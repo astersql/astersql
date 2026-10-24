@@ -463,3 +463,132 @@ def apply_whitelist(rules, context, actual, reference, phase='query'):
             a['fields'][col][0] = rule['reference']
             used.append(rule['id'])
     return a, b, used
+
+
+def evaluate_capabilities(cases, observations, summary, provenance):
+    """Derive bounded support from current raw evidence after both cleanup layers.
+
+    Classification describes ownership, never proof. Shared dialect equivalence
+    remains unverified: this fixture has only a MySQL health connection.
+    """
+    matrix = cases.get('capability_matrix') or json.loads(
+        Path(__file__).with_name('pg_core_capabilities.json').read_text())
+    report = {'schema_version': 1, 'run': summary.get('run'),
+              'target_version': provenance.get('record', {}).get('target_version'),
+              'capabilities': {}}
+    entries = matrix['capabilities']
+    for key, spec in entries.items():
+        report['capabilities'][key] = dict(spec, status='unverified',
+                                          reason='incomplete current evidence')
+    try:
+        validate_cases(cases)
+        record, expected = provenance['record'], provenance['expected']
+        run = summary['run']
+        business = [x for x in cases['cases'] if x['kind'] == 'business']
+        ids = {x['case_id'] for x in business}
+        registered = {x['capability_id'] for x in business}
+        associations = [i for spec in entries.values() for i in spec['case_ids']]
+        if (matrix['schema_version'] != 1 or set(associations) != ids
+                or len(associations) != len(ids) or not registered <= set(entries)
+                or any(set(spec['case_ids']) != {x['case_id'] for x in business
+                                                 if x['capability_id'] == key}
+                       for key, spec in entries.items())
+                or not validate_provenance(record, expected) or record['run'] != run
+                or not summary['passed'] or not summary['completed'] or not summary['cleanup_ok']
+                or summary['unique_effective'] != len(business) or not business
+                or summary['discovered'] != len(cases['cases'])
+                or summary['executed'] != len(cases['cases']) or summary['assertions'] <= 0
+                or any(summary[k] != 0 for k in ['failed', 'exceptions', 'timeouts', 'skipped', 'ignored'])
+                or observations['rust_cleanup'] != {'database_dropped': True,
+                    'postgres_port_closed': True, 'mysql_port_closed': True}
+                or observations['child_exit']['success'] is not True
+                or observations['child_exit']['code'] != 0):
+            return report
+        recount = summarize_run(run, cases['cases'], observations['attempts'], True, True)
+        if any(summary[k] != recount[k] for k in recount):
+            return report
+        streams = {}
+        for side in ['aster', 'reference']:
+            rows = observations[side]
+            if any(r['run'] != run or r['side'] != side for r in rows):
+                return report
+            # Duplicate records must never overwrite an earlier failure.
+            if len({(r['case_id'], r['attempt']) for r in rows}) != len(rows):
+                return report
+            streams[side] = {r['case_id']: r for r in rows}
+            for key in ['cleanup_rollback', 'cleanup_drop']:
+                if streams[side][key]['observation']['status'] != 1:
+                    return report
+            if streams[side]['connection_closed']['outcome'] != 'closed':
+                return report
+        mysql = observations['mysql']
+        health = (len(mysql) == 3 and [x['case_id'] for x in mysql] == ['before','during','after']
+                  and all(x['run'] == run and x['side'] == 'mysql'
+                          and x['outcome'] == 'bypass_health'
+                          and x['observation']['rows'] == [[[51,49],[45,49,55]]]
+                          for x in mysql))
+        if not health:
+            return report
+        passed = set()
+        for case in business:
+            key, phase = case['case_id'], case['input']['phase']
+            pair = [streams[side][key] for side in ['aster', 'reference']]
+            valid = True
+            for item in pair:
+                data = copy.deepcopy(case['input'])
+                sql = item['input']['sql']
+                tables = re.findall(r'public\.pg_core_diff_[0-9]+', sql)
+                data['sql'] = data['sql'].replace('{run_table}', tables[0] if tables else '{run_table}')
+                valid &= (item['input'] == data and item['outcome'] == 'collected'
+                          and item['attempt'] == 1)
+                obs = item['observation']
+                valid &= all(obs.get(k) == v for k, v in case['expected'].items())
+            a, b = [x['observation'] for x in pair]
+            valid &= (compare_rows(a, b, case.get('row_order', 'strict'))
+                      and compare_metadata(a, b, phase)
+                      and a.get('status') == b.get('status') and a.get('state') == b.get('state'))
+            if case.get('rejection_contract'):
+                rejections = [streams[side][key + '_rejection_contract']['observation']
+                              for side in ['aster', 'reference']]
+                valid &= compare_rejection(*rejections, case['rejection_contract'])
+            if valid:
+                passed.add(key)
+        # Recovery and transaction cases are global prerequisites for support;
+        # they cannot be dropped to upgrade a value-only result.
+        complete = passed == ids
+        for key, spec in entries.items():
+            result = report['capabilities'][key]
+            result['evidence'] = {'run': run, 'case_ids': spec['case_ids'],
+                                  'source': {k: record['source'][k] for k in ['head', 'workspace_sha256']},
+                                  'version': record['reference'],
+                                  'raw': ['aster.jsonl','reference.jsonl'],
+                                  'summary': 'summary.json', 'cleanup': 'rust-cleanup.json'}
+            if spec['classification'] == 'shared':
+                result.update(reason='MySQL bypass health only; missing MySQL reference/type evidence',
+                              bypass_health=health)
+            elif spec['classification'] == 'postgresql_exclusive' and spec['case_ids'] and complete:
+                result.update(status='supported', reason='current exact ' + record['target_version']
+                              + ' bounded PostgreSQL input domain')
+            # Formal unsupported declarations also stay unverified unless a
+            # separate complete refusal contract is explicitly implemented.
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return report
+    return report
+
+
+def finalize_capabilities(directory):
+    """Called by Rust only after child exit, MySQL after-check and server cleanup."""
+    directory = Path(directory)
+    load = lambda name: json.loads((directory / name).read_text())
+    observations = {side: [json.loads(line) for line in
+                          (directory / (side + '.jsonl')).read_text().splitlines()]
+                    for side in ['aster', 'reference', 'mysql']}
+    observations.update(rust_cleanup=load('rust-cleanup.json'), child_exit=load('child-exit.json'),
+                        attempts=load('attempts.json'))
+    record = load('environment.json')
+    # Recollect source/build/client identity at the original end-of-run gate;
+    # finalization cannot substitute record for independently collected expected.
+    report = evaluate_capabilities(load_cases(), observations, load('summary.json'),
+                                   {'record': record, 'expected': load('provenance-expected.json')})
+    (directory / 'capabilities.json').write_text(json.dumps(report, sort_keys=True))
+    return report

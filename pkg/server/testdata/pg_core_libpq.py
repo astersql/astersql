@@ -569,6 +569,7 @@ def integer_differential(aster_dsn):
         print("historical first-phase accounting: 94=91 business+3 self-checks; current summary follows cleanup", flush=True)
         expected = dict(provenance, **identities())
         eligible = validate_provenance(provenance, expected)
+        (evidence_dir / 'provenance-expected.json').write_text(json.dumps(expected, sort_keys=True))
         # Missing source or another exact version leaves functional evidence
         # intact, but cannot become acceptance evidence for the target.
         gate = {'run': run_id, 'target_version': target,

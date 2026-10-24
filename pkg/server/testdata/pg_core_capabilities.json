@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "capabilities": {
+    "integer.value": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "int4_suffix_min",
+        "int4_suffix_max",
+        "int4_suffix_text",
+        "int4_suffix_integer",
+        "int4_cast_min",
+        "int4_cast_max",
+        "int4_cast_text",
+        "int4_cast_integer",
+        "int8_suffix_min",
+        "int8_suffix_max",
+        "int8_suffix_text",
+        "int8_suffix_integer",
+        "int8_cast_min",
+        "int8_cast_max",
+        "int8_cast_text",
+        "int8_cast_integer",
+        "int_alias",
+        "nested_narrow"
+      ]
+    },
+    "integer.typed_null": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "int4_suffix_null",
+        "int4_cast_null",
+        "int8_suffix_null",
+        "int8_cast_null"
+      ]
+    },
+    "integer.overflow": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "int4_suffix_over",
+        "int4_suffix_under",
+        "int4_cast_over",
+        "int4_cast_under",
+        "int8_suffix_over",
+        "int8_suffix_under",
+        "int8_cast_over",
+        "int8_cast_under",
+        "nested_overflow",
+        "inferred_overflow",
+        "zero_overflow",
+        "explicit_overflow",
+        "text_source_overflow"
+      ]
+    },
+    "integer.recovery": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "recover_int4_suffix_over",
+        "recover_int4_suffix_under",
+        "recover_int4_suffix_invalid",
+        "recover_int4_cast_over",
+        "recover_int4_cast_under",
+        "recover_int4_cast_invalid",
+        "recover_int8_suffix_over",
+        "recover_int8_suffix_under",
+        "recover_int8_suffix_invalid",
+        "recover_int8_cast_over",
+        "recover_int8_cast_under",
+        "recover_int8_cast_invalid",
+        "nested_recovery",
+        "inferred_invalid_recovery",
+        "inferred_overflow_recovery",
+        "zero_invalid_recovery",
+        "zero_overflow_recovery",
+        "explicit_invalid_recovery",
+        "explicit_overflow_recovery",
+        "text_source_invalid_recovery",
+        "text_source_overflow_recovery",
+        "rollback_recovery"
+      ]
+    },
+    "integer.invalid": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "int4_suffix_invalid",
+        "int4_cast_invalid",
+        "int8_suffix_invalid",
+        "int8_cast_invalid",
+        "inferred_invalid",
+        "zero_invalid",
+        "explicit_invalid",
+        "text_source_invalid"
+      ]
+    },
+    "integer.prepare": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "inferred_prepare",
+        "zero_prepare",
+        "explicit_prepare",
+        "text_source_prepare",
+        "empty_prepare"
+      ]
+    },
+    "integer.describe": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "inferred_describe",
+        "zero_describe",
+        "explicit_describe",
+        "text_source_describe"
+      ]
+    },
+    "integer.reexecute": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "inferred_run_initial",
+        "inferred_run_boundary",
+        "inferred_run_null",
+        "zero_run_initial",
+        "zero_run_null",
+        "explicit_run_initial",
+        "explicit_run_null",
+        "text_source_run_initial",
+        "text_source_run_null"
+      ]
+    },
+    "integer.write": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "write"
+      ]
+    },
+    "integer.readback": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "readback"
+      ]
+    },
+    "integer.zero_rows": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "empty_describe",
+        "empty_execute"
+      ]
+    },
+    "integer.transaction": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "First-phase explicit int4/int8 inputs only.",
+      "case_ids": [
+        "invalid_write_prepare",
+        "invalid_write_describe",
+        "invalid_int4_write",
+        "invalid_int4_write_recovery",
+        "begin",
+        "transaction_error",
+        "transaction_failed",
+        "rollback"
+      ]
+    },
+    "scalar.output": {
+      "classification": "postgresql_exclusive",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "current_provenance",
+        "two_endpoints",
+        "metadata",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "Task 3 bounded text readback: SQL NULL, empty string, literal NULL and zero rows only.",
+      "case_ids": [
+        "scalar_null",
+        "scalar_empty",
+        "scalar_literal_null",
+        "scalar_zero_rows",
+        "multiset_ordered",
+        "multiset_unordered"
+      ]
+    },
+    "mysql.bypass_health": {
+      "classification": "shared",
+      "workflow": [
+        "1",
+        "8"
+      ],
+      "dependencies": [
+        "mysql_before_during_after",
+        "cleanup"
+      ],
+      "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+      "scope": "Same server CAST AS SIGNED and table read health only; no MySQL reference equivalence.",
+      "case_ids": []
+    }
+  }
+}

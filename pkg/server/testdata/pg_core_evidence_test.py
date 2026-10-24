@@ -901,3 +901,1581 @@ class WhitelistTests(unittest.TestCase):
         a, b, used = self.apply([self.rule], self.context, actual, self.reference)
         self.assertNotEqual(a, b)
         self.assertEqual(used, [])
+
+
+class CapabilityGateTests(unittest.TestCase):
+    """Copies of archived real observations test the gate, not database success."""
+    def setUp(self):
+        self.data = json.loads(SAMPLE_CAPABILITY_EVIDENCE)
+
+    def evaluate(self):
+        from pg_core_evidence import evaluate_capabilities
+        return evaluate_capabilities(**self.data)
+
+    def supported(self):
+        return self.evaluate()['capabilities']['integer.value']['status'] == 'supported'
+
+    def test_complete_current(self):
+        self.assertTrue(self.supported())
+        self.assertEqual(self.evaluate()['capabilities']['mysql.bypass_health']['status'], 'unverified')
+
+    def test_historical_stdout(self):
+        self.data['summary'] = {'passed': True, 'unique_effective': 94}
+        self.assertFalse(self.supported())
+
+    def test_wrong_exact_version(self):
+        self.data['provenance']['record']['target_version'] = '18.6'
+        self.assertFalse(self.supported())
+
+    def test_missing_endpoint(self):
+        del self.data['observations']['reference']
+        self.assertFalse(self.supported())
+
+    def test_missing_metadata(self):
+        del self.data['observations']['aster'][0]['observation']['fields']
+        self.assertFalse(self.supported())
+
+    def test_missing_recovery(self):
+        for record in self.data['observations']['aster']:
+            if record['case_id'].endswith('_rejection_contract'):
+                del record['observation']['recovery']
+        self.assertEqual(self.evaluate()['capabilities']['integer.transaction']['status'], 'unverified')
+
+    def test_missing_cleanup(self):
+        del self.data['observations']['rust_cleanup']['database_dropped']
+        self.assertFalse(self.supported())
+
+    def test_zero_business(self):
+        self.data['summary']['unique_effective'] = 0
+        self.assertFalse(self.supported())
+
+    def test_wrong_capability_association(self):
+        self.data['cases']['cases'][0]['capability_id'] = 'integer.invalid'
+        self.assertFalse(self.supported())
+
+    def test_old_run_observation(self):
+        self.data['observations']['aster'][0]['run'] = 'historical'
+        self.assertFalse(self.supported())
+
+    def test_missing_sql_input(self):
+        self.data['observations']['reference'][0]['input']['sql'] = 'SELECT 0'
+        self.assertFalse(self.supported())
+
+    def test_missing_client_provenance(self):
+        del self.data['provenance']['record']['client']
+        self.assertFalse(self.supported())
+
+    def test_cleanup_failure_and_exception(self):
+        self.data['summary']['exceptions'] = 1
+        self.assertFalse(self.supported())
+
+    def test_input_unchanged(self):
+        before = copy.deepcopy(self.data)
+        self.evaluate()
+        self.assertEqual(before, self.data)
+
+
+# Captured PostgreSQL18.4/libpq18 observations; this is comparator data only.
+SAMPLE_CAPABILITY_EVIDENCE = r'''{
+  "cases": {
+    "schema_version": 1,
+    "capabilities": {
+      "integer.value": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.typed_null": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.overflow": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.recovery": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.invalid": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.prepare": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.describe": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.reexecute": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.write": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.readback": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.zero_rows": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.transaction": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "integer.comparator_self_check": {
+        "scope": "First-phase explicit int4/int8 inputs only."
+      },
+      "scalar.output": {
+        "scope": "Task 3 bounded text readback: SQL NULL, empty string, literal NULL and zero rows only."
+      }
+    },
+    "cases": [
+      {
+        "case_id": "int4_suffix_min",
+        "kind": "business",
+        "capability_id": "integer.value",
+        "family": "value",
+        "input": {
+          "phase": "query",
+          "sql": "SELECT '-2147483648'::int4 AS n",
+          "statement": null,
+          "parameter_oids": null,
+          "arguments": null,
+          "parameter_formats": null,
+          "result_format": 0
+        },
+        "expected": {
+          "status": 2,
+          "state": "",
+          "rows": [
+            [
+              "-2147483648"
+            ]
+          ]
+        },
+        "dialects": {
+          "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+          "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+        },
+        "bindings": {
+          "run_table": "unique table owned by this run"
+        },
+        "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+        "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+        "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+        "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+        "comparison_fields": [
+          "status",
+          "state",
+          "fields",
+          "rows",
+          "params",
+          "cells"
+        ]
+      },
+      {
+        "case_id": "invalid_int4_write",
+        "kind": "business",
+        "capability_id": "integer.transaction",
+        "family": "rejection_write",
+        "input": {
+          "phase": "execute",
+          "sql": "INSERT INTO {run_table} VALUES ($1, 0, 'rejected')",
+          "statement": "invalid_write",
+          "parameter_oids": null,
+          "arguments": [
+            "12x"
+          ],
+          "parameter_formats": null,
+          "result_format": 0
+        },
+        "expected": {
+          "status": 7,
+          "state": "22P02"
+        },
+        "dialects": {
+          "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+          "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+        },
+        "bindings": {
+          "run_table": "unique table owned by this run"
+        },
+        "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+        "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+        "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+        "expected_basis": "Task6: invalid int4 write must preserve same-connection rows, recover and clean up.",
+        "comparison_fields": [
+          "status",
+          "state",
+          "fields",
+          "rows",
+          "params",
+          "cells"
+        ],
+        "rejection_contract": {
+          "classification": "expected_rejection",
+          "phase": "PQexecPrepared",
+          "sqlstate": "22P02",
+          "transaction_after_error": "I"
+        }
+      }
+    ],
+    "capability_matrix": {
+      "schema_version": 1,
+      "capabilities": {
+        "integer.value": {
+          "classification": "postgresql_exclusive",
+          "workflow": [
+            "1",
+            "8"
+          ],
+          "dependencies": [
+            "current_provenance",
+            "two_endpoints",
+            "metadata",
+            "cleanup"
+          ],
+          "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+          "scope": "First-phase explicit int4/int8 inputs only.",
+          "case_ids": [
+            "int4_suffix_min"
+          ]
+        },
+        "mysql.bypass_health": {
+          "classification": "shared",
+          "workflow": [
+            "1",
+            "8"
+          ],
+          "dependencies": [
+            "mysql_before_during_after",
+            "cleanup"
+          ],
+          "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+          "scope": "Same server CAST AS SIGNED and table read health only; no MySQL reference equivalence.",
+          "case_ids": []
+        },
+        "integer.transaction": {
+          "classification": "postgresql_exclusive",
+          "workflow": [
+            "1",
+            "8"
+          ],
+          "dependencies": [
+            "current_provenance",
+            "two_endpoints",
+            "metadata",
+            "cleanup"
+          ],
+          "acceptance": "pg_client_integration_test::pg_core_libpq_integer_differential",
+          "scope": "First-phase explicit int4/int8 inputs only.",
+          "case_ids": [
+            "invalid_int4_write"
+          ]
+        }
+      }
+    }
+  },
+  "observations": {
+    "aster": [
+      {
+        "attempt": 1,
+        "case_id": "int4_suffix_min",
+        "input": {
+          "arguments": null,
+          "parameter_formats": null,
+          "parameter_oids": null,
+          "phase": "query",
+          "result_format": 0,
+          "sql": "SELECT '-2147483648'::int4 AS n",
+          "statement": null
+        },
+        "observation": {
+          "affected_rows": "1",
+          "cells": [
+            [
+              {
+                "hex": "2d32313437343833363438",
+                "kind": "value",
+                "length": 11
+              }
+            ]
+          ],
+          "command_tag": "SELECT 1",
+          "fields": [
+            [
+              "n",
+              23,
+              4,
+              -1
+            ]
+          ],
+          "formats": [
+            0
+          ],
+          "param_count": 0,
+          "params": [],
+          "rows": [
+            [
+              "-2147483648"
+            ]
+          ],
+          "state": "",
+          "status": 2,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "aster"
+      },
+      {
+        "attempt": 1,
+        "case_id": "invalid_int4_write",
+        "input": {
+          "arguments": [
+            "12x"
+          ],
+          "parameter_formats": null,
+          "parameter_oids": null,
+          "phase": "execute",
+          "result_format": 0,
+          "sql": "INSERT INTO public.pg_core_diff_86436 VALUES ($1, 0, 'rejected')",
+          "statement": "invalid_write"
+        },
+        "observation": {
+          "affected_rows": "",
+          "cells": [],
+          "command_tag": "",
+          "fields": [],
+          "formats": [],
+          "param_count": 0,
+          "params": [],
+          "rows": [],
+          "state": "22P02",
+          "status": 7,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "aster"
+      },
+      {
+        "attempt": 1,
+        "case_id": "cleanup_rollback",
+        "error_type": null,
+        "input": {
+          "command": "ROLLBACK"
+        },
+        "observation": {
+          "affected_rows": "",
+          "cells": [],
+          "command_tag": "ROLLBACK",
+          "fields": [],
+          "formats": [],
+          "param_count": 0,
+          "params": [],
+          "rows": [],
+          "state": "",
+          "status": 1,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "aster"
+      },
+      {
+        "attempt": 1,
+        "case_id": "cleanup_drop",
+        "error_type": null,
+        "input": {
+          "command": "DROP TABLE public.pg_core_diff_86436"
+        },
+        "observation": {
+          "affected_rows": "",
+          "cells": [],
+          "command_tag": "DROP TABLE",
+          "fields": [],
+          "formats": [],
+          "param_count": 0,
+          "params": [],
+          "rows": [],
+          "state": "",
+          "status": 1,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "aster"
+      },
+      {
+        "attempt": 1,
+        "case_id": "connection_closed",
+        "error_type": null,
+        "input": null,
+        "observation": null,
+        "outcome": "closed",
+        "run": "86401-1792850299470758000",
+        "side": "aster"
+      },
+      {
+        "attempt": 1,
+        "case_id": "invalid_int4_write_rejection_contract",
+        "error_type": null,
+        "input": null,
+        "observation": {
+          "after": {
+            "affected_rows": "6",
+            "cells": [
+              [
+                {
+                  "hex": "31",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "39303037313939323534373430393933",
+                  "kind": "value",
+                  "length": 16
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "32",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "33",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "34",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "4e554c4c",
+                  "kind": "value",
+                  "length": 4
+                }
+              ],
+              [
+                {
+                  "hex": "35",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "36",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ]
+            ],
+            "command_tag": "SELECT 6",
+            "fields": [
+              [
+                "id",
+                23,
+                4,
+                -1
+              ],
+              [
+                "n",
+                20,
+                8,
+                -1
+              ],
+              [
+                "note",
+                25,
+                -1,
+                -1
+              ]
+            ],
+            "formats": [
+              0,
+              0,
+              0
+            ],
+            "param_count": 0,
+            "params": [],
+            "rows": [
+              [
+                "1",
+                "9007199254740993",
+                null
+              ],
+              [
+                "2",
+                null,
+                null
+              ],
+              [
+                "3",
+                "0",
+                ""
+              ],
+              [
+                "4",
+                "0",
+                "NULL"
+              ],
+              [
+                "5",
+                "0",
+                ""
+              ],
+              [
+                "6",
+                null,
+                null
+              ]
+            ],
+            "state": "",
+            "status": 2,
+            "table_origins": null
+          },
+          "backend_phase": null,
+          "before": {
+            "affected_rows": "6",
+            "cells": [
+              [
+                {
+                  "hex": "31",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "39303037313939323534373430393933",
+                  "kind": "value",
+                  "length": 16
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "32",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "33",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "34",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "4e554c4c",
+                  "kind": "value",
+                  "length": 4
+                }
+              ],
+              [
+                {
+                  "hex": "35",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "36",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ]
+            ],
+            "command_tag": "SELECT 6",
+            "fields": [
+              [
+                "id",
+                23,
+                4,
+                -1
+              ],
+              [
+                "n",
+                20,
+                8,
+                -1
+              ],
+              [
+                "note",
+                25,
+                -1,
+                -1
+              ]
+            ],
+            "formats": [
+              0,
+              0,
+              0
+            ],
+            "param_count": 0,
+            "params": [],
+            "rows": [
+              [
+                "1",
+                "9007199254740993",
+                null
+              ],
+              [
+                "2",
+                null,
+                null
+              ],
+              [
+                "3",
+                "0",
+                ""
+              ],
+              [
+                "4",
+                "0",
+                "NULL"
+              ],
+              [
+                "5",
+                "0",
+                ""
+              ],
+              [
+                "6",
+                null,
+                null
+              ]
+            ],
+            "state": "",
+            "status": 2,
+            "table_origins": null
+          },
+          "classification": "expected_rejection",
+          "cleanup": {
+            "connection_closed": true,
+            "drop": true,
+            "rollback": true
+          },
+          "connection_ok": true,
+          "error": {
+            "affected_rows": "",
+            "cells": [],
+            "command_tag": "",
+            "fields": [],
+            "formats": [],
+            "param_count": 0,
+            "params": [],
+            "rows": [],
+            "state": "22P02",
+            "status": 7,
+            "table_origins": null
+          },
+          "phase": "PQexecPrepared",
+          "recovery": {
+            "affected_rows": "1",
+            "cells": [
+              [
+                {
+                  "hex": "31",
+                  "kind": "value",
+                  "length": 1
+                }
+              ]
+            ],
+            "command_tag": "SELECT 1",
+            "fields": [
+              [
+                "n",
+                23,
+                4,
+                -1
+              ]
+            ],
+            "formats": [
+              0
+            ],
+            "param_count": 0,
+            "params": [],
+            "rows": [
+              [
+                "1"
+              ]
+            ],
+            "state": "",
+            "status": 2,
+            "table_origins": null
+          },
+          "transaction_after_error": "I",
+          "transaction_after_recovery": "I"
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "aster"
+      }
+    ],
+    "reference": [
+      {
+        "attempt": 1,
+        "case_id": "int4_suffix_min",
+        "input": {
+          "arguments": null,
+          "parameter_formats": null,
+          "parameter_oids": null,
+          "phase": "query",
+          "result_format": 0,
+          "sql": "SELECT '-2147483648'::int4 AS n",
+          "statement": null
+        },
+        "observation": {
+          "affected_rows": "1",
+          "cells": [
+            [
+              {
+                "hex": "2d32313437343833363438",
+                "kind": "value",
+                "length": 11
+              }
+            ]
+          ],
+          "command_tag": "SELECT 1",
+          "fields": [
+            [
+              "n",
+              23,
+              4,
+              -1
+            ]
+          ],
+          "formats": [
+            0
+          ],
+          "param_count": 0,
+          "params": [],
+          "rows": [
+            [
+              "-2147483648"
+            ]
+          ],
+          "state": "",
+          "status": 2,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "reference"
+      },
+      {
+        "attempt": 1,
+        "case_id": "invalid_int4_write",
+        "input": {
+          "arguments": [
+            "12x"
+          ],
+          "parameter_formats": null,
+          "parameter_oids": null,
+          "phase": "execute",
+          "result_format": 0,
+          "sql": "INSERT INTO public.pg_core_diff_86436 VALUES ($1, 0, 'rejected')",
+          "statement": "invalid_write"
+        },
+        "observation": {
+          "affected_rows": "",
+          "cells": [],
+          "command_tag": "",
+          "fields": [],
+          "formats": [],
+          "param_count": 0,
+          "params": [],
+          "rows": [],
+          "state": "22P02",
+          "status": 7,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "reference"
+      },
+      {
+        "attempt": 1,
+        "case_id": "cleanup_rollback",
+        "error_type": null,
+        "input": {
+          "command": "ROLLBACK"
+        },
+        "observation": {
+          "affected_rows": "",
+          "cells": [],
+          "command_tag": "ROLLBACK",
+          "fields": [],
+          "formats": [],
+          "param_count": 0,
+          "params": [],
+          "rows": [],
+          "state": "",
+          "status": 1,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "reference"
+      },
+      {
+        "attempt": 1,
+        "case_id": "cleanup_drop",
+        "error_type": null,
+        "input": {
+          "command": "DROP TABLE public.pg_core_diff_86436"
+        },
+        "observation": {
+          "affected_rows": "",
+          "cells": [],
+          "command_tag": "DROP TABLE",
+          "fields": [],
+          "formats": [],
+          "param_count": 0,
+          "params": [],
+          "rows": [],
+          "state": "",
+          "status": 1,
+          "table_origins": null
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "reference"
+      },
+      {
+        "attempt": 1,
+        "case_id": "connection_closed",
+        "error_type": null,
+        "input": null,
+        "observation": null,
+        "outcome": "closed",
+        "run": "86401-1792850299470758000",
+        "side": "reference"
+      },
+      {
+        "attempt": 1,
+        "case_id": "invalid_int4_write_rejection_contract",
+        "error_type": null,
+        "input": null,
+        "observation": {
+          "after": {
+            "affected_rows": "6",
+            "cells": [
+              [
+                {
+                  "hex": "31",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "39303037313939323534373430393933",
+                  "kind": "value",
+                  "length": 16
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "32",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "33",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "34",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "4e554c4c",
+                  "kind": "value",
+                  "length": 4
+                }
+              ],
+              [
+                {
+                  "hex": "35",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "36",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ]
+            ],
+            "command_tag": "SELECT 6",
+            "fields": [
+              [
+                "id",
+                23,
+                4,
+                -1
+              ],
+              [
+                "n",
+                20,
+                8,
+                -1
+              ],
+              [
+                "note",
+                25,
+                -1,
+                -1
+              ]
+            ],
+            "formats": [
+              0,
+              0,
+              0
+            ],
+            "param_count": 0,
+            "params": [],
+            "rows": [
+              [
+                "1",
+                "9007199254740993",
+                null
+              ],
+              [
+                "2",
+                null,
+                null
+              ],
+              [
+                "3",
+                "0",
+                ""
+              ],
+              [
+                "4",
+                "0",
+                "NULL"
+              ],
+              [
+                "5",
+                "0",
+                ""
+              ],
+              [
+                "6",
+                null,
+                null
+              ]
+            ],
+            "state": "",
+            "status": 2,
+            "table_origins": null
+          },
+          "backend_phase": null,
+          "before": {
+            "affected_rows": "6",
+            "cells": [
+              [
+                {
+                  "hex": "31",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "39303037313939323534373430393933",
+                  "kind": "value",
+                  "length": 16
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "32",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "33",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "34",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "4e554c4c",
+                  "kind": "value",
+                  "length": 4
+                }
+              ],
+              [
+                {
+                  "hex": "35",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "30",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "hex": "",
+                  "kind": "value",
+                  "length": 0
+                }
+              ],
+              [
+                {
+                  "hex": "36",
+                  "kind": "value",
+                  "length": 1
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                },
+                {
+                  "kind": "sql_null",
+                  "length": 0
+                }
+              ]
+            ],
+            "command_tag": "SELECT 6",
+            "fields": [
+              [
+                "id",
+                23,
+                4,
+                -1
+              ],
+              [
+                "n",
+                20,
+                8,
+                -1
+              ],
+              [
+                "note",
+                25,
+                -1,
+                -1
+              ]
+            ],
+            "formats": [
+              0,
+              0,
+              0
+            ],
+            "param_count": 0,
+            "params": [],
+            "rows": [
+              [
+                "1",
+                "9007199254740993",
+                null
+              ],
+              [
+                "2",
+                null,
+                null
+              ],
+              [
+                "3",
+                "0",
+                ""
+              ],
+              [
+                "4",
+                "0",
+                "NULL"
+              ],
+              [
+                "5",
+                "0",
+                ""
+              ],
+              [
+                "6",
+                null,
+                null
+              ]
+            ],
+            "state": "",
+            "status": 2,
+            "table_origins": null
+          },
+          "classification": "expected_rejection",
+          "cleanup": {
+            "connection_closed": true,
+            "drop": true,
+            "rollback": true
+          },
+          "connection_ok": true,
+          "error": {
+            "affected_rows": "",
+            "cells": [],
+            "command_tag": "",
+            "fields": [],
+            "formats": [],
+            "param_count": 0,
+            "params": [],
+            "rows": [],
+            "state": "22P02",
+            "status": 7,
+            "table_origins": null
+          },
+          "phase": "PQexecPrepared",
+          "recovery": {
+            "affected_rows": "1",
+            "cells": [
+              [
+                {
+                  "hex": "31",
+                  "kind": "value",
+                  "length": 1
+                }
+              ]
+            ],
+            "command_tag": "SELECT 1",
+            "fields": [
+              [
+                "n",
+                23,
+                4,
+                -1
+              ]
+            ],
+            "formats": [
+              0
+            ],
+            "param_count": 0,
+            "params": [],
+            "rows": [
+              [
+                "1"
+              ]
+            ],
+            "state": "",
+            "status": 2,
+            "table_origins": null
+          },
+          "transaction_after_error": "I",
+          "transaction_after_recovery": "I"
+        },
+        "outcome": "collected",
+        "run": "86401-1792850299470758000",
+        "side": "reference"
+      }
+    ],
+    "mysql": [
+      {
+        "run": "86401-1792850299470758000",
+        "case_id": "before",
+        "side": "mysql",
+        "attempt": 1,
+        "input": {
+          "command": "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation"
+        },
+        "observation": {
+          "rows": [
+            [
+              [
+                51,
+                49
+              ],
+              [
+                45,
+                49,
+                55
+              ]
+            ]
+          ]
+        },
+        "outcome": "bypass_health"
+      },
+      {
+        "run": "86401-1792850299470758000",
+        "case_id": "during",
+        "side": "mysql",
+        "attempt": 1,
+        "input": {
+          "command": "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation"
+        },
+        "observation": {
+          "rows": [
+            [
+              [
+                51,
+                49
+              ],
+              [
+                45,
+                49,
+                55
+              ]
+            ]
+          ]
+        },
+        "outcome": "bypass_health"
+      },
+      {
+        "run": "86401-1792850299470758000",
+        "case_id": "after",
+        "side": "mysql",
+        "attempt": 1,
+        "input": {
+          "command": "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation"
+        },
+        "observation": {
+          "rows": [
+            [
+              [
+                51,
+                49
+              ],
+              [
+                45,
+                49,
+                55
+              ]
+            ]
+          ]
+        },
+        "outcome": "bypass_health"
+      }
+    ],
+    "rust_cleanup": {
+      "database_dropped": true,
+      "postgres_port_closed": true,
+      "mysql_port_closed": true
+    },
+    "child_exit": {
+      "success": true,
+      "code": 0,
+      "status": "exit status: 0"
+    },
+    "attempts": [
+      {
+        "assertions": 9,
+        "attempt": 1,
+        "case_id": "int4_suffix_min",
+        "outcome": "passed",
+        "run": "86401-1792850299470758000"
+      },
+      {
+        "assertions": 9,
+        "attempt": 1,
+        "case_id": "invalid_int4_write",
+        "outcome": "passed",
+        "run": "86401-1792850299470758000"
+      }
+    ]
+  },
+  "summary": {
+    "run": "86401-1792850299470758000",
+    "passed": true,
+    "discovered": 2,
+    "executed": 2,
+    "attempts": 2,
+    "unique_effective": 2,
+    "failed": 0,
+    "exceptions": 0,
+    "timeouts": 0,
+    "skipped": 0,
+    "ignored": 0,
+    "self_checks": 0,
+    "assertions": 18,
+    "assertion_scope": "completed business check contracts; excludes self checks and run guards",
+    "cleanup_ok": true,
+    "completed": true,
+    "retries": []
+  },
+  "provenance": {
+    "record": {
+      "authentication": "InsecureRootOnly",
+      "build": {
+        "path": "/captured/rust-slot/astersql-server",
+        "profile": "cargo-test-default-features",
+        "sha256": "6e879802a6c832a9b76526548d6e1adc0e44a879ad51453647a1355fb2c005b4"
+      },
+      "client": {
+        "PQlibVersion": 180000,
+        "library": "/captured/libpq.5.dylib",
+        "python": "3.12.11 (main, Jun  3 2025, 15:41:47) [Clang 17.0.0 (clang-1700.0.13.3)]",
+        "sha256": "f5e2768d1403094d2cbcec6127e8290cb8f848a5ea08bfbb9a0268c386a205ab"
+      },
+      "endpoints": {
+        "aster": {
+          "encoding": "UTF8",
+          "protocol": 30000,
+          "search_path": "public",
+          "server_version": "18.0 (AsterSQL)",
+          "timezone": "UTC",
+          "transaction": "I"
+        },
+        "reference": {
+          "encoding": "UTF8",
+          "protocol": 30000,
+          "search_path": "\"$user\", public",
+          "server_version": "18.4 (Homebrew)",
+          "timezone": "Asia/Shanghai",
+          "transaction": "I"
+        }
+      },
+      "os": "macOS-26.1-arm64-arm-64bit",
+      "reference": {
+        "server_version_num": "180004",
+        "version": "PostgreSQL 18.4 (Homebrew) on aarch64-apple-darwin25.4.0, compiled by Apple clang version 21.0.0 (clang-2100.0.123.102), 64-bit"
+      },
+      "reference_build": {
+        "artifact_sha256": "9e120e78126eff196e43ac2c9485b7f0162c07d7902d04ee7add95bf073e10f4",
+        "configuration": "'--datadir=/opt/homebrew/share/postgresql@18' '--includedir=/opt/homebrew/include/postgresql@18' '--sysconfdir=/opt/homebrew/etc' '--docdir=/opt/homebrew/Cellar/postgresql@18/18.4/share/doc/postgresql@18' '--enable-nls' '--enable-thread-safety' '--with-gssapi' '--with-icu' '--with-ldap' '--with-libxml' '--with-libxslt' '--with-lz4' '--with-zstd' '--with-openssl' '--with-libcurl' '--with-pam' '--with-perl' '--with-uuid=e2fs' '--with-extra-version= (Homebrew)' '--with-bonjour' '--with-tcl' 'PG_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk' '--disable-debug' '--disable-dependency-tracking' '--prefix=/opt/homebrew/Cellar/postgresql@18/18.4' '--libdir=/opt/homebrew/lib/postgresql@18' 'CC=clang' 'LDFLAGS=-L/opt/homebrew/opt/gettext/lib -L/opt/homebrew/opt/krb5/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/readline/lib' 'CPPFLAGS=-I/opt/homebrew/opt/gettext/include -I/opt/homebrew/opt/krb5/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/readline/include' 'CXX=clang++' 'PKG_CONFIG_PATH=/opt/homebrew/opt/pkgconf/lib/pkgconfig:/opt/homebrew/opt/icu4c@78/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig:/opt/homebrew/opt/krb5/lib/pkgconfig:/opt/homebrew/opt/lz4/lib/pkgconfig:/opt/homebrew/opt/readline/lib/pkgconfig:/opt/homebrew/opt/xz/lib/pkgconfig:/opt/homebrew/opt/zstd/lib/pkgconfig'",
+        "server_version_num": 180004,
+        "source": "Homebrew INSTALL_RECEIPT.json SHA256=79c8ef9459cdc04bb1ded05efb03ae015fd6f7150de250c18e03ce32b7140aa1",
+        "version": "18.4"
+      },
+      "run": "86401-1792850299470758000",
+      "source": {
+        "head": "e37c137c4dbc6f9d77066798f794503743d65701",
+        "workspace_sha256": "5ea3581f213322cdd71df0abddd9c92d7c513cf11c8b731454eefa1db0f1a813"
+      },
+      "storage": "CreateAnalyzeSession test storage",
+      "target_version": "18.4"
+    },
+    "expected": {
+      "authentication": "InsecureRootOnly",
+      "build": {
+        "path": "/captured/rust-slot/astersql-server",
+        "profile": "cargo-test-default-features",
+        "sha256": "6e879802a6c832a9b76526548d6e1adc0e44a879ad51453647a1355fb2c005b4"
+      },
+      "client": {
+        "PQlibVersion": 180000,
+        "library": "/captured/libpq.5.dylib",
+        "python": "3.12.11 (main, Jun  3 2025, 15:41:47) [Clang 17.0.0 (clang-1700.0.13.3)]",
+        "sha256": "f5e2768d1403094d2cbcec6127e8290cb8f848a5ea08bfbb9a0268c386a205ab"
+      },
+      "endpoints": {
+        "aster": {
+          "encoding": "UTF8",
+          "protocol": 30000,
+          "search_path": "public",
+          "server_version": "18.0 (AsterSQL)",
+          "timezone": "UTC",
+          "transaction": "I"
+        },
+        "reference": {
+          "encoding": "UTF8",
+          "protocol": 30000,
+          "search_path": "\"$user\", public",
+          "server_version": "18.4 (Homebrew)",
+          "timezone": "Asia/Shanghai",
+          "transaction": "I"
+        }
+      },
+      "os": "macOS-26.1-arm64-arm-64bit",
+      "reference": {
+        "server_version_num": "180004",
+        "version": "PostgreSQL 18.4 (Homebrew) on aarch64-apple-darwin25.4.0, compiled by Apple clang version 21.0.0 (clang-2100.0.123.102), 64-bit"
+      },
+      "reference_build": {
+        "artifact_sha256": "9e120e78126eff196e43ac2c9485b7f0162c07d7902d04ee7add95bf073e10f4",
+        "configuration": "'--datadir=/opt/homebrew/share/postgresql@18' '--includedir=/opt/homebrew/include/postgresql@18' '--sysconfdir=/opt/homebrew/etc' '--docdir=/opt/homebrew/Cellar/postgresql@18/18.4/share/doc/postgresql@18' '--enable-nls' '--enable-thread-safety' '--with-gssapi' '--with-icu' '--with-ldap' '--with-libxml' '--with-libxslt' '--with-lz4' '--with-zstd' '--with-openssl' '--with-libcurl' '--with-pam' '--with-perl' '--with-uuid=e2fs' '--with-extra-version= (Homebrew)' '--with-bonjour' '--with-tcl' 'PG_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk' '--disable-debug' '--disable-dependency-tracking' '--prefix=/opt/homebrew/Cellar/postgresql@18/18.4' '--libdir=/opt/homebrew/lib/postgresql@18' 'CC=clang' 'LDFLAGS=-L/opt/homebrew/opt/gettext/lib -L/opt/homebrew/opt/krb5/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/readline/lib' 'CPPFLAGS=-I/opt/homebrew/opt/gettext/include -I/opt/homebrew/opt/krb5/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/readline/include' 'CXX=clang++' 'PKG_CONFIG_PATH=/opt/homebrew/opt/pkgconf/lib/pkgconfig:/opt/homebrew/opt/icu4c@78/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig:/opt/homebrew/opt/krb5/lib/pkgconfig:/opt/homebrew/opt/lz4/lib/pkgconfig:/opt/homebrew/opt/readline/lib/pkgconfig:/opt/homebrew/opt/xz/lib/pkgconfig:/opt/homebrew/opt/zstd/lib/pkgconfig'",
+        "server_version_num": 180004,
+        "source": "Homebrew INSTALL_RECEIPT.json SHA256=79c8ef9459cdc04bb1ded05efb03ae015fd6f7150de250c18e03ce32b7140aa1",
+        "version": "18.4"
+      },
+      "run": "86401-1792850299470758000",
+      "source": {
+        "head": "e37c137c4dbc6f9d77066798f794503743d65701",
+        "workspace_sha256": "5ea3581f213322cdd71df0abddd9c92d7c513cf11c8b731454eefa1db0f1a813"
+      },
+      "storage": "CreateAnalyzeSession test storage",
+      "target_version": "18.4"
+    }
+  }
+}'''

@@ -295,6 +295,36 @@ fn pg_core_libpq_integer_differential() {
         assert_eq!(record["outcome"], "bypass_health");
     }
     assert!(middle, "missing middle MySQL checkpoint");
+    let matrix_status = Command::new("python3")
+        .args(["-c", "import sys; from pg_core_evidence import finalize_capabilities; finalize_capabilities(sys.argv[1])"])
+        .arg(&evidence)
+        .current_dir(repository.join("pkg/server/testdata"))
+        .status()
+        .unwrap();
+    assert!(matrix_status.success(), "capability finalization failed");
+    let matrix: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("capabilities.json")).unwrap())
+            .unwrap();
+    assert_eq!(matrix["run"], run);
+    assert_eq!(
+        matrix["capabilities"]["mysql.bypass_health"]["status"],
+        "unverified"
+    );
+    let eligible: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("provenance-gate.json")).unwrap(),
+    )
+    .unwrap();
+    let support = eligible["eligible"] == true && summary["passed"] == true;
+    for (key, capability) in matrix["capabilities"].as_object().unwrap() {
+        if key != "mysql.bypass_health" {
+            assert_eq!(
+                capability["status"],
+                if support { "supported" } else { "unverified" },
+                "{key}"
+            );
+        }
+    }
+
     println!(
         "MySQL SELECT/CAST before, during and after PG; prepared regression and listener cleanup passed"
     );
