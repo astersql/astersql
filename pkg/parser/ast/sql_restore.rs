@@ -334,6 +334,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             ExplicitCharSet,
         } => {
             let value = restore_expr(Expr)?;
+            if *FunctionType == CastFunctionType::PostgreSQLInt4 {
+                return Ok(format!("CAST({value} AS INT4)"));
+            }
             if *FunctionType == CastFunctionType::Binary {
                 return Ok(format!("BINARY {value}"));
             }
@@ -342,7 +345,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 .map_err(|e| e.to_string())?;
             let target = String::from_utf8(encoded).map_err(|e| e.to_string())?;
             Ok(match FunctionType {
-                CastFunctionType::Cast => format!("CAST({value} AS {target})"),
+                CastFunctionType::Cast | CastFunctionType::PostgreSQLInt4 => {
+                    format!("CAST({value} AS {target})")
+                }
                 CastFunctionType::Convert => format!("CONVERT({value}, {target})"),
                 CastFunctionType::Binary => unreachable!(),
             })

@@ -1249,7 +1249,15 @@ pub(super) fn relational_expression_value(
                 .map(|expression| relational_expression_value(expression, row))
                 .unwrap_or(Ok(None))
         }
-        ast::ExprKind::Cast { Expr, Tp, .. } => {
+        ast::ExprKind::Cast {
+            Expr,
+            Tp,
+            FunctionType,
+            ..
+        } => {
+            if *FunctionType == ast::CastFunctionType::PostgreSQLInt4 {
+                return pg_int4_relational_value(Expr, relational_expression_value(Expr, row)?);
+            }
             let Some(value) = relational_expression_value(Expr, row)? else {
                 return Ok(None);
             };
@@ -3316,4 +3324,37 @@ pub(super) fn relational_count_extrema(
         }
     }
     count
+}
+
+/// Only the parser's PG int4 marker selects strict semantics; MySQL keeps its
+/// existing conversion/warning path. NULL remains an absent SQL value.
+pub(super) fn pg_int4_relational_value(
+    expression: &ast::ExprNode,
+    value: Option<String>,
+) -> SessionResult<Option<String>> {
+    use astersql_expression::{PgInt4Error, pg_cast_int4};
+    fn supported(expr: &ast::ExprNode) -> bool {
+        match &expr.Kind {
+            ast::ExprKind::Value(v) => matches!(
+                v.Datum,
+                ast::ValueDatum::Null
+                    | ast::ValueDatum::Int64(_)
+                    | ast::ValueDatum::Uint64(_)
+                    | ast::ValueDatum::String(_)
+            ),
+            ast::ExprKind::Parentheses(v) | ast::ExprKind::Unary { V: v, .. } => supported(v),
+            ast::ExprKind::Binary { Op, L, R } => {
+                matches!(Op.as_str(), "+" | "-" | "*") && supported(L) && supported(R)
+            }
+            _ => true, // Column types are checked before relational SELECT evaluation.
+        }
+    }
+    let result = if supported(expression) {
+        pg_cast_int4(value.as_deref())
+    } else {
+        Err(PgInt4Error::Unsupported)
+    };
+    result.map(|v| v.map(|n| n.to_string())).map_err(|error| {
+        SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+    })
 }

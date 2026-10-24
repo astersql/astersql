@@ -6890,6 +6890,7 @@ pub mod formal_registry {
     #[derive(Clone, PartialEq, Eq)]
     enum DynamicKind {
         Cast,
+        PgInt4,
         GetVar,
         ToBinary(String),
         FromBinary(bool),
@@ -6910,6 +6911,25 @@ pub mod formal_registry {
             let datum = self.base.args[0].Eval(ctx, row)?;
             if datum.IsNull() {
                 return Ok((datum, true));
+            }
+            if self.kind == DynamicKind::PgInt4 {
+                use crate::{PgInt4Error, pg_cast_int4};
+                let input = match datum.Kind() {
+                    types::KindInt64 => datum.GetInt64().to_string(),
+                    types::KindUint64 => datum.GetUint64().to_string(),
+                    types::KindString | types::KindBytes => datum.GetString(),
+                    _ => {
+                        return Err(errors::Error::from(
+                            crate::contextutil::errors::SharedError::new(PgInt4Error::Unsupported),
+                        ));
+                    }
+                };
+                let number = pg_cast_int4(Some(&input))
+                    .map_err(|error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    })?
+                    .expect("non-null input");
+                return Ok((types::NewIntDatum(i64::from(number)), false));
             }
             let datum = datum.ConvertTo(ctx.TypeCtx(), &self.base.return_type)?;
             let null = datum.IsNull();
@@ -7066,7 +7086,7 @@ pub mod formal_registry {
         }
         fn evalInt(&self, c: &dyn EvalContext, r: chunk::Row) -> Result<(i64, bool), Error> {
             match self.kind {
-                DynamicKind::Cast => {
+                DynamicKind::Cast | DynamicKind::PgInt4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { 0 } else { d.GetInt64() }, n))
                 }
@@ -7078,7 +7098,7 @@ pub mod formal_registry {
         }
         fn evalReal(&self, c: &dyn EvalContext, r: chunk::Row) -> Result<(f64, bool), Error> {
             match self.kind {
-                DynamicKind::Cast => {
+                DynamicKind::Cast | DynamicKind::PgInt4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { 0.0 } else { d.GetFloat64() }, n))
                 }
@@ -7091,7 +7111,7 @@ pub mod formal_registry {
         }
         fn evalString(&self, c: &dyn EvalContext, r: chunk::Row) -> Result<(String, bool), Error> {
             match &self.kind {
-                DynamicKind::Cast => {
+                DynamicKind::Cast | DynamicKind::PgInt4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { String::new() } else { d.ToString()? }, n))
                 }
@@ -7157,7 +7177,7 @@ pub mod formal_registry {
             r: chunk::Row,
         ) -> Result<(types::MyDecimal, bool), Error> {
             match self.kind {
-                DynamicKind::Cast => {
+                DynamicKind::Cast | DynamicKind::PgInt4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((
                         if n {
@@ -7181,7 +7201,7 @@ pub mod formal_registry {
             r: chunk::Row,
         ) -> Result<(types::Time, bool), Error> {
             match self.kind {
-                DynamicKind::Cast => {
+                DynamicKind::Cast | DynamicKind::PgInt4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { types::ZeroTime } else { d.GetMysqlTime() }, n))
                 }
@@ -7325,10 +7345,18 @@ pub mod formal_registry {
         base.collation_info.SetRepertoire(expr.Repertoire());
         base.collation_info
             .SetCharsetAndCollation(cast_charset, cast_collation);
-        base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
+        let pg_int4 = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+            && target.GetType() == mysql::TypeLong;
+        if !pg_int4 {
+            base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
+        }
         let f = Box::new(DynamicBuiltin {
             base,
-            kind: DynamicKind::Cast,
+            kind: if pg_int4 {
+                DynamicKind::PgInt4
+            } else {
+                DynamicKind::Cast
+            },
         });
         let out = scalar(crate::ast::Cast, tp.clone(), f);
         if tp.EvalType() == types::ETJson {

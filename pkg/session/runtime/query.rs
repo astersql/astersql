@@ -1106,7 +1106,18 @@ impl ConcreteSession {
             ast::ExprKind::Parentheses(inner) => {
                 self.relational_query_expression_value(inner, row, group_rows)
             }
-            ast::ExprKind::Cast { Expr, Tp, .. } => {
+            ast::ExprKind::Cast {
+                Expr,
+                Tp,
+                FunctionType,
+                ..
+            } => {
+                if *FunctionType == ast::CastFunctionType::PostgreSQLInt4 {
+                    return pg_int4_relational_value(
+                        Expr,
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                    );
+                }
                 if relational_expression_is_vector(Expr)
                     && matches!(
                         Tp.GetType(),
@@ -1677,6 +1688,8 @@ impl ConcreteSession {
         });
         let scalar_count = is_scalar_count_non_null_constant(select);
         select.With.is_some()
+            || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                && select.Where.as_ref().is_some_and(expression_contains_cast))
             || has_derived_source
             || select
                 .From
@@ -1862,10 +1875,76 @@ impl ConcreteSession {
         Ok(None)
     }
 
+    /// Reject unsupported numeric source types before row evaluation, including
+    /// empty scans: relational rows carry text and cannot recover source types.
+    fn validate_pg_int4_select_inputs(&self, select: &ast::SelectStmt) -> SessionResult<()> {
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
+            return Ok(());
+        }
+        let expressions = select
+            .Fields
+            .Fields
+            .iter()
+            .filter_map(|field| field.Expr.as_ref())
+            .chain(select.Where.as_ref())
+            .collect::<Vec<_>>();
+        if !expressions
+            .iter()
+            .any(|expr| expression_contains_cast(expr))
+        {
+            return Ok(());
+        }
+        let sources = self.relational_select_source_fields(select)?;
+        let mut table = astersql_meta_model::TableInfo::default();
+        table.Columns = sources.iter().map(|field| field.column.clone()).collect();
+        struct Inputs<'a> {
+            table: &'a astersql_meta_model::TableInfo,
+            unsupported: bool,
+        }
+        impl ast::ExprNodeVisitor for Inputs<'_> {
+            fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::Cast {
+                    Expr,
+                    FunctionType: ast::CastFunctionType::PostgreSQLInt4,
+                    ..
+                } = &input.Kind
+                {
+                    let source = relational_expression_type(Expr, self.table);
+                    self.unsupported |= source.GetType() != astersql_parser_mysql::r#type::TypeNull
+                        && !matches!(
+                            source.EvalType(),
+                            astersql_parser_types::eval_type::ETInt
+                                | astersql_parser_types::eval_type::ETString
+                        );
+                }
+                (input.clone(), self.unsupported)
+            }
+            fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                (input.clone(), !self.unsupported)
+            }
+        }
+        let mut visitor = Inputs {
+            table: &table,
+            unsupported: false,
+        };
+        for expr in expressions {
+            let _ = expr.Accept(&mut visitor);
+        }
+        if visitor.unsupported {
+            let error = astersql_expression::PgInt4Error::Unsupported;
+            return Err(SessionError::with_source(
+                error.to_string(),
+                astersql_errors::SharedError::new(error),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn execute_full_relational_select(
         &self,
         select: &ast::SelectStmt,
     ) -> SessionResult<ConcreteRecordSet> {
+        self.validate_pg_int4_select_inputs(select)?;
         let statement_read_ts = self.full_query_statement_read_ts(select)?;
         let previous_snapshot_read_ts = {
             let mut state = self.state.borrow_mut();
@@ -2391,6 +2470,7 @@ impl ConcreteSession {
         statement: &ast::SelectStmt,
         statement_sql: Option<&str>,
     ) -> SessionResult<Option<ConcreteRecordSet>> {
+        self.validate_pg_int4_select_inputs(statement)?;
         let Some(from) = statement.From.as_ref() else {
             return Ok(None);
         };

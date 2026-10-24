@@ -696,6 +696,7 @@ pub(crate) fn write_error(
 pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
     use crate::conn::ConnError;
     match error {
+        ConnError::PgInt4(error) => error.sqlstate(),
         ConnError::AccessDenied { .. } => "28000",
         ConnError::UnsupportedCommand(_) => "0A000",
         ConnError::ServerShutdown => "57P01",

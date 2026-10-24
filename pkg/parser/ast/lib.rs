@@ -659,6 +659,8 @@ pub enum TrimDirectionType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CastFunctionType {
     Cast,
+    /// Connection-owned PostgreSQL int4 semantics retained by shared AST consumers.
+    PostgreSQLInt4,
     Convert,
     Binary,
 }

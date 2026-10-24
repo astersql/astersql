@@ -99,3 +99,7 @@ Rust 当前并非 Go `conn.go` 的完全等价实现。Go `Run`/`dispatch` 还�
 ## 连接方言身份
 
 `SessionDriver::open_ctx_with_dialect` 是显式 SQL 身份入口。默认实现仅允许 MySQL 委托既有 open_ctx，对 PostgreSQL 返回错误，防止旧驱动静默降级。MySQL 握手、change_user、reset 继续使用 open_ctx。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+ConnError::PgInt4 保留严格 int4 转换的有类型错误，Display 只提供固定诊断文本；PG SQLSTATE 在 pg_conn 的枚举分支中决定。

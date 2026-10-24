@@ -100,3 +100,7 @@ Rust 直接回归证据在 [`materialized_test.rs`](materialized_test.rs)、[`go
 兼容性检查至少覆盖：Go 同类 `Restore` 的关键字与间距、标识符和字符串转义、括号及优先级、CTE 作用域、index/table hints、错误文本，以及解析—恢复—再解析的 AST 等价性。性能变更应特别审查深树递归和大型列表的 `collect/join` 分配。
 
 建议同步测试位置：通用表达式放在 `expressions_test.rs`/`functions_test.rs` 或相应 Aster 单元测试文件；SELECT、join、窗口和 set operation 放在 `dml_test.rs`；本模块当前无同名测试文件，直接规范 AST 的集成恢复回归集中在 `materialized_test.rs` 与 `go_merge_*_test.rs`。遵循仓库约束，生产逻辑和测试逻辑保持分文件。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+PostgreSQLInt4 CastFunctionType 恢复成 CAST(expr AS INT4)，保留严格 int4 语义和目标宽度，避免使用 MySQL CAST 目标格式化丢失该类型。

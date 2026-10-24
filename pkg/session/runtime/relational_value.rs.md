@@ -148,3 +148,7 @@ RustCodeGraph 的 `query` 能定位上述核心符号与 `runtime.rs:82` 的再�
 6. 修改 `/` 或物化视图定义求值时，保持 `BuildDivisionPrecision` 的 `0..=30` 验证与 Drop 恢复，并对照 Go `builtin_arithmetic.go`、eval context 及 `pkg/executor/test/executor/executor_test.go:2486` 的精度意图。
 7. 测试必须保留在独立文件 `pkg/session/runtime/relational_value_test.rs`，不要内嵌到生产文件。当前直接测试覆盖很窄；至少为新增分支补充 NULL、错误、边界数值、Unicode/collation 与 Go 对照案例。若行为通过 query/source 接线触发，还应在相邻独立 runtime 测试中加入端到端断言。
 8. 性能敏感扩展要避免在逐行窗口或投影内重复解析同一 AST/JSON/VECTOR；如引入缓存，应明确其 statement/session 生命周期，不能放入无边界全局状态。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+PostgreSQLInt4 标记在无会话参数的 Cast 消费者选择 pg_int4_relational_value，并与 query.rs 共用严格转换内核；SQL NULL 保留 None，结果规范化为十进制文本。错误通过 SessionError::with_source 保留 PgInt4Error；来源列类型在关系 SELECT 行执行前检查。

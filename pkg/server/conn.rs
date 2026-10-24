@@ -119,6 +119,7 @@ pub enum ConnError {
     ResultUndetermined(String),
     ClientQuit,
     Session(String),
+    PgInt4(astersql_expression::PgInt4Error),
     Poisoned(&'static str),
 }
 
@@ -128,6 +129,7 @@ impl fmt::Display for ConnError {
             Self::Io(message) | Self::ResultUndetermined(message) | Self::Session(message) => {
                 f.write_str(message)
             }
+            Self::PgInt4(error) => error.fmt(f),
             Self::NetPacketTooLarge => write!(
                 f,
                 "{}",

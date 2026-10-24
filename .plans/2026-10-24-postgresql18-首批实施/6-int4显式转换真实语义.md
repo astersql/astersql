@@ -2,7 +2,7 @@
 
 批次：【批次 6】依赖：批次 5；承接此前已完成的代码与验证
 
-状态：未开始
+状态：已完成
 
 目的：在真实执行链实现int4的整数/文本显式转换、NULL和越界错误。
 
@@ -127,9 +127,9 @@ Rust修改后先 cargo fmt --all，然后运行本任务精确命令；生成语
 ## 进度（Progress）
 
 
-- [ ] 当前消费者、失败断言和真实运行入口已核对。
-- [ ] 本行为的代码与独立测试已完成。
-- [ ] 聚焦验证、清理、Ready检查和差异审阅已记录。
+- [x] 当前消费者、失败断言和真实运行入口已核对。
+- [x] 本行为的代码与独立测试已完成。
+- [x] 聚焦验证、清理、Ready检查和差异审阅已记录。
 
 ## 发现与证据（Surprises & Discoveries）
 
@@ -144,7 +144,7 @@ Rust修改后先 cargo fmt --all，然后运行本任务精确命令；生成语
 ## 结果与复盘（Outcomes & Retrospective）
 
 
-尚未实施，无功能通过结论。完成时记录用户可观察结果、兼容性/正确性/性能风险、残留范围外缺口和实际交接路径；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
+本行为已实施并通过真实SQL、TCP/libpq及参考端验证，详见最终证据。完成时记录用户可观察结果、兼容性/正确性/性能风险、残留范围外缺口和实际交接路径；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
 
 ## 完成
 
@@ -152,3 +152,53 @@ Rust修改后先 cargo fmt --all，然后运行本任务精确命令；生成语
 仅在适用行为验证通过且证据完整后改为已完成。若环境等无关原因阻止必要验证，允许状态已完成，待回归并明确缺失项，保留本文件；本行为自身失败不能借此宣布完成。无法突破的阻塞只在本文件标已阻塞，记录原因、检查与可独立继续的范围，不递归扩建依赖。
 
 有代码、测试、配置或实际说明变更时，使用 $git-commit 仅提交本任务变更，排除工作区已有删除及其他任务文件；只改编号任务状态或删除则不调用提交。最终按Agent Output Contract报告文件、验证范围、风险、确切命令、未验证项和槽位。完成证据报告后删除本编号任务文件；待回归/阻塞时保留。删除前提交中保留本任务当前证据，最终回复报告可追溯提交SHA。禁止修改或删除plan.md，不把prompt.md作为进度记录。
+
+2026-10-24：起点 HEAD 40f232b42095e92ec40a5e86c9738d5ac215bbe8，已读批次5提交内通过证据，依赖满足。任务1–5既有删除保持原样；plan.md只读。已读指定技能、根/server规则、PLANS、testing-flow；目标根包无doc.go；RustCodeGraph status/sync/explore已执行，索引同步0变更。两个session Cast消费者均直接返回值，准备独立session/kernel/TCP-libpq基线。验证profile技能实际缺失，按任务列出的适用WIP/Ready执行，无Go/Bazel修改，不触发bazel_prepare。
+
+基线 /tmp/pg-task6-red.log：三条指定精确过滤命令各实际运行1测试，各101。session接受2147483648；wire返回未规范化的 +00042 文本；共享cast kernel返回Int(2147483648)。新增测试不是0测试通过。先完成三项基线，再改生产。
+
+参考端 bash /tmp/pg-task6-reference.sh 退出0，/tmp/pg-task6-reference.log：真实PostgreSQL18.4(Homebrew)，libpq180000，同一夹具93条真实SQL通过。ASCII空白/正负号/前导零允许，Unicode全角空白、空串、12x、小数文本和符号后空白22P02；边界22003；NULL和零行OID23；真实列读与事务E/25P02/ROLLBACK恢复。观察到原始 SELECT -2147483648::int4 在PG因后缀优先而拒绝；将负整数输入写成(-2147483648)::int4，CAST写法无此歧义。初次参考该差异失败后修正SQL，未降低值域断言。临时cluster均RAII停止并删除，未声称18.6。
+
+局部实施决定：共享AST的CastFunctionType新增PostgreSQLInt4标记，由已有PG parser两种cast语法设置；原因是无会话参数的relational_expression_value也是实际消费者，单靠query分支连接身份不能覆盖该路径。只标记int4，int8仍保留原实现。SQL恢复分支保留标记目标INT4，避免恢复为MySQL SIGNED或空目标。builtin_cast.rs新增严格十进制ASCII转换与PgInt4Error三种有类型错误，expression/lib.rs只重导出。formal_registry现有工厂通过已具备的SQLDialect选择动态strict cast，拒绝其他Datum类且不发布MySQL cast protobuf；未修改planner/context基础设施。两个session Cast消费者复用strict kernel；SessionError保留typed source，server普通/预处理/recordset局部桥接为ConnError::PgInt4，pg_conn直接按enum映射22003/22P02/0A000，无错误文本匹配。各项均对应本任务int4语义、双消费者、MySQL隔离和typed SQLSTATE传递契约，不扩建子系统。
+
+首次green因ast/functions.rs另有同名独立enum误扩展恢复match而编译失败，已撤销该文件无效改动；第二次因util/parser恢复match缺ast限定编译失败，局部补齐。记录编译失败但仍以真实运行通过为验收。
+
+追加范围内红灯 /tmp/pg-task6-numeric-red.log：2个session测试实际失败。新增真实表DECIMAL/DOUBLE输入测试发现原实现以文本词法给22P02而非本批明确不支持；同时真实SELECT7 WHERE '12x'::int4=12暴露无表快速投影忽略WHERE转换。局部解决：query.rs行求值前使用已有来源字段及relational_expression_type检查PG int4输入族，零行亦检查；仅PG含CAST谓词的查询选已有完整查询路径。不新增关系执行系统。kernel测试用实际dev-dependency exprstatic及Constant::with_type修正测试构造API；编译失败保留，未视作行为通过。
+
+中间green3：session 1/1通过，server 1/1通过、libpq实际103条SQL通过；kernel新测试编译错误，尚不能交付。green4由于输入类型检查误用astersql_types常量命名空间未编译，按现有query/source消费者改用astersql_parser_types::eval_type，并继续同断言验证。参考端增强后102条SQL通过，/tmp/pg-task6-reference-final.log；make lint 已执行至末尾，待确认退出码。
+
+## 最终交付证据（2026-10-24）
+
+最终 /tmp/pg-task6-slot.sh bash /tmp/pg-task6-ready.sh 整体退出0，/tmp/pg-task6-ready.log 带精确命令。10条cargo test均退出0，有效测试数依次2、1、1、1、1、8、3、2、1、1，合计21测试（本任务6个新增，其余15个原回归），无零测试验收。cargo fmt --all先执行并退出0；parser_actions/expression.rs由rustfmt --edition 2024显式格式化（include动作文件不被cargo fmt遍历），随后再测试。默认features、--locked，无--all-features，未改Rust failpoint配置或使用Go failpoint改写。
+
+确切交付命令（均在仓库根目录、持有槽位时运行）：
+
+    cargo fmt --all
+    rustfmt --edition 2024 pkg/parser/parser_actions/expression.rs
+    env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_core_int4_explicit_cast -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_int4_wire_semantics -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg_core_int4_cast_kernel -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-parser --lib pg_core_int4_ast_semantics -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-util-parser --lib pg_core_int4_restore_preserves_target -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib builtin_cast_test::go_parity -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-parser --lib pg_core_integer_cast_syntax -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_integer_cast_parse_boundary -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_dialect_prepared_lifecycle -- --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib mysql_prepared_statements_execute_real_sql_with_binary_values -- --nocapture
+    git diff --check
+
+其他适用验证：make lint 退出0（/tmp/pg-task6-lint.log）；python3 -m py_compile pkg/server/testdata/pg_core_int4.py 退出0，自己的pyc已清理；git diff --check 退出0；自审生产、测试、说明、版权和暂存范围。WIP用于红绿迭代，Ready用于上述交付检查；.agents/skills/tidb-verify-profile实际缺失，未虚构技能执行。仅Rust/Python和模块说明变更，未触发bazel_prepare，不运行被禁止的bazel_lint_changed。Cargo.lock/Cargo manifest/外部依赖均未改。
+
+真实行为：libpq180000通过最终107条SQL，包含三种int4目标拼写、CAST/::两语法、上下界、正负号/ASCII空白/前导零、9223372036854775808和长十进制文本越界22003、空串/12x/小数文本/Unicode空白22P02；NULL投影和表列NULL保持SQL NULL。实际BIGINT与TEXT列投影规范化且零行仍OID23；REAL/DECIMAL列（包含零行）和float/numeric常量明确0A000。不在事务内错误后下一SELECT正常，显式事务中两类错误使PQtransactionStatus=3（E），后续25P02，ROLLBACK后状态0及SELECT7通过。每个结果PQclear、最终PQfinish，表在finally删除，server.close后TCP连接失败。测试canonical存储和共享执行链不是RealTiKV。
+
+参考端最终 bash /tmp/pg-task6-reference.sh 退出0，/tmp/pg-task6-reference-ready.log记录真实PostgreSQL18.4(Homebrew)完整version()构建串与libpq180000；同一夹具102条SQL通过（参考支持float/numeric，AsterSQL不开放这些入口的6条检查仅对Aster执行，参考多1条version查询）。临时cluster UTF8，pg_ctl停止并删除，只清理本任务对象。不声称18.6版本证据；官方18整数/表达式文档已在线复核，文档不是实测替代。
+
+生产文件与契约依据：pkg/expression/builtin_cast.rs新增严格int4十进制内核与typed错误，builtin.rs正式工厂根据已有连接SQLDialect构建strict动态签名，lib.rs重导出复用边界；pkg/parser/ast/lib.rs新增PG int4 Cast标记，parser_actions/expression.rs两语法设置标记，ast/sql_restore.rs及util/parser/ast.rs专门恢复INT4，保障现有无会话参数消费者与重解析路径不丢语义；pkg/session/runtime/{query.rs,relational_value.rs}接入两个真实消费者并在关系行读取前验证来源类型，query.rs仅PG含CAST谓词路由既有完整查询路径；pkg/session/lib.rs保留typed source供边界读取；pkg/server/{conn.rs,runtime.rs,pg_conn.rs}仅增加PgInt4错误变体、普通/预处理/recordset必要桥接及枚举SQLSTATE映射。规划上下文和expression_rewriter已正确携带连接身份/FieldType，复用其现有工厂调用，不制造生产改动。未新增完整类型系统、事务系统或外部依赖。
+
+独立测试文件：pkg/expression/builtin_cast_test.rs，pkg/parser/parser_test.rs，pkg/server/pg_query_test.rs，pkg/session/runtime/relational_value_test.rs，pkg/util/parser/ast_test.rs；原创libpq夹具pkg/server/testdata/pg_core_int4.py。10份实际受影响且存在的.rs.md已同步（expression/builtin与builtin_cast、parser/ast/sql_restore与parser_actions/expression、server/conn/pg_conn/runtime、session/runtime/query与relational_value、util/parser/ast）。新增/修改Rust源文件均保留已有PingCAP许可证与AsterSQL版权。
+
+槽位：每阶段均从1至10按原子mkdir动态领取，实际均槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。持有记录包含计划、任务6、会话01a16d61及PID。每阶段正常或编译/测试失败后均由trap清理自己的owner与锁；最终全部Cargo/测试客户端/server子进程已结束，锁目录为空，编译缓存保留。最终wrapper还为INT/TERM加入子进程树终止及wait后释放路径；本轮无中断，不声称中断注入已测试。
+
+风险：correctness由范围/语法/类型/NULL/真实列/事务恢复红绿及双消费者验证覆盖；compatibility由原CAST Go parity8项、原parser3项、原PG command/libpq2项、PG prepared1项和MySQL真实二进制prepared1项覆盖；performance新增PG来源类型检查、AST遍历与严格十进制扫描，未运行性能基准。未验证RealTiKV分布式存储、生产鉴权/TLS/SCRAM、精确18.6构建、GUI/JDBC/ORM、float/numeric转换（明确范围外）、int8新语义、完整参数定型与结果OID族矩阵（后续批次7–9）。未递归扩展范围外子系统。
+
+使用git-commit仅提交以上本任务30个文件（13份生产Rust、5份独立Rust测试、1份Python、10份模块说明、本编号证据文件），任务1–5既有删除不暂存，plan.md始终只读。提交中保留此证据，报告完成后删除本编号文件，删除留在工作区。建议下一步按线性计划执行批次7。

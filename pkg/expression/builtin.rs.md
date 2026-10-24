@@ -113,3 +113,7 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 7. 至少覆盖正常值、NULL、错误、参数边界、标量/向量化一致性和跨上下文状态；涉及注册表时还要覆盖重复注册、删除恢复和并发访问。涉及 Go 对齐时保持原有分支与测试意图，不用缩减版实现代替完整行为。
 
 修改已有函数时要特别检查两套同名 API。crate 外部通常通过 `lib.rs` 获得 `formal_registry` 的正式符号；仅修前半精简 `GetDisplayName`、`VerifyArgsWrapper` 或 `BuildCastFunction` 的同名概念，不一定会改变生产路径。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+formal_registry::BuildCastFunction 使用已有 BuildContext::SQLDialect，在 PostgreSQL 且目标 TypeLong 时构造 PgInt4 动态签名。求值仅接受 NULL、整数或文本 Datum，复用 pg_cast_int4；不赋予 MySQL CAST protobuf 签名。MySQL 构造、警告和转换保持原路径。

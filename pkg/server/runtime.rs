@@ -1223,6 +1223,13 @@ fn field_list_on_session(
 pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::SqlDialect)>> =
     Mutex::new(Vec::new());
 
+fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
+    match error.pg_int4_error() {
+        Some(error) => ConnError::PgInt4(error),
+        None => ConnError::Session(error.to_string()),
+    }
+}
+
 fn execute_on_session(
     session: &ConcreteSession,
     cancellation: &SQLKiller,
@@ -1241,9 +1248,7 @@ fn execute_on_session(
                 .push((statement.clone(), session.sql_dialect()));
         }
         session.BeginProtocolResponse();
-        let execution = session
-            .execute(&statement)
-            .map_err(|error| ConnError::Session(error.to_string()));
+        let execution = session.execute(&statement).map_err(session_protocol_error);
         cancellation.Reset();
         let record_sets = execution?;
         let state = map_protocol_state(session.protocol_state());
@@ -1426,7 +1431,7 @@ fn execute_prepared_on_session(
     session.BeginProtocolResponse();
     let execution = session
         .execute_protocol_statement(u64::from(statement_id), &arguments)
-        .map_err(|error| ConnError::Session(error.to_string()));
+        .map_err(session_protocol_error);
     cancellation.Reset();
     let mut record_sets = execution?;
     if record_sets.len() > 1 {
@@ -1468,15 +1473,10 @@ fn result_from_record_set(
 ) -> ConnResult<QueryResult> {
     let mut result = result_metadata(&record_set, state, collation);
     let mut rows = Vec::new();
-    while let Some(row) = record_set
-        .next_row()
-        .map_err(|error| ConnError::Session(error.to_string()))?
-    {
+    while let Some(row) = record_set.next_row().map_err(session_protocol_error)? {
         rows.push(row.into_iter().map(protocol_value).collect());
     }
-    record_set
-        .close()
-        .map_err(|error| ConnError::Session(error.to_string()))?;
+    record_set.close().map_err(session_protocol_error)?;
     result.rows = rows;
     Ok(result)
 }

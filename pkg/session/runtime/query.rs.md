@@ -132,3 +132,7 @@ Go 同路径实现不存在；本文件顶部模块说明和 `pkg/session/Cargo.
 - 修改 INSERT SELECT：保留二进制转 hex literal、源/目标列数检查及复用 `execute_relational_insert` 的结构，并同步 `runtime_test/query.rs` 的冲突/原子性/外连接测试与 `runtime/query_binary_test.rs`。
 
 兼容风险主要是 MySQL/TiDB 的 NULL、类型强制、列名/字段类型和错误文本；正确性风险集中在 stale read、锁后重扫、谓词下推和复杂查询路由；性能风险集中在全量物化、笛卡尔连接、排序/DISTINCT/窗口、无效下推以及共享索引统计锁。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+PG int4 Cast 消费者复用 pg_int4_relational_value。关系 SELECT 在行求值前用实际来源字段检查 int4 的输入类型，拒绝 float/numeric，零行也不能绕过；包含 CAST 谓词的 PG SELECT 路由到既有完整查询路径，避免无表快速投影忽略转换错误。MySQL 选择保持不变。

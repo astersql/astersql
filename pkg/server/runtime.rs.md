@@ -93,3 +93,7 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 ## PostgreSQL 转换的拆句门禁（2026-10-24）
 
 真实 listener 在派发 SQL 前的拆句校验使用 SplitSQLStatementsWithDialect；ConcreteTiDBContext 保存建立连接时的不可变身份，普通和流式请求均传入同一身份。原 SplitSQLStatements API 保持 MySQL 默认。此处仍先校验完整 SQL 再按原引号/注释边界拆分，不重写转换或参数。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+session_protocol_error 在普通执行、预处理执行与 recordset 收取边界保留 SessionError 中的 PgInt4Error，其他 SessionError 维持原消息桥接。事务失败和恢复继续使用既有 PG 状态机。

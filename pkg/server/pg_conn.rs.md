@@ -90,3 +90,7 @@ accept 线程和每连接一个 worker 都由 `PgService` 持有 `JoinHandle`。
 ## 连接方言身份
 
 `negotiate` 通过 SessionDriver::open_ctx_with_dialect 显式传入 SqlDialect::PostgreSQL，在认证及首次解析前建立连接身份；不从 capability、版本字符串或 SQLMode 推断。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+sqlstate 对 ConnError::PgInt4 直接调用其枚举 SQLSTATE 映射，支持 22003/22P02/0A000；不通过任意错误消息推断转换类别。

@@ -1757,3 +1757,52 @@ pub fn decimalPrecisionToLength(field_type: &FieldType) -> i32 {
     }
     if result == 0 { 1 } else { result }
 }
+
+/// Strict decimal text/integer conversion shared by PostgreSQL int4 consumers.
+/// SQL whitespace is ASCII; Unicode whitespace is not accepted by int4 input.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum PgInt4Error {
+    #[error("integer out of range")]
+    OutOfRange,
+    #[error("invalid input syntax for type integer")]
+    InvalidSyntax,
+    #[error("PostgreSQL int4 cast supports only integer and text inputs")]
+    Unsupported,
+}
+impl PgInt4Error {
+    pub fn sqlstate(self) -> &'static str {
+        match self {
+            Self::OutOfRange => "22003",
+            Self::InvalidSyntax => "22P02",
+            Self::Unsupported => "0A000",
+        }
+    }
+}
+
+pub fn pg_cast_int4(value: Option<&str>) -> Result<Option<i32>, PgInt4Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(PgInt4Error::InvalidSyntax);
+    }
+    // Validate syntax before the checked accumulation so trailing junk does not
+    // become an overflow error merely because its numeric prefix is large.
+    let negative = value.starts_with('-');
+    let mut number = 0i32;
+    for digit in digits.bytes() {
+        number = number
+            .checked_mul(10)
+            .and_then(|n| {
+                if negative {
+                    n.checked_sub((digit - b'0') as i32)
+                } else {
+                    n.checked_add((digit - b'0') as i32)
+                }
+            })
+            .ok_or(PgInt4Error::OutOfRange)?;
+    }
+    Ok(Some(number))
+}

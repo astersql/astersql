@@ -124,3 +124,7 @@ Go 回归可参考 `pkg/parser/parser_test.go` 和 `pkg/parser/ast/expressions_t
 ## PostgreSQL 整数转换（2026-10-24）
 
 PgCastType 仅在 PostgreSQL 身份下接受 int4/integer/int 和 int8/bigint，分别生成 TypeLong/TypeLonglong。PgPostfixCast 与 CAST 动作均构造共享 ExprKind::Cast；嵌套转换逐层保留，node_text.OriginalText 保存完整原 SQL 跨度（含目标原拼写），OriginTextPosition 是原 SQL 字节偏移。PostgreSQL ParamMarker 同时保留 $n 原文，AST 的 PostgreSQLParameterIndex 读取参数编号，Offset 继续表示原 SQL 字节偏移；不混同协议一基字符错误位置。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+两种 PostgreSQL int4 显式转换在共享 Cast 中设置 PostgreSQLInt4 标记；int8 和 MySQL Cast 保留原标记。该标记供没有会话参数的关系求值消费者选择严格规则，不改变已保存的原 SQL 和跨度。

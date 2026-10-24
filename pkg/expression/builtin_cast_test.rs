@@ -24,3 +24,79 @@ pub use crate::builtin_cast_kernel::*;
 /// 与 Go `builtin_cast_test.go` 对齐的 CAST 语义用例。
 #[path = "builtin_cast_4_aster_unit_test.rs"]
 mod go_parity;
+
+#[test]
+fn pg_core_int4_cast_kernel() {
+    for (input, expected) in [
+        ("2147483648", PgInt4Error::OutOfRange),
+        ("-2147483649", PgInt4Error::OutOfRange),
+        ("12x", PgInt4Error::InvalidSyntax),
+        ("", PgInt4Error::InvalidSyntax),
+    ] {
+        assert_eq!(pg_cast_int4(Some(input)), Err(expected));
+    }
+    for (input, expected) in [
+        ("-2147483648", i32::MIN),
+        ("2147483647", i32::MAX),
+        (" +00042 ", 42),
+        ("-0", 0),
+    ] {
+        assert_eq!(pg_cast_int4(Some(input)), Ok(Some(expected)));
+    }
+    assert_eq!(pg_cast_int4(None), Ok(None));
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    let mysql_ctx = exprstatic::NewExprContext(vec![]);
+    for (datum, source_type, expected) in [
+        (types::NewIntDatum(2147483648), mysql::TypeLonglong, Err(())),
+        (
+            types::NewIntDatum(-2147483649),
+            mysql::TypeLonglong,
+            Err(()),
+        ),
+        (
+            types::NewStringDatum("12x".into()),
+            mysql::TypeVarString,
+            Err(()),
+        ),
+        (
+            types::NewStringDatum(" +00042 ".into()),
+            mysql::TypeVarString,
+            Ok((42, false)),
+        ),
+        (
+            types::NewIntDatum(-2147483648),
+            mysql::TypeLonglong,
+            Ok((-2147483648, false)),
+        ),
+        (types::Datum::default(), mysql::TypeNull, Ok((0, true))),
+    ] {
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(source_type),
+        ));
+        let expression = crate::formal_registry::BuildCastFunction(
+            &pg,
+            &source,
+            &types::NewFieldType(mysql::TypeLong),
+        );
+        assert_eq!(
+            expression
+                .EvalInt(pg.GetEvalCtx(), crate::chunk::Row::default())
+                .map_err(|_| ()),
+            expected
+        );
+    }
+    let source = Expression::constant(Value::Int(2147483648), FieldType::new(FieldKind::Int));
+    assert_eq!(
+        BuildCastFunction(source, FieldType::new(FieldKind::Int))
+            .eval(&mut CastContext::default())
+            .unwrap(),
+        Value::Int(2147483648)
+    );
+    assert_eq!(mysql_ctx.SQLDialect(), crate::ast::SqlDialect::MySQL);
+}

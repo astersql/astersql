@@ -96,3 +96,7 @@ Rust 还在 `ast_test.rs` 覆盖 full outer join、真实 SELECT 默认库/去�
 修改 `SimpleCases` 必须保持“不能证明安全就返回 false”的原则，并至少同步 Go 的四个基准用例、`INSERT ... SELECT` 拒绝用例，以及注释、引号、大小写、显式 schema、空默认库等边界。扩大快路径前应评估原文保真收益与误定位风险。
 
 兼容性风险主要是规范 SQL 文本变化会改变 binding 归一化与 digest；正确性风险主要是遗漏节点字段、错误去括号或错误注入 schema；性能风险来自递归中频繁构造临时 `String`/`Vec`。因此扩展后应检查 `pkg/bindinfo/binding.rs` 和 `pkg/session/hint_runtime.rs` 的调用契约，并用解析后的真实 AST 做往返/语义等价验证，而不能只手工构造局部节点。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+PG int4 标记专门恢复为 CAST(expr AS INT4)，不复用带显示宽度的 MySQL FieldType::String；独立 ast_test.rs 验证实际 parser AST 的恢复目标。

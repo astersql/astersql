@@ -26,7 +26,7 @@
 - 解析/规格化辅助：整数前缀解析、`parse_float`/`parse_decimal`、`produce_decimal`、字符串长度处理、时间和时长解析/舍入、JSON 数值转换、向量解析/格式化。
 - 公共辅助：`ConvertJSON2Tp`、`CanImplicitEvalInt`/`CanImplicitEvalReal`、全部 `WrapWithCastAs*`、`adjustRetFtForCastString`、`minimalDecimalLenForHoldingInteger`、`setDataTypeDouble`、`floatLength`、`decimalPrecisionToLength`。
 
-公开符号仅表示 Rust 模块可见性；由于 `builtin_cast_kernel` 本身是 crate 私有模块，它们目前不是 crate 的对外公共 API。
+公开符号仅表示 Rust 模块可见性；由于 `builtin_cast_kernel` 本身是 crate 私有模块，除新重导出的 pg_cast_int4/PgInt4Error 外，它们不是 crate 的对外公共 API。
 
 ## 执行流程
 
@@ -90,3 +90,7 @@ Rust 把 Go 按源/目标 `EvalType` 展开的众多 `builtinCastXAsYSig` 合并
 - 修改字符/二进制行为：重点核对字符数与字节数、固定宽度零填充、`max_allowed_packet`、charset/collation 元数据；若要补齐 Go 行为，应先明确本内核是否将接入生产 `formal_registry`，不要形成第三套隐式入口。
 - 修改时间或 DECIMAL：记录 `chrono`/`rust_decimal` 与 TiDB 类型能力的差距，避免把库限制误当 MySQL 规则；同步覆盖边界值、FSP 进位、负时长和精度溢出。
 - 测试必须继续放在独立文件：标量语义放 `pkg/expression/builtin_cast_4_aster_unit_test.rs`（由 `builtin_cast_test.rs` 挂载）；性能对照放 `builtin_cast_bench_test.rs`；Go 语义基准参考 `builtin_cast_test.go`。不要把测试内嵌回本源文件。
+
+## PostgreSQL int4 显式转换（2026-10-24）
+
+pg_cast_int4 是严格十进制 int4 共享内核：SQL NULL 透传，ASCII SQL 空白和单个正负号允许，检查全部数字语法并以 checked i32 累积验证范围。PgInt4Error::{OutOfRange,InvalidSyntax,Unsupported} 分别携带 22003/22P02/0A000 身份，由 crate 根重导出供会话和正式表达式签名复用；既有 MySQL kernel API 不变。

@@ -1282,3 +1282,29 @@ fn pg_core_integer_cast_parse_boundary_libpq() {
         "libpq integer cast syntax regression failed"
     );
 }
+
+#[test]
+fn pg_core_int4_wire_semantics() {
+    use crate::pg_client_integration_test::start_client_server;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(server.clone());
+    let address = server.postgres_listener_addr().unwrap();
+    let status = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_core_int4.py"
+        ))
+        .arg(address.port().to_string())
+        .status()
+        .unwrap();
+    server.close();
+    assert!(TcpStream::connect(address).is_err());
+    assert!(status.success(), "libpq int4 semantics failed");
+}

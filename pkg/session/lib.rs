@@ -32,6 +32,14 @@ impl SessionError {
         }
     }
 
+    /// Preserve strict PG conversion identity before the protocol bridge renders it.
+    pub fn pg_int4_error(&self) -> Option<astersql_expression::PgInt4Error> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<astersql_expression::PgInt4Error>()
+            .copied()
+    }
+
     pub fn into_shared(self) -> astersql_errors::SharedError {
         self.source
             .unwrap_or_else(|| astersql_errors::New(self.message))

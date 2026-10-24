@@ -1017,8 +1017,12 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 node_text,
                 Kind: parser_ast::ExprKind::Cast {
                     Expr: Box::new(expr),
-                    Tp: tp,
-                    FunctionType: parser_ast::CastFunctionType::Cast,
+                    Tp: tp.clone(),
+                    FunctionType: if tp.GetType() == parser_mysql::r#type::TypeLong {
+                        parser_ast::CastFunctionType::PostgreSQLInt4
+                    } else {
+                        parser_ast::CastFunctionType::Cast
+                    },
                     ExplicitCharSet: false,
                 },
                 OriginTextPosition: start as i32,
@@ -1612,8 +1616,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             } else {
                 parser_ast::ExprKind::Cast {
                     Expr: Box::new(expr),
-                    Tp: field_type,
-                    FunctionType: parser_ast::CastFunctionType::Cast,
+                    Tp: field_type.clone(),
+                    FunctionType: if pg_cast
+                        && field_type.GetType() == parser_mysql::r#type::TypeLong
+                    {
+                        parser_ast::CastFunctionType::PostgreSQLInt4
+                    } else {
+                        parser_ast::CastFunctionType::Cast
+                    },
                     ExplicitCharSet: explicit_charset,
                 }
             };
