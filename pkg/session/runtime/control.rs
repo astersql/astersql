@@ -1740,7 +1740,7 @@ impl ConcreteSession {
         &self,
         sql: &str,
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
-        let statements = parse(sql)?;
+        let statements = parse_in_dialect(sql, self.sql_dialect())?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
@@ -1763,7 +1763,13 @@ impl ConcreteSession {
         let statement_id = state.next_prepared_id;
         state.next_prepared_id += 1;
         state.prepared.insert(statement_id, sql.to_owned());
-        state.protocol_prepared_planned.insert(statement_id, false);
+        state.protocol_prepared_planned.insert(
+            statement_id,
+            super::session::ProtocolPreparedState {
+                dialect: self.sql_dialect(),
+                planned: false,
+            },
+        );
         Ok((statement_id, parameter_count, fields))
     }
 
@@ -1784,7 +1790,7 @@ impl ConcreteSession {
                     prepared.cached_transaction_contexts.clear();
                 }
                 for planned in state.protocol_prepared_planned.values_mut() {
-                    *planned = false;
+                    planned.planned = false;
                 }
                 state.plan_cache_generation = generation;
             }
@@ -1792,12 +1798,27 @@ impl ConcreteSession {
                 && state
                     .protocol_prepared_planned
                     .get(&statement_id)
-                    .copied()
-                    .unwrap_or(false)
+                    .is_some_and(|prepared| prepared.planned)
                 && !arguments
                     .iter()
                     .any(|argument| matches!(argument, ConcretePreparedArgument::Null))
         };
+        // Execution reparses bound SQL through self.execute. The saved identity
+        // must match that immutable connection before entering that consumer.
+        let dialect = self
+            .state
+            .borrow()
+            .protocol_prepared_planned
+            .get(&statement_id)
+            .map(|prepared| prepared.dialect)
+            .ok_or_else(|| {
+                SessionError::new(format!("unknown prepared statement {statement_id}"))
+            })?;
+        if dialect != self.sql_dialect() {
+            return Err(SessionError::new(
+                "prepared statement connection dialect mismatch",
+            ));
+        }
         let sql = self
             .state
             .borrow()
@@ -1821,7 +1842,7 @@ impl ConcreteSession {
         if execution.is_ok()
             && let Some(planned) = state.protocol_prepared_planned.get_mut(&statement_id)
         {
-            *planned = prepared_plan_cache;
+            planned.planned = prepared_plan_cache;
         }
         drop(state);
         execution

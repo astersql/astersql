@@ -133,3 +133,10 @@ RustCodeGraph 的文件节点列出 `runtime/scan_adapter_runtime_test.rs`、`ru
 - 修改直接 SELECT statement boundary 时，以 `reset_statement_context` 为唯一集中入口，并验证时区保留、hint restore/start、TaskID、CTE、killer、SQL mode flags 与动态分区裁剪不会跨语句泄漏。
 - Rust 单元测试必须继续放在独立文件。首选扩展 `pkg/session/runtime_test/planning.rs`（普通 planning/statement boundary）、`pkg/session/plan_cache_runtime_test.rs`（prepared cache/range/snapshot）、`pkg/session/runtime/scan_adapter_runtime_test.rs`（typed adapter 与执行终点）、`pkg/session/runtime_test/session.rs`（统计同步加载）、`pkg/session/cached_table_runtime_test.rs`（table-cache 标志）或 `pkg/session/runtime_pessimistic_test.rs`（事务导致的缓存失效），不要在 `planning.rs` 内嵌测试。
 - 兼容性风险主要是错误文本、cache key 漏项、schema/MDL 版本选择和 Go flags 不一致；性能风险主要是错误回退 pseudo、重复启动统计 worker、提前扫描表做估算、range 爆炸或不可缓存计划误准入。
+
+
+## 2026-10-24 预处理语句身份承接
+
+negative_unsigned_equality_parameter 对预处理 SQL 的再解析承接所属连接方言，避免负整数参数检查退回默认 MySQL；其余规划能力不扩展。
+
+PreparePlannedKVSelect 作为普通 SQL PREPARE 表查询的实际计划准备入口，同样按连接方言解析模板；不改变规划上下文或缓存键架构。

@@ -138,3 +138,149 @@ fn explain_ru_context_bypasses_plan_cache() {
         .remove(0);
     assert_eq!(result.next_row().unwrap().unwrap(), ["0"]);
 }
+
+#[test]
+fn pg_core_dialect_prepared_execution() {
+    use crate::runtime::{ConcretePreparedArgument, PARSED_DIALECTS};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    mysql
+        .execute("CREATE TABLE test.pg_prepared_identity_t3 (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO test.pg_prepared_identity_t3 VALUES (1), (2)")
+        .unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    let other = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let mut observations = Vec::new();
+    for (session, dialect) in [
+        (&pg, SqlDialect::PostgreSQL),
+        (&mysql, SqlDialect::MySQL),
+        (&other, SqlDialect::PostgreSQL),
+    ] {
+        PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+        let (first, count, _) = session
+            .prepare_protocol_statement("SELECT ? AS prepared_identity")
+            .unwrap();
+        assert_eq!(count, 1);
+        let (second, _, _) = session
+            .prepare_protocol_statement("SELECT ? AS prepared_other")
+            .unwrap();
+        observations.push((dialect, PARSED_DIALECTS.with(|seen| seen.borrow().clone())));
+        for (id, value) in [(first, 17), (second, 23), (first, 31), (second, 47)] {
+            PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+            let mut sets = session
+                .execute_protocol_statement(id, &[ConcretePreparedArgument::Signed(value)])
+                .unwrap();
+            assert_eq!(
+                sets[0].next_row().unwrap().unwrap(),
+                vec![value.to_string()]
+            );
+            assert_eq!(sets[0].next_row().unwrap(), None);
+            sets[0].close().unwrap();
+            observations.push((dialect, PARSED_DIALECTS.with(|seen| seen.borrow().clone())));
+        }
+        session.close_protocol_statement(first).unwrap();
+        assert!(
+            session
+                .execute_protocol_statement(first, &[ConcretePreparedArgument::Signed(1)])
+                .is_err()
+        );
+        assert!(session.execute_protocol_statement(second, &[]).is_err());
+        assert!(session.prepare_protocol_statement("SELECT FROM").is_err());
+        assert_eq!(
+            session
+                .execute_protocol_statement(second, &[ConcretePreparedArgument::Signed(59)])
+                .unwrap()[0]
+                .next_row()
+                .unwrap()
+                .unwrap(),
+            vec!["59"]
+        );
+        session.close_protocol_statement(second).unwrap();
+        // The SQL PREPARE path is a separate production consumer.
+        PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+        session
+            .execute("PREPARE identity_stmt FROM 'SELECT ?'")
+            .unwrap();
+        observations.push((dialect, PARSED_DIALECTS.with(|seen| seen.borrow().clone())));
+        for value in [61, -67] {
+            session
+                .execute(&format!("SET @identity_arg = {value}"))
+                .unwrap();
+            PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+            let mut sets = session
+                .execute("EXECUTE identity_stmt USING @identity_arg")
+                .unwrap();
+            assert_eq!(
+                sets[0].next_row().unwrap().unwrap(),
+                vec![value.to_string()]
+            );
+            observations.push((dialect, PARSED_DIALECTS.with(|seen| seen.borrow().clone())));
+        }
+        session.execute("DEALLOCATE PREPARE identity_stmt").unwrap();
+        PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+        session.execute("PREPARE identity_table_stmt FROM 'SELECT id FROM test.pg_prepared_identity_t3 WHERE id = ?'").unwrap();
+        observations.push((dialect, PARSED_DIALECTS.with(|seen| seen.borrow().clone())));
+        for value in [1, 2, 1] {
+            session
+                .execute(&format!("SET @identity_arg = {value}"))
+                .unwrap();
+            PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+            let mut sets = session
+                .execute("EXECUTE identity_table_stmt USING @identity_arg")
+                .unwrap();
+            assert_eq!(
+                sets[0].next_row().unwrap().unwrap(),
+                vec![value.to_string()]
+            );
+            assert_eq!(sets[0].next_row().unwrap(), None);
+            sets[0].close().unwrap();
+            observations.push((dialect, PARSED_DIALECTS.with(|seen| seen.borrow().clone())));
+        }
+        session
+            .execute("DEALLOCATE PREPARE identity_table_stmt")
+            .unwrap();
+        assert_eq!(session.sql_dialect(), dialect);
+    }
+    let (removed, _, _) = pg.prepare_protocol_statement("SELECT ?").unwrap();
+    let (survivor, _, _) = other.prepare_protocol_statement("SELECT ?").unwrap();
+    pg.reset_connection().unwrap();
+    assert_eq!(pg.sql_dialect(), SqlDialect::PostgreSQL);
+    assert!(
+        pg.execute_protocol_statement(removed, &[ConcretePreparedArgument::Signed(71)])
+            .is_err()
+    );
+    assert_eq!(
+        other
+            .execute_protocol_statement(survivor, &[ConcretePreparedArgument::Signed(73)])
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["73"]
+    );
+    other.close_protocol_statement(survivor).unwrap();
+    PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+    let (fresh, _, _) = pg.prepare_protocol_statement("SELECT ?").unwrap();
+    assert_eq!(
+        pg.execute_protocol_statement(fresh, &[ConcretePreparedArgument::Signed(79)])
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["79"]
+    );
+    observations.push((
+        SqlDialect::PostgreSQL,
+        PARSED_DIALECTS.with(|seen| seen.borrow().clone()),
+    ));
+    pg.close_protocol_statement(fresh).unwrap();
+    for (expected, seen) in observations {
+        assert!(!seen.is_empty());
+        assert!(
+            seen.iter().all(|actual| *actual == expected),
+            "expected {expected:?}, actual parser identities {seen:?}"
+        );
+    }
+}

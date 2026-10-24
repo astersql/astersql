@@ -1760,7 +1760,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         let mode =
             astersql_parser_mysql::r#const::GetSQLMode(&self.session.state.borrow().sql_mode)
                 .ok()?;
-        let parsed = super::parse_with_sql_mode(&sql, mode).ok()?;
+        let parsed = super::parse_with_dialect(&sql, mode, self.session.sql_dialect()).ok()?;
         if parsed.len() != 1 {
             return None;
         }

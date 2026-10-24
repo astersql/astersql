@@ -126,3 +126,10 @@ Plan Replayer 扩展应优先补齐 `SessionPlanReplaySource` 的真实 stats/Ti
 ## 连接方言身份
 
 `execute_with_logger_and_hook` 的普通 SQL 解析向 `parse_with_dialect` 传入会话固定身份；SQL mode 读取、归一化、错误映射和执行链保留。命名及协议预处理路径不属于本次普通查询接线。
+
+
+## 2026-10-24 预处理语句身份承接
+
+SQL PREPARE 保存并使用连接方言，EXECUTE fallback 使用该记录的方言重解析，具名计划复用比较身份；协议缓存失效保留身份。
+
+EXECUTE 的 hint/binding 分析复用该记录的原始 AST，避免重新用默认解析器解析模板。

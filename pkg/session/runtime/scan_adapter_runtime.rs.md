@@ -91,3 +91,8 @@ Rust 版本的结构差异是显式 trait 化：Go 可直接调用 session/txn m
 修改 PointGet 锁读时，必须分别覆盖 RR/RC、存在/缺失/删除、事务本地新增/更新/删除、等待超时、唯一索引双 key 和失败无残留锁。缓存优化必须重新绑定 snapshot/read-stats/diagnostic state，且不得把带事务或锁读 actor 放入无事务 prepared cache。
 
 新增资源或观测字段时，应明确其开始、一次性 finish 和最终 cleanup：通常分别接入 `SetProcessInfo`/`TopSQLStart`、`OnFinishStatement`/`TopSQLFinish`、`CleanupAfterFinish`。同步检查 `StatementContext`、正式 session state 和 `effects` 测试镜像三者；性能风险集中在每语句解析、额外 snapshot/RPC、全局 mutex 和高频指标写入，兼容风险集中在 Go 回调顺序、错误分类与 retry 可见状态。
+
+
+## 2026-10-24 预处理重解析身份
+
+StatementRUInstallState 对执行语句（包括 prepared_text）重新解析以推导只读/SELECT 标志时，使用所持 ConcreteSession 的不可变方言，并保留原 SQLMode。该局部接线不增加规划或求值上下文能力。

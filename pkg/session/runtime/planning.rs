@@ -1538,7 +1538,7 @@ pub(super) fn negative_unsigned_equality_parameter(
     {
         return Ok(false);
     }
-    let statements = parse(sql)?;
+    let statements = parse_in_dialect(sql, session.sql_dialect())?;
     let Some(select) = statements
         .first()
         .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
@@ -2096,7 +2096,7 @@ impl ConcreteSession {
         sql: &str,
         info_schema: Arc<dyn astersql_infoschema::infoschema::InfoSchema>,
     ) -> SessionResult<u64> {
-        let mut statements = parse(sql)?;
+        let mut statements = parse_in_dialect(sql, self.sql_dialect())?;
         if statements.len() != 1 || !statements[0].as_any().is::<ast::SelectStmt>() {
             return Err(SessionError::new(
                 "prepared planned KV execution requires exactly one SELECT",

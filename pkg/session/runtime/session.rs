@@ -216,7 +216,7 @@ pub(super) struct SessionState {
     pub(super) pessimistic_lock_ttl_expired_for_test: bool,
     pub(super) lock_wait_timeout_elapsed_for_test: bool,
     pub(super) prepared: HashMap<u64, String>,
-    pub(super) protocol_prepared_planned: HashMap<u64, bool>,
+    pub(super) protocol_prepared_planned: HashMap<u64, ProtocolPreparedState>,
     pub(super) prepared_planned: HashMap<u64, PreparedPlannedKVSelect>,
     pub(super) next_prepared_id: u64,
     pub(super) last_plan_from_cache: bool,
@@ -378,11 +378,19 @@ pub(super) struct SessionState {
     pub(super) stale_statement_observation_error: Option<String>,
 }
 
+/// Identity and cache state of one connection-owned protocol statement.
+#[derive(Clone, Copy)]
+pub(super) struct ProtocolPreparedState {
+    pub(super) dialect: ast::SqlDialect,
+    pub(super) planned: bool,
+}
+
 /// A text-protocol prepared statement. `planned` records whether a previous
 /// EXECUTE already produced a plan that the plan cache can reuse.
 #[derive(Clone, Default)]
 /// 具名预编译语句：SQL 文本与参数个数。
 pub(super) struct NamedPreparedStatement {
+    pub(super) dialect: ast::SqlDialect,
     pub(super) sql: String,
     pub(super) parsed: Option<Rc<dyn ast::Node>>,
     pub(super) database: String,

@@ -1277,10 +1277,15 @@ fn variable_is_on(value: &str) -> bool {
 
 /// 解析 SQL 文本为 AST 节点列表。
 pub(crate) fn parse(sql: &str) -> SessionResult<Vec<Box<dyn ast::Node>>> {
+    parse_in_dialect(sql, ast::SqlDialect::MySQL)
+}
+
+/// Parse a prepared template or bound SQL using its owning connection identity.
+fn parse_in_dialect(sql: &str, dialect: ast::SqlDialect) -> SessionResult<Vec<Box<dyn ast::Node>>> {
     let mode =
         astersql_parser_mysql::r#const::GetSQLMode(astersql_parser_mysql::r#const::DefaultSQLMode)
             .map_err(|error| session_error("parse default sql_mode", error))?;
-    parse_with_sql_mode(sql, mode)
+    parse_with_dialect(sql, mode, dialect)
 }
 
 #[cfg(test)]

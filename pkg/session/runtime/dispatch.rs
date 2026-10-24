@@ -2011,7 +2011,7 @@ impl ConcreteSession {
                 prepared.cached_transaction_contexts.clear();
             }
             for planned in state.protocol_prepared_planned.values_mut() {
-                *planned = false;
+                planned.planned = false;
             }
             state.last_plan_from_cache = false;
             return Ok(None);
@@ -3390,7 +3390,7 @@ impl ConcreteSession {
         };
         // Parsing is the whole of PREPARE; syntax and multi-statement errors
         // must surface here instead of being deferred to EXECUTE.
-        let statements = parse(&sql)?;
+        let statements = parse_in_dialect(&sql, self.sql_dialect())?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
@@ -3408,6 +3408,7 @@ impl ConcreteSession {
         let replaced = self.state.borrow_mut().prepared_by_name.insert(
             name,
             NamedPreparedStatement {
+                dialect: self.sql_dialect(),
                 sql,
                 parsed,
                 database,
@@ -3675,7 +3676,7 @@ impl ConcreteSession {
                 !state.transaction_write_keys.is_empty(),
             )
         };
-        let (sql, parsed, database, planned, last_parameter_shape, plan_cache) = {
+        let (sql, parsed, dialect, database, planned, last_parameter_shape, plan_cache) = {
             let state = self.state.borrow();
             let prepared = state.prepared_by_name.get(&name).ok_or_else(|| {
                 SessionError::new(format!(
@@ -3686,6 +3687,7 @@ impl ConcreteSession {
                 candidate.planned
                     && candidate.planned_catalog_version == Some(current_catalog_version)
                     && candidate.sql == prepared.sql
+                    && candidate.dialect == prepared.dialect
                     && candidate.database == prepared.database
                     && candidate
                         .cached_transaction_contexts
@@ -3694,6 +3696,7 @@ impl ConcreteSession {
             (
                 prepared.sql.clone(),
                 prepared.parsed.clone(),
+                prepared.dialect,
                 prepared.database.clone(),
                 planned,
                 prepared.last_parameter_shape,
@@ -3891,7 +3894,7 @@ impl ConcreteSession {
             self.record_statement_metric(parsed.as_ref());
         }
         if execution.is_ok() && record_set.is_none() {
-            let statements = parse(&sql)?;
+            let statements = parse_in_dialect(&sql, dialect)?;
             for prepared_statement in &statements {
                 match self.execute_statement(prepared_statement.as_ref(), Some(&sql)) {
                     Ok(result) => {
@@ -4219,7 +4222,7 @@ impl ConcreteSession {
                 stmt_tracker.AttachTo(parent);
             }
             self.sync_global_bindings();
-            let prepared_binding_sql = statement
+            let (prepared_binding_sql, prepared_binding_ast) = statement
                 .as_any()
                 .downcast_ref::<ast::ExecuteStmt>()
                 .and_then(|execute| {
@@ -4227,12 +4230,9 @@ impl ConcreteSession {
                         .borrow()
                         .prepared_by_name
                         .get(&execute.Name.to_lowercase())
-                        .map(|prepared| prepared.sql.clone())
-                });
-            let prepared_binding_ast = prepared_binding_sql
-                .as_deref()
-                .and_then(|sql| parse(sql).ok())
-                .and_then(|mut statements| (statements.len() == 1).then(|| statements.remove(0)));
+                        .map(|prepared| (Some(prepared.sql.clone()), prepared.parsed.clone()))
+                })
+                .unwrap_or_default();
             let explain = statement.as_any().downcast_ref::<ast::ExplainStmt>();
             let explain_inner_sql = explain.and_then(|_| {
                 let trimmed = current_sql.trim_start();

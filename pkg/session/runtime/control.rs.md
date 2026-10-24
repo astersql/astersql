@@ -113,3 +113,8 @@ Go 路径使用完整 preprocess/plan builder/executor 和 `PlanCacheStmt`；Rus
 新增协议 prepared 行为时，保持“只接受单 statement、marker 感知绑定、reserve/release 对称、缓存 generation 失效”四个不变量，并同步 `pkg/server/runtime.rs`、`pkg/testkit/mockstore.rs` 的调用契约。新增统计收集行为应从 `collect_statement_predicate_stats`/`collect_predicate_columns_point` 接入，避免在已裁剪索引上请求 histogram，同时覆盖 CTE、集合运算、表达式子查询和静态分区。
 
 管理语句扩展不能只修改内存 cache：账户/权限修改需在 transaction 中持久化 `mysql.*` 后再更新 privilege handle，失败时回滚；资源组默认项需区分元数据持久化和当前 Domain 的 runtime map。兼容风险主要是错误码/文案、scope 与 warning；正确性风险主要是事务清理、权限绕过和 cache/持久化不一致；性能风险集中在保存点全量扫描、谓词列/索引遍历、提交前 snapshot 比较以及锁等待轮询。
+
+
+## 2026-10-24 预处理语句身份承接
+
+生产 prepare_protocol_statement 用连接方言解析并保存身份；execute_protocol_statement 在绑定前校验保存身份与不可变连接一致，再沿已有 self.execute 重解析。参数仍由共享内核 token-aware 绑定。

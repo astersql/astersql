@@ -1248,3 +1248,139 @@ fn pg_introspection_binary_results_and_recovery() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_core_dialect_prepared_lifecycle() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_core_prepared.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // libpq uses unnamed portals. Exercise two explicitly named portals on
+    // the same real canonical connection without a Sync between executions.
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE TABLE public.pg_prepared_portals (id BIGINT PRIMARY KEY)",
+        "INSERT INTO public.pg_prepared_portals VALUES (17),(31),(73),(2147483648),(9223372036854775807)",
+    ] {
+        let response = query(&mut socket, sql);
+        assert!(
+            !response.iter().any(|message| message.0 == b'E'),
+            "{response:?}"
+        );
+    }
+    let mut other = TcpStream::connect(addr).unwrap();
+    other
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    other
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    other.write_all(&body).unwrap();
+    while read(&mut other).0 != b'Z' {}
+    parse(
+        &mut other,
+        "a",
+        "SELECT id FROM public.pg_prepared_portals WHERE id = $1",
+        &[23],
+    );
+    assert_eq!(read(&mut other).0, b'1');
+    bind(&mut other, "a", "a", &[Some("17")]);
+    assert_eq!(read(&mut other).0, b'2');
+    for (name, oid) in [("a", 23), ("b", 20)] {
+        parse(
+            &mut socket,
+            name,
+            "SELECT id FROM public.pg_prepared_portals WHERE id = $1",
+            &[oid],
+        );
+        assert_eq!(read(&mut socket).0, b'1');
+    }
+    for (name, number) in [
+        ("a", "17"),
+        ("b", "2147483648"),
+        ("a", "31"),
+        ("b", "9223372036854775807"),
+    ] {
+        bind(&mut socket, name, name, &[Some(number)]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, name, 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[Some(number)])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'C', &[b"P", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    bind(&mut socket, "survivor", "b", &[Some("73")]);
+    assert_eq!(read(&mut socket).0, b'2');
+    send(&mut socket, b'C', b"Sa\0");
+    assert_eq!(read(&mut socket).0, b'3');
+    execute(&mut socket, "survivor", 0);
+    assert_eq!(read(&mut socket), (b'D', row(&[Some("73")])));
+    assert_eq!(read(&mut socket).0, b'C');
+    // Closing a statement/portal on the first connection cannot affect an
+    // identically named live portal on another connection.
+    execute(&mut other, "a", 0);
+    assert_eq!(read(&mut other), (b'D', row(&[Some("17")])));
+    assert_eq!(read(&mut other).0, b'C');
+    send(&mut other, b'C', b"Sa\0");
+    assert_eq!(read(&mut other).0, b'3');
+    send(&mut other, b'S', &[]);
+    assert_eq!(read(&mut other).0, b'Z');
+    send(&mut other, b'X', &[]);
+    drop(other);
+    send(&mut socket, b'C', b"Sb\0");
+    assert_eq!(read(&mut socket).0, b'3');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    assert_eq!(
+        query(&mut socket, "DROP TABLE public.pg_prepared_portals")[0].0,
+        b'C'
+    );
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    _cleanup.0.close();
+    assert!(TcpStream::connect(addr).is_err());
+}

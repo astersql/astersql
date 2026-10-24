@@ -111,3 +111,8 @@ Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组�
 ## 连接方言身份
 
 `ConcreteSessionInner.sql_dialect` 在构造时固定，独立于可变 SessionState、SQLMode 和 capability。`new` 保持 MySQL 默认，`new_with_dialect` 在首次 SQL 前接受显式身份；事务结束、错误恢复和会话克隆不改变身份。
+
+
+## 2026-10-24 预处理语句身份承接
+
+具名 SQL 预处理记录和协议预处理缓存状态保存创建连接的 SqlDialect；缓存失效只重置 planned，Close/reset 随所属会话清理记录。

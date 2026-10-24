@@ -111,3 +111,8 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ## 连接方言身份
 
 普通连接执行通过 `parse_with_dialect` 创建 `Parser::with_dialect`，SQL mode 仍独立设置。无连接上下文的既有 `parse`/`parse_with_sql_mode` 保持 MySQL 约定；预处理身份接线由后续批次完成。测试构建用线程局部观测实际 parser 输入，不添加产品 SQL 调试函数。
+
+
+## 2026-10-24 预处理语句身份承接
+
+新增内部 parse_in_dialect，在保留原默认 SQLMode 的前提下让预处理模板、绑定后重解析和参数相关规划检查显式使用连接方言；原 parse 仍默认 MySQL。
