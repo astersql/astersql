@@ -171,6 +171,28 @@ pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, 
             "multiple statements in one Query are not supported".into(),
         ));
     }
+    // Preserve ROW in the shared AST, but do not expose MySQL scalar-row
+    // metadata as a PostgreSQL anonymous record or execute its subexpressions.
+    struct RecordGate(bool);
+    impl ast::Visitor for RecordGate {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
+                self.0 |= matches!(expr.Kind, ast::ExprKind::ExplicitRow { .. });
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut records = RecordGate(false);
+    statements[0].accept(&mut records);
+    if records.0 {
+        return Err((
+            "0A000",
+            "ROW constructors require record type analysis support".into(),
+        ));
+    }
     struct ArrayGate(bool);
     impl ast::Visitor for ArrayGate {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {

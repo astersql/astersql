@@ -1128,6 +1128,11 @@ fn pg_dialect_09_libpq() {
     pg_dialect_libpq(9);
 }
 
+#[test]
+fn pg_dialect_11_libpq() {
+    pg_dialect_libpq(11);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1365,6 +1370,48 @@ fn pg_dialect_libpq(task: u8) {
             vec![vec![Some(b"ARRAY[1,2]".to_vec())]]
         );
     }
+    if task == 11 {
+        let mut baseline = vec![];
+        for sql in [
+            "SELECT ROW(1,2)",
+            "SELECT ROW(1)",
+            "SELECT ROW(1,ROW(2,3))",
+            "SELECT ROW(1,",
+        ] {
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(&mut mysql, 0, &request);
+            let response = mysql_read(&mut mysql);
+            assert_eq!(
+                response[0], 0xff,
+                "freeze existing MySQL projection/syntax errors"
+            );
+            let expected = if sql == "SELECT ROW(1)" || sql == "SELECT ROW(1," {
+                (1064, b"42000".as_slice())
+            } else {
+                (1105, b"HY000".as_slice())
+            };
+            assert_eq!(
+                u16::from_le_bytes(response[1..3].try_into().unwrap()),
+                expected.0
+            );
+            assert_eq!(&response[4..9], expected.1);
+            baseline.push(serde_json::json!({"sql":sql, "error_code":u16::from_le_bytes(response[1..3].try_into().unwrap()), "sqlstate":String::from_utf8_lossy(&response[4..9]), "packet":response}));
+        }
+        std::fs::write(
+            evidence.join("mysql-row-baseline.json"),
+            serde_json::to_string(&baseline).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mysql_query(&mut mysql, "SELECT ROW(1,2)=ROW(1,2)"),
+            vec![vec![Some(b"1".to_vec())]]
+        );
+        assert_eq!(
+            mysql_query(&mut mysql, "SELECT 'ROW(1,2)' /* ROW() */"),
+            vec![vec![Some(b"ROW(1,2)".to_vec())]]
+        );
+    }
     checkpoint(&mut mysql, "before");
     let mut checkpoints = 0;
     for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
@@ -1399,6 +1446,25 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 11 {
+        assert_eq!(checkpoints, 6);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["syntax_eligible"], 6);
+        assert_eq!(summary["gate_cases"], 4);
+        assert_eq!(summary["semantic_row_success"], 0);
+        assert!((1..=2).contains(&summary["unique_effective"].as_u64().unwrap()));
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            8
+        );
+        return;
+    }
     if task == 9 {
         assert_eq!(checkpoints, 6);
         let summary: serde_json::Value =

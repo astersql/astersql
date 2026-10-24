@@ -858,6 +858,14 @@ pub enum ExprKind {
         Brackets: (usize, usize),
         Commas: Vec<usize>,
     },
+    /// Explicit PostgreSQL ROW, distinct from MySQL/implicit tuple expressions.
+    ExplicitRow {
+        Fields: Vec<ExprNode>,
+        /// Half-open original SQL byte spans; preserve UTF-8 character boundaries.
+        FieldSpans: Vec<(usize, usize)>,
+        Parentheses: (usize, usize),
+        Commas: Vec<usize>,
+    },
     Row(Vec<ExprNode>),
     Collate {
         Expr: Box<ExprNode>,
@@ -1309,7 +1317,8 @@ impl ExprNode {
             ExprKind::Regexp { Expr, Pattern, .. } => {
                 accept_box(Expr, visitor) && accept_box(Pattern, visitor)
             }
-            ExprKind::Row(values)
+            ExprKind::ExplicitRow { Fields: values, .. }
+            | ExprKind::Row(values)
             | ExprKind::Array {
                 Elements: values, ..
             } => accept_many(values, visitor),

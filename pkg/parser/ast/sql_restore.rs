@@ -175,7 +175,7 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 .collect::<Result<Vec<_>, _>>()?
                 .join(",")
         )),
-        ExprKind::Row(values) => Ok(format!(
+        ExprKind::ExplicitRow { Fields: values, .. } | ExprKind::Row(values) => Ok(format!(
             "ROW({})",
             values
                 .iter()

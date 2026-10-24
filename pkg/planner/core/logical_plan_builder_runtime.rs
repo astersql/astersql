@@ -1288,7 +1288,9 @@ fn validate_grouping_function_arguments(
                     visit(argument, group_by)?;
                 }
             }
-            ExprKind::AggregateFunction { Args, .. } | ExprKind::Row(Args) => {
+            ExprKind::AggregateFunction { Args, .. }
+            | ExprKind::Row(Args)
+            | ExprKind::ExplicitRow { Fields: Args, .. } => {
                 for argument in Args {
                     visit(argument, group_by)?;
                 }
@@ -3408,7 +3410,8 @@ fn collect_aggregate_nodes<'a>(
         }
         ExprKind::Function { Args, .. }
         | ExprKind::Row(Args)
-        | ExprKind::Array { Elements: Args, .. } => {
+        | ExprKind::Array { Elements: Args, .. }
+        | ExprKind::ExplicitRow { Fields: Args, .. } => {
             for argument in Args {
                 collect_aggregate_nodes(argument, nodes);
             }

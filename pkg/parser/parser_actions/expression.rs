@@ -19,6 +19,9 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
+    PgRow,
+    RowFieldFirst,
+    RowFieldNext,
     PgArray,
     PgArrayEmpty,
     PgArrayFirst,
@@ -152,7 +155,6 @@ enum ExpressionRule {
     SimpleExprAlt16,
     SimpleExprAlt18,
     SimpleExprAlt19,
-    SimpleExprAlt20,
     SimpleExprAlt21,
     SimpleExprAlt22,
     SimpleExprAlt23,
@@ -595,9 +597,9 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "simpleexpr_expressionlist_expression--1c7edbbb05e7e9fe" => {
             Some(ExpressionRule::SimpleExprAlt19)
         }
-        "simpleexpr_row_expressionlist_expression--e697c9441eb9ff5a" => {
-            Some(ExpressionRule::SimpleExprAlt20)
-        }
+        "simpleexpr_row_rowfields--dab491760725960b" => Some(ExpressionRule::PgRow),
+        "rowfields_expression--8fdd36a0ef896549" => Some(ExpressionRule::RowFieldFirst),
+        "rowfields_rowfields_expression--3ec8450b807c963a" => Some(ExpressionRule::RowFieldNext),
         "simpleexpr_exists_subselect--808b15c71735adc3" => Some(ExpressionRule::SimpleExprAlt21),
         "simpleexpr_identifier_expression--c81b0744f634bfa6" => {
             Some(ExpressionRule::SimpleExprAlt22)
@@ -989,8 +991,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Vec::<usize>::new(),
             )));
         }
-        ExpressionRule::PgArrayFirst | ExpressionRule::PgArrayNext => {
-            let (mut elements, mut starts, mut commas) = if rule == ExpressionRule::PgArrayNext {
+        ExpressionRule::PgArrayFirst
+        | ExpressionRule::PgArrayNext
+        | ExpressionRule::RowFieldFirst
+        | ExpressionRule::RowFieldNext => {
+            let (mut elements, mut starts, mut commas) = if matches!(
+                rule,
+                ExpressionRule::PgArrayNext | ExpressionRule::RowFieldNext
+            ) {
                 rhs[1]
                     .item
                     .as_deref()
@@ -1002,7 +1010,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             } else {
                 (vec![], vec![], vec![])
             };
-            let index = if rule == ExpressionRule::PgArrayNext {
+            let index = if matches!(
+                rule,
+                ExpressionRule::PgArrayNext | ExpressionRule::RowFieldNext
+            ) {
                 3
             } else {
                 1
@@ -1013,6 +1024,49 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 commas.push(rhs[2].offset as usize);
             }
             out.item = Some(Box::new((elements, starts, commas)));
+        }
+        ExpressionRule::PgRow => {
+            let (fields, starts, commas) = rhs[3]
+                .item
+                .as_deref()
+                .and_then(|item| {
+                    item.downcast_ref::<(Vec<parser_ast::ExprNode>, Vec<usize>, Vec<usize>)>()
+                })
+                .cloned()
+                .unwrap();
+            let postgres = parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL;
+            if !postgres && fields.len() < 2 {
+                yylex.AppendError(yylex.Errorf("ROW requires at least two fields in MySQL", &[]));
+                return Err(1);
+            }
+            let start = rhs[1].offset as usize;
+            let close = rhs[4].offset as usize;
+            let spans = starts
+                .iter()
+                .enumerate()
+                .map(|(i, &start)| {
+                    let end = commas.get(i).copied().unwrap_or(close);
+                    (start, start + parser_state.src[start..end].trim_end().len())
+                })
+                .collect();
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(start as i32);
+            node_text.SetText(None, &parser_state.src[start..close + 1]);
+            out.expr = Some(parser_ast::ExprNode {
+                node_text,
+                Kind: if postgres {
+                    parser_ast::ExprKind::ExplicitRow {
+                        Fields: fields,
+                        FieldSpans: spans,
+                        Parentheses: (rhs[2].offset as usize, close),
+                        Commas: commas,
+                    }
+                } else {
+                    parser_ast::ExprKind::Row(fields)
+                },
+                OriginTextPosition: start as i32,
+                Flag: Default::default(),
+            });
         }
         ExpressionRule::PgArray => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
@@ -1578,7 +1632,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Flag: Default::default(),
             });
         }
-        ExpressionRule::SimpleExprAlt19 | ExpressionRule::SimpleExprAlt20 => {
+        ExpressionRule::SimpleExprAlt19 => {
             let mut values = rhs[rhs_len - (3)]
                 .item
                 .as_deref()

@@ -3297,3 +3297,157 @@ fn pg_dialect_09_behavior() {
         "pg_dialect_09_behavior: 10 unique PG inputs; source/tree/parameter/visitor and 4 MySQL isolation checks"
     );
 }
+
+#[test]
+fn pg_dialect_11_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    fn expression(sql: &str) -> parser_ast::ExprNode {
+        let result = parser::Parser::with_dialect(SqlDialect::PostgreSQL).ParseOneStmt(sql, "", "");
+        assert!(
+            result.is_ok(),
+            "ROW syntax must reach shared AST: {sql}: {}",
+            result.err().unwrap()
+        );
+        result
+            .unwrap()
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap()
+            .Fields
+            .Fields[0]
+            .Expr
+            .clone()
+            .unwrap()
+    }
+    let assertions = std::cell::Cell::new(0usize);
+    macro_rules! check {
+        ($($args:tt)*) => {{ assertions.set(assertions.get()+1); assert!($($args)*); }};
+    }
+    macro_rules! check_eq {
+        ($($args:tt)*) => {{ assertions.set(assertions.get()+1); assert_eq!($($args)*); }};
+    }
+    for (sql, expected) in [
+        ("SELECT ROW(1)", vec!["1"]),
+        ("SELECT ROW(1,2)", vec!["1", "2"]),
+        ("SELECT ROW(1,ROW(2,3))", vec!["1", "ROW(2,3)"]),
+        ("SELECT ROW(NULL,$2,$1,$2)", vec!["NULL", "$2", "$1", "$2"]),
+        (
+            "/*中*/ SELECT ROW(1 + 2, '中,文', $2)",
+            vec!["1 + 2", "'中,文'", "$2"],
+        ),
+    ] {
+        let expr = expression(sql);
+        let ExprKind::ExplicitRow {
+            Fields: fields,
+            FieldSpans,
+            Parentheses,
+            Commas,
+        } = &expr.Kind
+        else {
+            panic!("ROW node required")
+        };
+        check_eq!(fields.len(), expected.len());
+        check_eq!(expr.node_text.Text(), &sql[sql.find("ROW").unwrap()..]);
+        check_eq!(expr.OriginTextPosition as usize, sql.find("ROW").unwrap());
+        check_eq!(FieldSpans.len(), fields.len());
+        check_eq!(Commas.len(), fields.len() - 1);
+        check_eq!(&sql[Parentheses.0..Parentheses.0 + 1], "(");
+        check_eq!(&sql[Parentheses.1..Parentheses.1 + 1], ")");
+        for ((field, &(start, end)), spelling) in fields.iter().zip(FieldSpans).zip(&expected) {
+            check_eq!(&sql[start..end], *spelling);
+            check!(sql.is_char_boundary(start) && sql.is_char_boundary(end));
+            check_eq!(field.OriginTextPosition as usize, start);
+            if spelling.starts_with('$') {
+                check!(matches!(field.Kind, ExprKind::ParamMarker { Offset } if Offset==start));
+            }
+        }
+        for &comma in Commas {
+            check_eq!(&sql[comma..comma + 1], ",");
+        }
+        struct Parameters(Vec<u16>);
+        impl parser_ast::Visitor for Parameters {
+            fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+                if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                    if let Some(index) = expr.PostgreSQLParameterIndex() {
+                        self.0.push(index);
+                    }
+                }
+                false
+            }
+            fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+                true
+            }
+        }
+        let mut parameters = Parameters(vec![]);
+        parser_ast::Node::accept(&expr, &mut parameters);
+        if sql.contains("NULL") {
+            check_eq!(parameters.0, [2, 1, 2]);
+        }
+        for (field, expected) in fields.iter().zip(&expected) {
+            if let Some(index) = expected.strip_prefix('$') {
+                check_eq!(
+                    field.PostgreSQLParameterIndex(),
+                    Some(index.parse().unwrap())
+                );
+            }
+        }
+        if sql.contains("NULL") {
+            check!(
+                matches!(&fields[0].Kind, ExprKind::Value(v) if v.Datum == parser_ast::ValueDatum::Null)
+            );
+        }
+        if sql.contains("ROW(2,3)") {
+            let ExprKind::ExplicitRow {
+                Fields: inner,
+                FieldSpans: spans,
+                Parentheses: parens,
+                Commas: commas,
+            } = &fields[1].Kind
+            else {
+                panic!("nested explicit ROW lost")
+            };
+            check_eq!(inner.len(), 2);
+            check_eq!(&sql[spans[0].0..spans[0].1], "2");
+            check_eq!(&sql[spans[1].0..spans[1].1], "3");
+            check_eq!(&sql[parens.0..parens.0 + 1], "(");
+            check_eq!(&sql[commas[0]..commas[0] + 1], ",");
+        }
+    }
+    for sql in ["SELECT ROW(1,", "/*中*/ SELECT ROW(1,", "SELECT ROW()"] {
+        let mut p = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        check!(p.ParseOneStmt(sql, "", "").is_err());
+        if sql.ends_with(',') {
+            check_eq!(
+                p.PostgreSQLEofErrorPosition(),
+                Some(sql.chars().count() + 1)
+            );
+        }
+        check!(p.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+    }
+    let protected = expression("SELECT 'ROW(1,2)' /* ROW($2) */");
+    check!(matches!(&protected.Kind, ExprKind::Value(v) if v.text()=="ROW(1,2)"));
+    let grouped = expression("SELECT (1)");
+    check!(matches!(grouped.Kind, ExprKind::Parentheses(_)));
+    let mysql = parser::Parser::with_dialect(SqlDialect::MySQL)
+        .ParseOneStmt("SELECT ROW(1,2)", "", "")
+        .unwrap();
+    let mysql = mysql
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap()
+        .Fields
+        .Fields[0]
+        .Expr
+        .as_ref()
+        .unwrap();
+    check!(matches!(&mysql.Kind, ExprKind::Row(fields) if fields.len()==2));
+    check!(
+        parser::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseOneStmt("SELECT ROW(1)", "", "")
+            .is_err()
+    );
+    println!(
+        "pg_dialect_11_behavior: assertions={}; 10 unique PG inputs, MySQL multi/single-field baseline",
+        assertions.get()
+    );
+}

@@ -639,6 +639,7 @@ fn walk_ast_expr(expr: &ast::ExprNode, facts: &mut AstFacts) {
         }
         ExprKind::Function { Args, .. }
         | ExprKind::Row(Args)
+        | ExprKind::ExplicitRow { Fields: Args, .. }
         | ExprKind::Array { Elements: Args, .. } => {
             for arg in Args {
                 walk_ast_expr(arg, facts);

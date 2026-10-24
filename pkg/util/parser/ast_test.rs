@@ -174,3 +174,27 @@ fn pg_core_int8_restore_preserves_target() {
         "SELECT CAST(' +00042 ' AS INT8)"
     );
 }
+
+#[test]
+fn pg_dialect_11_restore_boundary() {
+    for sql in [
+        "SELECT ROW(1)",
+        "SELECT ROW(1,ROW(2,3))",
+        "SELECT ROW(NULL,$2,$1,$2)",
+    ] {
+        let statement = parser::Parser::with_dialect(parser::ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "")
+            .unwrap();
+        assert!(
+            utilparser::RestoreWithoutDB(statement.as_ref()).is_empty(),
+            "PG record must not be restored for MySQL execution"
+        );
+    }
+    let statement = parser::New()
+        .ParseOneStmt("SELECT ROW(1,2)=ROW(1,2)", "", "")
+        .unwrap();
+    assert_eq!(
+        utilparser::RestoreWithoutDB(statement.as_ref()),
+        "SELECT ROW(1, 2) = ROW(1, 2)"
+    );
+}

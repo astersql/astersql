@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 9), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 9, 11), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -134,10 +134,19 @@ if task == 9:
         ('missing_close', '/*中*/ SELECT ARRAY[1,2', []),
         ('protected', "SELECT 'ARRAY[1,2]' /* ARRAY[] $2 */", []),
     ]
-assert len({case[0] for case in cases}) == (6 if task == 9 else (8 if task == 4 else 10))
+if task == 11:
+    cases = [
+        ('two', 'SELECT ROW(1,2)', []),
+        ('one', 'SELECT ROW(1)', []),
+        ('nested', 'SELECT ROW(1,ROW(2,3))', []),
+        ('parameters', 'SELECT ROW(NULL,$2,$1,$2)', [23,23]),
+        ('missing_close', '/*中*/ SELECT ROW(1,', []),
+        ('protected', "SELECT 'ROW(1,2)' /* ROW() $2 */", []),
+    ]
+assert len({case[0] for case in cases}) == (6 if task in (9,11) else (8 if task == 4 else 10))
 (evidence / 'cases.json').write_text(json.dumps([
-    dict(case_id=name, capability_id='pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence')), sql=sql,
-         phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task == 9 else [None]*len(oids)) if oids else []),
+    dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'))), sql=sql,
+         phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task in (9,11) else [None]*len(oids)) if oids else []),
          parameter_formats=([0]*len(oids) if oids else []), result_format=0,
          initial_state='I', expected_basis=f'dialect task {task} / PostgreSQL18.6 observation / roadmap chapter 2',
          expected_state='42601' if name.startswith('missing_') else '',
@@ -188,6 +197,21 @@ def compare_syntax(actual, reference, sql, invalid):
         return actual['position'] == reference['position'] == str(len(sql) + 1)
     return not actual['position'] and not reference['position']
 
+
+if task == 11:
+    registry = json.loads((evidence/'cases.json').read_text())
+    for case in registry:
+        name = case['case_id']
+        case['expected_by_side'] = {
+            'reference': '42601' if name=='missing_close' else 'success',
+            'aster': '42601' if name=='missing_close' else ('success' if name=='protected' else '0A000'),
+        }
+        case['expected_state'] = None
+        case['local_expected_state'] = case['expected_by_side']['aster']
+        case['reference_expected_state'] = case['expected_by_side']['reference']
+        case['execution'] = 'reference row/control Execute; local constructor gate is not record execution'
+        case['local_record_values_and_oid'] = 'unavailable: record analysis/codec external dependency' if name not in ('missing_close','protected') else 'not applicable: syntax error or scalar control'
+    (evidence/'cases.json').write_text(json.dumps(registry,indent=2))
 
 def archive(name, side, data, observation):
     append_observation(evidence, dict(run=evidence.name, case_id=name, side=side, attempt=1,
@@ -578,6 +602,172 @@ def array_handoff():
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and cleanup_ok,'incomplete run/cleanup'
     print(json.dumps(summary),flush=True)
+
+def row_handoff():
+    """ROW syntax/gate only; preserve separate reference type-analysis outcomes."""
+    connections, prepared = {}, []
+    checks = 0
+    self_checks = 0
+    eligible = 0
+    control_descriptors = {}
+    metadata_mismatches = 0
+    done = False
+    cleanup_ok = True
+    def record(name, label, data, result):
+        allowed = {'phase','sql','statement','parameter_oids','arguments','parameter_formats','result_format','command'}
+        archive(name, 'aster' if label.startswith('aster') else label,
+                {key:value for key,value in (data or {}).items() if key in allowed},
+                dict(result, connection=label, context=data))
+    def check(condition, message):
+        nonlocal checks
+        assert condition, message
+        checks += 1
+    def recover(conn, label, name):
+        if transaction(conn) in (2,3):
+            check(query(conn, 'ROLLBACK')['status'] == 1, 'rollback failed')
+        result = query(conn, 'SELECT 1::int4')
+        record(name+'_recovery', label, dict(phase='PQexec', sql='SELECT 1::int4'), result)
+        check(result['rows'] == [['1']] and result['state'] == '' and transaction(conn) == 0, 'original connection recovery failed')
+    def compare(a, r, name, sql):
+        if name == 'missing_close':
+            return all(x['state']=='42601' and x['status']==7 and x['position']==str(len(sql)+1) for x in [a,r])
+        if name == 'protected':
+            return all(x['state']=='' and x['status']==1 for x in [a,r])
+        return (a['state']=='0A000' and a['status']==7 and not a['position'] and
+                a['message']=='ROW constructors require record type analysis support' and
+                r['state']=='' and r['status']==1 and
+                r['position']=='')
+    try:
+        local = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference','aster','aster_b','aster_observer']:
+            conn = connect((os.environ['PG18_REFERENCE_DSN'] if label=='reference' else local).encode())
+            connections[label] = conn
+            check(bool(conn) and status(conn)==0, label+' connection failed')
+            if label=='reference': check(query(conn,"SET TIME ZONE 'UTC'")['status']==1,'timezone failed')
+            check(parameter_status(conn,b'client_encoding')==b'UTF8' and parameter_status(conn,b'TimeZone')==b'UTC','connection settings')
+            check(query(conn,'SET search_path TO public')['status']==1,'search path failed')
+        ref = connections['reference']
+        ref_version = query(ref,"SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(ref_version[1]=='180006','exact PostgreSQL18.6 required')
+        build = json.loads((evidence/'rust-build.json').read_text())
+        build['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance = dict(run=evidence.name, target_version='18.6', source=source_snapshot(root), build=build,
+            reference=dict(version=ref_version[0],server_version_num=ref_version[1]),
+            reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            endpoints={s:endpoint(connections[s]) for s in ['aster','aster_b','reference']})
+        provenance['mysql_reference_build']=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text())
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance invalid')
+        damaged=copy.deepcopy(provenance);damaged['reference_build']['server_version_num']=180004
+        check(not validate_provenance(damaged,provenance),'provenance negative self-check');self_checks+=1
+        before=query(connections['aster_observer'],'SELECT id FROM public.dialect_isolation')['rows']
+        check(before==[['31']],'initial observer state')
+        for index,(name,sql,oids) in enumerate(cases):
+            input_data=dict(role={label:connection_user(conn).decode() for label,conn in connections.items()},capability_id='pg.dialect.row.syntax',case_id=name,sql=sql,phase='PQprepare',
+                parameter_oids=oids,arguments=['7','9'] if oids else [],parameter_formats=[0]*len(oids),result_format=0,
+                encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping={},
+                expected_basis='task11 syntax/gate contract and exact PostgreSQL18.6 analysis; values/OIDs unavailable on local gated record constructors')
+            results={}
+            for label in ['reference', 'aster_b' if index%2 else 'aster']:
+                conn=connections[label];check(transaction(conn)==0,'initial transaction not idle')
+                statement=f'row_{index}'.encode()
+                result=observe(prepare(conn,statement,sql.encode(),len(oids),(c.c_uint*len(oids))(*oids) if oids else None))
+                result['transaction_after']={0:'I',2:'T',3:'E'}.get(transaction(conn))
+                record(name,label,input_data,result);results['reference' if label=='reference' else 'aster']=result
+                if result['status']==1:
+                    prepared.append((conn,statement))
+                    desc=observe(describe(conn,statement));record(name+'_describe',label,dict(input_data,phase='Describe'),desc)
+                    if label=='reference' and name in ('two','one','nested','parameters'):
+                        check(len(desc['fields'])==1 and desc['fields'][0]==['row',2249,-1,-1], 'reference record metadata')
+                        if oids:check(desc['param_count']==2 and desc['params']==[23,23],'reference parameter identity')
+                        args=(text*2)(b'7',b'9') if oids else None
+                        values=observe(exec_prepared(conn,statement,len(oids),args,None,None,0));record(name+'_execute',label,dict(input_data,phase='Execute'),values)
+                        expected={'two':'(1,2)','one':'(1)','nested':'(1,"(2,3)")','parameters':'(,9,7,9)'}[name]
+                        check(values['rows']==[[expected]] and values['command_tag']=='SELECT 1','reference record values')
+                    if name=='protected':
+                        control_descriptors['reference' if label=='reference' else 'aster']=desc
+                        check(len(desc['fields'])==1 and desc['fields'][0][1:]==[25,-1,-1] and desc['formats']==[0] and desc['param_count']==0,'scalar control descriptor type/format/parameters')
+                        values=observe(exec_prepared(conn,statement,0,None,None,None,0));record(name+'_execute',label,dict(input_data,phase='Execute'),values)
+                        check(values['rows']==[['ROW(1,2)']],'protected value')
+                recover(conn,label,name)
+            check(compare(results['aster'],results['reference'],name,sql),'prepare contract mismatch: '+name)
+            if name=='protected':
+                same_metadata=compare_metadata(control_descriptors['aster'],control_descriptors['reference'],'describe')
+                metadata_mismatches += int(not same_metadata)
+                record('protected_metadata_comparison','aster',None,dict(equal=same_metadata,aster=control_descriptors['aster'],reference=control_descriptors['reference'],scope='unnamed scalar label is outside ROW syntax; mismatch is excluded from full effective count'))
+            if name in ('two','one','missing_close'):
+                damaged=copy.deepcopy(results['aster']);damaged['state']='42601' if name!='missing_close' else '0A000'
+                check(not compare(damaged,results['reference'],name,sql),'comparator negative check');self_checks+=1
+            if name=='missing_close':
+                damaged=copy.deepcopy(results['aster']);damaged['position']='1'
+                check(not compare(damaged,results['reference'],name,sql),'position comparator negative check');self_checks+=1
+            for label in ['aster','reference']:
+                result=query(connections[label],sql);record(name+'_simple',label,dict(input_data,phase='Q',arguments=[],parameter_oids=[]),result)
+                if name=='protected':check(result['rows']==[['ROW(1,2)']],'simple literal changed')
+                elif name=='missing_close':check(result['state']=='42601' and result['position']==str(len(sql)+1),'simple original position')
+                elif label=='aster':check(result['state']=='0A000','simple record gate')
+                elif name=='parameters':check(result['state']=='42P02','simple parameter requires binding')
+                else:check(result['rows']==[[{'two':'(1,2)','one':'(1)','nested':'(1,"(2,3)")'}[name]]],'simple reference record')
+                recover(connections[label],label,name+'_simple')
+            for label in (['aster_b','aster'] if index%2==0 else ['aster','aster_b']):
+                recover(connections[label],label,name+'_isolation')
+            check(query(connections['aster_observer'],'SELECT id FROM public.dialect_isolation')['rows']==before,'observer state changed')
+            print('PG_DIALECT_CHECKPOINT '+name,flush=True)
+            check(sys.stdin.readline().strip()=='continue','MySQL checkpoint aborted')
+            eligible+=1
+        for label in ['aster','reference']:
+            conn=connections[label];check(query(conn,'BEGIN')['status']==1,'begin failed')
+            result=observe(prepare(conn,b'transaction_bad',b'SELECT ROW(1,',0,None))
+            record('transaction_error',label,dict(phase='PQprepare',sql='SELECT ROW(1,'),dict(result,transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conn))))
+            check(result['state']=='42601' and transaction(conn)==3,'transaction error state');recover(conn,label,'transaction')
+        for phase,invoke in [('Q',lambda sql:query(connections['aster'],sql)),('PQprepare',lambda sql:observe(prepare(connections['aster'],b'row_write',sql.encode(),0,None)))]:
+            sql='INSERT INTO public.dialect_isolation VALUES (ROW(47))'
+            result=invoke(sql);record('no_write_'+phase,'aster',dict(phase=phase,sql=sql),result)
+            check(result['state']=='0A000' and result['message']=='ROW constructors require record type analysis support','reject record DML before write')
+            check(query(connections['aster_observer'],'SELECT id FROM public.dialect_isolation')['rows']==before,'record DML changed observer state')
+            recover(connections['aster'],'aster','no_write_'+phase)
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
+        env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql):
+            proc=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            return dict(code=proc.returncode,output=proc.stdout.splitlines(),error=proc.stderr)
+        identity=mysql_ref('SELECT VERSION(), @@version_compile_os, @@version_compile_machine; SELECT @@sql_mode, @@character_set_connection, @@collation_connection')
+        record('identity','mysql',None,identity);check(identity['code']==0,'MySQL identity')
+        for name,sql in [('two','SELECT ROW(1,2)'),('one','SELECT ROW(1)'),('nested','SELECT ROW(1,ROW(2,3))'),('missing_close','SELECT ROW(1,'),('protected',"SELECT 'ROW(1,2)' /* ROW() $2 */")]:
+            result=mysql_ref(sql);record(name,'mysql',dict(phase='Q',sql=sql),result)
+            if name=='protected': check(result['code']==0 and result['output']==['ROW(1,2)'],'MySQL protected literal')
+            else:
+                code='1241 (21000)' if name in ('two','nested') else '1064 (42000)'
+                check(result['code']!=0 and 'ERROR '+code in result['error'],'MySQL row-specific projection/syntax diagnostic')
+        legal=mysql_ref("SELECT (1); SELECT ROW(1,2)=ROW(1,2); PREPARE s FROM 'SELECT ROW(?,?)=ROW(?,?)'; SET @a=1; SET @b=2; EXECUTE s USING @a,@b,@a,@b; DEALLOCATE PREPARE s")
+        record('legal_prepare','mysql',None,legal);check(legal['code']==0 and legal['output']==['1','1','1'],'MySQL row comparison/prepare control')
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root)
+        final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        final['client']['sha256']=hashlib.sha256(library.read_bytes()).hexdigest()
+        final['reference_build']=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        final['endpoints']={s:endpoint(connections[s]) for s in ['aster','aster_b','reference']}
+        check(validate_provenance(provenance,final),'provenance changed')
+        done=True
+    finally:
+        for conn,statement in prepared:
+            result=observe(close_prepared(conn,statement));cleanup_ok=result['status']==1 and cleanup_ok
+        for conn in connections.values():
+            if conn and transaction(conn) in (2,3):cleanup_ok=query(conn,'ROLLBACK')['status']==1 and cleanup_ok
+            if conn:finish(conn)
+        summary=dict(cases=len(cases),assertions=checks,self_checks=self_checks,syntax_eligible=eligible if done and cleanup_ok else 0,
+            gate_cases=4 if done and cleanup_ok else 0,unique_effective=(2-metadata_mismatches) if done and cleanup_ok else 0,
+            metadata_mismatch_cases=metadata_mismatches,
+            semantic_row_success=0,cleanup_ok=cleanup_ok,scope='ROW syntax/gate; local record typing/binding/execute unavailable')
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    assert done and cleanup_ok,'incomplete run/cleanup'
+    print(json.dumps(summary),flush=True)
+
+if task == 11:
+    row_handoff()
+    sys.exit(0)
 
 if task == 9:
     array_handoff()

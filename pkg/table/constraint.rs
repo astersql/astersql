@@ -246,7 +246,7 @@ impl checkConstraintChecker {
                 self.check(Expr);
                 self.check(Pattern);
             }
-            ExprKind::Array { .. } => self.reject_function(),
+            ExprKind::ExplicitRow { .. } | ExprKind::Array { .. } => self.reject_function(),
             ExprKind::Row(items) => self.check_all(items),
             ExprKind::MatchAgainst { Against, .. } => self.check(Against),
             ExprKind::Case {
