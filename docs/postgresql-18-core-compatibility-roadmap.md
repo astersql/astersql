@@ -5544,6 +5544,20 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 | 独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync | 断言 1/2、statement 参数描述、portal 描述、D/C 与 Sync Z(I)；两行结果 Execute(1) 得 D/s，再 D/C(SELECT 2)。关闭 statement 后 Bind 得 26000，错误中 Parse 被跳过；错误中 Q DELETE 被跳过，原表仍两行；缺失 statement/portal 的 Close 后 pipeline 仍成功。夹具为 InsecureRootOnly，未证明生产认证或运行通过。 |
 | 独立 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback / prepared_dml_commit_and_rollback | 断言重复键 Execute 后 Sync E、后续 Parse 25P02、ROLLBACK I；另断言显式事务 Sync T、第二连接提交前零行/提交后一行、未提交断连写入不保留。没有据此宣称隐式 Sync 原子性、所有旧 portal 门禁、异常清理计数或所有消息阶段已覆盖。 |
 
+#### 二进制证据与类型职责
+
+本域以 `9b21e4b7a5389016b9e738a4bb7b46420b5f7b90` 为取证基线（2026-10-24），批次 4 查询消息交付已存在，传递依赖为批次 3 `a692d03226`、批次 2 `e7d9bcbb2d`、批次 1 `d30bc34cd9`；对应五节正文及前序章节交接已核对，满足文档依赖。以下均为 RustCodeGraph 精确文件读取的静态事实，运行用例 **0**，通用二进制能力及 PG 18.6 对照**未验证**。
+
+| 实际来源/符号 | 静态事实、独立断言及限制 |
+| --- | --- |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Reader、parameter、binary_parameter、Extended::process 的 Bind 分支 | Reader 检查截断、计数和剩余字节；Bind 校验格式数量/0或1格式码、参数数量、-1及非负长度，末尾 end 后才注册 portal。通用 binary 参数仅有 bool、整数、浮点、bytea、文本分支，日期/时间/numeric 的文本分支不能证明其 binary 输入可用；NULL 提前返回也不证明未开放 codec 或类型身份已被验证。 |
+| 同文件 Describe/Execute、description_formats | statement 输出参数 OID 与默认文本描述；portal 保存格式/描述。Execute 调 encode_formats、比较描述后去掉 T，再缓存所有消息及 offset。无参数时缺 native_types 的回填是局部机制，不是通用参数化投影保真证据；结果编码错误当前统一映射 0A000，不能代表所有 PG 值域诊断。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::pg_type、value_text、value_binary、encode_formats | 从元数据选 OID/typlen；当前来源表OID/列号写0、typmod写-1。编码前检查 native_types 数、行宽、格式与名称NUL，NULL 写-1；先完整构造结果再发送。CatalogColumnType 的目录数组/vector 特例不能证明通用数组 codec、声明类型和 typmod 可用。 |
+| 独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 及目录参数段 | 前者断言参数描述 OID 23、重复 Bind 换值、零行目录仍有描述、推断未开放及 Sync 后恢复；目录参数段有混合格式 `[1,1,0]`、OID binary短/长载荷22P03、非法格式/数量08P01及恢复断言。目录特例与当前拒绝断言不替代通用族四方向验证。 |
+| 独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values、unsigned_binary_and_unsupported_types、pg_binary_native_results | 覆盖局部文本 OID/值、unsigned提升与JSON含NULL仍拒绝；binary断言网络序整数/浮点、日期时间、bytea、目录空数组/vector、T末尾格式1，拒绝格式2、格式数不符及整数越域。未在本轮执行，不能推导全部类型/空值/混合结果格式通过。 |
+
+本章拥有消息封装、长度/数量、格式选择、错误传递及恢复；[第 3 章规范映射](#规范类型与协议映射)、[准备描述执行元数据契约](#准备描述执行元数据契约)拥有类型身份、OID/typlen/typmod、codec 和失效时类型连续性，第 5/6 章拥有事务及目录事实。不得由载荷长度、首行或目录特例猜类型。
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5619,6 +5633,25 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 规范依据：2026-10-24 查阅 PostgreSQL **18** [§54.2.2–54.2.4 查询与 pipeline 消息流](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 及 [§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)，约束以上消息顺序、对象生命期、Sync 与字段。它们是大版本目标来源；18.6 只是来源指定参考构建，未启动/确认该补丁版，精确错误文本、位置和未列诊断码均未采集。帧已无法可信定位、未知消息类型或网络写失败是否应关闭，交资源域明确，不把任意坏帧都归为可用 Sync 恢复。
 
+#### 二进制消息与类型交接
+
+以下为目标。网络多字节整数按网络字节序；常规消息为一字节 tag 加 Int32 长度 L，L 包含长度字自身、不含 tag，消息体恰为 L-4 字节。参数/列载荷长度不含自己的长度字；字节数不按字符数计算。所有加法、乘法、窄化和分配前检查溢出、可表示范围及资源上限；不能把当前有符号计数实现当成 PG 全部上限规范。超长阈值、背压/期限的具体预算交资源域，不在本域猜数值。
+
+| 消息/方向 | 字段与数量/长度目标 | 类型与结果责任 |
+| --- | --- | --- |
+| Bind，前端 B | portal与statement的NUL结尾名称；Int16参数格式数C及C个Int16格式；Int16参数数N；每参数Int32长度及载荷；Int16结果格式数R及R个Int16格式。C为0/1/N，R为0/1/结果列数，0默认文本、1广播、逐项时按顺序；格式只允许0文本/1二进制，输入与输出独立。N匹配statement参数数，零参数/零结果列也须按规则解析完整消息。 | -1为SQL NULL且不读取载荷；0为空载荷，是否为合法值由对应codec判断，空text/bytea不变NULL，定宽类型空载荷不能成功。其他负长度、截断、缺名称终止符、剩余字节或不匹配数量拒绝，不注册半成portal、不执行写入。合法但未开放codec明确能力拒绝，禁止静默改成text。 |
+| ParameterDescription，后端 t | Int16参数数N，随后N个Int32类型OID；L=6+4N，N=0时仍可发送空描述。 | 无值、长度、格式、typlen或typmod字段；statement Describe先t再T/NoData，portal Describe不发t。OID由定型分析按参数编号提供，不能取本次Bind值或参数出现次数。 |
+| RowDescription，后端 T | Int16列数M；每列为NUL结尾名称、Int32来源表OID、Int16属性号、Int32类型OID、Int16 typlen、Int32 typmod、Int16格式；每列固定部分18字节再加名称及终止符，L据真实总字节计算。 | 表OID/属性号可识别时须来自第6章真实事实，不能永久以0掩盖缺口；表达式等不可识别来源才用0。statement Describe格式全0；portal Describe按本次Bind逐列格式；typlen/typmod不随格式改变。返回零行仍有描述，无行结果的命令才NoData，不能混为一谈。 |
+| DataRow，后端 D | Int16实际列数M；每列Int32载荷长度及恰好该长度字节，NULL只写-1；L=6+各列(4+非NULL载荷字节数)之和，列数/顺序匹配已定描述。 | 不携带OID或格式码，按portal描述选codec；不得重复塞入格式字段。空值、空载荷、全NULL和零行分开，零行无D。扩展Execute不重发T，简单Q按文本结果；合法零列行在开放对应查询时也须有独立计数/长度证据，不能用无结果命令代替。 |
+
+类型交接完整引用第 3 章“章节验收与后续交接”中的 TYPE-ACCEPT 族矩阵：每族沿 IT→OT（文本入→文本出）、IT→OB、IB→OT、IB→OB 四方向与 `TYPE-ACCEPT` 登记；本域增加消息证据，不复制或降低值域目标。族入口分别为[bool](#布尔类型契约)、[整数](#整数与无符号边界)、[numeric](#精确数值契约)、[float](#浮点数值契约)、[text/varchar/bpchar](#文本类型契约)、[bytea](#字节类型契约)、[date](#日期类型契约)、[time](#日内时间类型契约)、[timestamp](#无时区时间戳契约)、[timestamptz](#带时区时间戳契约)、[interval](#时间间隔契约)、[UUID](#通用唯一标识契约)、[JSON](#json文本契约)、[JSONB](#jsonb规范值契约)、[基础数组](#基础数组契约)。各族codec负责字节布局、内部身份及精度/时区/维度/元素NULL；wire负责完整传递，数组内部元素长度与外层参数长度分别核验。未开放的合法方向记录AsterSQL 0A000能力拒绝及PG成功目标，不写成PG也拒绝；NULL/零行不能自动豁免类型与所请求codec的能力检查。
+
+外层长度不足4、超预算或传输中断导致不能可信定位下一帧时，停止解析并关闭回收，不扫描字节寻找Sync。完整且可定位的Bind中，数量/格式/长度/剩余字节结构错误与完整合法载荷的值域/codec错误分开取证：前者按协议错误路径，后者沿第3章具体诊断，不能一律包成08P01/22P03/0A000。若连接可恢复，扩展错误后进入failed并丢弃直到Sync，I/T/E、隐式回滚和显式ROLLBACK沿查询域与第5章；资源政策要求关闭的超限帧不承诺Sync恢复。
+
+编码校验失败须在该次结果的DataRow和成功完成消息发送前报告，不把已发送的portal Describe算作本次部分行成功；不伪造CommandComplete，也不声称此前SQL副作用自动撤销。输出过程中值codec错误与网络发送中失败单列：未来流式路径须保证每帧完整，已发完整行不能撤回，后续codec失败记录已发前缀并进入适用错误恢复；网络中途写失败直接关闭，不能再写ErrorResponse/Sync修补半帧。取消/断连须回收参数、portal格式/缓存和句柄，真实副作用按第5章验证；全结果物化峰值内存/首行延迟交资源域取证。
+
+规范来源：2026-10-24 查阅 PostgreSQL **18** [§54.7 Bind/ParameterDescription/RowDescription/DataRow](https://www.postgresql.org/docs/18/protocol-message-formats.html)、[§54.1.1/54.1.3 帧与格式](https://www.postgresql.org/docs/18/protocol-overview.html#PROTOCOL-FORMAT-CODES)及[§54.2.3 扩展查询](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)。精确类型布局继续引用第3章各族的官方版本来源。18.6是来源指定目标，未确认/运行该补丁参考构建，精确错误文本/位置未采集，不凭静态代码填参考诊断。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
@@ -5634,6 +5667,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 查询消息范围边界
 
 本域只定义 Q/扩展消息、对象生命周期和恢复轨迹；codec、固定类型/失效归第 3 章，事务原子性/失败态归第 5 章，目录快照/权限归第 6 章并交叉验收。COPY 有独立子协议，不能套用本域普通 Flush/Sync 规则；COPY、取消密钥路由、帧上限/背压/超时由后续域补齐。本轮不新增 SQL PREPARE/DECLARE CURSOR 子系统、流式执行器或完整驱动平台；仅传输能回复不证明 SQL 或事务已正确。大结果全量物化的峰值内存、首次行延迟和副作用早于发送的风险只记录，未测性能不作通过结论。
+
+#### 二进制范围与类型边界
+
+本域不实现或重新规定类型codec、共享类型系统、通用数组/JSON子系统、SQL PREPARE或COPY二进制文件格式。Bind结果格式不等于COPY格式协商；目录数组/OID特例不得扩大为通用支持。第3章的PG合法值/格式目标保留，当前白名单只是未开放边界；第5/6章类型失效、事务与目录事实不可由wire缓存替代。
 
 ### 验收
 
@@ -5707,6 +5744,22 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 清理时仍处协议 failed 的连接先 Sync，随后对存活 T/E 连接 ROLLBACK，Close 可存活的对象、关闭连接并确认回收后，在事务外 DROP TABLE；缺失对象 Close 可幂等。每例保存第 1 章能力/用例 ID、双方完整构建 SHA/版本、客户端、授权/安全/会话夹具、原始消息顺序与 Sync/Z 数、I/T/E、描述/行值/标签/真实副作用、错误阶段及安全 S/V/C/M/适用D/H/P、资源前后值、命令/退出码和有效断言数。精确诊断未采不填猜值；性能另测物化峰值内存/首行延迟/暂停存活成本，本轮均未验证。
 
+#### 二进制消息与类型交接验收
+
+登记 `WIRE-BINARY-*` 为**待新增/待运行**消息用例，与第3章族/四方向/META ID关联；以下没有当前通过结论。未来夹具为两条独立连接A/B、固定构建/会话编码与时区、真实表 `public.wire_binary_probe(id int, v text)`（待新增，初始行1/'one'），B观察已提交基线；参数/结果分别选第3章各族的有效值、typed NULL、空值、边界及非法载荷。不支持的族保留PG成功目标并单列AsterSQL拒绝，不能跳过矩阵。原始报文构造、受控内部非法结果/写失败/取消屏障与资源观测均**待新增**。
+
+| ID及未来独立入口 | 参数/结果/失败与恢复断言 |
+| --- | --- |
+| BIND / FORMAT；pg_extended_test.rs | 对同一statement分别C=0、1、N且混合0/1，独立组合R=0、1、M且混合0/1；覆盖零参数、单参数、多参数及无结果命令。逐字节核验BindComplete、参数值、portal T格式和D载荷；非法C/R数量、格式2、参数数不符各独立轮，失败无BindComplete/半portal/写副作用，Sync后恢复。 |
+| PARAM / ROWDESC；pg_extended_test.rs | statement Describe精确t数量/OID、L及T默认0，portal Describe无t且T按Bind；逐字段核对名称/来源OID/属性号/类型OID/typlen/typmod及真实字节长。两个portal同statement不同格式与参数互不污染；重复未命名Bind换值不改类型，命名重名拒绝按查询域，DDL失效按META独立验。 |
+| ROW / NULL / EMPTY；pg_types_test.rs及pg_extended_test.rs | 逐族四方向对照第3章，混合NULL/非NULL、首行NULL、全NULL、零行及空text/bytea，断言每列计数/长度/载荷与描述一致。NULL=-1无字节，空=0，零行无D仍可Describe；完整合法但未开放codec（含NULL/零行）不能借text或目录身份假成功。 |
+| FRAME；pg_extended_test.rs中的原始消息入口（待新增） | 独立发L<4、超限、外层截断/半载荷断连；另用完整L发缺NUL、负载荷长-2、声明长超剩余、残余字节、错误数量。分清关闭与可恢复结构错；可恢复轮ErrorResponse后跳过一个带写副作用的Bind/Execute直到Sync，无成功回复、B基线未变；关闭轮资源回收且新连接正常。 |
+| VALUE / UNSUPPORTED；两独立测试文件 | 完整帧内非法text、定宽binary空/短/长、越域值与合法未开放codec分别运行，精确SQLSTATE沿族目标，记录Bind/Execute实际阶段；不混用外层截断错误。从I/T各跑：Sync→I/E，T轮ROLLBACK→I后新合法Bind/Execute成功；旧portal不得绕过失败事务门禁。 |
+| ENCODE / METADATA；pg_types_test.rs及pg_extended_test.rs | 受控缺身份、行宽不符、执行后OID/typmod改变、非法内部值、格式数不符/溢出，断言当前完整编码路径在本次D/成功C前拒绝；之前Describe仍有记录，不冒充整次会话未发T。写语句带结果的编码失败另验B副作用及事务回滚，不能只验错误包。 |
+| SEND / CANCEL / CLEANUP；pg_extended_test.rs（注入入口待新增） | 分别在编码中取消、活动Execute取消、完整帧之间断连和半帧写失败。可恢复取消按查询域Sync与I/E；传输失败关闭且不继续伪造消息。释放参数/描述/portal缓存/句柄/连接登记，B健康且新A2查询成功；未提交写入不可见，已提交副作用依第5章，不承诺网络失败撤销已提交写入。 |
+
+每例记录原始输入/输出帧及实际字节数、参数与结果格式、类型/元数据、关联族四方向ID、失败阶段、SQLSTATE与安全诊断、Sync/Z计数及I/T/E、B观察副作用、资源前后值、精确构建/客户端/设置、命令退出码和有效断言数。关闭不需要Sync；存活failed先Sync、T/E先ROLLBACK，再Close对象、断连、确认资源回收并DROP测试表。大结果内存与延迟另交资源域测量，本轮行为/兼容/性能均未验证。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5730,5 +5783,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 后续另立窄任务：①单条Q/空查询及Parse/Bind/Describe/Execute/Close/Flush顺序与错误响应；②Parse/Bind/Execute失败至Sync丢弃、pipeline分段与旧portal失败态门禁；③命名/未命名替换、Close级联及显式/隐式事务结束释放；④maxRows续读、耗尽重试不重复副作用及物化资源回归；⑤Q多语句与隐式事务原子性，明确依赖第5章而不在协议层模拟提交。复用 pg_conn/pg_extended/pg_session/pg_result 与共享执行链，扩展同目录独立 pg_extended_test.rs、pg_transaction_test.rs；受控执行/写失败/资源计数、参考端和真实客户端探针均**待新增**，不在本轮实现。
 
 需求映射：本任务步骤1→查询证据表、SIMPLE/EXTENDED；步骤2→消息目标表与MULTI/UNNAMED；步骤3→三类状态与PHASE/IMPLICIT/OLD；步骤4→portal生命期与PAGE/EFFECT、NAMES/CLOSE、END；步骤5→PIPELINE/ISOLATE/CONTROL/DISCONNECT/TRANSPORT。共同对应来源步骤1的Simple/Extended现状目标、步骤2的portal/错误后Sync/关闭边界。Ready文档范围检查为五节/稳定子标题、逐消息成功/错误/恢复与生命周期映射、官方来源/相对链接、与第3/5/6章一致及章节外字节不变；验证技能路径再次核对仍缺失，采用手工等效检查。正确性风险为静态推断及失败态遗漏，兼容性风险为当前拒绝策略/物化行为被当PG18.6实测，性能与资源成本未测。本域完成仅指文档，下一步按批次5补二进制与类型交接。
+
+#### 二进制后续实施切口
+
+另立窄实施任务：①Bind格式/数量/长度边界及原始报文独立回归；②t/T字段与第3/6章真实身份及typmod的最小交接；③逐族已授权codec的四方向联测及D长度/NULL/空值；④重复Bind、混合portal格式、零行/全NULL/失效连续性；⑤编码失败、传输失败、取消和资源回收。复用 pg_extended/pg_result 和同目录独立 pg_extended_test.rs、pg_types_test.rs，新夹具/注入/客户端入口均待新增；不递归实现类型系统或流式执行器。
+
+需求映射：本任务步骤1→二进制证据表；步骤2→四消息字段表与BIND/PARAM/ROWDESC/FRAME；步骤3→第3章逐族链接与四方向、VALUE/UNSUPPORTED；步骤4→FORMAT/ROW/NULL/EMPTY及重复Bind/portal隔离；步骤5→ENCODE/METADATA/SEND/CANCEL/CLEANUP及Sync/事务恢复。对应来源步骤1的二进制现状目标、步骤2的长度/失败/资源边界。Ready文档检查为五节定位、需求/异常轨迹映射、官方规范与本地链接、前后章节契约及章节外字节不变；验证技能文件仍缺失，采用手工等效检查。正确性风险为静态推断及错误阶段遗漏，兼容性风险为与第3章身份/codec或第5/6章失效契约冲突、将18手册误当18.6实测，性能未测；文档完成不表示二进制功能已实现。下一批补COPY输入契约。
 
 ## 8. 客户端与双方言共存验收
