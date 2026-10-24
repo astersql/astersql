@@ -257,7 +257,43 @@ fn pg_core_libpq_integer_differential() {
     assert_eq!(cleanup["database_dropped"], true);
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
-    assert!(status.success(), "integer differential client failed");
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+            .unwrap();
+    assert_eq!(summary["run"], run);
+    if std::env::var("PG_CORE_INJECT_CLEANUP_FAILURE").as_deref() == Ok("reference") {
+        assert!(
+            !status.success(),
+            "cleanup failure must fail the Python client"
+        );
+        assert_eq!(summary["passed"], false);
+        assert_eq!(summary["cleanup_ok"], false);
+        assert_eq!(summary["unique_effective"], 0);
+        assert!(summary["failed"].as_u64().unwrap() >= 1);
+    } else {
+        assert!(status.success(), "integer differential client failed");
+        assert_eq!(summary["passed"], true);
+        assert_eq!(summary["discovered"], 104);
+        assert_eq!(summary["executed"], 104);
+        assert_eq!(summary["unique_effective"], 101);
+        assert_eq!(summary["self_checks"], 3);
+        assert!(summary["assertions"].as_u64().unwrap() > 0);
+        for field in ["failed", "exceptions", "timeouts", "skipped", "ignored"] {
+            assert_eq!(summary[field], 0, "unexpected {field}");
+        }
+    }
+    let mysql_records: Vec<serde_json::Value> =
+        std::fs::read_to_string(evidence.join("mysql.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    assert_eq!(mysql_records.len(), 3);
+    for (record, phase) in mysql_records.iter().zip(["before", "during", "after"]) {
+        assert_eq!(record["run"], run);
+        assert_eq!(record["case_id"], phase);
+        assert_eq!(record["outcome"], "bypass_health");
+    }
     assert!(middle, "missing middle MySQL checkpoint");
     println!(
         "MySQL SELECT/CAST before, during and after PG; prepared regression and listener cleanup passed"

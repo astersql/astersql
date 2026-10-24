@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection, validate_provenance, source_snapshot
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection, validate_provenance, source_snapshot, summarize_run
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -82,6 +82,11 @@ def integer_differential(aster_dsn):
     evidence_dir = Path(os.environ['PG_CORE_EVIDENCE_DIR'])
     run_id = evidence_dir.name
     attempt = 1
+    attempts = []
+    completed = False
+
+    def save_attempts():
+        (evidence_dir / 'attempts.json').write_text(json.dumps(attempts, sort_keys=True))
     get_length = api('PQgetlength', integer, ptr, integer, integer)
     raw_value = api('PQgetvalue', ptr, ptr, integer, integer)
     field_format = api('PQfformat', integer, ptr, integer)
@@ -143,6 +148,9 @@ def integer_differential(aster_dsn):
               expected_state="", expected_params=None):
         actual_input, send = operation
         registered_input = registry.claim(case, family, actual_input)
+        entry = dict(run=run_id, case_id=case, attempt=attempt, outcome='pending', assertions=0)
+        attempts.append(entry)
+        save_attempts()
         for side, connection in connections.items():
             partial = {}
             try:
@@ -176,22 +184,31 @@ def integer_differential(aster_dsn):
                         transaction_after_recovery={0: 'I', 2: 'T', 3: 'E'}.get(transaction(connection), 'unknown'))
                 pending_rejections[side].clear()
             assert obs["status"] == expected_status, (side, case, obs)
+            entry["assertions"] += 1
             assert obs["state"] == expected_state, (side, case, obs)
+            entry["assertions"] += 1
             if expected_rows is not None:
                 assert obs["rows"] == expected_rows, (side, case, obs)
+                entry["assertions"] += 1
             if expected_params is not None:
                 assert obs["params"] == expected_params, (side, case, obs)
+                entry["assertions"] += 1
             phase, statement = registered_input['phase'], registered_input['statement']
             if phase == 'describe':
                 descriptions[side][statement] = copy.deepcopy(obs)
             elif phase == 'execute':
                 description = descriptions[side][statement]
                 assert len(registered_input['arguments']) == description['param_count'], (side, case)
+                entry['assertions'] += 1
                 if expected_status == 2:
                     for key in ['fields', 'formats']:
                         assert obs[key] == description[key], (side, case, key)
+                        entry["assertions"] += 1
         row_order = registry.cases['cases'][len(registry.seen) - 1].get('row_order', 'strict')
         equal(case, observations["aster"][case], observations["reference"][case], row_order, registered_input["phase"])
+        entry["assertions"] += 3  # equal(): rows, metadata, status/SQLSTATE
+        entry["outcome"] = "passed"
+        save_attempts()
         counts[family] += 1
         print("registered case:", json.dumps({"case_id": case, "input": registered_input,
               "aster": observations["aster"][case], "reference": observations["reference"][case]},
@@ -441,6 +458,9 @@ def integer_differential(aster_dsn):
                 equal("negative_self_check_" + key, changed, observations["reference"][case])
             except AssertionError:
                 counts["negative_self_check"] += 1
+                attempts.append(dict(run=run_id, case_id='negative_self_check_' + key,
+                                     attempt=attempt, outcome='passed', assertions=1))
+                save_attempts()
             else:
                 raise AssertionError("differential comparator missed " + key)
         import hashlib
@@ -529,7 +549,7 @@ def integer_differential(aster_dsn):
             assert counts[required] > 0, required
         assert registry.finish() == 104
         print("registered inputs: business=101 self_check=3 missing=0 duplicate=0", flush=True)
-        print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
+        print("historical first-phase accounting: 94=91 business+3 self-checks; current summary follows cleanup", flush=True)
         expected = dict(provenance, **identities())
         eligible = validate_provenance(provenance, expected)
         # Missing source or another exact version leaves functional evidence
@@ -562,8 +582,15 @@ def integer_differential(aster_dsn):
                 assert not validate_provenance(changed, expected), 'provenance mutation accepted'
             assert validate_provenance(provenance, expected)
         print('provenance gate:', json.dumps(gate, sort_keys=True), flush=True)
+        completed = True
     finally:
-        business_failed = sys.exc_info()[0] is not None
+        failure = sys.exc_info()[1]
+        business_failed = failure is not None
+        for entry in attempts:
+            if entry['outcome'] == 'pending':
+                entry['outcome'] = ('failed' if isinstance(failure, AssertionError) else
+                                    'timeout' if isinstance(failure, TimeoutError) else 'exception')
+        save_attempts()
         cleanup_errors = []
         cleanup_results = {}
         try:
@@ -586,6 +613,9 @@ def integer_differential(aster_dsn):
                     assert rollback['status'] == 1, (side, 'cleanup rollback failed')
                     assert obs["status"] == 1, (side, "table cleanup failed")
                     cleanup_results[side] = {'rollback': True, 'drop': True}
+                    # Controlled failure is reported only after removing our own table.
+                    if os.environ.get('PG_CORE_INJECT_CLEANUP_FAILURE') == side:
+                        raise AssertionError('controlled owned-table cleanup failure')
                 except Exception as exc:
                     archive('cleanup_failed', side, None, None, 'cleanup_failed', type(exc).__name__)
                     cleanup_errors.append((side, type(exc).__name__))
@@ -602,26 +632,39 @@ def integer_differential(aster_dsn):
                 archive('connection_closed', side, None, None, 'closed')
                 if side in cleanup_results:
                     cleanup_results[side]['connection_closed'] = True
-            if not business_failed and not cleanup_errors:
-                for case in ['invalid_int4_write', 'transaction_error', 'transaction_failed']:
-                    for side in connections:
-                        record = rejection_records[side][case]
-                        record['cleanup'] = cleanup_results.get(side)
-                        archive(case + '_rejection_contract', side, None, record)
-                    actual, reference = (rejection_records[side][case] for side in ['aster', 'reference'])
-                    assert compare_rejection(actual, reference, rejection_contracts[case]), case
-                    mutations = {
-                        'phase': None, 'connection_ok': False, 'recovery': None,
-                        'after': None, 'cleanup': None, 'classification': 'unimplemented',
-                        'error': dict(actual['error'], state='XX000')}
-                    baseline = copy.deepcopy(actual)
-                    for key, wrong in mutations.items():
-                        changed = copy.deepcopy(actual)
-                        changed[key] = wrong
-                        assert not compare_rejection(changed, reference, rejection_contracts[case]), (case, key)
-                        assert not compare_rejection(changed, changed, rejection_contracts[case]), (case, key)
-                    assert actual == baseline
-                print('rejection contracts: valid=3 illegal_writes=1 negative_mutations=21 cleanup_endpoints=2', flush=True)
+            try:
+                if not business_failed and not cleanup_errors:
+                    for case in ['invalid_int4_write', 'transaction_error', 'transaction_failed']:
+                        for side in connections:
+                            record = rejection_records[side][case]
+                            record['cleanup'] = cleanup_results.get(side)
+                            archive(case + '_rejection_contract', side, None, record)
+                        actual, reference = (rejection_records[side][case] for side in ['aster', 'reference'])
+                        assert compare_rejection(actual, reference, rejection_contracts[case]), case
+                        mutations = {
+                            'phase': None, 'connection_ok': False, 'recovery': None,
+                            'after': None, 'cleanup': None, 'classification': 'unimplemented',
+                            'error': dict(actual['error'], state='XX000')}
+                        baseline = copy.deepcopy(actual)
+                        for key, wrong in mutations.items():
+                            changed = copy.deepcopy(actual)
+                            changed[key] = wrong
+                            assert not compare_rejection(changed, reference, rejection_contracts[case]), (case, key)
+                            assert not compare_rejection(changed, changed, rejection_contracts[case]), (case, key)
+                        assert actual == baseline
+                    print('rejection contracts: valid=3 illegal_writes=1 negative_mutations=21 cleanup_endpoints=2', flush=True)
+            finally:
+                final_completed = completed and not business_failed and sys.exc_info()[0] is None
+                terminal = failure or sys.exc_info()[1]
+                run_error = ('failed' if isinstance(terminal, AssertionError) else
+                             'timeout' if isinstance(terminal, TimeoutError) else 'exception')
+                summary = summarize_run(run_id, registry.cases['cases'], attempts,
+                                        not cleanup_errors and len(cleanup_results) == 2,
+                                        final_completed, run_error)
+                (evidence_dir / 'summary.json').write_text(json.dumps(summary, sort_keys=True))
+                print('differential final summary:', json.dumps(summary, sort_keys=True), flush=True)
+                if not business_failed and sys.exc_info()[0] is None:
+                    assert summary['passed'], 'incomplete differential evidence'
 
 
 conninfo = (

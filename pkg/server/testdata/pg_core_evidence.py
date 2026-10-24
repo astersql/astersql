@@ -354,3 +354,48 @@ def validate_provenance(record, expected):
                 and record['authentication'] == 'InsecureRootOnly')
     except (KeyError, TypeError, ValueError, AttributeError):
         return False
+
+
+def summarize_run(run, cases, attempts, cleanup_ok, completed, run_error=None):
+    """Count unique business identities only after all applicable gates and cleanup.
+
+    Attempts are immutable history: a later pass cannot erase a failure. Assertion
+    totals cover completed check() contracts only, excluding comparator controls.
+    """
+    ids = [case['case_id'] for case in cases]
+    entries = {case['case_id']: case for case in cases}
+    current = [item for item in attempts if item['run'] == run]
+    grouped = {key: [item for item in current if item['case_id'] == key] for key in ids}
+    invalid = len(ids) != len(entries) or any(item['case_id'] not in entries for item in current)
+    invalid |= any(len({item['attempt'] for item in group}) != len(group) for group in grouped.values())
+    counts = Counter(item['outcome'] for item in current)
+    if not completed and cleanup_ok and not any(
+            counts[key] for key in ['failed', 'pending', 'exception', 'timeout']):
+        counts[run_error or 'failed'] += 1
+    failed = counts['failed'] + int(not cleanup_ok) + int(invalid)
+    skipped = sum(not group for group in grouped.values()) + counts['skipped']
+    errors = counts['exception'] + counts['pending']
+    timeouts = counts['timeout']
+    passed = any(case['kind'] == 'business' for case in cases) and completed and cleanup_ok and not (
+        failed or skipped or errors or timeouts or counts['ignored'])
+    valid = {}
+    for key, group in grouped.items():
+        good = bool(group) and all(item['outcome'] == 'passed' and
+                                   type(item['assertions']) is int and item['assertions'] > 0
+                                   for item in group)
+        if good:
+            valid[key] = group[0]['assertions']
+        else:
+            passed = False
+    effective = [key for key in valid if entries[key]['kind'] == 'business'] if completed and cleanup_ok and not invalid else []
+    return {'run': run, 'passed': passed, 'discovered': len(entries),
+            'executed': len(grouped) - sum(not group for group in grouped.values()),
+            'attempts': len(current), 'unique_effective': len(effective),
+            'failed': failed, 'exceptions': errors, 'timeouts': timeouts,
+            'skipped': skipped, 'ignored': counts['ignored'],
+            'self_checks': sum(entries[key]['kind'] == 'self_check' for key in valid),
+            'assertions': sum(valid[key] for key in effective),
+            'assertion_scope': 'completed business check contracts; excludes self checks and run guards',
+            'cleanup_ok': cleanup_ok, 'completed': completed,
+            'retries': [{'case_id': key, 'attempts': [item['attempt'] for item in group]}
+                        for key, group in grouped.items() if len(group) > 1]}

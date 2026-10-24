@@ -167,7 +167,7 @@ class ObservationArchiveTests(unittest.TestCase):
                          observations={'aster': {}, 'reference': {}}, observe=observe,
                          equal=lambda *args: None, counts=Counter(),
                          append_observation=append_observation, evidence_dir=self.directory,
-                         run_id='run', attempt=attempt)
+                         run_id='run', attempt=attempt, attempts=[], save_attempts=lambda: None)
         exec(compile(ast.Module(body=[check], type_ignores=[]), '<actual archive gate>', 'exec'), namespace)
         namespace['check'](case['case_id'], case['family'], (case['input'], send),
                            expected_rows=[['wrong']] if wrong_expected else None)
@@ -232,7 +232,10 @@ class ObservationArchiveTests(unittest.TestCase):
         import sys
         namespace = dict(sys=sys, created={'aster'}, connections={'aster': object()},
                          status=lambda conn: 0, execute=execute, observe=lambda x: x,
-                         finish=lambda conn: None, archive=archive)
+                         finish=lambda conn: None, archive=archive, attempts=[], save_attempts=lambda: None,
+                         completed=False, run_id='run', registry=CaseRegistry(load_cases(), 'public.pg_core_diff_123'),
+                         summarize_run=__import__('pg_core_evidence').summarize_run,
+                         evidence_dir=self.directory, json=json)
         body = ast.parse("raise RuntimeError('business failure')").body
         code = ast.fix_missing_locations(ast.Module(body=[ast.Try(
             body=body, handlers=[], orelse=[], finalbody=cleanup)], type_ignores=[]))
@@ -710,3 +713,99 @@ class ProvenanceTests(unittest.TestCase):
         changed['reference_build'].update(version='18.6', server_version_num=180006)
         changed['endpoints']['reference']['server_version'] = '18.6'
         self.assertTrue(validate_provenance(changed, changed))
+
+
+class EffectiveCountTests(unittest.TestCase):
+    def setUp(self):
+        from pg_core_evidence import summarize_run
+        self.summarize = summarize_run
+        self.cases = [{'case_id': 'a', 'kind': 'business'},
+                      {'case_id': 'self', 'kind': 'self_check'}]
+        self.attempts = [dict(run='r', case_id='a', attempt=1, outcome='passed', assertions=7),
+                         dict(run='r', case_id='self', attempt=1, outcome='passed', assertions=1)]
+
+    def report(self, cleanup=True, completed=True):
+        return self.summarize('r', self.cases, self.attempts, cleanup, completed)
+
+    def test_zero_tests(self):
+        self.cases, self.attempts = [], []
+        self.assertFalse(self.report()['passed'])
+
+    def test_double_alias(self):
+        self.cases.append(dict(self.cases[0]))
+        self.assertFalse(self.report()['passed'])
+
+    def test_duplicate_retry(self):
+        self.attempts.append(dict(self.attempts[0], attempt=2))
+        report = self.report()
+        self.assertEqual(report['unique_effective'], 1)
+        self.assertEqual(report['retries'], [{'case_id': 'a', 'attempts': [1, 2]}])
+
+    def test_self_checks_excluded(self):
+        report = self.report()
+        self.assertEqual(report['unique_effective'], 1)
+        self.assertEqual(report['self_checks'], 1)
+        self.assertEqual(report['assertions'], 7)
+
+    def test_cleanup_failure(self):
+        report = self.report(cleanup=False)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['unique_effective'], 0)
+        self.assertEqual(report['failed'], 1)
+
+    def test_incomplete_execution(self):
+        self.attempts.pop(0)
+        self.assertFalse(self.report()['passed'])
+        self.assertEqual(self.report()['skipped'], 1)
+
+    def test_health_cannot_cover_failure(self):
+        self.attempts[0].update(outcome='failed')
+        self.attempts.append(dict(self.attempts[0], attempt=2, outcome='passed'))
+        report = self.report()
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['unique_effective'], 0)
+        self.assertEqual(report['failed'], 1)
+
+    def test_late_assertion_failure(self):
+        self.assertFalse(self.report(completed=False)['passed'])
+        self.assertEqual(self.report(completed=False)['unique_effective'], 0)
+
+    def test_missing_assertions(self):
+        self.attempts[0]['assertions'] = 0
+        self.assertFalse(self.report()['passed'])
+
+    def test_other_run_does_not_cover(self):
+        self.attempts[0]['run'] = 'old'
+        self.assertFalse(self.report()['passed'])
+
+
+    def test_failure_categories(self):
+        for outcome, field in [('exception', 'exceptions'), ('timeout', 'timeouts'),
+                               ('skipped', 'skipped'), ('ignored', 'ignored')]:
+            self.attempts[0]['outcome'] = outcome
+            report = self.report()
+            self.assertFalse(report['passed'])
+            self.assertEqual(report[field], 1)
+            self.assertEqual(report['unique_effective'], 0)
+
+    def test_self_checks_alone_do_not_pass(self):
+        self.cases.pop(0)
+        self.attempts.pop(0)
+        self.assertFalse(self.report()['passed'])
+
+    def test_duplicate_attempt_is_invalid(self):
+        self.attempts.append(dict(self.attempts[0]))
+        self.assertFalse(self.report()['passed'])
+
+
+    def test_late_exception_and_timeout(self):
+        for outcome, field in [('exception', 'exceptions'), ('timeout', 'timeouts')]:
+            report = self.summarize('r', self.cases, self.attempts, True, False, outcome)
+            self.assertFalse(report['passed'])
+            self.assertEqual(report[field], 1)
+            self.assertEqual(report['failed'], 0)
+
+    def test_cleanup_failure_is_one_failure(self):
+        report = self.report(cleanup=False, completed=False)
+        self.assertEqual(report['failed'], 1)
+        self.assertFalse(report['passed'])
