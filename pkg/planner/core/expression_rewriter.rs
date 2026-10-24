@@ -3972,6 +3972,7 @@ pub fn patternLikeOrIlikeToExpression(rewriter: &mut expressionRewriter<'_>, nod
     let ast::ExprKind::Like {
         Not,
         Escape,
+        EscapeExpr,
         Explicit,
         IsLike,
         Type,
@@ -3980,6 +3981,19 @@ pub fn patternLikeOrIlikeToExpression(rewriter: &mut expressionRewriter<'_>, nod
     else {
         return;
     };
+    // The shared visitor now carries PostgreSQL's third child. The legacy
+    // matcher accepts only its original single-byte literal escape contract.
+    if let Some(escape) = EscapeExpr {
+        if !matches!(&escape.Kind, ast::ExprKind::Value(value)
+            if matches!(&value.Datum, ast::ValueDatum::String(text) if text.len() == 1 && text.is_ascii()))
+        {
+            rewriter.err = Some(errors::New(
+                "PostgreSQL ESCAPE expression evaluation is unsupported",
+            ));
+            return;
+        }
+        ctxStackPop(rewriter, 1);
+    }
     let result = (|| -> Result<expression::ExprBox, errors::Error> {
         let length = rewriter.ctxStack.len();
         expression::CheckArgsNotMultiColumnRow(&vec![

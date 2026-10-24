@@ -167,6 +167,25 @@ fn relational_collated_string_column(column: &astersql_meta_model::ColumnInfo) -
         )
 }
 
+// Keep the newly preserved PG expression out of the legacy byte matcher.
+// Parsing/Describe may succeed while evaluation awaits the scalar-type plan.
+fn check_pg_escape_evaluation(expression: &ast::ExprNode) -> SessionResult<()> {
+    if let ast::ExprKind::Like {
+        EscapeExpr: Some(escape),
+        ..
+    } = &expression.Kind
+    {
+        if !matches!(&escape.Kind, ast::ExprKind::Value(value)
+            if matches!(&value.Datum, ast::ValueDatum::String(text) if text.len() == 1 && text.is_ascii()))
+        {
+            return Err(SessionError::new(
+                "PostgreSQL ESCAPE expression evaluation is unsupported",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Evaluate predicates with the table column's collation.  The generic row
 /// evaluator has no schema argument and therefore deliberately falls back to
 /// binary comparison; table scans must retain MySQL's non-binary string
@@ -176,6 +195,7 @@ pub(super) fn relational_table_expression_value(
     row: &HashMap<String, Option<String>>,
     table: &astersql_meta_model::TableInfo,
 ) -> SessionResult<Option<String>> {
+    check_pg_escape_evaluation(expression)?;
     match &expression.Kind {
         ast::ExprKind::Parentheses(inner) => relational_table_expression_value(inner, row, table),
         ast::ExprKind::Binary { Op, L, R } if Op.eq_ignore_ascii_case("and") => {
@@ -789,6 +809,7 @@ pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<Option<String>> {
+    check_pg_escape_evaluation(expression)?;
     match &expression.Kind {
         ast::ExprKind::Value(value) => Ok(match &value.Datum {
             ast::ValueDatum::Null => None,

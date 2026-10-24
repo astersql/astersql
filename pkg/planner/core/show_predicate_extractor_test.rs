@@ -11,6 +11,7 @@ fn like(pattern: ExprNode, escape: &str) -> ExprNode {
             Pattern: Box::new(pattern),
             Not: false,
             Escape: escape.to_owned(),
+            EscapeExpr: None,
             Explicit: true,
             IsLike: true,
             Type: Default::default(),

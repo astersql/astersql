@@ -1105,6 +1105,15 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
 
 #[test]
 fn pg_dialect_01_libpq() {
+    pg_dialect_libpq(1);
+}
+
+#[test]
+fn pg_dialect_02_libpq() {
+    pg_dialect_libpq(2);
+}
+
+fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
     assert!(std::env::var_os("PG18_REFERENCE_DSN").is_some());
@@ -1115,10 +1124,14 @@ fn pg_dialect_01_libpq() {
     let _close = CloseServer(&server);
     let address = server.postgres_listener_addr().unwrap();
     let mysql_address = server.listener_addr().unwrap();
-    let database = format!("pg_dialect_01_{}_{}", std::process::id(), address.port());
+    let database = format!(
+        "pg_dialect_{task:02}_{}_{}",
+        std::process::id(),
+        address.port()
+    );
     let run = format!("{}-{}", std::process::id(), address.port());
     let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/pg-dialect-01-evidence")
+        .join(format!("../../target/pg-dialect-{task:02}-evidence"))
         .join(run);
     std::fs::create_dir_all(&evidence).unwrap();
     println!("PG_DIALECT_EVIDENCE_DIR={}", evidence.display());
@@ -1160,7 +1173,11 @@ fn pg_dialect_01_libpq() {
                 env!("CARGO_MANIFEST_DIR"),
                 "/testdata/pg_dialect_libpq.py"
             ))
-            .args(["1".to_owned(), address.port().to_string(), database.clone()])
+            .args([
+                task.to_string(),
+                address.port().to_string(),
+                database.clone(),
+            ])
             .env("PG_DIALECT_EVIDENCE_DIR", &evidence)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1307,7 +1324,7 @@ fn pg_dialect_01_libpq() {
         serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
     assert_eq!(summary["cleanup_ok"], true);
     assert_eq!(summary["syntax_eligible"], 10);
-    assert_eq!(summary["self_checks"], 15);
+    assert_eq!(summary["self_checks"], if task == 1 { 15 } else { 14 });
     assert_eq!(
         std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
             .unwrap()

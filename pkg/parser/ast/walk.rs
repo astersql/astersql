@@ -749,7 +749,12 @@ impl Children for ExprKind {
             Self::Between {
                 Expr, Left, Right, ..
             } => Expr.visit(_v) && Left.visit(_v) && Right.visit(_v),
-            Self::Like { Expr, Pattern, .. } => Expr.visit(_v) && Pattern.visit(_v),
+            Self::Like {
+                Expr,
+                Pattern,
+                EscapeExpr,
+                ..
+            } => Expr.visit(_v) && Pattern.visit(_v) && EscapeExpr.visit(_v),
             Self::Regexp { Expr, Pattern, .. } => Expr.visit(_v) && Pattern.visit(_v),
             Self::Row(x0) => x0.visit(_v),
             Self::Collate { Expr, .. } => Expr.visit(_v),
@@ -820,7 +825,12 @@ impl MutChildren for ExprKind {
             Self::Between {
                 Expr, Left, Right, ..
             } => Expr.visit_mut(_v) && Left.visit_mut(_v) && Right.visit_mut(_v),
-            Self::Like { Expr, Pattern, .. } => Expr.visit_mut(_v) && Pattern.visit_mut(_v),
+            Self::Like {
+                Expr,
+                Pattern,
+                EscapeExpr,
+                ..
+            } => Expr.visit_mut(_v) && Pattern.visit_mut(_v) && EscapeExpr.visit_mut(_v),
             Self::Regexp { Expr, Pattern, .. } => Expr.visit_mut(_v) && Pattern.visit_mut(_v),
             Self::Row(x0) => x0.visit_mut(_v),
             Self::Collate { Expr, .. } => Expr.visit_mut(_v),

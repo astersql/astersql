@@ -2875,6 +2875,7 @@ fn TestDMLVisitorCover() {
                         Pattern: Box::new(ce()),
                         Not: false,
                         Escape: "\\".into(),
+                        EscapeExpr: None,
                         Explicit: false,
                         IsLike: true,
                         Type: Default::default(),

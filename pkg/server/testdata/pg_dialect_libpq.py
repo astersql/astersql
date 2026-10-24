@@ -21,7 +21,8 @@ from urllib.parse import urlsplit
 
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
-assert sys.argv[1] == '1', 'only dialect task 1 is registered'
+task = int(sys.argv[1])
+assert task in (1, 2), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -87,12 +88,25 @@ cases = [
     ('missing_unicode', "/*中*/ SELECT 'Ab' ILIKE (", []),
     ('missing_multiline', "SELECT\n'Ab' ILIKE (", []),
 ]
+if task == 2:
+    cases = [
+        ('explicit', "SELECT 'A_b' ILIKE 'a!_b' ESCAPE '!'", []),
+        ('omitted', "SELECT 'A_b' ILIKE 'a_b'", []),
+        ('empty', "SELECT 'A_b' ILIKE 'a_b' ESCAPE ''", []),
+        ('unicode', "SELECT 'A_b' ILIKE 'a中_b' ESCAPE '中'", []),
+        ('parameter', "SELECT 'A_b' ILIKE 'a!_b' ESCAPE ($1)", [25]),
+        ('missing_operand', "SELECT 'A_b' ILIKE 'a_b' ESCAPE", []),
+        ('typed_null', "SELECT 'A_b' ILIKE 'a_b' ESCAPE NULL", []),
+        ('multi', "SELECT 'A_b' ILIKE 'a_b' ESCAPE 'xy'", []),
+        ('protected', "SELECT 'ILIKE' /* ESCAPE $1 */", []),
+        ('missing_unicode', "/*中*/ SELECT 'A_b' ILIKE 'a_b' ESCAPE", []),
+    ]
 assert len({case[0] for case in cases}) == 10
 (evidence / 'cases.json').write_text(json.dumps([
-    dict(case_id=name, capability_id='pg.dialect.ilike.syntax', sql=sql,
+    dict(case_id=name, capability_id='pg.dialect.ilike.syntax' if task == 1 else 'pg.dialect.escape.syntax', sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=([None] if oids else []),
          parameter_formats=([0] if oids else []), result_format=0,
-         initial_state='I', expected_basis='dialect task 1 / roadmap chapter 2',
+         initial_state='I', expected_basis=f'dialect task {task} / PostgreSQL18.6 observation / roadmap chapter 2',
          expected_state='42601' if name.startswith('missing_') else '',
          object_mapping={}, encoding='UTF8', timezone='UTC',
          side_effects='not applicable: SELECT expressions without relations',
@@ -144,6 +158,8 @@ collected = {'aster': {}, 'reference': {}}
 failures, descriptions = [], []
 assertions = 0
 self_checks = 0
+reference_execution_assertions = 0
+consumer_assertions = 0
 completed = False
 cleanup_ok = True
 
@@ -277,6 +293,38 @@ try:
             stored = query(connections[label], 'SELECT id FROM public.dialect_isolation')
             archive(name + '_stored_' + label, 'aster', dict(phase='PQexec', sql='SELECT id FROM public.dialect_isolation'), stored)
             assert stored['status'] == 2 and stored['rows'] == [['31']]
+    if task == 2:
+        # Freeze the semantic boundary from the exact reference, separately
+        # from the local syntax-only counts. Multi-character validation is
+        # deferred to execution; NULL never becomes a default backslash.
+        for name, sql, oids in cases:
+            if oids or name.startswith('missing_') or name == 'protected':
+                continue
+            result = query(ref, sql)
+            archive(name + '_reference_execute', 'reference', dict(phase='PQexec', sql=sql), result)
+            if name == 'multi':
+                assert result['status'] == 7 and result['state'] == '22025'
+                assert query(ref, 'SELECT 1::int4')['rows'] == [['1']]
+            else:
+                assert result['status'] == 2 and result['state'] == ''
+                assert result['rows'] == [[None if name == 'typed_null' else 't']]
+            reference_execution_assertions += 2
+    if task == 2:
+        sql = "SELECT id FROM public.dialect_isolation WHERE 'A_b' ILIKE 'a!_b' ESCAPE '!'"
+        result = query(connections['aster'], sql)
+        archive('legacy_ascii_execution', 'aster', dict(phase='PQexec', sql=sql), result)
+        assert result['status'] == 2 and result['rows'] == [['31']]
+        consumer_assertions += 1
+        for name, sql, oids in cases:
+            if name not in ('empty', 'unicode', 'typed_null', 'multi'):
+                continue
+            result = query(connections['aster'], sql)
+            archive(name + '_execution_gate', 'aster', dict(phase='PQexec', sql=sql), result)
+            assert result['status'] == 7 and result['state'] == '0A000'
+            assert result['message'] == 'PostgreSQL ESCAPE expression evaluation is unsupported'
+            assert query(connections['aster'], 'SELECT 1::int4')['rows'] == [['1']]
+            assert transaction(connections['aster']) == 0
+            consumer_assertions += 4
     for side in ['aster', 'reference']:
         conn = connections[side]
         assert query(conn, 'BEGIN')['status'] == 1
@@ -340,7 +388,8 @@ finally:
                 cleanup_ok = query(conn, 'ROLLBACK')['status'] == 1 and cleanup_ok
             finish(conn)
     summary = dict(cases=len(cases), assertions=assertions,
-                   self_checks=self_checks, failures=failures, cleanup_ok=cleanup_ok,
+                   self_checks=self_checks, reference_execution_assertions=reference_execution_assertions,
+                   consumer_assertions=consumer_assertions, failures=failures, cleanup_ok=cleanup_ok,
                    syntax_eligible=len(cases) if completed and cleanup_ok and not failures and assertions == 8 * len(cases) else 0,
                    unique_effective=0, scope='syntax handoff only; parameter execution gate 0A000 is not semantic success')
     (evidence / 'summary.json').write_text(json.dumps(summary, indent=2))

@@ -140,6 +140,7 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             Pattern,
             Not,
             Escape,
+            EscapeExpr,
             Explicit,
             IsLike,
             ..
@@ -151,7 +152,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 if *IsLike { "LIKE" } else { "ILIKE" },
                 restore_expr(Pattern)?
             );
-            if *Explicit && Escape != "\\" {
+            if let Some(escape) = EscapeExpr {
+                sql.push_str(&format!(" ESCAPE {}", restore_expr(escape)?));
+            } else if *Explicit && Escape != "\\" {
                 sql.push_str(&format!(" ESCAPE '{}'", Escape.replace('\'', "''")));
             }
             Ok(sql)
@@ -302,7 +305,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
         }
         .to_owned()),
         ExprKind::TableName(name) => Ok(restore_table_name(name)),
-        ExprKind::ParamMarker { .. } => Ok("?".into()),
+        ExprKind::ParamMarker { .. } => Ok(expr
+            .PostgreSQLParameterIndex()
+            .map_or_else(|| "?".into(), |index| format!("${index}"))),
         ExprKind::Subquery { Query, .. } => {
             let query = Query
                 .with_node(restore_node)

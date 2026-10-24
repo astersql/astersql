@@ -517,7 +517,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "likeorilikeescapeopt_prec_empty--776b5d4ea372dc09" => {
             Some(ExpressionRule::LikeOrIlikeEscapeOptAlt01)
         }
-        "likeorilikeescapeopt_escape_stringlit--841e024d9c6ed5a1" => {
+        "likeorilikeescapeopt_escape_simpleexpr--c395e315e70e900c" => {
             Some(ExpressionRule::LikeOrIlikeEscapeOptAlt02)
         }
         "literal_false--372444cc06ae64de" => Some(ExpressionRule::LiteralAlt01),
@@ -3104,7 +3104,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .item
                 .as_deref()
                 .and_then(|item| item.downcast_ref::<likeEscapeSpec>());
-            if escape.is_some_and(|value| value.escape.len() > 1) {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                && escape.is_some_and(|value| value.escape.len() > 1) {
                 yylex.AppendError(ErrWrongArguments.GenWithStackByArgs(&["ESCAPE".into()]));
                 return Err(1);
             }
@@ -3115,8 +3116,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .copied()
                 .unwrap_or(false);
             let mut node_text = parser_ast::base::AstNode::default();
-            if rule == ExpressionRule::PredicateExprAlt05
-                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
             {
                 // Preserve the original predicate, including quoted tokens and
                 // comments; restored SQL cannot recover source byte spans.
@@ -3134,6 +3134,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     Escape: escape
                         .map(|value| value.escape.clone())
                         .unwrap_or_else(|| "\\".to_owned()),
+                    EscapeExpr: escape.and_then(|value| value.expression.clone()),
                     Explicit: escape.map(|value| value.explicit).unwrap_or(false),
                     IsLike: rule == ExpressionRule::PredicateExprAlt04,
                     Type: parser_ast::ExprNode::PredicateType(),
@@ -3170,12 +3171,30 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::LikeOrIlikeEscapeOptAlt01 => {
             out.item = Some(Box::new(likeEscapeSpec {
                 escape: "\\".to_owned(),
+                expression: None,
                 explicit: false,
             }))
         }
         ExpressionRule::LikeOrIlikeEscapeOptAlt02 => {
+            let Some(mut expression) = rhs[rhs_len].expr.clone() else { return Ok(false) };
+            let literal = match &expression.Kind {
+                parser_ast::ExprKind::Value(value) => match &value.Datum { parser_ast::ValueDatum::String(text) => Some(text.clone()), _ => None },
+                _ => None,
+            };
+            let postgres = parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL;
+            if !postgres && literal.is_none() {
+                yylex.AppendError(ErrWrongArguments.GenWithStackByArgs(&["ESCAPE".into()]));
+                return Err(1);
+            }
+            if postgres {
+                let start = rhs[rhs_len].offset.max(0) as usize;
+                let end = rhs[rhs_len].end_offset;
+                expression.SetOriginTextPosition(start as i32);
+                expression.node_text.SetText(None, &parser_state.src[start..end]);
+            }
             out.item = Some(Box::new(likeEscapeSpec {
-                escape: rhs[rhs_len - (0)].ident.clone(),
+                escape: literal.unwrap_or_default(),
+                expression: postgres.then(|| Box::new(expression)),
                 explicit: true,
             }))
         }

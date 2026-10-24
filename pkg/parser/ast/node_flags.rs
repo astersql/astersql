@@ -89,9 +89,17 @@ fn expression_flag(expr: &ExprNode) -> u64 {
         } => Expr.GetFlag() | Left.GetFlag() | Right.GetFlag(),
         ExprKind::InList { Expr, List, .. } => Expr.GetFlag() | flags(List),
         ExprKind::InSubquery { Expr, Sel, .. } => Expr.GetFlag() | Sel.GetFlag(),
-        ExprKind::Like { Expr, Pattern, .. } | ExprKind::Regexp { Expr, Pattern, .. } => {
-            Expr.GetFlag() | Pattern.GetFlag()
+        ExprKind::Like {
+            Expr,
+            Pattern,
+            EscapeExpr,
+            ..
+        } => {
+            Expr.GetFlag()
+                | Pattern.GetFlag()
+                | EscapeExpr.as_ref().map_or(0, |expr| expr.GetFlag())
         }
+        ExprKind::Regexp { Expr, Pattern, .. } => Expr.GetFlag() | Pattern.GetFlag(),
         ExprKind::ExistsSubquery { Sel, .. } => Sel.GetFlag(),
         ExprKind::Row(args) => flags(args),
         ExprKind::Case {

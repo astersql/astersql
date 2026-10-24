@@ -351,6 +351,7 @@ fn go_merge_7_structured_expression_restore_without_source_text() {
             Pattern: Box::new(NewValueExpr("x%", "utf8mb4", "utf8mb4_bin")),
             Not: true,
             Escape: String::new(),
+            EscapeExpr: None,
             Explicit: false,
             IsLike: true,
             Type: parser_types::types::FieldType::default(),

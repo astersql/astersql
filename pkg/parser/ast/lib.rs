@@ -837,6 +837,9 @@ pub enum ExprKind {
         Pattern: Box<ExprNode>,
         Not: bool,
         Escape: String,
+        /// Original PostgreSQL ESCAPE expression. None means omitted (or the
+        /// legacy MySQL byte-literal representation); never evaluate it here.
+        EscapeExpr: Option<Box<ExprNode>>,
         Explicit: bool,
         IsLike: bool,
         Type: parser_types::types::FieldType,
@@ -1283,7 +1286,19 @@ impl ExprNode {
             } => {
                 accept_box(Expr, visitor) && accept_box(Left, visitor) && accept_box(Right, visitor)
             }
-            ExprKind::Like { Expr, Pattern, .. } | ExprKind::Regexp { Expr, Pattern, .. } => {
+            ExprKind::Like {
+                Expr,
+                Pattern,
+                EscapeExpr,
+                ..
+            } => {
+                accept_box(Expr, visitor)
+                    && accept_box(Pattern, visitor)
+                    && EscapeExpr
+                        .as_mut()
+                        .is_none_or(|expr| accept_box(expr, visitor))
+            }
+            ExprKind::Regexp { Expr, Pattern, .. } => {
                 accept_box(Expr, visitor) && accept_box(Pattern, visitor)
             }
             ExprKind::Row(values) => accept_many(values, visitor),

@@ -2762,3 +2762,172 @@ fn pg_dialect_01_behavior() {
         "pg_dialect_01_behavior: 13 primary inputs, reset probes and MySQL extension baselines"
     );
 }
+
+#[test]
+fn pg_dialect_02_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    for (suffix, escape, explicit) in [
+        (" ESCAPE '!'", "!", true),
+        ("", "\\", false),
+        (" ESCAPE ''", "", true),
+        (" ESCAPE '中'", "中", true),
+        (" ESCAPE 'xy'", "xy", true),
+    ] {
+        let sql = format!("SELECT /*中*/ 'A_b' ILIKE 'a!_b'{suffix}");
+        let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt(&sql, "", "")
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let expr = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap()
+            .Fields
+            .Fields[0]
+            .Expr
+            .as_ref()
+            .unwrap();
+        let ExprKind::Like {
+            Escape,
+            Explicit,
+            IsLike,
+            ..
+        } = &expr.Kind
+        else {
+            panic!("{expr:?}")
+        };
+        assert_eq!(Escape, escape);
+        assert_eq!(*Explicit, explicit);
+        assert!(!IsLike);
+        let ExprKind::Like { EscapeExpr, .. } = &expr.Kind else {
+            unreachable!()
+        };
+        assert_eq!(EscapeExpr.is_some(), explicit);
+        if let Some(escape_expr) = EscapeExpr {
+            assert!(matches!(&escape_expr.Kind, ExprKind::Value(v) if v == escape));
+            let offset = sql.rfind('\'').unwrap() - escape.len() - 1;
+            assert_eq!(escape_expr.OriginTextPosition as usize, offset);
+            assert_eq!(
+                escape_expr.node_text.OriginalText(),
+                &sql.as_bytes()[offset..]
+            );
+        }
+        let start = sql.find("'A_b'").unwrap();
+        assert_eq!(expr.OriginTextPosition as usize, start);
+        assert_eq!(expr.node_text.OriginalText(), &sql.as_bytes()[start..]);
+    }
+    for sql in [
+        "SELECT 'A_b' ILIKE 'a!_b' ESCAPE ($1)",
+        "SELECT 'A_b' ILIKE 'a_b' ESCAPE NULL",
+    ] {
+        assert!(
+            parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+                .ParseOneStmt(sql, "", "")
+                .is_ok(),
+            "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT 'A_b' ILIKE 'a_b' ESCAPE",
+        "/*中*/ SELECT 'A_b' ILIKE 'a_b' ESCAPE",
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err());
+        assert_eq!(
+            parser.PostgreSQLEofErrorPosition(),
+            Some(sql.chars().count() + 1)
+        );
+    }
+    let sql = "SELECT /*中*/ 'A_b' ILIKE 'a!_b' ESCAPE ($1)";
+    let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let expr = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap()
+        .Fields
+        .Fields[0]
+        .Expr
+        .as_ref()
+        .unwrap();
+    let ExprKind::Like {
+        EscapeExpr: Some(escape),
+        ..
+    } = &expr.Kind
+    else {
+        panic!("missing escape expression")
+    };
+    let ExprKind::Parentheses(marker) = &escape.Kind else {
+        panic!("parentheses lost")
+    };
+    assert_eq!(marker.PostgreSQLParameterIndex(), Some(1));
+    assert!(
+        matches!(marker.Kind, ExprKind::ParamMarker { Offset } if Offset == sql.find('$').unwrap())
+    );
+    assert_eq!(
+        escape.OriginTextPosition as usize,
+        sql.find("($1)").unwrap()
+    );
+    assert_eq!(escape.node_text.OriginalText(), b"($1)");
+    assert!(
+        parser_ast::sql_restore::restore_expr(expr)
+            .unwrap()
+            .ends_with(" ESCAPE ($1)")
+    );
+    struct Markers(Vec<usize>);
+    impl parser_ast::Visitor for Markers {
+        fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                if let Some(index) = expr.PostgreSQLParameterIndex() {
+                    self.0.push(usize::from(index));
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+            true
+        }
+    }
+    let mut markers = Markers(Vec::new());
+    assert!(stmt.accept(&mut markers));
+    assert_eq!(
+        markers.0,
+        vec![1],
+        "ESCAPE child must reach the shared visitor"
+    );
+    let null_sql = "SELECT 'A_b' ILIKE 'a_b' ESCAPE NULL";
+    let null_stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(null_sql, "", "")
+        .unwrap();
+    let null_expr = null_stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap()
+        .Fields
+        .Fields[0]
+        .Expr
+        .as_ref()
+        .unwrap();
+    assert!(
+        matches!(&null_expr.Kind, ExprKind::Like { EscapeExpr: Some(expr), .. } if matches!(&expr.Kind, ExprKind::Value(v) if v.Datum == parser_ast::ValueDatum::Null))
+    );
+    assert!(
+        parser_ast::sql_restore::restore_expr(null_expr)
+            .unwrap()
+            .ends_with(" ESCAPE NULL")
+    );
+    // MySQL retains its pre-existing byte-literal grammar and validation.
+    assert!(
+        parser::New()
+            .ParseOneStmt("SELECT 'A_b' ILIKE 'a_b' ESCAPE '!'", "", "")
+            .is_ok()
+    );
+    for suffix in ["'中'", "'xy'", "($1)", "NULL"] {
+        assert!(
+            parser::New()
+                .ParseOneStmt(&format!("SELECT 'A_b' ILIKE 'a_b' ESCAPE {suffix}"), "", "")
+                .is_err()
+        );
+    }
+    println!("pg_dialect_02_behavior: 9 parser cases plus MySQL baseline probes");
+}

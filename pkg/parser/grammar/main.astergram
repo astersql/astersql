@@ -1822,7 +1822,7 @@ PredicateExpr : BitExpr;
 RegexpSym : "REGEXP";
 RegexpSym : "RLIKE";
 LikeOrIlikeEscapeOpt : ε %prec empty @action;
-LikeOrIlikeEscapeOpt : "ESCAPE" stringLit @action;
+LikeOrIlikeEscapeOpt : "ESCAPE" SimpleExpr @action;
 Field : "*" %prec "*" @action;
 Field : Identifier "." "*" %prec "*" @action;
 Field : Identifier "." Identifier "." "*" %prec "*" @action;

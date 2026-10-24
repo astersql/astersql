@@ -40,6 +40,7 @@ use std::sync::LazyLock;
 /// LIKE/ESCAPE 子句的转义字符说明。
 pub struct likeEscapeSpec {
     escape: String,
+    expression: Option<Box<ast::ExprNode>>,
     explicit: bool,
 }
 
