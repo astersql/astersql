@@ -200,3 +200,52 @@ fn single_point_auto_id_factory_preserves_successful_insert_and_rebase() {
     assert_eq!(sets[0].next_row().unwrap(), None);
     sets[0].close().unwrap();
 }
+
+#[test]
+fn pg_core_dialect_session_lifecycle() {
+    use crate::runtime::{ConcreteSession, PARSED_DIALECTS};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    for (session, dialect) in [(&pg, SqlDialect::PostgreSQL), (&mysql, SqlDialect::MySQL)] {
+        for sql in [
+            "SELECT 73",
+            "BEGIN",
+            "SELECT 79",
+            "ROLLBACK",
+            "SET sql_mode = ''",
+            "SELECT 83",
+        ] {
+            PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+            let mut sets = session.execute(sql).unwrap();
+            if sql.starts_with("SELECT") {
+                assert_eq!(
+                    sets[0].next_row().unwrap().unwrap(),
+                    vec![sql[7..].to_owned()]
+                );
+            }
+            assert_eq!(session.sql_dialect(), dialect);
+            PARSED_DIALECTS.with(|seen| assert_eq!(*seen.borrow(), vec![dialect], "{sql}"));
+        }
+        PARSED_DIALECTS.with(|seen| seen.borrow_mut().clear());
+        assert!(session.execute("SELECT FROM").is_err());
+        PARSED_DIALECTS.with(|seen| assert_eq!(*seen.borrow(), vec![dialect]));
+        assert_eq!(
+            session.execute("SELECT 89").unwrap()[0]
+                .next_row()
+                .unwrap()
+                .unwrap(),
+            vec!["89"]
+        );
+    }
+    drop(pg);
+    let reconnected = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    assert_eq!(reconnected.sql_dialect(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        reconnected.execute("SELECT 97").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["97"]
+    );
+}

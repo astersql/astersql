@@ -100,7 +100,7 @@ fn pg_core_libpq_insert_readback() {
     );
 }
 
-fn start_client_server(
+pub(super) fn start_client_server(
     domain: Arc<astersql_domain::Domain>,
     postgres_port: Option<u16>,
 ) -> Arc<crate::server::Server> {
@@ -444,7 +444,7 @@ class PgIntrospection {
 }
 "#;
 
-fn mysql_read(socket: &mut TcpStream) -> Vec<u8> {
+pub(super) fn mysql_read(socket: &mut TcpStream) -> Vec<u8> {
     let mut header = [0; 4];
     socket.read_exact(&mut header).unwrap();
     let length =
@@ -454,7 +454,7 @@ fn mysql_read(socket: &mut TcpStream) -> Vec<u8> {
     socket.read_exact(&mut body).unwrap();
     body
 }
-fn mysql_packet(socket: &mut TcpStream, sequence: u8, body: &[u8]) {
+pub(super) fn mysql_packet(socket: &mut TcpStream, sequence: u8, body: &[u8]) {
     let length = body.len();
     socket
         .write_all(&[
@@ -466,7 +466,7 @@ fn mysql_packet(socket: &mut TcpStream, sequence: u8, body: &[u8]) {
         .unwrap();
     socket.write_all(body).unwrap();
 }
-fn mysql_handshake(socket: &mut TcpStream) {
+pub(super) fn mysql_handshake(socket: &mut TcpStream) {
     assert_eq!(mysql_read(socket).first(), Some(&10));
     let capabilities: u32 = (1 << 9) | (1 << 15) | (1 << 19);
     let mut response = capabilities.to_le_bytes().to_vec();
@@ -550,7 +550,7 @@ fn mysql_isolation(socket: &mut TcpStream) {
     );
 }
 
-fn mysql_query(socket: &mut TcpStream, sql: &str) -> Vec<Vec<Option<Vec<u8>>>> {
+pub(super) fn mysql_query(socket: &mut TcpStream, sql: &str) -> Vec<Vec<Option<Vec<u8>>>> {
     let mut packet = vec![3];
     packet.extend_from_slice(sql.as_bytes());
     mysql_packet(socket, 0, &packet);

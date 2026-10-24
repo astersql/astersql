@@ -122,3 +122,7 @@ RustCodeGraph 的文件节点报告 `dispatch.rs` 被 11 个文件使用，并�
 修改 SQL 文本拆分或引用规则时，在 `pkg/session/runtime/dispatch_test.rs` 扩展独立单元测试，至少覆盖引号、转义、块/行注释和 MySQL `--` 空白规则。日志、慢日志和 statement 生命周期场景主要在 `pkg/session/runtime_test/session.rs`；failpoint 的真实 TiKV 入口在 `tests/realtikvtest/sessiontest/session_fail_test.rs`。本文件的其他行为还由大量 session compatibility/runtime 测试间接覆盖。
 
 Plan Replayer 扩展应优先补齐 `SessionPlanReplaySource` 的真实 stats/TiFlash/config/metadata 数据，并为 load 期间 `FOREIGN_KEY_CHECKS` 使用可恢复 guard；同时核对 Go 对应归档布局与错误契约。涉及并行 SELECT 观察时，应保留 scoped join、确定性排序与 request 所有权不变量。
+
+## 连接方言身份
+
+`execute_with_logger_and_hook` 的普通 SQL 解析向 `parse_with_dialect` 传入会话固定身份；SQL mode 读取、归一化、错误映射和执行链保留。命名及协议预处理路径不属于本次普通查询接线。

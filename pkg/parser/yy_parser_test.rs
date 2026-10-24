@@ -255,3 +255,16 @@ fn rejected_params_do_not_leak_nested_parse_warnings() {
     assert_eq!(error.unwrap().to_string(), "rejected parameter");
     assert!(parser.Warnings().is_empty());
 }
+
+#[test]
+fn pg_core_parser_dialect_survives_reset() {
+    use parser_ast::SqlDialect;
+    assert_eq!(crate::New().sql_dialect(), SqlDialect::MySQL);
+    let mut parser = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for sql in ["SELECT 17", "SELECT FROM", "SELECT 23"] {
+        assert_eq!(parser.sql_dialect(), SqlDialect::PostgreSQL);
+        assert_eq!(parser.ParseSQL(sql, &[]).is_ok(), sql != "SELECT FROM");
+        parser.Reset();
+        assert_eq!(parser.sql_dialect(), SqlDialect::PostgreSQL);
+    }
+}

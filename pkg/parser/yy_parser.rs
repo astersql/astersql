@@ -258,6 +258,7 @@ pub(crate) fn check_ast_depth_limit(
 // Parser 保存一次解析所需的连接字符集、词法器、结果以及 yacc 临时值。
 // Go 的切片复用和指针字段在这里保留为 Vec/Option 形状，以表达生命周期和可空语义。
 pub struct Parser {
+    dialect: parser_ast::SqlDialect,
     charset: String,
     collation: String,
     result: Vec<Box<dyn parser_ast::Node>>,
@@ -298,6 +299,7 @@ pub fn New() -> Box<Parser> {
     parser_test_driver::init_test_driver();
 
     let mut parser_state = Box::new(Parser {
+        dialect: parser_ast::SqlDialect::MySQL,
         charset: String::new(),
         collation: String::new(),
         result: Vec::new(),
@@ -320,6 +322,18 @@ pub fn New() -> Box<Parser> {
 }
 
 impl Parser {
+    /// Construct an instance with a fixed SQL identity; Reset preserves it.
+    pub fn with_dialect(dialect: parser_ast::SqlDialect) -> Self {
+        let mut parser = *New();
+        parser.dialect = dialect;
+        parser
+    }
+
+    /// Return the identity fixed when this instance was constructed.
+    pub fn sql_dialect(&self) -> parser_ast::SqlDialect {
+        self.dialect
+    }
+
     /// Returns warnings from the latest parse, including a failed parse.
     pub fn Warnings(&self) -> Vec<errors::Error> {
         self.lastWarnings.clone()

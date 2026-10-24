@@ -93,3 +93,7 @@ SQL 适配/门禁使用 `Result<_, (&'static str, String)>`，让调用层直接
 - 新增查询适配：优先使用 AST 节点及源码 offset；若是 parser 前的特殊探测，必须像 `startup_time_query` 一样逐 token 验证边界，并在 `pg_query_test.rs` 覆盖字符串、注释、相似标识符、大小写、空白和尾随语句。
 - 改动编码顺序或流式输出：必须保留“编码错误不会先发送 RowDescription”的不变量，并验证 socket 写失败、portal 重放和 response lifecycle。性能优化应先测量整结果缓冲的峰值，再设计有等价原子性的分段方案。
 - PostgreSQL binary 时间与数组格式涉及 epoch、网络序、维度下界和 NULL 标志，兼容风险高；应使用真实客户端集成面 `pg_client_integration_test.rs` 或现有 `pg_extended_test.rs` 补回归，而不是把测试嵌入生产文件。
+
+## 连接方言身份
+
+adapt_query 与 command 对 PG 请求的前置解析显式使用 Parser::with_dialect(PostgreSQL)，避免普通查询到共享内核之前丢失方言身份。结果 OID/编码逻辑未改变。

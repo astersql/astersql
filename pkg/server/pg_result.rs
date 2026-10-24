@@ -92,7 +92,7 @@ pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'sta
     if !sql.to_ascii_lowercase().contains("current_catalog") {
         return Ok(std::borrow::Cow::Borrowed(sql));
     }
-    let (statements, _) = astersql_parser::New()
+    let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|error| ("42601", error.to_string()))?;
     struct CatalogProjection<'a> {
@@ -159,7 +159,7 @@ pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'sta
 /// Parse before execution: a batched engine error cannot preserve prior results.
 /// No SQL rewriting or multi-statement partial-success claims are permitted.
 pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, String)> {
-    let (statements, _) = astersql_parser::New()
+    let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|e| ("42601", e.to_string()))?;
     if statements.is_empty() {

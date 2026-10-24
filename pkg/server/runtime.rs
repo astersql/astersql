@@ -686,7 +686,26 @@ impl SessionDriver for ConcreteSessionDriver {
         capability: u32,
         collation: u8,
         database: &str,
+        tls_state: Option<&TlsState>,
+    ) -> ConnResult<Arc<dyn TiDBContext>> {
+        self.open_ctx_with_dialect(
+            connection_id,
+            capability,
+            collation,
+            database,
+            tls_state,
+            astersql_parser_ast::SqlDialect::MySQL,
+        )
+    }
+
+    fn open_ctx_with_dialect(
+        &self,
+        connection_id: u64,
+        capability: u32,
+        collation: u8,
+        database: &str,
         _tls_state: Option<&TlsState>,
+        dialect: astersql_parser_ast::SqlDialect,
     ) -> ConnResult<Arc<dyn TiDBContext>> {
         let (request_tx, request_rx) = mpsc::channel();
         let request_tx = Arc::new(request_tx);
@@ -700,10 +719,11 @@ impl SessionDriver for ConcreteSessionDriver {
             .clone();
         let result_sender = Arc::downgrade(&request_tx);
         let worker = thread::Builder::new()
-            .name(format!("mysql-session-{connection_id}"))
+            .name(format!("sql-session-{connection_id}"))
             .spawn(move || {
                 run_session_worker(
                     domain,
+                    dialect,
                     connection_id,
                     capability,
                     collation,
@@ -875,6 +895,7 @@ pub(crate) enum SessionRequest {
 
 fn run_session_worker(
     domain: Arc<Domain>,
+    dialect: astersql_parser_ast::SqlDialect,
     connection_id: u64,
     capability: u32,
     collation: u8,
@@ -890,7 +911,7 @@ fn run_session_worker(
     result_sender: Weak<mpsc::Sender<SessionRequest>>,
 ) {
     let setup = (|| {
-        let mut session = ConcreteSession::new(domain);
+        let mut session = ConcreteSession::new_with_dialect(domain, dialect);
         if let Some(manager) = session_manager {
             session.SetSessionManager(manager);
         }
@@ -1196,6 +1217,10 @@ fn field_list_on_session(
         .map_err(|error| ConnError::Session(error.to_string()))
 }
 
+#[cfg(test)]
+pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::SqlDialect)>> =
+    Mutex::new(Vec::new());
+
 fn execute_on_session(
     session: &ConcreteSession,
     cancellation: &SQLKiller,
@@ -1205,6 +1230,14 @@ fn execute_on_session(
 ) -> ConnResult<Vec<QueryResult>> {
     let mut results = Vec::with_capacity(statements.len());
     for statement in statements {
+        #[cfg(test)]
+        if statement.contains("pg_core_pg_identity") || statement.contains("pg_core_mysql_identity")
+        {
+            DIALECT_EXECUTIONS
+                .lock()
+                .unwrap()
+                .push((statement.clone(), session.sql_dialect()));
+        }
         session.BeginProtocolResponse();
         let execution = session
             .execute(&statement)

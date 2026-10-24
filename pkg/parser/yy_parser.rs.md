@@ -107,3 +107,7 @@ Rust 用 `Box<dyn Node>`/`Box<dyn Any>` 表达 Go 接口值，用 `Option<Box<_>
 - 字符集/排序规则改动应落在 `ParseParam` 和 charset encoding 层，保持空字符串默认值及“每轮 resetParams”语义；添加可能失败的参数实现时测试失败前后的警告和 Parser 状态。
 - hint 行为改动应从 `parseHint`、`hintparser.rs`、`hintparserimpl.rs` 和 `parser_actions/query.rs` 联合验证，确保使用实时 SQL mode 与词法位置。
 - 测试继续放在独立文件。优先扩展 `pkg/parser/yy_parser_test.rs`（警告、AST flag、错误上下文与复用）、`pkg/parser/yy_parser_4_aster_unit_test.rs`（辅助函数、参数、特殊注释、Go 边界）、深度相关的 `pkg/parser/go_merge_35_test.rs`，以及需要完整文法覆盖时的 `pkg/parser/parser_3_aster_unit_test.rs`；不要把 `#[cfg(test)]` 测试加入本生产文件。
+
+## 连接方言身份
+
+`Parser::with_dialect(SqlDialect)` 显式创建固定身份的解析器，`sql_dialect()` 返回实例身份；`New`/`Default` 仍为 MySQL，`Reset` 和每次 ParseSQL 的参数重置不改变身份。本增量只传递身份，不引入转换语法或 PostgreSQL 词法分支。

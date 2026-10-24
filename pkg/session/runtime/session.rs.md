@@ -107,3 +107,7 @@ Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组�
 - 修改共享/局部状态边界时，保持 `ConcreteSession` 单线程归属和 `CanonicalSessionFactory` 跨会话共享边界；不要仅为可跨线程而把 `Rc<RefCell<_>>` 机械替换为锁，这会改变借用失败、性能与生命周期语义。
 
 兼容风险主要是 Go session 行为漂移、系统表版本不一致和协议状态差异；正确性风险主要是 bootstrap 部分成功、MDL 固定错误或会话状态串扰；性能风险主要是扩大锁范围、重复扫描系统表、在热路径克隆大状态或错误地串行化共享 Domain 操作。
+
+## 连接方言身份
+
+`ConcreteSessionInner.sql_dialect` 在构造时固定，独立于可变 SessionState、SQLMode 和 capability。`new` 保持 MySQL 默认，`new_with_dialect` 在首次 SQL 前接受显式身份；事务结束、错误恢复和会话克隆不改变身份。

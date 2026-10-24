@@ -1119,3 +1119,106 @@ fn pg_introspection_names_live_tables() {
     send(&mut other, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_core_dialect_simple_query() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(server.clone());
+    let address = server.postgres_listener_addr().unwrap();
+    let mut mysql = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    struct Client(std::process::Child);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Client(
+        std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_core_dialect.py"
+            ))
+            .arg(address.port().to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    use std::io::BufRead;
+    let mut output = std::io::BufReader::new(child.0.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if output.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        println!("{}", line.trim());
+        if line.starts_with("stage ") {
+            if line.trim() == "stage 4" {
+                mysql_packet(&mut mysql, 0, &[0x1f]); // COM_RESET_CONNECTION
+                assert_eq!(mysql_read(&mut mysql).first(), Some(&0));
+            }
+            if line.trim() == "stage 5" {
+                mysql_packet(
+                    &mut mysql,
+                    0,
+                    b"\x11root\0\0\0\x2d\0mysql_native_password\0",
+                );
+                assert_eq!(mysql_read(&mut mysql).first(), Some(&0));
+            }
+            assert_eq!(
+                mysql_query(&mut mysql, "SELECT 314159 AS pg_core_mysql_identity"),
+                vec![vec![Some(b"314159".to_vec())]]
+            );
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    mysql_packet(&mut mysql, 0, &[1]);
+    server.close();
+    assert!(TcpStream::connect(address).is_err());
+    assert!(status.success(), "libpq lifecycle failed");
+    let observations = crate::runtime::DIALECT_EXECUTIONS.lock().unwrap().clone();
+    let pg = observations
+        .iter()
+        .filter(|(sql, _)| sql.contains("pg_core_pg_identity"))
+        .collect::<Vec<_>>();
+    let native = observations
+        .iter()
+        .filter(|(sql, _)| sql.contains("pg_core_mysql_identity"))
+        .collect::<Vec<_>>();
+    assert_eq!(pg.len(), 10, "missing real PG executions: {pg:?}");
+    assert_eq!(native.len(), 8);
+    assert!(
+        pg.iter()
+            .all(|(_, dialect)| *dialect == SqlDialect::PostgreSQL),
+        "worker identities: {pg:?}"
+    );
+    assert!(
+        native
+            .iter()
+            .all(|(_, dialect)| *dialect == SqlDialect::MySQL)
+    );
+}

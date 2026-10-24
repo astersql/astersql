@@ -85,3 +85,7 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 - 扩展 prepared 类型需修改 `prepared_argument` / `decode_binary_temporal`，对照 MySQL binary protocol 的有符号性、长度和编码，并在独立的 `pkg/server/runtime_test.rs` 增加畸形包和边界值回归。
 - 实现安全鉴权或 change-user 时，应替换 `BootstrapAuthMode` 的明确限制并对齐 Go `conn.go`，不能仅放宽 root 条件；需要覆盖插件协商、用户主机匹配、权限、TLS 状态和 session reset。
 - 扩展 Domain status API 应优先在 `CanonicalServerDomain` 代理真实 Domain 能力，保留输入验证与错误映射；涉及 handler 的测试应放在现有独立测试文件，不能内嵌进 `runtime.rs`。
+
+## 连接方言身份
+
+`ConcreteSessionDriver::open_ctx` 默认 MySQL，并委托显式 open_ctx_with_dialect；后者把身份传入 run_session_worker，再以 ConcreteSession::new_with_dialect 构造连接私有会话。身份在 worker 首条 SQL 前固定，所有查询仍使用共享执行内核。测试专用观测记录真实 worker 会话身份。

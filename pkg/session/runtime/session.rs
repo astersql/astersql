@@ -595,6 +595,7 @@ pub struct ConcreteSession {
 }
 
 pub struct ConcreteSessionInner {
+    pub(super) sql_dialect: ast::SqlDialect,
     pub(super) statement_ru_scope_depth: Cell<usize>,
     pub(super) statement_ru_pending:
         RefCell<Option<super::typed_adapter_bridge::PendingStatementRU>>,
@@ -1557,6 +1558,16 @@ impl ConcreteSession {
 
     /// 创建 ConcreteSession，安装谓词简化直通并初始化默认库。
     pub fn new(domain: Arc<Domain>) -> Self {
+        Self::new_with_dialect(domain, ast::SqlDialect::MySQL)
+    }
+
+    /// Return the identity fixed when this instance was constructed.
+    pub fn sql_dialect(&self) -> ast::SqlDialect {
+        self.sql_dialect
+    }
+
+    /// Fix the identity before any connection SQL is parsed.
+    pub fn new_with_dialect(domain: Arc<Domain>, sql_dialect: ast::SqlDialect) -> Self {
         astersql_planner_core_operator_logicalop::InstallPredicateSimplificationPassthrough();
         let mut session_vars = astersql_sessionctx_variable::session::SessionVars::default();
         session_vars.SetCurrentDB("test");
@@ -1580,6 +1591,7 @@ impl ConcreteSession {
         let instance_plan_cache = runtime_instance_plan_cache(&domain);
         let session = Self {
             inner: Rc::new(ConcreteSessionInner {
+                sql_dialect,
                 statement_ru_scope_depth: Cell::new(0),
                 statement_ru_pending: RefCell::new(None),
                 statement_ru_delayed: RefCell::new(None),

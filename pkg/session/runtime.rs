@@ -1283,16 +1283,29 @@ pub(crate) fn parse(sql: &str) -> SessionResult<Vec<Box<dyn ast::Node>>> {
     parse_with_sql_mode(sql, mode)
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static PARSED_DIALECTS: RefCell<Vec<ast::SqlDialect>> = const { RefCell::new(Vec::new()) }; }
+
 fn parse_with_sql_mode(
     sql: &str,
     mode: astersql_parser_mysql::r#const::SQLMode,
+) -> SessionResult<Vec<Box<dyn ast::Node>>> {
+    parse_with_dialect(sql, mode, ast::SqlDialect::MySQL)
+}
+
+fn parse_with_dialect(
+    sql: &str,
+    mode: astersql_parser_mysql::r#const::SQLMode,
+    dialect: ast::SqlDialect,
 ) -> SessionResult<Vec<Box<dyn ast::Node>>> {
     let normalized = sql.trim_start().to_ascii_lowercase();
     if normalized.starts_with("declare ") && normalized.contains(" cursor ") {
         return Err(SessionError::new("unsupported SQL cursor statement"));
     }
-    let mut parser = Parser::default();
+    let mut parser = Parser::with_dialect(dialect);
     parser.SetSQLMode(mode);
+    #[cfg(test)]
+    PARSED_DIALECTS.with(|observed| observed.borrow_mut().push(parser.sql_dialect()));
     parser
         .ParseSQL(sql, &[])
         .map(|(statements, _warnings)| statements)

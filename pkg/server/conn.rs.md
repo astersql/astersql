@@ -95,3 +95,7 @@ Rust 当前并非 Go `conn.go` 的完全等价实现。Go `Run`/`dispatch` 还�
 - 修改流式结果或游标：保持 `next_chunk`/`current_row` 不计入协议写耗时，确保 `finish`、`on_fetch_returned`、`close` 和 `ResponseLifecycle::finish` 的顺序与错误路径完整；同步检查 `pkg/server/conn_stmt.rs`。
 - 修改关闭或换用户：维护“先从注册表消失，再关闭可能阻塞的资源”和“新认证成功前旧会话仍可用”两个不变量；测试幂等关闭、并发取消、认证失败恢复、预处理/长参数释放和资源组计数。
 - 新增错误：更新 `ConnError::Display` 与 `mysql_error_code_and_state`，用独立测试断言 ERR header、数值错误码、`#`、5 字节 SQLSTATE 和消息；避免只做字符串包含匹配而没有协议断言。
+
+## 连接方言身份
+
+`SessionDriver::open_ctx_with_dialect` 是显式 SQL 身份入口。默认实现仅允许 MySQL 委托既有 open_ctx，对 PostgreSQL 返回错误，防止旧驱动静默降级。MySQL 握手、change_user、reset 继续使用 open_ctx。

@@ -990,6 +990,26 @@ pub trait SessionDriver: Send + Sync {
         tls_state: Option<&TlsState>,
     ) -> ConnResult<Arc<dyn TiDBContext>>;
 
+    /// Open with an explicit identity; legacy drivers must reject unsupported PG sessions.
+    fn open_ctx_with_dialect(
+        &self,
+        connection_id: u64,
+        capability: u32,
+        collation: u8,
+        database: &str,
+        tls_state: Option<&TlsState>,
+        dialect: astersql_parser_ast::SqlDialect,
+    ) -> ConnResult<Arc<dyn TiDBContext>> {
+        match dialect {
+            astersql_parser_ast::SqlDialect::MySQL => {
+                self.open_ctx(connection_id, capability, collation, database, tls_state)
+            }
+            astersql_parser_ast::SqlDialect::PostgreSQL => Err(ConnError::Session(
+                "session driver does not support PostgreSQL SQL identity".into(),
+            )),
+        }
+    }
+
     fn set_session_manager(&self, _manager: Weak<dyn astersql_session_sessmgr::Manager>) {}
 }
 

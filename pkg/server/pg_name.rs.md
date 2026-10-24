@@ -105,3 +105,7 @@ Go 侧 `pkg/server/server.go` 属于原有 TiDB server 主体，而这里的 `pg
 - 新增原生 AST 可表达但 token 状态机看不到的关系节点时，扩展 `validate_relations::Guard`。需保持“解析失败不在这里抢先返回”的错误顺序约束，并在扩展协议测试中验证参数 OID 错误优先级不回归。
 - 修改数据库获取策略时聚焦 `adapt`，保留无关系 SQL 零额外查询的不变量。若引入缓存，必须明确连接切库、事务和 session 生命周期中的失效规则；当前实现没有缓存，天然读取调用时的数据库。
 - 兼容风险主要是错误 SQLSTATE/先后顺序、带引号大小写、search path 和跨库隔离；性能风险主要是对所有查询无条件访问引擎或增加重复解析。任何支持面扩大都应同时经过纯重写测试和简单/扩展协议真实链路测试。
+
+## 连接方言身份
+
+PG 请求的 validate_relations 前置 AST 解析显式构造 PostgreSQL Parser；stored_view_select 解析的是既有原生存储源，仍使用默认 MySQL Parser。原有标识符改写与跨库限制保持。

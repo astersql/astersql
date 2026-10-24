@@ -107,3 +107,7 @@ DDL job 的提交顺序、history 和 failpoint 名称对齐 Go DDL owner/testut
 DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任何退出都会归档并唤醒等待者”的不变量，并在独立 `pkg/session/runtime_test/ddl.rs` 或 `runtime/ddl_test.rs` 增加测试；不要把测试嵌进生产文件。内存动作变更应验证 fallback 只被正确调用、kill signal、日志一次性和所有 Drop 路径；并发 request 变更应继续验证每个 scan branch 拥有独立请求对象。
 
 性能风险主要来自全局 Mutex 热点、每次语句 parser/字符串转换、Domain map 清理、超大 OFFSET/DDL batch 参数和 DDL Condvar 冲突范围。兼容风险主要来自错误文本/错误码、SQL mode、prepared 配额作用域、NULL 哨兵、系统时区和 Go 的完整 expression 语义。改动前应在相应独立 Rust 测试中增加回归，并用 Go 同行为测试确认意图。
+
+## 连接方言身份
+
+普通连接执行通过 `parse_with_dialect` 创建 `Parser::with_dialect`，SQL mode 仍独立设置。无连接上下文的既有 `parse`/`parse_with_sql_mode` 保持 MySQL 约定；预处理身份接线由后续批次完成。测试构建用线程局部观测实际 parser 输入，不添加产品 SQL 调试函数。

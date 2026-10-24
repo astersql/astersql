@@ -472,7 +472,9 @@ fn validate_relations(sql: &str, database: &str) -> ParseResult<()> {
     let native = crate::pg_extended::markers(sql)
         .map(|(sql, _)| sql)
         .unwrap_or_else(|_| sql.to_owned());
-    let Ok((statements, _)) = astersql_parser::New().ParseSQL(&native, &[]) else {
+    let Ok((statements, _)) =
+        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(&native, &[])
+    else {
         return Ok(());
     };
     struct Guard<'a> {

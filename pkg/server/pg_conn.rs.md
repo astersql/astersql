@@ -86,3 +86,7 @@ accept 线程和每连接一个 worker 都由 `PgService` 持有 `JoinHandle`。
 - 新增错误映射：只在 `sqlstate` 中基于稳定 `ConnError` 变体或 canonical 明确契约匹配，并扩展 `pg_error_test.rs`；避免从任意消息提取 SQLSTATE。
 - 修改取消：保持“只取消正在执行的目标连接”“每命令重置 token”“命令退出必清理”三个不变量，并同步 `pg_conn_test.rs::startup_cancel_is_scoped_and_consumed`。密钥格式变化还需覆盖 3.0/3.2 客户端兼容。
 - 修改线程/资源模型：必须维持 connection ID、context、socket、worker 的对称释放，并扩展 `catalog_error_recovery_and_cleanup` 与 server 双监听关闭测试；性能风险集中在每连接一线程、10 ms accept 轮询以及全局 `active` 锁的高并发竞争。
+
+## 连接方言身份
+
+`negotiate` 通过 SessionDriver::open_ctx_with_dialect 显式传入 SqlDialect::PostgreSQL，在认证及首次解析前建立连接身份；不从 capability、版本字符串或 SQLMode 推断。

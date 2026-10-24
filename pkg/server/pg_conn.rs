@@ -253,7 +253,14 @@ impl PgService {
         let pid =
             u32::try_from(id).map_err(|_| invalid("connection id exceeds PostgreSQL width"))?;
         // Open without a database, then select it only after authentication.
-        let context = match driver.open_ctx(id, 0, 45, "", None) {
+        let context = match driver.open_ctx_with_dialect(
+            id,
+            0,
+            45,
+            "",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        ) {
             Ok(c) => c,
             Err(e) => {
                 write_error(socket, "FATAL", "08006", &e.to_string())?;

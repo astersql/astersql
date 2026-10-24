@@ -20,6 +20,14 @@
 
 #![allow(non_snake_case, non_upper_case_globals, dead_code, non_fmt_panics)]
 
+/// Connection SQL identity, independent of SQL mode and wire capabilities.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SqlDialect {
+    #[default]
+    MySQL,
+    PostgreSQL,
+}
+
 extern crate self as parser_ast;
 
 extern crate parser_auth;
