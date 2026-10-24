@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 import unittest
 
-from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output
+from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows
 
 
 class CaseRegistryTests(unittest.TestCase):
@@ -32,11 +32,12 @@ class CaseRegistryTests(unittest.TestCase):
                             ['invalid', 'invalid_recovery', 'overflow', 'overflow_recovery'])
         expected.update(['write', 'readback', 'empty_prepare', 'empty_describe', 'empty_execute',
                          'scalar_null', 'scalar_empty', 'scalar_literal_null', 'scalar_zero_rows',
+                         'multiset_ordered', 'multiset_unordered',
                          'begin', 'transaction_error', 'transaction_failed', 'rollback', 'rollback_recovery'])
         business = [x['case_id'] for x in self.manifest['cases'] if x['kind'] == 'business']
         checks = [x['case_id'] for x in self.manifest['cases'] if x['kind'] == 'self_check']
         self.assertEqual(set(business), expected)
-        self.assertEqual(len(business), 95)
+        self.assertEqual(len(business), 97)
         self.assertEqual(set(checks), {'negative_self_check_' + key for key in ['rows', 'fields', 'state']})
         registry = CaseRegistry(self.manifest, self.table)
         for case in self.manifest['cases']:
@@ -44,7 +45,7 @@ class CaseRegistryTests(unittest.TestCase):
             if 'sql' in actual:
                 actual['sql'] = actual['sql'].replace('{run_table}', self.table)
             self.assertEqual(registry.claim(case['case_id'], case['family'], actual), actual)
-        self.assertEqual(registry.finish(), 98)
+        self.assertEqual(registry.finish(), 100)
 
     def test_real_check_rejects_unregistered_before_send(self):
         # Execute the actual fixture gate with no connections: this tests rejection,
@@ -341,12 +342,55 @@ class ScalarComparisonTests(unittest.TestCase):
                             and x.name == 'integer_differential')
         equal = next(x for x in differential.body if isinstance(x, ast.FunctionDef)
                      and x.name == 'equal')
-        namespace = {'compare_scalar_output': compare_scalar_output}
+        namespace = {'compare_rows': compare_rows}
         exec(compile(ast.Module(body=[equal], type_ignores=[]), '<actual scalar gate>', 'exec'), namespace)
         a = {'status': 2, 'state': '', 'fields': [], 'params': [],
              'rows': {'kind': 'uncollected'}, 'cells': {'kind': 'uncollected'}}
         with self.assertRaises(AssertionError):
             namespace['equal']('both_uncollected', a, copy.deepcopy(a))
+
+
+class MultisetComparisonTests(unittest.TestCase):
+    def output(self, rows):
+        return {'rows': rows, 'cells': [[
+            {'kind': 'sql_null', 'length': 0} if v is None else
+            {'kind': 'value', 'length': len(v.encode()), 'hex': v.encode().hex()}
+            for v in row] for row in rows]}
+
+    def test_permutations_and_raw_preservation(self):
+        a = self.output([['1', None], ['2', ''], ['1', None]])
+        b = self.output([['2', ''], ['1', None], ['1', None]])
+        before = copy.deepcopy((a, b))
+        self.assertTrue(compare_rows(a, b, 'multiset'))
+        self.assertEqual((a, b), before)
+
+    def test_missing_duplicate(self):
+        self.assertFalse(compare_rows(self.output([['1'], ['1']]), self.output([['1']]), 'multiset'))
+
+    def test_extra_duplicate(self):
+        self.assertFalse(compare_rows(self.output([['1']]), self.output([['1'], ['1']]), 'multiset'))
+
+    def test_null_empty_and_literal_distinct(self):
+        for value in ['', 'NULL']:
+            self.assertFalse(compare_rows(self.output([[None]]), self.output([[value]]), 'multiset'))
+
+    def test_column_order(self):
+        self.assertFalse(compare_rows(self.output([['1', '2']]), self.output([['2', '1']]), 'multiset'))
+
+    def test_strict_order(self):
+        self.assertFalse(compare_rows(self.output([['1'], ['2']]), self.output([['2'], ['1']]), 'strict'))
+
+    def test_invalid_type_and_contract(self):
+        a = self.output([['1']])
+        b = copy.deepcopy(a)
+        b['rows'] = [[1]]
+        self.assertFalse(compare_rows(b, b, 'multiset'))
+        self.assertFalse(compare_rows(a, a, 'unknown'))
+
+    def test_inconsistent_cells(self):
+        a = self.output([['1']])
+        a['cells'][0][0]['hex'] = '32'
+        self.assertFalse(compare_rows(a, a, 'multiset'))
 
 
 if __name__ == '__main__':

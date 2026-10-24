@@ -3800,6 +3800,84 @@
       ]
     },
     {
+      "case_id": "multiset_ordered",
+      "kind": "business",
+      "capability_id": "scalar.output",
+      "family": "multiset",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT n, note FROM {run_table} WHERE id >= 2 ORDER BY id",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference bounded text readback through real libpq.",
+        "astersql": "Same text readback through the PostgreSQL listener on the shared server."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps. Before scalar reads, each endpoint inserts (3, 0, ''), (4, 0, 'NULL') into run_table; id=2 retains SQL NULL note. Before these queries insert (5, 0, ''), (6, NULL, NULL) independently on both endpoints; project n/note from id >= 2.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task 4: preserve duplicate projected int/text rows and NULL/empty cells.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ],
+      "row_order": "strict"
+    },
+    {
+      "case_id": "multiset_unordered",
+      "kind": "business",
+      "capability_id": "scalar.output",
+      "family": "multiset",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT n, note FROM {run_table} WHERE id >= 2",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference bounded text readback through real libpq.",
+        "astersql": "Same text readback through the PostgreSQL listener on the shared server."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps. Before scalar reads, each endpoint inserts (3, 0, ''), (4, 0, 'NULL') into run_table; id=2 retains SQL NULL note. Before these queries insert (5, 0, ''), (6, NULL, NULL) independently on both endpoints; project n/note from id >= 2.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task 4: preserve duplicate projected int/text rows and NULL/empty cells.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ],
+      "row_order": "multiset"
+    },
+    {
       "case_id": "begin",
       "kind": "business",
       "capability_id": "integer.transaction",

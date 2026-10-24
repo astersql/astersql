@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -128,9 +128,9 @@ def integer_differential(aster_dsn):
         finally:
             clear(result)
 
-    def equal(case, actual, reference):
-        assert compare_scalar_output(actual, reference, {'result_format': 0}), (case, actual, reference)
-        keys = ('status', 'state', 'fields', 'rows', 'params')
+    def equal(case, actual, reference, row_order='strict'):
+        assert compare_rows(actual, reference, row_order), (case, actual, reference)
+        keys = ('status', 'state', 'fields', 'params')
         assert {k: actual[k] for k in keys} == {k: reference[k] for k in keys}, (case, actual, reference)
 
     def check(case, family, operation, expected_status=2, expected_rows=None,
@@ -156,7 +156,8 @@ def integer_differential(aster_dsn):
                 assert obs["rows"] == expected_rows, (side, case, obs)
             if expected_params is not None:
                 assert obs["params"] == expected_params, (side, case, obs)
-        equal(case, observations["aster"][case], observations["reference"][case])
+        row_order = registry.cases['cases'][len(registry.seen) - 1].get('row_order', 'strict')
+        equal(case, observations["aster"][case], observations["reference"][case], row_order)
         counts[family] += 1
         print("registered case:", json.dumps({"case_id": case, "input": registered_input,
               "aster": observations["aster"][case], "reference": observations["reference"][case]},
@@ -302,6 +303,17 @@ def integer_differential(aster_dsn):
             sql('scalar_' + label, 'scalar_' + label,
                 f"SELECT note FROM {table} WHERE id = {key}", expected_rows=expected)
 
+        # Project away the unique primary key so genuine duplicate rows remain.
+        command = f"INSERT INTO {table} VALUES (5, 0, ''), (6, NULL, NULL)"
+        for side, connection in connections.items():
+            obs = observe(execute(connection, command.encode()))
+            archive('multiset_setup', side, {'command': command}, obs)
+            assert obs['status'] == 1, (side, obs)
+        sql('multiset_ordered', 'multiset',
+            f"SELECT n, note FROM {table} WHERE id >= 2 ORDER BY id",
+            expected_rows=[[None, None], ['0', ''], ['0', 'NULL'], ['0', ''], [None, None]])
+        sql('multiset_unordered', 'multiset', f"SELECT n, note FROM {table} WHERE id >= 2")
+
         sql("begin", "transaction", "BEGIN", expected_status=1)
         sql("transaction_error", "transaction", "SELECT 'x'::int4", expected_status=7, expected_state="22P02")
         assert all(transaction(conn) == 3 for conn in connections.values()), "expected E"
@@ -338,12 +350,44 @@ def integer_differential(aster_dsn):
                                                  {'result_format': 0}), source
                 assert hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest() == digest
             print('scalar tag self-check:', source, 'mutations=3 raw_sha256=' + digest, flush=True)
+        source = observations['aster']['multiset_unordered']
+        reference = observations['reference']['multiset_unordered']
+        before = copy.deepcopy(source)
+        reordered = copy.deepcopy(source)
+        for key in ['rows', 'cells']:
+            reordered[key] = reordered[key][1:] + reordered[key][:1]
+        assert reordered['rows'] != source['rows']
+        assert not compare_rows(reordered, source, 'strict')
+        equal('multiset_permutation', reordered, reference, 'multiset')
+        for mutation in ['remove_duplicate', 'add_duplicate', 'column_order', 'oid', 'typmod']:
+            changed = copy.deepcopy(source)
+            if mutation in ['remove_duplicate', 'add_duplicate']:
+                for key in ['rows', 'cells']:
+                    if mutation == 'remove_duplicate':
+                        changed[key].pop()
+                    else:
+                        changed[key].append(copy.deepcopy(changed[key][0]))
+            elif mutation == 'column_order':
+                for key in ['rows', 'cells']:
+                    changed[key] = [list(reversed(row)) for row in changed[key]]
+            else:
+                field = list(changed['fields'][0])
+                field[1 if mutation == 'oid' else 3] += 1
+                changed['fields'][0] = tuple(field)
+            try:
+                equal('multiset_' + mutation, changed, reference, 'multiset')
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError('multiset comparator missed ' + mutation)
+        assert source == before
+        print('multiset self-check: permutation=1 rejected_mutations=5 raw_unchanged=1', flush=True)
         for required in ['scalar_null', 'scalar_empty', 'scalar_literal_null', 'scalar_zero_rows',
                          "value", "typed_null", "zero_rows", "overflow", "invalid",
                          "reexecute", "recovery", "write", "readback", "negative_self_check"]:
             assert counts[required] > 0, required
-        assert registry.finish() == 98
-        print("registered inputs: business=95 self_check=3 missing=0 duplicate=0", flush=True)
+        assert registry.finish() == 100
+        print("registered inputs: business=97 self_check=3 missing=0 duplicate=0", flush=True)
         print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
     finally:
         business_failed = sys.exc_info()[0] is not None

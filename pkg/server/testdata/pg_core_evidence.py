@@ -4,6 +4,7 @@
 Importing this module never loads libpq, reads argv, or connects to a database.
 None inside arguments is SQL NULL; absent/uncollected input is rejected.
 """
+from collections import Counter
 import copy
 import json
 from pathlib import Path
@@ -76,6 +77,8 @@ def validate_cases(cases):
                 raise ValueError(f'{case_id}: first-phase fixture uses default text formats')
         else:
             raise ValueError(f'{case_id}: invalid kind')
+        if case.get('row_order', 'strict') not in {'strict', 'multiset'}:
+            raise ValueError(f'{case_id}: invalid row_order')
         if not isinstance(case.get('expected'), dict):
             raise ValueError(f'{case_id}: expected basis required')
         seen[case_id] = case
@@ -171,3 +174,20 @@ def compare_scalar_output(actual, reference, contract):
 
     return (collected(actual) and collected(reference)
             and actual['rows'] == reference['rows'] and actual['cells'] == reference['cells'])
+
+
+def compare_rows(actual, reference, row_order):
+    """Compare collected rows under an explicit ordering contract."""
+    if row_order not in {'strict', 'multiset'}:
+        return False
+    # Validate both complete tagged observations before constructing hashable rows.
+    if not all(compare_scalar_output(x, x, {'result_format': 0}) for x in (actual, reference)):
+        return False
+    if row_order == 'strict':
+        return compare_scalar_output(actual, reference, {'result_format': 0})
+
+    def frequencies(output):
+        return Counter(json.dumps(row, sort_keys=True, separators=(',', ':'))
+                       for row in output['cells'])
+
+    return frequencies(actual) == frequencies(reference)
