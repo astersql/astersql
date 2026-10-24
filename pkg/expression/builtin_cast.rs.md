@@ -93,4 +93,7 @@ Rust 把 Go 按源/目标 `EvalType` 展开的众多 `builtinCastXAsYSig` 合并
 
 ## PostgreSQL int4 显式转换（2026-10-24）
 
-pg_cast_int4 是严格十进制 int4 共享内核：SQL NULL 透传，ASCII SQL 空白和单个正负号允许，检查全部数字语法并以 checked i32 累积验证范围。PgInt4Error::{OutOfRange,InvalidSyntax,Unsupported} 分别携带 22003/22P02/0A000 身份，由 crate 根重导出供会话和正式表达式签名复用；既有 MySQL kernel API 不变。
+pg_cast_int4 是严格十进制 int4 共享内核：SQL NULL 透传，ASCII SQL 空白和单个正负号允许，检查全部数字语法并以 checked i64 累积后执行 i32 范围检查。PgInt4Error::{OutOfRange,InvalidSyntax,Unsupported} 分别携带 22003/22P02/0A000 身份，由 crate 根重导出供会话和正式表达式签名复用；既有 MySQL kernel API 不变。
+
+
+2026-10-24 int8：PG int8 共用严格十进制扫描，以 i64 checked 累积（负数直接减）涵盖最小值，不经 f64；int4 在同一内核结果上执行 i32 范围检查。NULL 和 typed SQLSTATE 错误沿用现有通路。

@@ -127,4 +127,7 @@ PgCastType 仅在 PostgreSQL 身份下接受 int4/integer/int 和 int8/bigint，
 
 ## PostgreSQL int4 显式转换（2026-10-24）
 
-两种 PostgreSQL int4 显式转换在共享 Cast 中设置 PostgreSQLInt4 标记；int8 和 MySQL Cast 保留原标记。该标记供没有会话参数的关系求值消费者选择严格规则，不改变已保存的原 SQL 和跨度。
+两种 PostgreSQL int4 显式转换在共享 Cast 中设置 PostgreSQLInt4 标记；int8 使用 PostgreSQLInt8，MySQL Cast 保留原标记。该标记供没有会话参数的关系求值消费者选择严格规则，不改变已保存的原 SQL 和跨度。
+
+
+2026-10-24 int8：PG ::int8 和 CAST(... AS bigint/int8) 设置 PostgreSQLInt8 标记；每层嵌套保留各自目标，MySQL 解析不选择该标记。

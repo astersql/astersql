@@ -2543,3 +2543,58 @@ fn pg_core_int4_ast_semantics() {
         }
     ));
 }
+
+#[test]
+fn pg_core_int8_ast_semantics() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT 42::int8",
+        "SELECT CAST(42 AS bigint)",
+        "SELECT CAST(42 AS int8)",
+    ] {
+        let stmt = pg.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert!(matches!(
+            expr.Kind,
+            parser_ast::ExprKind::Cast {
+                FunctionType: parser_ast::CastFunctionType::PostgreSQLInt8,
+                ..
+            }
+        ));
+        let restored = parser_ast::sql_restore::restore_expr(expr).unwrap();
+        assert_eq!(restored, "CAST(42 AS INT8)");
+        let reparsed = pg
+            .ParseOneStmt(&format!("SELECT {restored}"), "", "")
+            .unwrap();
+        let reparsed = reparsed
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let roundtrip = reparsed.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert!(
+            matches!(roundtrip.Kind, parser_ast::ExprKind::Cast { FunctionType: parser_ast::CastFunctionType::PostgreSQLInt8, ref Tp, .. } if Tp.GetType() == parser_mysql::r#type::TypeLonglong)
+        );
+        assert_eq!(
+            parser_ast::sql_restore::restore_expr(roundtrip).unwrap(),
+            restored
+        );
+    }
+    let stmt = parser::New()
+        .ParseOneStmt("SELECT CAST(42 AS SIGNED)", "", "")
+        .unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    assert!(matches!(
+        select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+        parser_ast::ExprKind::Cast {
+            FunctionType: parser_ast::CastFunctionType::Cast,
+            ..
+        }
+    ));
+}

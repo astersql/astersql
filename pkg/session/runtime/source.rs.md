@@ -121,3 +121,6 @@ JOIN/集合/排序/分组与结果向量由当前函数拥有，无共享锁。G
 - 修改 CTE：保持 scope 在错误路径也 pop、递归成员只读 delta、UNION DISTINCT 跨轮去重、列 marker 随重命名、spill 后完整历史可重建。应同步 Rust 独立测试和 `pkg/executor/test/cte/cte_test.go` 所表达的 Go 边界。
 - 修改 SELECT 阶段：必须保留 SQL 次序，尤其 WHERE 在分组前、HAVING 在投影/聚合上下文、DISTINCT 在最终 LIMIT 前。扩展类型比较时同步审查 `runtime/query.rs` 的表达式类型和 marker。
 - 性能风险集中在全量物化、非等值嵌套循环 JOIN、排序/分组/DISTINCT 和 spill 全量回读；正确性风险集中在列歧义、NULL/三值逻辑、相关外层遮蔽和 CTE 迭代；兼容风险集中在字符串化行模型、排序规则、错误文本和 Go pipeline 的顺序差异。
+
+
+2026-10-24 PG整数转换：关系 SELECT 投影增加上下文时通过 SessionError::with_source 和 into_shared 保留原始 typed error，使 int4/int8 的 22003/22P02 身份可传递到协议层。

@@ -100,3 +100,91 @@ fn pg_core_int4_cast_kernel() {
     );
     assert_eq!(mysql_ctx.SQLDialect(), crate::ast::SqlDialect::MySQL);
 }
+
+#[test]
+fn pg_core_int8_cast_kernel() {
+    assert_eq!(pg_cast_int8(None), Ok(None));
+    for (input, expected) in [
+        ("-9223372036854775808", i64::MIN),
+        ("9223372036854775807", i64::MAX),
+        (" +09007199254740993 ", 9007199254740993),
+    ] {
+        assert_eq!(pg_cast_int8(Some(input)), Ok(Some(expected)));
+    }
+    for input in [
+        "9223372036854775808",
+        "-9223372036854775809",
+        "18446744073709551615",
+    ] {
+        assert_eq!(pg_cast_int8(Some(input)), Err(PgInt4Error::OutOfRange));
+    }
+    for input in ["", "12x", "1.0", "+ 1", "　1"] {
+        assert_eq!(pg_cast_int8(Some(input)), Err(PgInt4Error::InvalidSyntax));
+    }
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for (datum, expected) in [
+        (types::NewIntDatum(i64::MIN), Ok((i64::MIN, false))),
+        (types::NewIntDatum(i64::MAX), Ok((i64::MAX, false))),
+        (
+            types::NewIntDatum(9007199254740993),
+            Ok((9007199254740993, false)),
+        ),
+        (
+            types::NewStringDatum(" -9223372036854775808 ".into()),
+            Ok((i64::MIN, false)),
+        ),
+        (
+            types::NewStringDatum("9223372036854775807".into()),
+            Ok((i64::MAX, false)),
+        ),
+        (
+            types::NewStringDatum("9007199254740993".into()),
+            Ok((9007199254740993, false)),
+        ),
+        (types::NewUintDatum(u64::MAX), Err(())),
+        (types::NewStringDatum("9223372036854775808".into()), Err(())),
+        (
+            types::NewStringDatum("-9223372036854775809".into()),
+            Err(()),
+        ),
+        (
+            types::NewStringDatum("18446744073709551615".into()),
+            Err(()),
+        ),
+        (types::NewStringDatum("12x".into()), Err(())),
+        (types::Datum::default(), Ok((0, true))),
+    ] {
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(mysql::TypeVarString),
+        ));
+        let cast = crate::formal_registry::BuildCastFunction(
+            &pg,
+            &source,
+            &types::NewFieldType(mysql::TypeLonglong),
+        );
+        assert_eq!(cast.GetType(pg.GetEvalCtx()).GetType(), mysql::TypeLonglong);
+        assert_eq!(
+            cast.EvalInt(pg.GetEvalCtx(), crate::chunk::Row::default())
+                .map_err(|_| ()),
+            expected
+        );
+    }
+    let source = Expression::constant(
+        Value::UInt(u64::MAX),
+        FieldType::new(FieldKind::Int).with_unsigned(true),
+    );
+    let mut context = CastContext::default();
+    assert_eq!(
+        BuildCastFunction(source, FieldType::new(FieldKind::Int))
+            .eval(&mut context)
+            .unwrap(),
+        Value::Int(-1)
+    );
+    assert_eq!(context.warnings, vec![CastWarning::CastAsSignedOverflow]);
+}

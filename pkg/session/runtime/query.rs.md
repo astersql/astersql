@@ -135,4 +135,9 @@ Go 同路径实现不存在；本文件顶部模块说明和 `pkg/session/Cargo.
 
 ## PostgreSQL int4 显式转换（2026-10-24）
 
-PG int4 Cast 消费者复用 pg_int4_relational_value。关系 SELECT 在行求值前用实际来源字段检查 int4 的输入类型，拒绝 float/numeric，零行也不能绕过；包含 CAST 谓词的 PG SELECT 路由到既有完整查询路径，避免无表快速投影忽略转换错误。MySQL 选择保持不变。
+PG int4 Cast 消费者复用 pg_integer_relational_value。关系 SELECT 在行求值前用实际来源字段检查 int4 的输入类型，拒绝 float/numeric，零行也不能绕过；包含 CAST 谓词的 PG SELECT 路由到既有完整查询路径，避免无表快速投影忽略转换错误。MySQL 选择保持不变。
+
+
+2026-10-24 int8：两个现有 Cast 求值路径按 PostgreSQLInt8 复用严格 i64 转换；行扫描前的输入族检查也覆盖 int8，嵌套逐层求值并执行中间 int4 范围检查。
+
+PG CAST 投影也走已有完整关系查询路径，确保显式 OID 参数的执行结果具有引擎来源字段类型；避免无表快速投影缺失 native_types 而无法编码，不以 SQL 子串或值猜测 OID。

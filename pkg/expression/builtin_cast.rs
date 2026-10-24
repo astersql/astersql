@@ -1780,6 +1780,14 @@ impl PgInt4Error {
 }
 
 pub fn pg_cast_int4(value: Option<&str>) -> Result<Option<i32>, PgInt4Error> {
+    pg_cast_int8(value)?
+        .map(|number| i32::try_from(number).map_err(|_| PgInt4Error::OutOfRange))
+        .transpose()
+}
+
+/// Strict signed int8 input without floating-point conversion or unsigned wrap.
+/// Negative accumulation includes i64::MIN without overflowing its magnitude.
+pub fn pg_cast_int8(value: Option<&str>) -> Result<Option<i64>, PgInt4Error> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -1791,15 +1799,15 @@ pub fn pg_cast_int4(value: Option<&str>) -> Result<Option<i32>, PgInt4Error> {
     // Validate syntax before the checked accumulation so trailing junk does not
     // become an overflow error merely because its numeric prefix is large.
     let negative = value.starts_with('-');
-    let mut number = 0i32;
+    let mut number = 0i64;
     for digit in digits.bytes() {
         number = number
             .checked_mul(10)
             .and_then(|n| {
                 if negative {
-                    n.checked_sub((digit - b'0') as i32)
+                    n.checked_sub((digit - b'0') as i64)
                 } else {
-                    n.checked_add((digit - b'0') as i32)
+                    n.checked_add((digit - b'0') as i64)
                 }
             })
             .ok_or(PgInt4Error::OutOfRange)?;

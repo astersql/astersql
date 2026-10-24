@@ -104,3 +104,6 @@ Rust 直接回归证据在 [`materialized_test.rs`](materialized_test.rs)、[`go
 ## PostgreSQL int4 显式转换（2026-10-24）
 
 PostgreSQLInt4 CastFunctionType 恢复成 CAST(expr AS INT4)，保留严格 int4 语义和目标宽度，避免使用 MySQL CAST 目标格式化丢失该类型。
+
+
+2026-10-24 int8：PostgreSQLInt8 标记恢复为 CAST(... AS INT8)，保持目标身份与重解析时的严格转换语义。

@@ -631,6 +631,9 @@ impl<'a> Restorer<'a> {
                 ast::CastFunctionType::PostgreSQLInt4 => {
                     Ok(format!("CAST({} AS INT4)", self.expr(Expr)?))
                 }
+                ast::CastFunctionType::PostgreSQLInt8 => {
+                    Ok(format!("CAST({} AS INT8)", self.expr(Expr)?))
+                }
                 ast::CastFunctionType::Cast => {
                     Ok(format!("CAST({} AS {})", self.expr(Expr)?, Tp.String()))
                 }

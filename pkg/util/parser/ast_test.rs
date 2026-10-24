@@ -163,3 +163,14 @@ fn pg_core_int4_restore_preserves_target() {
         "SELECT CAST(' +00042 ' AS INT4)"
     );
 }
+
+#[test]
+fn pg_core_int8_restore_preserves_target() {
+    let statement = parser::Parser::with_dialect(parser::ast::SqlDialect::PostgreSQL)
+        .ParseOneStmt("SELECT ' +00042 '::int8", "", "")
+        .unwrap();
+    assert_eq!(
+        utilparser::RestoreWithoutDB(statement.as_ref()),
+        "SELECT CAST(' +00042 ' AS INT8)"
+    );
+}

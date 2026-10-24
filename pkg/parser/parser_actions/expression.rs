@@ -1020,6 +1020,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     Tp: tp.clone(),
                     FunctionType: if tp.GetType() == parser_mysql::r#type::TypeLong {
                         parser_ast::CastFunctionType::PostgreSQLInt4
+                    } else if tp.GetType() == parser_mysql::r#type::TypeLonglong {
+                        parser_ast::CastFunctionType::PostgreSQLInt8
                     } else {
                         parser_ast::CastFunctionType::Cast
                     },
@@ -1621,6 +1623,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         && field_type.GetType() == parser_mysql::r#type::TypeLong
                     {
                         parser_ast::CastFunctionType::PostgreSQLInt4
+                    } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeLonglong
+                    {
+                        parser_ast::CastFunctionType::PostgreSQLInt8
                     } else {
                         parser_ast::CastFunctionType::Cast
                     },

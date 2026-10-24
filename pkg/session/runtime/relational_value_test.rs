@@ -91,3 +91,61 @@ fn pg_core_int4_explicit_cast_numeric_columns_unsupported() {
         );
     }
 }
+
+#[test]
+fn pg_core_int8_explicit_cast() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for (input, expected) in [
+        ("(-9223372036854775808)", "-9223372036854775808"),
+        ("9223372036854775807", "9223372036854775807"),
+        ("9007199254740993", "9007199254740993"),
+        ("' +09007199254740993 '", "9007199254740993"),
+        ("2147483647::int4", "2147483647"),
+    ] {
+        let sql = format!("SELECT CAST({input} AS bigint)");
+        let mut results = pg.execute(&sql).unwrap();
+        assert_eq!(
+            results[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypeLonglong
+        );
+        assert_eq!(
+            results[0].next_row().unwrap().unwrap(),
+            vec![expected],
+            "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT 9223372036854775808::int8",
+        "SELECT (-9223372036854775809)::int8",
+        "SELECT '18446744073709551615'::int8",
+        "SELECT '12x'::int8",
+        "SELECT 2147483648::int8::int4",
+        "SELECT 2147483648::int4::int8",
+    ] {
+        let error = match pg.execute(sql) {
+            Ok(_) => panic!("must reject {sql}"),
+            Err(error) => error,
+        };
+        let expected = if sql.contains("12x") {
+            astersql_expression::PgInt4Error::InvalidSyntax
+        } else {
+            astersql_expression::PgInt4Error::OutOfRange
+        };
+        assert_eq!(error.pg_int4_error(), Some(expected), "{sql}: {error}");
+        assert_eq!(
+            pg.execute("SELECT 7").unwrap()[0]
+                .next_row()
+                .unwrap()
+                .unwrap(),
+            vec!["7"]
+        );
+    }
+}

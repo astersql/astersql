@@ -661,6 +661,8 @@ pub enum CastFunctionType {
     Cast,
     /// Connection-owned PostgreSQL int4 semantics retained by shared AST consumers.
     PostgreSQLInt4,
+    /// Strict PostgreSQL int8 semantics retained across shared AST consumers.
+    PostgreSQLInt8,
     Convert,
     Binary,
 }

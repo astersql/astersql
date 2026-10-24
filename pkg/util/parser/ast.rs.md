@@ -100,3 +100,6 @@ Rust 还在 `ast_test.rs` 覆盖 full outer join、真实 SELECT 默认库/去�
 ## PostgreSQL int4 显式转换（2026-10-24）
 
 PG int4 标记专门恢复为 CAST(expr AS INT4)，不复用带显示宽度的 MySQL FieldType::String；独立 ast_test.rs 验证实际 parser AST 的恢复目标。
+
+
+2026-10-24 int8：RestoreWithoutDB 对 PostgreSQLInt8 专门输出 INT8，避免共享恢复丢失 PostgreSQL 目标身份。

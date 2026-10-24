@@ -151,4 +151,9 @@ RustCodeGraph 的 `query` 能定位上述核心符号与 `runtime.rs:82` 的再�
 
 ## PostgreSQL int4 显式转换（2026-10-24）
 
-PostgreSQLInt4 标记在无会话参数的 Cast 消费者选择 pg_int4_relational_value，并与 query.rs 共用严格转换内核；SQL NULL 保留 None，结果规范化为十进制文本。错误通过 SessionError::with_source 保留 PgInt4Error；来源列类型在关系 SELECT 行执行前检查。
+PostgreSQLInt4 标记在无会话参数的 Cast 消费者选择 pg_integer_relational_value，并与 query.rs 共用严格转换内核；SQL NULL 保留 None，结果规范化为十进制文本。错误通过 SessionError::with_source 保留 PgInt4Error；来源列类型在关系 SELECT 行执行前检查。
+
+
+2026-10-24 int8：pg_integer_relational_value 由共享 AST 的 PG int4/int8 标记选择严格内核，返回精确十进制文本；嵌套先求内层，再检查外层范围。
+
+PG int4/int8 Cast 在关系结果类型解析中直接返回 AST 声明的 Tp，供 Prepare 与执行共享，避免扩展查询将整数目标误报为默认 TEXT。

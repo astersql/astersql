@@ -2224,11 +2224,12 @@ impl ConcreteSession {
                         if error.to_string() == "Subquery returns more than 1 row" {
                             error
                         } else {
-                            SessionError::new(format!(
+                            let message = format!(
                                 "relational SELECT field {} evaluation failed for {:?}: {error}",
                                 field_index + 1,
                                 expression.Kind
-                            ))
+                            );
+                            SessionError::with_source(message, error.into_shared())
                         }
                     })?
                 };
