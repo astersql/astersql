@@ -145,3 +145,7 @@ PreparePlannedKVSelect 作为普通 SQL PREPARE 表查询的实际计划准备�
 ## 2026-10-24 规划求值身份与缓存隔离
 
 统一规划工厂 plan_context_with_params / plan_context_with_params_and_explain 显式接收所属 SqlDialect，保存到 expression 的静态 EvalContext；派生 Ranger 与 BuildPB 使用同一身份。Prepared lookup、restore 与延迟 cache admission 通过 dialect_plan_cache_key 隔离实际共享键，缓存准入、范围重建与参数类型决策不变。相邻普通扫描、EXPLAIN、typed adapter、MLog 调用仅补传连接身份。
+
+## 整数参数元数据接线
+
+`ConcreteSession::protocol_integer_parameter_types` 在 PostgreSQL 方言中解析共享 AST，仅收集 SELECT 投影、WHERE/HAVING、GROUP/ORDER 表达式内直接 int4/int8 Cast 的 ParamMarker（允许括号），按原 offset 对应 engine marker；返回每个出现位置的 OID 23/20，未约束位置为0。嵌套 cast 由最内侧直接参数约束源类型，PG 消费者按原编号折叠首个直接约束。它不执行SQL、不注册statement，不实现跨DML/子查询/模式的一般推导。

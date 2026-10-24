@@ -59,7 +59,7 @@ RustCodeGraph 的 `query`/`node` 确认 `Extended`（`:426`）、`markers`（`:6
 
 参数标记错误区分语法 `42601`、未定义/越界参数 `42P02` 和不支持能力 `0A000`。文本解码使用 `22021`，文本值不合法使用 `22P02`，二进制形状不合法使用 `22P03`，日期时间不合法使用 `22007`，OID 数值溢出使用 `22003`。引擎 `ConnError` 经 `sqlstate` 映射；执行闭包自身的 `io::Error` 在协议层包装为 `XX000` 文本。
 
-当前明确限制包括：不支持 dollar-quoted SQL；不接受客户端直接发送 `?`；普通引擎查询不能推断未给定/为 0 的参数 OID；文本/binary OID 仅支持列出的子集；bytea 文本只支持 `\\x` 十六进制；时间精度最多微秒；日期限于引擎的 1..=9999 年；空 prepared statement 不支持。对普通 SQL，metadata 参数数与改写后的 marker 出现次数不一致会先关闭刚创建的引擎 handle，再报错，避免资源泄漏。
+当前明确限制包括：不支持 dollar-quoted SQL；不接受客户端直接发送 `?`；普通引擎查询仅从共享 AST 的直接 int4/int8 显式转换推断未给定/为 0 的参数 OID，未受约束的参数返回 `42P18`；文本/binary OID 仅支持列出的子集；bytea 文本只支持 `\\x` 十六进制；时间精度最多微秒；日期限于引擎的 1..=9999 年；空 prepared statement 不支持。对普通 SQL，metadata 参数数与改写后的 marker 出现次数不一致会先关闭刚创建的引擎 handle，再报错，避免资源泄漏。
 
 `Extended::handle` 将语义错误转成 PostgreSQL ErrorResponse 并进入等待 Sync 状态；真正的 socket 写错误仍以 `io::Result` 返回连接循环。Execute 在引擎错误和正常编码后都调用 `finish_protocol_response`，若 `QueryResult` 带 `response_lifecycle` 则显式 `finish()`。
 
@@ -83,3 +83,9 @@ RustCodeGraph 的 `query`/`node` 确认 `Extended`（`:426`）、`markers`（`:6
 - 修改 statement/portal 生命周期：集中检查 `Parse` 替换、`reset_unnamed`、`Close` 和 `Sync` 四个清理点，确保仅真实引擎 statement 调用 `close_prepared_statement`，且关联 portal 不悬挂。相关回归应留在独立 `pg_extended_test.rs`，不要把测试嵌入生产源文件。
 - 新增结果格式或流式执行：`description_formats` 与 Execute 编码必须保持同一 OID、长度和 format code；当前 portal 完整缓存结果，若改为流式需要重新定义 response lifecycle、取消、错误后 Sync、事务边界和 portal 重入语义。
 - 兼容风险集中在 PostgreSQL SQLSTATE、消息顺序、statement/portal 命名规则和 Describe/Execute 元数据一致性；性能风险集中在 SQL marker 线性扫描、metadata/参数克隆及完整结果缓存。任何优化都应保持客户端可观察顺序，并用真实监听器测试验证。
+
+## 显式整数参数约束
+
+普通 Parse 先取得 `PreparedMetadata.parameter_cast_oids`，其索引是 engine `?` 的出现顺序。PG 层用现有 mapping 将约束折叠为 `$n` 编号顺序；省略/0 OID 使用首先出现的直接整数 cast，显式非零 OID 是源类型，不被目标 cast 覆盖。重复或乱序引用仍按 mapping 扩展 Bind 参数。未知参数在注册 PG statement 前关闭刚创建的 engine statement，返回 `42P18`。
+
+int4/int8 文本参数先清理 ASCII 首尾空白，使用有界整数解析区分语法 `22P02` 和溢出 `22003`。Bind 在全部参数和格式校验后才插入 portal。对于参数均受直接整数转换约束的语句，Bind 后共享内核会重解析字面值；结果列名沿用 Parse 描述，结果类型仍来自实际执行并接受原有一致性校验。`pg_core_integer_parameter_types` 通过真实 TCP 与 libpq 验证参数描述字节、编号绑定、NULL、显式源类型和 Sync 恢复。

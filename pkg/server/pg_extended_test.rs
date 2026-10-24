@@ -344,7 +344,7 @@ fn parse_bind_execute_sync() {
     );
     let unsupported = read(&mut socket);
     assert_eq!(unsupported.0, b'E');
-    assert!(unsupported.1.windows(5).any(|w| w == b"0A000"));
+    assert!(unsupported.1.windows(5).any(|w| w == b"42P18"));
     // Simple Query is also discarded until Sync after an extended error.
     send(&mut socket, b'Q', b"DELETE FROM public.t\0");
     send(&mut socket, b'S', b"");
@@ -1383,4 +1383,237 @@ fn pg_core_dialect_prepared_lifecycle() {
     drop(socket);
     _cleanup.0.close();
     assert!(TcpStream::connect(addr).is_err());
+}
+
+#[test]
+fn pg_core_integer_parameter_types() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    parse(&mut socket, "inferred", "SELECT ($1)::int4", &[]);
+    assert_eq!(
+        read(&mut socket),
+        (b'1', vec![]),
+        "explicit cast must infer omitted OID"
+    );
+    send(&mut socket, b'D', b"Sinferred\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [
+                1i16.to_be_bytes().as_slice(),
+                23u32.to_be_bytes().as_slice()
+            ]
+            .concat()
+        )
+    );
+    assert_eq!(read(&mut socket).0, b'T');
+    for value in [Some("17"), None] {
+        bind(&mut socket, "", "inferred", &[value]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[value])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+
+    for (name, sql, supplied, expected, inputs, outputs) in [
+        (
+            "reordered",
+            "SELECT $2::int4 AS b, $1::int8 AS a, $2::int4 AS c",
+            vec![],
+            vec![20u32, 23],
+            vec![Some("9007199254740993"), Some("17")],
+            vec![Some("17"), Some("9007199254740993"), Some("17")],
+        ),
+        (
+            "zero",
+            "SELECT CAST($1 AS bigint)",
+            vec![0],
+            vec![20],
+            vec![None],
+            vec![None],
+        ),
+        (
+            "source",
+            "SELECT $1::int4",
+            vec![20],
+            vec![20],
+            vec![Some("17")],
+            vec![Some("17")],
+        ),
+        (
+            "mixed",
+            "SELECT $1::int4, $1::int8",
+            vec![],
+            vec![23],
+            vec![Some("17")],
+            vec![Some("17"), Some("17")],
+        ),
+        (
+            "reverse",
+            "SELECT $1::int8, $1::int4",
+            vec![],
+            vec![20],
+            vec![Some("17")],
+            vec![Some("17"), Some("17")],
+        ),
+        (
+            "offset",
+            "SELECT 'question ? $8', /* ? $3 */ ($1)::int4",
+            vec![],
+            vec![23],
+            vec![Some("19")],
+            vec![Some("question ? $8"), Some("19")],
+        ),
+    ] {
+        parse(&mut socket, name, sql, &supplied);
+        assert_eq!(read(&mut socket), (b'1', vec![]), "{sql}");
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        let mut description = (expected.len() as i16).to_be_bytes().to_vec();
+        for oid in expected {
+            description.extend_from_slice(&oid.to_be_bytes());
+        }
+        assert_eq!(read(&mut socket), (b't', description), "{sql}");
+        assert_eq!(read(&mut socket).0, b'T');
+        bind(&mut socket, "", name, &inputs);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&outputs)), "{sql}");
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    // Failed Parse leaves no statement; failed Bind leaves no portal.
+    parse(&mut socket, "retry", "SELECT $2::int4", &[]);
+    assert_state(&read(&mut socket), "42P18");
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    parse(&mut socket, "retry", "SELECT $1::int4", &[]);
+    assert_eq!(read(&mut socket).0, b'1');
+    for (value, state) in [("12x", "22P02"), ("2147483648", "22003")] {
+        bind(&mut socket, "failed", "retry", &[Some(value)]);
+        assert_state(&read(&mut socket), state);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+        send(&mut socket, b'D', b"Pfailed\0");
+        assert_state(&read(&mut socket), "34000");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+        bind(&mut socket, "failed", "retry", &[Some("31")]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "failed", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[Some("31")])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg_parameter_writes (id INT)"
+        )[0]
+        .0,
+        b'C'
+    );
+    parse(
+        &mut socket,
+        "writes",
+        "INSERT INTO public.pg_parameter_writes VALUES ($1)",
+        &[23],
+    );
+    assert_eq!(read(&mut socket).0, b'1');
+    bind(&mut socket, "write_failed", "writes", &[Some("2147483648")]);
+    assert_state(&read(&mut socket), "22003");
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    execute(&mut socket, "write_failed", 0);
+    assert_state(&read(&mut socket), "34000");
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT count(*) FROM public.pg_parameter_writes"
+        )[1],
+        (b'D', row(&[Some("0")]))
+    );
+    bind(&mut socket, "write_failed", "writes", &[Some("31")]);
+    assert_eq!(read(&mut socket).0, b'2');
+    execute(&mut socket, "write_failed", 0);
+    assert_eq!(read(&mut socket).0, b'C');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    assert_eq!(
+        query(&mut socket, "SELECT id FROM public.pg_parameter_writes")[1],
+        (b'D', row(&[Some("31")]))
+    );
+    assert_eq!(
+        query(&mut socket, "DROP TABLE public.pg_parameter_writes")[0].0,
+        b'C'
+    );
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_core_parameters.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    cleanup.0.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
+
+fn assert_state(message: &(u8, Vec<u8>), state: &str) {
+    assert_eq!(message.0, b'E', "{message:?}");
+    assert!(
+        message
+            .1
+            .windows(6)
+            .any(|bytes| bytes == [b"C", state.as_bytes()].concat()),
+        "{message:?}"
+    );
 }

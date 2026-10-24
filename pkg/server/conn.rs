@@ -635,6 +635,8 @@ pub struct PreparedMetadata {
     pub native_types: Vec<NativeType>,
     pub statement_id: u32,
     pub parameter_count: usize,
+    /// Explicit integer cast constraints in engine marker occurrence order.
+    pub parameter_cast_oids: Vec<u32>,
     pub columns: Vec<ColumnInfo>,
 }
 

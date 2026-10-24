@@ -144,6 +144,17 @@ pub(crate) fn markers(sql: &str) -> Result<(String, Vec<usize>)> {
     Ok((String::from_utf8(output).unwrap(), map))
 }
 
+fn integer_parameter<T: std::str::FromStr<Err = std::num::ParseIntError>>(text: &str) -> Result<T> {
+    let text = text.trim_matches(|c: char| c.is_ascii_whitespace());
+    text.parse()
+        .map_err(|error: std::num::ParseIntError| match error.kind() {
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
+                crate::pg_extended::error("22003", "integer out of range")
+            }
+            _ => crate::pg_extended::error("22P02", "invalid input syntax for integer"),
+        })
+}
+
 pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let Some(value) = value else {
         return Ok(BinaryParam {
@@ -174,20 +185,8 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_le_bytes()
                 .to_vec(),
         ),
-        23 => (
-            3,
-            text.parse::<i32>()
-                .map_err(|_| invalid())?
-                .to_le_bytes()
-                .to_vec(),
-        ),
-        20 => (
-            8,
-            text.parse::<i64>()
-                .map_err(|_| invalid())?
-                .to_le_bytes()
-                .to_vec(),
-        ),
+        23 => (3, integer_parameter::<i32>(text)?.to_le_bytes().to_vec()),
+        20 => (8, integer_parameter::<i64>(text)?.to_le_bytes().to_vec()),
         700 => (
             4,
             text.parse::<f32>()
@@ -409,6 +408,7 @@ struct Statement {
     command: Option<&'static str>,
 }
 struct Portal {
+    integer_parameters: bool,
     catalog: Option<crate::pg_catalog::CatalogQuery>,
     session_query: Option<crate::pg_session::SessionQuery>,
     statement_name: String,
@@ -563,19 +563,12 @@ impl Extended {
                     return Err(error("08P01", "too many parameter OIDs"));
                 }
                 oids.resize(n, 0);
-                // The current engine does not expose inferred parameter types.
-                // Report that limitation before registering a misleading statement.
-                if oids.contains(&0) {
-                    return Err(error(
-                        "0A000",
-                        "parameter type inference is unavailable; supply explicit OIDs",
-                    ));
-                }
                 for oid in &oids {
                     if catalog.is_none()
                         && !matches!(
                             *oid,
-                            16 | 17
+                            0 | 16
+                                | 17
                                 | 20
                                 | 21
                                 | 23
@@ -619,6 +612,20 @@ impl Extended {
                         let _ = context.close_prepared_statement(metadata.statement_id);
                     }
                     return Err(error("0A000", "engine parameter count mismatch"));
+                }
+                // Inference comes from parsed engine expressions, in occurrence
+                // order. Fold those constraints into PostgreSQL parameter order;
+                // the first direct cast fixes an unspecified source type.
+                for (index, oid) in mapping.iter().zip(&metadata.parameter_cast_oids) {
+                    if oids[*index] == 0 {
+                        oids[*index] = *oid;
+                    }
+                }
+                if oids.contains(&0) {
+                    if catalog.is_none() && session_query.is_none() {
+                        let _ = context.close_prepared_statement(metadata.statement_id);
+                    }
+                    return Err(error("42P18", "could not determine data type of parameter"));
                 }
                 if let Some(previous) = self.statements.remove(&name) {
                     if previous.catalog.is_none() && previous.session_query.is_none() {
@@ -728,6 +735,12 @@ impl Extended {
                 self.portals.insert(
                     name,
                     Portal {
+                        integer_parameters: !statement.mapping.is_empty()
+                            && statement
+                                .metadata
+                                .parameter_cast_oids
+                                .iter()
+                                .all(|oid| *oid != 0),
                         catalog,
                         session_query: statement.session_query.clone(),
                         statement_name,
@@ -813,16 +826,21 @@ impl Extended {
                         }
                     };
                     self.session.record_success(Some(command), context.as_ref());
-                    // A parameter-free prepared statement has fixed engine-derived
-                    // types. Constant projections may omit record-set fields; use
-                    // the original prepare metadata only in that case. Parameterized
-                    // projections remain unsupported when their native types are absent.
+                    // Constant evaluation may omit record-set fields. The original
+                    // AST types remain fixed for parameter-free SQL.
                     if portal.args.is_empty()
                         && result.native_types.is_empty()
                         && result.columns.len() == portal.native_types.len()
                     {
                         result.native_types = portal.native_types.clone();
                         result.columns = portal.columns.clone();
+                    }
+                    // Binding reparses literals in the shared kernel. Keep the
+                    // prepared labels while still checking actual result types.
+                    if portal.integer_parameters && result.columns.len() == portal.columns.len() {
+                        for (column, prepared) in result.columns.iter_mut().zip(&portal.columns) {
+                            column.name.clone_from(&prepared.name);
+                        }
                     }
                     let encoded =
                         crate::pg_result::encode_formats(&result, command, &portal.formats)

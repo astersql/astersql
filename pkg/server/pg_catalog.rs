@@ -1021,6 +1021,7 @@ impl CatalogQuery {
         // Catalog statement identity belongs to the PG statement name, not an
         // engine prepared statement. No backend handle is allocated or closed.
         PreparedMetadata {
+            parameter_cast_oids: Vec::new(),
             statement_id: 0,
             parameter_count: self.parameter_oids.len(),
             columns,

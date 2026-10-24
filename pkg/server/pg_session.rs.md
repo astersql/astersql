@@ -77,3 +77,7 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 扩展 search_path 支持时，必须同步审计 `public_precedes_catalog`、`has_public`、`schema`、`pg_catalog.rs` 的隐式关系遮蔽和 `pg_name.rs` 的关系改写。任意 schema、`$user` 或大小写/引号规则不能只放宽解析器；还需证明该名字如何映射到 TiDB database/infoschema，并保持显式 `pg_catalog`、隐式 catalog、CTE 和原生表的优先级。
 
 测试逻辑必须继续放在独立文件。解析器边界优先扩展 `pkg/server/pg_session_test.rs`；连接隔离、错误恢复、名称可见性与简单/扩展协议行为扩展 `pkg/server/pg_query_test.rs`；目录遮蔽扩展 `pkg/server/pg_catalog_test.rs`；Parse/Bind/Describe/Execute 的元数据或 portal 生命周期可补在 `pkg/server/pg_extended_test.rs`。重点兼容风险是客户端依赖的 SQLSTATE、列标签/类型、CommandComplete 标签、路径优先级和 prepared statement 的执行时状态。
+
+## 整数参数元数据接线
+
+本地会话 `metadata()` 的 `parameter_cast_oids` 为空，与零参数数目一致；不会创建或推断 engine 参数。

@@ -1089,30 +1089,38 @@ fn run_session_worker(
             }
             SessionRequest::Prepare { sql, response } => {
                 let result = session
-                    .prepare_protocol_statement(&sql)
-                    .and_then(|(statement_id, parameter_count, fields)| {
-                        Ok(PreparedMetadata {
-                            native_types: fields
-                                .iter()
-                                .map(|field| {
-                                    let tp = &field.column.FieldType;
-                                    crate::conn::NativeType {
-                                        code: tp.GetType(),
-                                        flags: tp.GetFlag(),
-                                        length: tp.GetFlen(),
-                                        decimal: tp.GetDecimal(),
-                                    }
-                                })
-                                .collect(),
-                            statement_id: u32::try_from(statement_id).map_err(|_| {
-                                astersql_session::SessionError::new(
-                                    "prepared statement id exceeds protocol width",
-                                )
-                            })?,
-                            parameter_count,
-                            columns: fields.iter().map(protocol_result_column).collect(),
-                        })
+                    .protocol_integer_parameter_types(&sql)
+                    .and_then(|parameter_cast_oids| {
+                        session
+                            .prepare_protocol_statement(&sql)
+                            .map(|metadata| (metadata, parameter_cast_oids))
                     })
+                    .and_then(
+                        |((statement_id, parameter_count, fields), parameter_cast_oids)| {
+                            Ok(PreparedMetadata {
+                                parameter_cast_oids,
+                                native_types: fields
+                                    .iter()
+                                    .map(|field| {
+                                        let tp = &field.column.FieldType;
+                                        crate::conn::NativeType {
+                                            code: tp.GetType(),
+                                            flags: tp.GetFlag(),
+                                            length: tp.GetFlen(),
+                                            decimal: tp.GetDecimal(),
+                                        }
+                                    })
+                                    .collect(),
+                                statement_id: u32::try_from(statement_id).map_err(|_| {
+                                    astersql_session::SessionError::new(
+                                        "prepared statement id exceeds protocol width",
+                                    )
+                                })?,
+                                parameter_count,
+                                columns: fields.iter().map(protocol_result_column).collect(),
+                            })
+                        },
+                    )
                     .map_err(|error| ConnError::Session(error.to_string()));
                 let _ = response.send(result);
             }

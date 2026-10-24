@@ -103,3 +103,7 @@ Rust 当前并非 Go `conn.go` 的完全等价实现。Go `Run`/`dispatch` 还�
 ## PostgreSQL int4 显式转换（2026-10-24）
 
 ConnError::PgInt4 保留严格 int4 转换的有类型错误，Display 只提供固定诊断文本；PG SQLSTATE 在 pg_conn 的枚举分支中决定。
+
+## 整数参数元数据接线
+
+`PreparedMetadata.parameter_cast_oids` 按 engine marker 出现顺序承接共享 AST 的直接整数转换约束（0 表示本里程碑不能定型）；PG 层据此生成编号参数描述，不从 Bind 值推断。

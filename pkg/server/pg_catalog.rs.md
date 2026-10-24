@@ -76,3 +76,7 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 新增原生类型映射应同步 `COLUMN_TYPES`、`native_column_type`、`format_column_type`、`column_default` 和线协议元数据；新增对象身份应先进入 `pg_oid`，再让 provider、regclass、定义函数共享同一映射。新增参数类型要同步 `catalog_parameter_type` 以及 `pg_extended.rs` 的文本/二进制参数解码。
 
 测试必须放在独立文件而非 `pg_catalog.rs` 内。首选扩展 `pkg/server/pg_catalog_test.rs` 的对应主题；纯 DataGrip 模板放 `pg_datagrip_test.rs`，Parse/Bind/Execute 和参数放 `pg_extended_test.rs`，解析边界放 `pg_catalog_query_test.rs`，线类型放 `pg_types_test.rs`，真实客户端兼容放 `pg_client_integration_test.rs`。重点风险是 OID 稳定性、客户端依赖的列名/类型/顺序、snapshot 一致性、NULL 语义、资源上限及不受控笛卡尔积。
+
+## 整数参数元数据接线
+
+目录 `metadata()` 的 `parameter_cast_oids` 为空；目录参数类型仍由本模块既有目录分析决定，不进入共享 engine 的直接整数约束折叠。

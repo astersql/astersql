@@ -157,6 +157,7 @@ impl SessionQuery {
             _ => None,
         };
         let mut result = PreparedMetadata {
+            parameter_cast_oids: Vec::new(),
             statement_id: 0,
             parameter_count: 0,
             columns: Vec::new(),

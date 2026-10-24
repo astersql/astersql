@@ -2805,3 +2805,68 @@ impl astersql_executor::select::StatementContextRuntime for ConcreteSession {
         Ok(())
     }
 }
+
+impl ConcreteSession {
+    /// Infer only direct explicit integer constraints from the canonical AST.
+    /// Offsets refer to the unchanged engine SQL, including repeated markers.
+    pub fn protocol_integer_parameter_types(&self, sql: &str) -> SessionResult<Vec<u32>> {
+        let markers = parameter_markers(sql);
+        let mut oids = vec![0; markers.len()];
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
+            return Ok(oids);
+        }
+        struct Constraints(Vec<(usize, u32)>);
+        impl ast::ExprNodeVisitor for Constraints {
+            fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::Cast {
+                    Expr, FunctionType, ..
+                } = &input.Kind
+                {
+                    let oid = match FunctionType {
+                        ast::CastFunctionType::PostgreSQLInt4 => 23,
+                        ast::CastFunctionType::PostgreSQLInt8 => 20,
+                        _ => 0,
+                    };
+                    let mut source = Expr.as_ref();
+                    while let ast::ExprKind::Parentheses(inner) = &source.Kind {
+                        source = inner;
+                    }
+                    if oid != 0
+                        && let ast::ExprKind::ParamMarker { Offset } = source.Kind
+                    {
+                        self.0.push((Offset, oid));
+                    }
+                }
+                (input.clone(), false)
+            }
+            fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                (input.clone(), true)
+            }
+        }
+        let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let mut constraints = Constraints(Vec::new());
+        for statement in &statements {
+            // This milestone admits direct SELECT constraints, not general
+            // inference through DML, subqueries, functions or table schemas.
+            if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
+                for field in &select.Fields.Fields {
+                    if let Some(expression) = &field.Expr {
+                        let _ = expression.Accept(&mut constraints);
+                    }
+                }
+                for expression in select.Where.iter().chain(select.Having.iter()) {
+                    let _ = expression.Accept(&mut constraints);
+                }
+                for item in select.GroupBy.iter().chain(&select.OrderBy) {
+                    let _ = item.Expr.Accept(&mut constraints);
+                }
+            }
+        }
+        for (offset, oid) in constraints.0 {
+            if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
+                oids[index] = oid;
+            }
+        }
+        Ok(oids)
+    }
+}

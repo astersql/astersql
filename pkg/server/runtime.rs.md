@@ -97,3 +97,7 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 ## PostgreSQL int4 显式转换（2026-10-24）
 
 session_protocol_error 在普通执行、预处理执行与 recordset 收取边界保留 SessionError 中的 PgInt4Error，其他 SessionError 维持原消息桥接。事务失败和恢复继续使用既有 PG 状态机。
+
+## 整数参数元数据接线
+
+Prepare worker 先调用 `ConcreteSession::protocol_integer_parameter_types` 获取连接方言下共享 AST 的直接整数约束，再准备真实 statement；约束放入 `PreparedMetadata.parameter_cast_oids` 返回 PG 消费者。MySQL 连接返回零约束且不改变原有 prepared 执行语义。
