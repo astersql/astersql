@@ -1830,7 +1830,18 @@ impl ConcreteSession {
             })?;
         let literals = arguments
             .iter()
-            .map(ConcretePreparedArgument::sql_literal)
+            .map(|argument| {
+                let literal = argument.sql_literal()?;
+                // A parameter is an atomic expression. Without parentheses,
+                // -9223372036854775808::int8 casts the positive magnitude first.
+                if dialect == ast::SqlDialect::PostgreSQL
+                    && matches!(argument, ConcretePreparedArgument::Signed(value) if *value < 0)
+                {
+                    Ok(format!("({literal})"))
+                } else {
+                    Ok(literal)
+                }
+            })
             .collect::<SessionResult<Vec<_>>>()?;
         let bound = bind_parameter_markers(&sql, &literals)?;
         self.state.borrow_mut().observation_sql_override = Some(sql);

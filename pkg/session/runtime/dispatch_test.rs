@@ -284,3 +284,36 @@ fn pg_core_dialect_prepared_execution() {
         );
     }
 }
+
+#[test]
+fn pg_core_integer_result_metadata_negative_parameters() {
+    use crate::runtime::ConcretePreparedArgument;
+    let (domain, _) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let session = crate::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let (statement, count, fields) = session
+        .prepare_protocol_statement("SELECT ?::int4 AS v4, ?::int8 AS v8")
+        .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(fields.len(), 2);
+    for value in [i64::MIN, -9007199254740993, -17, 31] {
+        let mut sets = session
+            .execute_protocol_statement(
+                statement,
+                &[
+                    ConcretePreparedArgument::Signed(-17),
+                    ConcretePreparedArgument::Signed(value),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            sets[0].next_row().unwrap().unwrap(),
+            ["-17".to_owned(), value.to_string()]
+        );
+        assert!(sets[0].next_row().unwrap().is_none());
+        sets[0].close().unwrap();
+    }
+    session.close_protocol_statement(statement).unwrap();
+}
