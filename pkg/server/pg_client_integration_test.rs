@@ -53,6 +53,92 @@ fn pg_introspection_clients_stored_view_source() {
     assert!(crate::pg_name::stored_view_select("SELECT 1; SELECT 2").is_err());
 }
 
+struct CloseServer<'a>(&'a crate::server::Server);
+
+impl Drop for CloseServer<'_> {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+#[test]
+fn pg_core_libpq_insert_readback() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let database = format!("pg_core_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    // Capture spawn/client failures until after teardown; the server guard also
+    // closes listeners and their sessions if setup or cleanup panics.
+    let result = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_core_libpq.py"
+        ))
+        .arg(address.port().to_string())
+        .arg(&database)
+        .env_remove("PG_JDBC_LIBRARIES")
+        .env_remove("PG_JAVA")
+        .env_remove("JAVA_HOME")
+        .env_remove("CLASSPATH")
+        .output();
+    server.close();
+    native
+        .execute(&format!("DROP DATABASE {database}"))
+        .unwrap();
+    assert!(TcpStream::connect(address).is_err(), "PG listener leaked");
+    let output = result.expect("Python 3 is required for the independent libpq client");
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "independent libpq workflow failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn start_client_server(
+    domain: Arc<astersql_domain::Domain>,
+    postgres_port: Option<u16>,
+) -> Arc<crate::server::Server> {
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    struct Driver;
+    impl crate::server::ServerDriver for Driver {
+        fn name(&self) -> &str {
+            "tidb"
+        }
+    }
+    let server = crate::server::Server::new_test(
+        crate::server::ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            postgres_port,
+            status: crate::server::StatusConfig {
+                report_status: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(Driver),
+    );
+    server
+        .set_connection_runtime(
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        )
+        .unwrap();
+    server
+        .run(Arc::new(crate::runtime::CanonicalServerDomain::new(domain)))
+        .unwrap();
+    server
+}
+
 fn run_clients(pg_enabled: bool) {
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let ui_port = std::env::var("PG_DATAGRIP_UI_PORT").ok().map(|port| {
@@ -81,44 +167,7 @@ fn run_clients(pg_enabled: bool) {
         native.execute(&format!("CREATE TABLE {database}.dg_ui_structure (id INT PRIMARY KEY, note VARCHAR(30) NOT NULL DEFAULT 'ready', UNIQUE KEY note_unique (note, id))")).unwrap();
     }
     let view_source = format!("SELECT id FROM `{database}`.`client_view_base`");
-    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
-        domain.clone(),
-        BootstrapAuthMode::InsecureRootOnly,
-    ));
-    struct Driver;
-    impl crate::server::ServerDriver for Driver {
-        fn name(&self) -> &str {
-            "tidb"
-        }
-    }
-    let server = crate::server::Server::new_test(
-        crate::server::ServerConfig {
-            host: "127.0.0.1".into(),
-            port: 0,
-            postgres_port: pg_enabled.then_some(ui_port.unwrap_or(0)),
-            status: crate::server::StatusConfig {
-                report_status: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        Arc::new(Driver),
-    );
-    server
-        .set_connection_runtime(
-            driver,
-            Arc::new(CanonicalConnectionDomain::new(domain.clone())),
-        )
-        .unwrap();
-    server
-        .run(Arc::new(crate::runtime::CanonicalServerDomain::new(domain)))
-        .unwrap();
-    struct CloseServer<'a>(&'a crate::server::Server);
-    impl Drop for CloseServer<'_> {
-        fn drop(&mut self) {
-            self.0.close();
-        }
-    }
+    let server = start_client_server(domain, pg_enabled.then_some(ui_port.unwrap_or(0)));
     let _close = CloseServer(&server);
     let address = server.postgres_listener_addr();
     let mut mysql = TcpStream::connect(server.listener_addr().unwrap()).unwrap();

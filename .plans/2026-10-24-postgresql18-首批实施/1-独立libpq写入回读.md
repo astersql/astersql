@@ -2,7 +2,7 @@
 
 批次：【批次 1】依赖：无
 
-状态：未开始
+状态：已完成
 
 目的：提供不启动 JDBC 的独立 libpq 参数化 INSERT 与真实回读测试入口。
 
@@ -120,9 +120,9 @@ Python 使用现有 PG_LIBPQ_LIBRARY 选择库，打印实际 libpq 版本、协
 ## 进度（Progress）
 
 
-- [ ] 当前消费者、失败断言和真实运行入口已核对。
-- [ ] 本行为的代码与独立测试已完成。
-- [ ] 聚焦验证、清理、Ready检查和差异审阅已记录。
+- [x] 当前消费者、失败断言和真实运行入口已核对。
+- [x] 本行为的代码与独立测试已完成。
+- [x] 聚焦验证、清理、Ready检查和差异审阅已记录。
 
 ## 发现与证据（Surprises & Discoveries）
 
@@ -137,7 +137,7 @@ Python 使用现有 PG_LIBPQ_LIBRARY 选择库，打印实际 libpq 版本、协
 ## 结果与复盘（Outcomes & Retrospective）
 
 
-尚未实施，无功能通过结论。完成时记录用户可观察结果、兼容性/正确性/性能风险、残留范围外缺口和实际交接路径；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
+已交付独立libpq参数化写入/真实回读入口，生产行为未改动，混合入口保留。最终验证证据见下文；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
 
 ## 完成
 
@@ -145,3 +145,23 @@ Python 使用现有 PG_LIBPQ_LIBRARY 选择库，打印实际 libpq 版本、协
 仅在适用行为验证通过且证据完整后改为已完成。若环境等无关原因阻止必要验证，允许状态已完成，待回归并明确缺失项，保留本文件；本行为自身失败不能借此宣布完成。无法突破的阻塞只在本文件标已阻塞，记录原因、检查与可独立继续的范围，不递归扩建依赖。
 
 有代码、测试、配置或实际说明变更时，使用 $git-commit 仅提交本任务变更，排除工作区已有删除及其他任务文件；只改编号任务状态或删除则不调用提交。最终按Agent Output Contract报告文件、验证范围、风险、确切命令、未验证项和槽位。完成证据报告后删除本编号任务文件；待回归/阻塞时保留。删除前提交中保留本任务当前证据，最终回复报告可追溯提交SHA。禁止修改或删除plan.md，不把prompt.md作为进度记录。
+
+2026-10-24 实施记录：批次1无依赖，HEAD `9736ec73b8084132c187f541c4ffb32c1d7c4aa7`，初始工作树干净。已读执行技能、根及server约束、PLANS和testing-flow；RustCodeGraph sync=0变更，已定位真实夹具。验证profile技能确实缺失。本任务提取测试夹具，无生产行为修改，按计划允许既有行为基线通过而不制造红灯。参考构建已发现Homebrew PostgreSQL 18.4，不能报告为18.6。
+
+2026-10-24 决策：仅从run_clients提取start_client_server和CloseServer供独立测试复用，原混合入口和MySQL流程保留；Python夹具移除PG_JAVA/PG_JDBC_LIBRARIES/JAVA_HOME/CLASSPATH环境，使用真实libpq，不调用JDBC。生产文件未修改，无需生产.rs.md更新；无Go/Bazel/依赖改动，不触发bazel_prepare。
+
+参考端验证：`/tmp/pg-task1-reference.sh` 初始化独立临时cluster（initdb -U root --auth=trust --no-locale，随机TCP端口），执行 `python3 pkg/server/testdata/pg_core_libpq.py "$port" postgres`，最后pg_ctl stop并删除临时目录。首次参考运行发现VARCHAR实际OID1043，夹具改用两端通用的TEXT保持明确OID25断言（本任务目标为int4 OID23），未改变生产代码或削减整数断言。最终参考运行退出0，libpq=180000、protocol=30000、参考server build=18.4 (Homebrew)，3组写入/回读、完整值、NULL/空串、表清理与后续SELECT均通过。该证据不是18.6构建验收。
+
+Ready交付检查：`make lint` 退出0；`git diff --check` 退出0。Rust fmt已退出0，聚焦行为测试编译进行中，槽位1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`，锁记录持有PID90466；阶段shell设置EXIT/INT/TERM清理自己的锁，缓存保留。
+
+首次Rust编译退出101，E0308：提取函数返回类型应为Arc<Server>（Server::new_test实际返回），已局部修复，仅测试夹具签名；本次有效测试数量0，不当作行为失败或验收证据。槽位1的阶段进程已退出并自动释放锁，保留缓存；随后重新动态领取。
+
+运行期基线：`env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_insert_readback -- --nocapture` 退出101，有效测试1个（0通过/1失败），3组目标写入、主键回读、NULL/空串和表列OID23均已通过；失败是我额外加入的`SELECT 1`期望OID23，而现实现返回OID20。整数常量定型不属于本任务，未扩修生产类型系统；用真实表列的不存在主键零行查询替代额外的常量查询，继续严格验证[23,23,25]元数据并证明连接可用，不改变写入/回读任何断言。此范围外差异留给后续整数类型任务评估，不能把它报告成已修复。原计划允许测试入口提取沿用正确行为，无需制造生产改动。
+
+2026-10-24 最终验收：最终工作树运行 `/tmp/pg-task1-slot.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_insert_readback -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_introspection_clients_mysql_only -- --nocapture'` 整体退出0。每阶段动态领取实际均为槽位1，绝对CARGO_TARGET_DIR为`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`。所有阶段子进程结束，锁目录已为空，编译缓存保留。
+
+命令与证据：`cargo fmt --all`退出0；`env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_insert_readback -- --nocapture`退出0，实际1通过/0失败，0.69s；`env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_introspection_clients_mysql_only -- --nocapture`退出0，实际1通过/0失败，0.49s。libpq=180000，protocol=30000；AsterSQL握手版本仅记录18.0 (AsterSQL)，不当作真实PG构建证据。相同最终Python夹具在独立PostgreSQL18.4 (Homebrew)临时参考端再次运行 `/tmp/pg-task1-reference.sh` 退出0（实际调用 `python3 pkg/server/testdata/pg_core_libpq.py "$port" postgres`），3组INSERT/按主键回读通过，零行列描述[23,23,25]通过。数据库/表均由真实SQL创建，写入值为(17,-41,'first write')、(29,NULL,'')、(43,2147483647,NULL)。PQcmdTuples每次=1，逐行及全表值均相符。Python finally清表/PQclear/PQfinish；Rust即使前次Python断言失败也在报告失败前执行关闭listener、删除独立数据库和listener不可连接断言，正常运行同样完成清理。独立入口不调用run_jdbc，并移除四项Java/JDBC环境变量。
+
+验证范围：WIP为聚焦迭代；Ready为上述两项聚焦运行、真实参考端、`make lint`退出0、最终`git diff --check`退出0及差异自审。因profile技能缺失，只按根AGENTS.md逐项落实，未虚构技能执行；未运行bazel_lint_changed，无需bazel_prepare。改动仅`pkg/server/pg_client_integration_test.rs`（提取真实夹具、注册独立测试）与`pkg/server/testdata/pg_core_libpq.py`（真实ctypes客户端），另本编号任务记录证据；没有生产模块、Go文件、依赖、总plan或路线图改动。
+
+风险与未验证：生产正确性/兼容性/性能无新增行为改动；测试依赖Python3与真实libpq18，缺依赖必须失败。没有运行旧libpq/JDBC混合全套、PostgreSQL18.6参考构建、生产鉴权/TLS、性能压测或RealTiKV，不能宣称这些已通过。范围外发现为整数常量SELECT 1的OID20，不在本任务修复；建议后续整数类型任务评估。下一步按原计划进入批次2。本任务已完成，提交保留证据后按用户要求删除本文件，不修改plan.md。
