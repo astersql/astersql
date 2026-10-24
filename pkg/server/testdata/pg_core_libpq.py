@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection, validate_provenance, source_snapshot
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -233,12 +233,57 @@ def integer_differential(aster_dsn):
             assert status(connection) == 0, f"{side} connection failed"
             print(side, "protocol:", protocol(connection), "server build:",
                   parameter_status(connection, b"server_version").decode(), flush=True)
-        (evidence_dir / 'environment.json').write_text(json.dumps({
-            'libpq_version': version(), 'libpq_library': str(Path(library).resolve()),
-            'python': sys.version, 'endpoints': {
-                side: {'protocol': protocol(conn),
-                       'server_version': parameter_status(conn, b'server_version').decode()}
-                for side, conn in connections.items()}}, sort_keys=True))
+        import hashlib
+        import platform
+        # dladdr resolves the image actually containing PQlibVersion, even when
+        # the loader was given a soname rather than an absolute file path.
+        class DlInfo(c.Structure):
+            _fields_ = [('filename', text), ('base', ptr), ('symbol', text), ('address', ptr)]
+        dladdr = c.CDLL(None).dladdr
+        dladdr.argtypes, dladdr.restype = [ptr, c.POINTER(DlInfo)], integer
+        info = DlInfo()
+        assert dladdr(c.cast(version, ptr), c.byref(info)), 'cannot identify loaded libpq'
+        loaded_library = Path(os.fsdecode(info.filename)).resolve(strict=True)
+        rust_build = json.loads((evidence_dir / 'rust-build.json').read_text())
+        root = Path(__file__).resolve().parents[3]
+        target = os.environ.get('PG_CORE_REFERENCE_TARGET_VERSION', '18.6')
+        metadata_path = os.environ.get('PG_CORE_REFERENCE_BUILD_FILE')
+
+        def build_metadata():
+            if not metadata_path:
+                return None
+            # Invalid/missing metadata never bypasses the gate or the SQL run.
+            try:
+                return json.loads(Path(metadata_path).read_text())
+            except (OSError, ValueError):
+                return None
+
+        def identities():
+            source = source_snapshot(root)
+            assert source['head'] == rust_build['head'], 'HEAD changed since Rust startup'
+            return {'source': source,
+                    'build': {'path': rust_build['path'], 'profile': rust_build['profile'],
+                              'sha256': hashlib.sha256(Path(rust_build['path']).read_bytes()).hexdigest()},
+                    'client': {'python': sys.version, 'library': str(loaded_library),
+                               'sha256': hashlib.sha256(loaded_library.read_bytes()).hexdigest(),
+                               'PQlibVersion': version()},
+                    'reference_build': build_metadata()}
+
+        provenance = dict(run=run_id, target_version=target, **identities(),
+                          os=platform.platform(), storage=rust_build['storage'],
+                          authentication=rust_build['authentication'], endpoints={})
+        for side, conn in connections.items():
+            initial = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn), 'unknown')
+            path_obs = observe(execute(conn, b'SHOW search_path'))
+            archive('environment_search_path', side, {'command': 'SHOW search_path'}, path_obs)
+            assert path_obs['status'] == 2 and len(path_obs['rows']) == 1
+            provenance['endpoints'][side] = {
+                'protocol': protocol(conn),
+                'server_version': parameter_status(conn, b'server_version').decode(),
+                'encoding': (parameter_status(conn, b'client_encoding') or b'').decode(),
+                'timezone': (parameter_status(conn, b'TimeZone') or b'').decode(),
+                'search_path': path_obs['rows'][0][0], 'transaction': initial}
+        (evidence_dir / 'environment.json').write_text(json.dumps(provenance, sort_keys=True))
         version_sql = "SELECT version(), current_setting('server_version_num'), '' AS archive_empty, NULL::int4 AS archive_null"
         ref = observe(execute(connections['reference'], version_sql.encode()))
         archive('reference_version', 'reference', {'command': version_sql}, ref)
@@ -250,6 +295,8 @@ def integer_differential(aster_dsn):
         assert 180000 <= int(number) < 190000, "reference must be real PostgreSQL 18.x"
         assert "PostgreSQL 18." in build and "AsterSQL" not in build
         print("reference build:", build, "server_version_num:", number, flush=True)
+        provenance['reference'] = {'version': build, 'server_version_num': number}
+        (evidence_dir / 'environment.json').write_text(json.dumps(provenance, sort_keys=True))
 
         for type_name, low, high in [("int4", -2147483648, 2147483647),
                                       ("int8", -9223372036854775808, 9223372036854775807)]:
@@ -483,6 +530,38 @@ def integer_differential(aster_dsn):
         assert registry.finish() == 104
         print("registered inputs: business=101 self_check=3 missing=0 duplicate=0", flush=True)
         print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
+        expected = dict(provenance, **identities())
+        eligible = validate_provenance(provenance, expected)
+        # Missing source or another exact version leaves functional evidence
+        # intact, but cannot become acceptance evidence for the target.
+        gate = {'run': run_id, 'target_version': target,
+                'actual_version_num': number, 'eligible': eligible,
+                'scope': '18.4 baseline only' if eligible and target == '18.4'
+                         else ('18.6 exact evidence' if eligible else 'unverified'),
+                'stable_inputs': all(provenance[k] == expected[k]
+                                     for k in ['source', 'build', 'client', 'reference_build'])}
+        (evidence_dir / 'provenance-gate.json').write_text(json.dumps(gate, sort_keys=True))
+        assert gate['stable_inputs'], 'provenance inputs changed during run'
+        # Negative controls use copies of this run's real observations.
+        if eligible:
+            mutations = []
+            changed = copy.deepcopy(provenance); changed['target_version'] = '18.6' if target == '18.4' else '18.4'
+            mutations.append(changed)
+            for key in ['reference', 'reference_build', 'endpoints', 'client', 'source', 'build']:
+                changed = copy.deepcopy(provenance); changed[key] = None
+                mutations.append(changed)
+            for section, field in [('client', 'sha256'), ('source', 'workspace_sha256'),
+                                   ('build', 'sha256')]:
+                changed = copy.deepcopy(provenance)
+                changed[section][field] = '0' * 64
+                mutations.append(changed)
+            changed = copy.deepcopy(provenance)
+            del changed['endpoints']['aster']['search_path']
+            mutations.append(changed)
+            for changed in mutations:
+                assert not validate_provenance(changed, expected), 'provenance mutation accepted'
+            assert validate_provenance(provenance, expected)
+        print('provenance gate:', json.dumps(gate, sort_keys=True), flush=True)
     finally:
         business_failed = sys.exc_info()[0] is not None
         cleanup_errors = []

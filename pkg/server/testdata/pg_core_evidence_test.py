@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 import unittest
 
-from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows, compare_metadata, compare_rejection
+from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows, compare_metadata, compare_rejection, validate_provenance
 
 
 class CaseRegistryTests(unittest.TestCase):
@@ -623,3 +623,90 @@ class RejectionComparisonTests(unittest.TestCase):
         self.assertTrue(compare_rows(error, error, 'strict'))
         self.assertTrue(compare_metadata(error, error))
         self.assertFalse(compare_rejection({'error': error}, {'error': error}, self.contract))
+
+
+class ProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        # Version/protocol strings retained from the real task6 libpq observation.
+        # Digests are validator test inputs, not claims of a new database run.
+        self.sample = {
+            'run': 'provenance-unit', 'target_version': '18.4',
+            'source': {'head': 'a' * 40, 'workspace_sha256': 'b' * 64},
+            'build': {'path': '/test/server', 'sha256': 'c' * 64,
+                      'profile': 'cargo-test-default-features'},
+            'client': {'python': '3.12.11', 'library': '/test/libpq.dylib',
+                       'sha256': 'd' * 64, 'PQlibVersion': 180000},
+            'os': 'Darwin arm64', 'storage': 'CreateAnalyzeSession test storage',
+            'authentication': 'InsecureRootOnly',
+            'endpoints': {side: {'protocol': 30000, 'server_version': version,
+                                'encoding': 'UTF8', 'timezone': 'UTC',
+                                'search_path': 'public', 'transaction': 'I'}
+                          for side, version in [('aster', '18.0 (AsterSQL)'),
+                                                ('reference', '18.4 (Homebrew)')]},
+            'reference': {'server_version_num': '180004',
+                          'version': 'PostgreSQL 18.4 (Homebrew) on aarch64-apple-darwin25.4.0, compiled by Apple clang version 21.0.0 (clang-2100.0.123.102), 64-bit'},
+            'reference_build': {'version': '18.4', 'server_version_num': 180004,
+                                'source': 'Homebrew receipt', 'artifact_sha256': 'e' * 64,
+                                'configuration': 'pg_config --configure output'}}
+        self.expected = copy.deepcopy(self.sample)
+
+    def reject(self, mutate):
+        changed = copy.deepcopy(self.sample)
+        mutate(changed)
+        self.assertFalse(validate_provenance(changed, self.expected))
+
+    def test_collected_exact_baseline(self):
+        self.assertTrue(validate_provenance(self.sample, self.expected))
+
+    def test_18_4_cannot_claim_18_6(self):
+        self.sample['target_version'] = self.expected['target_version'] = '18.6'
+        self.assertFalse(validate_provenance(self.sample, self.expected))
+
+    def test_handshake_alone(self):
+        self.reject(lambda x: x['reference'].pop('version'))
+
+    def test_missing_build_source(self):
+        self.reject(lambda x: x['reference_build'].pop('source'))
+
+    def test_library_changed(self):
+        self.reject(lambda x: x['client'].update(sha256='f' * 64))
+
+    def test_workspace_changed(self):
+        self.reject(lambda x: x['source'].update(workspace_sha256='f' * 64))
+
+    def test_environment_missing(self):
+        self.reject(lambda x: x['endpoints']['aster'].pop('search_path'))
+
+    def test_build_version_mismatch(self):
+        self.reject(lambda x: x['reference_build'].update(server_version_num=180006))
+
+    def test_missing_build_file(self):
+        self.reject(lambda x: x.update(reference_build=None))
+
+    def test_binary_changed(self):
+        self.reject(lambda x: x['build'].update(sha256='f' * 64))
+
+    def test_raw_unchanged(self):
+        before = copy.deepcopy(self.sample)
+        self.assertTrue(validate_provenance(self.sample, self.expected))
+        self.assertEqual(self.sample, before)
+
+    def test_both_records_missing_evidence(self):
+        for key in ['reference', 'reference_build', 'endpoints', 'client', 'source', 'build']:
+            changed = copy.deepcopy(self.sample)
+            changed[key] = None
+            self.assertFalse(validate_provenance(changed, changed), key)
+        for key in ['encoding', 'timezone', 'search_path', 'transaction', 'protocol']:
+            changed = copy.deepcopy(self.sample)
+            del changed['endpoints']['aster'][key]
+            self.assertFalse(validate_provenance(changed, changed), key)
+
+    def test_exact_18_6_structure(self):
+        # Tests the schema only; this does not supply real PostgreSQL18.6 evidence.
+        changed = copy.deepcopy(self.sample)
+        changed['target_version'] = '18.6'
+        changed['reference'] = {'version': 'PostgreSQL 18.6 (controlled build)',
+                                'server_version_num': '180006'}
+        changed['reference_build'].update(version='18.6', server_version_num=180006)
+        changed['endpoints']['reference']['server_version'] = '18.6'
+        self.assertTrue(validate_provenance(changed, changed))

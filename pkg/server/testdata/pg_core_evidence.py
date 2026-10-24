@@ -286,3 +286,71 @@ def compare_rejection(actual, reference, contract):
     return (collected(actual) and collected(reference)
             and actual['before']['rows'] == reference['before']['rows']
             and actual['after']['rows'] == reference['after']['rows'])
+
+
+def source_snapshot(root):
+    """Hash tracked and nonignored Rust build/fixture inputs, including deletions."""
+    import hashlib
+    import subprocess
+    root = Path(root)
+    names = subprocess.check_output([
+        'git', '-C', str(root), 'ls-files', '-z', '--cached', '--others',
+        '--exclude-standard', '--', '*.rs', '*.toml', 'Cargo.lock', '*.py', '*.json',
+        '.cargo/*']).split(b'\0')
+    files = {}
+    for name in sorted(set(names) - {b''}):
+        relative = name.decode()
+        path = root / relative
+        files[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    return {'head': subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                                           text=True).strip(),
+            'workspace_sha256': hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+            'files': files}
+
+
+def validate_provenance(record, expected):
+    """Fail closed: exact target, independent build source and stable run inputs.
+
+    expected is a fresh end-of-run collection, never a caller-declared version.
+    The reference build document is controlled external metadata, not SQL output.
+    """
+    def digest(value):
+        return isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) is not None
+
+    try:
+        target = record['target_version']
+        if target not in {'18.4', '18.6'} or expected['target_version'] != target:
+            return False
+        for key in ['run', 'source', 'build', 'client', 'os', 'storage', 'authentication',
+                    'endpoints', 'reference', 'reference_build']:
+            if not record[key] or record[key] != expected[key]:
+                return False
+        source, build, client = (record[key] for key in ['source', 'build', 'client'])
+        if (not re.fullmatch(r'[a-f0-9]{40}', source['head'])
+                or not digest(source['workspace_sha256'])
+                or not Path(build['path']).is_absolute() or not digest(build['sha256'])
+                or build['profile'] != 'cargo-test-default-features'
+                or not Path(client['library']).is_absolute() or not digest(client['sha256'])
+                or not isinstance(client['PQlibVersion'], int) or client['PQlibVersion'] < 180000
+                or not client['python']):
+            return False
+        for side in ['aster', 'reference']:
+            endpoint = record['endpoints'][side]
+            if (endpoint['protocol'] not in {30000, 30002} or not endpoint['server_version']
+                    or not all(isinstance(endpoint[k], str) and endpoint[k]
+                               for k in ['encoding', 'timezone', 'search_path'])
+                    or endpoint['transaction'] != 'I'):
+                return False
+        reference, metadata = record['reference'], record['reference_build']
+        number = 180000 + int(target.split('.')[1])
+        return (str(reference['server_version_num']) == str(number)
+                and reference['version'].startswith('PostgreSQL ' + target + ' ')
+                and record['endpoints']['reference']['server_version'].split()[0] == target
+                and metadata['version'] == target and metadata['server_version_num'] == number
+                and isinstance(metadata['source'], str) and bool(metadata['source'].strip())
+                and digest(metadata['artifact_sha256'])
+                and isinstance(metadata['configuration'], str) and bool(metadata['configuration'].strip())
+                and record['storage'] == 'CreateAnalyzeSession test storage'
+                and record['authentication'] == 'InsecureRootOnly')
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False

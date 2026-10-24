@@ -123,6 +123,21 @@ fn pg_core_libpq_integer_differential() {
     std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
     std::fs::create_dir(&evidence).unwrap();
     println!("PG_CORE_EVIDENCE_DIR={}", evidence.display());
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repository)
+        .output()
+        .expect("git HEAD is required for provenance");
+    assert!(head.status.success());
+    let build = serde_json::json!({
+        "head": String::from_utf8(head.stdout).unwrap().trim(),
+        "path": std::env::current_exe().unwrap(),
+        "profile": "cargo-test-default-features",
+        "storage": "CreateAnalyzeSession test storage",
+        "authentication": "InsecureRootOnly"
+    });
+    std::fs::write(evidence.join("rust-build.json"), build.to_string()).unwrap();
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let server = start_client_server(domain, Some(0));
     let _close = CloseServer(&server);
