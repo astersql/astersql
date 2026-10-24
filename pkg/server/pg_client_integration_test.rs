@@ -1123,6 +1123,11 @@ fn pg_dialect_04_libpq() {
     pg_dialect_libpq(4);
 }
 
+#[test]
+fn pg_dialect_09_libpq() {
+    pg_dialect_libpq(9);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1332,6 +1337,34 @@ fn pg_dialect_libpq(task: u8) {
         )
         .unwrap();
     }
+    if task == 9 {
+        for sql in [
+            "SELECT ARRAY[1,2]",
+            "SELECT ARRAY[]",
+            "SELECT ARRAY[NULL,1]",
+            "SELECT ARRAY[$2,$1,$2]",
+            "SELECT ARRAY[1,2",
+        ] {
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(&mut mysql, 0, &request);
+            let response = mysql_read(&mut mysql);
+            assert_eq!(response[0], 0xff);
+            assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1064);
+            assert_eq!(&response[4..9], b"42000");
+            let record = serde_json::json!({"sql": sql, "error_code":1064, "sqlstate":"42000", "packet":response});
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-array-isolation.jsonl"))
+                .unwrap();
+            writeln!(file, "{record}").unwrap();
+        }
+        assert_eq!(
+            mysql_query(&mut mysql, "SELECT 'ARRAY[1,2]' /* ARRAY[] */"),
+            vec![vec![Some(b"ARRAY[1,2]".to_vec())]]
+        );
+    }
     checkpoint(&mut mysql, "before");
     let mut checkpoints = 0;
     for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
@@ -1366,6 +1399,25 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 9 {
+        assert_eq!(checkpoints, 6);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["syntax_eligible"], 6);
+        assert_eq!(summary["gate_cases"], 4);
+        assert_eq!(summary["semantic_array_success"], 0);
+        assert_eq!(summary["unique_effective"], 2);
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            8
+        );
+        return;
+    }
     assert_eq!(checkpoints, if task == 4 { 8 } else { 10 });
     let summary_path = evidence.join("summary.json");
     let mut summary: serde_json::Value =

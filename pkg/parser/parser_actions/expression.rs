@@ -19,6 +19,10 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
+    PgArray,
+    PgArrayEmpty,
+    PgArrayFirst,
+    PgArrayNext,
     PgCastType,
     PgPostfixCast,
     ColumnNameAlt01,
@@ -316,6 +320,10 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        "simpleexpr_array_pgarrayelements--8ffaa3404f598f91" => Some(ExpressionRule::PgArray),
+        "pgarrayelements--6be43a6fd9578184" => Some(ExpressionRule::PgArrayEmpty),
+        "pgarraylist_expression--6d01bd618a315b86" => Some(ExpressionRule::PgArrayFirst),
+        "pgarraylist_pgarraylist_expression--5218f5a6838f5614" => Some(ExpressionRule::PgArrayNext),
         "pgcasttype_bigint--ae5884bd608717ab"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
@@ -974,6 +982,78 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         lexer: yylex,
     } = context;
     match rule {
+        ExpressionRule::PgArrayEmpty => {
+            out.item = Some(Box::new((
+                Vec::<parser_ast::ExprNode>::new(),
+                Vec::<usize>::new(),
+                Vec::<usize>::new(),
+            )));
+        }
+        ExpressionRule::PgArrayFirst | ExpressionRule::PgArrayNext => {
+            let (mut elements, mut starts, mut commas) = if rule == ExpressionRule::PgArrayNext {
+                rhs[1]
+                    .item
+                    .as_deref()
+                    .and_then(|item| {
+                        item.downcast_ref::<(Vec<parser_ast::ExprNode>, Vec<usize>, Vec<usize>)>()
+                    })
+                    .cloned()
+                    .unwrap()
+            } else {
+                (vec![], vec![], vec![])
+            };
+            let index = if rule == ExpressionRule::PgArrayNext {
+                3
+            } else {
+                1
+            };
+            elements.push(rhs[index].expr.clone().unwrap());
+            starts.push(rhs[index].offset as usize);
+            if index == 3 {
+                commas.push(rhs[2].offset as usize);
+            }
+            out.item = Some(Box::new((elements, starts, commas)));
+        }
+        ExpressionRule::PgArray => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(
+                    yylex.Errorf("ARRAY constructor requires PostgreSQL dialect", &[]),
+                );
+                return Err(1);
+            }
+            let (elements, starts, commas) = rhs[3]
+                .item
+                .as_deref()
+                .and_then(|item| {
+                    item.downcast_ref::<(Vec<parser_ast::ExprNode>, Vec<usize>, Vec<usize>)>()
+                })
+                .cloned()
+                .unwrap();
+            let start = rhs[1].offset as usize;
+            let close = rhs[4].offset as usize;
+            let spans = starts
+                .iter()
+                .enumerate()
+                .map(|(i, &start)| {
+                    let end = commas.get(i).copied().unwrap_or(close);
+                    (start, start + parser_state.src[start..end].trim_end().len())
+                })
+                .collect();
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(start as i32);
+            node_text.SetText(None, &parser_state.src[start..close + 1]);
+            out.expr = Some(parser_ast::ExprNode {
+                node_text,
+                Kind: parser_ast::ExprKind::Array {
+                    Elements: elements,
+                    ElementSpans: spans,
+                    Brackets: (rhs[2].offset as usize, close),
+                    Commas: commas,
+                },
+                OriginTextPosition: start as i32,
+                Flag: Default::default(),
+            });
+        }
         ExpressionRule::PgCastType => {
             let spelling = &rhs[1].ident;
             let tp = match spelling.to_ascii_lowercase().as_str() {
@@ -3105,7 +3185,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .as_deref()
                 .and_then(|item| item.downcast_ref::<likeEscapeSpec>());
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
-                && escape.is_some_and(|value| value.escape.len() > 1) {
+                && escape.is_some_and(|value| value.escape.len() > 1)
+            {
                 yylex.AppendError(ErrWrongArguments.GenWithStackByArgs(&["ESCAPE".into()]));
                 return Err(1);
             }
@@ -3116,8 +3197,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .copied()
                 .unwrap_or(false);
             let mut node_text = parser_ast::base::AstNode::default();
-            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
-            {
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
                 // Preserve the original predicate, including quoted tokens and
                 // comments; restored SQL cannot recover source byte spans.
                 let start = rhs[1].offset.max(0) as usize;
@@ -3176,9 +3256,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             }))
         }
         ExpressionRule::LikeOrIlikeEscapeOptAlt02 => {
-            let Some(mut expression) = rhs[rhs_len].expr.clone() else { return Ok(false) };
+            let Some(mut expression) = rhs[rhs_len].expr.clone() else {
+                return Ok(false);
+            };
             let literal = match &expression.Kind {
-                parser_ast::ExprKind::Value(value) => match &value.Datum { parser_ast::ValueDatum::String(text) => Some(text.clone()), _ => None },
+                parser_ast::ExprKind::Value(value) => match &value.Datum {
+                    parser_ast::ValueDatum::String(text) => Some(text.clone()),
+                    _ => None,
+                },
                 _ => None,
             };
             let postgres = parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL;
@@ -3190,7 +3275,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 let start = rhs[rhs_len].offset.max(0) as usize;
                 let end = rhs[rhs_len].end_offset;
                 expression.SetOriginTextPosition(start as i32);
-                expression.node_text.SetText(None, &parser_state.src[start..end]);
+                expression
+                    .node_text
+                    .SetText(None, &parser_state.src[start..end]);
             }
             out.item = Some(Box::new(likeEscapeSpec {
                 escape: literal.unwrap_or_default(),

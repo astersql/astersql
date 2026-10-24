@@ -167,6 +167,14 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             if *Not { " NOT" } else { "" },
             restore_expr(Pattern)?
         )),
+        ExprKind::Array { Elements, .. } => Ok(format!(
+            "ARRAY[{}]",
+            Elements
+                .iter()
+                .map(restore_expr)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(",")
+        )),
         ExprKind::Row(values) => Ok(format!(
             "ROW({})",
             values

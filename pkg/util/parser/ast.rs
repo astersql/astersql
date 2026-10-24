@@ -491,6 +491,9 @@ impl<'a> Restorer<'a> {
                 if *Not { "NOT " } else { "" },
                 self.expr(Pattern)?
             )),
+            ExprKind::Array { .. } => {
+                Err("ARRAY requires PostgreSQL array type analysis".to_owned())
+            }
             ExprKind::Row(values) => Ok(format!(
                 "ROW({})",
                 values

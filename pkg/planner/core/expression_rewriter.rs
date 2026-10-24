@@ -2986,6 +2986,11 @@ pub fn Leave(
             return Err(error);
         }
         match &input_node.Kind {
+            ast::ExprKind::Array { .. } => {
+                return Err(errors::New(
+                    "ARRAY constructors require array type analysis support",
+                ));
+            }
             ast::ExprKind::AggregateFunction { .. }
             | ast::ExprKind::Parentheses(_)
             | ast::ExprKind::Subquery { .. }

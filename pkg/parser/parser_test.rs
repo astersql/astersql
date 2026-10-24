@@ -3172,3 +3172,128 @@ fn pg_dialect_04_behavior() {
         "pg_dialect_04_behavior: 7 PG inputs, 1 MySQL extension baseline; projection tree/source/parameter assertions"
     );
 }
+
+#[test]
+fn pg_dialect_09_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    fn expression(sql: &str) -> parser_ast::ExprNode {
+        let result = parser::Parser::with_dialect(SqlDialect::PostgreSQL).ParseOneStmt(sql, "", "");
+        assert!(
+            result.is_ok(),
+            "ARRAY syntax must reach shared AST: {sql}: {}",
+            result.err().unwrap()
+        );
+        let stmt = result
+            .unwrap()
+            .into_any()
+            .downcast::<parser_ast::SelectStmt>()
+            .ok()
+            .unwrap();
+        stmt.Fields.Fields[0].Expr.clone().unwrap()
+    }
+    for (sql, expected) in [
+        ("SELECT ARRAY[1,2]", vec!["1", "2"]),
+        ("SELECT ARRAY[]", vec![]),
+        ("SELECT ARRAY[NULL,1]", vec!["NULL", "1"]),
+        ("SELECT ARRAY[$2,$1,$2]", vec!["$2", "$1", "$2"]),
+        (
+            "/*中*/ SELECT ARRAY[1 + 2, '中,文', $2]",
+            vec!["1 + 2", "'中,文'", "$2"],
+        ),
+    ] {
+        let expr = expression(sql);
+        let ExprKind::Array {
+            Elements,
+            ElementSpans,
+            Brackets,
+            Commas,
+        } = &expr.Kind
+        else {
+            panic!("independent ARRAY node required");
+        };
+        assert_eq!(Elements.len(), expected.len());
+        assert_eq!(Commas.len(), expected.len().saturating_sub(1));
+        assert_eq!(&sql[Brackets.0..Brackets.0 + 1], "[");
+        assert_eq!(&sql[Brackets.1..Brackets.1 + 1], "]");
+        assert_eq!(
+            expr.node_text.Text(),
+            &sql[sql.find("ARRAY").unwrap()..Brackets.1 + 1]
+        );
+        assert_eq!(expr.OriginTextPosition as usize, sql.find("ARRAY").unwrap());
+        for ((element, &(start, end)), expected) in Elements.iter().zip(ElementSpans).zip(expected)
+        {
+            assert_eq!(&sql[start..end], expected);
+            assert!(sql.is_char_boundary(start) && sql.is_char_boundary(end));
+            assert_eq!(element.OriginTextPosition as usize, start);
+            if expected.starts_with('$') {
+                assert_eq!(
+                    element.PostgreSQLParameterIndex(),
+                    Some(expected[1..].parse().unwrap())
+                );
+                assert!(
+                    matches!(element.Kind, ExprKind::ParamMarker { Offset } if Offset == start)
+                );
+            }
+        }
+        for &comma in Commas {
+            assert_eq!(&sql[comma..comma + 1], ",");
+        }
+        if sql.contains("NULL") {
+            assert!(
+                matches!(&Elements[0].Kind, ExprKind::Value(v) if v.Datum == parser_ast::ValueDatum::Null)
+            );
+        }
+        struct Parameters(Vec<usize>);
+        impl parser_ast::Visitor for Parameters {
+            fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+                if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                    if let Some(index) = expr.PostgreSQLParameterIndex() {
+                        self.0.push(usize::from(index));
+                    }
+                }
+                false
+            }
+            fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+                true
+            }
+        }
+        let mut parameters = Parameters(vec![]);
+        parser_ast::Node::accept(&expr, &mut parameters);
+        if sql == "SELECT ARRAY[$2,$1,$2]" {
+            assert_eq!(parameters.0, [2, 1, 2]);
+        }
+    }
+    for sql in [
+        "SELECT ARRAY[1,2",
+        "/*中*/ SELECT ARRAY[1,2",
+        "SELECT ARRAY[,1]",
+        "SELECT ARRAY[1,]",
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err());
+        if !sql.ends_with(']') {
+            assert_eq!(
+                parser.PostgreSQLEofErrorPosition(),
+                Some(sql.chars().count() + 1)
+            );
+        }
+        assert!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+    }
+    let protected = expression("SELECT 'ARRAY[1,2]' /* ARRAY[] $2 */");
+    assert!(matches!(&protected.Kind, ExprKind::Value(v) if v.text() == "ARRAY[1,2]"));
+    for sql in [
+        "SELECT ARRAY[1,2]",
+        "SELECT ARRAY[]",
+        "SELECT ARRAY[NULL,1]",
+        "SELECT ARRAY[$2,$1,$2]",
+    ] {
+        assert!(
+            parser::Parser::with_dialect(SqlDialect::MySQL)
+                .ParseOneStmt(sql, "", "")
+                .is_err()
+        );
+    }
+    println!(
+        "pg_dialect_09_behavior: 10 unique PG inputs; source/tree/parameter/visitor and 4 MySQL isolation checks"
+    );
+}

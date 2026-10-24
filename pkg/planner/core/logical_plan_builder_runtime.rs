@@ -3406,7 +3406,9 @@ fn collect_aggregate_nodes<'a>(
                 nodes.push(node);
             }
         }
-        ExprKind::Function { Args, .. } | ExprKind::Row(Args) => {
+        ExprKind::Function { Args, .. }
+        | ExprKind::Row(Args)
+        | ExprKind::Array { Elements: Args, .. } => {
             for argument in Args {
                 collect_aggregate_nodes(argument, nodes);
             }

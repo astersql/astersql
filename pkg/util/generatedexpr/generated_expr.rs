@@ -122,7 +122,9 @@ impl NameResolver<'_> {
             ExprKind::Variable { Value, .. } => Value
                 .as_deref()
                 .map_or(Ok(()), |value| self.resolve_expr(value)),
-            ExprKind::Function { Args, .. } | ExprKind::Row(Args) => self.resolve_exprs(Args),
+            ExprKind::Function { Args, .. }
+            | ExprKind::Row(Args)
+            | ExprKind::Array { Elements: Args, .. } => self.resolve_exprs(Args),
             ExprKind::AggregateFunction { Args, Order, .. } => {
                 self.resolve_exprs(Args)?;
                 self.resolve_items(Order)

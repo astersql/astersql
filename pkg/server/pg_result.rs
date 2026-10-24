@@ -171,6 +171,26 @@ pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, 
             "multiple statements in one Query are not supported".into(),
         ));
     }
+    struct ArrayGate(bool);
+    impl ast::Visitor for ArrayGate {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
+                self.0 |= matches!(expr.Kind, ast::ExprKind::Array { .. });
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut arrays = ArrayGate(false);
+    statements[0].accept(&mut arrays);
+    if arrays.0 {
+        return Err((
+            "0A000",
+            "ARRAY constructors require array type analysis support".into(),
+        ));
+    }
     let node = statements[0].as_any();
     let tag = if node.is::<ast::SelectStmt>() || node.is::<ast::SetOprStmt>() {
         "SELECT"

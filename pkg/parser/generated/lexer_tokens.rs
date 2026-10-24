@@ -19,6 +19,8 @@ mod token {
     pub const literal_3c: i32 = 60;
     pub const literal_3e: i32 = 62;
     pub const literal_40: i32 = 64;
+    pub const literal_5b: i32 = 91;
+    pub const literal_5d: i32 = 93;
     pub const literal_5e: i32 = 94;
     pub const literal_7b: i32 = 123;
     pub const literal_7c: i32 = 124;

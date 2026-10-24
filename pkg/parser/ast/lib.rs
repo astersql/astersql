@@ -850,6 +850,14 @@ pub enum ExprKind {
         Not: bool,
         Type: parser_types::types::FieldType,
     },
+    /// PostgreSQL bracket constructor, independent of row values and typing.
+    Array {
+        Elements: Vec<ExprNode>,
+        /// Half-open original SQL byte spans, losslessly convertible to characters.
+        ElementSpans: Vec<(usize, usize)>,
+        Brackets: (usize, usize),
+        Commas: Vec<usize>,
+    },
     Row(Vec<ExprNode>),
     Collate {
         Expr: Box<ExprNode>,
@@ -1301,7 +1309,10 @@ impl ExprNode {
             ExprKind::Regexp { Expr, Pattern, .. } => {
                 accept_box(Expr, visitor) && accept_box(Pattern, visitor)
             }
-            ExprKind::Row(values) => accept_many(values, visitor),
+            ExprKind::Row(values)
+            | ExprKind::Array {
+                Elements: values, ..
+            } => accept_many(values, visitor),
             ExprKind::MatchAgainst { Against, .. } => accept_box(Against, visitor),
             ExprKind::Case {
                 Value,
