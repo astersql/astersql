@@ -5585,6 +5585,20 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 协议层拥有H/d/c/C帧、请求模式恢复与发送生命周期；COPY方言/名称解析拥有表/查询来源、列顺序和选项门禁；共享执行链拥有真实读取、快照/事务与授权。第3章拥有类型身份/codec，第5章拥有事务与快照，第6章拥有目录/角色权限。真实读取接口、取消与发送活动边界不足时登记依赖，不在协议层造数据或补建另一套扫描器。
 
+#### 取消与资源证据
+
+本域在 `0a41d6922f01a0ca53305497312d4e455073b346`（2026-10-24）通过 RustCodeGraph status 与精确文件查询静态取证；批次 7 的 COPY OUT 提交及批次 1–6 连续交付已核实，传递依赖满足文档前置条件。以下不是运行结果；本轮有效运行用例数 0，取消、资源限制与关闭行为均**未验证**。
+
+| 只读来源与符号 | 当前静态事实及不能外推的能力 |
+| --- | --- |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::cancel_key_length / negotiate / cancel | 3.0 secret 为4字节，3.2当前发32字节，由 secure_random.fill 生成；BackendKeyData 体为PID+secret。初始CancelRequest限总长16–268，按目标登记的版本再次核对secret精确长度，以异或累积比较并要求executing，随后同时调用catalog_cancel.cancel与context.cancel。合法长度但错PID/secret不命中；非法外层长度可走当前08P01 FATAL，不等于参考端行为。 |
+| 同文件 with_query / Completion::drop | 用active同一锁登记执行、每次换目录token，退出时清executing并finish_query_cancellation；普通/目录执行经此闭包。编码、结果发送和空闲读不因此自动可取消；同连接下一命令与完成竞态须独立验证，不能声称所有cancel都成功。 |
+| 同文件 start / close / negotiate | accept为每个连接建worker，sockets在认证前登记；10秒裸TCP读写超时，认证后read timeout取context.wait_timeout。worker完成移除active、close context、shutdown socket、移除sockets、释放连接ID；完成worker的句柄在后续accept时join回收，停服统一join。close以stopped幂等门禁，先停accept，再取消active、shutdown所有已登记socket、join workers。未发现本层并发连接/worker配额或停服join总期限。 |
+| 同文件 read_initial / read_message / write_message；[pg_protocol.rs](../pkg/server/pg_protocol.rs)::MAX_STARTUP_LENGTH | 初始帧总长8–10000，普通消息长度L为4–1048576（含4字节长度字，不含tag），分配前检查；消息体最多1048572。write_message直接将body.len()+4转换u32，未见同等输出上限/溢出保护。上述数值是当前本地策略，不能当PG协议通用上限。 |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended / Portal / process；[pg_result.rs](../pkg/server/pg_result.rs)::encode_formats / write_result | statements/portals为HashMap，本层未见对象数/累计字节配额。QueryResult已有完整rows，再编码完整消息Vec；portal保存messages/offset，Execute将本轮切片to_vec复制。maxRows只限制发送行数，不限制首次计算/编码或长期缓存；源结果与编码结果并存的峰值、暂停portal与慢读客户端均有风险。 |
+| 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs)::startup_auth_roundtrip / startup_protocol_30_roundtrip / startup_cancel_is_scoped_and_consumed | 启动断言K体36/8字节；取消测试用with_query屏障后执行select 1，覆盖两版本、错secret、跨连接secret、长短secret/跨版本、超过256字节、命中interrupted、后续查询、idle及断连旧键和旁路连接。不是正在运行的长查询/阻塞发送/COPY取消证明，也没有强制PID复用或随机性统计断言；本轮未运行。 |
+| 同测试 catalog_error_recovery_and_cleanup / startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients | 前者断言错误后恢复、弱context释放、半启动/半普通帧只影响本连接、重复close、active/sockets/workers最终(0,0,0)；后者核已接受待启动与已认证连接停服EOF、监听关闭及MySQL握手。3秒是测试等待期限，不能当生产回收保证；全部未运行。 |
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5730,6 +5744,30 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 
 背压目标为有界待发送字节、扫描/编码/发送协作及取消/关闭能释放所有权；具体预算和期限交取消/资源域。逐行发包、portal切片或TCP阻塞均不能独自证明执行器流式。数据正确性与吞吐/首字节延迟/峰值内存/暂停接收成本分别验收；这里没有性能通过结论。
 
+#### 取消资源与关闭边界
+
+本域统一前述TLS/SCRAM、Q、扩展查询与COPY的生命周期交接；第3章继续拥有codec，第5章拥有事务I/T/E，第6章拥有真实身份/权限。规范依据为 PostgreSQL 18 [54.2.8 取消](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-CANCELING-REQUESTS)、[54.2.9 终止](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-TERMINATION)及[54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)中的BackendKeyData/CancelRequest；COPY恢复沿本章对应域及54.2.6，不另造事务状态。这里查阅的是18大版本手册，18.6参考构建/精确错误诊断尚未采集。
+
+取消键只在认证成功后交付，PID不作为身份凭证；secret须由可靠随机源生成，不记日志/错误、不截断比较、不复用已关闭连接的secret，随机源失败即拒绝启动。3.0 secret固定4字节：K体8、长度字段12、含tag共13；CancelRequest总长16。3.2按K实际长度保存不透明secret，手册允许4–256字节，当前服务选择32：K体36、长度字段40、含tag共41；CancelRequest为12+n，当前44。CancelRequest没有协议版本，按目标会话校验长度与secret；不得把32写成协议唯一长度，客户端也不能固定读36字节。有效格式请求通过独立短连接处理后关闭，无成功确认；命中与否从主连接结果判断。未知PID、错误/过期secret和空闲取消不应泄露目标是否存在；畸形帧关闭/诊断的准确参考轨迹另采，不能把当前FATAL提升为规范。
+
+取消只作用于接收时正在执行的目标命令。与完成同时到达允许命中错误或完成成功，按实际完成/提交屏障取证；已完成事务不承诺撤销。同一连接后发下一查询与迟到取消重叠时，协议没有查询编号，不能承诺区分客户端原意；验收必须用执行代次屏障区分“下一查询尚未开始”和“已进入下一活动命令”。已消费取消、idle取消及登记移除后的旧键不得残留污染下一轮；PID复用后必须靠新secret隔离，另外验证其他连接完全不受影响。
+
+| 预算对象 | 当前保护/缺口 | 目标限制种类、拒绝阶段与边界对测 |
+| --- | --- | --- |
+| 初始/协商帧 | read_initial总长8–10000；同种SSL/GSS只探测一次；当前10秒socket读超时不等于总期限 | 分配前检查长度/整数溢出；冻结后测下限前/恰好下限/上限/上限+1、负长度位型与半包EOF。逐字节慢送、重复协商另验总启动期限及未认证并发预算，在创建昂贵认证状态前拒绝。 |
+| 认证消息 | 尚无SCRAM交换；普通消息上限不能证明认证态已保护 | 定义单帧、累计交换字节/轮数、凭证派生工作量和总认证期限，帧分配或派生前拒绝；各预算L-1/L/L+1、持续小包、认证中EOF/停服，确认无K/会话身份泄漏。只列种类，不发明配置名/数值。 |
+| 普通消息/参数 | read_message L限4–1048576；扩展Reader检查截断/尾随字节，单帧限不约束多帧累计状态 | 冻结请求体/单参数/SQL及pipeline在途预算；在分配、对象登记或执行前最早拒绝。测L=3/4/1048576/1048577和0xffffffff，合法外层但内部长度不符另测。输出独立检查编码长度、加法/u32溢出及行/字段预算，不能用输入限替代。 |
+| COPY分块与累计输入 | 当前COPY尚无真实通道，不能将普通读帧限当已实现COPY预算 | 定义d单帧、跨d单字段/单行、累计输入与解码缓冲、总期限；先检查帧再分配，解析增长前查行/字段额度，超累计预算停止写入并按COPY域撤销未提交数据。每项L-1/L/L+1、空d、无换行大字段、多个小d跨界；不因帧边界改变合法数据。 |
+| 累计输出/慢客户端 | 完整QueryResult再完整编码，无本层总输出预算；当前write timeout 10秒，不能替代总发送期限 | 定义单字段/行/帧、总输出字节、待发缓冲/背压及总发送期限；编码增长前或发送完整帧前拒绝。输出d行边界沿COPY OUT，不为满足预算任意切行；超大行须在安全阶段拒绝。暂停/恢复慢读、断连、超时各测，已发送前缀不能当成功结果。 |
+| statement/portal数量与缓存 | HashMap无本层配额；Portal messages长期保留，maxRows不控制物化峰值 | 定义每连接对象数、参数/计划/编码缓存字节和并发执行预算；Parse/Bind登记前检查，Execute编码前及增长中检查；L-1/L/L+1、重复命名失败、未命名替换、Close、Sync及事务结束逐项核不泄漏、不重复扣费且释放后可重新分配。 |
+| 全服务连接/worker与关闭 | 认证前已有worker/socket；句柄可等下次accept回收，close join未见总期限 | 定义未认证/已认证并发、全服务缓存与关闭期限；accept/认证准入拒绝不遗留ID。连接风暴后停止新accept也应能观察资源收敛；与并发close/认证完成交错测，不凭单连接成功推全局有界。 |
+
+表中未测预算须经后续负载测量和策略评审冻结数值/单位/计费范围后才可开放；不是现有可配置项，也不承诺超预算都能恢复。拒绝时若已分配资源，计费与释放必须对称，敏感SQL、行值、认证载荷和secret不进入无界诊断。
+
+目标清理顺序是先封闭新工作入口、使取消键失效并通知活动执行停止，同时用socket中断唤醒阻塞读写，再等待执行退出、按提交事实回滚尚未提交事务，释放扫描/写入句柄、快照/锁与COPY解析/编码缓存、portal/prepared资源和context；最终关闭socket、移除登记、释放连接ID并回收worker。不能先join阻塞worker再唤醒它，也不能在持登记锁join时等待同锁清理。部分初始化、认证失败、Terminate、EOF、异常、写失败及重复/并发服务close必须幂等；这是待验证的所有权要求，不把本段顺序冒充当前源码顺序或新接口。
+
+失败分三类：完整已读帧内可恢复的类型/值错沿Q错误结束或扩展丢弃至合法Sync，I/T/E依第5章、T/E仍需ROLLBACK；已能读全帧但消息种类/状态非法，是否可恢复须按对应子协议与参考端决定，不因为“读全”就一律Sync；长度越界/失去帧边界、截断、读写超时/失败等无法安全继续时关闭并清理。回复写到半帧后不得继续追加ErrorResponse/成功标签，当前worker的通用FATAL写回路径不能当安全保证。认证前worker没有已交付K，取消请求不能代替认证总期限或停服中断。目录查询、COPY等待输入、普通查询/COPY输出阻塞发送均需独立活动屏障，本轮不实现这些钩子。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
@@ -5757,6 +5795,10 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 #### COPY OUT 范围与读取边界
 
 本域仅定义表及SELECT查询到STDOUT的真实读取文档；不实现扫描器、协议状态机、客户端API或性能平台。服务器文件TO/FROM、PROGRAM及CopyBoth/复制沿COPY IN拒绝边界，不能以高权限开放或回虚假H/W。客户端psql的\copy写客户端文件与服务器路径不同，可作未来STDOUT消费入口（待新增），不能用文件存在替代逐值/逐字节核验。RETURNING/副作用查询、RLS、分区/继承和未开放codec保留独立能力门槛；快照/锁/事务由第5章，类型由第3章，权限/身份由第6章负责，不扩大实施范围。
+
+#### 取消与资源范围边界
+
+只交付上述生命周期和验收契约；不实现全局资源管理器、流式执行器、COPY通道、运行器或新配置。GSSAPI/OAuth、复制与CopyBoth拒绝沿各域；不能为了测试关闭而开放它们。生产配额、认证总期限、发送/停服期限及取消延迟数值均待测量冻结；不以本地10000/1MiB策略声称PG通用限制。当前源码与独立断言均未运行，旧版本记录不提升为18.6或性能证据。
 
 ### 验收
 
@@ -5880,6 +5922,23 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 
 清理：可恢复扩展失败先Sync，存活T/E先ROLLBACK，Close对象并关闭连接，确认读句柄/快照/锁与连接资源回收后，事务外DROP夹具。失败输出的客户端临时产物标失败并删除，不作为可用备份。每例记录第1章能力/用例ID、双方完整SHA/实际版本、客户端及协议/授权/会话、源表SELECT与输入SQL、H字段、原始帧/接收字节/解码值/真实类型、COPY n与c/C/Z/Sync顺序、I/T/E和B观察、错误阶段/SQLSTATE/安全诊断、资源前后值、命令退出码及有效断言数。敏感行不无界写日志；精确18.6、真实读取/客户端、取消/清理和性能均未验证，当前运行数0。
 
+#### 取消与资源关闭验收
+
+以下 `WIRE-LIFECYCLE-*` 为**待新增/待运行**的独立用例，不是当前测试执行记录。统一夹具为同库连接A/B和可重新连接的A2，协议3.0/3.2、真实授权与第5章事务夹具；记录基线S0及每轮B新快照观察。活动/完成/提交屏障、PID强制复用、分配/写失败注入、预算计费和全服务资源计数入口均**待新增**；不以sleep碰运气、idle cancel或仅返回码替代断言。
+
+| ID / 未来独立入口 | 成功/失败/取消及清理断言 |
+| --- | --- |
+| KEY / RANDOM / ROUTE；pg_conn_test.rs | 逐字节解析两版本K与CancelRequest上述长度；随机源失败启动拒绝，重连生成新secret且无日志泄漏。活动屏障上分别正确键、错误secret、错PID、同PID跨连接键、4/32跨版本键、过短/过长及256/257上界；3.2客户端独立夹具接收4/32/256字节不透明键。合法请求短连接EOF且无成功确认，主连接只在命中时错误，B与A2健康；畸形帧诊断从参考端采集。 |
+| GENERATION / IDLE / RACE；pg_conn_test.rs及代次屏障待新增 | 先无活动取消再执行SELECT成功；命中活动A后同步/回滚再SELECT成功。关闭A后发旧键、强制复用PID的新A2拒旧键/接受新键，B不受影响。完成前/后与提交前/后各屏障采主连接实际结果和B可见性；下一查询尚未进入时取消不污染它，进入后是新的可取消活动命令，不能虚构查询编号路由。 |
+| QUERY / CATALOG；pg_conn_test.rs、pg_extended_test.rs | 对Q与扩展普通/目录查询在实际执行中取消，主连接错误无成功C；Q到Z(I/E)，扩展丢弃带写副作用的排队消息至新Sync到Z(I/E)，T/E回滚后B为S0，新查询真实值正确。目录执行token独立核对；缓存portal续发另设发送屏障，不能用首次执行闭包证明续发可取消。 |
+| COPY-IN / COPY-OUT；pg_client_integration_test.rs | 分别在G后已有有效行且等下一d、H后活动读取/编码、已有完整d后阻塞发送取消；可恢复轮无成功COPY n，按Q/扩展恢复及ROLLBACK，B无部分写入、A2再COPY成功。已完成/提交竞态另列，已发输出前缀标失败，不把断连或取消当必然撤销已提交结果。 |
+| BOUNDS / ACCOUNT；pg_conn_test.rs、pg_extended_test.rs及预算注入待新增 | 为上表每种额度冻结后逐一L-1/L/L+1，逐项核拒绝发生于分配/登记/执行/发送何阶段、资源计费无负值/泄漏、A2与B可用；初始/普通帧另用明确静态数值边界，输入和输出独立。完整帧值错、完整帧状态错、半帧/超长分别核Q/Sync恢复或关闭，不能把关闭算恢复成功。 |
+| AUTH / BLOCK / SEND；pg_conn_test.rs及受控读写入口待新增 | 认证前慢送/半帧/认证中EOF与停服；认证后空闲读、COPY输入等读、普通/COPY输出暂停读分别触发总期限、取消或服务close，阻塞能退出、无K/secret泄漏。首帧前写失败、完整帧间写失败、半帧写失败各核无成功/无帧拼接；退出后context/socket/登记/ID/worker回收，B不受影响。 |
+| CLOSE / EOF / ERROR / STOP；pg_conn_test.rs、pg_transaction_test.rs | Terminate、正常EOF、半启动/半认证/半普通/COPY帧EOF、执行异常、编码失败、超时与重复/并发close覆盖部分初始化和认证完成竞态；存活连接走合法恢复，关闭连接不再Sync。未提交事务回滚，扫描/写句柄/快照/锁/缓存/portal/prepared/context释放，active/sockets归零，worker在规定回收期限内收敛；停服后workers也归零且监听拒新连接。运行中断连可能晚于自动提交，B按实际提交屏障判断，不无条件断言S0。 |
+| MEMORY / THROUGHPUT；测量入口待新增 | 固定构建、预算、硬件、并发、类型与行宽，递增总行数/大单行，Q、Execute maxRows=0/1和多暂停portal、COPY双向及慢客户端分别测。记录首字节延迟、总耗时、吞吐、RSS/分配峰值、源rows/编码消息/复制片段/缓存字节、取消及关闭收敛时间，前后空闲基线核回落。先测当前物化路径再定预算，不因分页少发几行认定内存有界，不在本轮优化。 |
+
+每例保留第1章能力/用例ID、双方完整SHA/实际版本、客户端与协商版本、权限/会话/事务设置、受控屏障顺序、主/取消连接帧与结果、错误阶段/SQLSTATE/安全诊断、I/T/E、B真实值、资源前后值、预算单位/实际拒绝点、命令退出码及有效断言数。secret只记长度与脱敏关联标识。清理存活T/E连接先ROLLBACK、Close对象再关连接，确认资源收敛后事务外清理夹具；关闭轮不得依赖已死连接清理。所有运行与性能数值未采集，本轮有效运行数0。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5921,5 +5980,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 后续另立窄任务：①表/SELECT来源、列/选项门禁与真实SELECT授权；②H/d/c/C及Simple/Extended恢复，复用已有连接所有权；③共享读取与text格式，先证明真实客户端内容而非消息回复；④CSV/binary与第3章codec、NULL/空值/头尾及独立回归；⑤读取/发送活动取消、慢读背压、传输失败与资源回收。复用pg_conn/pg_extended/pg_result边界，扩展同目录独立pg_client_integration_test.rs、pg_extended_test.rs、pg_types_test.rs、pg_transaction_test.rs；共享读取接口、夹具/注入/客户端入口均**待新增**，不在本轮创建，不因接口缺口递归扩建执行器。
 
 需求映射：本任务步骤1→读取证据表与TABLE/QUERY；步骤2→阶段表及SYNC/LIMIT/MULTI/FRAME；步骤3→三格式表及COLUMN/TEXT/CSV/BINARY/EMPTY/CLIENT；步骤4→AUTHZ/READ/ENCODE/CANCEL/DISCONNECT/SEND/STOP/TXN；步骤5→SNAPSHOT/BACKPRESSURE/RELEASE及范围拒绝。对应来源步骤1/2/4的COPY OUT、传输/取消/清理和真实读出。Ready文档检查为本章五节、稳定子标题、来源/本地链接、需求与失败轨迹、前后章一致及章节外字节不变；验证技能路径再次确认缺失，采用人工等效检查。正确性风险为静态证据与异常竞态遗漏，兼容性风险为把输入分块/普通结果格式套到输出或误称PG18.6实测，吞吐/内存均未测。本域完成仅指文档交付；下一批由取消与资源域定义密钥路由、预算和期限。
+
+#### 取消与资源后续实施切口
+
+后续另立窄任务：①3.0/3.2取消键长度、随机源失败与PID复用/代次竞态独立回归；②普通及目录活动取消到共享会话的最小接线；③按已冻结预算补帧/对象/累计缓冲准入与对称计费；④结果编码/发送及COPY读写阻塞中断与所有权清理，依赖相应通道真实存在；⑤并发停服、部分初始化与物化峰值/慢客户端测量。复用pg_conn/pg_extended/pg_result与同目录独立测试，新屏障/注入/测量/资源观测入口均待新增；缺共享能力只列依赖，不递归补建子系统。
+
+需求映射：任务步骤1→取消与资源证据表；步骤2→逐预算表及BOUNDS/ACCOUNT；步骤3→密钥长度/代次契约及KEY/RANDOM/ROUTE/GENERATION/IDLE/RACE；步骤4→QUERY/CATALOG/COPY-IN/COPY-OUT/AUTH/BLOCK/SEND/CLOSE/EOF/ERROR/STOP及清理顺序；步骤5→三类失败与MEMORY/THROUGHPUT。共同覆盖来源步骤2的消息上限、取消键、关闭与大结果风险，前序各域验收沿用其真实成功/失败轨迹。本域Ready文档检查包括五节定位、需求/异常轨迹映射、官方/相对链接、与第3/5/6章交接及章节外字节不变；验证技能路径仍缺失，采用手工等效检查。正确性风险为静态推断与竞态遗漏，兼容性风险为取消/关闭边界或本地预算被误作PG18.6实测；性能/资源预算未测。本域完成仅指文档，下一批9仅收口，不实现生产能力。
 
 ## 8. 客户端与双方言共存验收
