@@ -3055,3 +3055,120 @@ fn pg_dialect_03_behavior() {
     assert_eq!(pg.PostgreSQLEofErrorPosition(), None);
     println!("pg_dialect_03_behavior: 9 PG shapes x 2 modes, 2 MySQL mode baselines");
 }
+
+#[test]
+fn pg_dialect_04_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    fn insert(sql: &str, dialect: SqlDialect) -> parser_ast::InsertStmt {
+        let node = parser::Parser::with_dialect(dialect)
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        *node
+            .into_any()
+            .downcast::<parser_ast::InsertStmt>()
+            .ok()
+            .expect("INSERT AST")
+    }
+    let sql = "/*中*/ INSERT INTO public.t(id) VALUES ($2) RETURNING id, id+1 AS \"Next_ID\", t.*, $1 AS \"P\"";
+    let stmt = insert(sql, SqlDialect::PostgreSQL);
+    assert_eq!(stmt.Returning.len(), 4);
+    assert!(matches!(&stmt.Returning[0].Expr.as_ref().unwrap().Kind,
+        ExprKind::Column(c) if c.Name.O == "id"));
+    assert!(matches!(&stmt.Returning[1].Expr.as_ref().unwrap().Kind,
+        ExprKind::Binary { Op, L, R }
+            if Op == "+" && matches!(&L.Kind, ExprKind::Column(c) if c.Name.O == "id")
+            && matches!(&R.Kind, ExprKind::Value(v) if v.text() == "1")));
+    assert_eq!(stmt.Returning[1].AsName.O, "Next_ID");
+    let wildcard = stmt.Returning[2].WildCard.as_ref().unwrap();
+    assert_eq!(wildcard.Table.O, "t");
+    assert!(wildcard.Schema.O.is_empty());
+    assert!(stmt.Returning[2].Expr.is_none());
+    for (expr, index, marker) in [
+        (&stmt.Lists[0][0], 2, "$2"),
+        (stmt.Returning[3].Expr.as_ref().unwrap(), 1, "$1"),
+    ] {
+        assert_eq!(expr.PostgreSQLParameterIndex(), Some(index));
+        assert!(matches!(expr.Kind, ExprKind::ParamMarker { Offset }
+            if Offset == sql.find(marker).unwrap()));
+        assert_eq!(expr.OriginTextPosition as usize, sql.find(marker).unwrap());
+    }
+    for (field, original) in
+        stmt.Returning
+            .iter()
+            .zip(["id", "id+1 AS \"Next_ID\"", "t.*", "$1 AS \"P\""])
+    {
+        assert_eq!(
+            field.OriginalText, original,
+            "projection source lost: {field:?}"
+        );
+        assert_eq!(
+            &sql[field.Offset..field.Offset + field.OriginalText.len()],
+            original
+        );
+        // Byte offsets remain losslessly convertible to original character spans.
+        assert!(sql.is_char_boundary(field.Offset));
+        assert_eq!(sql[..field.Offset].chars().count() + 1, {
+            let list_start = sql.find("RETURNING ").unwrap() + "RETURNING ".len();
+            let expected_start = list_start + sql[list_start..].find(original).unwrap();
+            sql[..expected_start].chars().count() + 1
+        });
+    }
+    let plain = insert(
+        "INSERT INTO public.t(id) VALUES ($1)",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(plain.Returning.is_empty());
+    let protected = insert(
+        "INSERT INTO public.t(id) VALUES ('RETURNING') /* RETURNING $2 */",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(protected.Returning.is_empty());
+    assert!(matches!(&protected.Lists[0][0].Kind, ExprKind::Value(v) if v.text() == "RETURNING"));
+    let null = insert(
+        "INSERT INTO public.t(id) VALUES (NULL) RETURNING *",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(
+        matches!(&null.Lists[0][0].Kind, ExprKind::Value(v) if v.Datum == parser_ast::ValueDatum::Null)
+    );
+    assert_eq!(null.Returning.len(), 1);
+    assert_eq!(null.Returning[0].OriginalText, "*");
+    assert!(
+        null.Returning[0]
+            .WildCard
+            .as_ref()
+            .unwrap()
+            .Table
+            .O
+            .is_empty()
+    );
+    let bare = insert(
+        "INSERT INTO public.t(id) VALUES (1) RETURNING id label",
+        SqlDialect::PostgreSQL,
+    );
+    assert_eq!(bare.Returning[0].AsName.O, "label");
+    for sql in [
+        "INSERT INTO public.t(id) VALUES (1) RETURNING",
+        "/*中*/ INSERT INTO public.t(id) VALUES (1) RETURNING id,",
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err());
+        assert_eq!(
+            parser.PostgreSQLEofErrorPosition(),
+            Some(sql.chars().count() + 1)
+        );
+        assert!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+        assert_eq!(parser.PostgreSQLEofErrorPosition(), None);
+    }
+    // Freeze the pre-existing shared MySQL RETURNING extension, rather than
+    // silently deleting it to imitate the official MySQL grammar.
+    let mysql = insert(
+        "INSERT INTO t(id) VALUES (?) RETURNING id, t.*",
+        SqlDialect::MySQL,
+    );
+    assert_eq!(mysql.Returning.len(), 2);
+    assert_eq!(mysql.Returning[1].WildCard.as_ref().unwrap().Table.O, "t");
+    println!(
+        "pg_dialect_04_behavior: 7 PG inputs, 1 MySQL extension baseline; projection tree/source/parameter assertions"
+    );
+}

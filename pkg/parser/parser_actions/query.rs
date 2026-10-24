@@ -2103,7 +2103,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 .map(|field| *field)
                 .unwrap_or_default();
             field.Offset = rhs[rhs_len - (0)].offset.max(0) as usize;
-            if field.Expr.is_some() {
+            if field.Expr.is_some() || field.WildCard.is_some() {
                 let end = parser_state.yylval.offset.max(field.Offset as i32) as usize;
                 field.OriginalText = parser_state
                     .src
@@ -2128,7 +2128,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 .map(|field| *field)
             {
                 field.Offset = rhs[rhs_len - (0)].offset.max(0) as usize;
-                if field.Expr.is_some() {
+                if field.Expr.is_some() || field.WildCard.is_some() {
                     let end = parser_state.yylval.offset.max(field.Offset as i32) as usize;
                     field.OriginalText = parser_state
                         .src

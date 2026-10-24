@@ -1,5 +1,5 @@
 # Copyright 2026 AsterSQL.
-"""ILIKE syntax handoff through real libpq; argv: task, local port, database.
+"""Dialect syntax and DML rejection handoff through real libpq; argv: task, local port, database.
 
 The first-phase script is deliberately not imported: it connects at import time.
 This fixture compares parse/prepare, and archives Describe separately because
@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3), 'unregistered dialect task'
+assert task in (1, 2, 3, 4), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -114,7 +114,18 @@ if task == 3:
         ('missing_operand', "/*中*/ SELECT NOT 'Ab' ILIKE (", []),
         ('protected', "SELECT 'ILIKE' /* NOT ILIKE $1 = TRUE */", []),
     ]
-assert len({case[0] for case in cases}) == 10
+if task == 4:
+    cases = [
+        ('projection', 'INSERT INTO public.t(id) VALUES ($1) RETURNING id, id+1 AS next_id, t.*', [23]),
+        ('quoted', 'INSERT INTO public.t(id) VALUES (7) RETURNING id AS "Next_ID", t.*', []),
+        ('plain', 'INSERT INTO public.t(id) VALUES (11)', []),
+        ('missing_projection', 'INSERT INTO public.t(id) VALUES (8) RETURNING', []),
+        ('protected', "INSERT INTO public.t(id,v) VALUES (12,'RETURNING') /* RETURNING $2 */", []),
+        ('null_star', 'INSERT INTO public.t(id) VALUES (NULL) RETURNING *', []),
+        ('bare_alias', 'INSERT INTO public.t(id) VALUES (9) RETURNING id label', []),
+        ('missing_trailing', '/*中*/ INSERT INTO public.t(id) VALUES (10) RETURNING id,', []),
+    ]
+assert len({case[0] for case in cases}) == (8 if task == 4 else 10)
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=([None] if oids else []),
@@ -191,6 +202,223 @@ def endpoint(conn):
                 timezone=parameter_status(conn, b'TimeZone').decode(),
                 search_path=query(conn, 'SHOW search_path')['rows'][0][0],
                 transaction='I' if transaction(conn) == 0 else str(transaction(conn)))
+
+
+def returning_handoff():
+    """Keep syntax, safe rejection and RETURNING execution as distinct layers."""
+    scope = f'dialect_04_{os.getpid()}_{int(sys.argv[2])}'
+    connections = {}
+    prepared = []
+    checks = 0
+    self_checks = 0
+    done = False
+    cleanup_ok = True
+    reference_schema_created = False
+    gate_cases = 0
+    eligible = 0
+    reference_dsn = os.environ['PG18_REFERENCE_DSN']
+    local_dsn = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+    def check(condition, message):
+        nonlocal checks
+        assert condition, message
+        checks += 1
+    def recovery(conn, side, name):
+        if transaction(conn) in (2, 3):
+            check(query(conn, 'ROLLBACK')['status'] == 1, 'rollback failed')
+        probe = query(conn, 'SELECT 1::int4')
+        archive(name + '_recovery', side, dict(phase='PQexec', sql='SELECT 1::int4'), probe)
+        check(probe['state'] == '' and probe['rows'] == [['1']] and transaction(conn) == 0, 'same-connection recovery failed')
+    def snapshot(side):
+        conn = connections[side + '_observer']
+        sql = f'SELECT id, v FROM {scope}.t ORDER BY id' if side == 'reference' else 'SELECT id, v FROM public.t ORDER BY id'
+        result = query(conn, sql)
+        check(result['status'] == 2 and result['state'] == '', 'observer failed')
+        return result['rows']
+    def compare(a, r, kind, sql, ref_sql):
+        if kind == 'gate':
+            return (a['status'] == 7 and a['state'] == '0A000' and
+                    a['message'] == 'DML RETURNING is unsupported by the PostgreSQL listener' and
+                    a['position'] == '' and a['transaction_after'] == 'I' and
+                    r['status'] == 1 and r['state'] == '' and r['position'] == '' and r['transaction_after'] == 'I')
+        if kind == 'invalid':
+            return (all(x['status'] == 7 and x['state'] == '42601' and x['transaction_after'] == 'I' for x in [a, r]) and
+                    a['position'] == str(len(sql)+1) and r['position'] == str(len(ref_sql)+1))
+        return all(x['status'] == 1 and x['state'] == '' and x['transaction_after'] == 'I' for x in [a, r]) and compare_metadata(a, r, 'prepare')
+    try:
+        for label in ['reference', 'reference_observer', 'aster', 'aster_b', 'aster_observer']:
+            conn = connect((reference_dsn if label.startswith('reference') else local_dsn).encode())
+            connections[label] = conn
+            check(bool(conn) and status(conn) == 0, label + ' connection failed')
+            if label.startswith('reference'):
+                check(query(conn, "SET TIME ZONE 'UTC'")['status'] == 1, 'timezone failed')
+            check(parameter_status(conn, b'client_encoding') == b'UTF8', 'encoding mismatch')
+            check(parameter_status(conn, b'TimeZone') == b'UTC', 'timezone mismatch')
+            check(query(conn, 'SET search_path TO public')['status'] == 1, 'search_path failed')
+        ref = connections['reference']
+        reference_version = query(ref, "SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(reference_version[1] == '180006', 'exact PostgreSQL18.6 required')
+        reference_build = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        build = json.loads((evidence / 'rust-build.json').read_text())
+        build['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance = dict(run=evidence.name, target_version='18.6', source=source_snapshot(root), build=build,
+                          client=dict(python=sys.version, library=str(library), sha256=hashlib.sha256(library.read_bytes()).hexdigest(), PQlibVersion=version()),
+                          os=platform.platform(), storage='CreateAnalyzeSession test storage', authentication='InsecureRootOnly',
+                          reference=dict(version=reference_version[0], server_version_num=reference_version[1]), reference_build=reference_build,
+                          endpoints={s: endpoint(connections[s]) for s in ['aster', 'aster_b', 'reference']})
+        (evidence / 'provenance.json').write_text(json.dumps(provenance, indent=2))
+        check(validate_provenance(provenance, copy.deepcopy(provenance)), 'provenance failed')
+        damaged = copy.deepcopy(provenance); damaged['reference_build']['server_version_num'] = 180004
+        assert not validate_provenance(damaged, provenance)
+        self_checks += 1
+        check(query(ref, f'CREATE SCHEMA {scope}')['status'] == 1, 'reference schema failed')
+        reference_schema_created = True
+        for side in ['aster', 'reference']:
+            table = f'{scope}.t' if side == 'reference' else 'public.t'
+            check(query(connections[side], f'CREATE TABLE {table} (id INT, v VARCHAR(20))')['status'] == 1, 'table creation failed')
+        registry = []
+        for index, (name, sql, oids) in enumerate(cases):
+            kind = 'invalid' if name.startswith('missing_') else ('control' if name in ('plain', 'protected') else 'gate')
+            # Explicit test-object mapping, never a product SQL adaptation.
+            ref_sql = sql.replace('public.t', f'{scope}.t')
+            data = dict(case_id=name, capability_id='pg.dialect.insert.returning.syntax',
+                        sql=sql, reference_sql=ref_sql, phase='PQprepare', parameter_oids=oids,
+                        arguments=None, parameter_formats=None, result_format=0, encoding='UTF8', timezone='UTC',
+                        role={s: connection_user(connections[s]).decode() for s in ['aster', 'reference']}, search_path='public', initial_state='I',
+                        object_mapping={'aster': f'{sys.argv[3]}.t', 'reference': f'{scope}.t'},
+                        expected_basis='task4 syntax/gate contract and exact PostgreSQL18.6 PQprepare',
+                        expected={'aster': '0A000' if kind == 'gate' else ('42601' if kind == 'invalid' else 'success'),
+                                  'reference': '42601' if kind == 'invalid' else 'success'},
+                        unverified='RETURNING binding/types and execution remain outside this gate; no local successful RETURNING metadata')
+            registry.append(data)
+            (evidence / 'cases.json').write_text(json.dumps(registry, indent=2))
+            before = {side: snapshot(side) for side in ['aster', 'reference']}
+            results = {}
+            for side in ['reference', 'aster']:
+                conn = connections['aster_b' if side == 'aster' and index % 2 else side]
+                actual_sql = ref_sql if side == 'reference' else sql
+                statement = f'returning_{index}'.encode()
+                result = observe(prepare(conn, statement, actual_sql.encode(), len(oids), (c.c_uint * len(oids))(*oids) if oids else None))
+                result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))
+                archive(name, side, dict(phase='PQprepare', sql=actual_sql, statement=statement.decode(),
+                                        parameter_oids=oids, arguments=None, parameter_formats=None, result_format=0), result)
+                results[side] = result
+                if result['status'] == 1:
+                    prepared.append((conn, statement))
+                    desc = observe(describe(conn, statement))
+                    archive(name + '_describe', side, dict(phase='PQdescribePrepared', statement=statement.decode()), desc)
+                    check(desc['status'] == 1 and desc['state'] == '', 'describe failed')
+                    check(desc['params'] == oids and desc['param_count'] == len(oids), 'parameter identity lost')
+                    expected_fields = [] if kind == 'control' else (
+                        [['id',23,4,-1], ['next_id',23,4,-1], ['id',23,4,-1], ['v',1043,-1,24]] if name == 'projection' else
+                        [['Next_ID',23,4,-1], ['id',23,4,-1], ['v',1043,-1,24]] if name == 'quoted' else
+                        [['id',23,4,-1], ['v',1043,-1,24]] if name == 'null_star' else [['label',23,4,-1]])
+                    check(desc['fields'] == expected_fields, 'reference/control descriptor mismatch')
+                    check(desc['formats'] == [0] * len(expected_fields), 'nontext descriptor')
+                    check(observe(close_prepared(conn, statement))['status'] == 1, 'statement close failed')
+                    prepared.remove((conn, statement))
+                recovery(conn, side, name)
+                check(snapshot(side) == before[side], 'prepare/describe/rejection wrote rows')
+            check(compare(results['aster'], results['reference'], kind, sql, ref_sql), 'syntax/gate comparator mismatch')
+            for mutation in ['state', 'status']:
+                changed = copy.deepcopy(results['aster']); changed[mutation] = 'XX000' if mutation == 'state' else 0
+                assert not compare(changed, results['reference'], kind, sql, ref_sql)
+                self_checks += 1
+            if kind == 'gate':
+                gate_cases += 1
+                if not oids:
+                    result = query(connections['aster'], sql)
+                    archive(name + '_simple_gate', 'aster', dict(phase='PQexec', sql=sql), result)
+                    check(result['status'] == 7 and result['state'] == '0A000', 'simple gate failed')
+                    recovery(connections['aster'], 'aster', name + '_simple')
+                    check(snapshot('aster') == before['aster'], 'simple gate wrote rows')
+            elif kind == 'invalid':
+                for side in ['aster', 'reference']:
+                    actual_sql = ref_sql if side == 'reference' else sql
+                    result = query(connections[side], actual_sql)
+                    archive(name + '_simple_error', side, dict(phase='PQexec', sql=actual_sql), result)
+                    check(result['status'] == 7 and result['state'] == '42601' and result['position'] == str(len(actual_sql)+1), 'simple diagnostic mismatch')
+                    recovery(connections[side], side, name + '_simple')
+                    check(snapshot(side) == before[side], 'invalid query wrote rows')
+                eligible += 1
+            else:
+                for side in ['aster', 'reference']:
+                    actual_sql = ref_sql if side == 'reference' else sql
+                    result = query(connections[side], actual_sql)
+                    archive(name + '_execute_control', side, dict(phase='PQexec', sql=actual_sql), result)
+                    check(result['status'] == 1 and result['state'] == '' and result['command_tag'] == 'INSERT 0 1', 'normal INSERT failed')
+                expected_rows = [['11', None]] if name == 'plain' else [['11', None], ['12', 'RETURNING']]
+                for side in ['aster', 'reference']:
+                    check(snapshot(side) == expected_rows, 'control values/NULL/side effects mismatch')
+                eligible += 1
+            print('PG_DIALECT_CHECKPOINT', name, flush=True)
+            check(sys.stdin.readline().strip() == 'continue', 'MySQL checkpoint aborted')
+            for label in (['aster_b', 'aster'] if index % 2 == 0 else ['aster', 'aster_b']):
+                recovery(connections[label], 'aster', name + '_' + label)
+                check(query(connections[label], 'SELECT id FROM public.dialect_isolation')['rows'] == [['31']], 'cross-dialect state polluted')
+        for side in ['aster', 'reference']:
+            conn = connections[side]
+            check(query(conn, 'BEGIN')['status'] == 1, 'BEGIN failed')
+            failure = observe(prepare(conn, b'failed_returning', b'INSERT INTO t VALUES (1) RETURNING', 0, None))
+            failure['transaction_after'] = {0:'I',2:'T',3:'E'}.get(transaction(conn))
+            archive('transaction_error', side, dict(phase='PQprepare', sql='INSERT INTO t VALUES (1) RETURNING'), failure)
+            check(failure['state'] == '42601' and failure['transaction_after'] == 'E', 'transaction error state mismatch')
+            recovery(conn, side, 'transaction')
+        parsed = urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
+        check(parsed.scheme == 'mysql' and bool(parsed.hostname) and bool(parsed.port), 'MySQL reference missing')
+        mysql_env = dict(os.environ, MYSQL_PWD=parsed.password or '')
+        args = ['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql):
+            proc = subprocess.run(args + ['-e', "SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; " + sql], env=mysql_env, capture_output=True, text=True, timeout=15)
+            return dict(code=proc.returncode, output=proc.stdout.splitlines(), error=proc.stderr)
+        identity = mysql_ref('SELECT VERSION(), @@version_compile_os, @@version_compile_machine; SELECT @@sql_mode, @@character_set_connection, @@collation_connection')
+        archive('reference_identity', 'mysql', None, identity)
+        check(identity['code'] == 0, 'MySQL identity failed')
+        table = f'mysql.pg_returning_{os.getpid()}'
+        legal = mysql_ref(f'CREATE TEMPORARY TABLE {table}(id INT); INSERT INTO {table} VALUES (31); SELECT id FROM {table}; PREPARE p FROM \'SELECT id FROM {table} WHERE id=?\'; SET @v=31; EXECUTE p USING @v; DEALLOCATE PREPARE p')
+        archive('legal_prepare', 'mysql', None, legal)
+        check(legal['code'] == 0 and legal['output'] == ['31', '31'], 'MySQL control failed')
+        for name, sql, oids in cases:
+            # Own table mapping and own legal VALUES syntax isolate RETURNING.
+            suffix = {'projection':'id, id+1 AS next_id, t.*', 'quoted':'id AS "Next_ID", t.*', 'null_star':'*', 'bare_alias':'id label'}.get(name)
+            if suffix is None:
+                continue
+            sql = f'CREATE TEMPORARY TABLE {table}(id INT); INSERT INTO {table} VALUES (1) RETURNING {suffix}'
+            result = mysql_ref(sql)
+            archive('returning_' + name, 'mysql', dict(phase='query', sql=sql), result)
+            check(result['code'] != 0 and 'ERROR 1064 (42000)' in result['error'] and 'RETURNING' in result['error'], 'MySQL syntax isolation failed')
+        final = copy.deepcopy(provenance)
+        final['source'] = source_snapshot(root)
+        final['build']['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        final['client']['sha256'] = hashlib.sha256(library.read_bytes()).hexdigest()
+        final['reference_build'] = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        final['endpoints'] = {s:endpoint(connections[s]) for s in ['aster','aster_b','reference']}
+        check(validate_provenance(provenance, final), 'provenance changed')
+        done = True
+    finally:
+        for conn, statement in prepared:
+            if conn:
+                observe(close_prepared(conn, statement))
+        for conn in connections.values():
+            if conn and transaction(conn) in (2,3):
+                cleanup_ok = query(conn, 'ROLLBACK')['status'] == 1 and cleanup_ok
+        if reference_schema_created:
+            cleanup_ok = query(connections['reference'], f'DROP SCHEMA {scope} CASCADE')['status'] == 1 and cleanup_ok
+        for conn in connections.values():
+            if conn:
+                finish(conn)
+        summary = dict(cases=len(cases), assertions=checks, self_checks=self_checks,
+                       syntax_eligible=len(cases) if done and cleanup_ok else 0,
+                       gate_cases=gate_cases if done and cleanup_ok else 0,
+                       unique_effective=eligible if done and cleanup_ok else 0,
+                       semantic_returning_success=0, cleanup_ok=cleanup_ok,
+                       scope='parser/gate evidence only; 0A000 cases do not count as successful RETURNING')
+        (evidence/'summary.json').write_text(json.dumps(summary, indent=2))
+    assert done and cleanup_ok, 'incomplete run/cleanup'
+    print(json.dumps(summary), flush=True)
+
+if task == 4:
+    returning_handoff()
+    sys.exit(0)
 
 
 try:

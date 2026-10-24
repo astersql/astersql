@@ -1118,6 +1118,11 @@ fn pg_dialect_03_libpq() {
     pg_dialect_libpq(3);
 }
 
+#[test]
+fn pg_dialect_04_libpq() {
+    pg_dialect_libpq(4);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1302,6 +1307,31 @@ fn pg_dialect_libpq(task: u8) {
         &mut mysql,
         &format!("INSERT INTO {database}.dialect_isolation VALUES (31)"),
     );
+    if task == 4 {
+        // Observe the existing MySQL extension inside a rolled-back transaction.
+        // Keep its acceptance distinct from the official MySQL reference rejection.
+        mysql_query(&mut mysql, "BEGIN");
+        let baseline_sql =
+            format!("INSERT INTO {database}.dialect_isolation VALUES (47) RETURNING id");
+        let returned = mysql_query(&mut mysql, &baseline_sql);
+        let stored = mysql_query(
+            &mut mysql,
+            &format!("SELECT id FROM {database}.dialect_isolation ORDER BY id"),
+        );
+        assert_eq!(
+            stored,
+            vec![vec![Some(b"31".to_vec())], vec![Some(b"47".to_vec())]]
+        );
+        mysql_query(&mut mysql, "ROLLBACK");
+        std::fs::write(
+            evidence.join("mysql-returning-baseline.json"),
+            serde_json::json!({"sql": baseline_sql, "accepted": true,
+                "returned": returned, "stored_before_rollback": stored,
+                "rollback": true})
+            .to_string(),
+        )
+        .unwrap();
+    }
     checkpoint(&mut mysql, "before");
     let mut checkpoints = 0;
     for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
@@ -1335,21 +1365,23 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["database_dropped"], true);
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
-    assert!(status.success(), "ILIKE handoff failed; see evidence");
-    assert_eq!(checkpoints, 10);
+    assert!(status.success(), "dialect handoff failed; see evidence");
+    assert_eq!(checkpoints, if task == 4 { 8 } else { 10 });
     let summary_path = evidence.join("summary.json");
     let mut summary: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
     assert_eq!(summary["cleanup_ok"], true);
-    assert_eq!(summary["syntax_eligible"], 10);
+    assert_eq!(summary["syntax_eligible"], if task == 4 { 8 } else { 10 });
     assert_eq!(
         summary["self_checks"],
         if task == 1 {
             15
         } else if task == 2 {
             14
-        } else {
+        } else if task == 3 {
             13
+        } else {
+            17
         }
     );
     assert_eq!(
@@ -1357,8 +1389,15 @@ fn pg_dialect_libpq(task: u8) {
             .unwrap()
             .lines()
             .count(),
-        12
+        if task == 4 { 10 } else { 12 }
     );
-    summary["unique_effective"] = 10.into();
+    if task == 4 {
+        // Gate evidence is distinct from RETURNING result semantics.
+        assert_eq!(summary["gate_cases"], 4);
+        assert_eq!(summary["unique_effective"], 4);
+        assert_eq!(summary["semantic_returning_success"], 0);
+    } else {
+        summary["unique_effective"] = 10.into();
+    }
     std::fs::write(summary_path, summary.to_string()).unwrap();
 }
