@@ -2,7 +2,7 @@
 
 批次：【批次 10】依赖：批次 9；承接此前已完成的代码与验证
 
-状态：未开始
+状态：已完成
 
 目的：用真实libpq和PostgreSQL18参考端验收首批整数转换、参数与元数据闭环。
 
@@ -124,9 +124,9 @@ Rust修改后先 cargo fmt --all，然后运行本任务精确命令；生成语
 ## 进度（Progress）
 
 
-- [ ] 当前消费者、失败断言和真实运行入口已核对。
-- [ ] 本行为的代码与独立测试已完成。
-- [ ] 聚焦验证、清理、Ready检查和差异审阅已记录。
+- [x] 当前消费者、失败断言和真实运行入口已核对。
+- [x] 本行为的代码与独立测试已完成。
+- [x] 聚焦验证、清理、Ready检查和差异审阅已记录。
 
 ## 发现与证据（Surprises & Discoveries）
 
@@ -141,7 +141,7 @@ Rust修改后先 cargo fmt --all，然后运行本任务精确命令；生成语
 ## 结果与复盘（Outcomes & Retrospective）
 
 
-尚未实施，无功能通过结论。完成时记录用户可观察结果、兼容性/正确性/性能风险、残留范围外缺口和实际交接路径；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
+已完成真实两端94场景差分和首批/相邻回归，无生产变更。完成时记录用户可观察结果、兼容性/正确性/性能风险、残留范围外缺口和实际交接路径；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
 
 ## 完成
 
@@ -149,3 +149,17 @@ Rust修改后先 cargo fmt --all，然后运行本任务精确命令；生成语
 仅在适用行为验证通过且证据完整后改为已完成。若环境等无关原因阻止必要验证，允许状态已完成，待回归并明确缺失项，保留本文件；本行为自身失败不能借此宣布完成。无法突破的阻塞只在本文件标已阻塞，记录原因、检查与可独立继续的范围，不递归扩建依赖。
 
 有代码、测试、配置或实际说明变更时，使用 $git-commit 仅提交本任务变更，排除工作区已有删除及其他任务文件；只改编号任务状态或删除则不调用提交。最终按Agent Output Contract报告文件、验证范围、风险、确切命令、未验证项和槽位。完成证据报告后删除本编号任务文件；待回归/阻塞时保留。删除前提交中保留本任务当前证据，最终回复报告可追溯提交SHA。禁止修改或删除plan.md，不把prompt.md作为进度记录。
+
+2026-10-24：HEAD 899335615b01ae366796a7ae0550b72922900008；批次9提交内状态已完成，含1/11/1真实测试及18.4参考证据，依赖满足。已读执行/RustCodeGraph技能、PLANS、server约束与testing-flow；无doc.go及verify-profile技能。新增差分消费者和同一Python夹具模式，未改生产逻辑。既有1–9任务删除不纳入提交。
+
+2026-10-24 实际基线：bash /tmp/pg-task10-slot.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_integer_differential -- --nocapture'，退出101，实际1测试因缺PG18_REFERENCE_DSN失败，证明不跳过。日志/tmp/pg-task10-baseline.log。首次带真实参考的同过滤命令退出101，裸SELECT 1恢复探针描述不同（AsterSQL int8、PG int4）；另暴露清理后listener_addr为None的夹具错误。未改变生产逻辑，恢复探针显式1::int4，使其属于本批显式cast契约；保存原差异为范围外建议。日志/tmp/pg-task10-differential.log。
+
+WIP通过：bash /tmp/pg-task10-reference.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_integer_differential -- --nocapture' 退出0，1测试/90场景。随后新增int别名、嵌套收窄/溢出及恢复4场景，并改善失败清理：Rust guard关闭stdin让Python finally运行，Python一端清理失败仍尝试另一端。
+
+最终Ready命令：bash /tmp/pg-task10-reference.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_integer_differential -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_ -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib mysql_prepared_statements_execute_real_sql_with_binary_values -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_introspection_namespace_session_state -- --nocapture' 退出0；分别实际1/10/1/1测试全部通过，无ignored。日志/tmp/pg-task10-ready.log。make lint 退出0（/tmp/pg-task10-lint.log）；git diff --check 退出0。独立Cargo阶段均动态领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；原子mkdir后写计划/任务/会话/PID，进程结束后释放，锁不存在，缓存保留。
+
+真实参考：独立Homebrew initdb与pg_ctl临时TCP实例55470；version()=PostgreSQL 18.4 (Homebrew) on aarch64-apple-darwin25.4.0, compiled by Apple clang version 21.0.0 (clang-2100.0.123.102), 64-bit；server_version_num=180004；libpq=180000。临时实例已停止、目录删除，其他参考服务未动。最终每次差分94场景：value18/typed_null4/zero_rows2/overflow13/invalid8/prepare5/describe4/reexecute9/recovery22/transaction4/write1/readback1/negative_self_check3。值/OID/SQLSTATE负向自检仅改变AsterSQL内存观测副本，均检测到差异；两端原观测保留。表/连接/结果finally清理，双listener关闭端口拒连；MySQL前中后真实SELECT/CAST及prepared通过。
+
+文件：pg_client_integration_test.rs注册真实差分测试、同Server MySQL检查和RAII；testdata/pg_core_libpq.py复用夹具新增两端同输入模式、全字段描述/值/SQLSTATE及计数；docs/postgresql-protocol-first-phase.md只记录本次真实能力/命令/版本/限制；本编号文件记录证据。无生产代码修改、无新增依赖，未触发bazel_prepare，未运行bazel_lint_changed。fmt后确认无其他Rust文件差异；未触碰只读plan.md、来源蓝图和路线图。自审无DSN/密码写入日志或提交。
+
+风险与未验证：生产行为/性能不变；测试新增必要PG18_REFERENCE_DSN环境依赖。未验证18.6、生产鉴权、RealTiKV分布式存储、性能、完整错误消息/位置、表OID/列来源；portal原始字段由批次9实际TCP证据覆盖。本次只验证显式整数cast；默认裸整数定型差异范围外，建议另立任务。无强制生产修改；verify-profile技能缺失按根WIP/Ready范围执行。只提交本任务4文件（含本证据），排除既有1–9任务删除；交付后删除本任务文件，plan.md不变。

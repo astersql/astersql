@@ -100,6 +100,103 @@ fn pg_core_libpq_insert_readback() {
     );
 }
 
+#[test]
+fn pg_core_libpq_integer_differential() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN is required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let database = format!("pg_diff_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_isolation(&mut mysql);
+    let checkpoint = |mysql: &mut TcpStream| {
+        assert_eq!(
+            mysql_query(
+                mysql,
+                "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation"
+            ),
+            vec![vec![Some(b"31".to_vec()), Some(b"-17".to_vec())]]
+        );
+    };
+    checkpoint(&mut mysql);
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            // EOF releases the Python checkpoint even if a MySQL assertion panics,
+            // allowing its finally block to clean the reference endpoint as well.
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_core_libpq.py"
+            ))
+            .args([
+                address.port().to_string(),
+                database.clone(),
+                "integer-differential".into(),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Python 3 is required"),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let mut middle = false;
+    for line in std::io::BufReader::new(stdout).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG_DIFFERENTIAL_MID" {
+            checkpoint(&mut mysql);
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    checkpoint(&mut mysql);
+    mysql_query(&mut mysql, "DROP DATABASE public");
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    server.close();
+    native
+        .execute(&format!("DROP DATABASE {database}"))
+        .unwrap();
+    assert!(TcpStream::connect(address).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    assert!(status.success(), "integer differential client failed");
+    assert!(middle, "missing middle MySQL checkpoint");
+    println!(
+        "MySQL SELECT/CAST before, during and after PG; prepared regression and listener cleanup passed"
+    );
+}
+
 pub(super) fn start_client_server(
     domain: Arc<astersql_domain::Domain>,
     postgres_port: Option<u16>,

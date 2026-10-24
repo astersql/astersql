@@ -495,3 +495,29 @@ DataGrip 2025.1.3 真实 UI 连接测试成功，报告 `18.0 (AsterSQL)`、JDBC
 完整 DataGrip 自动内省仍会发出已知范围外的 `show DateStyle`、`pg_catalog.pg_timezone_names`、roles 和 server-object 查询；这些错误在先前 MockTiKV UI 树通过时也存在，不表示 RealTiKV 上 DDL 未生效。本次 Database Explorer 同步后仍显示 ALTER 前的 `id + note` 缓存；删除旧任务数据源、创建并成功测试全新数据源后，IDE 在不重启的情况下仍未向 Explorer 动态注册新节点。为避免中断用户其他 DataGrip 会话，未强制重启；真实 UI 最终列树保留为待回归项，不以 JDBC 或 MySQL 查询结果替代 UI 证据。
 
 此次 stride 增加一个 Value 槽位，目录 provider 每行存储约增加 1/24，JOIN 工作量、行数和 CTE 列数上限保持不变。未做性能基准测试。make lint 与差异检查均通过；Ready 按仓库交付规则执行，当前仓库缺少 .agents/skills/tidb-verify-profile/SKILL.md，未声称已读取该缺失 skill。
+
+## 2026-10-24 首批显式整数转换 libpq 差分
+
+`pg_core_libpq_integer_differential` 在 CreateAnalyzeSession 的真实共享内核、测试存储和临时双 listener 上运行独立 Python/libpq 夹具。夹具的 `integer-differential` 模式必须设置 `PG18_REFERENCE_DSN`，缺失明确失败；参考连接串仅从环境读取，连接错误不回显完整串或密码。`PG_LIBPQ_LIBRARY` 仍可选择系统库。
+
+本次客户端为 libpq 180000；真实参考端查询 `version()` / `server_version_num` 得到 PostgreSQL 18.4 (Homebrew)，aarch64-apple-darwin25.4.0，Apple clang 21.0.0 (clang-2100.0.123.102)，64-bit，180004。参考端使用独立 initdb、127.0.0.1:55470 和临时数据库目录，退出后停止并清理；未操作其他参考服务。目标 18.6 未验证。
+
+最终 94 个有效场景包含普通值 18、typed NULL 4、零行描述/执行 2、溢出 13、非法文本 8、准备 5、额外参数描述 4、重复执行 9、错误恢复 22、事务步骤 4、写入/回读各 1，以及差分器负向自检 3。两端按固定用例 ID 和输入顺序独立存储观测，严格比较值/NULL、列名、OID、长度、typmod、参数数量/OID 和 SQLSTATE。覆盖 `::` / `CAST`、int4/int8 上下界、integer/int/bigint 别名、嵌套收窄、超过 2^53 的精确整数、参数 OID 省略/零/显式来源 OID、重复/乱序参数、typed NULL、零行、22P02/22003 和 E→ROLLBACK→I。值、OID、SQLSTATE 的负向自检只修改 AsterSQL 观测副本，均被比较器拒绝。
+
+同一健康 MySQL 连接在 PG 流程前、中、后均读取真实表值及 `CAST AS SIGNED`，中间检查使用管道握手；另复用真实预处理整数回归。两端唯一测试表在 finally 删除，libpq 结果/连接与 Rust 子进程/listener 均清理，关闭后两个端口拒绝连接。此次复用前序生产实现，仅新增测试和说明。
+
+在仓库共享槽位规则下动态领取槽位 1，设置 `CARGO_TARGET_DIR=$PWD/target/rust-slot-1` 的绝对路径，并提供真实 `PG18_REFERENCE_DSN` 后运行以下命令。退出前释放自己的锁，保留缓存：
+
+```bash
+cargo fmt --all
+env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_libpq_integer_differential -- --nocapture
+env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_ -- --nocapture
+env -u LDFLAGS cargo test --locked -p astersql-server --lib mysql_prepared_statements_execute_real_sql_with_binary_values -- --nocapture
+env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_introspection_namespace_session_state -- --nocapture
+make lint
+git diff --check
+```
+
+分别实际执行 1/10/1/1 个测试，均通过；fmt、lint、diff 检查退出 0。Ready 按根规则执行，verify-profile 技能当前缺失。未改 Go/import/Bazel/依赖，未触发 bazel_prepare，未运行 bazel_lint_changed。
+
+libpq 未暴露的 portal 原始字段沿用批次 9 的真实 TCP 回归证据，不默认字段相等；本差分不比较表 OID/列来源、错误消息全文或错误位置。裸 `SELECT 1` 的默认整数定型不同（AsterSQL int8、参考端 int4），恢复探针显式使用本批范围的 `1::int4`，默认字面量定型留作范围外工作。此轮不代表 PostgreSQL18 全量兼容、18.6 对照、生产鉴权、RealTiKV 分布式存储或性能验收。
