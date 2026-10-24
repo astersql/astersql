@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection, validate_provenance, source_snapshot, summarize_run
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection, validate_provenance, source_snapshot, summarize_run, validate_whitelist, apply_whitelist
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -83,6 +83,8 @@ def integer_differential(aster_dsn):
     run_id = evidence_dir.name
     attempt = 1
     attempts = []
+    whitelist = validate_whitelist(json.loads(Path(__file__).with_name('pg_core_whitelist.json').read_text()))
+    whitelist_used = []
     completed = False
 
     def save_attempts():
@@ -138,7 +140,10 @@ def integer_differential(aster_dsn):
         finally:
             clear(result)
 
-    def equal(case, actual, reference, row_order='strict', phase='query'):
+    def equal(case, actual, reference, row_order='strict', phase='query', context=None):
+        if context is not None:
+            actual, reference, used = apply_whitelist(whitelist, context, actual, reference, phase)
+            whitelist_used.extend(used)
         assert compare_rows(actual, reference, row_order), (case, actual, reference)
         assert compare_metadata(actual, reference, phase), (case, actual, reference)
         keys = ('status', 'state')
@@ -205,7 +210,19 @@ def integer_differential(aster_dsn):
                         assert obs[key] == description[key], (side, case, key)
                         entry["assertions"] += 1
         row_order = registry.cases['cases'][len(registry.seen) - 1].get('row_order', 'strict')
-        equal(case, observations["aster"][case], observations["reference"][case], row_order, registered_input["phase"])
+        registered = next((item for item in registry.cases['cases'] if item['case_id'] == case), None)
+        context = None
+        if registered is not None and registered['kind'] == 'business':
+            context = dict(capability=registered['family'], case_id=case,
+                           sql=registered['input']['sql'],
+                           type_oids=[field[1] for field in observations['reference'][case]['fields']],
+                           client=json.dumps(provenance['client'], sort_keys=True),
+                           environment=json.dumps({key: provenance[key] for key in
+                               ['os', 'storage', 'authentication', 'endpoints']}, sort_keys=True),
+                           version=provenance['target_version'],
+                           implementation=json.dumps(provenance['source'], sort_keys=True),
+                           configuration=json.dumps(provenance['reference_build'], sort_keys=True))
+        equal(case, observations["aster"][case], observations["reference"][case], row_order, registered_input["phase"], context)
         entry["assertions"] += 3  # equal(): rows, metadata, status/SQLSTATE
         entry["outcome"] = "passed"
         save_attempts()
@@ -581,6 +598,9 @@ def integer_differential(aster_dsn):
             for changed in mutations:
                 assert not validate_provenance(changed, expected), 'provenance mutation accepted'
             assert validate_provenance(provenance, expected)
+        whitelist_report = {'rules': len(whitelist), 'used': len(whitelist_used), 'ids': whitelist_used}
+        (evidence_dir / 'whitelist.json').write_text(json.dumps(whitelist_report, sort_keys=True))
+        print('whitelist:', json.dumps(whitelist_report, sort_keys=True), flush=True)
         print('provenance gate:', json.dumps(gate, sort_keys=True), flush=True)
         completed = True
     finally:

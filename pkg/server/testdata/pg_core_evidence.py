@@ -399,3 +399,67 @@ def summarize_run(run, cases, attempts, cleanup_ok, completed, run_error=None):
             'cleanup_ok': cleanup_ok, 'completed': completed,
             'retries': [{'case_id': key, 'attempts': [item['attempt'] for item in group]}
                         for key, group in grouped.items() if len(group) > 1]}
+
+
+def validate_whitelist(rules):
+    """Accept only reviewed exact column-name substitutions; no error exemptions."""
+    scope_keys = {'capability', 'case_id', 'sql', 'type_oids', 'client', 'environment',
+                  'version', 'implementation', 'configuration'}
+    review_keys = {'version', 'implementation', 'configuration', 'client'}
+
+    def text(value):
+        return isinstance(value, str) and bool(value.strip()) and not any(c in value for c in '*?')
+
+    if not isinstance(rules, list):
+        raise ValueError('whitelist must be an array')
+    seen = set()
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) != {
+                'id', 'scope', 'field', 'column', 'actual', 'reference', 'transform',
+                'basis', 'approval', 'review'}:
+            raise ValueError('unknown or missing whitelist fields')
+        scope, basis, review = rule['scope'], rule['basis'], rule['review']
+        if (not text(rule['id']) or rule['id'] in seen
+                or not isinstance(scope, dict) or set(scope) != scope_keys
+                or not all(text(scope[k]) for k in scope_keys - {'type_oids'})
+                or not isinstance(scope['type_oids'], list) or not scope['type_oids']
+                or any(type(x) is not int or x <= 0 for x in scope['type_oids'])
+                or rule['field'] != 'fields.name' or rule['transform'] != 'replace_exact_name'
+                or type(rule['column']) is not int or rule['column'] < 0
+                or not text(rule['actual']) or not text(rule['reference'])
+                or rule['actual'] == rule['reference']
+                or not isinstance(basis, dict)
+                or set(basis) != {'version', 'section', 'link', 'evidence'}
+                or not all(text(v) for v in basis.values())
+                or basis['version'] != scope['version']
+                or not basis['link'].startswith('https://') or not text(rule['approval'])
+                or not isinstance(review, dict) or set(review) != review_keys
+                or any(review[k] != scope[k] for k in review_keys)):
+            raise ValueError('whitelist requires exact scope, source and bound review')
+        seen.add(rule['id'])
+    return copy.deepcopy(rules)
+
+
+def apply_whitelist(rules, context, actual, reference, phase='query'):
+    """Transform comparison copies only, after complete successful collection.
+
+    SQL errors, recovery and side effects remain under their existing contracts.
+    A stale rule simply does not apply; it never fills absent evidence.
+    """
+    rules = validate_whitelist(rules)
+    a, b, used = copy.deepcopy(actual), copy.deepcopy(reference), []
+    if rules:
+        for observation in (a, b):
+            if (not compare_rows(observation, observation, 'strict')
+                    or not compare_metadata(observation, observation, phase)
+                    or observation.get('status') != 2 or observation.get('state') != ''):
+                raise ValueError('whitelist cannot waive errors or missing evidence')
+    for rule in rules:
+        col = rule['column']
+        if (context == rule['scope'] and col < len(a['fields']) and col < len(b['fields'])
+                and a['fields'][col][0] == rule['actual']
+                and b['fields'][col][0] == rule['reference']):
+            a['fields'][col] = list(a['fields'][col])
+            a['fields'][col][0] = rule['reference']
+            used.append(rule['id'])
+    return a, b, used

@@ -156,7 +156,7 @@ class ObservationArchiveTests(unittest.TestCase):
         def send(side):
             if fail_reference and side == 'reference':
                 raise RuntimeError('controlled collection failure password=secret')
-            return {'status': 2, 'state': '', 'rows': [[side]], 'params': []}
+            return {'status': 2, 'state': '', 'rows': [[side]], 'params': [], 'fields': []}
         def observe(result, partial):
             if fail_observe:
                 partial['status'] = result['status']
@@ -166,6 +166,9 @@ class ObservationArchiveTests(unittest.TestCase):
                          connections={'aster': 'aster', 'reference': 'reference'},
                          observations={'aster': {}, 'reference': {}}, observe=observe,
                          equal=lambda *args: None, counts=Counter(),
+                         provenance={key: 'archive-only-controlled-test' for key in
+                             ['client', 'os', 'storage', 'authentication', 'endpoints',
+                              'target_version', 'source', 'reference_build']},
                          append_observation=append_observation, evidence_dir=self.directory,
                          run_id='run', attempt=attempt, attempts=[], save_attempts=lambda: None)
         exec(compile(ast.Module(body=[check], type_ignores=[]), '<actual archive gate>', 'exec'), namespace)
@@ -809,3 +812,92 @@ class EffectiveCountTests(unittest.TestCase):
         report = self.report(cleanup=False, completed=False)
         self.assertEqual(report['failed'], 1)
         self.assertFalse(report['passed'])
+
+
+class WhitelistTests(unittest.TestCase):
+    def setUp(self):
+        from pg_core_evidence import validate_whitelist, apply_whitelist
+        self.validate = validate_whitelist
+        self.apply = apply_whitelist
+        self.context = dict(capability='integer', case_id='int_alias', sql='SELECT 1::int',
+                            type_oids=[23], client='libpq18-sha', environment='test-env',
+                            version='18.4', implementation='a' * 40, configuration='default')
+        self.rule = dict(id='test-only-name', scope=copy.deepcopy(self.context),
+                         field='fields.name', column=0, actual='aster', reference='postgres',
+                         transform='replace_exact_name',
+                         basis=dict(version='18.4', section='test section', link='https://example.org/spec',
+                                    evidence='test-only evidence'), approval='test-only review',
+                         review={k: self.context[k] for k in
+                                 ['version', 'implementation', 'configuration', 'client']})
+        self.actual = dict(status=2, state='', rows=[['1']],
+                           cells=[[dict(kind='value', length=1, hex='31')]],
+                           fields=[['aster', 23, 4, -1]], formats=[0], params=[], param_count=0)
+        self.reference = copy.deepcopy(self.actual)
+        self.reference['fields'][0][0] = 'postgres'
+
+    def test_exact_rule_transforms_copy(self):
+        before = copy.deepcopy(self.actual)
+        a, b, used = self.apply([self.rule], self.context, self.actual, self.reference)
+        self.assertEqual(a, b)
+        self.assertEqual(used, ['test-only-name'])
+        self.assertEqual(self.actual, before)
+
+    def test_empty_official_list(self):
+        self.assertEqual(json.loads(Path(__file__).with_name('pg_core_whitelist.json').read_text()), [])
+        a, b, used = self.apply([], self.context, self.actual, self.reference)
+        self.assertEqual(a, self.actual)
+        self.assertEqual(used, [])
+        self.assertNotEqual(a, b)
+
+    def test_missing_reason(self):
+        for key in ['basis', 'approval']:
+            rule = copy.deepcopy(self.rule); rule[key] = None
+            with self.assertRaises(ValueError): self.validate([rule])
+
+    def test_wildcard_scope(self):
+        for key in self.context:
+            rule = copy.deepcopy(self.rule); rule['scope'][key] = '*'
+            with self.assertRaises(ValueError): self.validate([rule])
+
+    def test_unknown_field(self):
+        for field in ['state', 'status', 'rows', 'fields.oid', 'recovery', 'cleanup', 'side_effects']:
+            rule = copy.deepcopy(self.rule); rule['field'] = field
+            with self.assertRaises(ValueError): self.validate([rule])
+
+    def test_missing_review(self):
+        for key in self.rule['review']:
+            rule = copy.deepcopy(self.rule); del rule['review'][key]
+            with self.assertRaises(ValueError): self.validate([rule])
+
+    def test_stale_conditions_do_not_apply(self):
+        for key in self.context:
+            context = copy.deepcopy(self.context)
+            context[key] = [20] if key == 'type_oids' else 'changed'
+            a, b, used = self.apply([self.rule], context, self.actual, self.reference)
+            self.assertNotEqual(a, b)
+            self.assertEqual(used, [])
+
+    def test_review_must_bind_scope(self):
+        rule = copy.deepcopy(self.rule); rule['review']['version'] = '18.6'
+        with self.assertRaises(ValueError): self.validate([rule])
+
+    def test_missing_observation_cannot_be_filled(self):
+        for key in self.actual:
+            actual = copy.deepcopy(self.actual); del actual[key]
+            with self.assertRaises(ValueError): self.apply([self.rule], self.context, actual, self.reference)
+
+    def test_errors_cannot_be_waived(self):
+        for key, value in [('status', 7), ('state', '22003')]:
+            actual = copy.deepcopy(self.actual); actual[key] = value
+            with self.assertRaises(ValueError): self.apply([self.rule], self.context, actual, self.reference)
+
+    def test_unknown_rule_key_and_duplicate_id(self):
+        rule = copy.deepcopy(self.rule); rule['ignore'] = True
+        with self.assertRaises(ValueError): self.validate([rule])
+        with self.assertRaises(ValueError): self.validate([self.rule, self.rule])
+
+    def test_nonmatching_column_name_is_not_replaced(self):
+        actual = copy.deepcopy(self.actual); actual['fields'][0][0] = 'other'
+        a, b, used = self.apply([self.rule], self.context, actual, self.reference)
+        self.assertNotEqual(a, b)
+        self.assertEqual(used, [])
