@@ -74,3 +74,19 @@ pub(crate) struct PreparedPlannedKVSelect {
     /// 绑定参数个数。
     pub ParameterCount: usize,
 }
+
+/// Partition the actual shared-cache lookup/admission key while retaining the
+/// planner's schema, account, parameter-type and session-setting key components.
+pub(crate) fn dialect_plan_cache_key(dialect: ast::SqlDialect, key: &[u8]) -> String {
+    let namespace = match dialect {
+        ast::SqlDialect::MySQL => "mysql:",
+        ast::SqlDialect::PostgreSQL => "postgresql:",
+    };
+    let mut result = String::with_capacity(namespace.len() + key.len() * 2);
+    result.push_str(namespace);
+    for byte in key {
+        use std::fmt::Write;
+        write!(result, "{byte:02x}").expect("writing a cache key to a String cannot fail");
+    }
+    result
+}

@@ -219,3 +219,8 @@ RustCodeGraph 将本文件标记为被 73 个文件使用；这个数字包含�
 
 性能方面，热路径访问器应继续保持简单克隆或 `Arc` 借用；不要让每次表达式求值重新解析系统
 变量、读取 session 或加全局锁。若扩展 `TimeOnce` 回调，还需评估首次调用持锁期间的阻塞。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+WithSQLDialect 将连接方言保存为独立于系统变量的静态快照，默认 MySQL；Apply、LoadSystemVars 和 MakeEvalContextStatic 均保留身份，trait 调用与具体类型读取一致。只新增 parser_ast 内部 path 依赖。

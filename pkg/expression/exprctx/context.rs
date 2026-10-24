@@ -60,6 +60,10 @@ impl PlanColumnIDAllocator for SimplePlanColumnIDAllocator {
 
 /// 对应 Go EvalContext：聚合一次表达式求值所需的稳定会话快照与可选属性。
 pub trait EvalContext: contextutil::WarnHandler + ParamValues {
+    /// Immutable SQL semantics captured by this evaluation context.
+    fn SQLDialect(&self) -> parser_ast::SqlDialect {
+        parser_ast::SqlDialect::MySQL
+    }
     fn CtxID(&self) -> u64;
     fn SQLMode(&self) -> mysql::SQLMode;
     fn TypeCtx(&self) -> types::Context;
@@ -91,6 +95,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
 
 /// 对应 Go BuildContext：提供表达式构建参数以及计划缓存、列 ID 等可变决策入口。
 pub trait BuildContext {
+    /// Building and evaluation use the same dialect snapshot.
+    fn SQLDialect(&self) -> parser_ast::SqlDialect {
+        self.GetEvalCtx().SQLDialect()
+    }
     /// Collation semantics captured by this expression-building context.
     fn NewCollationEnabled(&self) -> bool {
         collate_crate::NewCollationEnabled()
@@ -351,6 +359,9 @@ impl ParamValues for InnerOverrideEvalContext<'_> {
 }
 
 impl EvalContext for InnerOverrideEvalContext<'_> {
+    fn SQLDialect(&self) -> parser_ast::SqlDialect {
+        self.inner.SQLDialect()
+    }
     fn CtxID(&self) -> u64 {
         self.inner.CtxID()
     }

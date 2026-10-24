@@ -92,3 +92,8 @@ Index merge 是本文件唯一显式多线程区域：`std::thread::scope` 让 w
 新增 OFFSET 优化不得以稠密 handle 为前提；当前 candidate 只是不会越过目标的下界，仍需精确范围计数补偿删除空洞。任何 snapshot option 修改都要恢复，任何 iterator/response 新分支都要关闭。新增 COUNT datum 类型或 executor 形态时保留溢出检查和 planner 首尾约束。
 
 测试必须放在独立文件而非本源文件。优先扩展 `pkg/session/runtime_test/storage.rs`（计数、OFFSET、二级索引、index merge 与快路结果）、`pkg/session/runtime_test/planning.rs`（planner/DAG 形态），以及 `pkg/session/runtime/scan_adapter_runtime_test.rs`（client response 关闭、exec details、RC TSO、codec 边界）。若改变 Go 对齐语义，还应对照对应 Go executor/planner 测试，而不是只验证 Rust 能编译。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+现有物理扫描规划上下文调用补传所属连接方言，不改变扫描、存储或语法能力。

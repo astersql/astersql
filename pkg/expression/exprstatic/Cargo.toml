@@ -9,6 +9,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+parser_ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
 chrono = "0.4"
 chrono-tz = "0.10"
 collate-crate = { package = "astersql-util-collate", path = "../../util/collate" }

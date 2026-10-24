@@ -4939,6 +4939,7 @@ dependencies = [
  "astersql-errctx",
  "astersql-expression-exprctx",
  "astersql-expression-expropt",
+ "astersql-parser-ast",
  "astersql-parser-charset",
  "astersql-parser-mysql",
  "astersql-sessionctx-vardef",

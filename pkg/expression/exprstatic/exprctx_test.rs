@@ -342,3 +342,32 @@ fn TestExprSystemVarNormalizationMatchesGo() {
             .is_err()
     );
 }
+
+#[test]
+fn pg_core_dialect_context_snapshot_build() {
+    use parser_ast::SqlDialect;
+    let pg = NewExprContext(vec![WithEvalCtx(Arc::new(NewEvalContext(vec![
+        WithSQLDialect(SqlDialect::PostgreSQL),
+    ])))]);
+    assert_eq!(pg.SQLDialect(), SqlDialect::PostgreSQL);
+    assert_eq!(pg.Apply(vec![]).SQLDialect(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.LoadSystemVars(&HashMap::new()).unwrap().SQLDialect(),
+        SqlDialect::PostgreSQL
+    );
+    assert_eq!(
+        exprctx::WithNullRejectCheck(&pg).SQLDialect(),
+        SqlDialect::PostgreSQL
+    );
+    assert_eq!(
+        exprctx::WithConstantPropagateCheck(&pg).SQLDialect(),
+        SqlDialect::PostgreSQL
+    );
+    let truncated = exprctx::CtxWithHandleTruncateErrLevel(&pg, errctx::Level::LevelWarn);
+    assert_eq!(truncated.SQLDialect(), SqlDialect::PostgreSQL);
+    assert_eq!(truncated.GetEvalCtx().SQLDialect(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        MakeExprContextStatic(&pg).SQLDialect(),
+        SqlDialect::PostgreSQL
+    );
+}

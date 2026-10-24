@@ -131,3 +131,8 @@ Go 与 Rust 的结构并不完全相同：Rust 明确拆出 `OwnedKVSnapshotSour
 - 修改 RU 生命周期时同时审查 `dispatch.rs`、`load_data.rs`、`planning.rs`、`explain_analyze.rs` 和 Go `session.go` 的终结分支，覆盖成功、编译后错误、result set 关闭错误、panic、嵌套语句和文件传输延迟。
 - 修改 deadline 时验证“从原始 started 计时”“取消后不污染复用会话”“无 Next 也超时”三项；注意 join 可能阻塞当前 worker，不能引入持锁等待。
 - 性能风险集中在每次 getter 新建 snapshot、物理树 clone、prepared range 重建和多叶 source 创建；正确性风险集中在错误 range、错用 MVCC 版本、遗漏 RU 终态与 session/快照所有权混淆。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+AdapterPlanContext 在建立共享执行器的表达式上下文时传入所属连接方言；与预处理物理计划上下文保持一致。

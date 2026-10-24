@@ -1807,6 +1807,7 @@ impl ConcreteSession {
             true,
             Some(Arc::clone(&self.domain)),
             None,
+            self.sql_dialect(),
         );
         self.session_vars
             .PlanID
@@ -2938,6 +2939,7 @@ impl ConcreteSession {
                 true,
                 Some(Arc::clone(&self.domain)),
                 None,
+                self.sql_dialect(),
             );
             // A statement owns one physical-plan ID sequence. Scalar
             // subqueries optimized while building the main logical tree must

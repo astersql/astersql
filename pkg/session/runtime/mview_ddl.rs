@@ -6,7 +6,12 @@ pub(super) fn mlog_schedule_unix_seconds(
     session: &ConcreteSession,
     expression: &ast::ExprNode,
 ) -> SessionResult<Option<i64>> {
-    let context = plan_context_with_params(Arc::clone(&session.session_vars), &[], false);
+    let context = plan_context_with_params(
+        Arc::clone(&session.session_vars),
+        &[],
+        false,
+        session.sql_dialect(),
+    );
     let expression_context = astersql_planner_core_base::PlanContext::GetExprCtx(context.as_ref());
     let built =
         astersql_planner_core::PlannerBuildSimpleExpr(expression_context, expression, Vec::new())
@@ -101,7 +106,12 @@ impl ConcreteSession {
             let next = purge.Next.as_ref().ok_or_else(|| {
                 SessionError::new("PURGE NEXT is required for CREATE MATERIALIZED VIEW LOG")
             })?;
-            let context = plan_context_with_params(Arc::clone(&self.session_vars), &[], false);
+            let context = plan_context_with_params(
+                Arc::clone(&self.session_vars),
+                &[],
+                false,
+                self.sql_dialect(),
+            );
             let expression_context =
                 astersql_planner_core_base::PlanContext::GetExprCtx(context.as_ref());
             let validate = |expression: &ast::ExprNode, clause: &str| -> SessionResult<String> {

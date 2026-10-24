@@ -140,3 +140,8 @@ RustCodeGraph 的文件节点列出 `runtime/scan_adapter_runtime_test.rs`、`ru
 negative_unsigned_equality_parameter 对预处理 SQL 的再解析承接所属连接方言，避免负整数参数检查退回默认 MySQL；其余规划能力不扩展。
 
 PreparePlannedKVSelect 作为普通 SQL PREPARE 表查询的实际计划准备入口，同样按连接方言解析模板；不改变规划上下文或缓存键架构。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+统一规划工厂 plan_context_with_params / plan_context_with_params_and_explain 显式接收所属 SqlDialect，保存到 expression 的静态 EvalContext；派生 Ranger 与 BuildPB 使用同一身份。Prepared lookup、restore 与延迟 cache admission 通过 dialect_plan_cache_key 隔离实际共享键，缓存准入、范围重建与参数类型决策不变。相邻普通扫描、EXPLAIN、typed adapter、MLog 调用仅补传连接身份。

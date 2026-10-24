@@ -546,3 +546,19 @@ fn TestEvalSystemVarNormalizationMatchesGo() {
     assert_eq!(loaded.GetDivPrecisionIncrement(), 30);
     assert_eq!(loaded.GetTiDBRedactLog(), "custom");
 }
+
+#[test]
+fn pg_core_dialect_context_snapshot_eval() {
+    use parser_ast::SqlDialect;
+    assert_eq!(NewEvalContext(vec![]).SQLDialect(), SqlDialect::MySQL);
+    let pg = NewEvalContext(vec![WithSQLDialect(SqlDialect::PostgreSQL)]);
+    assert_eq!(pg.Apply(vec![]).SQLDialect(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.LoadSystemVars(&HashMap::new()).unwrap().SQLDialect(),
+        SqlDialect::PostgreSQL
+    );
+    assert_eq!(
+        MakeEvalContextStatic(&pg).SQLDialect(),
+        SqlDialect::PostgreSQL
+    );
+}

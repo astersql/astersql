@@ -1123,7 +1123,12 @@ impl kv::Retriever for OwnedKVSnapshotSource {
 
 impl ConcreteSession {
     pub fn AdapterPlanContext(&self) -> astersql_planner_core_base::ContextRef {
-        super::planning::plan_context_with_params(Arc::clone(&self.session_vars), &[], false)
+        super::planning::plan_context_with_params(
+            Arc::clone(&self.session_vars),
+            &[],
+            false,
+            self.sql_dialect(),
+        )
     }
     /// Build the typed executor directly from a canonical optimized scan node.
     pub fn OpenTypedPhysicalTableScan(

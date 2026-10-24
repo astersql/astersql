@@ -96,3 +96,8 @@ range 超过 `tidb_opt_range_max_size` 是可恢复的缓存回退而非查询�
 扩展计划快照时，应修改 `collect_process_plan_snapshot` 并说明遍历顺序和哪些节点产生额外数据；不要假设 `Operators` 与 `IndexRanges` 一一对应。新增公开字段还需评估 crate 外 API 兼容性及克隆成本，尤其是行集、字符串和大型计划诊断数据。
 
 性能风险集中在计划克隆/恢复、快照字符串生成、参数类型匹配与大 range；正确性风险集中在缓存键遗漏、InfoSchema 版本、事务/隔离读环境和失败执行误准入；兼容性风险集中在 Go 完整计划缓存语义与 Rust 当前计划型 KV `SELECT` 子集之间的差异。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+dialect_plan_cache_key 为真实实例缓存 Get/Put 的字符串键加 mysql: 或 postgresql: 命名空间，后接原 key 字节的十六进制编码；原 schema、account、session setting 与参数类型检查保留。同方言跨会话仍可共享，跨方言隔离。

@@ -110,3 +110,8 @@ RustCodeGraph 的文件索引确认 `pkg/session/runtime/explain_query.rs` 已�
 - 新增点查代际差异：接入 `explain_point_get_select`/`explain_point_get_dml`，明确与 optimizer fix control 和 `IsNextGen` 的交互。
 - 测试应继续放在独立文件 `pkg/session/runtime/explain_query_test.rs`，不要内嵌到生产源文件；跨模块 EXPLAIN/ANALYZE 行为还应同步相邻 Rust 测试或 Go 的 `pkg/executor/explain_test.go`、`pkg/executor/explain_unit_test.go` 与相关 planner casetest。
 - 性能风险主要来自重复解析/重复规划、深树递归克隆、统计锁读取和大量字符串替换；兼容性风险主要是输出列号、树形缩进、Build/Probe 顺序、CTE producer 顺序和 Go golden 文本漂移。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+两个现有 EXPLAIN 规划上下文调用补传所属连接方言，保证共享 expression/eval/ranger/PB 快照保真；EXPLAIN 算法与输出不变。

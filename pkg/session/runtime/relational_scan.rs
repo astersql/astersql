@@ -2775,6 +2775,7 @@ impl ConcreteSession {
             false,
             Some(Arc::clone(&self.domain)),
             None,
+            self.sql_dialect(),
         );
         let (row_count, stats_version) =
             estimated_table_stats(self.domain.as_ref(), expected_table_id);

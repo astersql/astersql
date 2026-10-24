@@ -83,3 +83,8 @@
 - `StringerWithCtx` 的新实现必须覆盖 `None` 参数上下文、redact 模式和带参数标记的情况；优先复用 `exprctx::EmptyParamValues`，不要在实现中对 `None` 做 `unwrap()`。
 - 测试必须保持在独立文件 [`pkg/expression/context_test.rs`](context_test.rs)，不内嵌到生产源文件。可选属性的新分支至少覆盖 required、allowed、未声明 panic 和嵌套装饰器；时区逻辑应补充一致与不一致两条路径。
 - 兼容性风险主要是改变 `EvalContext` 公开 trait 会强制所有实现者更新，以及 required/allowed 错分可能导致计划构建缺少必需 provider。性能风险主要是断言模式下每次标量/向量求值的包装与检查；普通路径不会创建该装饰器。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+assertionEvalContext 显式向底层 EvalContext 转发 SQLDialect，防止 builtin 测试包装将 PostgreSQL 退回默认 MySQL；相邻独立测试覆盖真实静态上下文的包装。

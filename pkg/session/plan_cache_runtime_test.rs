@@ -1078,3 +1078,80 @@ fn memory_arbitration_compilation_releases_quota_before_prepared_execution() {
     );
     core.set_runtime_heap(0);
 }
+
+fn dialect_cache_observations() -> Vec<(
+    astersql_parser_ast::SqlDialect,
+    [astersql_parser_ast::SqlDialect; 4],
+    bool,
+    bool,
+)> {
+    use astersql_parser_ast::SqlDialect;
+    use astersql_types::datum::NewIntDatum;
+    let (domain, mysql) = crate::runtime::CreateAnalyzeSession().unwrap();
+    mysql
+        .execute("CREATE TABLE test.pg_cache_identity_t4 (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO test.pg_cache_identity_t4 VALUES (1), (2)")
+        .unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    let pg_peer = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    let sql = "SELECT id FROM test.pg_cache_identity_t4 WHERE id = ?";
+    let schema = domain.info_schema();
+    let my_id = mysql.PreparePlannedKVSelect(sql, schema.clone()).unwrap();
+    let pg_id = pg.PreparePlannedKVSelect(sql, schema.clone()).unwrap();
+    let peer_id = pg_peer.PreparePlannedKVSelect(sql, schema).unwrap();
+    let mut seen = Vec::new();
+    for (session, id, dialect, expected_hit, value) in [
+        (&mysql, my_id, SqlDialect::MySQL, false, 1),
+        (&mysql, my_id, SqlDialect::MySQL, true, 2),
+        (&pg, pg_id, SqlDialect::PostgreSQL, false, 1),
+        (&pg, pg_id, SqlDialect::PostgreSQL, true, 2),
+        (&pg_peer, peer_id, SqlDialect::PostgreSQL, true, 1),
+        (&mysql, my_id, SqlDialect::MySQL, true, 1),
+    ] {
+        let planned = session
+            .PlanPreparedPlannedKVSelect(id, &[NewIntDatum(value)])
+            .unwrap();
+        let context = planned.Plan.s_ctx();
+        seen.push((
+            dialect,
+            [
+                context.GetExprCtx().SQLDialect(),
+                context.GetExprCtx().GetEvalCtx().SQLDialect(),
+                context.GetRangerCtx().ExprCtx.SQLDialect(),
+                context.GetBuildPBCtx().ExprCtx.SQLDialect(),
+            ],
+            planned.FromPlanCache,
+            expected_hit,
+        ));
+        drop(planned);
+        let result = session
+            .ExecutePreparedPlannedKVSelectThroughAdapter(id, &[NewIntDatum(value)])
+            .unwrap();
+        assert_eq!(result.Rows.len(), 1);
+        assert_eq!(
+            result.Rows[0].0,
+            vec![astersql_executor_sortexec::SortValue::Int(value)]
+        );
+        assert_eq!(result.FromPlanCache, seen.last().unwrap().2);
+    }
+    mysql
+        .execute("DROP TABLE test.pg_cache_identity_t4")
+        .unwrap();
+    seen
+}
+
+#[test]
+fn pg_core_dialect_plan_cache() {
+    for (dialect, _, hit, expected_hit) in dialect_cache_observations() {
+        assert_eq!(hit, expected_hit, "{dialect:?} cache ownership");
+    }
+}
+
+#[test]
+fn pg_core_dialect_plan_cache_context() {
+    for (dialect, contexts, _, _) in dialect_cache_observations() {
+        assert_eq!(contexts, [dialect; 4]);
+    }
+}

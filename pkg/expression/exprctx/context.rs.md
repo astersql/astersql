@@ -77,3 +77,8 @@ Rust 相比当前 Go 文件新增/显式化了 `ParseSQL` 默认覆盖点、`Get
 修改截断策略应集中在 `CtxWithHandleTruncateErrLevel`，同时核对 `types::Flags` 与 `errctx::ErrGroupTruncate`，并扩展 `context_override_test.rs` 和 `migration_aster_unit_test.rs` 的 Error/Warn/Ignore、原对象不变、重复调用复用测试。修改列 ID 规则要同步 `context_test.rs` 的溢出边界、迁移测试的并发唯一性，以及 `exprstatic/exprctx_test.rs` 的静态化/自定义分配器场景。
 
 `AssertLocationWithSessionVars` 仍应保持测试辅助性质。新测试应继续放在独立 `*_test.rs` 文件，并在 `lib.rs` 以 `#[cfg(test)]` 模块接入，不要内嵌到生产源文件。性能上应避免无变化时创建 override，避免为每次 getter 做深拷贝，并优先通过已有 `Arc` 接口共享明确线程安全的资源。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+EvalContext::SQLDialect 默认 MySQL，旧调用保留原语义；BuildContext 从其 EvalContext 读取同一身份。截断求值包装显式转发身份，空拒绝、常量传播与构建包装通过原 GetEvalCtx 保真。

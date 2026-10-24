@@ -274,3 +274,12 @@ fn uncompress_allows_session_vars_without_requiring_them() {
         fallback
     );
 }
+
+#[test]
+fn pg_core_dialect_context_snapshot_assertion_wrapper() {
+    use parser_ast_dependency::SqlDialect;
+    let pg = exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(SqlDialect::PostgreSQL)]);
+    let function = TestBuiltin::new(OptionalEvalPropKeySet::default());
+    let wrapped = wrapEvalAssert(&pg, &function);
+    assert_eq!(wrapped.SQLDialect(), SqlDialect::PostgreSQL);
+}

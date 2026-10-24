@@ -148,6 +148,9 @@ impl ParamValues for assertionEvalContext<'_> {
 }
 
 impl EvalContext for assertionEvalContext<'_> {
+    fn SQLDialect(&self) -> parser_ast_dependency::SqlDialect {
+        self.eval_context.SQLDialect()
+    }
     fn CtxID(&self) -> u64 {
         self.eval_context.CtxID()
     }

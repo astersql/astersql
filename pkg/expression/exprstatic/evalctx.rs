@@ -116,6 +116,7 @@ impl exprctx::UserVarsReader for EmptyUserVarsReader {
 /// 求值上下文内部可变状态；Clone 时共享告警处理器与语句时间等 Arc 资源。
 pub struct EvalCtxState {
     warn_handler: SharedWarnHandler,
+    sql_dialect: parser_ast::SqlDialect,
     sql_mode: mysql::SQLMode,
     type_ctx: types::Context,
     err_ctx: errctx::Context,
@@ -134,6 +135,7 @@ impl Clone for EvalCtxState {
     fn clone(&self) -> Self {
         Self {
             warn_handler: Arc::clone(&self.warn_handler),
+            sql_dialect: self.sql_dialect,
             sql_mode: self.sql_mode,
             type_ctx: self.type_ctx.clone(),
             err_ctx: self.err_ctx.clone(),
@@ -156,6 +158,11 @@ pub type EvalCtxOption = Box<dyn FnOnce(&mut EvalCtxState)>;
 /// 覆盖告警处理器（与 TypeCtx/ErrCtx 共享同一 appender）。
 pub fn WithWarnHandler(handler: SharedWarnHandler) -> EvalCtxOption {
     Box::new(move |state| state.warn_handler = handler)
+}
+
+/// Capture the connection dialect independently of mutable system variables.
+pub fn WithSQLDialect(dialect: parser_ast::SqlDialect) -> EvalCtxOption {
+    Box::new(move |state| state.sql_dialect = dialect)
 }
 
 /// 设置 SQL Mode（影响严格模式、日期合法性等）。
@@ -268,6 +275,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
     let appender = appender_for(&warning_handler);
     let mut state = EvalCtxState {
         warn_handler: warning_handler,
+        sql_dialect: parser_ast::SqlDialect::MySQL,
         sql_mode: default_sql_mode(),
         type_ctx: types::NewContext(types::StrictFlags, UTC, Arc::clone(&appender)),
         err_ctx: errctx::NewContext(appender),
@@ -292,6 +300,10 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
 }
 
 impl EvalContext {
+    pub fn SQLDialect(&self) -> parser_ast::SqlDialect {
+        self.state.sql_dialect
+    }
+
     /// 上下文唯一 ID；每次 `New`/`Apply` 都会重新分配。
     pub fn CtxID(&self) -> u64 {
         self.id
@@ -529,6 +541,9 @@ impl exprctx::ParamValues for EvalContext {
 }
 
 impl exprctx::EvalContext for EvalContext {
+    fn SQLDialect(&self) -> parser_ast::SqlDialect {
+        self.SQLDialect()
+    }
     fn CtxID(&self) -> u64 {
         EvalContext::CtxID(self)
     }
@@ -619,6 +634,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
     NewEvalContext(vec![
         WithWarnHandler(warning_handler),
         WithSQLMode(context.SQLMode()),
+        WithSQLDialect(context.SQLDialect()),
         WithTypeFlags(type_context.Flags()),
         WithLocation(type_context.Location()),
         WithErrLevelMap(error_context.LevelMap()),

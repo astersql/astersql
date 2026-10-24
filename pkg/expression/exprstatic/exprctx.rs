@@ -175,6 +175,11 @@ pub fn NewExprContext(options: Vec<ExprCtxOption>) -> ExprContext {
 }
 
 impl ExprContext {
+    /// Building and evaluation share one immutable dialect snapshot.
+    pub fn SQLDialect(&self) -> parser_ast::SqlDialect {
+        self.state.eval_ctx.SQLDialect()
+    }
+
     /// 克隆状态并应用新选项；共享资源（tracker、列 ID）仍指向同一对象。
     pub fn Apply(&self, options: Vec<ExprCtxOption>) -> ExprContext {
         let mut state = self.state.clone();

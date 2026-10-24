@@ -1276,8 +1276,18 @@ pub(super) fn plan_context_with_params(
     variables: Arc<astersql_sessionctx_variable::session::SessionVars>,
     parameters: &[astersql_types::datum::Datum],
     use_cache: bool,
+    sql_dialect: ast::SqlDialect,
 ) -> astersql_planner_core_base::ContextRef {
-    plan_context_with_params_and_explain(variables, parameters, use_cache, false, false, None, None)
+    plan_context_with_params_and_explain(
+        variables,
+        parameters,
+        use_cache,
+        false,
+        false,
+        None,
+        None,
+        sql_dialect,
+    )
 }
 
 pub(crate) fn plan_context_with_params_and_explain(
@@ -1288,10 +1298,12 @@ pub(crate) fn plan_context_with_params_and_explain(
     ignore_explain_id_suffix: bool,
     stats_domain: Option<Arc<astersql_domain::Domain>>,
     prepared_marker_offsets: Option<Vec<usize>>,
+    sql_dialect: ast::SqlDialect,
 ) -> astersql_planner_core_base::ContextRef {
     let new_expression = || {
         let eval = Arc::new(astersql_expression_exprstatic::NewEvalContext(vec![
             astersql_expression_exprstatic::WithParamList(parameters.to_vec()),
+            astersql_expression_exprstatic::WithSQLDialect(sql_dialect),
         ]));
         astersql_expression_exprstatic::NewExprContext(vec![
             astersql_expression_exprstatic::WithEvalCtx(eval),
@@ -1707,7 +1719,12 @@ impl ConcreteSession {
             .flatten()
             .ok_or_else(|| SessionError::new("SELECT table is absent from infoschema"))?;
         let (row_count, stats_version) = estimated_table_stats(self.domain.as_ref(), table_id);
-        let plan_context = plan_context_with_params(Arc::clone(&self.session_vars), &[], false);
+        let plan_context = plan_context_with_params(
+            Arc::clone(&self.session_vars),
+            &[],
+            false,
+            self.sql_dialect(),
+        );
         let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
             .withDataSourceProvider(Arc::new(SessionKVDataSourceProvider {
                 row_count,
@@ -1844,7 +1861,12 @@ impl ConcreteSession {
             .flatten()
             .ok_or_else(|| SessionError::new("SELECT table is absent from infoschema"))?;
         let (row_count, stats_version) = estimated_table_stats(self.domain.as_ref(), table_id);
-        let plan_context = plan_context_with_params(Arc::clone(&self.session_vars), &[], false);
+        let plan_context = plan_context_with_params(
+            Arc::clone(&self.session_vars),
+            &[],
+            false,
+            self.sql_dialect(),
+        );
         let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
             .withDataSourceProvider(Arc::new(SessionKVDataSourceProvider {
                 row_count,
@@ -2429,6 +2451,7 @@ impl ConcreteSession {
                     .map(|marker| marker.offset)
                     .collect(),
             ),
+            self.sql_dialect(),
         );
         let parameter_types = parameters
             .iter()
@@ -2440,11 +2463,10 @@ impl ConcreteSession {
                 field_type
             })
             .collect::<Vec<_>>();
-        let instance_key = cache_key
-            .AsBytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let instance_key = crate::plan_cache_runtime::dialect_plan_cache_key(
+            self.sql_dialect(),
+            cache_key.AsBytes(),
+        );
         let cached_value = self
             .instance_plan_cache
             .Get(&instance_key, &parameter_types);
@@ -2681,6 +2703,7 @@ impl ConcreteSession {
             false,
             Some(Arc::clone(&self.domain)),
             None,
+            self.sql_dialect(),
         );
         let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
             .withDataSourceProvider(Arc::new(SessionDomainDataSourceProvider {

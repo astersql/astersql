@@ -89,3 +89,8 @@ Rust 通过 `GetRngArc`/`GetPlanCacheTrackerArc` 允许已知实现零损复用�
 测试优先扩展独立文件 `pkg/expression/exprstatic/exprctx_test.rs`：默认/全选项字段放入 `checkDefaultStaticExprCtx` 与 `checkOptionsStaticExprCtx`，共享或替换语义放入 `TestStaticExprCtxApplyOptions`，静态化字段放入 `TestMakeExprContextStatic`，系统变量放入 `TestExprCtxLoadSystemVars` 或规范化测试。跨层解析规则还应同步检查 `evalctx_test.rs` 和 `migration_aster_unit_test.rs`；Go 行为变化则对照 `exprctx_test.go`。
 
 兼容风险集中在默认值、系统变量规范化和 trait 新方法；遗漏静态化字段会造成会话/静态上下文行为分叉。性能风险集中在无意把共享资源改成深复制、重复构造 tracker，以及在热路径增加字符串克隆。并发风险集中在更换列 ID 分配器或 tracker 时破坏现有共享语义。若增加新的资源型字段，应明确 `Apply` 是共享还是复制、`MakeExprContextStatic` 是否需要独立化，并以指针身份和状态传播测试固定契约。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+SQLDialect 直接读取内嵌 EvalContext，不再存储第二份可能冲突的身份；Apply、系统变量派生及 MakeExprContextStatic 继承该稳定快照。

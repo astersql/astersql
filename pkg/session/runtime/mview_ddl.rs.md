@@ -96,3 +96,8 @@ Go 测试 `pkg/ddl/tests/materializedviewlog/materialized_view_basic_test.go` �
 - 修改日志列生成时必须保持内部列顺序、类型/长度/非空约束和被清除的字段标志，并验证 text 与 generated column 不被误判为 BLOB/不支持列。
 - 测试逻辑应继续放在独立文件。最近的 Rust 测试是 `pkg/session/runtime/normal_ddl_create_materialized_view_log_test.rs`；会话级新增回归可扩展该文件，后台系统会话行为则同步检查 `pkg/session/tests/system_session.rs`。不要把测试内嵌进本生产文件。
 - 兼容风险集中在错误码/消息、对象合法性、时区与 SQL mode；正确性风险集中在基础表—日志表关联和失败回滚；性能风险主要是每次创建/调度重算都会构建并执行表达式，但此文件不在逐行 DML 热路径上。
+
+
+## 2026-10-24 规划求值身份与缓存隔离
+
+MLog 调度表达式及现有物化日志构建上下文调用仅增加所属连接方言参数，沿用共享工厂，未扩展物化视图能力。
