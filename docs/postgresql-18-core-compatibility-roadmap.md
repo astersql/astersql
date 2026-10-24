@@ -5504,6 +5504,19 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 | 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs) | startup_negotiation_and_secure_mode_reject 在两种 secure 值下均断言 SSL/GSS 的 N 及最终 E，未断言 SQLSTATE、重复协商或 TLS。startup_auth_roundtrip / startup_protocol_30_roundtrip 断言开发 root 成功、intruder 28P01、3.2/3.0 密钥体长 36/8。startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients 断言已接受待启动/已认证连接停服 EOF；catalog_error_recovery_and_cleanup 断言停服资源计数归零。这些均未在本轮执行，不能替代 TLS 回归。 |
 | 独立 [pg_protocol_test.rs](../pkg/server/pg_protocol_test.rs) | startup_packet_bounds、startup_reader_bounds 检查版本、长度、截断及不多读下一包；startup_raw_tcp_client_v1_requests_32 是裸 TCP 3.2/3.0 读取意图，不覆盖 TLS 握手。 |
 
+#### SCRAM 证据与身份链
+
+本域在基线 `d30bc34cd9b408f6bdff5d39956a0c261ab0171d` 静态取证（2026-10-24），已核验批次 1 TLS 五节正文及其提交；传递依赖沿该提交核验的第 1–6 章契约及第 6 章交付 `b74cdfd93843ac3fda4119562f6b4fb5cf93dd47`，满足文档前置条件。来源任务状态不改。本轮有效运行用例数 **0**，生产认证、授权、客户端、PG 18.6 与性能均**未验证**。
+
+| 实际来源/符号 | 当前事实及限制 |
+| --- | --- |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService::negotiate | open_ctx 传空数据库；auth_plugin_for_user 只接受 AUTH_NATIVE_PASSWORD，再以 startup user、对端 IP、空 auth_data/salt、tls_state=None 调 authenticate。成功后才 use_db、SET time_zone、登记 active/取消密钥并输出 AuthenticationOk；没有 SASL 挑战/proof。认证失败当前映射 FATAL/28P01，插件不支持为 0A000，use_db 错误统一 3D000；这些不是 PG 18.6 的诊断实测或正确授权映射证据。 |
+| [conn.rs](../pkg/server/conn.rs)::AuthIdentity / AuthRequest / TiDBContext | identity 包含 username/hostname/plugin，request 另含 auth_data/salt/tls_state/attributes；authenticate 与 use_db/execute_query 分离。接口字段存在不证明 SCRAM verifier 或 channel binding 可用；AuthRequest 派生 Debug，未来须审计格式化和错误传播，不能整包记录。 |
+| [runtime.rs](../pkg/server/runtime.rs)::ConcreteSessionDriver::open_ctx / ConcreteTiDBContext::authenticate | 驱动携带 BootstrapAuthMode。auth_plugin_for_user 固定 native；SecureUnsupported 拒绝，InsecureRootOnly 仅接受 root/native/空数据，并发 SessionRequest::SetAuthenticatedUser(username, has_process_privilege=true)。不是任意用户口令认证；is_connection_admin 固定 true 也不能用作非 root 权限依据。 |
+| 同文件 worker 的 SetAuthenticatedUser 分支；[dispatch.rs](../pkg/session/runtime/dispatch.rs)::SetAuthenticatedUser | worker 把身份写到共享会话；当前 setter 将 login_user 写入、login_host/authenticated_host 固定为 %，保存 PROCESS 标志。不能据此声称保留了真实匹配 host、PG 角色或默认角色；后续生产接线须证明规范化身份连续性。 |
+| [privilege.rs](../pkg/privilege/privilege.rs)::Manager | MatchIdentity/ConnectionVerification 是共享 user/host 匹配与认证候选，RequestVerification/RequestVerificationWithUser 覆盖库表列静态权限，ActiveRoles/RequestDynamicVerification 对应角色和动态权限。本轮只确认接口，未确认其与 PG SCRAM/CONNECT/schema USAGE/PG 角色 OID 的接线；真实事实和 PG 权限映射仍由第 6 章拥有，不新建第二套权限体系。 |
+| 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs)::startup_auth_roundtrip / startup_protocol_30_roundtrip | 两协议用例均在 InsecureRootOnly 下断言 root 的 AuthenticationOk/ReadyForQuery 和 intruder 的 28P01；BackendKeyData 体长分别 36/8。没有口令交换、SCRAM proof、真实非 root 或授权断言。本轮只读未执行；握手成功不代替授权证据。 |
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5520,9 +5533,27 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 直接以 TLS ClientHello 开始的连接是 PG 18 规范中的另一种入口，要求 ALPN 为 postgresql（见 54.2.10）。本域首批目标仅认领 SSLRequest 路径，直接 TLS 暂列明确拒绝边界，不能将 ClientHello 误解为可继续的明文 startup；未来开放须单独验收 ALPN 与重复加密请求，不从客户端默认值推定支持。
 
+#### SCRAM 身份与权限
+
+能力 `WIRE-SCRAM/pg` 承接来源步骤 1、3、4。官方依据（2026-10-24 查阅）为 PostgreSQL **18 大版本** [54.3 SASL/SCRAM](https://www.postgresql.org/docs/18/sasl-authentication.html)、[54.2.1 启动与认证](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-START-UP)、[20.5 口令认证与存储边界](https://www.postgresql.org/docs/18/auth-password.html)，算法依据为 [RFC 7677 §3–4](https://www.rfc-editor.org/rfc/rfc7677.html#section-3) 与 [RFC 5802 §3、5–7](https://www.rfc-editor.org/rfc/rfc5802.html#section-3)。这些定义目标，不是 18.6 构建/行为证据；参考端严重度、SQLSTATE、精确文本和失败阶段仍**未采集**。
+
+| 契约阶段 | 目标与失败边界 |
+| --- | --- |
+| 生产身份和凭证前置 | startup user 决定登录身份；PG 按规范忽略 client-first 内用户名的身份选择作用，不能切换成该字段或默认为 root。保留客户端登录名、实际 peer host、共享体系匹配后的 user/host、有效角色及授权事实的可追溯关联，不能仅截断 user@host 或拼角色目录行。生产要求共享认证体系可为该真实身份提供受保护的 SCRAM verifier（salt、迭代数、StoredKey、ServerKey）及账户状态策略；native-password 散列与 verifier 不能互推，也不能将旧挑战响应当 SCRAM proof。缺凭证来源时拒绝本认证方法；本域只登记依赖，不设计迁移、新存储或自动重置口令。 |
+| 机制选择与 client-first | 在 TLS 域安全策略满足后，AuthenticationSASL 仅列已实现且当前连接适用的机制；客户端 SASLInitialResponse 必须选择列表内机制并携带合法 client-first。检查消息长度、GS2 头、属性语法/重复属性、必需扩展、nonce 和阶段；不能将普通 PasswordMessage 或未知机制解释为开发空认证。初期仅认领 SCRAM-SHA-256，未开放的 PLUS/GSS/OAuth 不宣告。 |
+| server-first | 返回 AuthenticationSASLContinue，内含完整 nonce（客户端 nonce 加不可预测的新服务端部分）、base64 salt、正整数 iteration。salt/iteration 来自该身份的真实 verifier，不能每次临时换 salt 却沿用旧键；服务端 nonce 每次新生成。依据 RFC 7677 新凭证迭代数建议至少 4096，具体策略及最大值/计算预算待凭证接入任务确定并测试，不由客户端任意指定。 |
+| client-final 与双向验证 | 客户端检查 nonce 前缀、salt 编码和 iteration，按确定的口令字节规则派生键；服务端核验 client-final 的完整 nonce、c= 通道绑定数据、proof 长度/编码及消息状态。AuthMessage 绑定 client-first-bare、server-first 和不含 proof 的 client-final；以 StoredKey/HMAC 和 ClientProof 恢复 ClientKey，SHA-256 后恒时比较 StoredKey。仅成功后发送 AuthenticationSASLFinal 的 server signature（ServerKey 的 HMAC），紧随 AuthenticationOk；客户端必须验证 server-final，签名错误不得发 SQL。密码预处理遵循 PG 的 SASLprep 及非法 UTF-8/禁止序列原字节回退，未来加入独立边界用例，不能静默改密码。 |
+| TLS 与通道绑定 | SCRAM 本身不加密后续 SQL，不替代 TLS 域的生产安全门禁；失败不能降级为空凭据。PLUS 仅在实现后且真实 TLS 能提供 PG 的 tls-server-end-point 数据时可宣告，并按 GS2 标志、机制和本连接证书派生数据验证 c=，不能用 startup 自报或另连接数据。初期不宣告 PLUS，客户端强制 channel_binding=require 时应连接失败，不能假装绑定成功；支持可选绑定的客户端可按其显式策略选择普通 SCRAM，但不得绕过服务端要求。未来开放 PLUS 再测 y/p 标志与降级检测、错绑和 TLS 恢复，不能把 TLS 建成等同 PLUS 已支持。 |
+| 认证到授权 | proof 校验成功后才绑定真实会话身份；库选择及 CONNECT 门禁后才进入可执行就绪状态。认证期间可有受限临时上下文，但不得执行用户 SQL、选择数据库、注册可用 active 会话或发 BackendKeyData/ReadyForQuery；失败不发 AuthenticationOk。后续目录、普通/扩展 SQL、对象权限与 owner/ACL 均消费同一认证身份及第 6 章权限契约，不能赋予固定 PROCESS/admin。已认证但无 CONNECT 是授权失败，不应统一伪装数据库不存在；具体诊断交参考端取证。 |
+| 失败、中断和保密 | 错密码/未知身份/proof 不符均结束本连接；错误只保留安全阶段信息，未知身份不得借机制/错误细节额外暴露账户存在。畸形帧/越序、EOF、总认证期限耗尽和停服均释放临时上下文、交换材料、socket/ID/worker，不注册取消密钥，不继续处理缓冲 SQL。限制交换字节/轮次/总期限与计算预算，实际数值和负载指标交后续资源任务。口令、ClientProof/ServerSignature、verifier/派生键、取消 secret、TLS 私钥及含密配置不进入日志、ErrorResponse、Debug/trace 或可公开证据；底层错误也须脱敏，测试材料使用隔离夹具。 |
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
+
+#### SCRAM 范围与开发边界
+
+本域只完成认证契约，不实现 SASL 状态机、凭证存储/迁移、角色管理子系统或权限模型。InsecureRootOnly 只允许显式隔离的开发 root/空 native 凭据探针，必须标识其模式；生产 SCRAM、TLS 或凭证接入失败绝不能回退该模式。SecureUnsupported 的拒绝不表示生产认证已实现。PLUS 首批未开放；GSSAPI/SSPI 身份与 OAUTHBEARER 均不宣告、不挑战、不接受 token 成功，策略只允许这些机制时启动/连接应明确拒绝；意外携带其响应按当前认证阶段拒绝关闭，不能转换为 root。GSSENCRequest 传输探测沿 TLS 域，不能代替身份认证。复制边界留给后续指定域，不在本域扩写。
 
 ### 验收
 
@@ -5540,10 +5571,33 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 后续运行记录按第 1 章保存能力/用例 ID、双方构建 SHA/精确版本、客户端与策略、证书夹具标识（不含私钥）、消息顺序、失败阶段、关闭与资源计数、命令/退出码及实际断言数。认证前取消以客户端断开/停服中断握手验收；CancelRequest 密钥与查询取消交后续域，不能用其代替握手清理。本轮只完成文档检查，上述所有行为仍未验证。
 
+#### SCRAM 身份、授权及失败验收
+
+以下 `WIRE-SCRAM-*` 均为**待新增/待运行**。夹具为独立库 D、真实非 root 登录角色 scram_reader（受保护 verifier 来自共享认证体系）、owner 创建的 public.auth_probe(id integer) 且含一行 1，以及两角色不同的 CONNECT/schema USAGE/表 SELECT 授权；复用第 6 章角色权限块创建、授予/撤销及清理约定，不能用 root 补齐失败夹具。固定客户端/libpq 与服务端完整构建、安全策略、协议 3.0/3.2、UTF8/UTC/初始 I；TLS 按前域可信证书夹具。消息阶段无 SQL 参数/OID；授权 SQL 的结果/Describe 沿第 3 章。参考端诊断均待采集，不以当前 intruder 的 28P01 套用所有失败。
+
+| ID / 输入与条件 | 目标观察、清理与验证入口 |
+| --- | --- |
+| OK / IDENTITY：scram_reader 正确口令、普通 SCRAM 完整交换；client-first 内另填 root | R(SASL)→client-first→R(Continue)→client-final→R(Final)→R(Ok)，绑定 startup 的 scram_reader，客户端验证服务端签名后才进入参数/K/Z(I)。`SELECT current_user; SELECT id FROM public.auth_probe;` 应是该角色与一行 1；另一真实角色/不同 host 匹配分别验证不串身份。正常 Terminate 后资源归基线；待扩展独立 pg_conn_test.rs 及待新增真实 libpq 探针。 |
+| AUTHZ：保持同一角色，分别撤销 CONNECT、schema USAGE、表 SELECT，再依第 6 章授回 | 无 CONNECT 在数据库进入门禁拒绝且不发就绪/不选库；其余允许认证和连接，但 `SELECT id FROM public.auth_probe;` 在对应对象权限阶段拒绝。授权恢复后新请求/连接成功；目录可见不等于 SELECT 权限。保存规范化身份、权限事实与错误阶段，具体 SQLSTATE 按第 6 章目标及参考端采证；待新增 pg_conn_test.rs 非 root 端到端授权用例，结束撤销临时授权、关闭连接后清理库/角色。 |
+| CREDENTIAL：错误口令、未知身份、NULL/无 SCRAM verifier、仅 native 散列、锁定/禁止登录账户 | 每个子场景不发 AuthenticationOk/K/Z，不 use_db/执行 SQL、不回退 root；外部诊断不泄露存在性或材料，保存安全阶段。服务端 worker/临时会话/ID 回收，随后合法新连接仍可用。待新增共享凭证接入与 pg_conn_test.rs 独立回归；账户策略取共享真实来源，未接通记依赖缺失。 |
+| MECHANISM / DEV：选择未宣告 PLUS、OAUTHBEARER 或 GSS；错误认证响应；另隔离开发模式 | 生产拒绝未知/越序机制、不发成功；只允许未开放机制的部署拒绝。channel_binding=require 在无 PLUS 时客户端失败；可选绑定按明确策略协商。开发 root 成功只能记开发断言，intruder 仍拒绝；TLS/SCRAM 失败不触发开发重试。待扩展 startup_auth_roundtrip / startup_protocol_30_roundtrip 及待新增机制探针。 |
+| FRAME / PROOF：长度截断/超限、重复属性、非法 base64、必需扩展、缺 client-first、重复 final、nonce 篡改、proof 错误/长度错、错 c= | 按协议/认证对应阶段有界拒绝，完整可写帧时脱敏 ErrorResponse 后关闭；传输损坏允许 EOF，不伪造 SQLSTATE。伪服务端给错 signature 时客户端拒绝并不发 SQL。独立算法夹具待新增，协议覆盖待扩展 pg_conn_test.rs，不能只验算法而漏会话门禁。 |
+| REPLAY / BIND：将成功连接 final 重放到新 nonce 的连接；未来 PLUS 下重放不同证书/连接的 c= | 普通 SCRAM 重放失败；并发连接的状态与 nonce 不混用。PLUS 未开放时记录拒绝，开放后才验错绑；不把当前未开放当正向绑定通过。保存不含原 proof 的断言结果，断连后清除交换材料；待新增 nonce/通道绑定独立用例。 |
+| INTERRUPT / STOP：client-first 前、server-first 后、final 前分别断连/超时/停服，另在认证前发 Query/CancelRequest | 不执行 SQL、不产生可用取消密钥；CancelRequest 沿独立连接路由，不作为认证成功或清理手段。总期限内关闭并回收临时 context、socket、worker、ID，资源回到基线且健康连接仍可用；待扩展 pg_conn_test.rs 停服/资源计数用例，关闭幂等。 |
+| SECRET：在成功、每类错误、断连/停服及底层异常中检查客户端错误、服务端日志/trace/Debug | 口令、proof、signature、verifier/键、取消 secret、私钥和配置中密值均不得出现；只输出材料存在/缺失的断言，不归档原值。安全证据保留阶段/长度和夹具标识，未来测试逐项注入标记后断言缺失；待新增独立日志捕获及错误回归。 |
+
+后续记录遵守第 1 章，包含身份/授权夹具标识（不含密值）、消息顺序、错误发生阶段与完整安全诊断、两端精确构建/客户端/安全策略、资源前后值和有效断言数。性能记录认证延迟、迭代计算成本及并发等待/资源上限，当前未测；本轮文档检查不产生上述行为通过证据。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
 
 需求映射：来源步骤 1 的 TLS 现状/目标→证据表及 OK/CERT；步骤 3 的 GSS 边界→REJECT；步骤 4 的安全身份与脱敏→认证交接及 PLAIN；传输失败/取消/清理→FRAME/INTERRUPT/STOP。Ready 文档适用检查为五节与稳定子标题、来源及相对链接、逐需求/轨迹覆盖和章节外字节不变；`.agents/skills/tidb-verify-profile/SKILL.md` 再查仍缺失，采用这些人工等效检查，不宣称执行了缺失技能。正确性风险为静态推断/遗漏状态，兼容性风险为误用开发认证、证书校验端或 18.6 诊断，性能与握手资源成本未测；均留待对应实施取证。本域文档完成不表示整章或生产 TLS 已实现。
+
+#### SCRAM 后续实施切口
+
+按单一责任另立窄实施任务：①共享凭证体系提供真实身份/verifier及账户状态的只读接入契约（缺来源先作为依赖，不设计迁移）；②SASL 帧/状态机与独立算法/proof 回归；③认证成功到共享会话身份、库门禁和对象授权的最小接线，覆盖非 root；④认证中断、期限、保密和资源清理；⑤TLS 属性可靠后另行开放 PLUS。复用 pg_conn/conn/runtime 及共享权限入口，测试放同目录独立测试文件，新增夹具/真实客户端探针明确为待新增，不在本轮创建。第 6 章继续拥有角色/owner/ACL 映射，第 5 章拥有事务状态；不扩建完整子系统。
+
+需求映射：来源步骤 1 的 SCRAM 现状/目标→证据表及 OK/FRAME；步骤 3 的未开放机制→MECHANISM/DEV；步骤 4 的真实身份/权限与 TLS/保密→IDENTITY/AUTHZ/CREDENTIAL/SECRET；失败/重放/认证取消清理→PROOF/REPLAY/INTERRUPT/STOP。Ready 文档范围检查采用本章五节、稳定子标题、相对链接存在性、需求到验收映射、前后契约与章节外字节不变审阅；`.agents/skills/tidb-verify-profile/SKILL.md` 再查仍缺失，未宣称运行该技能。正确性风险为静态证据不足和异常轨迹遗漏，兼容性风险为 PG 口令字节规则、真实身份/权限及将大版本规范误当 18.6 实测，性能未验证。本域文档完成不表示 SCRAM 或生产授权已实现。
 
 ## 8. 客户端与双方言共存验收
