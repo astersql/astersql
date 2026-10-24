@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 9, 11, 13), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 9, 11, 13, 14), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -159,7 +159,23 @@ if task == 13:
         ('empty', '/*中*/ SELECT ""', []),
         ('unclosed', '/*中*/ SELECT "broken', []),
     ]
-assert len({case[0] for case in cases}) == (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10)))
+if task == 14:
+    relation_table = 't14_' + evidence.name.replace('-', '_')
+    other_database = sys.argv[3] + '_other'
+    cases = [
+        ('unqualified', 'SELECT id FROM @t@', []),
+        ('schema', 'SELECT id FROM public.@t@', []),
+        ('database', 'SELECT id FROM @db@.public.@t@', []),
+        ('foreign', 'SELECT id FROM @other@.public.@t@', []),
+        ('schema_gate', 'SELECT id FROM @other@.@t@', []),
+        ('trailing', '/*中*/ SELECT id FROM public.', []),
+        ('excess', '/*中*/ SELECT id FROM @db@.public.@t@.extra', []),
+        ('quoted_current', 'SELECT id FROM "@db@"."public"."@t@"', []),
+        ('quoted_foreign', 'SELECT id FROM "@DB@".public.@t@', []),
+        ('protected', "SELECT 'other.public.t' AS v FROM public.@t@ /* @db@.public.t.extra $2 */", []),
+        ('parameters', 'SELECT $2::int4 AS v, $1::int4 AS w FROM @db@.public.@t@ WHERE id=1', [23,23]),
+    ]
+assert len({case[0] for case in cases}) == (11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'))), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task in (9,11) else [None]*len(oids)) if oids else []),
@@ -213,7 +229,7 @@ def observe(result):
                     rows=[[None if is_null(result, r, col) else value(result, r, col).decode()
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task==13 else None))
+                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (13,14) else None))
     finally:
         clear(result)
 
@@ -986,6 +1002,195 @@ def identifiers_handoff():
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and cleanup_ok,'incomplete run/cleanup'
     print(json.dumps(summary),flush=True)
+
+def relations_handoff():
+    connections, prepared, created = {}, [], []
+    checks = self_checks = eligible = semantic = gates = 0
+    done = False
+    cleanup_ok = True
+    def check(condition, message):
+        nonlocal checks
+        assert condition, message
+        checks += 1
+    def record(name, label, data, result):
+        if label=='mysql' and not data and 'sql' in result:data=dict(phase='Q',sql=result['sql'])
+        allowed={'phase','sql','statement','parameter_oids','arguments','parameter_formats','result_format','command'}
+        archive(name, 'aster' if label.startswith('aster') else label, {k:v for k,v in data.items() if k in allowed}, dict(result, connection=label, context=data))
+    def recover(conn, label, name):
+        if transaction(conn) in (2,3):
+            check(query(conn,'ROLLBACK')['status']==1,'rollback failed')
+        result=query(conn,'SELECT 1::int4')
+        record(name+'_recovery',label,dict(phase='Q',sql='SELECT 1::int4'),result)
+        check(result['rows']==[['1']] and transaction(conn)==0,'original connection recovery')
+    def expected(name, label, sql):
+        if name=='schema_gate':return ('0A000','') if label=='aster' else ('42P01',str(sql.index('FROM ')+6))
+        if name in ('foreign','quoted_foreign'):return '0A000',str(sql.index('FROM ')+6)
+        if name=='trailing':return '42601',str(len(sql)+1)
+        if name=='excess':return '42601',str(sql.index('FROM ')+6)
+        return '', ''
+    def diagnostics(result,name,label,sql,prepare_phase):
+        state,position=expected(name,label,sql)
+        return result['status']==(7 if state else (1 if prepare_phase else 2)) and result['state']==state and result['position']==position
+    def origins(actual, reference, expected_column):
+        return actual==([[oids['aster'],1]] if expected_column else [[0,0]]*len(actual)) and reference==([[oids['reference'],1]] if expected_column else [[0,0]]*len(reference))
+    def sql_for(template, db):
+        return template.replace('@DB@',db.upper()).replace('@db@',db).replace('@other@',other_database).replace('@t@',relation_table)
+    oids={}
+    try:
+        local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference','aster','aster_b','aster_observer']:
+            conn=connect((os.environ['PG18_REFERENCE_DSN'] if label=='reference' else local).encode())
+            connections[label]=conn
+            check(bool(conn) and status(conn)==0,label+' connection')
+            if label=='reference':check(query(conn,"SET TIME ZONE 'UTC'")['status']==1,'timezone')
+            check(parameter_status(conn,b'client_encoding')==b'UTF8' and parameter_status(conn,b'TimeZone')==b'UTC','settings')
+            check(query(conn,'SET search_path TO public')['status']==1,'search path')
+        ref=connections['reference'];identity=query(ref,"SELECT version(),current_setting('server_version_num'),current_database()")['rows'][0]
+        check(identity[1]=='180006','exact 18.6 required')
+        databases={'aster':sys.argv[3],'reference':identity[2]}
+        build=json.loads((evidence/'rust-build.json').read_text());build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,
+            reference=dict(version=identity[0],server_version_num=identity[1]),reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            endpoints={s:endpoint(connections[s]) for s in ['reference','aster','aster_b']},
+            mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
+        bad=copy.deepcopy(provenance);bad['reference_build']['server_version_num']=180004
+        check(not validate_provenance(bad,provenance),'provenance negative');self_checks+=1
+        for label in ['reference','aster']:
+            conn=connections[label]
+            sql='CREATE TABLE public.'+relation_table+' (id integer)'
+            result=query(conn,sql);record('setup',label,dict(phase='Q',sql=sql),result)
+            check(result['status']==1,'create fixture '+label);created.append(label)
+            check(query(conn,'INSERT INTO public.'+relation_table+' VALUES (1)')['status']==1,'insert fixture')
+            oid_sql="SELECT oid FROM pg_catalog.pg_class WHERE relname='"+relation_table+"'"
+            result=query(conn,oid_sql);record('relation_oid',label,dict(phase='Q',sql=oid_sql),result)
+            check(result['status']==2 and len(result['rows'])==1,'registered relation OID');oids[label]=int(result['rows'][0][0])
+        # Distinct native database with the same table and value=2 detects prefix truncation.
+        foreign=connect((local+' dbname='+other_database).encode());connections['aster_other']=foreign
+        check(status(foreign)==0,'foreign fixture connection')
+        check(query(foreign,'CREATE TABLE public.'+relation_table+' (id integer)')['status']==1,'foreign table')
+        check(query(foreign,'INSERT INTO public.'+relation_table+' VALUES (2)')['status']==1,'foreign value')
+        # PostgreSQL cross-database rejection is independent of foreign contents.
+        check(query(ref,'CREATE DATABASE '+other_database)['status']==1,'reference foreign database');created.append('reference_other')
+        reference_other=connect((os.environ['PG18_REFERENCE_DSN']+' dbname='+other_database).encode());connections['reference_other']=reference_other
+        check(status(reference_other)==0,'reference foreign connect')
+        check(query(reference_other,'CREATE TABLE public.'+relation_table+' (id integer)')['status']==1,'reference foreign table')
+        check(query(reference_other,'INSERT INTO public.'+relation_table+' VALUES (2)')['status']==1,'reference foreign value')
+        registry=[]
+        for index,(name,template,param_oids) in enumerate(cases):
+            inputs={side:dict(capability_id='pg.dialect.relation.qualified',case_id=name,phase='PQprepare',sql=sql_for(template,db),
+                parameter_oids=param_oids,arguments=['7','9'] if param_oids else [],parameter_formats=[0]*len(param_oids),result_format=0,
+                encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',role=connection_user(connections[side]).decode(),
+                object_mapping={'database':db,'schema':'public','table':relation_table,'foreign_database':other_database,'current_value':1,'foreign_value':2},
+                expected_state=expected(name,side,sql_for(template,db)),expected_basis='task14 PostgreSQL18.6 exact reference; non-public schema remains explicit capability gate') for side,db in databases.items()}
+            registry.append(dict(case_id=name,by_side=inputs));(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+            outputs={};descriptors={};values={}
+            selected='aster_b' if index%2 else 'aster'
+            for label in ['reference',selected]:
+                side='reference' if label=='reference' else 'aster';conn=connections[label];data=inputs[side];sql=data['sql']
+                check(transaction(conn)==0,'initial idle')
+                statement=f'relation_{index}'.encode()
+                result=observe(prepare(conn,statement,sql.encode(),len(param_oids),(c.c_uint*len(param_oids))(*param_oids) if param_oids else None))
+                record(name,label,data,dict(result,transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conn))));outputs[side]=result
+                check(diagnostics(result,name,side,sql,True),'Prepare diagnostic '+name+' '+label)
+                if result['status']==1:
+                    prepared.append((conn,statement));desc=observe(describe(conn,statement));descriptors[side]=desc
+                    record(name+'_describe',label,dict(data,phase='Describe'),desc)
+                    args=(text*2)(b'7',b'9') if param_oids else None
+                    output=observe(exec_prepared(conn,statement,len(param_oids),args,None,None,0));values[side]=output
+                    record(name+'_execute',label,dict(data,phase='Bind/Execute'),output)
+                    rows_expected=[['9','7']] if param_oids else ([['other.public.t']] if name=='protected' else [['1']])
+                    check(output['status']==2 and output['rows']==rows_expected and output['command_tag']=='SELECT 1','Execute '+name)
+                    if param_oids:
+                        null_output=observe(exec_prepared(conn,statement,2,(text*2)(None,b'9'),None,None,0))
+                        record(name+'_null',label,dict(data,phase='Bind/Execute',arguments=[None,'9']),null_output)
+                        check(null_output['rows']==[['9',None]] and null_output['fields']==output['fields'],'NULL binding')
+                recover(conn,label,name)
+                if not param_oids:
+                    simple=query(conn,sql);record(name+'_simple',label,dict(data,phase='Q'),simple)
+                    check(diagnostics(simple,name,side,sql,False),'Q diagnostic '+name+' '+label)
+                    if not expected(name,side,sql)[0]:check(simple['rows']==values[side]['rows'] and simple['fields']==values[side]['fields'] and simple['table_origins']==values[side]['table_origins'],'Q metadata/value/origin')
+                    recover(conn,label,name+'_simple')
+            if descriptors:
+                a,r=descriptors['aster'],descriptors['reference']
+                check(compare_metadata(a,r,'describe'),'Describe metadata '+name)
+                check(a['params']==param_oids and a['param_count']==len(param_oids),'parameter identity')
+                check(a['formats']==[0]*len(a['fields']),'text format')
+                check(values['aster']['fields']==values['reference']['fields'] and values['aster']['rows']==values['reference']['rows'],'Execute differential')
+                check(origins(a['table_origins'],r['table_origins'],name not in ('parameters','protected')),'mapped column origins')
+                check(origins(values['aster']['table_origins'],values['reference']['table_origins'],name not in ('parameters','protected')),'Execute mapped origins')
+                bad=copy.deepcopy(a);bad['fields'][0][1]=99999
+                check(not compare_metadata(bad,r,'describe'),'metadata negative');self_checks+=1
+                bad=copy.deepcopy(values['aster']);bad['rows']=[['2']]
+                check(bad['rows']!=values['reference']['rows'],'foreign value negative');self_checks+=1
+                semantic+=1
+            else:
+                bad=copy.deepcopy(outputs['aster']);bad['state']='XX000'
+                check(not diagnostics(bad,name,'aster',inputs['aster']['sql'],True),'state negative');self_checks+=1
+                if name!='schema_gate':
+                    bad=copy.deepcopy(outputs['aster']);bad['position']='1'
+                    check(not diagnostics(bad,name,'aster',inputs['aster']['sql'],True),'position negative');self_checks+=1
+            gates+=int(name=='schema_gate')
+            print('PG_DIALECT_CHECKPOINT '+name,flush=True);check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
+            for label in (['aster_b','aster'] if index%2==0 else ['aster','aster_b']):recover(connections[label],label,name+'_isolation')
+            for observer,connection,want in [('aster_observer',connections['aster_observer'],'1'),('aster_other',foreign,'2')]:
+                sql='SELECT id FROM public.'+relation_table;observed=query(connection,sql)
+                record(name+'_observer',observer,dict(phase='Q',sql=sql),observed)
+                check(observed['rows']==[[want]],'observer unchanged '+observer)
+            eligible+=int(name!='schema_gate')
+        for label in ['aster','reference']:
+            conn=connections[label];check(query(conn,'BEGIN')['status']==1,'begin')
+            sql='SELECT id FROM '+other_database+'.public.'+relation_table
+            result=observe(prepare(conn,b'foreign_tx',sql.encode(),0,None));record('transaction_error',label,dict(phase='PQprepare',sql=sql),dict(result,transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conn))))
+            check(result['state']=='0A000' and transaction(conn)==3,'failed transaction');recover(conn,label,'transaction')
+        # MySQL's own database.table semantics, actual version/build and prepare.
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql):
+            p=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            return dict(sql=sql,code=p.returncode,output=p.stdout.splitlines(),error=p.stderr)
+        mysql_db='ref14_'+evidence.name.replace('-','_')
+        try:
+            result=mysql_ref('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; SELECT @@sql_mode,@@character_set_connection,@@collation_connection; CREATE DATABASE '+mysql_db+'; CREATE DATABASE '+mysql_db+'_other; CREATE TABLE '+mysql_db+'.t(id INT); INSERT INTO '+mysql_db+'.t VALUES (1); CREATE TABLE '+mysql_db+'_other.t(id INT); INSERT INTO '+mysql_db+'_other.t VALUES (2)')
+            record('identity_fixture','mysql',{},result);check(result['code']==0,'MySQL fixture')
+            result=mysql_ref('USE '+mysql_db+'; SELECT id FROM t; SELECT id FROM '+mysql_db+'_other.t; PREPARE s FROM \'SELECT id FROM '+mysql_db+'_other.t WHERE id=?\'; SET @v=2; EXECUTE s USING @v; DEALLOCATE PREPARE s')
+            record('database_prepare','mysql',{},result);check(result['code']==0 and result['output']==['1','2','2'],'MySQL database semantics')
+            for sql in ['SELECT id FROM '+mysql_db+'.public.t','SELECT id FROM '+mysql_db+'.t.extra','SELECT id FROM '+mysql_db+'.']:
+                result=mysql_ref(sql);record('syntax','mysql',dict(phase='Q',sql=sql),result)
+                check(result['code']!=0 and '1064 (42000)' in result['error'],'MySQL own syntax diagnostic')
+        finally:
+            result=mysql_ref('DROP DATABASE IF EXISTS '+mysql_db+'; DROP DATABASE IF EXISTS '+mysql_db+'_other');record('cleanup','mysql',{},result)
+            cleanup_ok=result['code']==0 and cleanup_ok
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        check(validate_provenance(provenance,final),'source/build changed');done=True
+    finally:
+        for conn,statement in prepared:
+            cleanup_ok=observe(close_prepared(conn,statement))['status']==1 and cleanup_ok
+        for conn in connections.values():
+            if conn and transaction(conn) in (2,3):cleanup_ok=query(conn,'ROLLBACK')['status']==1 and cleanup_ok
+        for label in ['aster','reference']:
+            if label in created:
+                result=query(connections[label],'DROP TABLE IF EXISTS public.'+relation_table);record('cleanup',label,dict(phase='Q',sql='DROP TABLE IF EXISTS public.'+relation_table),result)
+                cleanup_ok=result['status']==1 and cleanup_ok
+        for conn in connections.values():
+            if conn:finish(conn)
+        if 'reference_other' in created:
+            ref=connect(os.environ['PG18_REFERENCE_DSN'].encode())
+            sql='DROP DATABASE '+other_database;result=query(ref,sql)
+            record('cleanup_database','reference',dict(phase='Q',sql=sql),result)
+            cleanup_ok=result['status']==1 and cleanup_ok;finish(ref)
+        summary=dict(cases=len(cases),assertions=checks,self_checks=self_checks,unique_effective=eligible if done and cleanup_ok else 0,
+            value_type_cases=semantic if done and cleanup_ok else 0,gate_cases=gates if done and cleanup_ok else 0,cleanup_ok=cleanup_ok)
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    assert done and cleanup_ok,'incomplete run/cleanup'
+    print(json.dumps(summary),flush=True)
+
+if task == 14:
+    relations_handoff()
+    sys.exit(0)
 
 if task == 13:
     identifiers_handoff()

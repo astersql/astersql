@@ -59,6 +59,7 @@ enum QueryRule {
     TableNameAlt01,
     TableNameAlt02,
     TableNameAlt03,
+    PgQualifiedRelation,
     TableNameListAlt01,
     TableNameListAlt02,
     TableNameOptWildAlt01,
@@ -309,6 +310,7 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "tablename_identifier--7d846223712c4126" => Some(QueryRule::TableNameAlt01),
         "tablename_identifier_identifier--01188383505f340b" => Some(QueryRule::TableNameAlt02),
         "tablename_identifier--cd0532a691a4662a" => Some(QueryRule::TableNameAlt03),
+        "tablename_identifier_identifier_identifier--ef335475158fb064" => Some(QueryRule::PgQualifiedRelation),
         "tablenamelist_tablename--20400d6a3ec9fcec" => Some(QueryRule::TableNameListAlt01),
         "tablenamelist_tablenamelist_tablename--325702bb5eceb0ff" => {
             Some(QueryRule::TableNameListAlt02)
@@ -2334,6 +2336,22 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                     .into_iter()
                     .filter_map(|back| super::identifier(parser_state, &rhs[rhs_len - back]).1)
                     .collect(),
+                ..Default::default()
+            }));
+        }
+        QueryRule::PgQualifiedRelation => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("three-part relation names require PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            // The shared native schema remains the PG schema here. The PG name
+            // boundary consumes all three original identities before adapting
+            // to the current native database; no database prefix is discarded.
+            out.item = Some(Box::new(parser_ast::TableName {
+                Schema: super::identifier(parser_state, &rhs[rhs_len - 2]).0,
+                Name: super::identifier(parser_state, &rhs[rhs_len]).0,
+                PostgreSQLParts: [4, 2, 0].into_iter()
+                    .filter_map(|back| super::identifier(parser_state, &rhs[rhs_len - back]).1).collect(),
                 ..Default::default()
             }));
         }

@@ -193,6 +193,7 @@ struct Resolver<'a> {
     database: &'a str,
     public: bool,
     edits: BTreeMap<usize, (usize, String)>,
+    error_position: Option<usize>,
 }
 impl Resolver<'_> {
     fn word(&self, i: usize, name: &str) -> bool {
@@ -260,6 +261,20 @@ impl Resolver<'_> {
         }
         if self.symbol(i, b'(') && !allow_columns {
             return Err(error("0A000", "native table functions are unsupported"));
+        }
+        if parts.len() > 3 {
+            self.error_position = Some(self.sql[..self.tokens[start].start].chars().count() + 1);
+            return Err(error(
+                "42601",
+                "improper qualified name (too many dotted names)",
+            ));
+        }
+        if parts.len() == 3 && !self.database.is_empty() && parts[0] != self.database {
+            self.error_position = Some(self.sql[..self.tokens[start].start].chars().count() + 1);
+            return Err(error(
+                "0A000",
+                "cross-database references are not implemented",
+            ));
         }
         match parts.as_slice() {
             [name] => {
@@ -418,6 +433,16 @@ impl Resolver<'_> {
 }
 
 pub(crate) fn rewrite(sql: &str, database: &str, public: bool) -> ParseResult<String> {
+    rewrite_with_position(sql, database, public, &mut None)
+}
+
+fn rewrite_with_position(
+    sql: &str,
+    database: &str,
+    public: bool,
+    position: &mut Option<usize>,
+) -> ParseResult<String> {
+    *position = None;
     let parts: BTreeMap<_, _> = identifier_parts(sql)?
         .into_iter()
         .map(|part| (part.Span, part))
@@ -438,8 +463,11 @@ pub(crate) fn rewrite(sql: &str, database: &str, public: bool) -> ParseResult<St
         database,
         public,
         edits: BTreeMap::new(),
+        error_position: None,
     };
-    resolver.scope(0, resolver.tokens.len(), &HashSet::new())?;
+    let resolved = resolver.scope(0, resolver.tokens.len(), &HashSet::new());
+    *position = resolver.error_position;
+    resolved?;
     let mut out = String::with_capacity(sql.len());
     let mut previous = 0;
     for (start, (end, text)) in resolver.edits {
@@ -493,7 +521,14 @@ fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQ
             false
         }
         fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
-            self.consume(&table.PostgreSQLParts);
+            if table.PostgreSQLParts.len() == 3 {
+                // Database identity is checked exactly by Resolver::relation,
+                // independently of the backend's case-insensitive catalog.
+                self.parts.push(table.PostgreSQLParts[0].clone());
+                self.consume(&table.PostgreSQLParts[1..]);
+            } else {
+                self.consume(&table.PostgreSQLParts);
+            }
             false
         }
         fn leave(&mut self, _: &dyn ast::Node) -> bool {
@@ -539,10 +574,11 @@ fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQ
 pub(crate) fn adapt(
     sql: &str,
     context: &dyn TiDBContext,
-    session: &crate::pg_session::PgSession,
+    session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
     // Queries without native relations must not execute an extra engine query.
-    match rewrite(sql, "", session.has_public()) {
+    let public = session.has_public();
+    match rewrite_with_position(sql, "", public, &mut session.relation_error_position) {
         Err(("3D000", _)) => {}
         result => return result,
     }
@@ -557,14 +593,14 @@ pub(crate) fn adapt(
         Some(Value::Text(name)) => name.as_str(),
         _ => "",
     };
-    let sql = rewrite(sql, database, session.has_public())?;
+    let sql = rewrite_with_position(sql, database, public, &mut session.relation_error_position)?;
     validate_relations(&sql, database)?;
     Ok(sql)
 }
 
 /// Reject foreign schemas on TableName nodes exposed by the native visitor.
 /// Token handling remains necessary for nodes not visited by the native AST.
-fn validate_relations(sql: &str, database: &str) -> ParseResult<()> {
+pub(crate) fn validate_relations(sql: &str, database: &str) -> ParseResult<()> {
     use astersql_parser_ast as ast;
     // Validate original PostgreSQL relation nodes without moving syntax errors
     // ahead of the extended protocol's OID checks. The command gate still rejects
@@ -579,12 +615,18 @@ fn validate_relations(sql: &str, database: &str) -> ParseResult<()> {
         foreign: bool,
     }
     impl ast::Visitor for Guard<'_> {
-        fn enter(&mut self, node: &dyn ast::Node) -> bool {
-            if let Some(table) = node.as_any().downcast_ref::<ast::TableName>() {
-                if !table.Schema.L.is_empty() && table.Schema.L != self.database.to_lowercase() {
-                    self.foreign = true;
-                }
-            }
+        fn enter(&mut self, _: &dyn ast::Node) -> bool {
+            false
+        }
+        fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+            // TableName is a value type: the generic Node hook cannot see it.
+            // Guard the original PG database segment before the native schema.
+            let parts = &table.PostgreSQLParts;
+            self.foreign |= if parts.len() == 3 {
+                parts[0].Lookup != self.database || parts[1].Lookup != "public"
+            } else {
+                !table.Schema.L.is_empty() && table.Schema.L != self.database.to_lowercase()
+            };
             false
         }
         fn leave(&mut self, _: &dyn ast::Node) -> bool {

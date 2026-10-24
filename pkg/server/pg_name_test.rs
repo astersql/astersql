@@ -124,3 +124,115 @@ fn pg_dialect_13_name_boundary() {
         assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000");
     }
 }
+
+#[test]
+fn pg_dialect_14_behavior() {
+    use astersql_parser_ast as ast;
+    let mut assertions = 0;
+    for (relation, parts) in [
+        ("t", 1),
+        ("public.t", 2),
+        ("db.public.t", 3),
+        ("\"db\".\"public\".\"t\"", 3),
+    ] {
+        let sql =
+            format!("/*中*/ SELECT $2, 'other.public.t' FROM {relation} /* db.public.t.extra */");
+        let stmt = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(&sql, "", "")
+            .unwrap();
+        let select = stmt.as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let ast::ResultSetNode::TableSource(source) = select
+            .From
+            .as_ref()
+            .unwrap()
+            .TableRefs
+            .Left
+            .as_deref()
+            .unwrap()
+        else {
+            panic!("relation AST")
+        };
+        assert_eq!(source.Source.PostgreSQLParts.len(), parts);
+        assertions += 1;
+        assert_eq!(source.Source.Name.O, "t");
+        assertions += 1;
+        assert_eq!(
+            source.Source.Schema.O,
+            if parts > 1 { "public" } else { "" }
+        );
+        assertions += 1;
+        for part in &source.Source.PostgreSQLParts {
+            assert_eq!(&sql[part.Span.0..part.Span.1], part.Original);
+            assertions += 1;
+            assert_eq!(part.Quoted, relation.starts_with('"'));
+            assertions += 1;
+        }
+        assert_eq!(
+            select.Fields.Fields[0]
+                .Expr
+                .as_ref()
+                .unwrap()
+                .PostgreSQLParameterIndex(),
+            Some(2)
+        );
+        assertions += 1;
+        let adapted = rewrite(&sql, "db", true).unwrap();
+        assert!(
+            adapted.contains("'other.public.t'") && adapted.ends_with("/* db.public.t.extra */")
+        );
+        assertions += 1;
+        assert_eq!(
+            rewrite(&format!("SELECT id FROM {relation}"), "db", true).unwrap(),
+            format!(
+                "SELECT id FROM `db`.{}",
+                if relation.starts_with('"') {
+                    "\"t\""
+                } else {
+                    "t"
+                }
+            )
+        );
+        assertions += 1;
+    }
+    for (sql, state) in [
+        ("SELECT id FROM other.public.t", "0A000"),
+        ("SELECT id FROM other.t", "0A000"),
+        ("SELECT id FROM public.", "42601"),
+        ("SELECT id FROM db.public.t.extra", "42601"),
+        ("SELECT id FROM \"DB\".public.t", "0A000"),
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, state, "{sql}");
+        assertions += 1;
+    }
+    assert_eq!(
+        rewrite("SELECT id FROM t", "db", false).unwrap_err().0,
+        "42P01"
+    );
+    assertions += 1;
+    assert!(rewrite("SELECT id FROM db.public.t", "db", false).is_ok());
+    assertions += 1;
+    assert!(
+        astersql_parser::New()
+            .ParseOneStmt("SELECT id FROM db.public.t", "", "")
+            .is_err()
+    );
+    assertions += 1;
+    for sql in [
+        "SELECT id FROM other.t",
+        "SELECT id FROM other.public.t",
+        "SELECT id FROM db.public.t JOIN other.public.u ON t.id=u.id",
+    ] {
+        assert_eq!(
+            crate::pg_name::validate_relations(sql, "db").unwrap_err().0,
+            "0A000"
+        );
+        assertions += 1;
+    }
+    for sql in ["SELECT id FROM db.public.t", "SELECT id FROM db.t"] {
+        assert!(crate::pg_name::validate_relations(sql, "db").is_ok());
+        assertions += 1;
+    }
+    println!(
+        "pg_dialect_14_behavior: assertions={assertions}, primary_cases=7; quoted/path/MySQL guards separate"
+    );
+}

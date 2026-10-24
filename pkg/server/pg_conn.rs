@@ -385,6 +385,7 @@ impl PgService {
                     continue;
                 }
                 if tag == b'Q' {
+                    extended.session.relation_error_position = None;
                     extended.reset_unnamed(&context);
                     let sql = body
                         .strip_suffix(&[0])
@@ -451,7 +452,7 @@ impl PgService {
                         } else if catalog.as_ref().is_ok_and(|query| query.is_some()) {
                             Ok((std::borrow::Cow::Borrowed(sql), Some("SELECT")))
                         } else {
-                            crate::pg_name::adapt(sql, context.as_ref(), &extended.session)
+                            crate::pg_name::adapt(sql, context.as_ref(), &mut extended.session)
                                 .and_then(|sql| {
                                     crate::pg_sql::adapt_with_context(&sql, context.as_ref())
                                 })
@@ -546,7 +547,13 @@ impl PgService {
                             }
                             Err((state, message)) => {
                                 extended.session.record_error(context.as_ref());
-                                write_sql_error(socket, state, &message, sql)?
+                                write_sql_error(
+                                    socket,
+                                    state,
+                                    &message,
+                                    sql,
+                                    extended.session.relation_error_position,
+                                )?
                             }
                         }
                     } else {
@@ -679,15 +686,19 @@ pub(crate) fn write_error(
     write_error_position(socket, severity, state, message, None)
 }
 
-/// Only a formal parse of the original SQL supplies a structured quote/EOF
-/// cursor. Other adapted diagnostics keep their position unknown.
+/// Relation resolution supplies its original character cursor; syntax errors
+/// otherwise use the formal parser's quote/EOF cursor. Never locate errors in
+/// adapted SQL or infer a position from an engine message.
 pub(crate) fn write_sql_error(
     socket: &mut TcpStream,
     state: &str,
     message: &str,
     original_sql: &str,
+    relation_position: Option<usize>,
 ) -> io::Result<()> {
-    let position = if state == "42601" {
+    let position = if relation_position.is_some() {
+        relation_position
+    } else if state == "42601" {
         let mut parser =
             astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL);
         if parser.ParseSQL(original_sql, &[]).is_err() {

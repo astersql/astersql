@@ -1138,6 +1138,11 @@ fn pg_dialect_13_libpq() {
     pg_dialect_libpq(13);
 }
 
+#[test]
+fn pg_dialect_14_libpq() {
+    pg_dialect_libpq(14);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1172,7 +1177,11 @@ fn pg_dialect_libpq(task: u8) {
     let cleanup_guard = Cleanup(|| {
         server.close();
         let dropped = native.execute(&format!("DROP DATABASE {database}")).is_ok();
-        let cleanup = serde_json::json!({"database_dropped": dropped,
+        let other_dropped = task != 14
+            || native
+                .execute(&format!("DROP DATABASE {database}_other"))
+                .is_ok();
+        let cleanup = serde_json::json!({"database_dropped": dropped, "other_database_dropped": other_dropped,
             "postgres_port_closed": TcpStream::connect(address).is_err(),
             "mysql_port_closed": TcpStream::connect(mysql_address).is_err()});
         let _ = std::fs::write(evidence.join("rust-cleanup.json"), cleanup.to_string());
@@ -1180,6 +1189,11 @@ fn pg_dialect_libpq(task: u8) {
     native
         .execute(&format!("CREATE DATABASE {database}"))
         .unwrap();
+    if task == 14 {
+        native
+            .execute(&format!("CREATE DATABASE {database}_other"))
+            .unwrap();
+    }
     let mut mysql = TcpStream::connect(mysql_address).unwrap();
     mysql
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -1221,6 +1235,35 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 14 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            let table = format!("t14_{}_{}", std::process::id(), address.port());
+            assert_eq!(
+                mysql_query(socket, &format!("SELECT id FROM {database}.{table}")),
+                vec![vec![Some(b"1".to_vec())]]
+            );
+            assert_eq!(
+                mysql_query(socket, &format!("SELECT id FROM {database}_other.{table}")),
+                vec![vec![Some(b"2".to_vec())]]
+            );
+            for sql in [
+                format!("SELECT id FROM {database}.public.{table}"),
+                format!("SELECT id FROM {database}.{table}.extra"),
+            ] {
+                let mut request = vec![3];
+                request.extend_from_slice(sql.as_bytes());
+                mysql_packet(socket, 0, &request);
+                let response = mysql_read(socket);
+                assert_eq!(response[0], 0xff);
+                assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1064);
+                assert_eq!(&response[4..9], b"42000");
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(evidence.join("mysql-relations.jsonl"))
+                    .unwrap();
+                writeln!(file,"{}",serde_json::json!({"phase":phase,"sql":sql,"error_code":1064,"sqlstate":"42000","packet":response,"current_value":1,"other_value":2})).unwrap();
+            }
+        }
         if task == 13 {
             mysql_query(socket, "SET SESSION sql_mode = ''");
             assert_eq!(
@@ -1473,6 +1516,18 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 14 {
+        assert_eq!(checkpoints, 11);
+        assert_eq!(cleanup["other_database_dropped"], true);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 10);
+        assert_eq!(summary["value_type_cases"], 6);
+        assert_eq!(summary["gate_cases"], 1);
+        return;
+    }
     if task == 13 {
         assert_eq!(checkpoints, 9);
         let summary: serde_json::Value =

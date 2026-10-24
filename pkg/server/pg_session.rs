@@ -15,12 +15,16 @@ pub(crate) enum SessionQuery {
 pub(crate) struct PgSession {
     path: Vec<String>,
     failed_transaction: bool,
+    // Original relation cursor from name adaptation, consumed by this request's
+    // Q/Parse error response and reset before the next frontend command.
+    pub(crate) relation_error_position: Option<usize>,
 }
 impl Default for PgSession {
     fn default() -> Self {
         Self {
             path: vec!["public".into()],
             failed_transaction: false,
+            relation_error_position: None,
         }
     }
 }

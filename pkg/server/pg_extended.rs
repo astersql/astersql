@@ -491,6 +491,7 @@ impl Extended {
         if self.failed {
             return Ok(true);
         }
+        self.session.relation_error_position = None;
         match self.process(tag, body, context, execute) {
             Ok(messages) => {
                 for (tag, body) in messages {
@@ -507,7 +508,13 @@ impl Extended {
                     None
                 };
                 if let Some(sql) = original_sql {
-                    crate::pg_conn::write_sql_error(socket, state, &message, &sql)?;
+                    crate::pg_conn::write_sql_error(
+                        socket,
+                        state,
+                        &message,
+                        &sql,
+                        self.session.relation_error_position,
+                    )?;
                 } else {
                     write_error(socket, "ERROR", state, &message)?;
                 }
@@ -554,7 +561,7 @@ impl Extended {
                 let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
                     (sql, Vec::new())
                 } else {
-                    let sql = crate::pg_name::adapt(&sql, context.as_ref(), &self.session)?;
+                    let sql = crate::pg_name::adapt(&sql, context.as_ref(), &mut self.session)?;
                     let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
                     markers(&sql)?
                 };

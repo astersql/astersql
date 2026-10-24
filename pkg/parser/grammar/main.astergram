@@ -2817,6 +2817,7 @@ PriorityOpt : ε @action;
 PriorityOpt : Priority;
 TableName : Identifier @action;
 TableName : Identifier "." Identifier @action;
+TableName : Identifier "." Identifier "." Identifier @action;
 TableName : "*" "." Identifier @action;
 TableNameList : TableName @action;
 TableNameList : TableNameList "," TableName @action;
