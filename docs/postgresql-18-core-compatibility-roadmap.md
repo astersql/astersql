@@ -5517,6 +5517,19 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 | [privilege.rs](../pkg/privilege/privilege.rs)::Manager | MatchIdentity/ConnectionVerification 是共享 user/host 匹配与认证候选，RequestVerification/RequestVerificationWithUser 覆盖库表列静态权限，ActiveRoles/RequestDynamicVerification 对应角色和动态权限。本轮只确认接口，未确认其与 PG SCRAM/CONNECT/schema USAGE/PG 角色 OID 的接线；真实事实和 PG 权限映射仍由第 6 章拥有，不新建第二套权限体系。 |
 | 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs)::startup_auth_roundtrip / startup_protocol_30_roundtrip | 两协议用例均在 InsecureRootOnly 下断言 root 的 AuthenticationOk/ReadyForQuery 和 intruder 的 28P01；BackendKeyData 体长分别 36/8。没有口令交换、SCRAM proof、真实非 root 或授权断言。本轮只读未执行；握手成功不代替授权证据。 |
 
+#### 启动参数证据与交接职责
+
+本域于 **2026-10-24** 基于 `e7d9bcbb2ddd948e91df9b5d2470091c77ccdb22` 静态核对以下源码与独立测试。TLS 文档提交 `d30bc34cd9b408f6bdff5d39956a0c261ab0171d`、SCRAM 文档提交 `e7d9bcbb2ddd948e91df9b5d2470091c77ccdb22` 及对应正文已核实，满足批次 1–2 文档依赖；不表示生产传输/认证可用。本轮有效运行用例数 **0**，启动行为、客户端、参考端及性能均**未验证**。
+
+| 来源与符号 | 当前静态事实及缺证 |
+| --- | --- |
+| [pg_protocol.rs](../pkg/server/pg_protocol.rs)::parse_startup / take_string | 总长 9–10000 字节，版本仅精确接受 196608/196610（3.0/3.2）；检查长度一致、UTF-8、零终止、尾部及同名重复参数。保留未知键，结构合法不代表存在 user；3.1/3.3 直接拒绝，尚无 NegotiateProtocolVersion。 |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService::negotiate | 要求非空 user；接受 user/database/application_name，UTF8/UTF-8，ISO/ISO, MDY，extra_float_digits=1/2/3，以及非空且限字符的 TimeZone（DateStyle/TimeZone 名称忽略大小写，其他键按源码精确匹配）。未知键及其他值当前 0A000；仅字符合法的时区还须执行原生 SET time_zone，失败当前 22023。application_name 只过白名单；DateStyle/浮点参数没有 PG 会话状态接线，不能由接受推导生效。 |
+| 同上认证、库与回复顺序 | 空库 open_ctx→真实 authenticate→可选 use_db→SET time_zone（未指定 UTC）→登记取消键→R(Ok)→五个 S→K→Z。S 固定 client_encoding/server_encoding=UTF8、DateStyle=ISO, MDY、TimeZone=请求值或 UTC、server_version=18.0 (AsterSQL)。缺省/空 database 不执行 use_db，不等于 PG 默认连接用户名同名库；产品报告字符串不证明 18.6 兼容。 |
+| [pg_session.rs](../pkg/server/pg_session.rs)::PgSession / SessionQuery::parse / execute | 连接私有 path 与 failed_transaction，处理 search_path、current_schema/current_database 等局部查询；非通用 GUC（运行时配置参数）存储，不能据此认领应用名、编码、日期/浮点、时区 SET/SHOW/RESET 与事务回退。I/T/E 语义及 search_path 契约归第 5 章。 |
+| 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs)::startup_server_version_parameter / startup_datagrip_date_style | 前者在 3.0/3.2 断言 R→五个指定 S→K→Z(I)，K 体长 8/36；后者断言 ISO 大小写/ISO, MDY、Asia/Shanghai、digits=1/2/3 的接收及 S，SQL, DMY/-1/注入串为 0A000、NoSuch/Zone 为 22023，成功后 SELECT 1 回复 T/D/C/Z。没有证明 SHOW、日期/浮点实际编码、两连接隔离或 SET 回退；只是断言意图，未运行。 |
+| 独立 [pg_protocol_test.rs](../pkg/server/pg_protocol_test.rs)::startup_packet_bounds / startup_reader_bounds；[pg_session_test.rs](../pkg/server/pg_session_test.rs)::pg_introspection_namespace_parser_boundaries | 前者有非法版本/长度/截断/重复键/UTF-8 及不多读下一包断言，允许缺 user 的结构包；后者只验 search_path 语法/多语句拒绝/不误认字符串，不覆盖启动交接或通用参数生命周期。连接测试 startup_auth_roundtrip / startup_protocol_30_roundtrip 另有 intruder 28P01 及关闭断言，不能代替认证失败不选库的调用/副作用证据。 |
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5547,6 +5560,30 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 | 认证到授权 | proof 校验成功后才绑定真实会话身份；库选择及 CONNECT 门禁后才进入可执行就绪状态。认证期间可有受限临时上下文，但不得执行用户 SQL、选择数据库、注册可用 active 会话或发 BackendKeyData/ReadyForQuery；失败不发 AuthenticationOk。后续目录、普通/扩展 SQL、对象权限与 owner/ACL 均消费同一认证身份及第 6 章权限契约，不能赋予固定 PROCESS/admin。已认证但无 CONNECT 是授权失败，不应统一伪装数据库不存在；具体诊断交参考端取证。 |
 | 失败、中断和保密 | 错密码/未知身份/proof 不符均结束本连接；错误只保留安全阶段信息，未知身份不得借机制/错误细节额外暴露账户存在。畸形帧/越序、EOF、总认证期限耗尽和停服均释放临时上下文、交换材料、socket/ID/worker，不注册取消密钥，不继续处理缓冲 SQL。限制交换字节/轮次/总期限与计算预算，实际数值和负载指标交后续资源任务。口令、ClientProof/ServerSignature、verifier/派生键、取消 secret、TLS 私钥及含密配置不进入日志、ErrorResponse、Debug/trace 或可公开证据；底层错误也须脱敏，测试材料使用隔离夹具。 |
 
+#### 启动参数与会话交接
+
+以下是**目标契约**，不是当前支持声明。入口先完成 TLS/认证阶段门禁及有界 StartupMessage 结构校验；user 绑定真实认证身份。参数先解析成结构化设置，按认证/授权/会话初始化分阶段验证，全部成功后才交给普通 SQL；不得拼接未经验证的 SQL、静默丢弃设置或让同一连接内的参数覆盖其他连接。认证前可拒绝畸形帧/不支持能力，但不查询或选择请求数据库、执行用户 SQL。认证成功后可按 PG 顺序先发 AuthenticationOk 再应用会话设置；后续初始化失败仍必须 ErrorResponse 并关闭，不得发 K/Z。现代码在设置成功后才发 R(Ok) 是静态顺序，不将其提升为 PG 所有路径的唯一顺序。
+
+正常消息目标是认证完成→R(Ok)→初始 ParameterStatus→BackendKeyData→ReadyForQuery(I)，允许规范规定的 Notice/版本协商插入，不强制 S 各参数间的固定排序。**只有 ReadyForQuery 表示可发普通命令**；初始化错误不在本连接 Sync 重试。认证前的 Query/Parse/Bind/Execute 不得执行，缓冲的越序消息拒绝并关闭，不能认证后偷偷补执行。
+
+| 参数输入 | 验证阶段、真实状态源与缺省目标 | 初始报告、SET 后变化与拒绝边界 |
+| --- | --- | --- |
+| user | 结构要求存在且非空，随后按认证域真实账户/host/角色解析；不接受普通 SQL 文本作为身份操作。 | 不是同名 ParameterStatus；身份读取与权限由第 6 章真实会话承担，session_authorization 等报告须源自同一事实。SET user 不作为切换登录身份接口；任何身份变更另按授权契约，失败不回退 root。 |
+| database | 认证成功后验证存在性及 CONNECT，缺省按 PG 取 user 同名库；空字符串行为另采参考端，不由当前跳过 use_db 推断。 | 不是 ParameterStatus；current_database() 必须等于实际选择库，无库/无 CONNECT 在就绪前拒绝且区分诊断。PG 连接内不能靠 SET database 换库，重连才换；数据库名经专用接口传递，不作为 SQL 片段。 |
+| application_name | 初始化到连接私有应用名状态，默认空；按 PG 字符/字节长度及规范化规则取证，原请求与有效值分别记录。 | 属报告集合，初始 S、有效 SET/RESET/事务回退后的 S 与 SHOW/current_setting 一致。任意引号/分号只可作值，不执行 SQL；非法编码按对应阶段拒绝，不能接受后忘记保存或回显敏感输入。 |
+| client_encoding | 初始化校验实际 codec；首批 UTF8/UTF-8 规范化为 UTF8，与第 3 章输入/输出编码一致；缺省取真实数据库编码，UTF8 夹具明确固定。 | 初始 S；支持的 SET 后生效并按有效值报告。PG 合法但未开放编码显式能力拒绝；不存在编码名或非法字节记录参考诊断，不能假转码/继续宣称 UTF8。当前仅 UTF8 白名单不证明非法文本或动态转换行为。 |
+| DateStyle | 会话保存输出格式及 MDY/DMY/YMD 输入解释顺序；缺省来自实际配置，夹具固定 ISO, MDY。第 3 章类型 codec 消费同一状态。 | 属报告集合，初始及变化/恢复 S 与 SHOW 一致；ISO 与 ISO, MDY 成功必须有实际日期输入/输出证据。合法但未开放样式明确能力拒绝，非法组合按参考诊断拒绝；不接受 DMY 却固定报告 MDY。 |
+| TimeZone | 认证后按可用时区库/共享时间语义校验并保存连接私有有效值；缺省为真实配置，测试显式固定 UTC，不能称 PG 所有部署默认 UTC。 | 初始 S 与 SHOW、timestamptz 同一时刻显示一致；SET/RESET/LOCAL 及事务回退按有效状态发 S。不存在区域、非法偏移、注入字符拒绝；共享 time_zone 若不足以表示 PG 时区，先列能力缺口，不直接回显请求假装生效。 |
+| extra_float_digits | 初始化保存真实整数状态，默认目标 1；PG 合法区间 -15..3，正值使用最短精确输出，0/负值影响舍入，codec 由第 3 章拥有。 | 不属 ParameterStatus 集合，不伪造同名 S；用 SHOW/current_setting 与 float4/float8 文本核对。SET/RESET 与 LOCAL 恢复须生效；当前可只认领 1/2/3，0/负合法值明确未开放，非整数/越界另采非法值诊断，不能映射成成功且忽略。 |
+
+参数变更的事务持久化/撤销（含 SET SESSION、SET LOCAL、COMMIT、ROLLBACK 及已开放的保存点）由第 5 章决定，本域负责在共享会话与 wire 之间传递**当前有效值**。扩展协议 failed 与事务 E 分开；Sync 不能清掉 E 或偷重置参数，ROLLBACK 后恢复值时也要报告。startup 显式设置作为会话缺省，RESET 恢复相应缺省；未显式覆盖且来源为配置文件的值应按 RESET 规范取当前配置，不能一律还原初连快照；初始化或关闭不改变 MySQL sql_mode/其他连接配置。search_path 继续使用第 5/6 章契约，PG 18 的报告集合包含 search_path，不能将当前五个固定 S 视为完整 PG 18 集合。server_encoding、server_version、integer_datetimes 等不可变报告从真实配置/能力得出；其余规范报告项沿各自能力域，缺项显式记录，不填假常量。产品身份必须保留 AsterSQL，线上 server_version 字符串、产品构建 SHA 与参考 PG 精确版本分开存证。
+
+版本目标：3.0 与 3.2 分别协商、建会话；3.2 的取消 secret 是不透明 4–256 字节（PG 当前最多发 32），3.0 固定 4 字节。K 的消息体是 PID 的 4 字节加 secret，长度字段另占 4 字节，消息 tag 另占 1；当前体长 8/36 只是本产品 4/32 字节 secret 的断言。CancelRequest 为独立连接上的长度字+80877102+PID+原 secret，没有协议版本字段；按目标会话协商版本解释，不能按新连接猜版本、截断或泄露密钥；取消语义和资源上限交后续域。
+
+不支持的主版本拒绝并关闭；同主版本请求更高次版本时目标以 NegotiateProtocolVersion（v）报告实际支持的最高次版本，再按协商结果认证，客户端不能接受则关闭；3.1 不因精确白名单缺失就被错误归作主版本不兼容，应按已声明的同主版本兼容规则处理。未知 `_pq_.` 协议选项由 v 列出未识别选项名/数量，不能静默接受或当普通 GUC；普通未知参数、未开放的 options 输入明确拒绝并关闭。options 若未来开放，须按 PG 参数语法结构化解析并走同一权限/设置校验，不交 shell 或拼 SQL。现有 3.1/3.3 统一拒绝和没有 v 的缺口保留为待实现，不能由“支持 3.0/3.2”推导完成协商。
+
+规范依据于 **2026-10-24** 查阅，适用 **PostgreSQL 18**：[54.2.1 启动流程](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-START-UP)、[54.2.7 参数异步报告](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-ASYNC)、[54.7 StartupMessage / ParameterStatus / BackendKeyData / NegotiateProtocolVersion](https://www.postgresql.org/docs/18/protocol-message-formats.html)、[19.11 客户端配置](https://www.postgresql.org/docs/18/runtime-config-client.html)、[PG REL_18_STABLE 的 guc_tables.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/misc/guc_tables.c) 中 extra_float_digits 的默认值/区间（1、-15..3）、[SET](https://www.postgresql.org/docs/18/sql-set.html)、[RESET](https://www.postgresql.org/docs/18/sql-reset.html)、[54.4 复制启动模式](https://www.postgresql.org/docs/18/protocol-replication.html)。未核实参考端 **18.6** 构建或执行，精确诊断文本/SQLSTATE/错误阶段及补丁版行为均未采集；18.0 (AsterSQL) 只作当前产品报告事实。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
@@ -5554,6 +5591,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### SCRAM 范围与开发边界
 
 本域只完成认证契约，不实现 SASL 状态机、凭证存储/迁移、角色管理子系统或权限模型。InsecureRootOnly 只允许显式隔离的开发 root/空 native 凭据探针，必须标识其模式；生产 SCRAM、TLS 或凭证接入失败绝不能回退该模式。SecureUnsupported 的拒绝不表示生产认证已实现。PLUS 首批未开放；GSSAPI/SSPI 身份与 OAUTHBEARER 均不宣告、不挑战、不接受 token 成功，策略只允许这些机制时启动/连接应明确拒绝；意外携带其响应按当前认证阶段拒绝关闭，不能转换为 root。GSSENCRequest 传输探测沿 TLS 域，不能代替身份认证。复制边界留给后续指定域，不在本域扩写。
+
+#### 启动参数范围与复制拒绝
+
+只定义启动到普通 SQL 会话的交接；不实现通用 GUC 框架、角色切换、完整时区/编码子系统、options 命令行兼容或连接池重用协议。未开放的普通参数/合法值须明确拒绝，不以忽略参数获得成功。逻辑复制与物理复制均不在首批应用 SQL 范围：replication=true/on/yes/1 请求物理 walsender，replication=database 请求绑定数据库的逻辑 walsender；两者都在进入复制模式前明确能力拒绝并关闭，不能删除该键后作为普通 SQL 登录。replication 缺省或显式 false/off/no/0 目标为普通 SQL 连接，仍完整认证/授权；非法布尔/其他值拒绝，不能因登录角色有复制权限就启用未实现模式。当前白名单拒绝所有 replication 键，包含 false，与该目标的差异明确保留。逻辑复制可发部分普通 SQL 不等于普通连接，也不等于 COPY IN/OUT 已实现；不在本域添加复制实现。
 
 ### 验收
 
@@ -5588,6 +5629,25 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 后续记录遵守第 1 章，包含身份/授权夹具标识（不含密值）、消息顺序、错误发生阶段与完整安全诊断、两端精确构建/客户端/安全策略、资源前后值和有效断言数。性能记录认证延迟、迭代计算成本及并发等待/资源上限，当前未测；本轮文档检查不产生上述行为通过证据。
 
+#### 启动参数与会话交接验收
+
+以下 `WIRE-START-*` 全为**待新增/待运行**。夹具固定真实登录角色 u、存在且有 CONNECT 的独立库 D 及同名库 u；权限依第 6 章，不能用 root 替代。A/B 是同 Server、同 u/D 的独立 PG 连接，协议 3.0/3.2 分别复验；显式启动 UTF8、ISO, MDY、UTC、digits=1、不同应用名 app_A/app_B，初始 I。缺省库组另用未指定 database 的新连接。生产成功组依赖前序 TLS/SCRAM 实现，当前未就绪只记缺口；开发探针单独标识。所有消息/SQL 原文和 settings 前后快照留证，无 SQL 参数，文本结果；SHOW 与 current_setting 的列描述/类型、时间与浮点 codec 沿第 3 章，不猜 OID/typmod。成功 SQLSTATE 不适用，所有失败的 PG 18.6 精确 S/V/C/M/P 等字段及客户端诊断待采集。
+
+| ID / 输入轨迹 | 可观察目标、失败/清理与未来验证入口 |
+| --- | --- |
+| OK / DEFAULT：完整启动；另省略 database，再逐项省略可选设置 | 按 R→S→K→Z(I) 建连；SHOW application_name/client_encoding/DateStyle/TimeZone/extra_float_digits、SELECT current_user/current_database() 与真实状态/指定值一致（分别发命令），缺省库等于 u，RESET 恢复真实启动缺省。五个固定 S 不当完整报告集合；保存原始参数、有效规范值及完整回复。待扩展 pg_conn_test.rs，真实 libpq startup 探针待新增；Terminate 后资源归基线。 |
+| EFFECT：A startup UTC/ISO, MDY/1，B Asia/Shanghai/ISO, MDY/3 | 各自 SHOW 一致；`SELECT TIMESTAMPTZ '2024-01-01 00:00:00+00'` 同一时刻 A 显示 UTC 零时、B 上海八时（具体文本沿 codec 采证）；`SELECT '01/02/2024'::date` 为 2024-01-02；`SELECT 1.2345678901234567::float8` 核对最短精确文本。SET 到未开放的合法格式/编码/负浮点精度必须明确拒绝，不能假成功。待扩展独立 pg_conn_test.rs 及第 3 章 codec 用例，不由 S 回显替代行为。 |
+| ISOLATE / SET：A `SET application_name='changed_A'`、`SET TIME ZONE 'Asia/Shanghai'`，B 查询同参数 | A SHOW 与变化 S 一致，B 始终 app_B/自身时区；A RESET 回启动 app_A/UTC。A `BEGIN; SET LOCAL TIME ZONE 'Asia/Shanghai'; COMMIT;` 与独立 ROLLBACK 变体各条单发，事务内上海、结束 UTC；另 `BEGIN; SET TIME ZONE 'Asia/Shanghai'; ROLLBACK;` 恢复 UTC。Q 与 Parse/Bind/Execute/Sync 各复验，Sync 仅恢复协议，不改变有效设置；失败进入 E 的轨迹沿第 5 章，ROLLBACK 恢复值/S。待扩展 pg_conn_test.rs 与独立 pg_session_test.rs，不能仅 parser 测试。 |
+| AUTH / DATABASE：错误凭据且请求 D；正确凭据但不存在库/无 CONNECT | 前者证明 use_db/SQL 未被调用、无库进入副作用，且无 R(Ok)/K/Z；后两者在认证后就绪前拒绝、无 K/Z，不将无权限统一伪装不存在。用真实资源/安全调用观测取证（入口待新增），拒绝后新合法连接成功；关闭临时 context/ID/socket，不能以仅看到 E 代替不选库证据。 |
+| VALUE / UNKNOWN：client_encoding=NoSuchEncoding/合法未开放 LATIN1、TimeZone=NoSuch/Zone、DateStyle=非法串、digits=非整数/4/合法未开放 -1、未知普通键、options | 分列非法值和合法但未开放能力，按相应阶段拒绝/关闭，无就绪成功；错误不回显敏感值。A/B 已有设置不变，新合法连接仍从初值启动；待扩展 startup_datagrip_date_style，新增编码/未知参数及 SET 失败轨迹。 |
+| FRAME / ORDER：错误长度、截断、缺零终止、非法 UTF-8、同名重复键、大小写别名冲突、缺/空 user；认证中抢发 Q/Parse/Bind/Execute | 结构错误/身份缺失有界拒绝，规范化后的重复设置不能产生多份冲突状态；普通消息不执行、不跨连接复用。PG 对重复参数的参考行为另采，本产品确定拒绝边界单列。独立 pg_protocol_test.rs 检查 framing，pg_conn_test.rs 证明完整连接门禁/无 SQL 副作用，均待扩展；EOF 允许传输关闭，不伪造错误码。 |
+| VERSION / KEY：3.0、3.2、较高 3.x、不支持主版本；未知 `_pq_.probe` | 成功版本按自身 K 格式存储并可用于独立 CancelRequest；更高次版本及选项的 v 内容/继续认证或客户端关闭符合协商，低次兼容单测 3.1。错误主版本关闭；不把当前 0A000 当目标全部通过。验证密钥长度/匹配断言而不归档 secret，取消后的事务/查询归后续取消域。待扩展 startup_protocol_30_roundtrip、startup_auth_roundtrip 和 pg_protocol_test.rs；v 入口待新增。 |
+| REPLICATION：true/on/yes/1、database；另 false/off/no/0 与非法值 | 前两组明确拒绝，无复制命令/普通 SQL 执行和 K/Z；false 组普通认证/会话成功，非法值拒绝。即使 u 有复制属性也不开放；不能忽略参数伪装成功。每组断连后重连正常 SQL 恢复初值，待新增 pg_conn_test.rs 复制拒绝测试，不启动复制服务。 |
+| INTERRUPT / RECONNECT：长度字/参数半包、认证中、参数初始化中、R 后 Z 前断连/期限耗尽/停服；合法 Terminate | 所有阶段有界回收 context、socket、worker、ID 和已登记取消键，半完成设置不可留给下一连接；认证前取消是断连/停服，不以 CancelRequest 代替。重连重新认证和初始化，应用名/时区/事务 I 独立，旧 secret 无效；B 健康连接不受单连接失败影响（停服组另重启夹具）。待扩展 startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients、资源计数与重连回归，关闭幂等。 |
+| INJECTION：application_name / database 取 `x'; SET sql_mode='ANSI_QUOTES`，时区另取同形非法值；参数含换行/超长 | 合法文本字段只作值或安全拒绝，时区非法值拒绝，不执行附带 SQL；用受控共享会话观测确认 sql_mode/其他连接设置不变，不能只看 SELECT 1。日志/错误不泄露口令、取消键或危险原值，资源有界；独立错误/日志捕获入口待新增。 |
+
+每例保存能力/用例 ID、两端真实构建/版本、客户端与安全策略、输入到状态源的映射、S 的初始/变化/恢复顺序、K 长度（不存密值）、I/T/E、失败阶段、关闭/资源前后计数及实际断言数。原始 observations 当前未采集，verdict 未验证。性能后续测初始化延迟、参数帧/内存上限与异常连接回收期限；不以文档检查代替实际行为通过。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5599,5 +5659,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 按单一责任另立窄实施任务：①共享凭证体系提供真实身份/verifier及账户状态的只读接入契约（缺来源先作为依赖，不设计迁移）；②SASL 帧/状态机与独立算法/proof 回归；③认证成功到共享会话身份、库门禁和对象授权的最小接线，覆盖非 root；④认证中断、期限、保密和资源清理；⑤TLS 属性可靠后另行开放 PLUS。复用 pg_conn/conn/runtime 及共享权限入口，测试放同目录独立测试文件，新增夹具/真实客户端探针明确为待新增，不在本轮创建。第 6 章继续拥有角色/owner/ACL 映射，第 5 章拥有事务状态；不扩建完整子系统。
 
 需求映射：来源步骤 1 的 SCRAM 现状/目标→证据表及 OK/FRAME；步骤 3 的未开放机制→MECHANISM/DEV；步骤 4 的真实身份/权限与 TLS/保密→IDENTITY/AUTHZ/CREDENTIAL/SECRET；失败/重放/认证取消清理→PROOF/REPLAY/INTERRUPT/STOP。Ready 文档范围检查采用本章五节、稳定子标题、相对链接存在性、需求到验收映射、前后契约与章节外字节不变审阅；`.agents/skills/tidb-verify-profile/SKILL.md` 再查仍缺失，未宣称运行该技能。正确性风险为静态证据不足和异常轨迹遗漏，兼容性风险为 PG 口令字节规则、真实身份/权限及将大版本规范误当 18.6 实测，性能未验证。本域文档完成不表示 SCRAM 或生产授权已实现。
+
+#### 启动参数后续实施切口
+
+另立窄实施任务：①启动结构与规范化参数校验/未知参数拒绝，补版本与 `_pq_.` 选项协商；②认证后身份/库/CONNECT 与连接私有设置交接，修正 database 缺省并覆盖认证失败不选库；③逐参数的真实状态、SHOW/SET/RESET 与 ParameterStatus，同第 3/5 章 codec/事务最小接线，先补 application_name 而不扩建 GUC 子系统；④两连接隔离、注入/畸形/中断/重连清理；⑤复制请求的明确拒绝及 false 普通模式。复用 pg_protocol/pg_conn/pg_session，回归放同目录独立测试文件；新客户端/安全观测入口均**待新增**，本轮不创建代码或运行器。
+
+需求映射：本任务步骤 1→启动证据表与 OK/FRAME；步骤 2→逐参数状态表与 EFFECT/ISOLATE/VALUE；步骤 3→版本/密钥契约与 VERSION/KEY；步骤 4→AUTH/DATABASE、INJECTION、INTERRUPT/RECONNECT；步骤 5→复制范围边界与 REPLICATION。对应来源步骤 1、2 的 startup/session parameter 与连接生命周期。Ready 文档检查覆盖五节/稳定子标题、官方来源与相对链接、需求与异常轨迹、章节外字节不变；验证技能 `.agents/skills/tidb-verify-profile/SKILL.md` 再查缺失，使用手工等效检查。正确性风险是只回显参数未实际生效或失败清理遗漏，兼容性风险是将当前白名单/产品报告版本当成 PG 18.6 或与第 3/5/6 章分责冲突；性能未验证。此域完成只表示文档交付，下一步另行授权实施与参考端采证。
 
 ## 8. 客户端与双方言共存验收
