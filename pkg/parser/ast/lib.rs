@@ -988,6 +988,19 @@ impl Default for ExprNode {
 }
 
 impl ExprNode {
+    /// PostgreSQL `$n` identity retained by the native lexer; MySQL `?` has no number.
+    /// Offset remains the byte offset into the original SQL, independent of n.
+    pub fn PostgreSQLParameterIndex(&self) -> Option<u16> {
+        if !matches!(self.Kind, ExprKind::ParamMarker { .. }) {
+            return None;
+        }
+        std::str::from_utf8(self.node_text.OriginalText())
+            .ok()?
+            .strip_prefix('$')?
+            .parse()
+            .ok()
+    }
+
     pub fn GetFlag(&self) -> u64 {
         self.Flag.get()
     }

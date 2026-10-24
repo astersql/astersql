@@ -2,7 +2,7 @@
 
 批次：【批次 5】依赖：批次 4；承接此前已完成的代码与验证
 
-状态：未开始
+状态：已完成
 
 目的：在PG解析入口接入int4/int8的::与CAST语法，输出共享Cast并保持参数和原始位置。
 
@@ -134,9 +134,9 @@ PG前置名称/命令门禁必须使用已接通的PG解析入口；MySQL入口�
 ## 进度（Progress）
 
 
-- [ ] 当前消费者、失败断言和真实运行入口已核对。
-- [ ] 本行为的代码与独立测试已完成。
-- [ ] 聚焦验证、清理、Ready检查和差异审阅已记录。
+- [x] 当前消费者、失败断言和真实运行入口已核对。
+- [x] 本行为的代码与独立测试已完成。
+- [x] 聚焦验证、清理、Ready检查和差异审阅已记录。
 
 ## 发现与证据（Surprises & Discoveries）
 
@@ -151,7 +151,7 @@ PG前置名称/命令门禁必须使用已接通的PG解析入口；MySQL入口�
 ## 结果与复盘（Outcomes & Retrospective）
 
 
-尚未实施，无功能通过结论。完成时记录用户可观察结果、兼容性/正确性/性能风险、残留范围外缺口和实际交接路径；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
+已完成本批共享语法、AST/位置保真、真实listener及MySQL隔离验证，详细红绿和Ready证据见末尾；本文件是遵守PLANS.md的活动ExecPlan，plan.md始终只读。
 
 ## 完成
 
@@ -159,3 +159,49 @@ PG前置名称/命令门禁必须使用已接通的PG解析入口；MySQL入口�
 仅在适用行为验证通过且证据完整后改为已完成。若环境等无关原因阻止必要验证，允许状态已完成，待回归并明确缺失项，保留本文件；本行为自身失败不能借此宣布完成。无法突破的阻塞只在本文件标已阻塞，记录原因、检查与可独立继续的范围，不递归扩建依赖。
 
 有代码、测试、配置或实际说明变更时，使用 $git-commit 仅提交本任务变更，排除工作区已有删除及其他任务文件；只改编号任务状态或删除则不调用提交。最终按Agent Output Contract报告文件、验证范围、风险、确切命令、未验证项和槽位。完成证据报告后删除本编号任务文件；待回归/阻塞时保留。删除前提交中保留本任务当前证据，最终回复报告可追溯提交SHA。禁止修改或删除plan.md，不把prompt.md作为进度记录。
+
+2026-10-24 起点HEAD b681f059ff2cc2dfcae88dc06b5c738a8fbf8cb6。已读批次4提交内的红绿、Ready与参考端证据，依赖满足。工作区既有任务1–4删除保持不动。已读指定技能、根/server规则、PLANS及testing-flow；目标包无doc.go。RustCodeGraph status与explore/node已用于定位，PG command实际接Parser::with_dialect，lexer与共享grammar尚未接::。先注册独立解析与真实生产command门禁基线，随后增加TCP/libpq覆盖。
+
+基线 /tmp/pg-task5-red.log：两条精确命令均退出101，各实际执行1测试并失败。parser在SELECT 1::int4::int8报line 1 column 9；server生产command门禁在SELECT 1::int4返回42601。新增源信息由现有AstNode原文存储承载，不新增另一套Cast，也不把PG转换改写成SIGNED。grammar新增PgCastType和高优先级后缀，lexer仅PG识别::与$n，yy_parser每次注入方言，expression动作保留嵌套Cast/目标宽度/原文/偏移，ast/lib提供参数编号读取；均直接对应任务契约。未修改Go与Bazel，无bazel_prepare触发。Ready技能路径实际缺失，按根规则执行适用检查。
+参考端 bash /tmp/pg-task5-reference.sh 已退出0：postgres --version PostgreSQL18.4(Homebrew)，libpq180000；同一真实客户端夹具验证9条有效转换、字符串/注释、缺类型（含UTF8前缀）的42601和随后SELECT7恢复；参考端支持其他类型，故仅在AsterSQL运行中断言受限类型族拒绝。私有cluster已停止并删除，不声称18.6。
+
+第一次生成成功且fmt退出0，2个新parser测试仍运行期失败，定位到INT4/INT8已有专用词法token，必须为PgCastType复用这两个token而不是当普通identifier；补齐本任务语法 alternatives，不改变既有token表映射。初始未优化生成在7分余后主动终止（143，已清理锁），随后仅生成器命令使用CARGO_PROFILE_DEV_OPT_LEVEL=3，生成约2分钟内完成，未改仓库配置/features。
+
+第二次parser运行2个测试：源跨度/树形测试通过，数组拒绝断言失败；FieldType::GetType在SetArray后返回JSON，已把本任务数组门禁移到SetArray前，保留断言。第三次parser 2/2通过。server命令门禁通过，真实libpq失败：SELECT 1::int4::int8在server/runtime.rs的SplitSQLStatements前置校验被默认MySQL parser拒绝。通过rg与RustCodeGraph核对真实生产调用，仅增加SplitSQLStatementsWithDialect（原API保留MySQL默认）、runtime.rs重导出及ConcreteTiDBContext不可变身份在普通/流式拆句的传递；该三文件是本行为不可缺少的局部接线，新增相邻独立session测试，未修改其他重解析入口。
+
+局部拆句接线后parser2/session1均通过，server command通过，真实SELECT 1::int4::int8已越过语法但投影结果返回engine type metadata count mismatch。本任务测试计划明确“不以尚未实现的求值值/OID作为通过前提”，结果描述属后续批次9；故不修结果元数据，也不将该投影错误冒充成功。保留原投影解析树断言与原始红绿，真实客户端把每个同样cast表达式放入WHERE，投影现有literal列，从真实listener/共享会话执行本任务语法与拒绝恢复；参考端继续运行原投影和值断言。此调整避免新增夹具把范围外投影OID作为语法任务前提。
+
+进一步定位而非假定缺结果子系统：谓词也报同一metadata count错误；server/runtime.rs读取既有describe_result_fields失败后保留空native_types，该方法在control.rs:1698仍用默认MySQL parser重解析原文。现有方法已实现CAST声明类型保留，无需新增类型/OID规则。仅该一行改为parse_in_dialect(sql,self.sql_dialect())，作为本任务原SQL的必要消费者局部接线，更新既有说明。撤销夹具谓词改写，恢复原9条投影SQL与同一值断言；不降低原先期待、不新增通用结果描述实现。后续完整参数/类型/范围/OID语义仍属批次6–9。
+
+原始投影恢复后server精确过滤器2/2通过（/tmp/pg-task5-ready2.log），同服MySQL ::拒绝/SIGNED值1、libpq180000的9条转换值、字符串注释、4条语法/目标错误、每次SELECT7恢复、PQfinish与listener关闭全部通过；生成器check退出0。追加诊断回归pg_core_integer_cast_syntax_unicode_position，基线/tmp/pg-task5-unicode-red.log退出101、1个实际失败：SELECT 1::误报column10而非一基EOF11。lexer的PG Errorf仅把原token偏移转换为原SQL字符行列（MySQL原规则保留），对UTF8与EOF同断言验证；不新增协议P字段、不把AST字节偏移伪装为字符位置。
+
+## 最终交付证据（2026-10-24）
+
+生产变更与依据：grammar/main.astergram 新增仅供PG词法返回的pgTypecast及PgCastType，使用真实parsergen生成两表；lexer.rs 在连接方言下识别::/$n，继承该身份并把PG诊断偏移转换为一基字符行列；yy_parser.rs 每次reset后注入所属方言；parser_actions/expression.rs 复用共享Cast，统一两种语法的FieldType，保留原始跨度/目标拼写/嵌套树形，拒绝范围外数组；ast/lib.rs 从保留的参数原文读取$n编号。pg_name.rs 的名称守卫直接解析原PG SQL，保留原参数身份。真实客户端暴露的两个前置重解析缺口仅局部传入方言：session/runtime/session.rs 新增拆句校验函数且保留默认MySQL API，session/runtime.rs重导出，server/runtime.rs连接私有身份传给普通/流式拆句；session/runtime/control.rs 的既有describe_result_fields重解析使用所属方言。没有重写转换为SIGNED，没有新增结果类型或求值子系统；pg_sql/pg_result已有PG入口由新增测试验证后复用，不制造改动。每份实际修改且存在的.rs.md同步。parser/server/session独立Rust测试和原创Python/libpq夹具记录真实行为。
+
+最终 /tmp/pg-task5-delivery.log 对应下列脚本整体退出0，每命令均退出0；cargo fmt --all在测试前退出0。所有Cargo命令默认features、--locked，不使用--all-features或Go failpoint改写。实际有效数依次3、1、2、1、1、5、1、1，总15个测试（6新增、9已有回归）；无零测试验收。
+
+    /tmp/pg-task5-slot.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-parser --lib pg_core_integer_cast_syntax -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_core_integer_cast_syntax_split_boundary -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_integer_cast_parse_boundary -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-parser --lib parser_test::test_simple -- --exact && env -u LDFLAGS cargo test --locked -p astersql-parser --lib parser_test::test_func_call_expr_offset -- --exact && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_introspection_names -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_dialect_prepared_lifecycle -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib mysql_prepared_statements_execute_real_sql_with_binary_values -- --nocapture'
+
+生成命令（最终语法generate在/tmp/pg-task5-green2.log退出0，生成后fmt；check在/tmp/pg-task5-ready2.log退出0；之后只改lexer诊断/测试，语法与生成器均未变，不重复昂贵生成）：
+
+    /tmp/pg-task5-slot.sh bash -c 'CARGO_PROFILE_DEV_OPT_LEVEL=3 env -u LDFLAGS cargo run --locked -p astersql-parsergen --bin astersql-parsergen -- generate && cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-parser --lib pg_core_integer_cast_syntax -- --nocapture && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_integer_cast_parse_boundary -- --nocapture'
+    /tmp/pg-task5-slot.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_core_integer_cast_parse_boundary -- --nocapture && CARGO_PROFILE_DEV_OPT_LEVEL=3 env -u LDFLAGS cargo run --locked -p astersql-parsergen --bin astersql-parsergen -- check'
+
+第一条脚本当时因数组门禁断言失败而整体101，但generate/fmt均0；保留失败记录而不将整个阶段误报成功。最终相同语法/生成器的check及所有行为断言已通过。另运行rustfmt --edition 2024 pkg/parser/parser_actions/expression.rs退出0（该include动作文件未被cargo fmt遍历）。诊断红灯命令为 /tmp/pg-task5-slot.sh env -u LDFLAGS cargo test --locked -p astersql-parser --lib pg_core_integer_cast_syntax_unicode_position -- --nocapture，退出101且1失败；最终同过滤器被syntax过滤器覆盖并通过，Unicode字符/注释前缀和EOF保持一基字符诊断，AST字节偏移另行断言。
+
+真实证据：新增libpq测试执行9条原投影转换（包含链式/括号/算术优先级及5种目标名）得到1/3，字符串和注释中的::不变；缺类型、UTF8前缀缺类型及受限目标返回42601，每次SELECT7恢复。原TCP MySQL连接拒绝::后SIGNED继续返回1。PQfinish后关闭server，端口连接失败。已有PG预处理回归验证双连接、命名statement、重复值、Parse/Bind错误、Sync恢复、Close；MySQL真实二进制预处理仍通过。session拆句测试和原共享AST测试同时验证$n原编号与原偏移、两语法目标一致、内层Cast未丢失。真实canonical测试存储不是RealTiKV。
+
+参考端最终命令 bash /tmp/pg-task5-reference.sh 退出0，/tmp/pg-task5-reference.log：真实PostgreSQL18.4(Homebrew)、libpq180000，临时cluster显式UTF8；同一最终客户端夹具的原9条投影/值、字符串、缺类型与Unicode一基P位置、错误后恢复均通过，cluster停止且已删除。受限类型拒绝只断言AsterSQL范围，不错误要求PostgreSQL拒绝它支持的text/int2。未声称18.6构建证据。执行期已复核任务引用的PostgreSQL18官方表达式、整数和协议文档，文档不作为实测替代。
+
+Ready适用检查：最终 make lint 退出0（/tmp/pg-task5-lint.log），git diff --check退出0，已自审局部生产、独立测试、说明和生成差异。WIP用于上述真实红绿，Ready用于本轮交付；.agents/skills/tidb-verify-profile实际缺失，未虚构技能执行。仅Rust/Python/说明修改，无Go源码/导入/依赖、新Go测试或Bazel触发，不运行bazel_prepare；未运行禁止的bazel_lint_changed。Cargo.lock与全部manifest未修改，无外部依赖临时副本、vendor或patch。
+
+所有Cargo阶段均由/tmp/pg-task5-slot.sh动态原子领取，实际均槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；owner记录计划2026-10-24-postgresql18、任务5、会话01a16d3f及持有PID。最终Cargo/客户端/server子进程均已结束，自己的锁与owner已释放，编译缓存保留；未删除其他锁或修改其他会话产物。
+
+风险与未验证项：correctness由原断言红绿、原SQL树/目标宽度/参数编号/跨度/UTF8和真实listener覆盖；compatibility由MySQL默认路径及9项已有回归覆盖；performance增加源文本保存、方言传递和错误时字符计数，未做性能基准。未验证RealTiKV、生产鉴权/TLS/SCRAM、18.6精确构建、GUI/JDBC/ORM、整数边界/NULL/文本输入/参数定型与完整结果OID矩阵（后续6–9批范围）。其他内部SQL重解析入口未按全仓扫描改造，作为范围外建议保留。下一步按线性计划执行批次6。
+
+实际文件：pkg/parser/{grammar/main.astergram,generated/main_tables.rs,generated/lexer_tokens.rs,lexer.rs,yy_parser.rs,parser_actions/expression.rs,ast/lib.rs,parser_test.rs}，lexer/yy_parser/parser_actions/expression现有3份.rs.md；pkg/server/{pg_name.rs,runtime.rs,pg_query_test.rs,testdata/pg_core_cast_syntax.py}及pg_name/runtime现有2份.rs.md；pkg/session/{runtime.rs,runtime/session.rs,runtime/control.rs,runtime/session_test.rs}及前3模块现有3份.rs.md；本编号任务文件。总计25文件，使用git-commit仅提交这些文件并保留本任务证据；任务1–4既有删除不暂存，plan.md始终只读。按授权在提交完成且报告证据后删除本编号文件，删除保留在工作区，不混入他人删除。
+
+交付整理：拆句回归移动到生产session.rs同目录既有独立session_test.rs，以符合任务的*_test.rs约束；仅移动本任务新增函数，原runtime_test/session.rs恢复原内容。移动后重新cargo fmt --all及同精确session过滤器验证，命令见/tmp/pg-task5-relocated.log。
+
+最终移动后 /tmp/pg-task5-slot.sh bash -c 'cargo fmt --all && env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_core_integer_cast_syntax_split_boundary -- --nocapture' 整体退出0，runtime_session_test中实际1测试通过；其余测试覆盖的生产代码未改，复用15项已通过证据。最终make lint再次退出0，最终参考端再次退出0，git diff --check退出0，锁目录为空。

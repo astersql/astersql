@@ -401,6 +401,7 @@ impl Parser {
         resetParams(self);
         self.lastWarnings.clear();
         self.lexer.reset(sql.to_owned());
+        self.lexer.postgres = self.dialect == parser_ast::SqlDialect::PostgreSQL;
         for param in params {
             // 参数按调用顺序生效；任一个失败都在启动语法分析前返回。
             if let Err(error) = param.ApplyOn(self) {

@@ -466,14 +466,11 @@ pub(crate) fn adapt(
 /// Token handling remains necessary for nodes not visited by the native AST.
 fn validate_relations(sql: &str, database: &str) -> ParseResult<()> {
     use astersql_parser_ast as ast;
-    // Validate relation nodes using native markers, without moving syntax errors
+    // Validate original PostgreSQL relation nodes without moving syntax errors
     // ahead of the extended protocol's OID checks. The command gate still rejects
     // syntax errors before execution; this guard only checks successfully parsed ASTs.
-    let native = crate::pg_extended::markers(sql)
-        .map(|(sql, _)| sql)
-        .unwrap_or_else(|_| sql.to_owned());
     let Ok((statements, _)) =
-        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(&native, &[])
+        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
     else {
         return Ok(());
     };

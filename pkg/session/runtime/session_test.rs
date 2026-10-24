@@ -249,3 +249,16 @@ fn pg_core_dialect_session_lifecycle() {
         vec!["97"]
     );
 }
+
+#[test]
+fn pg_core_integer_cast_syntax_split_boundary() {
+    use crate::runtime::{SplitSQLStatements, SplitSQLStatementsWithDialect};
+    use astersql_parser_ast::SqlDialect;
+    let sql = "SELECT ($12)::int4; SELECT CAST(1 AS bigint)";
+    assert_eq!(
+        SplitSQLStatementsWithDialect(sql, SqlDialect::PostgreSQL).unwrap(),
+        vec!["SELECT ($12)::int4", "SELECT CAST(1 AS bigint)"]
+    );
+    assert!(SplitSQLStatements(sql).is_err());
+    assert!(SplitSQLStatementsWithDialect("SELECT 1::", SqlDialect::PostgreSQL).is_err());
+}

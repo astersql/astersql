@@ -1222,3 +1222,63 @@ fn pg_core_dialect_simple_query() {
             .all(|(_, dialect)| *dialect == SqlDialect::MySQL)
     );
 }
+
+#[test]
+fn pg_core_integer_cast_parse_boundary() {
+    // Exercise the exact command gate used before real canonical execution.
+    assert_eq!(
+        crate::pg_result::command("SELECT 1::int4").unwrap(),
+        Some("SELECT")
+    );
+    assert_eq!(
+        crate::pg_result::command("SELECT CAST(1 AS int8)").unwrap(),
+        Some("SELECT")
+    );
+    assert_eq!(
+        crate::pg_result::command("SELECT 1::").unwrap_err().0,
+        "42601"
+    );
+}
+
+#[test]
+fn pg_core_integer_cast_parse_boundary_libpq() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(server.clone());
+    let address = server.postgres_listener_addr().unwrap();
+    let mut mysql = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_packet(&mut mysql, 0, b"\x03SELECT 1::int4");
+    assert_eq!(mysql_read(&mut mysql).first(), Some(&0xff));
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(1 AS SIGNED)"),
+        vec![vec![Some(b"1".to_vec())]]
+    );
+    mysql_packet(&mut mysql, 0, &[1]);
+    let status = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_core_cast_syntax.py"
+        ))
+        .arg(address.port().to_string())
+        .status()
+        .unwrap();
+    server.close();
+    assert!(TcpStream::connect(address).is_err());
+    assert!(
+        status.success(),
+        "libpq integer cast syntax regression failed"
+    );
+}

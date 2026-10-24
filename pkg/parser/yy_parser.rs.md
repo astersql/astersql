@@ -111,3 +111,7 @@ Rust 用 `Box<dyn Node>`/`Box<dyn Any>` 表达 Go 接口值，用 `Option<Box<_>
 ## 连接方言身份
 
 `Parser::with_dialect(SqlDialect)` 显式创建固定身份的解析器，`sql_dialect()` 返回实例身份；`New`/`Default` 仍为 MySQL，`Reset` 和每次 ParseSQL 的参数重置不改变身份。本增量只传递身份，不引入转换语法或 PostgreSQL 词法分支。
+
+## PostgreSQL 整数转换（2026-10-24）
+
+ParseSQL 在 reset 后把连接所属 SqlDialect 注入本轮 Scanner；默认 MySQL 的词法和 CAST AS SIGNED 路径保持。PostgreSQL 的后缀转换和整数 CAST 由同一生成语法/动作完成，不经 SQL 文本替换。

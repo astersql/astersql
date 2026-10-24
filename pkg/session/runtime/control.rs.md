@@ -118,3 +118,7 @@ Go 路径使用完整 preprocess/plan builder/executor 和 `PlanCacheStmt`；Rus
 ## 2026-10-24 预处理语句身份承接
 
 生产 prepare_protocol_statement 用连接方言解析并保存身份；execute_protocol_statement 在绑定前校验保存身份与不可变连接一致，再沿已有 self.execute 重解析。参数仍由共享内核 token-aware 绑定。
+
+## PostgreSQL 转换的原文解析（2026-10-24）
+
+describe_result_fields 在既有 AST/类型解析前使用所属会话的方言重解析原 SQL，避免 PostgreSQL :: 被默认 MySQL parser 拒绝后导致协议丢失整个 native_types 数组；结果类型计算逻辑保持原样。

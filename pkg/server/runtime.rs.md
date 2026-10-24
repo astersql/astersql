@@ -89,3 +89,7 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 ## 连接方言身份
 
 `ConcreteSessionDriver::open_ctx` 默认 MySQL，并委托显式 open_ctx_with_dialect；后者把身份传入 run_session_worker，再以 ConcreteSession::new_with_dialect 构造连接私有会话。身份在 worker 首条 SQL 前固定，所有查询仍使用共享执行内核。测试专用观测记录真实 worker 会话身份。
+
+## PostgreSQL 转换的拆句门禁（2026-10-24）
+
+真实 listener 在派发 SQL 前的拆句校验使用 SplitSQLStatementsWithDialect；ConcreteTiDBContext 保存建立连接时的不可变身份，普通和流式请求均传入同一身份。原 SplitSQLStatements API 保持 MySQL 默认。此处仍先校验完整 SQL 再按原引号/注释边界拆分，不重写转换或参数。

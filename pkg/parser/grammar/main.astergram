@@ -946,6 +946,7 @@
 %token builtinMinCount 58267;
 %token result 58268 "RESULT";
 %token returnKwd 58269 "RETURN";
+%token pgTypecast 58270;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -1015,6 +1016,7 @@
 %precedence lowerThanNot;
 %right not not2;
 %right collate;
+%left pgTypecast;
 %left interval;
 %right encryption;
 %left labels;
@@ -2567,6 +2569,7 @@ BitExpr : SimpleExpr;
 SimpleIdent : Identifier @action;
 SimpleIdent : Identifier "." Identifier @action;
 SimpleIdent : Identifier "." Identifier "." Identifier @action;
+SimpleExpr : SimpleExpr pgTypecast PgCastType %prec pgTypecast @action;
 SimpleExpr : SimpleIdent;
 SimpleExpr : FunctionCallKeyword;
 SimpleExpr : FunctionCallNonKeyword;
@@ -4260,3 +4263,11 @@ QueryWatchTextOption : "SQL" "TEXT" ResourceGroupRunawayWatchOption "TO" SimpleE
 DropQueryWatchStmt : "QUERY" "WATCH" "REMOVE" NUM @action;
 DropQueryWatchStmt : "QUERY" "WATCH" "REMOVE" "RESOURCE" "GROUP" ResourceGroupName @action;
 DropQueryWatchStmt : "QUERY" "WATCH" "REMOVE" "RESOURCE" "GROUP" UserVariable @action;
+
+PgCastType : identifier @action;
+PgCastType : "INT" @action;
+PgCastType : "INT4" @action;
+PgCastType : "INT8" @action;
+PgCastType : "INTEGER" @action;
+PgCastType : "BIGINT" @action;
+CastType : PgCastType;

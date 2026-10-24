@@ -116,3 +116,7 @@ Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组�
 ## 2026-10-24 预处理语句身份承接
 
 具名 SQL 预处理记录和协议预处理缓存状态保存创建连接的 SqlDialect；缓存失效只重置 planned，Close/reset 随所属会话清理记录。
+
+## PostgreSQL 转换的拆句门禁（2026-10-24）
+
+真实 listener 在派发 SQL 前的拆句校验使用 SplitSQLStatementsWithDialect；ConcreteTiDBContext 保存建立连接时的不可变身份，普通和流式请求均传入同一身份。原 SplitSQLStatements API 保持 MySQL 默认。此处仍先校验完整 SQL 再按原引号/注释边界拆分，不重写转换或参数。

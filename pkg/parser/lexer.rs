@@ -32,6 +32,7 @@ const MAX_PARENTHESES_DEPTH: usize = 10_000;
 // Scanner 对应 yyLexer 实现；字段顺序与 Go 一致，保存编码、诊断、提示和最近关键字状态。
 /// yyLexer 实现：持有 reader、编码、诊断、SQL Mode 与关键字历史。
 pub struct Scanner {
+    pub(super) postgres: bool,
     r: reader,
     buf: Vec<u8>,
     pub(super) client: charset::encoding::EncodingRef,
@@ -107,11 +108,21 @@ impl Scanner {
         } else {
             (rest, String::new())
         };
+        let (line, column) = if self.postgres {
+            // AST offsets remain bytes; diagnostics refer to original SQL characters.
+            let prefix = &self.r.s[..self.lastScanOffset as usize];
+            (
+                prefix.bytes().filter(|byte| *byte == b'\n').count() as i32 + 1,
+                prefix.rsplit('\n').next().unwrap_or_default().chars().count() as i32 + 1,
+            )
+        } else {
+            (self.r.p.Line, self.r.p.Col)
+        };
         errors::Errorf(
             "line %d column %d near \"%s\"%s %s",
             &[
-                self.r.p.Line.into(),
-                self.r.p.Col.into(),
+                line.into(),
+                column.into(),
                 near.into(),
                 detail.into(),
                 length.into(),
@@ -234,6 +245,30 @@ impl Scanner {
     /// 主词法入口：扫描、合并复合关键字、转换字面量并写入语义值。
     pub fn Lex(&mut self, v: &mut yySymType) -> i32 {
         let (mut tok, mut pos, mut lit) = self.scan();
+        if self.postgres && tok == ':' as i32 && self.r.peek() == b':' {
+            self.r.inc();
+            tok = token::pgTypecast;
+            lit = "::".to_owned();
+        }
+        if self.postgres
+            && tok == token::identifier
+            && self.r.s.as_bytes().get(pos.Offset as usize) == Some(&b'$')
+            && lit.starts_with('$')
+            && lit.len() > 1
+            && lit[1..].bytes().all(|b| b.is_ascii_digit())
+        {
+            if lit[1..]
+                .parse::<u16>()
+                .ok()
+                .filter(|n| *n != 0)
+                .is_none()
+            {
+                self.AppendError(self.Errorf("invalid PostgreSQL parameter number"));
+                tok = token::invalid;
+            } else {
+                tok = token::paramMarker;
+            }
+        }
         self.lastScanOffset = pos.Offset;
         if !self.updateParenthesesDepth(tok) {
             return token::invalid;
@@ -373,6 +408,7 @@ impl Scanner {
     /// 继承父 Scanner 配置，诊断与缓冲从空状态开始。
     pub fn InheritScanner(&self, sql: String) -> Scanner {
         let mut child = Scanner::empty(reader::new(sql));
+        child.postgres = self.postgres;
         child.client = self.client;
         child.sqlMode = self.sqlMode;
         child.supportWindowFunc = self.supportWindowFunc;
@@ -608,6 +644,7 @@ impl Scanner {
     /// 构造零状态 Scanner。
     fn empty(r: reader) -> Scanner {
         Scanner {
+            postgres: false,
             r,
             buf: Vec::new(),
             client: charset::encoding::FindEncoding(mysql::DefaultCharset),

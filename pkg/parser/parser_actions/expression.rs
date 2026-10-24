@@ -19,6 +19,8 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
+    PgCastType,
+    PgPostfixCast,
     ColumnNameAlt01,
     ColumnNameAlt02,
     ColumnNameAlt03,
@@ -314,6 +316,15 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        "pgcasttype_bigint--ae5884bd608717ab"
+        | "pgcasttype_identifier--cd3c6a728f9b6dbd"
+        | "pgcasttype_int--1751d0591dd29f2d"
+        | "pgcasttype_integer--a6fba6c5af1a8564"
+        | "pgcasttype_int4--72598e6daca526eb"
+        | "pgcasttype_int8--724bb66dac992d87" => Some(ExpressionRule::PgCastType),
+        "simpleexpr_simpleexpr_pgtypecast_pgcasttype_prec--7c15958f86c11347" => {
+            Some(ExpressionRule::PgPostfixCast)
+        }
         "columnname_identifier--01ade32d68461e4e" => Some(ExpressionRule::ColumnNameAlt01),
         "columnname_identifier_identifier--ab6513b845c58833" => {
             Some(ExpressionRule::ColumnNameAlt02)
@@ -963,6 +974,57 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         lexer: yylex,
     } = context;
     match rule {
+        ExpressionRule::PgCastType => {
+            let spelling = &rhs[1].ident;
+            let tp = match spelling.to_ascii_lowercase().as_str() {
+                "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
+                "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
+                _ => {
+                    yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
+                    return Err(1);
+                }
+            };
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("PostgreSQL cast requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            let mut field_type = parser_types::types::NewFieldType(tp);
+            let (flen, decimal) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
+            field_type.SetFlen(flen);
+            field_type.SetDecimal(decimal);
+            field_type.SetCharset("binary".to_owned());
+            field_type.SetCollate("binary".to_owned());
+            out.item = Some(Box::new(field_type));
+        }
+        ExpressionRule::PgPostfixCast => {
+            let Some(expr) = rhs[1].expr.clone() else {
+                return Ok(false);
+            };
+            let Some(tp) = rhs[3]
+                .item
+                .as_deref()
+                .and_then(|v| v.downcast_ref::<parser_types::types::FieldType>())
+                .cloned()
+            else {
+                return Ok(false);
+            };
+            let start = rhs[1].offset.max(0) as usize;
+            let end = rhs[3].offset.max(0) as usize + rhs[3].ident.len();
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(start as i32);
+            node_text.SetText(None, &parser_state.src[start..end]);
+            out.expr = Some(parser_ast::ExprNode {
+                node_text,
+                Kind: parser_ast::ExprKind::Cast {
+                    Expr: Box::new(expr),
+                    Tp: tp,
+                    FunctionType: parser_ast::CastFunctionType::Cast,
+                    ExplicitCharSet: false,
+                },
+                OriginTextPosition: start as i32,
+                Flag: Default::default(),
+            });
+        }
         ExpressionRule::ColumnNameAlt01 => {
             out.item = Some(Box::new(parser_ast::ColumnName {
                 Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
@@ -1514,7 +1576,27 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     .and_then(|item| item.downcast_ref::<bool>())
                     .copied()
                     .unwrap_or(false);
+            let pg_cast = parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL;
+            if pg_cast
+                && is_array
+                && matches!(
+                    field_type.GetType(),
+                    parser_mysql::r#type::TypeLong | parser_mysql::r#type::TypeLonglong
+                )
+            {
+                yylex.AppendError(
+                    yylex.Errorf("PostgreSQL integer array casts are unsupported", &[]),
+                );
+                return Err(1);
+            }
             field_type.SetArray(is_array);
+            let mut cast_text = parser_ast::base::AstNode::default();
+            if pg_cast {
+                let start = rhs[1].offset.max(0) as usize;
+                let end = rhs[rhs_len].offset.max(0) as usize + 1;
+                cast_text.SetOriginTextPosition(start as i32);
+                cast_text.SetText(None, &parser_state.src[start..end]);
+            }
             let explicit_charset = parser_state.explicitCharset;
             if is_array && !explicit_charset && field_type.GetCharset() != "binary" {
                 field_type.SetCharset("utf8mb4".to_owned());
@@ -1536,9 +1618,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 }
             };
             out.expr = Some(parser_ast::ExprNode {
-                node_text: Default::default(),
+                node_text: cast_text,
                 Kind: kind,
-                OriginTextPosition: 0,
+                OriginTextPosition: if pg_cast { rhs[1].offset } else { 0 },
                 Flag: Default::default(),
             });
         }
@@ -2483,7 +2565,13 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::SimpleExprAlt08 => {
             out.expr = Some(parser_ast::ExprNode::ParamMarker(
                 rhs[rhs_len - (0)].offset.max(0) as usize,
-            ))
+            ));
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                if let Some(expr) = out.expr.as_mut() {
+                    expr.node_text.SetText(None, &rhs[rhs_len].ident);
+                    expr.node_text.SetOriginTextPosition(rhs[rhs_len].offset);
+                }
+            }
         }
         ExpressionRule::SimpleExprAlt11
         | ExpressionRule::SimpleExprAlt12

@@ -32,7 +32,7 @@ use astersql_domain::Domain;
 use astersql_server_internal_util::probe_tcp_stream_alive;
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, CanonicalSessionFactory, ConcretePreparedArgument, ConcreteProtocolState,
-    ConcreteResultField, ConcreteSession, SplitSQLStatements,
+    ConcreteResultField, ConcreteSession, SplitSQLStatementsWithDialect,
 };
 use astersql_session_sessmgr::Manager as SessionManager;
 use astersql_util_sqlkiller::sqlkiller::{QueryInterrupted, SQLKiller};
@@ -743,6 +743,7 @@ impl SessionDriver for ConcreteSessionDriver {
             }
         };
         Ok(Arc::new(ConcreteTiDBContext {
+            dialect,
             domain: Arc::clone(&self.domain),
             requests: Mutex::new(Some(request_tx)),
             worker: Mutex::new(Some(worker)),
@@ -782,6 +783,7 @@ impl SessionDriver for ConcreteSessionDriver {
 }
 
 struct ConcreteTiDBContext {
+    dialect: astersql_parser_ast::SqlDialect,
     domain: Arc<Domain>,
     requests: Mutex<Option<Arc<mpsc::Sender<SessionRequest>>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -1778,8 +1780,8 @@ impl TiDBContext for ConcreteTiDBContext {
             return Err(ConnError::Session("session is closed".to_owned()));
         }
         self.ensure_not_cancelled(cancel)?;
-        let statements =
-            SplitSQLStatements(sql).map_err(|error| ConnError::Session(error.to_string()))?;
+        let statements = SplitSQLStatementsWithDialect(sql, self.dialect)
+            .map_err(|error| ConnError::Session(error.to_string()))?;
         if !allow_multi_statements && statements.len() > 1 {
             return Err(ConnError::Session(
                 "multi-statement execution is disabled".to_owned(),
@@ -1863,8 +1865,8 @@ impl TiDBContext for ConcreteTiDBContext {
             return Err(ConnError::Session("session is closed".to_owned()));
         }
         self.ensure_not_cancelled(cancel)?;
-        let statements =
-            SplitSQLStatements(sql).map_err(|error| ConnError::Session(error.to_string()))?;
+        let statements = SplitSQLStatementsWithDialect(sql, self.dialect)
+            .map_err(|error| ConnError::Session(error.to_string()))?;
         self.in_multi_statements
             .store(statements.len() > 1, Ordering::Release);
         if !allow_multi_statements && statements.len() > 1 {

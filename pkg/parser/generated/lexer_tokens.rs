@@ -948,4 +948,5 @@ mod token {
     pub const builtinMinCount: i32 = 58267;
     pub const result: i32 = 58268;
     pub const returnKwd: i32 = 58269;
+    pub const pgTypecast: i32 = 58270;
 }

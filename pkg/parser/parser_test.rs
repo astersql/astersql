@@ -2331,3 +2331,160 @@ fn temporal_interval_expressions_restore() {
         }
     }
 }
+
+#[test]
+fn pg_core_integer_cast_syntax() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let mut pg = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT 1::int4::int8",
+        "SELECT ((1)::int4)::int8",
+        "SELECT (1+2)::int4",
+        "SELECT 1+2::int4",
+        "SELECT CAST(1 AS int4)",
+        "SELECT CAST(1 AS integer)",
+        "SELECT CAST(1 AS int)",
+        "SELECT CAST(1 AS int8)",
+        "SELECT CAST(1 AS bigint)",
+        "SELECT ($1)::int4",
+        "SELECT '::int4' /* ::int8 */",
+    ] {
+        let stmt = pg
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        if sql == "SELECT 1+2::int4" {
+            assert!(
+                matches!(&expr.Kind, ExprKind::Binary { R, .. } if matches!(R.Kind, ExprKind::Cast { .. }))
+            );
+        } else if !sql.contains("'::") {
+            assert!(
+                matches!(expr.Kind, ExprKind::Cast { .. }),
+                "{sql}: {expr:?}"
+            );
+        }
+    }
+    for sql in [
+        "SELECT 1::",
+        "SELECT 1::text",
+        "SELECT CAST(1 AS int2)",
+        "SELECT CAST(1 AS int4 ARRAY)",
+        "SELECT 1::int4(2)",
+    ] {
+        assert!(pg.ParseOneStmt(sql, "", "").is_err(), "{sql}");
+    }
+    let mut mysql = parser::New();
+    assert!(mysql.ParseOneStmt("SELECT 1::int4", "", "").is_err());
+    assert!(
+        mysql
+            .ParseOneStmt("SELECT CAST(1 AS SIGNED)", "", "")
+            .is_ok()
+    );
+}
+
+#[test]
+fn pg_core_integer_cast_syntax_source_and_tree() {
+    use parser_ast::{ExprKind, SqlDialect};
+    use parser_mysql::r#type as mysql;
+    fn expression(sql: &str) -> parser_ast::ExprNode {
+        let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "")
+            .unwrap();
+        stmt.as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap()
+            .Fields
+            .Fields[0]
+            .Expr
+            .clone()
+            .unwrap()
+    }
+    fn cast(expr: &parser_ast::ExprNode, tp: u8) -> &parser_ast::ExprNode {
+        match &expr.Kind {
+            ExprKind::Cast { Expr, Tp, .. } => {
+                assert_eq!(Tp.GetType(), tp);
+                Expr
+            }
+            _ => panic!("expected cast: {expr:?}"),
+        }
+    }
+    for (name, tp) in [
+        ("int4", mysql::TypeLong),
+        ("integer", mysql::TypeLong),
+        ("int", mysql::TypeLong),
+        ("int8", mysql::TypeLonglong),
+        ("bigint", mysql::TypeLonglong),
+    ] {
+        let suffix = expression(&format!("SELECT 1::{name}"));
+        let standard = expression(&format!("SELECT CAST(1 AS {name})"));
+        cast(&suffix, tp);
+        cast(&standard, tp);
+        let (ExprKind::Cast { Tp: left, .. }, ExprKind::Cast { Tp: right, .. }) =
+            (&suffix.Kind, &standard.Kind)
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            left, right,
+            "both syntaxes must produce the same canonical target"
+        );
+    }
+    let literal = expression("SELECT '$12' /* ::int8 $1 */");
+    assert!(matches!(&literal.Kind, ExprKind::Value(v) if v == "$12"));
+    assert_eq!(literal.PostgreSQLParameterIndex(), None);
+    let outer = expression("SELECT 1::iNt4::InT8");
+    let inner = cast(&outer, mysql::TypeLonglong);
+    cast(inner, mysql::TypeLong);
+    assert_eq!(outer.node_text.OriginalText(), b"1::iNt4::InT8");
+    assert_eq!(inner.node_text.OriginalText(), b"1::iNt4");
+    assert_eq!(outer.OriginTextPosition, 7);
+    let outer = expression("SELECT ((1)::int4)::int8");
+    let inner = cast(&outer, mysql::TypeLonglong);
+    let ExprKind::Parentheses(inner) = &inner.Kind else {
+        panic!("{inner:?}")
+    };
+    let value = cast(inner, mysql::TypeLong);
+    assert!(matches!(value.Kind, ExprKind::Parentheses(_)));
+    let outer = expression("SELECT (1+2)::int4");
+    let inner = cast(&outer, mysql::TypeLong);
+    assert!(
+        matches!(&inner.Kind, ExprKind::Parentheses(v) if matches!(v.Kind, ExprKind::Binary { .. }))
+    );
+    let sql = "SELECT /*中*/ ($12)::InTeGeR";
+    let outer = expression(sql);
+    assert_eq!(outer.node_text.OriginalText(), b"($12)::InTeGeR");
+    assert_eq!(outer.OriginTextPosition as usize, sql.find('(').unwrap());
+    let inner = cast(&outer, mysql::TypeLong);
+    let ExprKind::Parentheses(param) = &inner.Kind else {
+        panic!("{inner:?}")
+    };
+    assert_eq!(param.PostgreSQLParameterIndex(), Some(12));
+    assert!(
+        matches!(param.Kind, ExprKind::ParamMarker { Offset } if Offset == sql.find('$').unwrap())
+    );
+    let outer = expression("SELECT CAST(($2)::int4 AS BiGiNt)");
+    assert_eq!(
+        outer.node_text.OriginalText(),
+        b"CAST(($2)::int4 AS BiGiNt)"
+    );
+    cast(cast(&outer, mysql::TypeLonglong), mysql::TypeLong);
+}
+
+#[test]
+fn pg_core_integer_cast_syntax_unicode_position() {
+    for sql in ["SELECT 1::", "SELECT '中', 1::", "/*中*/ SELECT 1::"] {
+        let error = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "")
+            .err()
+            .expect("missing target must fail");
+        let expected = format!("line 1 column {} ", sql.chars().count() + 1);
+        assert!(
+            error.to_string().contains(&expected),
+            "{sql}: {error}; expected {expected}"
+        );
+    }
+}

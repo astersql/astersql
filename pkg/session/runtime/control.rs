@@ -1695,7 +1695,7 @@ impl ConcreteSession {
     /// Resolve original engine result types without executing or registering a
     /// statement. This uses the same AST/catalog resolver as prepared metadata.
     pub fn describe_result_fields(&self, sql: &str) -> SessionResult<Vec<ConcreteResultField>> {
-        let statements = parse(sql)?;
+        let statements = parse_in_dialect(sql, self.sql_dialect())?;
         if statements.len() != 1 {
             return Err(SessionError::new("result metadata requires one statement"));
         }

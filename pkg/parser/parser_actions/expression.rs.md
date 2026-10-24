@@ -120,3 +120,7 @@ Go 回归可参考 `pkg/parser/parser_test.go` 和 `pkg/parser/ast/expressions_t
 6. 至少更新 `query_expression_rule_coverage` 的清单/数量（若非终结符或 action 数变化），并在独立 Rust 测试文件中增加端到端 `ParseOneStmt` 断言。源文件与单元测试不得合并。
 
 最常修改的符号是 `ExpressionRule`、`identify` 和 `apply_rule`，三者必须作为原子改动。高风险点是语法优先级、RHS 偏移、动态类型、NOT 布尔反转、字符集/SQL mode、AST flag 传播和 Go restore 文本兼容；性能风险主要来自在递归列表动作中额外克隆。若只变更 grammar 而漏掉映射，覆盖测试应报告未拥有的规则；若映射命中却 action 缺值，runtime 会把语义标记为不完整，不能把“解析返回节点”当作充分验证。
+
+## PostgreSQL 整数转换（2026-10-24）
+
+PgCastType 仅在 PostgreSQL 身份下接受 int4/integer/int 和 int8/bigint，分别生成 TypeLong/TypeLonglong。PgPostfixCast 与 CAST 动作均构造共享 ExprKind::Cast；嵌套转换逐层保留，node_text.OriginalText 保存完整原 SQL 跨度（含目标原拼写），OriginTextPosition 是原 SQL 字节偏移。PostgreSQL ParamMarker 同时保留 $n 原文，AST 的 PostgreSQLParameterIndex 读取参数编号，Offset 继续表示原 SQL 字节偏移；不混同协议一基字符错误位置。

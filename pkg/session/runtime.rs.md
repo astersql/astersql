@@ -116,3 +116,7 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ## 2026-10-24 预处理语句身份承接
 
 新增内部 parse_in_dialect，在保留原默认 SQLMode 的前提下让预处理模板、绑定后重解析和参数相关规划检查显式使用连接方言；原 parse 仍默认 MySQL。
+
+## PostgreSQL 转换的拆句门禁（2026-10-24）
+
+真实 listener 在派发 SQL 前的拆句校验使用 SplitSQLStatementsWithDialect；ConcreteTiDBContext 保存建立连接时的不可变身份，普通和流式请求均传入同一身份。原 SplitSQLStatements API 保持 MySQL 默认。此处仍先校验完整 SQL 再按原引号/注释边界拆分，不重写转换或参数。

@@ -185,7 +185,7 @@ pub use session::{
     ConcretePreparedArgument, ConcreteProtocolState, ConcreteRecordSet, ConcreteResultField,
     ConcreteSession, ConcreteTestRuntime, CreateAnalyzeSession, CreateDanglingIndexForTest,
     CreateUnbootstrappedAnalyzeSessionForTest, CreateUnbootstrappedRootSessionForTest,
-    EnableMockDDLForTest, RuntimeDomain, SplitSQLStatements,
+    EnableMockDDLForTest, RuntimeDomain, SplitSQLStatements, SplitSQLStatementsWithDialect,
 };
 use session::{NamedPreparedStatement, SessionState, SessionWarning, build_bootstrap_view_table};
 pub use statistics::{

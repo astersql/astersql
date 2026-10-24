@@ -109,3 +109,7 @@ Go 侧 `pkg/server/server.go` 属于原有 TiDB server 主体，而这里的 `pg
 ## 连接方言身份
 
 PG 请求的 validate_relations 前置 AST 解析显式构造 PostgreSQL Parser；stored_view_select 解析的是既有原生存储源，仍使用默认 MySQL Parser。原有标识符改写与跨库限制保持。
+
+## PostgreSQL 整数转换解析（2026-10-24）
+
+validate_relations 直接使用 PostgreSQL Parser 解析原 SQL；本轮原生词法器已接受 $n，不再为名称门禁将其重写为 ?，避免门禁 AST 丢失参数编号或改变原始偏移。语法错误仍交由后续 command 门禁处理，保留扩展协议 OID 检查顺序。

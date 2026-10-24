@@ -1959,7 +1959,15 @@ impl TestRecordSet for ConcreteRecordSet {
 /// Validate and split SQL with the same quote/comment-aware boundaries used by
 /// ConcreteSession's existing multi-statement executor.
 pub fn SplitSQLStatements(sql: &str) -> SessionResult<Vec<String>> {
-    parse(sql)?;
+    SplitSQLStatementsWithDialect(sql, ast::SqlDialect::MySQL)
+}
+
+/// Validate the original SQL using its owning connection's dialect before splitting.
+pub fn SplitSQLStatementsWithDialect(
+    sql: &str,
+    dialect: ast::SqlDialect,
+) -> SessionResult<Vec<String>> {
+    parse_in_dialect(sql, dialect)?;
     Ok(split_statement_sql(sql))
 }
 

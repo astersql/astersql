@@ -47,7 +47,7 @@
 - `getNextToken` 和 `getNextTwoTokens` 必须恢复整个 `reader`，所以前瞻不能消费正式输入；它们只用于判定复合 token。
 - `identifierDot` 使点号后的数字按标识符处理，避免限定名中的数字段被误判为数值；读取星号时会清除此状态。
 - `Errors` 的语义是先 warnings 后 errors。`lastErrorAsWarn` 只移动最近一个普通错误，括号/AST 深度错误必须保持致命；`depthLimitError` 记录本扫描器产生的括号深度错误索引。
-- `InheritScanner` 只继承客户端编码、SQL Mode 和窗口函数开关；子扫描器的输入、诊断、缓冲和位置均为新状态。连接编码没有在该函数中继承，这是当前实现和 Go 对照共同约定的实际行为。
+- `InheritScanner` 继承客户端编码、SQL Mode、窗口函数开关和 PostgreSQL 方言标志；子扫描器的输入、诊断、缓冲和位置均为新状态。连接编码没有在该函数中继承，这是当前实现和 Go 对照共同约定的实际行为。
 
 ## 依赖与调用关系
 
@@ -105,3 +105,9 @@ Rust 保留了 Go 的主要符号顺序和行为：`Pos`/`Scanner` 字段、`Lex
 - 测试必须放在独立文件。首选同步 `pkg/parser/lexer_5_aster_unit_test.rs` 的精确内部断言及 `pkg/parser/lexer_test.rs` 的公开入口回归；Go 语义变化还要对照 `pkg/parser/lexer_test.go`，深度/token 合并场景检查 `pkg/parser/go_merge_29_lexer_test.rs`。本仓库规则禁止把测试模块写入 `lexer.rs`。
 
 兼容性风险集中在 token 编号/分类、语义值具体类型、字节位置、warning/error 等级及 SQL Mode 分支；性能风险集中在输入字符串克隆、每 token 分配、字符集转换和 trie/关键字查找。扩展后应优先添加最小的 token 序列、语义值类型、offset 和诊断顺序断言。
+
+## PostgreSQL 整数转换（2026-10-24）
+
+PostgreSQL 方言由 Parser 在每次 ParseSQL 时注入 Scanner，并由 InheritScanner 继承用于深度预扫描。仅该方言合并相邻 :: 为 pgTypecast，识别未引用的 $1…$65535 参数；字符串、注释和引用标识符不被转换。参数语义值保留原拼写及原 SQL 字节偏移。
+
+PG Errorf 的行列由原 SQL token 起始字节偏移转换为一基字符行列，含 EOF 与 UTF-8；AST 的 Offset/OriginTextPosition 仍为字节偏移。MySQL 诊断规则保留。
