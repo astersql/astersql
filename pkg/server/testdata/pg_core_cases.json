@@ -1,0 +1,3832 @@
+{
+  "schema_version": 1,
+  "capabilities": {
+    "integer.value": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.typed_null": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.overflow": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.recovery": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.invalid": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.prepare": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.describe": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.reexecute": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.write": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.readback": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.zero_rows": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.transaction": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "integer.comparator_self_check": {
+      "scope": "First-phase explicit int4/int8 inputs only."
+    }
+  },
+  "cases": [
+    {
+      "case_id": "int4_suffix_min",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '-2147483648'::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-2147483648"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_max",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '2147483647'::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "2147483647"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_text",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT ' +0017 '::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_integer",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT -31::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-31"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_null",
+      "kind": "business",
+      "capability_id": "integer.typed_null",
+      "family": "typed_null",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT NULL::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_over",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '2147483648'::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int4_suffix_over",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_under",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '-2147483649'::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int4_suffix_under",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_suffix_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '12x'::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int4_suffix_invalid",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_min",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('-2147483648' AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-2147483648"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_max",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('2147483647' AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "2147483647"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_text",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(' +0017 ' AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_integer",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(-31 AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-31"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_null",
+      "kind": "business",
+      "capability_id": "integer.typed_null",
+      "family": "typed_null",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(NULL AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_over",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('2147483648' AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int4_cast_over",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_under",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('-2147483649' AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int4_cast_under",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int4_cast_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('12x' AS int4) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int4_cast_invalid",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_min",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '-9223372036854775808'::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-9223372036854775808"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_max",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '9223372036854775807'::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "9223372036854775807"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_text",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT ' +0017 '::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_integer",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT -31::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-31"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_null",
+      "kind": "business",
+      "capability_id": "integer.typed_null",
+      "family": "typed_null",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT NULL::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_over",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '9223372036854775808'::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int8_suffix_over",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_under",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '-9223372036854775809'::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int8_suffix_under",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_suffix_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '12x'::int8 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int8_suffix_invalid",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_min",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('-9223372036854775808' AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-9223372036854775808"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_max",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('9223372036854775807' AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "9223372036854775807"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_text",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(' +0017 ' AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_integer",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(-31 AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-31"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_null",
+      "kind": "business",
+      "capability_id": "integer.typed_null",
+      "family": "typed_null",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(NULL AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_over",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('9223372036854775808' AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int8_cast_over",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_under",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('-9223372036854775809' AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int8_cast_under",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int8_cast_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST('12x' AS int8) AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "recover_int8_cast_invalid",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "int_alias",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT '+0017'::int AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "nested_narrow",
+      "kind": "business",
+      "capability_id": "integer.value",
+      "family": "value",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT ('2147483647'::int8)::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "2147483647"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "nested_overflow",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT ('2147483648'::int8)::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "nested_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_prepare",
+      "kind": "business",
+      "capability_id": "integer.prepare",
+      "family": "prepare",
+      "input": {
+        "phase": "prepare",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_describe",
+      "kind": "business",
+      "capability_id": "integer.describe",
+      "family": "describe",
+      "input": {
+        "phase": "describe",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": "",
+        "params": [
+          20,
+          23
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_run_initial",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          "9007199254740993",
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17",
+            "9007199254740993",
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_run_boundary",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          "-9223372036854775808",
+          "-2147483648"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "-2147483648",
+            "-9223372036854775808",
+            "-2147483648"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_run_null",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          null,
+          null
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null,
+            null,
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          "12x",
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_invalid_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          "9007199254740993",
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_overflow",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          "9223372036854775808",
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "inferred_overflow_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $2::int4 AS b, CAST($1 AS bigint) AS a, $2::int4 AS c",
+        "statement": "inferred",
+        "parameter_oids": null,
+        "arguments": [
+          "9007199254740993",
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_prepare",
+      "kind": "business",
+      "capability_id": "integer.prepare",
+      "family": "prepare",
+      "input": {
+        "phase": "prepare",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": [
+          0
+        ],
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_describe",
+      "kind": "business",
+      "capability_id": "integer.describe",
+      "family": "describe",
+      "input": {
+        "phase": "describe",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": "",
+        "params": [
+          23
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_run_initial",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": [
+          "31"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "31"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_run_null",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": [
+          null
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": [
+          "12x"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_invalid_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": [
+          "31"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_overflow",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": [
+          "9223372036854775808"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "zero_overflow_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT CAST($1 AS integer) AS n",
+        "statement": "zero",
+        "parameter_oids": null,
+        "arguments": [
+          "31"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_prepare",
+      "kind": "business",
+      "capability_id": "integer.prepare",
+      "family": "prepare",
+      "input": {
+        "phase": "prepare",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": [
+          20
+        ],
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_describe",
+      "kind": "business",
+      "capability_id": "integer.describe",
+      "family": "describe",
+      "input": {
+        "phase": "describe",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": "",
+        "params": [
+          20
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_run_initial",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": [
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_run_null",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": [
+          null
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": [
+          "12x"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_invalid_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": [
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_overflow",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": [
+          "9223372036854775808"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "explicit_overflow_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int4 AS n",
+        "statement": "explicit",
+        "parameter_oids": null,
+        "arguments": [
+          "17"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_prepare",
+      "kind": "business",
+      "capability_id": "integer.prepare",
+      "family": "prepare",
+      "input": {
+        "phase": "prepare",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": [
+          25
+        ],
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_describe",
+      "kind": "business",
+      "capability_id": "integer.describe",
+      "family": "describe",
+      "input": {
+        "phase": "describe",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": "",
+        "params": [
+          25
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_run_initial",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": [
+          "+0017"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "17"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_run_null",
+      "kind": "business",
+      "capability_id": "integer.reexecute",
+      "family": "reexecute",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": [
+          null
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_invalid",
+      "kind": "business",
+      "capability_id": "integer.invalid",
+      "family": "invalid",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": [
+          "12x"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_invalid_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": [
+          "+0017"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_overflow",
+      "kind": "business",
+      "capability_id": "integer.overflow",
+      "family": "overflow",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": [
+          "9223372036854775808"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22003"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "text_source_overflow_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT $1::int8 AS n",
+        "statement": "text_source",
+        "parameter_oids": null,
+        "arguments": [
+          "+0017"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "write",
+      "kind": "business",
+      "capability_id": "integer.write",
+      "family": "write",
+      "input": {
+        "phase": "query",
+        "sql": "INSERT INTO {run_table} VALUES (1, '9007199254740993'::int8), (2, NULL)",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "readback",
+      "kind": "business",
+      "capability_id": "integer.readback",
+      "family": "readback",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT CAST(id AS int8) AS id, n::int8 AS n FROM {run_table} ORDER BY id",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1",
+            "9007199254740993"
+          ],
+          [
+            "2",
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "empty_prepare",
+      "kind": "business",
+      "capability_id": "integer.prepare",
+      "family": "prepare",
+      "input": {
+        "phase": "prepare",
+        "sql": "SELECT id::int4 AS id, CAST(n AS bigint) AS n FROM {run_table} WHERE id = $1::int4",
+        "statement": "empty",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "empty_describe",
+      "kind": "business",
+      "capability_id": "integer.zero_rows",
+      "family": "zero_rows",
+      "input": {
+        "phase": "describe",
+        "sql": "SELECT id::int4 AS id, CAST(n AS bigint) AS n FROM {run_table} WHERE id = $1::int4",
+        "statement": "empty",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": "",
+        "params": [
+          23
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "empty_execute",
+      "kind": "business",
+      "capability_id": "integer.zero_rows",
+      "family": "zero_rows",
+      "input": {
+        "phase": "execute",
+        "sql": "SELECT id::int4 AS id, CAST(n AS bigint) AS n FROM {run_table} WHERE id = $1::int4",
+        "statement": "empty",
+        "parameter_oids": null,
+        "arguments": [
+          "999"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": []
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "begin",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "transaction",
+      "input": {
+        "phase": "query",
+        "sql": "BEGIN",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "transaction_error",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "transaction",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 'x'::int4",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "transaction_failed",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "transaction",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "25P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "rollback",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "transaction",
+      "input": {
+        "phase": "query",
+        "sql": "ROLLBACK",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "rollback_recovery",
+      "kind": "business",
+      "capability_id": "integer.recovery",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "1"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "negative_self_check_rows",
+      "kind": "self_check",
+      "capability_id": "integer.comparator_self_check",
+      "family": "negative_self_check",
+      "input": {
+        "phase": "self_check",
+        "source_case_id": "int4_suffix_min",
+        "mutation_field": "rows"
+      },
+      "expected": {
+        "rejected": true
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "negative_self_check_fields",
+      "kind": "self_check",
+      "capability_id": "integer.comparator_self_check",
+      "family": "negative_self_check",
+      "input": {
+        "phase": "self_check",
+        "source_case_id": "int4_suffix_min",
+        "mutation_field": "fields"
+      },
+      "expected": {
+        "rejected": true
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    },
+    {
+      "case_id": "negative_self_check_state",
+      "kind": "self_check",
+      "capability_id": "integer.comparator_self_check",
+      "family": "negative_self_check",
+      "input": {
+        "phase": "self_check",
+        "source_case_id": "int4_suffix_invalid",
+        "mutation_field": "state"
+      },
+      "expected": {
+        "rejected": true
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params"
+      ]
+    }
+  ]
+}

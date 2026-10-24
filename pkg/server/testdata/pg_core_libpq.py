@@ -51,6 +51,8 @@ print("external libpq version:", version(), flush=True)
 def integer_differential(aster_dsn):
     import copy
     import signal
+    import json
+    from pg_core_evidence import CaseRegistry, load_cases
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -70,6 +72,8 @@ def integer_differential(aster_dsn):
     table = f"public.pg_core_diff_{os.getpid()}"
     created = set()
     counts = Counter()
+    registry = CaseRegistry(load_cases(), table)
+    statements = {}
 
     def interrupted(signum, frame):
         raise KeyboardInterrupt("client interrupted")
@@ -99,8 +103,10 @@ def integer_differential(aster_dsn):
 
     def check(case, family, operation, expected_status=2, expected_rows=None,
               expected_state="", expected_params=None):
+        actual_input, send = operation
+        registered_input = registry.claim(case, family, actual_input)
         for side, connection in connections.items():
-            obs = observe(operation(connection))
+            obs = observe(send(connection))
             observations[side][case] = obs
             assert obs["status"] == expected_status, (side, case, obs)
             assert obs["state"] == expected_state, (side, case, obs)
@@ -110,14 +116,36 @@ def integer_differential(aster_dsn):
                 assert obs["params"] == expected_params, (side, case, obs)
         equal(case, observations["aster"][case], observations["reference"][case])
         counts[family] += 1
+        print("registered case:", json.dumps({"case_id": case, "input": registered_input,
+              "aster": observations["aster"][case], "reference": observations["reference"][case]},
+              sort_keys=True), flush=True)
+
+    def input_descriptor(phase, query, statement=None, oids=None, args=None):
+        return {"phase": phase, "sql": query, "statement": statement,
+                "parameter_oids": oids, "arguments": args,
+                "parameter_formats": None, "result_format": 0}
 
     def sql(case, family, command, **expected):
-        check(case, family, lambda conn: execute(conn, command.encode()), **expected)
+        check(case, family, (input_descriptor("query", command),
+                            lambda conn: execute(conn, command.encode())), **expected)
+
+    def prepare_input(name, query, supplied):
+        statements[name] = query
+        oids = list(supplied) if supplied else None
+        return (input_descriptor("prepare", query, name, oids), lambda conn: prepare(
+            conn, name.encode(), query.encode(), len(supplied),
+            (c.c_uint * len(supplied))(*supplied) if supplied else None))
+
+    def describe_input(name):
+        return (input_descriptor("describe", statements[name], name),
+                lambda conn: describe(conn, name.encode()))
 
     def bind_values(name, args):
-        payload = [None if arg is None else str(arg).encode() for arg in args]
-        return lambda conn: prepared(conn, name.encode(), len(payload),
-                                     (text * len(payload))(*payload), None, None, 0)
+        arguments = [None if arg is None else str(arg) for arg in args]
+        payload = [None if arg is None else arg.encode() for arg in arguments]
+        return (input_descriptor("execute", statements[name], name, args=arguments),
+                lambda conn: prepared(conn, name.encode(), len(payload),
+                                      (text * len(payload))(*payload), None, None, 0))
 
     try:
         for side, dsn in [("aster", aster_dsn), ("reference", reference_dsn)]:
@@ -126,6 +154,8 @@ def integer_differential(aster_dsn):
             connections[side] = connection
             # Do not echo libpq connection errors: they may contain DSN secrets.
             assert status(connection) == 0, f"{side} connection failed"
+            print(side, "protocol:", protocol(connection), "server build:",
+                  parameter_status(connection, b"server_version").decode(), flush=True)
         ref = observe(execute(connections["reference"],
                               b"SELECT version(), current_setting('server_version_num')"))
         assert ref["status"] == 2, "reference version query failed"
@@ -172,17 +202,17 @@ def integer_differential(aster_dsn):
             ("explicit", "SELECT $1::int4 AS n", [20], [20], [("17",), (None,)]),
             ("text_source", "SELECT $1::int8 AS n", [25], [25], [("+0017",), (None,)]),
         ]:
-            check(name + "_prepare", "prepare", lambda conn: prepare(
-                conn, name.encode(), query.encode(), len(supplied),
-                (c.c_uint * len(supplied))(*supplied) if supplied else None), expected_status=1)
-            check(name + "_describe", "describe", lambda conn: describe(conn, name.encode()),
+            check(name + "_prepare", "prepare", prepare_input(name, query, supplied), expected_status=1)
+            check(name + "_describe", "describe", describe_input(name),
                   expected_status=1, expected_params=inferred)
             for i, args in enumerate(runs):
                 if name == "inferred":
                     expected = [[args[1], args[0], args[1]]]
                 else:
                     expected = [[None if args[0] is None else str(int(args[0]))]]
-                check(f"{name}_run_{i}", "reexecute", bind_values(name, args), expected_rows=expected)
+                run_label = (["initial", "boundary", "null"] if name == "inferred"
+                             else ["initial", "null"])[i]
+                check(f"{name}_run_{run_label}", "reexecute", bind_values(name, args), expected_rows=expected)
             for label, argument, state in [("invalid", "12x", "22P02"),
                                             ("overflow", "9223372036854775808", "22003")]:
                 args = (argument, "17") if name == "inferred" else (argument,)
@@ -203,9 +233,9 @@ def integer_differential(aster_dsn):
         sql("readback", "readback", f"SELECT CAST(id AS int8) AS id, n::int8 AS n FROM {table} ORDER BY id",
             expected_rows=[["1", "9007199254740993"], ["2", None]])
         empty = f"SELECT id::int4 AS id, CAST(n AS bigint) AS n FROM {table} WHERE id = $1::int4"
-        check("empty_prepare", "prepare", lambda conn: prepare(conn, b"empty", empty.encode(), 0, None),
+        check("empty_prepare", "prepare", prepare_input("empty", empty, []),
               expected_status=1)
-        check("empty_describe", "zero_rows", lambda conn: describe(conn, b"empty"),
+        check("empty_describe", "zero_rows", describe_input("empty"),
               expected_status=1, expected_params=[23])
         check("empty_execute", "zero_rows", bind_values("empty", [999]), expected_rows=[])
         sql("begin", "transaction", "BEGIN", expected_status=1)
@@ -220,6 +250,8 @@ def integer_differential(aster_dsn):
         for case, key, wrong in [("int4_suffix_min", "rows", [["0"]]),
                                  ("int4_suffix_min", "fields", [("n", 20, 4, -1)]),
                                  ("int4_suffix_invalid", "state", "22003")]:
+            registry.claim("negative_self_check_" + key, "negative_self_check",
+                           {"phase": "self_check", "source_case_id": case, "mutation_field": key})
             changed = copy.deepcopy(observations["aster"][case])
             changed[key] = wrong
             try:
@@ -231,6 +263,8 @@ def integer_differential(aster_dsn):
         for required in ["value", "typed_null", "zero_rows", "overflow", "invalid",
                          "reexecute", "recovery", "write", "readback", "negative_self_check"]:
             assert counts[required] > 0, required
+        assert registry.finish() == 94
+        print("registered inputs: business=91 self_check=3 missing=0 duplicate=0", flush=True)
         print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
     finally:
         cleanup_errors = []
