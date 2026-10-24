@@ -1143,6 +1143,11 @@ fn pg_dialect_14_libpq() {
     pg_dialect_libpq(14);
 }
 
+#[test]
+fn pg_dialect_16_libpq() {
+    pg_dialect_libpq(16);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1235,6 +1240,42 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 16 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            let table = format!("{database}.t16_{}_{}", std::process::id(), address.port());
+            assert_eq!(
+                mysql_query(socket, &format!("SELECT a.id FROM {table} a")),
+                vec![vec![Some(b"1".to_vec())]]
+            );
+            assert_eq!(
+                mysql_query(
+                    socket,
+                    &format!("SELECT a.id,b.id FROM {table} a JOIN {table} b ON a.id=b.id")
+                ),
+                vec![vec![Some(b"1".to_vec()), Some(b"1".to_vec())]]
+            );
+            for sql in [
+                format!(
+                    "SELECT t16_{}_{}.id FROM {table} a",
+                    std::process::id(),
+                    address.port()
+                ),
+                format!("SELECT a.missing FROM {table} a"),
+            ] {
+                let mut request = vec![3];
+                request.extend_from_slice(sql.as_bytes());
+                mysql_packet(socket, 0, &request);
+                let response = mysql_read(socket);
+                assert_eq!(response[0], 0xff);
+                assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1054);
+                assert_eq!(&response[4..9], b"42S22");
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(evidence.join("mysql-aliases.jsonl"))
+                    .unwrap();
+                writeln!(file,"{}",serde_json::json!({"phase":phase,"sql":sql,"packet":response,"error_code":1054,"sqlstate":"42S22","alias_value":1,"self_join":[1,1]})).unwrap();
+            }
+        }
         if task == 14 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let table = format!("t14_{}_{}", std::process::id(), address.port());
             assert_eq!(
@@ -1516,6 +1557,15 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 16 {
+        assert_eq!(checkpoints, 5);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 5);
+        return;
+    }
     if task == 14 {
         assert_eq!(checkpoints, 11);
         assert_eq!(cleanup["other_database_dropped"], true);

@@ -443,7 +443,8 @@ fn rewrite_with_position(
     position: &mut Option<usize>,
 ) -> ParseResult<String> {
     *position = None;
-    let parts: BTreeMap<_, _> = identifier_parts(sql)?
+    let allowed_aliases = alias_scope(sql, None, database, position)?;
+    let parts: BTreeMap<_, _> = identifier_parts(sql, &allowed_aliases)?
         .into_iter()
         .map(|part| (part.Span, part))
         .collect();
@@ -482,7 +483,10 @@ fn rewrite_with_position(
 /// Consume the formal parser's original per-segment identity at the normal PG
 /// name boundary. Until exact object binding is available, never silently bind
 /// a quoted mixed-case reference through the backend's lowercase catalog.
-fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQLIdentifier>> {
+fn identifier_parts(
+    sql: &str,
+    aliases: &HashSet<(usize, usize)>,
+) -> ParseResult<Vec<astersql_parser_ast::PostgreSQLIdentifier>> {
     use astersql_parser_ast as ast;
     let Ok((statements, _)) =
         astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
@@ -538,7 +542,7 @@ fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQ
     let mut gate = Gate {
         blocked: false,
         parts: Vec::new(),
-        declarations: HashSet::new(),
+        declarations: aliases.clone(),
     };
     for statement in statements {
         // Declarations are not references. Preserve their existing admission;
@@ -554,10 +558,15 @@ fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQ
                     .downcast_ref::<ast::CreateSequenceStmt>()
                     .map(|create| &create.Name)
             };
-        gate.declarations = declaration
-            .into_iter()
-            .flat_map(|table| &table.PostgreSQLParts)
-            .map(|part| part.Span)
+        gate.declarations = aliases
+            .iter()
+            .copied()
+            .chain(
+                declaration
+                    .into_iter()
+                    .flat_map(|table| &table.PostgreSQLParts)
+                    .map(|part| part.Span),
+            )
             .collect();
         statement.accept(&mut gate);
     }
@@ -569,6 +578,189 @@ fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQ
     } else {
         Ok(gate.parts)
     }
+}
+
+/// Bind qualified column references to their query's visible range names before
+/// the case-insensitive native binder runs. Catalog facts come from the same
+/// connection snapshot; this does not execute a projection to discover columns.
+fn alias_scope(
+    sql: &str,
+    snapshot: Option<astersql_infoschema::SchemaRef>,
+    database: &str,
+    position: &mut Option<usize>,
+) -> ParseResult<HashSet<(usize, usize)>> {
+    use astersql_parser_ast as ast;
+    let Ok((statements, _)) =
+        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
+    else {
+        return Ok(HashSet::new());
+    };
+    struct Binding {
+        name: String,
+        columns: Option<HashSet<String>>,
+    }
+    struct Scope<'a> {
+        tokens: Vec<Token>,
+        snapshot: Option<astersql_infoschema::SchemaRef>,
+        database: &'a str,
+        scopes: Vec<Vec<Binding>>,
+        allowed: HashSet<(usize, usize)>,
+        failure: Option<(&'static str, &'static str, usize)>,
+    }
+    impl Scope<'_> {
+        fn sources(&mut self, node: &ast::ResultSetNode, bindings: &mut Vec<Binding>) {
+            match node {
+                ast::ResultSetNode::Join(join) => {
+                    for source in [join.Left.as_deref(), join.Right.as_deref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        self.sources(source, bindings);
+                    }
+                }
+                ast::ResultSetNode::TableSource(source) => {
+                    let parts = &source.Source.PostgreSQLParts;
+                    let name = if source.AsName.O.is_empty() {
+                        parts
+                            .last()
+                            .map(|p| p.Lookup.clone())
+                            .unwrap_or_else(|| source.Source.Name.L.clone())
+                    } else {
+                        // Alias syntax has no AST span yet. Locate only the
+                        // declaration immediately after this AST relation span;
+                        // literals/comments are already excluded by the lexer.
+                        let end = parts.last().map(|part| part.Span.1);
+                        let alias = end.and_then(|end| {
+                            self.tokens
+                                .iter()
+                                .filter(|t| t.start >= end)
+                                .find(|t| !t.word("AS"))
+                        });
+                        alias
+                            .and_then(|t| t.name.clone())
+                            .unwrap_or_else(|| source.AsName.L.clone())
+                    };
+                    let columns = if source.QuerySource.is_none()
+                        && (parts.len() == 1
+                            || parts
+                                .get(parts.len().saturating_sub(2))
+                                .is_some_and(|p| p.Lookup == "public"))
+                    {
+                        self.snapshot
+                            .as_ref()
+                            .and_then(|schema| {
+                                schema
+                                    .ModelTableInfoByName(
+                                        &astersql_infoschema::CiString::new(self.database),
+                                        &astersql_infoschema::CiString::new(&source.Source.Name.L),
+                                    )
+                                    .ok()
+                            })
+                            .map(|table| {
+                                table
+                                    .Columns
+                                    .iter()
+                                    .filter(|c| !c.Hidden)
+                                    .map(|c| c.Name.O.clone())
+                                    .collect()
+                            })
+                    } else {
+                        None
+                    };
+                    // Native range keys fold case. Refuse the one shape that
+                    // would merge two distinct PG aliases before native binding.
+                    if bindings.iter().any(|binding| {
+                        binding.name != name && binding.name.to_lowercase() == name.to_lowercase()
+                    }) {
+                        self.failure = Some((
+                            "0A000",
+                            "case-distinct aliases require exact range binding",
+                            parts.last().map_or(0, |part| part.Span.0),
+                        ));
+                    }
+                    bindings.push(Binding { name, columns });
+                }
+            }
+        }
+    }
+    impl ast::Visitor for Scope<'_> {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                let mut bindings = Vec::new();
+                if let Some(from) = &select.From {
+                    for source in [
+                        from.TableRefs.Left.as_deref(),
+                        from.TableRefs.Right.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        self.sources(source, &mut bindings);
+                    }
+                }
+                self.scopes.push(bindings);
+            }
+            if self.failure.is_none()
+                && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && let ast::ExprKind::Column(column) = &expr.Kind
+                && column.PostgreSQLParts.len() == 2
+                && !self.scopes.is_empty()
+            {
+                let qualifier = &column.PostgreSQLParts[0];
+                let target = self.scopes.iter().rev().find_map(|scope| {
+                    scope
+                        .iter()
+                        .find(|binding| binding.name == qualifier.Lookup)
+                });
+                if let Some(binding) = target {
+                    if binding
+                        .columns
+                        .as_ref()
+                        .is_some_and(|columns| !columns.contains(&column.PostgreSQLParts[1].Lookup))
+                    {
+                        self.failure = Some((
+                            "42703",
+                            "column does not exist in the visible relation",
+                            qualifier.Span.0,
+                        ));
+                    } else {
+                        // Only this successfully bound qualifier bypasses the
+                        // object-name gate. Quoted column/object names retain it.
+                        self.allowed.insert(qualifier.Span);
+                    }
+                } else {
+                    self.failure = Some((
+                        "42P01",
+                        "missing FROM-clause entry for relation",
+                        qualifier.Span.0,
+                    ));
+                }
+            }
+            false
+        }
+        fn leave(&mut self, node: &dyn ast::Node) -> bool {
+            if node.as_any().is::<ast::SelectStmt>() {
+                self.scopes.pop();
+            }
+            true
+        }
+    }
+    let mut scope = Scope {
+        tokens: tokens(sql)?,
+        snapshot,
+        database,
+        scopes: Vec::new(),
+        allowed: HashSet::new(),
+        failure: None,
+    };
+    for statement in statements {
+        statement.accept(&mut scope);
+    }
+    if let Some((state, message, byte)) = scope.failure {
+        *position = Some(sql[..byte].chars().count() + 1);
+        return Err(error(state, message));
+    }
+    Ok(scope.allowed)
 }
 
 pub(crate) fn adapt(
@@ -593,6 +785,12 @@ pub(crate) fn adapt(
         Some(Value::Text(name)) => name.as_str(),
         _ => "",
     };
+    alias_scope(
+        sql,
+        context.schema_snapshot(),
+        database,
+        &mut session.relation_error_position,
+    )?;
     let sql = rewrite_with_position(sql, database, public, &mut session.relation_error_position)?;
     validate_relations(&sql, database)?;
     Ok(sql)

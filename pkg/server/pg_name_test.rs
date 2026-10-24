@@ -236,3 +236,71 @@ fn pg_dialect_14_behavior() {
         "pg_dialect_14_behavior: assertions={assertions}, primary_cases=7; quoted/path/MySQL guards separate"
     );
 }
+
+#[test]
+fn pg_dialect_16_behavior() {
+    use astersql_parser_ast as ast;
+    let mut assertions = 0;
+    for sql in [
+        "SELECT a.id FROM public.t AS a",
+        "SELECT a.missing FROM public.t AS a",
+        "SELECT a.id,b.id FROM public.t AS a JOIN public.t AS b ON a.id=b.id",
+        "SELECT \"A\".id FROM public.t AS \"A\"",
+        "/*中*/ SELECT a.id,$2,'t.id' FROM public.t a /* t.id */",
+    ] {
+        let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let ast::ExprKind::Column(column) = &expr.Kind else {
+            panic!("column AST")
+        };
+        assert_eq!(column.PostgreSQLParts.len(), 2);
+        assertions += 1;
+        for part in &column.PostgreSQLParts {
+            assert_eq!(&sql[part.Span.0..part.Span.1], part.Original);
+            assertions += 1;
+        }
+        assert!(rewrite(sql, "db", true).is_ok(), "{sql}");
+        assertions += 1;
+    }
+    for sql in [
+        "SELECT t.id FROM public.t AS a",
+        "SELECT a.id FROM public.t AS \"A\"",
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "42P01", "{sql}");
+        assertions += 1;
+    }
+    let sql = "/*中*/ SELECT a.id,$2,'t.id' FROM public.t a /* t.id */";
+    let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .unwrap();
+    let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+    assert_eq!(
+        select.Fields.Fields[1]
+            .Expr
+            .as_ref()
+            .unwrap()
+            .PostgreSQLParameterIndex(),
+        Some(2)
+    );
+    assertions += 1;
+    let adapted = rewrite(sql, "db", true).unwrap();
+    assert!(adapted.contains("'t.id'") && adapted.ends_with("/* t.id */"));
+    assertions += 1;
+    assert_eq!(
+        rewrite(
+            "SELECT a.id FROM public.t a JOIN public.t AS \"A\" ON true",
+            "db",
+            true
+        )
+        .unwrap_err()
+        .0,
+        "0A000"
+    );
+    assertions += 1;
+    println!(
+        "pg_dialect_16_behavior: assertions={assertions}; 5 primary shapes, visibility/case guards"
+    );
+}

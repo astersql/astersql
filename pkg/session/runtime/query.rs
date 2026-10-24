@@ -2208,8 +2208,7 @@ impl ConcreteSession {
                     let mut candidates = source_fields.iter().filter(|candidate| {
                         candidate.column.Name.L == column.Name.L
                             && (column.Table.L.is_empty()
-                                || candidate.table_as_name.L == column.Table.L
-                                || candidate.table_name.L == column.Table.L)
+                                || candidate.table_as_name.L == column.Table.L)
                     });
                     let Some(candidate) = candidates.next() else {
                         if column.Name.L == "_tidb_rowid" {
@@ -2339,6 +2338,30 @@ impl ConcreteSession {
                         )));
                     }
                     let mut result_field = candidate.clone();
+                    if !column.Table.L.is_empty() && result_field.column_origin.is_none() {
+                        // A qualified projection selects one physical column even
+                        // through a join. Recover its existing bound origin, while
+                        // leaving derived and unqualified USING outputs unknown.
+                        let mut bound_fields = Vec::new();
+                        if let Some(from) = &select.From {
+                            for source in [
+                                from.TableRefs.Left.as_deref(),
+                                from.TableRefs.Right.as_deref(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            {
+                                self.append_relational_source_fields(source, &mut bound_fields)?;
+                            }
+                        }
+                        result_field.column_origin = bound_fields
+                            .iter()
+                            .find(|field| {
+                                field.table_as_name.L == column.Table.L
+                                    && field.column.Name.L == column.Name.L
+                            })
+                            .and_then(|field| field.column_origin);
+                    }
                     result_field.column_as_name = ast::NewCIStr(&output);
                     result.push(result_field);
                 } else {
@@ -3554,6 +3577,31 @@ impl ConcreteSession {
         } else {
             source.AsName.clone()
         };
+        // The point/scan shortcut must enforce the same visible range name as
+        // prepared/full-query binding before dropping a column's qualifier.
+        for field in &statement.Fields.Fields {
+            let mut expression = field.Expr.as_ref();
+            while let Some(expr) = expression {
+                if let ast::ExprKind::Parentheses(inner) = &expr.Kind {
+                    expression = Some(inner);
+                    continue;
+                }
+                if let ast::ExprKind::Column(column) = &expr.Kind {
+                    if !column.Table.L.is_empty()
+                        && column.Table.L != table_alias.L
+                        && !table.Columns.iter().any(|bound| {
+                            bound.Name.L == format!("{}.{}", column.Table.L, column.Name.L)
+                        })
+                    {
+                        return Err(SessionError::new(format!(
+                            "Unknown column '{}.{}' in 'field list'",
+                            column.Table.O, column.Name.O
+                        )));
+                    }
+                }
+                break;
+            }
+        }
         let root_limit_window = if scan_window.is_some() || index_merge_embedded_window.is_some() {
             None
         } else {

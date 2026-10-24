@@ -650,3 +650,34 @@ fn nested_window_and_scalar_subquery_use_window_evaluation() {
     }
     assert_eq!(result.Next().expect("nested window result exhausted"), None);
 }
+
+#[test]
+fn pg_dialect_16_shared_alias_binding() {
+    let (_domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    session.execute("CREATE DATABASE alias_scope_16").unwrap();
+    session.execute("USE alias_scope_16").unwrap();
+    session.execute("CREATE TABLE t(id INT)").unwrap();
+    session.execute("INSERT INTO t VALUES (1)").unwrap();
+    let fields = session
+        .describe_result_fields(
+            "SELECT a.id AS left_id,b.id AS right_id FROM t AS a JOIN t AS b ON a.id=b.id",
+        )
+        .unwrap();
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].column_as_name.O, "left_id");
+    assert_eq!(fields[1].column_as_name.O, "right_id");
+    assert!(
+        fields.iter().all(|field| field.column_origin.is_some()),
+        "qualified physical columns retain their actual origin through an alias join"
+    );
+    assert!(
+        session.execute("SELECT t.id FROM t AS a").is_err(),
+        "the scan shortcut must hide the original table name too"
+    );
+    let hidden = session.describe_result_fields("SELECT t.id FROM t AS a");
+    assert!(
+        hidden.is_err(),
+        "an explicit alias hides the physical table name"
+    );
+    session.execute("DROP DATABASE alias_scope_16").unwrap();
+}
