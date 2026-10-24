@@ -619,6 +619,8 @@ impl Drop for WriteSQLResponseTimer {
 #[derive(Debug, Clone, Default)]
 /// 一次查询/命令产生的结果集（列、行与会话状态）。
 pub struct QueryResult {
+    /// Original physical identities from binding; absent entries remain unknown.
+    pub column_origins: Vec<Option<astersql_session::runtime::ConcreteColumnOrigin>>,
     /// Original engine types, before MySQL wire metadata truncation.
     /// Missing metadata is explicit; consumers must not infer types from values.
     pub native_types: Vec<NativeType>,
@@ -631,6 +633,7 @@ pub struct QueryResult {
 
 #[derive(Debug, Clone)]
 pub struct PreparedMetadata {
+    pub column_origins: Vec<Option<astersql_session::runtime::ConcreteColumnOrigin>>,
     /// Original engine result types for consumers independent of wire format.
     pub native_types: Vec<NativeType>,
     pub statement_id: u32,

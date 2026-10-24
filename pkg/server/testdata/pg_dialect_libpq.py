@@ -800,6 +800,7 @@ def row_handoff():
 def identifiers_handoff():
     """Keep quoted identity gates separate from successful identifier execution."""
     connections, prepared = {}, []
+    table_oids, attributes = {}, {}
     checks = self_checks = eligible = semantic = origin_mismatches = 0
     done = False
     cleanup_ok = True
@@ -828,6 +829,12 @@ def identifiers_handoff():
         if name in ('empty','unclosed'):
             return all(x['status']==7 and x['state']=='42601' and x['position']==quote_position(sql) for x in (a,r))
         return all(x['status']==1 and x['state']=='' for x in (a,r))
+    def compare_origins(a,r,name):
+        column={'lower':'foo','folded':'foo','quoted':'foo','escaped':'a"b'}.get(name)
+        if column:
+            return a==[[table_oids['aster'],attributes['aster'][column]]] and r==[[table_oids['reference'],attributes['reference'][column]]]
+        expected=[[0,0],[0,0]] if name=='parameters' else [[0,0]]
+        return a==r==expected
     try:
         local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
         for label in ['reference','aster','aster_b','aster_observer']:
@@ -856,6 +863,15 @@ def identifiers_handoff():
                         'INSERT INTO public.'+identifier_table+' VALUES (1,3)']:
                 result=query(conn,sql);record('setup',label,dict(phase='Q',sql=sql),result)
                 check(result['status']==1,'fixture setup '+label)
+        for label in ['reference','aster']:
+            sql="SELECT oid FROM pg_catalog.pg_class WHERE relname='"+identifier_table+"'"
+            result=query(connections[label],sql);record('registered_relation_oid',label,dict(phase='Q',sql=sql),result)
+            check(result['status']==2 and len(result['rows'])==1,'registered relation identity')
+            table_oids[label]=int(result['rows'][0][0]);check(table_oids[label]>0,'positive catalog OID')
+            sql='SELECT attnum,attname FROM pg_catalog.pg_attribute WHERE attrelid='+str(table_oids[label])+' ORDER BY attnum'
+            result=query(connections[label],sql);record('registered_attributes',label,dict(phase='Q',sql=sql),result)
+            attributes[label]={name:int(number) for number,name in result['rows'] if int(number)>0}
+            check(result['status']==2 and attributes[label]=={'foo':1,'a"b':2},'catalog attribute identity')
         initial=query(connections['aster_observer'],'SELECT foo,"a""b" FROM public.'+identifier_table)['rows']
         check(initial==[['1','3']],'observer initial')
         for index,(name,sql,oids) in enumerate(cases):
@@ -903,13 +919,19 @@ def identifiers_handoff():
                 # Relation OIDs differ between servers; only compare mapped column
                 # origins after confirming both sides actually supplied them.
                 a_origins=descriptors['aster']['table_origins'];r_origins=descriptors['reference']['table_origins']
-                origin_equal=len(a_origins)==len(r_origins) and all(
-                    (a==r==[0,0]) or (a[0]>0 and r[0]>0 and a[1]==r[1]) for a,r in zip(a_origins,r_origins))
+                origin_equal=compare_origins(a_origins,r_origins,name)
+                damaged=copy.deepcopy(a_origins);damaged[0][0]+=1
+                check(not compare_origins(damaged,r_origins,name),'origin OID negative');self_checks+=1
+                if name in ('lower','folded','quoted','escaped'):
+                    damaged=copy.deepcopy(a_origins);damaged[0][1]+=1
+                    check(not compare_origins(damaged,r_origins,name),'origin attribute negative');self_checks+=1
+                check(compare_origins(values['aster']['table_origins'],values['reference']['table_origins'],name),'Execute origin identity')
                 origin_mismatches+=int(not origin_equal)
                 record(name+'_origin_comparison','aster',data,dict(equal=origin_equal,aster=a_origins,reference=r_origins,
                     scope='zero relation OID cannot stand for an available physical column origin; mismatch excluded from full effective count'))
                 semantic+=1
             if not oids:
+                simple_origins={}
                 for label in ['aster','reference']:
                     result=query(connections[label],sql);record(name+'_simple',label,dict(data,phase='Q'),result)
                     if name in ('mixed_case','empty','unclosed'):
@@ -917,7 +939,9 @@ def identifiers_handoff():
                         check(result['state']==expected_state,'Q diagnostic '+name)
                         if name!='mixed_case':check(result['position']==quote_position(sql),'Q original character position')
                     else:check(result['rows']==values[label]['rows'] and result['fields']==values[label]['fields'],'Q value/metadata '+name)
+                    simple_origins[label]=result['table_origins']
                     recover(connections[label],label,name+'_simple')
+                if name not in ('mixed_case','empty','unclosed'):check(compare_origins(simple_origins['aster'],simple_origins['reference'],name),'Q origin identity')
             for label in (['aster_b','aster'] if index%2==0 else ['aster','aster_b']):recover(connections[label],label,name+'_isolation')
             check(query(connections['aster_observer'],'SELECT foo,"a""b" FROM public.'+identifier_table)['rows']==initial,'observer unchanged')
             print('PG_DIALECT_CHECKPOINT '+name,flush=True);check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')

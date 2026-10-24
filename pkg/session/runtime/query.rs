@@ -2048,6 +2048,9 @@ impl ConcreteSession {
                     field.table_as_name = source.AsName.clone();
                 }
             }
+            for field in &mut derived_fields {
+                field.column_origin = None;
+            }
             fields.extend(derived_fields);
             return Ok(());
         }
@@ -2082,6 +2085,11 @@ impl ConcreteSession {
                 .iter()
                 .filter(|column| !column.Hidden)
                 .map(|column| ConcreteResultField {
+                    column_origin: if virtual_table.is_none() {
+                        relational_column_origin(table, column)
+                    } else {
+                        None
+                    },
                     column: column.clone(),
                     column_as_name: column.Name.clone(),
                     table_name: table.Name.clone(),
@@ -2103,6 +2111,16 @@ impl ConcreteSession {
             }
             if let Some(right) = from.TableRefs.Right.as_deref() {
                 self.append_relational_source_fields(right, &mut fields)?;
+            }
+            // Only the directly bound base-table case is admitted here.
+            // Join/derived output lineage keeps its previous unknown origin;
+            // do not infer a physical source for coalesced USING expressions.
+            if from.TableRefs.Right.is_some()
+                || !matches!(from.TableRefs.Left.as_deref(), Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none())
+            {
+                for field in &mut fields {
+                    field.column_origin = None;
+                }
             }
         }
         Ok(fields)
@@ -2207,6 +2225,7 @@ impl ConcreteSession {
                                 table_name: column.Table.clone(),
                                 table_as_name: column.Table.clone(),
                                 db_name: ast::NewCIStr(&self.current_database()),
+                                column_origin: None,
                             });
                             continue;
                         }
@@ -2271,6 +2290,7 @@ impl ConcreteSession {
                                 table_name: column.Table.clone(),
                                 table_as_name: column.Table.clone(),
                                 db_name: ast::NewCIStr(&self.current_database()),
+                                column_origin: None,
                             });
                             continue;
                         }
@@ -2300,6 +2320,7 @@ impl ConcreteSession {
                                 table_name: column.Table.clone(),
                                 table_as_name: column.Table.clone(),
                                 db_name: ast::NewCIStr(&self.current_database()),
+                                column_origin: None,
                             });
                             continue;
                         }
@@ -2334,6 +2355,7 @@ impl ConcreteSession {
                         table_name: ast::CIStr::default(),
                         table_as_name: ast::CIStr::default(),
                         db_name: ast::CIStr::default(),
+                        column_origin: None,
                     });
                 }
             }
@@ -2354,6 +2376,12 @@ impl ConcreteSession {
             .first()
             .ok_or_else(|| SessionError::new("set operation is empty"))?;
         self.relational_query_node_result_fields(first.as_ref(), output_columns)
+            .map(|mut fields| {
+                for field in &mut fields {
+                    field.column_origin = None;
+                }
+                fields
+            })
     }
 
     pub(super) fn execute_relational_query_record_set(

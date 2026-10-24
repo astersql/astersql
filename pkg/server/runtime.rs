@@ -1098,6 +1098,10 @@ fn run_session_worker(
                     .and_then(
                         |((statement_id, parameter_count, fields), parameter_cast_oids)| {
                             Ok(PreparedMetadata {
+                                column_origins: fields
+                                    .iter()
+                                    .map(|field| field.column_origin)
+                                    .collect(),
                                 parameter_cast_oids,
                                 native_types: fields
                                     .iter()
@@ -1286,6 +1290,8 @@ fn execute_on_session(
                 if !result.columns.is_empty()
                     && let Ok(fields) = session.describe_result_fields(&statement)
                 {
+                    result.column_origins =
+                        fields.iter().map(|field| field.column_origin).collect();
                     result.native_types = fields
                         .iter()
                         .map(|field| {
@@ -1549,6 +1555,11 @@ pub(crate) fn result_metadata(
         .collect();
     QueryResult {
         native_types,
+        column_origins: record_set
+            .result_fields()
+            .iter()
+            .map(|field| field.as_ref().and_then(|field| field.column_origin))
+            .collect(),
         columns,
         state,
         ..QueryResult::default()

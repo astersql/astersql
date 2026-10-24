@@ -2745,6 +2745,32 @@ pub(super) fn relational_expression_type(
     }
 }
 
+// Capture identity while the bound physical table and column are available.
+// Do not recover it later from an output label or table alias.
+pub(super) fn relational_column_origin(
+    table: &astersql_meta_model::TableInfo,
+    column: &astersql_meta_model::ColumnInfo,
+) -> Option<ConcreteColumnOrigin> {
+    if table.ID <= 0
+        || table.View.is_some()
+        || table.Sequence.is_some()
+        || column.ID <= 0
+        || column.Hidden
+        || column.State != astersql_meta_model::StatePublic
+    {
+        return None;
+    }
+    let attribute_number = column
+        .Offset
+        .checked_add(1)
+        .filter(|number| *number > 0)
+        .and_then(|number| i16::try_from(number).ok())?;
+    Some(ConcreteColumnOrigin {
+        table_id: table.ID,
+        attribute_number,
+    })
+}
+
 pub(super) fn relational_expression_result_field(
     header: &str,
     expression: &ast::ExprNode,
@@ -2760,6 +2786,7 @@ pub(super) fn relational_expression_result_field(
         table_name: ast::CIStr::default(),
         table_as_name: ast::CIStr::default(),
         db_name: ast::CIStr::default(),
+        column_origin: None,
     }
 }
 
@@ -3155,6 +3182,7 @@ pub(super) fn project_relational_rows(
                     column.GetType() == astersql_parser_mysql::r#type::TypeBit,
                 ));
                 result_fields.push(Some(ConcreteResultField {
+                    column_origin: relational_column_origin(table, column),
                     column: column.clone(),
                     column_as_name: ast::NewCIStr(output_name),
                     table_name: table.Name.clone(),
@@ -3201,6 +3229,7 @@ pub(super) fn project_relational_rows(
                     column_info.GetType() == astersql_parser_mysql::r#type::TypeBit,
                 ));
                 result_fields.push(Some(ConcreteResultField {
+                    column_origin: relational_column_origin(table, &column_info),
                     column: column_info,
                     column_as_name: ast::NewCIStr(&header),
                     table_name: table.Name.clone(),
@@ -3243,6 +3272,7 @@ pub(super) fn project_relational_rows(
                     column_info.GetType() == astersql_parser_mysql::r#type::TypeBit,
                 ));
                 result_fields.push(Some(ConcreteResultField {
+                    column_origin: relational_column_origin(table, &column_info),
                     column: column_info,
                     column_as_name: ast::NewCIStr(&header),
                     table_name: table.Name.clone(),

@@ -85,6 +85,7 @@ impl ConcreteSession {
                     table_name: ast::CIStr::default(),
                     table_as_name: ast::CIStr::default(),
                     db_name: ast::NewCIStr("information_schema"),
+                    column_origin: None,
                 })
             })
             .collect();

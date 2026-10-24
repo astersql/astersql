@@ -631,6 +631,9 @@ pub(crate) fn encode_formats(
     {
         return Err(invalid("invalid result formats"));
     }
+    if !result.column_origins.is_empty() && result.column_origins.len() != result.columns.len() {
+        return Err(invalid("engine column origin count mismatch"));
+    }
     let mut messages = Vec::new();
     if !result.columns.is_empty() {
         let mut body = count(result.columns.len())?.to_be_bytes().to_vec();
@@ -649,8 +652,17 @@ pub(crate) fn encode_formats(
             }
             body.extend_from_slice(column.name.as_bytes());
             body.push(0);
-            body.extend_from_slice(&0u32.to_be_bytes()); // unknown source table OID
-            body.extend_from_slice(&0i16.to_be_bytes()); // unknown attribute number
+            let (table_oid, attribute) = match result.column_origins.get(index).copied().flatten() {
+                Some(origin) if origin.attribute_number > 0 => (
+                    crate::pg_oid::table_oid(origin.table_id)
+                        .map_err(|error| invalid(&error.to_string()))?,
+                    origin.attribute_number,
+                ),
+                Some(_) => return Err(invalid("invalid physical column attribute number")),
+                None => (0, 0), // Unknown or non-physical expression; never infer from a label.
+            };
+            body.extend_from_slice(&table_oid.to_be_bytes());
+            body.extend_from_slice(&attribute.to_be_bytes());
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
             body.extend_from_slice(&(-1i32).to_be_bytes());

@@ -182,10 +182,11 @@ use system_query::*;
 pub(crate) use session::ValidateDiagnosticBootstrap;
 pub use session::{
     AddRecordWithoutAutoIDRebaseForTest, BootstrapCanonicalDomain, CanonicalSessionFactory,
-    ConcretePreparedArgument, ConcreteProtocolState, ConcreteRecordSet, ConcreteResultField,
-    ConcreteSession, ConcreteTestRuntime, CreateAnalyzeSession, CreateDanglingIndexForTest,
-    CreateUnbootstrappedAnalyzeSessionForTest, CreateUnbootstrappedRootSessionForTest,
-    EnableMockDDLForTest, RuntimeDomain, SplitSQLStatements, SplitSQLStatementsWithDialect,
+    ConcreteColumnOrigin, ConcretePreparedArgument, ConcreteProtocolState, ConcreteRecordSet,
+    ConcreteResultField, ConcreteSession, ConcreteTestRuntime, CreateAnalyzeSession,
+    CreateDanglingIndexForTest, CreateUnbootstrappedAnalyzeSessionForTest,
+    CreateUnbootstrappedRootSessionForTest, EnableMockDDLForTest, RuntimeDomain,
+    SplitSQLStatements, SplitSQLStatementsWithDialect,
 };
 use session::{NamedPreparedStatement, SessionState, SessionWarning, build_bootstrap_view_table};
 pub use statistics::{

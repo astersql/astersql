@@ -1482,7 +1482,8 @@ fn pg_dialect_libpq(task: u8) {
         assert_eq!(summary["syntax_eligible"], 9);
         assert_eq!(summary["gate_cases"], 1);
         assert_eq!(summary["value_type_cases"], 6);
-        assert!((4..=8).contains(&summary["unique_effective"].as_u64().unwrap()));
+        assert_eq!(summary["unique_effective"], 8);
+        assert_eq!(summary["origin_metadata_mismatch_cases"], 0);
         assert_eq!(
             summary["unique_effective"].as_u64().unwrap()
                 + summary["origin_metadata_mismatch_cases"].as_u64().unwrap(),

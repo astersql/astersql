@@ -120,6 +120,7 @@ fn show_result_fields(
                 table_name: ast::CIStr::default(),
                 table_as_name: ast::CIStr::default(),
                 db_name: ast::CIStr::default(),
+                column_origin: None,
             })
         })
         .collect()
@@ -219,6 +220,7 @@ fn project_virtual_rows_with_evaluator(
                         table_name: table.Name.clone(),
                         table_as_name: table_alias.clone(),
                         db_name: ast::NewCIStr(database),
+                        column_origin: None,
                     })
             })
     };

@@ -414,6 +414,7 @@ struct Portal {
     statement_name: String,
     columns: Vec<crate::conn::ColumnInfo>,
     native_types: Vec<crate::conn::NativeType>,
+    column_origins: Vec<Option<astersql_session::runtime::ConcreteColumnOrigin>>,
     statement: u32,
     args: Vec<BinaryParam>,
     description: Option<Vec<u8>>,
@@ -756,6 +757,7 @@ impl Extended {
                         statement_name,
                         columns: statement.metadata.columns.clone(),
                         native_types: statement.metadata.native_types.clone(),
+                        column_origins: statement.metadata.column_origins.clone(),
                         statement: statement.metadata.statement_id,
                         args: statement.mapping.iter().map(|i| args[*i].clone()).collect(),
                         description,
@@ -843,6 +845,7 @@ impl Extended {
                         && result.columns.len() == portal.native_types.len()
                     {
                         result.native_types = portal.native_types.clone();
+                        result.column_origins = portal.column_origins.clone();
                         result.columns = portal.columns.clone();
                     }
                     // Binding reparses literals in the shared kernel. Keep the
@@ -936,6 +939,7 @@ fn description_formats(metadata: &PreparedMetadata, formats: &[usize]) -> Result
     let result = QueryResult {
         columns: metadata.columns.clone(),
         native_types: metadata.native_types.clone(),
+        column_origins: metadata.column_origins.clone(),
         ..QueryResult::default()
     };
     let messages = crate::pg_result::encode_formats(&result, "SELECT", formats)

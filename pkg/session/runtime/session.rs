@@ -681,9 +681,18 @@ impl std::ops::DerefMut for ConcreteSession {
     }
 }
 
+/// Bound physical-column identity, independent of labels and aliases.
+/// The attribute number follows the catalog's checked Offset + 1 rule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConcreteColumnOrigin {
+    pub table_id: i64,
+    pub attribute_number: i16,
+}
+
 /// Send-safe result-column metadata consumed by the production protocol worker.
 #[derive(Clone, Debug)]
 pub struct ConcreteResultField {
+    pub column_origin: Option<ConcreteColumnOrigin>,
     pub column: astersql_meta_model::ColumnInfo,
     pub column_as_name: ast::CIStr,
     pub table_name: ast::CIStr,
