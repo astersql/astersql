@@ -6224,6 +6224,24 @@ UI证据必须能关联运行ID、日期、实际数据源、对象路径、刷�
 
 本族为纯SELECT，无持久业务对象；finally释放各端结果、statement/portal及连接，活连接先结束活动事务，断连不再发送恢复。记录实际创建的准备对象、资源前后值/回收期限和清理退出码；若运行器确需临时对象，仅清理本轮登记集合，清理失败单列且保留脱敏诊断。规范来源（2026-10-24查阅）：PostgreSQL 18 [数学函数](https://www.postgresql.org/docs/18/functions-math.html)与MySQL 8.4 [数学函数](https://dev.mysql.com/doc/refman/8.4/en/mathematical-functions.html)支持各自ABS与溢出/NULL目标；PG精确签名、类型/错误字段继续引用第4章已列官方固定源码与协议来源。手册为规范依据，不是18.6或MySQL精确构建运行证据，本轮不宣布兼容功能通过。
 
+#### 专属函数策略
+
+沿第4章既有四分类取其中PG核心专属、MySQL/TiDB专属、同名异义三个主题；不新增第五分类，不改变支持范围或批准共享别名。这里的“另一入口”是同一Server实例的另一方言连接，必须用该入口合法SQL验证名称/签名策略，不能用PG cast或限定名语法在MySQL产生的解析错误替代门禁证据。第4章局部实现、规格、专用会话查询及独立测试只提供静态意图，普通SQL工厂贯通、双入口策略及元数据仍未验证；未知不能改记明确不支持。以下case及采证/筛选夹具均**待新增、待运行**，本轮有效运行数0、有效行为断言数0。
+
+| 原分类 / 复用能力ID（两入口分别登记） | 所属入口结果、NULL及错误目标 | 另一入口策略与证据 |
+| --- | --- | --- |
+| PG系统函数专属；FUNC-SYS-TYPEOF、FUNC-SYS-ISOLATION，case_id区分pg/mysql | PG `SELECT pg_typeof(1::int4) AS v`与`SELECT pg_typeof(NULL::int4) AS v`均为非NULL regtype值23，text显示integer；结果OID2206/typlen4/typmod−1。扩展参数定型int4后重绑1/NULL不改身份；`pg_typeof()`目标分析拒绝42883。 | MySQL用`SELECT pg_typeof(1) AS v`与`SELECT pg_typeof(NULL) AS v`验证PG内建名称不暴露，采自身code/SQLSTATE/消息和阶段（精确诊断待采）；不能返回MySQL内部整数类型冒充PG内省。PG同时核未限定及pg_catalog限定名，无同名用户/扩展遮蔽。 |
+| MySQL/TiDB管理函数专属；FUNC-MY-ADMIN，case_id区分mysql/pg | MySQL `SELECT TIDB_VERSION() AS v`应非NULL、等于本服务GetTiDBInfo，保留自身字符串列定义；零参无NULL输入，`TIDB_VERSION(NULL)`是参数个数错误，采自身诊断。成功参考为精确版本TiDB/本仓库Go，不以普通MySQL未知函数拒绝替代成功参考。 | PG `SELECT tidb_version() AS v`及`SELECT tidb_version(NULL::text) AS v`目标分析拒绝42883；再测pg_catalog限定名，不发成功RowDescription/DataRow。不重写为version，不让共享别名或NULL折叠泄露管理工厂；缺工厂错误不算名称隔离通过。 |
+| 同名异义；FUNC-SPLIT-NULL及FUNC-SYS-IDENTITY/ISOLATION，case_id区分pg/mysql | PG `SELECT concat('a'::text,NULL::text,'b'::text) AS v`→非NULL ab/text（25/−1/−1）；全typed NULL→非NULL空串/text。MySQL对应三个CAST AS CHAR参数→SQL NULL/自身字符串，全NULL也为NULL。 | 两入口保留各自CONCAT含义，不一律拒绝，不批准按名称共享算法；逐端对照各自参考。VERSION同名另沿FUNC-SYS-IDENTITY核真实版本说明和各自类型/构建来源，不要求逐字等于参考构建串，不互换缓存或冒充PG兼容版本。 |
+
+每条分别关联第1章能力记录与所属方言，不合并两入口通过状态；同名异义仍属第4章原分类。PG值/类型依据为官方PostgreSQL **18** [系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)，CONCAT忽略NULL依据为[字符串函数](https://www.postgresql.org/docs/18/functions-string.html)（2026-10-24核对）；MySQL/TiDB语义、PG隐藏名称的产品策略及诊断目标承接第4章对应模板与FUNC-MY/FUNC-SYS/FUNC-SPLIT验收表，不将产品策略说成参考PG禁止用户函数。来源要求的18.6参考构建尚未采集，不能声称该补丁版通过。
+
+执行前固定同Server双listener、两个PG会话与一个MySQL会话、无同名用户函数/扩展、UTF-8及各自search_path/sql_mode/字符集/时区，记录真实角色、数据库和构建。第2章负责名称环境，第3章负责regtype/int4/text及参数/结果codec，第4章负责候选到工厂，第5/7章负责会话与恢复；第6章拥有身份/授权事实，不能由路径字符串或函数返回常量伪造权限。当前范围只读内省和纯值计算，不增管理写操作或权限需求；以实际角色可连接及必要目录可读为前提，缺授权依赖记阻塞，不放宽权限求通过。权限变更与完整ACL实施仍归第6章。
+
+成功项逐端采Simple Query及适用Prepare/Describe/Bind/Execute，记录原SQL、参数类型/值/NULL/格式、实际值、NULL标记、行列数和列名v。PG描述核OID/typlen/typmod、text/binary格式及载荷；MySQL独立采code/flags/charset/length/decimals，不从PG OID或首行推导，NULL/零行/重绑均保持已定类型。无参函数参数字段写不适用；拒绝项成功载荷/成功元数据写不适用，并证明无伪成功结果。所有失败保存真实错误字段、位置与阶段，未知字段保持未采，不套用另一入口错误码。
+
+同一场景交错PG→MySQL→PG重复调用并交换先后，验证候选、准备语句及版本缓存不串方言；成功与预期拒绝都须按既定契约判定，意外成功/拒绝、类型/NULL错误、管理能力泄漏或副作用均失败。以调用前后独立观察确认业务表数据、角色权限及会话配置未被这些SELECT改变，不把只读语句名当无副作用证据；观察入口待新增。错误后按实际协议Sync及必要ROLLBACK，原连接重跑合法只读请求、另一入口仍可用；释放结果/statement/portal、恢复夹具会话设置、关闭连接，并独立确认无遗留事务和对象。恢复/清理失败不能被后续健康请求覆盖，须定位到名称、绑定、工厂、求值、codec、协议或授权层。仅完整参考记录、适用断言及清理齐全的唯一场景计有效；重试与限定名别名不重复充数。
+
 #### 差异白名单
 
 白名单当前为空；以下仅定义登记规则，不预先授权任何差异。每项必须列唯一白名单ID、能力ID/case_id、官方版本/章节/链接与必要参考端证据、差异字段及原因、适用SQL/类型/客户端/环境、确定的比较转换、仍需保留的原始观测、审核依据及复审条件（参考版本、实现、客户端或配置变化即复审）。无ORDER BY的行序、动态时间或用户对象OID也不能笼统忽略：分别按第1章重复行规则、第4章时间语义、第6章真实身份关联约束取证后再逐项登记。白名单只解释有依据的可比差异，不能吞掉未实现、未知错误、类型丢失、错误恢复或副作用失败；未获依据的差异保持失败/未验证。
@@ -6242,6 +6260,8 @@ UI证据必须能关联运行ID、日期、实际数据源、对象路径、刷�
 本任务仅定义四层与共用证据，具体客户端流程、函数共享/专属场景、会话事务隔离、取消关闭、大结果及八工作流最终收口由后续编号任务补正文；不预填支持结论。不实现生产代码、测试平台、运行器、CI、数据库或压测环境，不运行Cargo、Go、数据库或客户端，不改第1–7章和来源计划。
 
 ### 验收
+
+专属函数主题按“专属函数策略”交接：逐类核PG内省、TiDB管理函数及同名异义的两入口能力ID、所属结果/错误和另一入口显式策略，并审阅NULL/类型/元数据、真实权限前提、无副作用、错误恢复和清理；拒绝须排除语法错误及缺工厂假阳性。当前仅文档完成，功能未验证。
 
 共享函数主题按“共享函数用例族”交接：signed ABS同Server双入口与各自参考端，逐项核普通值、typed NULL、域内/溢出边界、双入口元数据、NULL与错误及恢复清理；数学值等价和方言类型/诊断各自正确分别判定。当前仅文档完成，功能未验证。
 
@@ -6300,3 +6320,9 @@ libpq主题须按“libpq端到端流程”核对加载库、默认/强制3.2、
 后续先另立signed ABS的int4普通值与双入口列描述窄任务，承接第2章连接身份/名称、第3章类型/转换/描述、第4章签名到正式工厂的最小必要接线；复用现存pg_client_integration_test.rs双listener及pg_query_test.rs、pg_types_test.rs、pg_extended_test.rs独立测试。再拆typed NULL/零行、int4与signed BIGINT域差异、int8负最小值及错误后恢复清理。新夹具、MySQL描述采集、参考端及筛选入口均待新增；不实现差分框架，不扩建函数/类型子系统，不为通过删减边界。
 
 本主题需求映射：步骤1→第4章既有signed ABS候选与现状边界；步骤2→同Server双入口及四端输入表、元数据与NULL；步骤3→值等价/各自类型诊断、域差异及转换限制；步骤4→本节窄实施与第2/3/4章依赖；步骤5→验收交接与成功/失败/清理计数。正确性风险是域扩宽或浮点中转隐藏溢出，兼容性风险是同名/同值误作类型等价及未知字段被默认通过；性能、资源期限与实际客户端均未验证。
+
+#### 专属函数交接与窄实施切口
+
+后续先另立FUNC-MY-ADMIN的TIDB_VERSION零参成功与PG未限定/pg_catalog限定名拒绝窄任务，复用pg_client_integration_test.rs双listener、pg_query_test.rs与pg_extended_test.rs独立测试及第4章既有构建信息提供者，补最小名称过滤/正式工厂接线和两入口描述/错误采集；不移植完整表达式内核。参考TiDB/Go构建、单场景筛选和副作用/清理观察夹具均待新增。再分别拆pg_typeof定型NULL与regtype依赖、CONCAT同名异义和缓存交错；依赖缺口仅登记，不扩建类型、目录或授权子系统。
+
+本主题需求映射：步骤1→三主题沿既有四分类及两入口能力记录；步骤2→三行所属结果与另一入口策略；步骤3→NULL/描述/权限责任与无副作用、恢复清理；步骤4→FUNC-MY-ADMIN单场景切口及未验证状态；步骤5→验收交接与本节。正确性风险是缺工厂/语法拒绝被误作门禁成功，兼容性风险是别名泄漏与同名错误共享；性能、实际客户端及18.6参考端均未实测。
