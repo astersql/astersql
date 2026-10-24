@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 import unittest
 
-from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows
+from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows, compare_metadata
 
 
 class CaseRegistryTests(unittest.TestCase):
@@ -391,6 +391,93 @@ class MultisetComparisonTests(unittest.TestCase):
         a = self.output([['1']])
         a['cells'][0][0]['hex'] = '32'
         self.assertFalse(compare_rows(a, a, 'multiset'))
+
+
+class MetadataComparisonTests(unittest.TestCase):
+    def setUp(self):
+        # Use only a deep copy of an actual retained libpq observation.
+        # task4 inferred_describe, PostgreSQL 18.4/libpq 180000.
+        self.sample = {
+            'status': 1, 'state': '', 'rows': [], 'cells': [],
+            'fields': [['b', 23, 4, -1], ['a', 20, 8, -1], ['c', 23, 4, -1]],
+            'formats': [0, 0, 0], 'params': [20, 23], 'param_count': 2,
+            'command_tag': '', 'affected_rows': '', 'table_origins': None,
+        }
+
+    def test_complete_description(self):
+        self.assertTrue(compare_metadata(self.sample, copy.deepcopy(self.sample), 'describe'))
+
+    def mutate(self, key, value):
+        changed = copy.deepcopy(self.sample)
+        changed[key] = value
+        self.assertFalse(compare_metadata(changed, self.sample, 'describe'))
+
+    def test_column_name(self):
+        fields = copy.deepcopy(self.sample['fields'])
+        fields[0][0] = 'wrong'
+        self.mutate('fields', fields)
+
+    def test_column_oid(self):
+        fields = copy.deepcopy(self.sample['fields'])
+        fields[0][1] = 20
+        self.mutate('fields', fields)
+
+    def test_typlen(self):
+        fields = copy.deepcopy(self.sample['fields'])
+        fields[0][2] = 8
+        self.mutate('fields', fields)
+
+    def test_typmod(self):
+        fields = copy.deepcopy(self.sample['fields'])
+        fields[0][3] = 4
+        self.mutate('fields', fields)
+
+    def test_parameter_oid(self):
+        self.mutate('params', [23, 23])
+
+    def test_parameter_count(self):
+        self.mutate('param_count', 1)
+
+    def test_format(self):
+        self.mutate('formats', [1, 0, 0])
+
+    def test_both_missing_required_fields(self):
+        for key in ['fields', 'params', 'formats', 'param_count']:
+            with self.subTest(key=key):
+                changed = copy.deepcopy(self.sample)
+                del changed[key]
+                self.assertFalse(compare_metadata(changed, copy.deepcopy(changed), 'describe'))
+
+    def test_both_malformed_descriptions(self):
+        for key, value in [('fields', [['b', 23]]), ('params', [None]),
+                           ('param_count', 3), ('formats', []), ('formats', [2, 0, 0])]:
+            with self.subTest(key=key):
+                changed = copy.deepcopy(self.sample)
+                changed[key] = value
+                self.assertFalse(compare_metadata(changed, copy.deepcopy(changed), 'describe'))
+
+    def test_unknown_phase(self):
+        self.assertFalse(compare_metadata(self.sample, self.sample, 'unknown'))
+
+    def test_real_equal_rejects_both_missing_metadata(self):
+        tree = ast.parse(Path(__file__).with_name('pg_core_libpq.py').read_text())
+        differential = next(x for x in tree.body if isinstance(x, ast.FunctionDef)
+                            and x.name == 'integer_differential')
+        equal = next(x for x in differential.body if isinstance(x, ast.FunctionDef)
+                     and x.name == 'equal')
+        namespace = {'compare_rows': compare_rows, 'compare_metadata': compare_metadata}
+        exec(compile(ast.Module(body=[equal], type_ignores=[]), '<actual metadata gate>', 'exec'), namespace)
+        for key in ['fields', 'params', 'formats', 'param_count']:
+            with self.subTest(key=key):
+                changed = copy.deepcopy(self.sample)
+                del changed[key]
+                with self.assertRaises(AssertionError):
+                    namespace['equal']('missing_' + key, changed, copy.deepcopy(changed), phase='describe')
+
+    def test_raw_unchanged(self):
+        before = copy.deepcopy(self.sample)
+        self.assertTrue(compare_metadata(self.sample, self.sample, 'describe'))
+        self.assertEqual(self.sample, before)
 
 
 if __name__ == '__main__':

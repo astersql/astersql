@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -74,6 +74,7 @@ def integer_differential(aster_dsn):
     counts = Counter()
     registry = CaseRegistry(load_cases(), table)
     statements = {}
+    descriptions = {"aster": {}, "reference": {}}
     from pathlib import Path
     evidence_dir = Path(os.environ['PG_CORE_EVIDENCE_DIR'])
     run_id = evidence_dir.name
@@ -105,7 +106,8 @@ def integer_differential(aster_dsn):
             obs['fields'] = [(field_name(result, col).decode(), field_type(result, col),
                               field_size(result, col), field_mod(result, col))
                              for col in range(columns(result))]
-            obs['params'] = [param_type(result, i) for i in range(nparams(result))]
+            obs['param_count'] = nparams(result)
+            obs['params'] = [param_type(result, i) for i in range(obs['param_count'])]
             obs['formats'] = [field_format(result, col) for col in range(columns(result))]
             obs['command_tag'] = (command_status(result) or b'').decode()
             obs['affected_rows'] = (command_rows(result) or b'').decode()
@@ -128,9 +130,10 @@ def integer_differential(aster_dsn):
         finally:
             clear(result)
 
-    def equal(case, actual, reference, row_order='strict'):
+    def equal(case, actual, reference, row_order='strict', phase='query'):
         assert compare_rows(actual, reference, row_order), (case, actual, reference)
-        keys = ('status', 'state', 'fields', 'params')
+        assert compare_metadata(actual, reference, phase), (case, actual, reference)
+        keys = ('status', 'state')
         assert {k: actual[k] for k in keys} == {k: reference[k] for k in keys}, (case, actual, reference)
 
     def check(case, family, operation, expected_status=2, expected_rows=None,
@@ -156,8 +159,17 @@ def integer_differential(aster_dsn):
                 assert obs["rows"] == expected_rows, (side, case, obs)
             if expected_params is not None:
                 assert obs["params"] == expected_params, (side, case, obs)
+            phase, statement = registered_input['phase'], registered_input['statement']
+            if phase == 'describe':
+                descriptions[side][statement] = copy.deepcopy(obs)
+            elif phase == 'execute':
+                description = descriptions[side][statement]
+                assert len(registered_input['arguments']) == description['param_count'], (side, case)
+                if expected_status == 2:
+                    for key in ['fields', 'formats']:
+                        assert obs[key] == description[key], (side, case, key)
         row_order = registry.cases['cases'][len(registry.seen) - 1].get('row_order', 'strict')
-        equal(case, observations["aster"][case], observations["reference"][case], row_order)
+        equal(case, observations["aster"][case], observations["reference"][case], row_order, registered_input["phase"])
         counts[family] += 1
         print("registered case:", json.dumps({"case_id": case, "input": registered_input,
               "aster": observations["aster"][case], "reference": observations["reference"][case]},
@@ -382,6 +394,40 @@ def integer_differential(aster_dsn):
                 raise AssertionError('multiset comparator missed ' + mutation)
         assert source == before
         print('multiset self-check: permutation=1 rejected_mutations=5 raw_unchanged=1', flush=True)
+        metadata_checks = 0
+        for case, phase in [('int4_suffix_min', 'query'), ('int8_suffix_null', 'query'),
+                            ('inferred_describe', 'describe'), ('zero_describe', 'describe'),
+                            ('explicit_describe', 'describe'), ('text_source_describe', 'describe'),
+                            ('empty_describe', 'describe'), ('empty_execute', 'execute')]:
+            original = observations['aster'][case]
+            baseline = copy.deepcopy(original)
+            reference = observations['reference'][case]
+            mutations = []
+            for index, wrong in [(0, 'wrong'), (1, 999), (2, 999), (3, 999)]:
+                changed = copy.deepcopy(original)
+                field = list(changed['fields'][0]); field[index] = wrong
+                changed['fields'][0] = tuple(field)
+                mutations.append((changed, reference))
+            for key, value in [('formats', [1] * len(original['fields'])),
+                               ('param_count', original['param_count'] + 1)]:
+                changed = copy.deepcopy(original); changed[key] = value
+                mutations.append((changed, reference))
+            if original['params']:
+                changed = copy.deepcopy(original); changed['params'][0] = 999
+                mutations.append((changed, reference))
+            for key in ['fields', 'params', 'param_count', 'formats']:
+                changed = copy.deepcopy(original); del changed[key]
+                mutations.append((changed, copy.deepcopy(changed)))
+            for changed, other in mutations:
+                try:
+                    equal('metadata_' + case, changed, other, phase=phase)
+                except AssertionError:
+                    metadata_checks += 1
+                else:
+                    raise AssertionError('metadata comparator missed mutation: ' + case)
+            assert original == baseline, case
+        print('metadata self-check: sources=8 rejected_mutations=' + str(metadata_checks)
+              + ' raw_unchanged=8 parameter_descriptions=4 zero_rows=2', flush=True)
         for required in ['scalar_null', 'scalar_empty', 'scalar_literal_null', 'scalar_zero_rows',
                          "value", "typed_null", "zero_rows", "overflow", "invalid",
                          "reexecute", "recovery", "write", "readback", "negative_self_check"]:

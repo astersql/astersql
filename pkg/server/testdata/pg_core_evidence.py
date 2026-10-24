@@ -149,7 +149,7 @@ def compare_scalar_output(actual, reference, contract):
 
     def collected(output):
         allowed = {'rows', 'cells', 'status', 'state', 'fields', 'params', 'formats',
-                   'command_tag', 'affected_rows', 'table_origins'}
+                   'command_tag', 'affected_rows', 'table_origins', 'param_count'}
         if not isinstance(output, dict) or set(output) - allowed:
             return False
         rows, cells = output.get('rows'), output.get('cells')
@@ -191,3 +191,37 @@ def compare_rows(actual, reference, row_order):
                        for row in output['cells'])
 
     return frequencies(actual) == frequencies(reference)
+
+
+def compare_metadata(actual, reference, phase='query'):
+    """Compare result descriptions collected by libpq for this operation phase."""
+    if phase not in {'query', 'prepare', 'describe', 'execute'}:
+        return False
+
+    def collected(output):
+        if not isinstance(output, dict):
+            return False
+        fields, formats = output.get('fields'), output.get('formats')
+        params, count = output.get('params'), output.get('param_count')
+        if not isinstance(fields, list) or not isinstance(formats, list):
+            return False
+        if len(formats) != len(fields) or any(type(x) is not int or x not in (0, 1) for x in formats):
+            return False
+        for field in fields:
+            if not isinstance(field, (tuple, list)) or len(field) != 4:
+                return False
+            name, oid, length, modifier = field
+            if not isinstance(name, str) or any(type(x) is not int for x in (oid, length, modifier)):
+                return False
+            if oid <= 0 or length < -2 or modifier < -1:
+                return False
+        if not isinstance(params, list) or type(count) is not int or count != len(params):
+            return False
+        if any(type(oid) is not int or oid <= 0 for oid in params):
+            return False
+        # PQnparams describes parameters only on PQdescribePrepared results.
+        return phase == 'describe' or count == 0
+
+    keys = ('fields', 'formats', 'params', 'param_count')
+    return (collected(actual) and collected(reference)
+            and all(actual[k] == reference[k] for k in keys))
