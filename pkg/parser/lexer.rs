@@ -59,6 +59,12 @@ pub struct Scanner {
 }
 
 impl Scanner {
+    pub(super) fn PostgreSQLEofErrorPosition(&self) -> Option<usize> {
+        (self.postgres && self.errs.len() == 1
+            && self.lastScanOffset as usize == self.r.s.len())
+            .then(|| self.r.s.chars().count() + 1)
+    }
+
     // Errors 沿用 Go 返回顺序：先 warning，后 error。
     /// 返回 (warnings, errors)，顺序与 Go 一致。
     pub fn Errors(&self) -> (&[errors::Error], &[errors::Error]) {
@@ -682,7 +688,9 @@ impl yyLexer for Scanner {
         Some((self.client, self.stmtText()))
     }
     fn Lex(&mut self, lval: &mut yySymType) -> isize {
-        Scanner::Lex(self, lval) as isize
+        let token = Scanner::Lex(self, lval);
+        lval.end_offset = self.r.pos().Offset as usize;
+        token as isize
     }
     fn Errorf(&self, format: &str, _args: &[&dyn std::any::Any]) -> ParserError {
         Scanner::Errorf(self, format)

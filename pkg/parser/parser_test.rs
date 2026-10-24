@@ -2598,3 +2598,167 @@ fn pg_core_int8_ast_semantics() {
         }
     ));
 }
+
+#[test]
+fn pg_dialect_01_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    fn expression(sql: &str, dialect: SqlDialect) -> parser_ast::ExprNode {
+        let stmt = parser::Parser::with_dialect(dialect)
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        stmt.as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap()
+            .Fields
+            .Fields[0]
+            .Expr
+            .clone()
+            .unwrap()
+    }
+    fn predicate(expr: &parser_ast::ExprNode, expected_not: bool) {
+        let ExprKind::Like {
+            IsLike,
+            Not,
+            Expr,
+            Pattern,
+            ..
+        } = &expr.Kind
+        else {
+            panic!("ILIKE predicate lost: {expr:?}");
+        };
+        assert!(!IsLike, "ILIKE became LIKE");
+        assert_eq!(*Not, expected_not);
+        assert!(matches!(&Expr.Kind, ExprKind::Value(v) if v == "Ab"));
+        assert!(matches!(&Pattern.Kind, ExprKind::Value(v) if v == "a%"));
+    }
+    for (sql, not) in [
+        ("SELECT 'Ab' ILIKE 'a%'", false),
+        ("SELECT 'Ab' NOT ILIKE 'a%'", true),
+    ] {
+        let expr = expression(sql, SqlDialect::PostgreSQL);
+        predicate(&expr, not);
+        assert_eq!(
+            expr.OriginTextPosition, 7,
+            "original predicate start: {sql}"
+        );
+        assert_eq!(expr.node_text.OriginalText(), &sql.as_bytes()[7..]);
+        // Capture the existing MySQL extension before any acceptance changes.
+        predicate(&expression(sql, SqlDialect::MySQL), not);
+    }
+    let outer = expression("SELECT NOT ('Ab' ILIKE 'a%')", SqlDialect::PostgreSQL);
+    let ExprKind::Unary { Op, V } = &outer.Kind else {
+        panic!("outer NOT lost: {outer:?}")
+    };
+    assert_eq!(Op, "NOT");
+    let ExprKind::Parentheses(inner) = &V.Kind else {
+        panic!("parentheses lost: {V:?}")
+    };
+    predicate(inner, false);
+    let protected = expression("SELECT 'ILIKE' /* ILIKE */", SqlDialect::PostgreSQL);
+    assert!(matches!(&protected.Kind, ExprKind::Value(v) if v == "ILIKE"));
+    let alias = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt("SELECT 'Ab' ILIKE", "", "")
+        .expect("PostgreSQL18.6 treats trailing ILIKE as a bare alias");
+    let select = alias
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    assert_eq!(select.Fields.Fields[0].AsName.O, "ilike");
+    assert!(
+        matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+        ExprKind::Value(v) if v == "Ab")
+    );
+    assert!(
+        parser::New()
+            .ParseOneStmt("SELECT 'Ab' ILIKE", "", "")
+            .is_err()
+    );
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt("SELECT 'Ab' NOT ILIKE", "", "")
+            .is_err()
+    );
+    let sql = "SELECT 'Ab' ILIKE (";
+    let error = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .err()
+        .expect("missing operand must fail");
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("column {} ", sql.chars().count() + 1)),
+        "{error}"
+    );
+    let null = expression(
+        "SELECT CAST(NULL AS CHAR) ILIKE 'a%'",
+        SqlDialect::PostgreSQL,
+    );
+    let ExprKind::Like {
+        Expr,
+        IsLike: false,
+        ..
+    } = &null.Kind
+    else {
+        panic!("{null:?}")
+    };
+    let ExprKind::Cast { Expr, .. } = &Expr.Kind else {
+        panic!("typed NULL cast lost")
+    };
+    assert!(matches!(&Expr.Kind, ExprKind::Value(v) if v.Datum == parser_ast::ValueDatum::Null));
+    let sql = "SELECT /*中*/ $2 ILIKE 'a%'";
+    let parameter = expression(sql, SqlDialect::PostgreSQL);
+    let ExprKind::Like {
+        Expr,
+        IsLike: false,
+        ..
+    } = &parameter.Kind
+    else {
+        panic!("{parameter:?}")
+    };
+    assert_eq!(Expr.PostgreSQLParameterIndex(), Some(2));
+    assert!(
+        matches!(Expr.Kind, ExprKind::ParamMarker { Offset } if Offset == sql.find('$').unwrap())
+    );
+    // Source ends must follow consumed tokens, not decoded literal lengths or
+    // the next lookahead token; multibyte comments must not shift byte offsets.
+    for (sql, expected) in [
+        (
+            "SELECT /*中*/ 'Ab' /* ILIKE */ ILIKE 'a%' AS matched",
+            "'Ab' /* ILIKE */ ILIKE 'a%'",
+        ),
+        (
+            "SELECT 'Ab' ILIKE 'a''%' /* trailing */",
+            "'Ab' ILIKE 'a''%'",
+        ),
+        ("SELECT ('Ab' ILIKE ('a%'))", "'Ab' ILIKE ('a%')"),
+    ] {
+        let expr = expression(sql, SqlDialect::PostgreSQL);
+        let predicate = match &expr.Kind {
+            ExprKind::Parentheses(inner) => inner.as_ref(),
+            _ => &expr,
+        };
+        assert_eq!(
+            predicate.node_text.OriginalText(),
+            expected.as_bytes(),
+            "{sql}"
+        );
+        let start = predicate.OriginTextPosition as usize;
+        assert_eq!(
+            &sql.as_bytes()[start..start + expected.len()],
+            expected.as_bytes()
+        );
+    }
+    for sql in ["/*中*/ SELECT 'Ab' ILIKE (", "SELECT\n'Ab' ILIKE ("] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err());
+        assert_eq!(
+            parser.PostgreSQLEofErrorPosition(),
+            Some(sql.chars().count() + 1)
+        );
+        assert!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+        assert_eq!(parser.PostgreSQLEofErrorPosition(), None);
+    }
+    println!(
+        "pg_dialect_01_behavior: 13 primary inputs, reset probes and MySQL extension baselines"
+    );
+}

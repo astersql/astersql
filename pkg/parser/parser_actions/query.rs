@@ -23,6 +23,7 @@ enum QueryRule {
     FieldAlt02,
     FieldAlt03,
     FieldAlt04,
+    PgIlikeAlias,
     FieldAsNameOptAlt01,
     FieldAsNameAlt02,
     FieldAsNameAlt04,
@@ -262,6 +263,9 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "field_identifier_prec--bd90d8902cf5ebba" => Some(QueryRule::FieldAlt02),
         "field_identifier_identifier_prec--87242d3ad01f8af5" => Some(QueryRule::FieldAlt03),
         "field_expression_fieldasnameopt--345551df2e60fe38" => Some(QueryRule::FieldAlt04),
+        "field_bitexpr_ilikeornotop_prec_higherthanreturn--5bb1817969497024" => {
+            Some(QueryRule::PgIlikeAlias)
+        },
         "fieldasnameopt_prec_higherthanreturning--d66a8b909d7a7f92" => {
             Some(QueryRule::FieldAsNameOptAlt01)
         }
@@ -2060,6 +2064,23 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                     Schema: parser_ast::NewCIStr(&rhs[rhs_len - (4)].ident),
                     Table: parser_ast::NewCIStr(&rhs[rhs_len - (2)].ident),
                 }),
+                ..Default::default()
+            }));
+        }
+        QueryRule::PgIlikeAlias => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("ILIKE bare aliases require PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            if rhs[2].item.as_deref().and_then(|value| value.downcast_ref::<bool>()) != Some(&true) {
+                yylex.AppendError(yylex.Errorf("NOT ILIKE requires a pattern", &[]));
+                return Err(1);
+            }
+            // The shared grammar shifts ILIKE as a predicate operator. Only a
+            // field-ending lookahead selects this alternative, as in PG18.6.
+            out.item = Some(Box::new(parser_ast::SelectField {
+                Expr: rhs[1].expr.take(),
+                AsName: parser_ast::NewCIStr("ilike"),
                 ..Default::default()
             }));
         }

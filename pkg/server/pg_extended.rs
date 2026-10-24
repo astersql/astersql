@@ -499,7 +499,17 @@ impl Extended {
             Err((state, message)) => {
                 self.failed = true;
                 self.session.record_error(context.as_ref());
-                write_error(socket, "ERROR", state, &message)?;
+                let original_sql = if tag == b'P' {
+                    let mut reader = Reader { bytes: body };
+                    reader.string().and_then(|_| reader.string()).ok()
+                } else {
+                    None
+                };
+                if let Some(sql) = original_sql {
+                    crate::pg_conn::write_sql_error(socket, state, &message, &sql)?;
+                } else {
+                    write_error(socket, "ERROR", state, &message)?;
+                }
             }
         }
         Ok(true)

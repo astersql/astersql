@@ -479,6 +479,13 @@ impl Parser {
         Ok(stmts.remove(0))
     }
 
+    /// One-based character cursor for a single PostgreSQL error at EOF.
+    /// Other diagnostics require their own structured source span; do not infer
+    /// a position from an engine error string or an adapted query.
+    pub fn PostgreSQLEofErrorPosition(&self) -> Option<usize> {
+        self.lexer.PostgreSQLEofErrorPosition()
+    }
+
     // SetSQLMode 将 SQL mode 原样交给词法器。
     pub fn SetSQLMode(&mut self, mode: mysql::SQLMode) {
         self.lexer.SetSQLMode(mode);

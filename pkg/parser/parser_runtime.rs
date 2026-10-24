@@ -193,6 +193,11 @@ pub fn yyParse(yylex: &mut dyn yyLexer, parser_state: &mut Parser) -> isize {
                     return 1;
                 }
                 let value_start = values.len() - pop_count;
+                let source_end = values[value_start..]
+                    .iter()
+                    .map(|value| value.end_offset)
+                    .max()
+                    .unwrap_or(0);
                 let rhs_semantic_complete = values[value_start..]
                     .iter()
                     .all(|value| value.semantic_complete);
@@ -220,6 +225,7 @@ pub fn yyParse(yylex: &mut dyn yyLexer, parser_state: &mut Parser) -> isize {
                 } else if !handled {
                     reduced_value.semantic_complete = !parser_actions::has_semantic_action(rule_id);
                 }
+                reduced_value.end_offset = source_end;
                 values.truncate(values.len() - pop_count);
                 let base_state = values.last().expect("reduction leaves a base state").yys as usize;
                 let encoded_goto = generated_main_action(base_state, reduction_symbol);

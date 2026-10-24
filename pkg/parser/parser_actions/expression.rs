@@ -3114,8 +3114,19 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .and_then(|item| item.downcast_ref::<bool>())
                 .copied()
                 .unwrap_or(false);
+            let mut node_text = parser_ast::base::AstNode::default();
+            if rule == ExpressionRule::PredicateExprAlt05
+                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+            {
+                // Preserve the original predicate, including quoted tokens and
+                // comments; restored SQL cannot recover source byte spans.
+                let start = rhs[1].offset.max(0) as usize;
+                let end = rhs[rhs_len].end_offset.max(rhs[rhs_len - 1].end_offset);
+                node_text.SetOriginTextPosition(start as i32);
+                node_text.SetText(None, &parser_state.src[start..end]);
+            }
             out.expr = Some(parser_ast::ExprNode {
-                node_text: Default::default(),
+                node_text,
                 Kind: parser_ast::ExprKind::Like {
                     Expr: Box::new(expr),
                     Pattern: Box::new(pattern),

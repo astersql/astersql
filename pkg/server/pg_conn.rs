@@ -546,7 +546,7 @@ impl PgService {
                             }
                             Err((state, message)) => {
                                 extended.session.record_error(context.as_ref());
-                                write_error(socket, "ERROR", state, &message)?
+                                write_sql_error(socket, state, &message, sql)?
                             }
                         }
                     } else {
@@ -676,6 +676,38 @@ pub(crate) fn write_error(
     state: &str,
     message: &str,
 ) -> io::Result<()> {
+    write_error_position(socket, severity, state, message, None)
+}
+
+/// Only a formal parse of the original SQL may supply the EOF cursor. This
+/// deliberately leaves positions unknown for non-EOF and adapted diagnostics.
+pub(crate) fn write_sql_error(
+    socket: &mut TcpStream,
+    state: &str,
+    message: &str,
+    original_sql: &str,
+) -> io::Result<()> {
+    let position = if state == "42601" {
+        let mut parser =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL);
+        if parser.ParseSQL(original_sql, &[]).is_err() {
+            parser.PostgreSQLEofErrorPosition()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    write_error_position(socket, "ERROR", state, message, position)
+}
+
+fn write_error_position(
+    socket: &mut TcpStream,
+    severity: &str,
+    state: &str,
+    message: &str,
+    position: Option<usize>,
+) -> io::Result<()> {
     let mut body = Vec::new();
     for (tag, text) in [
         (b'S', severity),
@@ -685,6 +717,11 @@ pub(crate) fn write_error(
     ] {
         body.push(tag);
         body.extend(text.bytes().filter(|b| *b != 0));
+        body.push(0);
+    }
+    if let Some(position) = position {
+        body.push(b'P');
+        body.extend_from_slice(position.to_string().as_bytes());
         body.push(0);
     }
     body.push(0);

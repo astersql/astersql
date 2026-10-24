@@ -1102,3 +1102,219 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
     finally:
         finish(conn)
 "#;
+
+#[test]
+fn pg_dialect_01_libpq() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    assert!(std::env::var_os("PG18_REFERENCE_DSN").is_some());
+    assert!(std::env::var_os("PG_CORE_REFERENCE_BUILD_FILE").is_some());
+    assert!(std::env::var_os("MYSQL_REFERENCE_DSN").is_some());
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg_dialect_01_{}_{}", std::process::id(), address.port());
+    let run = format!("{}-{}", std::process::id(), address.port());
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-dialect-01-evidence")
+        .join(run);
+    std::fs::create_dir_all(&evidence).unwrap();
+    println!("PG_DIALECT_EVIDENCE_DIR={}", evidence.display());
+    let executable = std::env::current_exe().unwrap();
+    let build = serde_json::json!({"path": executable, "profile": "cargo-test-default-features"});
+    std::fs::write(evidence.join("rust-build.json"), build.to_string()).unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup_guard = Cleanup(|| {
+        server.close();
+        let dropped = native.execute(&format!("DROP DATABASE {database}")).is_ok();
+        let cleanup = serde_json::json!({"database_dropped": dropped,
+            "postgres_port_closed": TcpStream::connect(address).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err()});
+        let _ = std::fs::write(evidence.join("rust-cleanup.json"), cleanup.to_string());
+    });
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_dialect_libpq.py"
+            ))
+            .args(["1".to_owned(), address.port().to_string(), database.clone()])
+            .env("PG_DIALECT_EVIDENCE_DIR", &evidence)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    fn column_type(column: &[u8]) -> u8 {
+        let mut offset = 0;
+        for _ in 0..6 {
+            let length = usize::from(column[offset]);
+            assert!(length < 251);
+            offset += length + 1;
+        }
+        assert_eq!(column[offset], 12);
+        column[offset + 7]
+    }
+    let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        let sql = format!("SELECT id AS v FROM {database}.dialect_isolation WHERE id=31");
+        let mut request = vec![3];
+        request.extend_from_slice(sql.as_bytes());
+        mysql_packet(socket, 0, &request);
+        assert_eq!(mysql_read(socket), vec![1]);
+        let column = mysql_read(socket);
+        assert_eq!(column_type(&column), 3);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let row = mysql_read(socket);
+        assert_eq!(&row, b"\x0231");
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let mut request = vec![0x16];
+        request.extend_from_slice(
+            format!("SELECT id AS v FROM {database}.dialect_isolation WHERE id=?").as_bytes(),
+        );
+        mysql_packet(socket, 0, &request);
+        let prepared = mysql_read(socket);
+        assert_eq!(prepared[0], 0);
+        let id = &prepared[1..5];
+        assert_eq!(u16::from_le_bytes(prepared[5..7].try_into().unwrap()), 1);
+        assert_eq!(u16::from_le_bytes(prepared[7..9].try_into().unwrap()), 1);
+        let parameter = mysql_read(socket);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let prepared_column = mysql_read(socket);
+        assert_eq!(column_type(&prepared_column), 3);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let mut request = vec![0x17];
+        request.extend_from_slice(id);
+        request.extend_from_slice(&[0, 1, 0, 0, 0, 0, 1, 3, 0]);
+        request.extend_from_slice(&31_i32.to_le_bytes());
+        mysql_packet(socket, 0, &request);
+        assert_eq!(mysql_read(socket), vec![1]);
+        let executed_column = mysql_read(socket);
+        assert_eq!(column_type(&executed_column), 3);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let binary = mysql_read(socket);
+        assert_eq!(&binary[..2], &[0, 0]);
+        assert_eq!(i32::from_le_bytes(binary[2..6].try_into().unwrap()), 31);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let mut close = vec![0x19];
+        close.extend_from_slice(id);
+        mysql_packet(socket, 0, &close);
+        let record = serde_json::json!({"run": evidence.file_name().unwrap().to_str().unwrap(),
+            "case_id": phase, "side": "mysql", "attempt": 1,
+            "input": {"command": sql}, "observation": {"column": column, "text_row": row,
+                "parameter": parameter, "prepared_column": prepared_column,
+                "binary_row": binary, "executed_column": executed_column}, "outcome": "bypass_health"});
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(evidence.join("mysql-local.jsonl"))
+            .unwrap();
+        writeln!(file, "{record}").unwrap();
+        file.sync_all().unwrap();
+    };
+    mysql_query(&mut mysql, "SET SESSION sql_mode = ''");
+    mysql_query(&mut mysql, "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci");
+    let environment = mysql_query(
+        &mut mysql,
+        "SELECT @@sql_mode, @@character_set_connection, @@collation_connection",
+    );
+    assert_eq!(
+        environment,
+        vec![vec![
+            Some(b"".to_vec()),
+            Some(b"utf8mb4".to_vec()),
+            Some(b"utf8mb4_general_ci".to_vec())
+        ]]
+    );
+    std::fs::write(
+        evidence.join("mysql-local-environment.json"),
+        serde_json::to_string(&environment).unwrap(),
+    )
+    .unwrap();
+    let baseline = mysql_query(&mut mysql, "SELECT 'Ab' ILIKE 'a%'");
+    std::fs::write(
+        evidence.join("mysql-legacy-extension.json"),
+        serde_json::to_string(&baseline).unwrap(),
+    )
+    .unwrap();
+    mysql_query(
+        &mut mysql,
+        &format!("CREATE TABLE {database}.dialect_isolation (id INT)"),
+    );
+    mysql_query(
+        &mut mysql,
+        &format!("INSERT INTO {database}.dialect_isolation VALUES (31)"),
+    );
+    checkpoint(&mut mysql, "before");
+    let mut checkpoints = 0;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line.starts_with("PG_DIALECT_CHECKPOINT ") {
+            checkpoint(&mut mysql, &line);
+            checkpoints += 1;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    std::fs::write(
+        evidence.join("child-exit.json"),
+        serde_json::json!({"success": status.success(), "code": status.code()}).to_string(),
+    )
+    .unwrap();
+    drop(child);
+    checkpoint(&mut mysql, "after");
+    mysql_packet(&mut mysql, 0, &[1]);
+    drop(cleanup_guard);
+    let cleanup: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("rust-cleanup.json")).unwrap())
+            .unwrap();
+    assert_eq!(cleanup["database_dropped"], true);
+    assert_eq!(cleanup["postgres_port_closed"], true);
+    assert_eq!(cleanup["mysql_port_closed"], true);
+    assert!(status.success(), "ILIKE handoff failed; see evidence");
+    assert_eq!(checkpoints, 10);
+    let summary_path = evidence.join("summary.json");
+    let mut summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
+    assert_eq!(summary["cleanup_ok"], true);
+    assert_eq!(summary["syntax_eligible"], 10);
+    assert_eq!(summary["self_checks"], 15);
+    assert_eq!(
+        std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        12
+    );
+    summary["unique_effective"] = 10.into();
+    std::fs::write(summary_path, summary.to_string()).unwrap();
+}

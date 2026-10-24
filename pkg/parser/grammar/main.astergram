@@ -1827,6 +1827,7 @@ Field : "*" %prec "*" @action;
 Field : Identifier "." "*" %prec "*" @action;
 Field : Identifier "." Identifier "." "*" %prec "*" @action;
 Field : Expression FieldAsNameOpt @action;
+Field : BitExpr IlikeOrNotOp %prec higherThanReturning @action;
 FieldAsNameOpt : ε %prec higherThanReturning @action;
 FieldAsNameOpt : FieldAsName;
 FieldAsName : Identifier;

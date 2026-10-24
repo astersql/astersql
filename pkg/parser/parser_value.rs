@@ -22,6 +22,7 @@
 pub struct yySymType {
     yys: isize,
     offset: i32, // offset
+    end_offset: usize, // Exclusive byte end of the consumed source tokens.
     item: Option<Box<dyn Any>>,
     ident: String,
     expr: Option<parser_ast::ExprNode>,
@@ -34,6 +35,7 @@ impl Default for yySymType {
         Self {
             yys: 0,
             offset: 0,
+            end_offset: 0,
             item: None,
             ident: String::new(),
             expr: None,
