@@ -1,5 +1,5 @@
-// Copyright 2015 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2015 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -486,10 +486,11 @@ impl Parser {
         self.lexer.PostgreSQLEofErrorPosition()
     }
 
-    /// Original character cursor for an identifier quote error or EOF error.
+    /// Original character cursor for an identifier quote, closing parenthesis, or EOF error.
     pub fn PostgreSQLSyntaxErrorPosition(&self) -> Option<usize> {
         self.lexer
             .PostgreSQLIdentifierErrorPosition()
+            .or_else(|| self.lexer.PostgreSQLClosingParenErrorPosition())
             .or_else(|| self.PostgreSQLEofErrorPosition())
     }
 

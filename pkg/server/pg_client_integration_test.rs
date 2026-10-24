@@ -1153,6 +1153,11 @@ fn pg_dialect_18_libpq() {
     pg_dialect_libpq(18);
 }
 
+#[test]
+fn pg_dialect_24_libpq() {
+    pg_dialect_libpq(24);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1390,6 +1395,45 @@ fn pg_dialect_libpq(task: u8) {
             }
             mysql_query(socket, "SET SESSION sql_mode = ''");
         }
+        if task == 24 {
+            let sql = "SELECT CAST(1 AS SIGNED) AS pg_core_mysql_identity_24";
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            assert_eq!(mysql_read(socket), vec![1]);
+            let cast_column = mysql_read(socket);
+            assert_eq!(column_type(&cast_column), 253);
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            assert_eq!(mysql_read(socket), b"\x011");
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            // Freeze the existing bare scalar CAST metadata separately; the
+            // lifecycle contract uses the typed table projection below.
+            let table_sql = format!(
+                "SELECT id AS pg_core_mysql_identity_24 FROM {database}.dialect_isolation WHERE id=CAST(31 AS SIGNED)"
+            );
+            let mut table_request = vec![3];
+            table_request.extend_from_slice(table_sql.as_bytes());
+            mysql_packet(socket, 0, &table_request);
+            assert_eq!(mysql_read(socket), vec![1]);
+            let table_column = mysql_read(socket);
+            assert_eq!(column_type(&table_column), 3);
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            assert_eq!(mysql_read(socket), b"\x0231");
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            let mut request = vec![3];
+            request.extend_from_slice(b"SELECT 1::int4");
+            mysql_packet(socket, 0, &request);
+            let error = mysql_read(socket);
+            assert_eq!(error[0], 0xff);
+            assert_eq!(u16::from_le_bytes(error[1..3].try_into().unwrap()), 1064);
+            assert_eq!(&error[4..9], b"42000");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-lifecycle.jsonl"))
+                .unwrap();
+            writeln!(file, "{}", serde_json::json!({"phase":phase,"sql":"SELECT 1::int4", "code":1064,"state":"42000", "packet":error,"bare_cast_type_baseline":253,"bare_cast_column":cast_column,"table_cast_type":3,"table_cast_sql":table_sql,"table_cast_column":table_column})).unwrap();
+        }
         let sql = format!("SELECT id AS v FROM {database}.dialect_isolation WHERE id=31");
         let mut request = vec![3];
         request.extend_from_slice(sql.as_bytes());
@@ -1403,7 +1447,11 @@ fn pg_dialect_libpq(task: u8) {
         assert_eq!(mysql_read(socket)[0], 0xfe);
         let mut request = vec![0x16];
         request.extend_from_slice(
-            format!("SELECT id AS v FROM {database}.dialect_isolation WHERE id=?").as_bytes(),
+            format!(
+                "SELECT id AS v FROM {database}.dialect_isolation WHERE id={}",
+                if task == 24 { "CAST(? AS SIGNED)" } else { "?" }
+            )
+            .as_bytes(),
         );
         mysql_packet(socket, 0, &request);
         let prepared = mysql_read(socket);
@@ -1607,6 +1655,36 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 24 {
+        assert_eq!(checkpoints, 6);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 6);
+        let observed = crate::runtime::DIALECT_EXECUTIONS.lock().unwrap();
+        for (marker, dialect) in [
+            (
+                "pg_core_pg_identity_24",
+                astersql_parser_ast::SqlDialect::PostgreSQL,
+            ),
+            (
+                "pg_core_mysql_identity_24",
+                astersql_parser_ast::SqlDialect::MySQL,
+            ),
+        ] {
+            let entries = observed
+                .iter()
+                .filter(|(sql, _)| sql.contains(marker))
+                .collect::<Vec<_>>();
+            assert!(
+                entries.len() >= 8,
+                "missing current connection identity evidence: {marker}"
+            );
+            assert!(entries.iter().all(|(_, actual)| *actual == dialect));
+        }
+        return;
+    }
     if task == 18 {
         assert_eq!(checkpoints, 6);
         let summary: serde_json::Value =

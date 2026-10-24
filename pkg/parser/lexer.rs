@@ -70,6 +70,15 @@ impl Scanner {
             .filter(|offset| *offset == self.lastScanOffset as usize)
             .map(|offset| self.r.s[..offset].chars().count() + 1)
     }
+    // The connection lifecycle recovery probe rejects an unexpected closing
+    // parenthesis. Its scanner cursor refers to the original SQL, before any
+    // PG boundary adaptation. Do not guess positions for other error shapes.
+    pub(super) fn PostgreSQLClosingParenErrorPosition(&self) -> Option<usize> {
+        let offset = usize::try_from(self.lastScanOffset).ok()?;
+        (self.postgres && self.errs.len() == 1 && self.r.s.as_bytes().get(offset) == Some(&b')'))
+            .then(|| self.r.s[..offset].chars().count() + 1)
+    }
+
     pub(super) fn PostgreSQLEofErrorPosition(&self) -> Option<usize> {
         (self.postgres && self.errs.len() == 1 && self.lastScanOffset as usize == self.r.s.len())
             .then(|| self.r.s.chars().count() + 1)

@@ -406,3 +406,67 @@ fn pg_dialect_18_behavior() {
         "pg_dialect_18_behavior: primary_shapes=6 assertions={assertions}; binding values verified separately by libpq"
     );
 }
+
+#[test]
+fn pg_dialect_24_behavior() {
+    use astersql_parser_ast::{CastFunctionType, ExprKind, SelectStmt, SqlDialect};
+    let mut pg = astersql_parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    let mut mysql = astersql_parser::Parser::with_dialect(SqlDialect::MySQL);
+    let sql = "/*中*/ SELECT $2::int4 AS \"v\", '$1 ::int8' /* $3 */";
+    let mut checks = 0;
+    // Each instance is reused after errors and Reset while the other stays live.
+    for _ in 0..3 {
+        assert!(pg.ParseOneStmt("/*中*/ SELECT )", "", "").is_err());
+        checks += 1;
+        assert_eq!(pg.PostgreSQLSyntaxErrorPosition(), Some(14));
+        checks += 1;
+        assert_eq!(mysql.PostgreSQLSyntaxErrorPosition(), None);
+        checks += 1;
+        mysql.Reset();
+        assert_eq!(mysql.sql_dialect(), SqlDialect::MySQL);
+        checks += 1;
+        let stmt = mysql
+            .ParseOneStmt("SELECT CAST(1 AS SIGNED)", "", "")
+            .unwrap();
+        let select = stmt.as_any().downcast_ref::<SelectStmt>().unwrap();
+        assert!(matches!(
+            select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+            ExprKind::Cast {
+                FunctionType: CastFunctionType::Cast,
+                ..
+            }
+        ));
+        checks += 1;
+        assert!(mysql.ParseOneStmt("SELECT 1::int4", "", "").is_err());
+        checks += 1;
+        pg.Reset();
+        assert_eq!(pg.sql_dialect(), SqlDialect::PostgreSQL);
+        checks += 1;
+        let stmt = pg.ParseOneStmt(sql, "", "").unwrap();
+        assert_eq!(pg.PostgreSQLSyntaxErrorPosition(), None);
+        checks += 1;
+        let select = stmt.as_any().downcast_ref::<SelectStmt>().unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let ExprKind::Cast {
+            Expr,
+            FunctionType,
+            Tp,
+            ..
+        } = &expr.Kind
+        else {
+            panic!("PG cast tree: {expr:?}");
+        };
+        assert_eq!(*FunctionType, CastFunctionType::PostgreSQLInt4);
+        assert_eq!(Tp.GetType(), astersql_parser_mysql::r#type::TypeLong);
+        assert_eq!(Expr.PostgreSQLParameterIndex(), Some(2));
+        assert_eq!(expr.node_text.OriginalText(), b"$2::int4");
+        assert_eq!(&sql[expr.OriginTextPosition as usize..][..8], "$2::int4");
+        assert_eq!(select.Fields.Fields[0].AsName.O, "v");
+        let literal = select.Fields.Fields[1].Expr.as_ref().unwrap();
+        assert!(matches!(&literal.Kind, ExprKind::Value(value) if value == "$1 ::int8"));
+        assert_eq!(literal.PostgreSQLParameterIndex(), None);
+        checks += 8;
+    }
+    assert_eq!(checks, 48);
+    println!("pg_dialect_24_behavior: {checks} semantic assertions; 3 reuse/error/reset cycles");
+}

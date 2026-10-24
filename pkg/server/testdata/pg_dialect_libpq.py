@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 9, 11, 13, 14, 16, 18), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -194,7 +194,16 @@ if task == 18:
         ('forward_table','WITH a AS (SELECT v FROM @t@), @t@ AS (SELECT 2 AS v) SELECT v FROM a',[]),
         ('self_table','WITH @t@ AS (SELECT v FROM @t@) SELECT v FROM @t@',[]),
     ]
-assert len({case[0] for case in cases}) == (6 if task == 18 else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
+if task == 24:
+    cases = [(name,sql,oids) for name,sql,oids in [
+        ('coexist','SELECT $1::int4 AS v',[23]),
+        ('parse_error','/*中*/ SELECT )',[]),
+        ('close_statement','SELECT $1::int8 AS v',[20]),
+        ('close_portal','SELECT $1::int4 AS v',[23]),
+        ('reconnect','SELECT $1::int4 AS v',[23]),
+        ('transaction_error','/*中*/ SELECT )',[]),
+    ]]
+assert len({case[0] for case in cases}) == (6 if task in (18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'))), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task in (9,11) else [None]*len(oids)) if oids else []),
@@ -248,7 +257,7 @@ def observe(result):
                     rows=[[None if is_null(result, r, col) else value(result, r, col).decode()
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (13,14,16,18) else None))
+                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -1505,6 +1514,266 @@ def cte_handoff():
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and clean, 'completion/cleanup: '+str(failures)
     print(json.dumps(summary),flush=True)
+
+def lifecycle_handoff():
+    """Connection lifecycle through libpq18; named portals need a wire supplement."""
+    import socket
+    import struct
+    conns, prepared, wire_sockets = {}, set(), []
+    checks = self_checks = eligible = 0
+    clean = True
+    done = False
+    registry = []
+    current_case = "setup"
+    def check(ok, message):
+        nonlocal checks
+        checks += 1
+        assert ok, message
+    def record(name, label, data, result):
+        archive(name, 'aster' if label.startswith('aster') else ('reference' if label.startswith('reference') else label), data,
+                dict(result, connection=label, lifecycle_case=current_case,
+                     transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conns[label])) if label in conns else None))
+    local = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+    def open_conn(label):
+        conn = connect((os.environ['PG18_REFERENCE_DSN'] if label.startswith('reference') else local).encode())
+        conns[label] = conn
+        check(bool(conn) and status(conn) == 0, 'connect '+label)
+        if label.startswith('reference'):
+            check(query(conn, "SET TIME ZONE 'UTC'")['status'] == 1, 'UTC')
+        check(query(conn, 'SET search_path TO public')['status'] == 1, 'public')
+        return conn
+    def q(label, sql, name):
+        result = query(conns[label], sql)
+        record(name, label, dict(phase='Q',sql=sql), result)
+        return result
+    def prep(label, oid, name=b'same'):
+        sql = f'SELECT $1::int{4 if oid==23 else 8} AS v'
+        data = dict(phase='Parse',sql=sql,statement=name.decode(),parameter_oids=[oid],arguments=[],parameter_formats=[0],result_format=0)
+        result = observe(prepare(conns[label],name,sql.encode(),1,(c.c_uint*1)(oid)))
+        record('prepare',label,data,result)
+        check(result['status']==1, 'prepare '+label+': '+str(result))
+        prepared.add((label,name))
+        desc = observe(describe(conns[label],name));record('describe',label,dict(data,phase='Describe'),desc)
+        check(desc['params']==[oid] and desc['param_count']==1 and desc['fields']==[['v',oid,4 if oid==23 else 8,-1]] and desc['formats']==[0], 'typed Describe '+label)
+        check(desc['table_origins']==[[0,0]], 'expression has no physical origin '+label)
+        return desc
+    def run(label, arg, oid, name=b'same'):
+        result = observe(exec_prepared(conns[label],name,1,(text*1)(arg.encode() if arg is not None else None),None,None,0))
+        record('execute',label,dict(phase='Bind/Execute',statement=name.decode(),arguments=[arg],parameter_formats=[0],result_format=0),result)
+        check(result['status']==2 and result['rows']==[[arg]] and result['fields']==[['v',oid,4 if oid==23 else 8,-1]] and result['command_tag']=='SELECT 1' and result['formats']==[0], 'typed value/NULL '+label)
+        check(result['table_origins']==[[0,0]], 'executed expression has no physical origin '+label)
+        return result
+    def close(label, name=b'same'):
+        result=observe(close_prepared(conns[label],name));record('close_statement',label,dict(phase='Close',statement=name.decode()),result)
+        check(result['status']==1,'Close statement');prepared.discard((label,name))
+    def recover(label):
+        if transaction(conns[label]) in (2,3):
+            check(q(label,'ROLLBACK','rollback')['status']==1,'rollback')
+        result=q(label,'SELECT 1::int4 AS pg_core_pg_identity_24','recovery')
+        check(result['rows']==[['1']] and result['fields']==[['pg_core_pg_identity_24',23,4,-1]] and transaction(conns[label])==0,'same connection typed recovery '+label)
+    def checkpoint(name):
+        forward = len(registry) % 2 == 1
+        recover('aster' if forward else 'aster_b')
+        print('PG_DIALECT_CHECKPOINT '+name,flush=True)
+        check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
+        for label in (['aster_b','aster','reference_b','reference'] if forward else ['aster','aster_b','reference','reference_b']):
+            recover(label)
+    scope='lifecycle24_'+evidence.name.replace('-','_')
+    def observers(name):
+        for label,table in [('aster_observer','public.dialect_isolation'),('reference_observer','public.'+scope)]:
+            result=q(label,'SELECT id FROM '+table,name+'_observer')
+            check(result['rows']==[['31']], 'independent observer unchanged')
+    def register(name, sql, phase, oids=None, args=None):
+        nonlocal current_case
+        current_case = name
+        data=dict(case_id=name,capability_id='pg.dialect.connection.lifecycle',sql=sql,phase=phase,
+                  parameter_oids=oids or [],arguments=args or [],parameter_formats=[0]*len(oids or []),result_format=0,
+                  encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',
+                  object_mapping={'aster':'current_database.public.dialect_isolation','reference':'public.'+scope},
+                  roles={s:connection_user(conns[s]).decode() for s in ['aster','aster_b','reference','reference_b']},
+                  expected_basis='task24 immutable connection identity; PostgreSQL18.6 actual lifecycle',
+                  expected_state='42601' if name in ('parse_error','transaction_error') else '',
+                  expected_position=str(sql.index(')')+1) if name in ('parse_error','transaction_error') else None)
+        registry.append(data);(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+    def wire_portals(label):
+        # libpq does not expose Bind with a named portal. Use a separate real
+        # protocol connection so its internal read buffer is never bypassed.
+        host,port,user,db = ('127.0.0.1',int(sys.argv[2]),'root',sys.argv[3])
+        if label=='reference':
+            options=api('PQhost',text,ptr)(conns[label]).decode(),api('PQport',text,ptr)(conns[label]).decode(),connection_user(conns[label]).decode(),api('PQdb',text,ptr)(conns[label]).decode()
+            host,port,user,db=options;port=int(port)
+        sock=socket.create_connection((host,port),timeout=10);wire_sockets.append(sock)
+        def send(tag,body):sock.sendall(tag+struct.pack('!I',len(body)+4)+body)
+        def exact(n):
+            result=b''
+            while len(result)<n:
+                part=sock.recv(n-len(result));assert part, 'wire EOF';result+=part
+            return result
+        def read():
+            header=exact(5);return header[:1],exact(struct.unpack('!I',header[1:])[0]-4)
+        startup=struct.pack('!I',196608)+b'user\0'+user.encode()+b'\0database\0'+db.encode()+b'\0\0'
+        sock.sendall(struct.pack('!I',len(startup)+4)+startup)
+        wire_parameters={}
+        def parameter(tag,body):
+            if tag==b'S':
+                key,val,_=body.split(b'\0',2);wire_parameters[key.decode()]=val.decode()
+        while True:
+            tag,body=read();parameter(tag,body)
+            if tag==b'R':check(body==b'\0\0\0\0','trust fixture authentication')
+            if tag==b'Z':check(body==b'I','wire initial idle');break
+        # Freeze and observe the same environment on the supplementary socket.
+        def wire_query(sql):
+            send(b'Q',sql.encode()+b'\0');messages=[]
+            while True:
+                tag,body=read();parameter(tag,body);messages.append((tag,body))
+                if tag==b'Z':break
+            check(not any(tag==b'E' for tag,body in messages),'wire environment command')
+            return messages
+        if label=='reference':wire_query("SET TIME ZONE 'UTC'")
+        wire_query('SET search_path TO public')
+        for sql,want in [('SHOW search_path','public')]:
+            messages=wire_query(sql)
+            check([body for tag,body in messages if tag==b'D']==[struct.pack('!HI',1,len(want))+want.encode()], 'wire environment '+sql)
+            record('wire_environment',label,dict(phase='Q',sql=sql),dict(wire=[(tag.decode(),body.hex()) for tag,body in messages]))
+        check(wire_parameters.get('TimeZone')=='UTC' and wire_parameters.get('client_encoding')=='UTF8','wire ParameterStatus environment')
+        record('wire_parameters',label,{},dict(parameters=wire_parameters))
+        results=[]
+        for oid,arg in [(23,'7'),(20,'2147483648')]:
+            sql=f'SELECT $1::int{4 if oid==23 else 8} AS v'
+            send(b'P',b'same\0'+sql.encode()+b'\0'+struct.pack('!HI',1,oid))
+            send(b'B',b'portal\0same\0'+struct.pack('!HHI',0,1,len(arg))+arg.encode()+struct.pack('!H',0))
+            send(b'D',b'Pportal\0');send(b'E',b'portal\0'+struct.pack('!I',0))
+            send(b'C',b'Pportal\0');send(b'C',b'Ssame\0');send(b'S',b'')
+            messages=[]
+            while True:
+                tag,body=read();messages.append((tag,body))
+                if tag==b'Z':break
+            record('named_portal',label,dict(phase='Parse/Bind/Describe/Execute/Close/Sync',sql=sql,parameter_oids=[oid],arguments=[arg]),dict(wire=[(t.decode(),b.hex()) for t,b in messages]))
+            check([t for t,b in messages]==[b'1',b'2',b'T',b'D',b'C',b'3',b'3',b'Z'],'portal lifecycle messages '+label)
+            desc=messages[2][1];end=desc.index(b'\0',2)
+            check(desc[2:end]==b'v' and struct.unpack('!Ihih',desc[end+7:])==(oid,4 if oid==23 else 8,-1,0),'portal exact metadata')
+            check(messages[3][1]==struct.pack('!HI',1,len(arg))+arg.encode() and messages[4][1]==b'SELECT 1\0' and messages[-1][1]==b'I','portal value/command/idle')
+            results.append(dict(oid=oid,arg=arg,description=desc.hex()))
+        # Pipeline a command after a Parse error: only ErrorResponse and Sync's
+        # ReadyForQuery may survive; the ignored Bind must not create a portal.
+        sql='/*中*/ SELECT )'
+        send(b'P',b'bad\0'+sql.encode()+b'\0'+struct.pack('!H',0))
+        send(b'B',b'ignored\0bad\0'+struct.pack('!HHH',0,0,0));send(b'S',b'')
+        messages=[]
+        while True:
+            tag,body=read();messages.append((tag,body))
+            if tag==b'Z':break
+        record('parse_error_wire',label,dict(phase='Parse/ignored Bind/Sync',sql=sql),dict(wire=[(tag.decode(),body.hex()) for tag,body in messages]))
+        check([tag for tag,body in messages]==[b'E',b'Z'] and messages[-1][1]==b'I','explicit Sync recovery')
+        fields={item[:1]:item[1:] for item in messages[0][1].split(b'\0') if item}
+        check(fields.get(b'C')==b'42601' and fields.get(b'P')==b'14','wire original error fields')
+        send(b'X',b'');sock.close();wire_sockets.remove(sock)
+        return results
+    reference_created=False
+    try:
+        for label in ['reference','reference_b','aster','aster_b','aster_observer','reference_observer']:open_conn(label)
+        identity=query(conns['reference'],"SELECT version(),current_setting('server_version_num')")['rows'][0]
+        check(identity[1]=='180006','exact PostgreSQL18.6')
+        build=json.loads((evidence/'rust-build.json').read_text());build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,
+            reference=dict(version=identity[0],server_version_num=identity[1]),reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),endpoints={s:endpoint(conns[s]) for s in conns},storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
+        bad=copy.deepcopy(provenance);bad['reference_build']['server_version_num']=180004
+        check(not validate_provenance(bad,provenance),'provenance negative');self_checks+=1
+        check(q('reference','CREATE TABLE public.'+scope+'(id integer)','setup')['status']==1,'reference observer table');reference_created=True
+        check(q('reference','INSERT INTO public.'+scope+' VALUES(31)','setup')['status']==1,'reference observer row')
+        observers('initial')
+        check(q('aster',"SET search_path TO pg_catalog, public",'path')['status']==1,'A path')
+        check(q('reference',"SET search_path TO pg_catalog, public",'path')['status']==1,'reference A path')
+        register('coexist','SELECT $1::int4 AS v','Parse/Bind/Describe/Execute',[23],['7'])
+        descs={label:prep(label,23 if label in ('aster','reference') else 20) for label in ['aster','reference','aster_b','reference_b']}
+        check(compare_metadata(descs['aster'],descs['reference'],'describe') and compare_metadata(descs['aster_b'],descs['reference_b'],'describe'),'two endpoint parameter identity')
+        bad=copy.deepcopy(descs['aster']);bad['fields'][0][1]=20
+        check(not compare_metadata(bad,descs['reference'],'describe'),'metadata negative');self_checks+=1
+        for label in ['aster','reference','reference_b','aster_b']:
+            oid=23 if label in ('aster','reference') else 20;run(label,'7' if oid==23 else '2147483648',oid);run(label,None,oid)
+        checkpoint('coexist');observers('coexist');eligible+=1
+        register('parse_error','/*中*/ SELECT )','Parse')
+        for label in ['aster','reference']:
+            result=observe(prepare(conns[label],b'bad',b'/*\xe4\xb8\xad*/ SELECT )',0,None));record('parse_error',label,dict(phase='Parse',sql='/*中*/ SELECT )'),result)
+            check(result['status']==7 and result['state']=='42601' and result['position']=='14' and transaction(conns[label])==0,'Parse error and libpq implicit Sync')
+            recover(label)
+            result=q(label,'/*中*/ SELECT )','simple_error');check(result['state']=='42601' and result['position']=='14','Q original position');recover(label)
+        for label in ['aster_b','reference_b']:
+            run(label,'2147483648',20);check(q(label,'SHOW search_path','B_path')['rows']==[['public']],'B path unchanged')
+        checkpoint('parse_error');observers('parse_error');eligible+=1
+        register('close_statement','SELECT $1::int8 AS v','Close/Parse/Describe/Execute',[20],['2147483648'])
+        for label in ['aster','reference']:
+            close(label);prep(label,20);run(label,'2147483648',20)
+        for label in ['aster_b','reference_b']:run(label,'9',20)
+        checkpoint('close_statement');observers('close_statement');eligible+=1
+        register('close_portal','SELECT $1::int4 AS v','Parse/Bind/Describe/Execute/Close/Sync',[23],['7'])
+        check(wire_portals('aster')==wire_portals('reference'),'named portal differential')
+        checkpoint('close_portal');observers('close_portal');eligible+=1
+        register('reconnect','SELECT $1::int4 AS v','Close/disconnect/Parse/Describe/Execute',[23],['11'])
+        for label in ['aster','reference']:
+            close(label);finish(conns.pop(label));open_conn(label)
+            check(q(label,'SHOW search_path','fresh_path')['rows']==[['public']],'explicit fresh connection path')
+            prep(label,23);run(label,'11',23)
+        for label in ['aster_b','reference_b']:run(label,'13',20)
+        checkpoint('reconnect');observers('reconnect');eligible+=1
+        register('transaction_error','/*中*/ SELECT )','BEGIN/Parse/Sync/ROLLBACK/Q')
+        for label in ['aster','reference']:
+            check(q(label,'BEGIN','begin')['status']==1,'begin')
+            result=observe(prepare(conns[label],b'bad_tx',b'/*\xe4\xb8\xad*/ SELECT )',0,None));record('transaction_error',label,dict(phase='Parse',sql='/*中*/ SELECT )'),result)
+            check(result['state']=='42601' and result['position']=='14' and transaction(conns[label])==3,'failed transaction after Sync')
+            recover(label);run(label,'17',23)
+        checkpoint('transaction_error');observers('transaction_error');eligible+=1
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql,types=False,case_name='control'):
+            process=subprocess.run(args+(['--column-type-info','-vvv'] if types else [])+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            result=dict(sql=sql,code=process.returncode,output=process.stdout.splitlines(),error=process.stderr)
+            record('mysql_reference_'+case_name,'mysql',dict(phase='Q/PREPARE/EXECUTE',sql=sql),dict(result,lifecycle_case=case_name));return result
+        identity=mysql_ref('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; SELECT @@sql_mode,@@character_set_connection,@@collation_connection')
+        check(identity['code']==0,'MySQL exact identity')
+        scalar_baseline=mysql_ref('SELECT CAST(1 AS SIGNED) AS v',True)
+        check(scalar_baseline['code']==0 and re.findall(r'Type:\s+(\w+)', '\n'.join(scalar_baseline['output']))==['LONGLONG'],'reference bare CAST baseline; local 253 is a pre-existing scalar metadata gap')
+        for name,_,_ in cases:
+            table='mysql.'+scope
+            sql=f"CREATE TEMPORARY TABLE {table}(id INT); INSERT INTO {table} VALUES(31); SELECT id AS v FROM {table} WHERE id=CAST(31 AS SIGNED); PREPARE p FROM 'SELECT id AS v FROM {table} WHERE id=CAST(? AS SIGNED)'; SET @v=31; EXECUTE p USING @v; DEALLOCATE PREPARE p; DROP TEMPORARY TABLE {table}"
+            result=mysql_ref(sql,True,case_name=name)
+            check(result['code']==0 and re.findall(r'Type:\s+(\w+)', '\n'.join(result['output']))==['LONG','LONG'],'MySQL reference own types/prepare')
+            check(sum(bool(re.fullmatch(r'\|\s*31\s*\|',line)) for line in result['output'])==2,'MySQL reference own values')
+        result=mysql_ref('SELECT 1::int4');check(result['code']!=0 and '1064 (42000)' in result['error'],'MySQL own negative SQL')
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        final['client']['sha256']=hashlib.sha256(library.read_bytes()).hexdigest()
+        final['reference_build']=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        current=query(conns['reference'],"SELECT version(),current_setting('server_version_num')")['rows'][0]
+        final['reference']=dict(version=current[0],server_version_num=current[1])
+        check(validate_provenance(provenance,final),'source/build/client/reference unchanged');done=True
+    finally:
+        for sock in wire_sockets:sock.close()
+        for label,name in prepared:
+            if label in conns:
+                if transaction(conns[label]) in (2,3):clean=query(conns[label],'ROLLBACK')['status']==1 and clean
+                clean=observe(close_prepared(conns[label],name))['status']==1 and clean
+        if reference_created:
+            result=q('reference','DROP TABLE IF EXISTS public.'+scope,'cleanup');clean=result['status']==1 and clean
+        for conn in conns.values():
+            if conn:
+                if transaction(conn) in (2,3):clean=query(conn,'ROLLBACK')['status']==1 and clean
+                finish(conn)
+        # Always persist failed-run cleanup and counts before propagating its
+        # original exception. Successful runs assert completion below.
+        summary=dict(cases=6,assertions=checks+int(done),self_checks=self_checks,unique_effective=eligible if done and clean else 0,cleanup_ok=clean,
+                     layers=dict(libpq_cases=5,named_portal_wire_cases=1,mysql_local_checkpoints=8 if done else 0,mysql_reference_cases=6 if done else 0))
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    check(done and clean,'completion/cleanup')
+    print(json.dumps(summary),flush=True)
+
+if task == 24:
+    lifecycle_handoff()
+    sys.exit(0)
 
 if task == 18:
     cte_handoff()
