@@ -265,7 +265,7 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "field_expression_fieldasnameopt--345551df2e60fe38" => Some(QueryRule::FieldAlt04),
         "field_bitexpr_ilikeornotop_prec_higherthanreturn--5bb1817969497024" => {
             Some(QueryRule::PgIlikeAlias)
-        },
+        }
         "fieldasnameopt_prec_higherthanreturning--d66a8b909d7a7f92" => {
             Some(QueryRule::FieldAsNameOptAlt01)
         }
@@ -2069,10 +2069,17 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         QueryRule::PgIlikeAlias => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
-                yylex.AppendError(yylex.Errorf("ILIKE bare aliases require PostgreSQL dialect", &[]));
+                yylex.AppendError(
+                    yylex.Errorf("ILIKE bare aliases require PostgreSQL dialect", &[]),
+                );
                 return Err(1);
             }
-            if rhs[2].item.as_deref().and_then(|value| value.downcast_ref::<bool>()) != Some(&true) {
+            if rhs[2]
+                .item
+                .as_deref()
+                .and_then(|value| value.downcast_ref::<bool>())
+                != Some(&true)
+            {
                 yylex.AppendError(yylex.Errorf("NOT ILIKE requires a pattern", &[]));
                 return Err(1);
             }
@@ -2302,8 +2309,10 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             } else {
                 0
             };
+            let (name, part) = super::identifier(parser_state, &rhs[rhs_len - back]);
             out.item = Some(Box::new(parser_ast::TableName {
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (back)].ident),
+                Name: name,
+                PostgreSQLParts: part.into_iter().collect(),
                 ..Default::default()
             }));
         }
@@ -2319,8 +2328,12 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 return Err(1);
             }
             out.item = Some(Box::new(parser_ast::TableName {
-                Schema: parser_ast::NewCIStr(&schema),
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (name_back)].ident),
+                Schema: super::identifier(parser_state, &rhs[rhs_len - schema_back]).0,
+                Name: super::identifier(parser_state, &rhs[rhs_len - name_back]).0,
+                PostgreSQLParts: [schema_back, name_back]
+                    .into_iter()
+                    .filter_map(|back| super::identifier(parser_state, &rhs[rhs_len - back]).1)
+                    .collect(),
                 ..Default::default()
             }));
         }

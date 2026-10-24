@@ -1166,24 +1166,26 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             });
         }
         ExpressionRule::ColumnNameAlt01 => {
-            out.item = Some(Box::new(parser_ast::ColumnName {
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
-                ..Default::default()
-            }));
+            out.item = Some(Box::new(super::column_name(
+                parser_state,
+                &[&rhs[rhs_len - (0)]],
+            )));
         }
         ExpressionRule::ColumnNameAlt02 => {
-            out.item = Some(Box::new(parser_ast::ColumnName {
-                Table: parser_ast::NewCIStr(&rhs[rhs_len - (2)].ident),
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
-                ..Default::default()
-            }));
+            out.item = Some(Box::new(super::column_name(
+                parser_state,
+                &[&rhs[rhs_len - (2)], &rhs[rhs_len - (0)]],
+            )));
         }
         ExpressionRule::ColumnNameAlt03 => {
-            out.item = Some(Box::new(parser_ast::ColumnName {
-                Schema: parser_ast::NewCIStr(&rhs[rhs_len - (4)].ident),
-                Table: parser_ast::NewCIStr(&rhs[rhs_len - (2)].ident),
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
-            }));
+            out.item = Some(Box::new(super::column_name(
+                parser_state,
+                &[
+                    &rhs[rhs_len - (4)],
+                    &rhs[rhs_len - (2)],
+                    &rhs[rhs_len - (0)],
+                ],
+            )));
         }
         ExpressionRule::ColumnNameListAlt01 => {
             let column = rhs[rhs_len - (0)]
@@ -1507,24 +1509,26 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             ));
         }
         ExpressionRule::SimpleIdentAlt01 => {
-            out.expr = Some(parser_ast::ExprNode::Column(parser_ast::ColumnName {
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
-                ..Default::default()
-            }));
+            out.expr = Some(parser_ast::ExprNode::Column(super::column_name(
+                parser_state,
+                &[&rhs[rhs_len - (0)]],
+            )));
         }
         ExpressionRule::SimpleIdentAlt02 => {
-            out.expr = Some(parser_ast::ExprNode::Column(parser_ast::ColumnName {
-                Table: parser_ast::NewCIStr(&rhs[rhs_len - (2)].ident),
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
-                ..Default::default()
-            }));
+            out.expr = Some(parser_ast::ExprNode::Column(super::column_name(
+                parser_state,
+                &[&rhs[rhs_len - (2)], &rhs[rhs_len - (0)]],
+            )));
         }
         ExpressionRule::SimpleIdentAlt03 => {
-            out.expr = Some(parser_ast::ExprNode::Column(parser_ast::ColumnName {
-                Schema: parser_ast::NewCIStr(&rhs[rhs_len - (4)].ident),
-                Table: parser_ast::NewCIStr(&rhs[rhs_len - (2)].ident),
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
-            }));
+            out.expr = Some(parser_ast::ExprNode::Column(super::column_name(
+                parser_state,
+                &[
+                    &rhs[rhs_len - (4)],
+                    &rhs[rhs_len - (2)],
+                    &rhs[rhs_len - (0)],
+                ],
+            )));
         }
         ExpressionRule::SimpleExprAlt27 => {
             let Some(expr) = rhs[rhs_len - (3)].expr.clone() else {

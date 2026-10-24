@@ -1133,6 +1133,11 @@ fn pg_dialect_11_libpq() {
     pg_dialect_libpq(11);
 }
 
+#[test]
+fn pg_dialect_13_libpq() {
+    pg_dialect_libpq(13);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1216,6 +1221,28 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 13 {
+            mysql_query(socket, "SET SESSION sql_mode = ''");
+            assert_eq!(
+                mysql_query(socket, "SELECT \"Foo\""),
+                vec![vec![Some(b"Foo".to_vec())]]
+            );
+            mysql_query(socket, "SET SESSION sql_mode = 'ANSI_QUOTES'");
+            let mut request = vec![3];
+            request.extend_from_slice(b"SELECT \"Foo\"");
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(response[0], 0xff);
+            assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1054);
+            assert_eq!(&response[4..9], b"42S22");
+            mysql_query(socket, "SET SESSION sql_mode = ''");
+            let mut output = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-identifier-isolation.jsonl"))
+                .unwrap();
+            writeln!(output,"{}",serde_json::json!({"phase":phase,"default_value":"Foo","ansi_error_code":1054,"ansi_sqlstate":"42S22"})).unwrap();
+        }
         if task == 3 {
             for (mode, expected) in [
                 ("", b"1".as_slice()),
@@ -1446,6 +1473,37 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 13 {
+        assert_eq!(checkpoints, 9);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["syntax_eligible"], 9);
+        assert_eq!(summary["gate_cases"], 1);
+        assert_eq!(summary["value_type_cases"], 6);
+        assert!((4..=8).contains(&summary["unique_effective"].as_u64().unwrap()));
+        assert_eq!(
+            summary["unique_effective"].as_u64().unwrap()
+                + summary["origin_metadata_mismatch_cases"].as_u64().unwrap(),
+            8
+        );
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            11
+        );
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("mysql-identifier-isolation.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            11
+        );
+        return;
+    }
     if task == 11 {
         assert_eq!(checkpoints, 6);
         let summary: serde_json::Value =

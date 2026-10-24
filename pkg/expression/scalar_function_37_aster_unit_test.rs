@@ -262,6 +262,7 @@ fn field_name_resolution_matches_redundant_and_ambiguous_rules() {
         Schema: ast::NewCIStr("db"),
         Table: ast::NewCIStr("tbl"),
         Name: ast::NewCIStr("col"),
+        PostgreSQLParts: Vec::new(),
     };
     let names = |values: Vec<types::FieldName>| {
         types::NameSlice(

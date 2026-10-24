@@ -2451,6 +2451,7 @@ fn select_projection_expressions(
                     Schema: ast::CIStr::default(),
                     Table: ast::CIStr::default(),
                     Name: ast::NewCIStr(column),
+                    PostgreSQLParts: Vec::new(),
                 }),
                 OriginTextPosition: 0,
                 Flag: Default::default(),

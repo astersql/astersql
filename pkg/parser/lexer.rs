@@ -56,12 +56,22 @@ pub struct Scanner {
     keepHint: bool,
     parenDepth: usize,
     depthLimitError: Option<usize>,
+    identifierQuoteError: Option<usize>,
 }
 
 impl Scanner {
+    pub(super) fn PostgreSQLIdentifierErrorPosition(&self) -> Option<usize> {
+        if !self.postgres || self.errs.len() != 1 {
+            return None;
+        }
+        self.identifierQuoteError
+            // Lookahead may scan a later malformed quote before the parser
+            // rejects the current token. Only that quote's own error owns P.
+            .filter(|offset| *offset == self.lastScanOffset as usize)
+            .map(|offset| self.r.s[..offset].chars().count() + 1)
+    }
     pub(super) fn PostgreSQLEofErrorPosition(&self) -> Option<usize> {
-        (self.postgres && self.errs.len() == 1
-            && self.lastScanOffset as usize == self.r.s.len())
+        (self.postgres && self.errs.len() == 1 && self.lastScanOffset as usize == self.r.s.len())
             .then(|| self.r.s.chars().count() + 1)
     }
 
@@ -86,6 +96,7 @@ impl Scanner {
         self.identifierDot = false;
         self.parenDepth = 0;
         self.depthLimitError = None;
+        self.identifierQuoteError = None;
     }
 
     // stmtText 截取当前语句，并按 Go 逻辑只修剪边界上的一个换行。
@@ -119,7 +130,13 @@ impl Scanner {
             let prefix = &self.r.s[..self.lastScanOffset as usize];
             (
                 prefix.bytes().filter(|byte| *byte == b'\n').count() as i32 + 1,
-                prefix.rsplit('\n').next().unwrap_or_default().chars().count() as i32 + 1,
+                prefix
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .count() as i32
+                    + 1,
             )
         } else {
             (self.r.p.Line, self.r.p.Col)
@@ -263,12 +280,7 @@ impl Scanner {
             && lit.len() > 1
             && lit[1..].bytes().all(|b| b.is_ascii_digit())
         {
-            if lit[1..]
-                .parse::<u16>()
-                .ok()
-                .filter(|n| *n != 0)
-                .is_none()
-            {
+            if lit[1..].parse::<u16>().ok().filter(|n| *n != 0).is_none() {
                 self.AppendError(self.Errorf("invalid PostgreSQL parameter number"));
                 tok = token::invalid;
             } else {
@@ -673,6 +685,7 @@ impl Scanner {
             keepHint: false,
             parenDepth: 0,
             depthLimitError: None,
+            identifierQuoteError: None,
         }
     }
 }
@@ -959,7 +972,7 @@ const quotedIdentifier: i32 = -token::identifier;
 /// 扫描反引号标识符，还原成对 ``。
 fn scanQuotedIdent(s: &mut Scanner) -> (i32, Pos, String) {
     let pos = s.r.pos();
-    s.r.inc();
+    let delimiter = s.r.readByte();
     s.buf.clear();
     while !s.r.eof() {
         let at = s.r.pos();
@@ -968,8 +981,12 @@ fn scanQuotedIdent(s: &mut Scanner) -> (i32, Pos, String) {
             continue;
         }
         let ch = s.r.readByte();
-        if ch == b'`' {
-            if s.r.peek() != b'`' {
+        if ch == delimiter {
+            if s.r.peek() != delimiter {
+                if s.postgres && delimiter == b'"' && s.buf.is_empty() {
+                    s.identifierQuoteError = Some(pos.Offset as usize);
+                    return (invalid, pos, String::new());
+                }
                 return (
                     quotedIdentifier,
                     pos,
@@ -980,12 +997,19 @@ fn scanQuotedIdent(s: &mut Scanner) -> (i32, Pos, String) {
         }
         s.buf.push(ch);
     }
+    if s.postgres && delimiter == b'"' {
+        s.identifierQuoteError = Some(pos.Offset as usize);
+    }
     (invalid, pos, String::new())
 }
 
 /// 字符串字面量入口，委托 `scanString`。
 fn startString(s: &mut Scanner) -> (i32, Pos, String) {
-    s.scanString()
+    if s.postgres && s.r.peek() == b'"' {
+        scanQuotedIdent(s)
+    } else {
+        s.scanString()
+    }
 }
 
 // lazyBuf 保留 Go 的延迟分配思想：无转义时直接切 reader，有转义时才读独立 buffer。

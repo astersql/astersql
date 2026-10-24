@@ -491,6 +491,8 @@ pub const MaskingPolicyRestrictNameCTAS: &str = "CTAS";
 pub struct TableName {
     pub Schema: CIStr,
     pub Name: CIStr,
+    /// Original PostgreSQL segments, before schema adaptation. Empty for MySQL.
+    pub PostgreSQLParts: Vec<PostgreSQLIdentifier>,
     pub PartitionNames: Vec<CIStr>,
     pub IndexHints: Vec<IndexHint>,
 }
@@ -622,12 +624,24 @@ pub struct TableRefsClause {
     pub TableRefs: Join,
 }
 
+/// One identifier segment in the original PostgreSQL source. Span is a
+/// half-open UTF-8 byte range; Lookup folds ASCII only for unquoted names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgreSQLIdentifier {
+    pub Original: String,
+    pub Decoded: String,
+    pub Quoted: bool,
+    pub Lookup: String,
+    pub Span: (usize, usize),
+}
+
 /// 列名（库/表/列三段式）。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ColumnName {
     pub Schema: CIStr,
     pub Table: CIStr,
     pub Name: CIStr,
+    pub PostgreSQLParts: Vec<PostgreSQLIdentifier>,
 }
 
 /// CASE 中的 WHEN ... THEN ... 子句。

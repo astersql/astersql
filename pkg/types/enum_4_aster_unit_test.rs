@@ -316,6 +316,7 @@ fn field_names_match_rendering_memory_clone_shallow_and_lookup_semantics() {
         Schema: ast::CIStr::default(),
         Table: ast::CIStr::default(),
         Name: ast::NewCIStr("COL"),
+        PostgreSQLParts: Vec::new(),
     };
     assert!(names.FindAstColName(&wildcard));
 

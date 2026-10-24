@@ -31,6 +31,7 @@ fn column(schema: &str, table: &str, name: &str) -> ast::ColumnName {
         Schema: ast::NewCIStr(schema),
         Table: ast::NewCIStr(table),
         Name: ast::NewCIStr(name),
+        PostgreSQLParts: Vec::new(),
     }
 }
 

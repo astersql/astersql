@@ -328,6 +328,7 @@ fn column_name_from_parts(parts: Vec<String>) -> parser_ast::ColumnName {
         Schema: parser_ast::NewCIStr(&schema),
         Table: parser_ast::NewCIStr(&table),
         Name: parser_ast::NewCIStr(&name),
+        PostgreSQLParts: Vec::new(),
     }
 }
 
@@ -3899,6 +3900,7 @@ fn TestImportIntoRestore() {
         Schema: parser_ast::NewCIStr(""),
         Table: parser_ast::NewCIStr(""),
         Name: parser_ast::NewCIStr(name),
+        PostgreSQLParts: Vec::new(),
     };
     let assignment = parser_ast::Assignment {
         Column: column("a"),

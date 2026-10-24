@@ -5,6 +5,60 @@ use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 use std::sync::OnceLock;
 
+// Read the consumed token's original span, not reconstructed SQL or CIStr.L.
+// This local constructor leaves NewCIStr and all MySQL name semantics intact.
+fn identifier(
+    parser: &Parser,
+    symbol: &yySymType,
+) -> (parser_ast::CIStr, Option<parser_ast::PostgreSQLIdentifier>) {
+    if parser.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+        return (parser_ast::NewCIStr(&symbol.ident), None);
+    }
+    let start = symbol.offset as usize;
+    let end = symbol.end_offset;
+    let raw = &parser.src[start..end];
+    let quoted = raw.starts_with('"') || raw.starts_with('`');
+    let decoded = symbol.ident.clone();
+    let lookup = if quoted {
+        decoded.clone()
+    } else {
+        decoded.to_ascii_lowercase()
+    };
+    // CIStr.L remains the native lowercase compatibility key. PostgreSQL's
+    // distinct lookup identity lives in the typed segment consumed at its
+    // name boundary, not in the shared catalog's lowercase field.
+    let name = parser_ast::NewCIStr(&decoded);
+    (
+        name,
+        Some(parser_ast::PostgreSQLIdentifier {
+            Original: raw.to_owned(),
+            Decoded: decoded,
+            Quoted: quoted,
+            Lookup: lookup,
+            Span: (start, end),
+        }),
+    )
+}
+
+fn column_name(parser: &Parser, symbols: &[&yySymType]) -> parser_ast::ColumnName {
+    let mut names = Vec::new();
+    let mut parts = Vec::new();
+    for symbol in symbols {
+        let (name, part) = identifier(parser, symbol);
+        names.push(name);
+        parts.extend(part);
+    }
+    let name = names.pop().unwrap_or_default();
+    let table = names.pop().unwrap_or_default();
+    let schema = names.pop().unwrap_or_default();
+    parser_ast::ColumnName {
+        Schema: schema,
+        Table: table,
+        Name: name,
+        PostgreSQLParts: parts,
+    }
+}
+
 mod admin;
 mod ddl;
 mod dml;
@@ -112,14 +166,27 @@ fn owner(rule_id: RuleId) -> Option<Owner> {
 pub(crate) fn apply(rule_id: RuleId, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool, isize> {
     match owner(rule_id) {
         Some(Owner::Mview) => mview::apply(rule_id, rhs, context),
-        Some(Owner::Ddl) => ddl::apply(rule_id, rhs, context).expect("owned DDL rule has an action"),
-        Some(Owner::Dml) => dml::apply(rule_id, rhs, context).expect("owned DML rule has an action"),
-        Some(Owner::Expression) => expression::apply(rule_id, rhs, context)
-            .expect("owned expression rule has an action"),
-        Some(Owner::Query) => query::apply(rule_id, rhs, context).expect("owned query rule has an action"),
-        Some(Owner::Security) => security::apply(rule_id, rhs, context).expect("owned security rule has an action"),
-        Some(Owner::Admin) => admin::apply(rule_id, rhs, context).expect("owned admin rule has an action"),
-        Some(Owner::Misc) => misc::apply(rule_id, rhs, context).expect("owned misc rule has an action"),
+        Some(Owner::Ddl) => {
+            ddl::apply(rule_id, rhs, context).expect("owned DDL rule has an action")
+        }
+        Some(Owner::Dml) => {
+            dml::apply(rule_id, rhs, context).expect("owned DML rule has an action")
+        }
+        Some(Owner::Expression) => {
+            expression::apply(rule_id, rhs, context).expect("owned expression rule has an action")
+        }
+        Some(Owner::Query) => {
+            query::apply(rule_id, rhs, context).expect("owned query rule has an action")
+        }
+        Some(Owner::Security) => {
+            security::apply(rule_id, rhs, context).expect("owned security rule has an action")
+        }
+        Some(Owner::Admin) => {
+            admin::apply(rule_id, rhs, context).expect("owned admin rule has an action")
+        }
+        Some(Owner::Misc) => {
+            misc::apply(rule_id, rhs, context).expect("owned misc rule has an action")
+        }
         None => Ok(false),
     }
 }

@@ -486,6 +486,13 @@ impl Parser {
         self.lexer.PostgreSQLEofErrorPosition()
     }
 
+    /// Original character cursor for an identifier quote error or EOF error.
+    pub fn PostgreSQLSyntaxErrorPosition(&self) -> Option<usize> {
+        self.lexer
+            .PostgreSQLIdentifierErrorPosition()
+            .or_else(|| self.PostgreSQLEofErrorPosition())
+    }
+
     // SetSQLMode 将 SQL mode 原样交给词法器。
     pub fn SetSQLMode(&mut self, mode: mysql::SQLMode) {
         self.lexer.SetSQLMode(mode);

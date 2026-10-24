@@ -189,6 +189,7 @@ pub(crate) fn stored_view_select(sql: &str) -> ParseResult<String> {
 }
 struct Resolver<'a> {
     tokens: Vec<Token>,
+    sql: &'a str,
     database: &'a str,
     public: bool,
     edits: BTreeMap<usize, (usize, String)>,
@@ -260,7 +261,7 @@ impl Resolver<'_> {
         if self.symbol(i, b'(') && !allow_columns {
             return Err(error("0A000", "native table functions are unsupported"));
         }
-        let name = match parts.as_slice() {
+        match parts.as_slice() {
             [name] => {
                 if !self.public {
                     return Err(error("42P01", "relation is not in the PG search path"));
@@ -290,7 +291,16 @@ impl Resolver<'_> {
             .retain(|offset, _| *offset < first || *offset >= last);
         self.edits.insert(
             first,
-            (last, format!("{}.{}", quote(self.database), quote(name))),
+            // Keep the table segment's PG quotes. Re-quoting with backticks
+            // destroys its source identity before the shared parser sees it.
+            (
+                last,
+                format!(
+                    "{}.{}",
+                    quote(self.database),
+                    &self.sql[self.tokens[i - 1].start..last]
+                ),
+            ),
         );
         Ok(i)
     }
@@ -408,21 +418,26 @@ impl Resolver<'_> {
 }
 
 pub(crate) fn rewrite(sql: &str, database: &str, public: bool) -> ParseResult<String> {
-    let tokens = tokens(sql)?;
-    let mut edits = BTreeMap::new();
-    for token in &tokens {
-        if token.quoted {
-            edits.insert(
-                token.start,
-                (token.end, quote(token.name.as_deref().unwrap())),
-            );
+    let parts: BTreeMap<_, _> = identifier_parts(sql)?
+        .into_iter()
+        .map(|part| (part.Span, part))
+        .collect();
+    let mut tokens = tokens(sql)?;
+    // Join semantic identities back to source tokens by their original spans.
+    // This consumes the AST metadata before relation/schema adaptation, without
+    // guessing identifiers inside strings or comments.
+    for token in &mut tokens {
+        if let Some(part) = parts.get(&(token.start, token.end)) {
+            token.name = Some(part.Lookup.clone());
+            token.quoted = part.Quoted;
         }
     }
     let mut resolver = Resolver {
         tokens,
+        sql,
         database,
         public,
-        edits,
+        edits: BTreeMap::new(),
     };
     resolver.scope(0, resolver.tokens.len(), &HashSet::new())?;
     let mut out = String::with_capacity(sql.len());
@@ -434,6 +449,91 @@ pub(crate) fn rewrite(sql: &str, database: &str, public: bool) -> ParseResult<St
     }
     out.push_str(&sql[previous..]);
     Ok(out)
+}
+
+/// Consume the formal parser's original per-segment identity at the normal PG
+/// name boundary. Until exact object binding is available, never silently bind
+/// a quoted mixed-case reference through the backend's lowercase catalog.
+fn identifier_parts(sql: &str) -> ParseResult<Vec<astersql_parser_ast::PostgreSQLIdentifier>> {
+    use astersql_parser_ast as ast;
+    let Ok((statements, _)) =
+        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
+    else {
+        return Ok(Vec::new()); // Lexical diagnostics remain owned by their existing path.
+    };
+    struct Gate {
+        blocked: bool,
+        parts: Vec<ast::PostgreSQLIdentifier>,
+        declarations: HashSet<(usize, usize)>,
+    }
+    impl Gate {
+        fn consume(&mut self, parts: &[ast::PostgreSQLIdentifier]) {
+            self.blocked |= parts.iter().any(|part| {
+                !self.declarations.contains(&part.Span)
+                    && part.Quoted
+                    && part.Lookup.bytes().any(|byte| byte.is_ascii_uppercase())
+            });
+            self.parts.extend_from_slice(parts);
+        }
+    }
+    impl ast::Visitor for Gate {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            let parts = if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
+                if let ast::ExprKind::Column(column) = &expr.Kind {
+                    Some(&column.PostgreSQLParts)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(parts) = parts {
+                self.consume(parts);
+            }
+            false
+        }
+        fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+            self.consume(&table.PostgreSQLParts);
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut gate = Gate {
+        blocked: false,
+        parts: Vec::new(),
+        declarations: HashSet::new(),
+    };
+    for statement in statements {
+        // Declarations are not references. Preserve their existing admission;
+        // backend case-distinct object creation belongs to the binding work.
+        let declaration =
+            if let Some(create) = statement.as_any().downcast_ref::<ast::CreateTableStmt>() {
+                Some(&create.Table)
+            } else if let Some(create) = statement.as_any().downcast_ref::<ast::CreateViewStmt>() {
+                Some(&create.ViewName)
+            } else {
+                statement
+                    .as_any()
+                    .downcast_ref::<ast::CreateSequenceStmt>()
+                    .map(|create| &create.Name)
+            };
+        gate.declarations = declaration
+            .into_iter()
+            .flat_map(|table| &table.PostgreSQLParts)
+            .map(|part| part.Span)
+            .collect();
+        statement.accept(&mut gate);
+    }
+    if gate.blocked {
+        Err(error(
+            "0A000",
+            "quoted mixed-case identifiers require exact name binding support",
+        ))
+    } else {
+        Ok(gate.parts)
+    }
 }
 
 pub(crate) fn adapt(

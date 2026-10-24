@@ -3451,3 +3451,155 @@ fn pg_dialect_11_behavior() {
         assertions.get()
     );
 }
+
+#[test]
+fn pg_dialect_13_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let count = std::cell::Cell::new(0usize);
+    macro_rules! check { ($($args:tt)*) => {{count.set(count.get()+1); assert!($($args)*);}}; }
+    macro_rules! equal { ($($args:tt)*) => {{count.set(count.get()+1); assert_eq!($($args)*);}}; }
+    let sql = "/*中*/ SELECT foo, Foo, \"Foo\", \"a\"\"b\", $2 FROM \"public\".\"t\"";
+    let statement = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let select = statement
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let mut previous = 0;
+    for (field, (raw, decoded, lookup, quoted)) in select.Fields.Fields.iter().zip([
+        ("foo", "foo", "foo", false),
+        ("Foo", "Foo", "foo", false),
+        ("\"Foo\"", "Foo", "Foo", true),
+        ("\"a\"\"b\"", "a\"b", "a\"b", true),
+    ]) {
+        let expr = field.Expr.as_ref().unwrap();
+        let ExprKind::Column(column) = &expr.Kind else {
+            panic!("quoted name must be a column: {expr:?}")
+        };
+        equal!(
+            column.Name.L,
+            decoded.to_lowercase(),
+            "native CIStr compatibility key"
+        );
+        equal!(&column.Name.O, decoded);
+        equal!(column.PostgreSQLParts.len(), 1);
+        let part = &column.PostgreSQLParts[0];
+        equal!(&part.Original, raw);
+        equal!(&part.Decoded, decoded);
+        equal!(&part.Lookup, lookup, "PostgreSQL lookup identity");
+        equal!(part.Quoted, quoted);
+        equal!(&sql[part.Span.0..part.Span.1], raw);
+        check!(part.Span.0 >= previous);
+        previous = part.Span.1;
+        check!(sql.is_char_boundary(part.Span.0) && sql.is_char_boundary(part.Span.1));
+        equal!(expr.OriginTextPosition as usize, part.Span.0);
+    }
+    equal!(
+        select.Fields.Fields[4]
+            .Expr
+            .as_ref()
+            .unwrap()
+            .PostgreSQLParameterIndex(),
+        Some(2)
+    );
+    let parser_ast::ResultSetNode::TableSource(source) = select
+        .From
+        .as_ref()
+        .unwrap()
+        .TableRefs
+        .Left
+        .as_deref()
+        .unwrap()
+    else {
+        panic!("table source")
+    };
+    equal!(source.Source.PostgreSQLParts.len(), 2);
+    for (part, raw) in source
+        .Source
+        .PostgreSQLParts
+        .iter()
+        .zip(["\"public\"", "\"t\""])
+    {
+        equal!(&part.Original, raw);
+        equal!(&sql[part.Span.0..part.Span.1], raw);
+        check!(part.Quoted);
+    }
+    let qualified = "/*中*/ SELECT public.\"t\".\"a.b\", a.\"x.y\", \"x\\y\"";
+    let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(qualified, "", "")
+        .unwrap();
+    let stmt = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    for (field, expected) in stmt.Fields.Fields.iter().zip([
+        vec![("public", false), ("t", true), ("a.b", true)],
+        vec![("a", false), ("x.y", true)],
+        vec![("x\\y", true)],
+    ]) {
+        let ExprKind::Column(column) = &field.Expr.as_ref().unwrap().Kind else {
+            panic!("column")
+        };
+        equal!(column.PostgreSQLParts.len(), expected.len());
+        for (part, (lookup, quoted)) in column.PostgreSQLParts.iter().zip(expected) {
+            equal!(&part.Lookup, lookup);
+            equal!(part.Quoted, quoted);
+            equal!(&qualified[part.Span.0..part.Span.1], part.Original.as_str());
+        }
+    }
+    for sql in [
+        "SELECT \"\"",
+        "SELECT \"unterminated",
+        "/*中*/ SELECT \"\"",
+        "/*中*/ SELECT \"unterminated",
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        check!(parser.ParseOneStmt(sql, "", "").is_err(), "{sql}");
+        equal!(
+            parser.PostgreSQLSyntaxErrorPosition(),
+            Some(sql[..sql.find('"').unwrap()].chars().count() + 1)
+        );
+    }
+    let protected = "SELECT 'Foo \"a\"\"b\"' /* \"Foo\" */ -- \"bad\n";
+    let mut lookahead = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    check!(
+        lookahead
+            .ParseOneStmt("SELECT TO \"broken", "", "")
+            .is_err()
+    );
+    equal!(lookahead.PostgreSQLSyntaxErrorPosition(), None);
+    let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(protected, "", "")
+        .unwrap();
+    let stmt = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    check!(
+        matches!(&stmt.Fields.Fields[0].Expr.as_ref().unwrap().Kind,ExprKind::Value(value) if value.as_str()=="Foo \"a\"\"b\"")
+    );
+    for mode in [parser::mysql::SQLMode(0), parser::mysql::ModeANSIQuotes] {
+        let mut parser = parser::New();
+        parser.SetSQLMode(mode);
+        let stmt = parser.ParseOneStmt("SELECT \"Foo\"", "", "").unwrap();
+        let stmt = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = stmt.Fields.Fields[0].Expr.as_ref().unwrap();
+        if mode == parser::mysql::ModeANSIQuotes {
+            let ExprKind::Column(column) = &expr.Kind else {
+                panic!("ANSI_QUOTES column")
+            };
+            equal!(&column.Name.L, "foo");
+            check!(column.PostgreSQLParts.is_empty());
+        } else {
+            check!(matches!(expr.Kind, ExprKind::Value(_)));
+        }
+    }
+    println!(
+        "pg_dialect_13_behavior: assertions={}; 7 primary PG inputs + 1 lookahead guard, MySQL default/ANSI_QUOTES",
+        count.get()
+    );
+}

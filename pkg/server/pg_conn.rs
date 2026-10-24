@@ -679,8 +679,8 @@ pub(crate) fn write_error(
     write_error_position(socket, severity, state, message, None)
 }
 
-/// Only a formal parse of the original SQL may supply the EOF cursor. This
-/// deliberately leaves positions unknown for non-EOF and adapted diagnostics.
+/// Only a formal parse of the original SQL supplies a structured quote/EOF
+/// cursor. Other adapted diagnostics keep their position unknown.
 pub(crate) fn write_sql_error(
     socket: &mut TcpStream,
     state: &str,
@@ -691,7 +691,7 @@ pub(crate) fn write_sql_error(
         let mut parser =
             astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL);
         if parser.ParseSQL(original_sql, &[]).is_err() {
-            parser.PostgreSQLEofErrorPosition()
+            parser.PostgreSQLSyntaxErrorPosition()
         } else {
             None
         }

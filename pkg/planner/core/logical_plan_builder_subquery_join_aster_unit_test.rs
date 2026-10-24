@@ -56,6 +56,7 @@ fn aggregate_mapper_distinguishes_qualified_and_quoted_column_names() {
                 Schema: ast::NewCIStr(schema),
                 Table: ast::NewCIStr(table),
                 Name: ast::NewCIStr(name),
+                PostgreSQLParts: Vec::new(),
             })];
         }
         node
