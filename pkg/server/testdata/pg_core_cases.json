@@ -39,6 +39,9 @@
     },
     "integer.comparator_self_check": {
       "scope": "First-phase explicit int4/int8 inputs only."
+    },
+    "scalar.output": {
+      "scope": "Task 3 bounded text readback: SQL NULL, empty string, literal NULL and zero rows only."
     }
   },
   "cases": [
@@ -72,7 +75,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -81,7 +84,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -114,7 +118,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -123,7 +127,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -156,7 +161,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -165,7 +170,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -198,7 +204,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -207,7 +213,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -240,7 +247,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -249,7 +256,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -277,7 +285,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -286,7 +294,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -319,7 +328,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -328,7 +337,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -356,7 +366,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -365,7 +375,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -398,7 +409,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -407,7 +418,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -435,7 +447,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -444,7 +456,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -477,7 +490,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -486,7 +499,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -519,7 +533,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -528,7 +542,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -561,7 +576,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -570,7 +585,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -603,7 +619,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -612,7 +628,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -645,7 +662,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -654,7 +671,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -687,7 +705,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -696,7 +714,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -724,7 +743,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -733,7 +752,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -766,7 +786,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -775,7 +795,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -803,7 +824,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -812,7 +833,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -845,7 +867,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -854,7 +876,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -882,7 +905,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -891,7 +914,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -924,7 +948,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -933,7 +957,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -966,7 +991,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -975,7 +1000,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1008,7 +1034,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1017,7 +1043,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1050,7 +1077,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1059,7 +1086,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1092,7 +1120,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1101,7 +1129,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1134,7 +1163,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1143,7 +1172,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1171,7 +1201,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1180,7 +1210,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1213,7 +1244,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1222,7 +1253,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1250,7 +1282,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1259,7 +1291,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1292,7 +1325,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1301,7 +1334,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1329,7 +1363,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1338,7 +1372,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1371,7 +1406,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1380,7 +1415,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1413,7 +1449,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1422,7 +1458,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1455,7 +1492,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1464,7 +1501,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1497,7 +1535,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1506,7 +1544,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1539,7 +1578,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1548,7 +1587,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1581,7 +1621,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1590,7 +1630,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1618,7 +1659,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1627,7 +1668,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1660,7 +1702,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1669,7 +1711,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1697,7 +1740,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1706,7 +1749,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1739,7 +1783,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1748,7 +1792,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1776,7 +1821,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1785,7 +1830,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1818,7 +1864,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1827,7 +1873,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1860,7 +1907,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1869,7 +1916,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1902,7 +1950,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1911,7 +1959,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1939,7 +1988,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1948,7 +1997,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -1981,7 +2031,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -1990,7 +2040,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2018,7 +2069,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2027,7 +2078,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2059,7 +2111,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2068,7 +2120,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2106,7 +2159,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2115,7 +2168,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2153,7 +2207,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2162,7 +2216,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2200,7 +2255,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2209,7 +2264,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2240,7 +2296,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2249,7 +2305,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2280,7 +2337,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2289,7 +2346,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2320,7 +2378,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2329,7 +2387,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2360,7 +2419,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2369,7 +2428,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2399,7 +2459,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2408,7 +2468,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2439,7 +2500,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2448,7 +2509,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2483,7 +2545,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2492,7 +2554,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2527,7 +2590,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2536,7 +2599,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2566,7 +2630,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2575,7 +2639,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2605,7 +2670,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2614,7 +2679,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2644,7 +2710,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2653,7 +2719,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2683,7 +2750,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2692,7 +2759,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2722,7 +2790,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2731,7 +2799,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2762,7 +2831,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2771,7 +2840,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2806,7 +2876,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2815,7 +2885,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2850,7 +2921,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2859,7 +2930,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2889,7 +2961,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2898,7 +2970,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2928,7 +3001,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2937,7 +3010,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -2967,7 +3041,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -2976,7 +3050,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3006,7 +3081,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3015,7 +3090,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3045,7 +3121,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3054,7 +3130,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3085,7 +3162,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3094,7 +3171,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3129,7 +3207,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3138,7 +3216,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3173,7 +3252,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3182,7 +3261,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3212,7 +3292,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3221,7 +3301,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3251,7 +3332,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3260,7 +3341,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3290,7 +3372,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3299,7 +3381,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3329,7 +3412,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3338,7 +3421,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3348,7 +3432,7 @@
       "family": "write",
       "input": {
         "phase": "query",
-        "sql": "INSERT INTO {run_table} VALUES (1, '9007199254740993'::int8), (2, NULL)",
+        "sql": "INSERT INTO {run_table} VALUES (1, '9007199254740993'::int8, NULL), (2, NULL, NULL)",
         "statement": null,
         "parameter_oids": null,
         "arguments": null,
@@ -3366,7 +3450,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3375,7 +3459,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3413,7 +3498,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3422,7 +3507,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3450,7 +3536,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3459,7 +3545,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3490,7 +3577,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3499,7 +3586,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3530,7 +3618,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3539,7 +3627,176 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
+      ]
+    },
+    {
+      "case_id": "scalar_null",
+      "kind": "business",
+      "capability_id": "scalar.output",
+      "family": "scalar_null",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT note FROM {run_table} WHERE id = 2",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            null
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference bounded text readback through real libpq.",
+        "astersql": "Same text readback through the PostgreSQL listener on the shared server."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps. Before scalar reads, each endpoint inserts (3, 0, ''), (4, 0, 'NULL') into run_table; id=2 retains SQL NULL note.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task 3: collected text distinguishes SQL NULL, empty string, literal NULL and zero rows",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ]
+    },
+    {
+      "case_id": "scalar_empty",
+      "kind": "business",
+      "capability_id": "scalar.output",
+      "family": "scalar_empty",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT note FROM {run_table} WHERE id = 3",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            ""
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference bounded text readback through real libpq.",
+        "astersql": "Same text readback through the PostgreSQL listener on the shared server."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps. Before scalar reads, each endpoint inserts (3, 0, ''), (4, 0, 'NULL') into run_table; id=2 retains SQL NULL note.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task 3: collected text distinguishes SQL NULL, empty string, literal NULL and zero rows",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ]
+    },
+    {
+      "case_id": "scalar_literal_null",
+      "kind": "business",
+      "capability_id": "scalar.output",
+      "family": "scalar_literal_null",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT note FROM {run_table} WHERE id = 4",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": [
+          [
+            "NULL"
+          ]
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference bounded text readback through real libpq.",
+        "astersql": "Same text readback through the PostgreSQL listener on the shared server."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps. Before scalar reads, each endpoint inserts (3, 0, ''), (4, 0, 'NULL') into run_table; id=2 retains SQL NULL note.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task 3: collected text distinguishes SQL NULL, empty string, literal NULL and zero rows",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ]
+    },
+    {
+      "case_id": "scalar_zero_rows",
+      "kind": "business",
+      "capability_id": "scalar.output",
+      "family": "scalar_zero_rows",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT note FROM {run_table} WHERE id = 999",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": "",
+        "rows": []
+      },
+      "dialects": {
+        "postgresql": "Reference bounded text readback through real libpq.",
+        "astersql": "Same text readback through the PostgreSQL listener on the shared server."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps. Before scalar reads, each endpoint inserts (3, 0, ''), (4, 0, 'NULL') into run_table; id=2 retains SQL NULL note.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task 3: collected text distinguishes SQL NULL, empty string, literal NULL and zero rows",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
       ]
     },
     {
@@ -3567,7 +3824,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3576,7 +3833,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3604,7 +3862,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3613,7 +3871,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3641,7 +3900,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3650,7 +3909,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3678,7 +3938,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3687,7 +3947,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3720,7 +3981,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3729,7 +3990,8 @@
         "state",
         "fields",
         "rows",
-        "params"
+        "params",
+        "cells"
       ]
     },
     {
@@ -3752,7 +4014,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3784,7 +4046,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",
@@ -3816,7 +4078,7 @@
       "bindings": {
         "run_table": "unique table owned by this run"
       },
-      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
       "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
       "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
       "expected_basis": "Original pg_core_libpq.py integer_differential at c84583fd558f6232fb400e19cfeb18aa0fe99a5c.",

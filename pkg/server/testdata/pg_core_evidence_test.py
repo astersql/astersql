@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 import unittest
 
-from pg_core_evidence import CaseRegistry, load_cases, validate_cases
+from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output
 
 
 class CaseRegistryTests(unittest.TestCase):
@@ -31,11 +31,12 @@ class CaseRegistryTests(unittest.TestCase):
             expected.update(name + '_' + label for label in
                             ['invalid', 'invalid_recovery', 'overflow', 'overflow_recovery'])
         expected.update(['write', 'readback', 'empty_prepare', 'empty_describe', 'empty_execute',
+                         'scalar_null', 'scalar_empty', 'scalar_literal_null', 'scalar_zero_rows',
                          'begin', 'transaction_error', 'transaction_failed', 'rollback', 'rollback_recovery'])
         business = [x['case_id'] for x in self.manifest['cases'] if x['kind'] == 'business']
         checks = [x['case_id'] for x in self.manifest['cases'] if x['kind'] == 'self_check']
         self.assertEqual(set(business), expected)
-        self.assertEqual(len(business), 91)
+        self.assertEqual(len(business), 95)
         self.assertEqual(set(checks), {'negative_self_check_' + key for key in ['rows', 'fields', 'state']})
         registry = CaseRegistry(self.manifest, self.table)
         for case in self.manifest['cases']:
@@ -43,7 +44,7 @@ class CaseRegistryTests(unittest.TestCase):
             if 'sql' in actual:
                 actual['sql'] = actual['sql'].replace('{run_table}', self.table)
             self.assertEqual(registry.claim(case['case_id'], case['family'], actual), actual)
-        self.assertEqual(registry.finish(), 94)
+        self.assertEqual(registry.finish(), 98)
 
     def test_real_check_rejects_unregistered_before_send(self):
         # Execute the actual fixture gate with no connections: this tests rejection,
@@ -245,6 +246,107 @@ class ObservationArchiveTests(unittest.TestCase):
                                attempt=1, dsn='password=secret'))
         self.assertNotIn('secret', str(caught.exception))
         self.assertEqual(self.records(), [])
+
+
+class ScalarComparisonTests(unittest.TestCase):
+    """The scalar contract distinguishes collected output from absent evidence."""
+
+    def output(self, value):
+        cell = ({'kind': 'sql_null', 'length': 0} if value is None else
+                {'kind': 'value', 'length': len(value.encode()), 'hex': value.encode().hex()})
+        return {'rows': [[value]], 'cells': [[cell]]}
+
+    def compare(self, a, b):
+        return compare_scalar_output(a, b, {'result_format': 0})
+
+    def test_equal_values(self):
+        for value in ['9007199254740993', '', 'NULL', None]:
+            self.assertTrue(self.compare(self.output(value), self.output(value)))
+
+    def test_six_outcomes_are_distinct(self):
+        outcomes = [self.output('1'), self.output(None), self.output('NULL'),
+                    self.output(''), {'rows': [], 'cells': []}, {'kind': 'uncollected'}]
+        for i, a in enumerate(outcomes):
+            for j, b in enumerate(outcomes):
+                if i != j:
+                    with self.subTest(i=i, j=j):
+                        self.assertFalse(self.compare(a, b))
+
+    def test_both_uncollected_fail(self):
+        self.assertFalse(self.compare({'kind': 'uncollected'}, {'kind': 'uncollected'}))
+
+    def test_both_not_applicable_fail(self):
+        self.assertFalse(self.compare({'kind': 'not_applicable'}, {'kind': 'not_applicable'}))
+
+    def test_both_missing_rows_fail(self):
+        self.assertFalse(self.compare({'cells': []}, {'cells': []}))
+
+    def test_both_missing_cells_fail(self):
+        self.assertFalse(self.compare({'rows': []}, {'rows': []}))
+
+    def test_unknown_cell_tag_fails(self):
+        a = self.output('1')
+        a['cells'][0][0]['kind'] = 'unknown'
+        self.assertFalse(self.compare(a, copy.deepcopy(a)))
+
+    def test_missing_cell_tag_fails(self):
+        a = self.output('1')
+        del a['cells'][0][0]['kind']
+        self.assertFalse(self.compare(a, copy.deepcopy(a)))
+
+    def test_inconsistent_null_fails(self):
+        a = self.output(None)
+        a['rows'] = [['NULL']]
+        self.assertFalse(self.compare(a, copy.deepcopy(a)))
+
+    def test_cell_shape_and_payload_fail(self):
+        for key, wrong in [('cells', []), ('rows', [[1]])]:
+            a = self.output('1')
+            a[key] = wrong
+            self.assertFalse(self.compare(a, copy.deepcopy(a)))
+        for key, wrong in [('length', 7), ('hex', '00')]:
+            a = self.output('1')
+            a['cells'][0][0][key] = wrong
+            self.assertFalse(self.compare(a, copy.deepcopy(a)))
+
+    def test_zero_rows_are_collected(self):
+        self.assertTrue(self.compare({'rows': [], 'cells': []}, {'rows': [], 'cells': []}))
+
+    def test_order_and_precision_preserved(self):
+        a = self.output('9007199254740993')
+        self.assertFalse(self.compare(a, self.output('9007199254740992')))
+        b = self.output('2')
+        multi = {'rows': a['rows'] + b['rows'], 'cells': a['cells'] + b['cells']}
+        reverse = {'rows': b['rows'] + a['rows'], 'cells': b['cells'] + a['cells']}
+        self.assertFalse(self.compare(multi, reverse))
+        before = json.dumps(multi, sort_keys=True)
+        self.assertTrue(self.compare(multi, copy.deepcopy(multi)))
+        self.assertEqual(json.dumps(multi, sort_keys=True), before)
+
+    def test_unknown_contract_fails(self):
+        a = self.output('1')
+        self.assertFalse(compare_scalar_output(a, a, {'result_format': 1}))
+
+    def test_unknown_scalar_field_fails(self):
+        a = self.output('1')
+        a['cells'][0][0]['unknown'] = True
+        self.assertFalse(self.compare(a, copy.deepcopy(a)))
+        a = self.output('1')
+        a['kind'] = 'uncollected'
+        self.assertFalse(self.compare(a, copy.deepcopy(a)))
+
+    def test_real_equal_rejects_both_uncollected(self):
+        tree = ast.parse(Path(__file__).with_name('pg_core_libpq.py').read_text())
+        differential = next(x for x in tree.body if isinstance(x, ast.FunctionDef)
+                            and x.name == 'integer_differential')
+        equal = next(x for x in differential.body if isinstance(x, ast.FunctionDef)
+                     and x.name == 'equal')
+        namespace = {'compare_scalar_output': compare_scalar_output}
+        exec(compile(ast.Module(body=[equal], type_ignores=[]), '<actual scalar gate>', 'exec'), namespace)
+        a = {'status': 2, 'state': '', 'fields': [], 'params': [],
+             'rows': {'kind': 'uncollected'}, 'cells': {'kind': 'uncollected'}}
+        with self.assertRaises(AssertionError):
+            namespace['equal']('both_uncollected', a, copy.deepcopy(a))
 
 
 if __name__ == '__main__':

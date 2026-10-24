@@ -137,3 +137,37 @@ def read_observations(directory):
     """Read separate endpoint streams without comparing or filling missing data."""
     return [json.loads(line) for path in sorted(Path(directory).glob('*.jsonl'))
             for line in path.read_text().splitlines()]
+
+
+def compare_scalar_output(actual, reference, contract):
+    """Compare collected scalar output without changing either observation."""
+    if contract != {'result_format': 0}:
+        return False
+
+    def collected(output):
+        allowed = {'rows', 'cells', 'status', 'state', 'fields', 'params', 'formats',
+                   'command_tag', 'affected_rows', 'table_origins'}
+        if not isinstance(output, dict) or set(output) - allowed:
+            return False
+        rows, cells = output.get('rows'), output.get('cells')
+        if not isinstance(rows, list) or not isinstance(cells, list) or len(rows) != len(cells):
+            return False
+        for row, tagged in zip(rows, cells):
+            if not isinstance(row, list) or not isinstance(tagged, list) or len(row) != len(tagged):
+                return False
+            for value, cell in zip(row, tagged):
+                if not isinstance(cell, dict) or type(cell.get('length')) is not int:
+                    return False
+                if value is None:
+                    if cell != {'kind': 'sql_null', 'length': 0}:
+                        return False
+                elif isinstance(value, str):
+                    payload = value.encode('utf-8')
+                    if cell != {'kind': 'value', 'length': len(payload), 'hex': payload.hex()}:
+                        return False
+                else:
+                    return False
+        return True
+
+    return (collected(actual) and collected(reference)
+            and actual['rows'] == reference['rows'] and actual['cells'] == reference['cells'])

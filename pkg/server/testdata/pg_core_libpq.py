@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -118,7 +118,7 @@ def integer_differential(aster_dsn):
                 for col in range(columns(result)):
                     if is_null(result, row, col):
                         values.append(None)
-                        cells.append({'kind': 'null', 'length': get_length(result, row, col)})
+                        cells.append({'kind': 'sql_null', 'length': get_length(result, row, col)})
                     else:
                         length = get_length(result, row, col)
                         payload = c.string_at(raw_value(result, row, col), length)
@@ -129,6 +129,7 @@ def integer_differential(aster_dsn):
             clear(result)
 
     def equal(case, actual, reference):
+        assert compare_scalar_output(actual, reference, {'result_format': 0}), (case, actual, reference)
         keys = ('status', 'state', 'fields', 'rows', 'params')
         assert {k: actual[k] for k in keys} == {k: reference[k] for k in keys}, (case, actual, reference)
 
@@ -210,7 +211,7 @@ def integer_differential(aster_dsn):
         build, number = ref['rows'][0][:2]
         assert ref['rows'][0][2:] == ['', None]
         assert ref['cells'][0][2:] == [
-            {'kind': 'value', 'length': 0, 'hex': ''}, {'kind': 'null', 'length': 0}]
+            {'kind': 'value', 'length': 0, 'hex': ''}, {'kind': 'sql_null', 'length': 0}]
         assert 180000 <= int(number) < 190000, "reference must be real PostgreSQL 18.x"
         assert "PostgreSQL 18." in build and "AsterSQL" not in build
         print("reference build:", build, "server_version_num:", number, flush=True)
@@ -276,11 +277,11 @@ def integer_differential(aster_dsn):
 
         for side, connection in connections.items():
             obs = observe(execute(connection,
-                f"CREATE TABLE {table} (id INT PRIMARY KEY, n BIGINT)".encode()))
+                f"CREATE TABLE {table} (id INT PRIMARY KEY, n BIGINT, note TEXT)".encode()))
             assert obs["status"] == 1, (side, obs)
             created.add(side)
-            archive('create_table', side, {'command': f'CREATE TABLE {table} (id INT PRIMARY KEY, n BIGINT)'}, obs)
-        sql("write", "write", f"INSERT INTO {table} VALUES (1, '9007199254740993'::int8), (2, NULL)",
+            archive('create_table', side, {'command': f'CREATE TABLE {table} (id INT PRIMARY KEY, n BIGINT, note TEXT)'}, obs)
+        sql("write", "write", f"INSERT INTO {table} VALUES (1, '9007199254740993'::int8, NULL), (2, NULL, NULL)",
             expected_status=1)
         sql("readback", "readback", f"SELECT CAST(id AS int8) AS id, n::int8 AS n FROM {table} ORDER BY id",
             expected_rows=[["1", "9007199254740993"], ["2", None]])
@@ -290,6 +291,17 @@ def integer_differential(aster_dsn):
         check("empty_describe", "zero_rows", describe_input("empty"),
               expected_status=1, expected_params=[23])
         check("empty_execute", "zero_rows", bind_values("empty", [999]), expected_rows=[])
+        # Reuse this run's independent writeback tables for a bounded text probe.
+        for side, connection in connections.items():
+            command = f"INSERT INTO {table} VALUES (3, 0, ''), (4, 0, 'NULL')"
+            obs = observe(execute(connection, command.encode()))
+            archive('scalar_text_setup', side, {'command': command}, obs)
+            assert obs['status'] == 1, (side, obs)
+        for label, key, expected in [('null', 2, [[None]]), ('empty', 3, [['']]),
+                                     ('literal_null', 4, [['NULL']]), ('zero_rows', 999, [])]:
+            sql('scalar_' + label, 'scalar_' + label,
+                f"SELECT note FROM {table} WHERE id = {key}", expected_rows=expected)
+
         sql("begin", "transaction", "BEGIN", expected_status=1)
         sql("transaction_error", "transaction", "SELECT 'x'::int4", expected_status=7, expected_state="22P02")
         assert all(transaction(conn) == 3 for conn in connections.values()), "expected E"
@@ -312,11 +324,26 @@ def integer_differential(aster_dsn):
                 counts["negative_self_check"] += 1
             else:
                 raise AssertionError("differential comparator missed " + key)
-        for required in ["value", "typed_null", "zero_rows", "overflow", "invalid",
+        import hashlib
+        for source in ['scalar_null', 'scalar_empty', 'scalar_literal_null']:
+            original = observations['aster'][source]
+            digest = hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()
+            for replacement in [None, 'unknown', 'uncollected']:
+                changed = copy.deepcopy(original)
+                if replacement is None:
+                    del changed['cells'][0][0]['kind']
+                else:
+                    changed['cells'][0][0]['kind'] = replacement
+                assert not compare_scalar_output(changed, observations['reference'][source],
+                                                 {'result_format': 0}), source
+                assert hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest() == digest
+            print('scalar tag self-check:', source, 'mutations=3 raw_sha256=' + digest, flush=True)
+        for required in ['scalar_null', 'scalar_empty', 'scalar_literal_null', 'scalar_zero_rows',
+                         "value", "typed_null", "zero_rows", "overflow", "invalid",
                          "reexecute", "recovery", "write", "readback", "negative_self_check"]:
             assert counts[required] > 0, required
-        assert registry.finish() == 94
-        print("registered inputs: business=91 self_check=3 missing=0 duplicate=0", flush=True)
+        assert registry.finish() == 98
+        print("registered inputs: business=95 self_check=3 missing=0 duplicate=0", flush=True)
         print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
     finally:
         business_failed = sys.exc_info()[0] is not None
