@@ -307,7 +307,9 @@ impl Scanner {
         if tok == token::pipes && !self.sqlMode.HasPipesAsConcatMode() {
             return token::pipesAsOr;
         }
-        if tok == token::not && self.sqlMode.HasHighNotPrecedenceMode() {
+        // PostgreSQL logical NOT keeps its grammar precedence regardless of
+        // MySQL session mode inherited by the shared scanner.
+        if tok == token::not && !self.postgres && self.sqlMode.HasHighNotPrecedenceMode() {
             return token::not2;
         }
 

@@ -2931,3 +2931,127 @@ fn pg_dialect_02_behavior() {
     }
     println!("pg_dialect_02_behavior: 9 parser cases plus MySQL baseline probes");
 }
+
+#[test]
+fn pg_dialect_03_behavior() {
+    use parser_ast::{ExprKind, ExprNode, SqlDialect};
+    fn shape(expr: &ExprNode) -> String {
+        match &expr.Kind {
+            ExprKind::Binary { Op, L, R } => format!("{Op}({},{})", shape(L), shape(R)),
+            ExprKind::Unary { Op, V } => format!("{Op}({})", shape(V)),
+            ExprKind::Parentheses(v) => format!("({})", shape(v)),
+            ExprKind::Like {
+                Expr,
+                Pattern,
+                Not,
+                IsLike,
+                ..
+            } => format!(
+                "{}{}({},{})",
+                if *Not { "NOT " } else { "" },
+                if *IsLike { "LIKE" } else { "ILIKE" },
+                shape(Expr),
+                shape(Pattern)
+            ),
+            ExprKind::IsTruth { Expr, Not, True } => format!("IS{}{}({})", Not, True, shape(Expr)),
+            _ => "v".into(),
+        }
+    }
+    let cases = [
+        ("SELECT 'Ab' ILIKE 'a%' = TRUE", "=(ILIKE(v,v),v)"),
+        (
+            "SELECT NOT 'Ab' ILIKE 'a%' AND TRUE",
+            "AND(NOT(ILIKE(v,v)),v)",
+        ),
+        (
+            "SELECT NOT ('Ab' ILIKE 'a%' AND TRUE)",
+            "NOT((AND(ILIKE(v,v),v)))",
+        ),
+        ("SELECT 'Ab' NOT ILIKE 'a%'", "NOT ILIKE(v,v)"),
+        ("SELECT NOT 'Ab' NOT ILIKE 'a%'", "NOT(NOT ILIKE(v,v))"),
+        (
+            "SELECT 'Ab' ILIKE 'a%' IS TRUE OR FALSE",
+            "OR(ISfalsetrue(ILIKE(v,v)),v)",
+        ),
+        ("SELECT ('Ab' ILIKE 'a%') = TRUE", "=((ILIKE(v,v)),v)"),
+        ("SELECT 'Ab' ILIKE ('a%')", "ILIKE(v,(v))"),
+        (
+            "SELECT CAST(NULL AS CHAR) ILIKE 'a%' = TRUE",
+            "=(ILIKE(v,v),v)",
+        ),
+    ];
+    for mode in [
+        parser::mysql::SQLMode(0),
+        parser::mysql::ModeHighNotPrecedence,
+    ] {
+        let mut pg = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        pg.SetSQLMode(mode);
+        for (sql, expected) in cases {
+            let stmt = pg
+                .ParseOneStmt(sql, "", "")
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+            let select = stmt
+                .as_any()
+                .downcast_ref::<parser_ast::SelectStmt>()
+                .unwrap();
+            assert_eq!(
+                shape(select.Fields.Fields[0].Expr.as_ref().unwrap()),
+                expected,
+                "{sql}, mode={mode:?}"
+            );
+        }
+        let mut mysql = parser::Parser::with_dialect(SqlDialect::MySQL);
+        mysql.SetSQLMode(mode);
+        let stmt = mysql
+            .ParseOneStmt("SELECT NOT 'Ab' LIKE 'a%'", "", "")
+            .unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert_eq!(
+            shape(select.Fields.Fields[0].Expr.as_ref().unwrap()),
+            if mode == parser::mysql::SQLMode(0) {
+                "NOT(LIKE(v,v))"
+            } else {
+                "LIKE(!(v),v)"
+            }
+        );
+    }
+    let sql = "/*中*/ SELECT $2 ILIKE 'a%' = TRUE";
+    let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let ExprKind::Binary { L, .. } = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind else {
+        panic!("comparison lost")
+    };
+    let ExprKind::Like { Expr, Pattern, .. } = &L.Kind else {
+        panic!("predicate lost")
+    };
+    assert_eq!(Expr.PostgreSQLParameterIndex(), Some(2));
+    assert_eq!(Expr.node_text.OriginalText(), b"$2");
+    assert_eq!(
+        Expr.node_text.OriginTextPosition(),
+        sql.find("$2").unwrap() as i32
+    );
+    assert!(matches!(&Pattern.Kind, ExprKind::Value(v) if v == "a%"));
+    assert_eq!(L.node_text.OriginalText(), b"$2 ILIKE 'a%'");
+    assert_eq!(L.OriginTextPosition, sql.find("$2").unwrap() as i32);
+    let mut pg = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    let invalid = "/*中*/ SELECT NOT 'Ab' ILIKE (";
+    assert!(pg.ParseOneStmt(invalid, "", "").is_err());
+    assert_eq!(
+        pg.PostgreSQLEofErrorPosition(),
+        Some(invalid.chars().count() + 1)
+    );
+    assert!(
+        pg.ParseOneStmt("SELECT 'NOT ILIKE $2' /* AND TRUE */", "", "")
+            .is_ok()
+    );
+    assert_eq!(pg.PostgreSQLEofErrorPosition(), None);
+    println!("pg_dialect_03_behavior: 9 PG shapes x 2 modes, 2 MySQL mode baselines");
+}

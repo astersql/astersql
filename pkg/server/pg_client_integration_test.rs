@@ -1113,6 +1113,11 @@ fn pg_dialect_02_libpq() {
     pg_dialect_libpq(2);
 }
 
+#[test]
+fn pg_dialect_03_libpq() {
+    pg_dialect_libpq(3);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1196,6 +1201,19 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 3 {
+            for (mode, expected) in [
+                ("", b"1".as_slice()),
+                ("HIGH_NOT_PRECEDENCE", b"0".as_slice()),
+            ] {
+                mysql_query(socket, &format!("SET SESSION sql_mode = '{mode}'"));
+                assert_eq!(
+                    mysql_query(socket, "SELECT NOT 'Ab' LIKE 'x%'"),
+                    vec![vec![Some(expected.to_vec())]]
+                );
+            }
+            mysql_query(socket, "SET SESSION sql_mode = ''");
+        }
         let sql = format!("SELECT id AS v FROM {database}.dialect_isolation WHERE id=31");
         let mut request = vec![3];
         request.extend_from_slice(sql.as_bytes());
@@ -1324,7 +1342,16 @@ fn pg_dialect_libpq(task: u8) {
         serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
     assert_eq!(summary["cleanup_ok"], true);
     assert_eq!(summary["syntax_eligible"], 10);
-    assert_eq!(summary["self_checks"], if task == 1 { 15 } else { 14 });
+    assert_eq!(
+        summary["self_checks"],
+        if task == 1 {
+            15
+        } else if task == 2 {
+            14
+        } else {
+            13
+        }
+    );
     assert_eq!(
         std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
             .unwrap()

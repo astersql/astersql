@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2), 'unregistered dialect task'
+assert task in (1, 2, 3), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -101,9 +101,22 @@ if task == 2:
         ('protected', "SELECT 'ILIKE' /* ESCAPE $1 */", []),
         ('missing_unicode', "/*中*/ SELECT 'A_b' ILIKE 'a_b' ESCAPE", []),
     ]
+if task == 3:
+    cases = [
+        ('comparison', "SELECT 'Ab' ILIKE 'a%' = TRUE", []),
+        ('not_and', "SELECT NOT 'Ab' ILIKE 'a%' AND TRUE", []),
+        ('parentheses', "SELECT NOT ('Ab' ILIKE 'a%' AND TRUE)", []),
+        ('predicate_not', "SELECT 'Ab' NOT ILIKE 'a%'", []),
+        ('double_not', "SELECT NOT 'Ab' NOT ILIKE 'a%'", []),
+        ('is_or', "SELECT 'Ab' ILIKE 'a%' IS TRUE OR FALSE", []),
+        ('typed_null', "SELECT CAST(NULL AS CHAR) ILIKE 'a%' = TRUE", []),
+        ('parameter', "SELECT $1 ILIKE 'a%' = TRUE", [25]),
+        ('missing_operand', "/*中*/ SELECT NOT 'Ab' ILIKE (", []),
+        ('protected', "SELECT 'ILIKE' /* NOT ILIKE $1 = TRUE */", []),
+    ]
 assert len({case[0] for case in cases}) == 10
 (evidence / 'cases.json').write_text(json.dumps([
-    dict(case_id=name, capability_id='pg.dialect.ilike.syntax' if task == 1 else 'pg.dialect.escape.syntax', sql=sql,
+    dict(case_id=name, capability_id='pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=([None] if oids else []),
          parameter_formats=([0] if oids else []), result_format=0,
          initial_state='I', expected_basis=f'dialect task {task} / PostgreSQL18.6 observation / roadmap chapter 2',
@@ -293,6 +306,25 @@ try:
             stored = query(connections[label], 'SELECT id FROM public.dialect_isolation')
             archive(name + '_stored_' + label, 'aster', dict(phase='PQexec', sql='SELECT id FROM public.dialect_isolation'), stored)
             assert stored['status'] == 2 and stored['rows'] == [['31']]
+    if task == 3:
+        expected = dict(comparison='t', not_and='f', parentheses='f', predicate_not='f',
+                        double_not='t', is_or='t', typed_null=None)
+        for name, sql, oids in cases:
+            if name not in expected:
+                continue
+            result = query(ref, sql)
+            archive(name + '_reference_execute', 'reference', dict(phase='PQexec', sql=sql), result)
+            assert result['status'] == 2 and result['state'] == ''
+            assert result['rows'] == [[expected[name]]]
+            reference_execution_assertions += 2
+            # Consume the same predicate through the ordinary planner without
+            # claiming the out-of-scope boolean result codec is implemented.
+            where_sql = 'SELECT id FROM public.dialect_isolation WHERE ' + sql[len('SELECT '):]
+            local = query(connections['aster'], where_sql)
+            archive(name + '_where_execute', 'aster', dict(phase='PQexec', sql=where_sql), local)
+            assert local['status'] == 2 and local['state'] == ''
+            assert local['rows'] == ([['31']] if expected[name] == 't' else [])
+            consumer_assertions += 2
     if task == 2:
         # Freeze the semantic boundary from the exact reference, separately
         # from the local syntax-only counts. Multi-character validation is
@@ -348,6 +380,12 @@ try:
     mysql_identity = mysql_ref('SELECT VERSION(), @@version_compile_os, @@version_compile_machine; SELECT @@sql_mode, @@character_set_connection, @@collation_connection')
     assert mysql_identity['code'] == 0
     archive('reference_identity', 'mysql', None, mysql_identity)
+    if task == 3:
+        for mode, expected in [('', '1'), ('HIGH_NOT_PRECEDENCE', '0')]:
+            result = mysql_ref(f"SET SESSION sql_mode='{mode}'; SELECT NOT 'Ab' LIKE 'x%'")
+            archive('like_mode_' + (mode or 'default'), 'mysql', dict(command=f"SET SESSION sql_mode='{mode}'; SELECT NOT 'Ab' LIKE 'x%'"), result)
+            assert result['code'] == 0 and result['output'] == [expected]
+
     (evidence / 'mysql-reference.json').write_text(json.dumps(mysql_identity))
     # A connection-local temporary table disappears even on a failed CLI call;
     # no persistent reference object or existing table is modified.
