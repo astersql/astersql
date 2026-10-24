@@ -6129,6 +6129,33 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 
 官方依据（2026-10-24查阅）：PostgreSQL 18 [psql手册](https://www.postgresql.org/docs/18/app-psql.html)的Options、Exit Status与Variables说明上述选项、退出码及交互/脚本差别；SQL副作用目标沿第5章事务契约。手册示例版本不构成18.6参考构建采集证据。正常、故意错误、人工交互分别关联case_id，记录发现/执行/有效/失败/异常/跳过及断言数、脚本摘要、逐步输出、首个不一致与清理结果；预期失败符合全部断言才计有效，不将两端或重试重复累计。
 
+#### JDBC预处理流程
+
+本节定义待实施的单连接PreparedStatement CRUD与事务验收，新增用例、单流程筛选和wire观测入口均**待新增、待运行**。现存 [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs) 的 `run_jdbc` 将 `JDBC_WORKFLOW` 写成临时 `PgIntrospection.java`，以Java源码启动模式执行，并读取 [目录SQL夹具](../pkg/server/testdata/pg_datagrip)。`PG_JDBC_LIBRARIES` 指定jar列表，否则尝试DataGrip安装目录的42.7.13及42.7.3；`PG_JAVA` 指定运行时，否则使用DataGrip内置Java。这些是静态选择规则，安装列表不能证明本轮实际加载版本。当前夹具包含目录查询、typed NULL、基础CRUD和42P01后查询恢复，未形成下述完整事务与资源观测流程；不能用成功打印标签代替逐步断言。批次1–3的四层、证据格式、libpq和psql契约作为已具备的文档依赖，不视为功能前置已通过。
+
+驱动配置须在后续运行时采集：每轮只选一个精确jar，记录下载/安装来源、产物摘要、实际加载位置、DatabaseMetaData.getDriverVersion及JRE/JDK供应商、完整版本、Java路径和启动方式兼容性。缺jar、运行时或启动失败记准备失败，不降为mock。冻结脱敏连接属性、preferQueryMode、prepareThreshold、binaryTransfer及其Enable/Disable类型列表、stringtype、自动提交、隔离级别、编码/时区/search_path、超时和认证/TLS配置；未指定属性记录该精确驱动的实际默认值。当前夹具显式prepareThreshold=1、sslmode=disable、gssEncMode=disable、connectTimeout=5、socketTimeout=10，只能定位开发模式，生产前置依第7章另验。凭证不进入URL、SQL或输出。
+
+每端以独立初态和唯一限定表J运行；DDL在事务外，以自动提交开启创建 `J(id integer PRIMARY KEY,v varchar(30))`。绑定标识符不使用值占位符，值均通过 `?` 参数绑定，id用setInt、v用setString或setNull(Types.VARCHAR)。依第3章类型/NULL/元数据、第5章事务与第7章Parse/Bind/Execute及Sync恢复契约，缺必要能力只登记阻塞，不补建子系统。O为 `SELECT id,v FROM J ORDER BY id`，业务全程同一Connection，不重连掩盖恢复。
+
+| 步骤 | 输入、预期真实观测与失败门槛 |
+| --- | --- |
+| CREATE / INSERT / READ | 建表后O零行仍核列描述。准备 `INSERT INTO J(id,v) VALUES (?,?)`，绑定(1,'base')、(2,SQL NULL)，每次executeUpdate为1；O须为[(1,'base'),(2,SQL NULL)]。另以PreparedStatement按id查询，分别断言命中及无匹配零行，不以SELECT 1代替回读。 |
+| UPDATE / EMPTY | `UPDATE J SET v=? WHERE id=?` 依次绑定('two',1)、('',2)，各影响1行；O为[(1,'two'),(2,'')]，证明NULL与空串不同。 |
+| COMMIT | setAutoCommit(false)，绑定插入(3,'committed')并事务内回读；commit后重新查询O为原两行加第三行。记录实际BEGIN/提交消息及I/T/E，不能从getAutoCommit推断事务状态；commit后下一条查询可能启动新事务，分别采证。 |
+| ROLLBACK | 同连接绑定更新id1为'rolled back'，事务内回读确有改变；rollback后O恢复[(1,'two'),(2,''),(3,'committed')]。同连接提交/回滚不推导跨连接可见性或持久化通过。 |
+| SQLSTATE / RECOVER | 在手动提交模式新事务插入(4,'discard')，再重复id1插入应23505；SQLException.getSQLState及异常链逐项记录，后续查询应25P02。驱动完成适用Sync后仍需rollback；回读O仅原三行，无id4，再合法参数查询id1='two'。网络错误、超时或Java异常不是预期SQL错误，后续健康检查不覆盖首个失败。 |
+| DELETE / CLOSE | 结束当前只读事务后恢复自动提交；`DELETE FROM J WHERE id=?` 绑定3应影响1行，O只剩[(1,'two'),(2,'')]。事务外DROP本轮J并核对象消失；释放所有ResultSet、PreparedStatement/Statement及Connection，包括错误分支。清理缺证或失败使流程失败。 |
+
+每次executeQuery逐列读取真实值并立即关联wasNull，记录getObject返回类及适用getInt/getString结果；ResultSetMetaData记录列数、顺序、标签/名称、JDBC类型码/类型名、Java类名、精度/标度、可空性及适用库/schema/表来源。id应按INTEGER、v按VARCHAR契约比较，别名和零行不省略元数据；PreparedStatement.getMetaData可得与执行后元数据分别保留，不虚构不可得字段。JDBC类型码不冒充PG OID，wire中的OID、typmod、参数/结果格式及statement/portal身份另关联第3/7章。每个失败记录具体API、SQL、异常链和首个实际协议阶段Parse/Bind/Describe/Execute/Sync；只有API异常而无wire时阶段写“未采集”，不能从报错字符串猜测。
+
+格式切换分配置运行同一流程：先以preferQueryMode=extended、prepareThreshold=1、binaryTransfer=false取得文本基线；再保持同一驱动其余条件，启用驱动默认二进制策略，分别记录阈值前后实际参数和结果格式。另选prepareThreshold=5，在同一个SELECT PreparedStatement上稳定绑定并至少执行6次，记录每次服务端准备状态及wire格式，不把重复新建Statement当作达到阈值。prepareThreshold=0禁用服务端准备可单列对照，但不等同Simple Query。配置值只表意图，实际类型是否切换由wire证明；混合格式、值、NULL及元数据连续性逐列比较，缺观测则格式结论未验证。参数二进制成功与结果二进制成功分别计证，不能相互推导。
+
+[历史说明](postgresql-protocol-first-phase.md)早期要求binaryTransfer=false，后期记录42.7.13/42.7.3以prepareThreshold=1和默认二进制策略完成目录27/27查询；当前Java夹具也保留默认二进制设置。目录SQL、原生CRUD和历史RealTiKV事务记录逐场景保留，目录通过不推广到全部原生SQL、类型或二进制结果。历史RealTiKV记录的42703→25P02→ROLLBACK恢复不是本轮23505流程证据；未支持配置保持失败/依赖阻塞，不悄悄关闭binaryTransfer后报全配置成功。
+
+finally路径在连接存活时先结束未提交事务，关闭结果与statement，再事务外清理登记的本轮对象并关闭连接；try-with-resources与显式rollback配合，不依赖close隐式处理活动事务。已断连接由独立管理连接清理，仅用于清理而非业务恢复断言。保存主异常与清理异常、每项退出码、资源前后值及回收期限，Java临时源码/目录删除也要观测，现存Cleanup忽略删除错误不等于清理已验收。每轮按case_id、驱动和配置记录发现/执行/有效/失败/异常/跳过及断言数，重试不重复累计。本轮有效运行数0、有效行为断言数0，目标参考端18.6精确构建未采集，全部功能待验证。
+
+官方依据（2026-10-24查阅）：pgJDBC [连接配置](https://jdbc.postgresql.org/documentation/use/)及[服务端预处理](https://jdbc.postgresql.org/documentation/server-prepare/)用于属性与准备/格式策略；Java SE 17 [PreparedStatement](https://docs.oracle.com/en/java/javase/17/docs/api/java.sql/java/sql/PreparedStatement.html)与[Connection](https://docs.oracle.com/en/java/javase/17/docs/api/java.sql/java/sql/Connection.html)用于绑定和事务API。协议阶段服从第7章所引PG18消息流；这些规范不证明本轮驱动或18.6构建已运行。
+
 #### 差异白名单
 
 白名单当前为空；以下仅定义登记规则，不预先授权任何差异。每项必须列唯一白名单ID、能力ID/case_id、官方版本/章节/链接与必要参考端证据、差异字段及原因、适用SQL/类型/客户端/环境、确定的比较转换、仍需保留的原始观测、审核依据及复审条件（参考版本、实现、客户端或配置变化即复审）。无ORDER BY的行序、动态时间或用户对象OID也不能笼统忽略：分别按第1章重复行规则、第4章时间语义、第6章真实身份关联约束取证后再逐项登记。白名单只解释有依据的可比差异，不能吞掉未实现、未知错误、类型丢失、错误恢复或副作用失败；未获依据的差异保持失败/未验证。
@@ -6147,6 +6174,8 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 本任务仅定义四层与共用证据，具体客户端流程、函数共享/专属场景、会话事务隔离、取消关闭、大结果及八工作流最终收口由后续编号任务补正文；不预填支持结论。不实现生产代码、测试平台、运行器、CI、数据库或压测环境，不运行Cargo、Go、数据库或客户端，不改第1–7章和来源计划。
 
 ### 验收
+
+JDBC主题按“JDBC预处理流程”核对精确jar/JRE、驱动配置、参数化CRUD与NULL、ResultSetMetaData、commit/rollback、SQLSTATE及同连接恢复、阈值与实际格式切换、资源和对象清理；各配置分别采证，文档完成不代表功能通过。
 
 psql主题按“psql脚本流程”交接：核对精确产物与隔离配置、正常/故意错误脚本的值和标签、退出状态、副作用、断连回滚与脚本清理。两端完整观测及清理齐全才可验功能，当前只完成文档。
 
@@ -6173,3 +6202,9 @@ libpq主题须按“libpq端到端流程”核对加载库、默认/强制3.2、
 后续另立一个真实psql非交互正常脚本任务，仅补唯一表夹具、建表/写入/查询/回滚再查询/提交和清理断言；再拆故意23505退出3、断连回滚及独立管理清理任务，人工交互单独采证。脚本、运行器与证据入口均待新增，不把run_clients宣称为现成psql入口，不扩建客户端平台或事务子系统。
 
 本主题需求映射：步骤1→历史/ctypes/人工区分；步骤2→精确版本、非交互配置与正常流程；步骤3→故意错误、退出状态和脚本清理；步骤4→待新增入口与有效数0；步骤5→验收交接及本节窄切口。正确性风险为退出码掩盖错误副作用或清理失败；兼容性风险为人工/历史记录被当作18.6脚本通过；性能与超时阈值未实测。
+
+#### JDBC交接与窄实施切口
+
+先另立一个PreparedStatement参数化INSERT与typed NULL回读窄任务，复用pg_client_integration_test.rs及独立类型/查询测试；再拆同连接commit/rollback、23505后恢复、同一statement阈值前后格式和资源清理观测。新Java流程、配置筛选、wire关联与差分入口均待新增；run_clients仍包含libpq/MySQL，不能当作现成JDBC单流程命令。本轮不创建环境、脚本或证据目录，不扩大为驱动平台或事务子系统。
+
+本主题需求映射：步骤1→run_jdbc/Java入口及精确jar/JRE采集；步骤2→CRUD/NULL/元数据/事务/SQLSTATE表及格式切换；步骤3→目录与原生SQL历史边界；步骤4→第3/5/7章依赖、错误阶段与清理；步骤5→验收交接与本节窄切口。正确性风险为未观测格式或清理被误算通过，兼容性风险为目录历史结果泛化；性能、回收期限与全部配置未实测。
