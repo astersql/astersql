@@ -5599,6 +5599,12 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 | 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs)::startup_auth_roundtrip / startup_protocol_30_roundtrip / startup_cancel_is_scoped_and_consumed | 启动断言K体36/8字节；取消测试用with_query屏障后执行select 1，覆盖两版本、错secret、跨连接secret、长短secret/跨版本、超过256字节、命中interrupted、后续查询、idle及断连旧键和旁路连接。不是正在运行的长查询/阻塞发送/COPY取消证明，也没有强制PID复用或随机性统计断言；本轮未运行。 |
 | 同测试 catalog_error_recovery_and_cleanup / startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients | 前者断言错误后恢复、弱context释放、半启动/半普通帧只影响本连接、重复close、active/sockets/workers最终(0,0,0)；后者核已接受待启动与已认证连接停服EOF、监听关闭及MySQL握手。3秒是测试等待期限，不能当生产回收保证；全部未运行。 |
 
+#### 章节收口的证据基线
+
+2026-10-24 以 `caae605f1a67b4f8e9813a43a366c69a3e3293f8` 收口：批次8取消/资源交付及传递批次1–7的八个连续提交均已核验，实际增量只有本章文档；各域的模块、目标、范围外、验收和后续细分均已有正文。来源父任务仍标未开始，保留原样，不影响本轮文档依赖成立，也不表示生产依赖已满足。
+
+收口经 RustCodeGraph status 和精确源码/独立测试读取复核 `PgService::negotiate` 的空 native 凭据与无 TLS 状态、`Extended::handle/process` 的分派/Sync/portal 缓存、`pg_result::encode_formats` 的完整消息物化。独立 `startup_auth_roundtrip` 断言开发 root、intruder 28P01 与3.2密钥体36字节，`parse_bind_execute_sync` 含描述/真实行/同步，`pg_binary_native_results` 含网络序载荷，`prepared_crud_roundtrip` 含普通写入，`failed_transaction_requires_rollback` 含Sync后E及回滚，`startup_cancel_is_scoped_and_consumed` 含受控执行入口与密钥隔离。均只读未运行；不把这些断言扩展为TLS、SCRAM、COPY或阻塞发送的覆盖。历史模块说明仅导航，当前有效运行数 **0**，本章所有运行能力、真实客户端、参考端与性能仍**未验证**。
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5768,9 +5774,33 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 
 失败分三类：完整已读帧内可恢复的类型/值错沿Q错误结束或扩展丢弃至合法Sync，I/T/E依第5章、T/E仍需ROLLBACK；已能读全帧但消息种类/状态非法，是否可恢复须按对应子协议与参考端决定，不因为“读全”就一律Sync；长度越界/失去帧边界、截断、读写超时/失败等无法安全继续时关闭并清理。回复写到半帧后不得继续追加ErrorResponse/成功标签，当前worker的通用FATAL写回路径不能当安全保证。认证前worker没有已交付K，取消请求不能代替认证总期限或停服中断。目录查询、COPY等待输入、普通查询/COPY输出阻塞发送均需独立活动屏障，本轮不实现这些钩子。
 
+#### 章节验收与后续交接
+
+以下是来源任务步骤1–4的章内需求映射，状态统一为**文档完成、运行未验证**。各域验收表给出完整夹具/轨迹，本表只作入口与遗漏审查，不能用关键词或路径存在代替行为通过。ID使用各域已有能力/用例族，不将本表新增为支持清单。
+
+| 来源需求 / 域 | 现状与目标定位 | 成功、失败、取消、清理的验收入口 |
+| --- | --- | --- |
+| 步骤1、4：TLS | [TLS证据](#tls-证据与职责) → [安全传输目标](#tls-与安全传输) | WIRE-TLS 的OK/CERT/PLAIN/FRAME/INTERRUPT/STOP/REJECT；握手前取消键不适用，以断连/期限/停服验回收；TLS成功仍须真实认证。 |
+| 步骤1、3、4：SCRAM | [身份链证据](#scram-证据与身份链) → [身份权限目标](#scram-身份与权限) | [SCRAM验收](#scram-身份授权及失败验收) OK/IDENTITY/AUTHZ、CREDENTIAL/PROOF/REPLAY、INTERRUPT/STOP/SECRET；认证取消同TLS，不把空native开发模式当生产成功。 |
+| 步骤1、2、3：startup/session | [启动证据](#启动参数证据与交接职责) → [参数交接目标](#启动参数与会话交接) | [启动验收](#启动参数与会话交接验收) OK/EFFECT/ISOLATE、AUTH/VALUE/FRAME/VERSION、INTERRUPT/RECONNECT及REPLICATION；初始化无K/Z时不适用查询取消。 |
+| 步骤1、2：Q/Extended | [查询证据](#查询消息证据与职责) → [消息恢复目标](#查询消息与同步恢复) | [查询验收](#查询消息与同步恢复验收) SIMPLE/EXTENDED/PAGE/EFFECT、PHASE/IMPLICIT/OLD、DISCONNECT/TRANSPORT；命名对象/事务结束释放见NAMES/CLOSE/END，活动取消沿生命周期域。 |
+| 步骤1、2：二进制消息 | [类型职责证据](#二进制证据与类型职责) → [消息类型目标](#二进制消息与类型交接) | [二进制验收](#二进制消息与类型交接验收) BIND/PARAM/ROWDESC/ROW、FRAME/VALUE/ENCODE、SEND/CANCEL/CLEANUP；Bind/t/T/D逐消息分开，不以目录特例代替通用族。 |
+| 步骤1、2、4：COPY IN | [写入证据](#copy-in-证据与写入职责) → [真实写入目标](#copy-in-真实写入) | [输入验收](#copy-in-真实写入验收) TEXT/CSV/BINARY/CHUNK、COMMIT/ROLLBACK/SYNC、BAD/FAIL/AUTHZ、CANCEL/EOF/STOP/SEND；必须有A/B真实回读及失败无部分写入。 |
+| 步骤1、2、4：COPY OUT | [读取证据](#copy-out-证据与读取职责) → [真实读取目标](#copy-out-真实读取) | [输出验收](#copy-out-真实读取验收) TABLE/QUERY/CLIENT、TEXT/CSV/BINARY、READ/ENCODE/AUTHZ、CANCEL/DISCONNECT/SEND/STOP、BACKPRESSURE/RELEASE；逐字节/逐值核验且失败前缀不能当成功导出。 |
+| 步骤2及各域中断：取消/资源/关闭 | [生命周期证据](#取消与资源证据) → [密钥预算目标](#取消资源与关闭边界) | [生命周期验收](#取消与资源关闭验收) KEY/ROUTE/GENERATION/RACE、BOUNDS/ACCOUNT、QUERY/COPY-IN/COPY-OUT、AUTH/BLOCK/SEND/CLOSE/STOP；MEMORY/THROUGHPUT独立测量，不把maxRows当内存上限。 |
+| 步骤3、4：明确拒绝和安全身份 | [范围门槛](#章节收口的范围门槛)、各域范围外及真实身份交接 | TLS REJECT、SCRAM MECHANISM/DEV/SECRET、启动REPLICATION、COPY AUTHZ/REJECT，拒绝前后核无文件/进程/复制状态/SQL副作用与资源残留；不能由错误包推断无副作用。 |
+
+跨章责任继续固定：第3章[准备描述执行元数据契约](#准备描述执行元数据契约)拥有类型身份、OID/typlen/typmod和codec，本章拥有封装/数量/格式与描述连续性；第5章拥有共享事务与快照，本章拥有协议failed与Sync，Sync清协议失败不代表E回滚或隐式段已提交；第6章拥有真实目录、角色/owner/ACL与授权，本章传递同一身份且不造root/影子权限。已核对这些前序正文，未发现需要改写前章的契约冲突；当前缺类型元数据、真实认证权限或隐式事务接线均保留为实现依赖。
+
+2026-10-24收口复查官方 PostgreSQL **18** [54.2消息流（启动、查询、COPY、取消、终止、SSL）](https://www.postgresql.org/docs/18/protocol-flow.html)、[54.7消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)、[54.3 SASL](https://www.postgresql.org/docs/18/sasl-authentication.html)及[SQL COPY](https://www.postgresql.org/docs/18/sql-copy.html)；具体字段和例外沿各域已列规范/固定源码来源。本轮没有核实18.6参考构建、错误阶段/SQLSTATE/精确文本或真实客户端，未采字段记未采集，不从大版本手册填补丁版实测结果。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
+
+#### 章节收口的范围门槛
+
+首批只认领经逐项取证的应用SQL通道：安全连接与真实身份、启动设置、Q/扩展查询、已开放类型的参数/结果及STDIN/STDOUT。逻辑/物理复制、START_REPLICATION/CopyBoth、GSSAPI/OAuth、服务器文件与PROGRAM继续按前述阶段明确拒绝，不因管理员身份或普通COPY开放绕过门槛；复制false的普通连接目标与当前全拒绝差异保留。扩展生态仍沿第1章非目标。本轮不创建实现任务、测试运行器或第8章内容，也不扩大SQL/类型/事务/权限子系统；缺接口只登记依赖。认证前没有取消键，取消场景使用断连/期限/停服；已提交结果不承诺被取消或网络失败撤销。
 
 #### SCRAM 范围与开发边界
 
@@ -5939,6 +5969,12 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 
 每例保留第1章能力/用例ID、双方完整SHA/实际版本、客户端与协商版本、权限/会话/事务设置、受控屏障顺序、主/取消连接帧与结果、错误阶段/SQLSTATE/安全诊断、I/T/E、B真实值、资源前后值、预算单位/实际拒绝点、命令退出码及有效断言数。secret只记长度与脱敏关联标识。清理存活T/E连接先ROLLBACK、Close对象再关连接，确认资源收敛后事务外清理夹具；关闭轮不得依赖已死连接清理。所有运行与性能数值未采集，本轮有效运行数0。
 
+#### 章节交付检查与第8章证据入口
+
+本轮Ready仅验文档：逐域审阅上述映射与五节正文、官方规范/本地链接、与第3/5/6章分责及第7章外字节不变；`.agents/skills/tidb-verify-profile/SKILL.md` 再查仍缺失，使用这些人工等效检查，不宣称执行该技能。文档通过不提升运行能力，所有行为/性能仍未验证，有效运行数0。
+
+交给第8章的是**待采集**的单客户端流程与证据格式：先冻结一个客户端及精确版本、协议3.0或3.2、TLS/SCRAM/身份权限和会话夹具，再选择本章单一能力/用例ID；依第1章记录双方完整构建SHA/精确版本、SQL/参数/格式/类型与NULL、原始帧和真实值/副作用、错误阶段及安全诊断、Sync/Z与I/T/E、取消/资源前后值、清理、新请求继续性、命令退出码和有效断言数。敏感材料只留脱敏关联，不归档secret/proof/私钥；精确18.6未核实写未采集。psql/libpq、JDBC、图形客户端、ORM与MySQL共存分别采证，既有脚本/历史记录不替代新客户端请求；本轮不创建证据目录或运行器，不修改第8章。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5986,5 +6022,26 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 后续另立窄任务：①3.0/3.2取消键长度、随机源失败与PID复用/代次竞态独立回归；②普通及目录活动取消到共享会话的最小接线；③按已冻结预算补帧/对象/累计缓冲准入与对称计费；④结果编码/发送及COPY读写阻塞中断与所有权清理，依赖相应通道真实存在；⑤并发停服、部分初始化与物化峰值/慢客户端测量。复用pg_conn/pg_extended/pg_result与同目录独立测试，新屏障/注入/测量/资源观测入口均待新增；缺共享能力只列依赖，不递归补建子系统。
 
 需求映射：任务步骤1→取消与资源证据表；步骤2→逐预算表及BOUNDS/ACCOUNT；步骤3→密钥长度/代次契约及KEY/RANDOM/ROUTE/GENERATION/IDLE/RACE；步骤4→QUERY/CATALOG/COPY-IN/COPY-OUT/AUTH/BLOCK/SEND/CLOSE/EOF/ERROR/STOP及清理顺序；步骤5→三类失败与MEMORY/THROUGHPUT。共同覆盖来源步骤2的消息上限、取消键、关闭与大结果风险，前序各域验收沿用其真实成功/失败轨迹。本域Ready文档检查包括五节定位、需求/异常轨迹映射、官方/相对链接、与第3/5/6章交接及章节外字节不变；验证技能路径仍缺失，采用手工等效检查。正确性风险为静态推断与竞态遗漏，兼容性风险为取消/关闭边界或本地预算被误作PG18.6实测；性能/资源预算未测。本域完成仅指文档，下一批9仅收口，不实现生产能力。
+
+#### 章节收口的窄实施候选
+
+下表各行分别另立实施任务，不能把本轮串行文档批次当作实现并行依赖图。生产路径和独立测试路径均已存在；表中指定的新用例、夹具、注入、共享接口及客户端探针一律**待新增/待运行**。每次只选一个行为先取得真实失败，最小修复后再通过同一断言及必要相邻回归；编译成功、零测试或消息标签不作为通过证据。
+
+| 单行为候选 / 确切生产与独立测试路径 | 单行为失败目标、前置依赖与通过证据 |
+| --- | --- |
+| TLS协商：`pkg/server/pg_conn.rs`；`pkg/server/pg_conn_test.rs`、`pkg/server/pg_protocol_test.rs` | 先证SSLRequest后不能完成可信TLS，再验S后加密startup及真实查询；依赖TLS流所有权/证书夹具。CERT/PLAIN/STOP另拆窄任务，保留无降级与回收断言。 |
+| SCRAM proof与身份交接：`pkg/server/pg_conn.rs`、`pkg/server/runtime.rs`；`pkg/server/pg_conn_test.rs` | 先选真实非root正确proof建立身份的失败用例，再验签名、current_user和单个已授权读取；依赖共享verifier/账户状态与第6章授权事实，缺源先登记。错误proof无成功/无密值泄漏另设回归，不新建权限系统。 |
+| 单启动参数：`pkg/server/pg_protocol.rs`、`pkg/server/pg_conn.rs`、`pkg/server/pg_session.rs`；`pkg/server/pg_conn_test.rs`、`pkg/server/pg_session_test.rs` | 先选application_name接受后SHOW不一致的失败，再验A/B隔离及SET/RESET有效值与S一致；依赖连接私有设置接口。版本v、默认库/CONNECT、其他参数分别另拆，不一次实现完整GUC。 |
+| 单查询恢复：`pkg/server/pg_extended.rs`、`pkg/server/pg_conn.rs`；`pkg/server/pg_extended_test.rs`、`pkg/server/pg_transaction_test.rs` | 选Parse/Bind/Execute一个错误阶段，证明带写副作用后缀被丢弃、新Sync仍E、ROLLBACK后真实值恢复；依赖第5章共享事务，不把旧portal门禁或隐式原子性缺口隐藏在Sync标签里。 |
+| Bind B输入：`pkg/server/pg_extended.rs`；`pkg/server/pg_extended_test.rs` | 选一个完整帧的非法格式数量/长度，失败不得半注册portal或执行写入；依赖第3章已定型参数与原始报文夹具。通过须有错误阶段、Sync恢复、新合法Bind真实值与B无副作用。 |
+| ParameterDescription t：`pkg/server/pg_extended.rs`；`pkg/server/pg_extended_test.rs` | 选一个statement参数描述数量/OID与分析类型不符的失败；依赖第3章真实参数元数据。按原始长度/OID逐字段核对，含重复$n，不能用Bind值猜类型；无参数typlen/格式字段。 |
+| RowDescription T：`pkg/server/pg_extended.rs`、`pkg/server/pg_result.rs`；`pkg/server/pg_extended_test.rs`、`pkg/server/pg_types_test.rs` | 选单列声明typmod/来源身份丢失或portal格式不连续的一个失败；依赖第3章元数据、第6章真实对象。通过需statement默认0与portal实际格式、零行/NULL描述稳定，不由当前固定0/-1填充假通过。 |
+| DataRow D：`pkg/server/pg_result.rs`、`pkg/server/pg_extended.rs`；`pkg/server/pg_types_test.rs`、`pkg/server/pg_extended_test.rs` | 选一族的一种方向/边界载荷失败；依赖第3章该族codec。通过逐字节列数/长度/值、NULL=-1与空=0及Describe一致，非法值错误后恢复；其他族/方向保留独立任务。 |
+| COPY IN真实写入：`pkg/server/pg_conn.rs`、`pkg/server/pg_extended.rs`、`pkg/server/pg_sql.rs`；`pkg/server/pg_dml_test.rs`、`pkg/server/pg_client_integration_test.rs` | 先选text输入无法真实回读的失败，再验COPY n、A/B行值和有效行后失败无部分写入；依赖共享导入/事务/授权、COPY语法和输入状态。CSV、binary、活动取消另拆，普通INSERT回归不能替代。 |
+| COPY OUT真实读取：`pkg/server/pg_conn.rs`、`pkg/server/pg_extended.rs`、`pkg/server/pg_result.rs`；`pkg/server/pg_client_integration_test.rs`、`pkg/server/pg_types_test.rs` | 先选真实表text输出不能被客户端消费的失败，再验H/d/c/C、内容与源SELECT相等；依赖共享读取/快照/授权与COPY格式，读取接口待新增。CSV/binary、查询来源及慢读取消分别另拆，不造常量流。 |
+| 活动取消：`pkg/server/pg_conn.rs`；`pkg/server/pg_conn_test.rs`、`pkg/server/pg_transaction_test.rs` | 选一个活动执行屏障的正确键取消失败，再验主连接无成功、Q或Sync恢复、T/E回滚及B/A2健康；依赖共享执行取消接口。PID复用/完成竞态、目录、编码/发送与COPY各另拆，idle cancel不替代。 |
+| 单预算/关闭：`pkg/server/pg_conn.rs`、`pkg/server/pg_extended.rs`、`pkg/server/pg_result.rs`；`pkg/server/pg_conn_test.rs`、`pkg/server/pg_extended_test.rs` | 先冻结一个计费对象/数值/阶段，L-1/L/L+1证准入和释放；或单选阻塞发送停服的失败再证唤醒/资源收敛。依赖预算评审、受控读写/资源计数，不借此补建全局管理器或流式执行器；物化峰值与吞吐另测。 |
+
+推荐下一步先为一个TLS协商或真实SCRAM凭证接入切口细分实施，并由第8章冻结一个真实客户端流程；缺依赖先补事实，不扩建完整子系统。正确性风险仍是静态推断及异常/竞态遗漏，兼容性风险是类型/事务/权限交接与误称18.6实测，性能、预算数值与关闭期限尚未测量；本章收口仅表示文档完成。
 
 ## 8. 客户端与双方言共存验收
