@@ -111,3 +111,29 @@ class CaseRegistry:
         if len(self.seen) != len(self.cases['cases']):
             raise ValueError('registered cases were not executed')
         return len(self.seen)
+
+
+def append_observation(directory, record):
+    """Persist one endpoint before assertions; never accept connection material."""
+    allowed = {'run', 'case_id', 'side', 'attempt', 'input', 'observation',
+               'outcome', 'error_type'}
+    if set(record) - allowed or not {'run', 'case_id', 'side', 'attempt'} <= set(record):
+        raise ValueError('invalid observation envelope')
+    if record['side'] not in {'aster', 'reference', 'mysql'}:
+        raise ValueError('invalid observation side')
+    data = record.get('input')
+    if data is not None and set(data) - (_INPUT_FIELDS | {'command'}):
+        raise ValueError('invalid observation input')
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / (record['side'] + '.jsonl')).open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(record, sort_keys=True) + '\n')
+        stream.flush()
+        import os
+        os.fsync(stream.fileno())
+
+
+def read_observations(directory):
+    """Read separate endpoint streams without comparing or filling missing data."""
+    return [json.loads(line) for path in sorted(Path(directory).glob('*.jsonl'))
+            for line in path.read_text().splitlines()]

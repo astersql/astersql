@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -74,39 +74,80 @@ def integer_differential(aster_dsn):
     counts = Counter()
     registry = CaseRegistry(load_cases(), table)
     statements = {}
+    from pathlib import Path
+    evidence_dir = Path(os.environ['PG_CORE_EVIDENCE_DIR'])
+    run_id = evidence_dir.name
+    attempt = 1
+    get_length = api('PQgetlength', integer, ptr, integer, integer)
+    raw_value = api('PQgetvalue', ptr, ptr, integer, integer)
+    field_format = api('PQfformat', integer, ptr, integer)
+    command_status = api('PQcmdStatus', text, ptr)
+
+    def archive(case, side, actual_input, observation, outcome='collected', error_type=None):
+        append_observation(evidence_dir, dict(run=run_id, case_id=case, side=side,
+                           attempt=attempt, input=actual_input, observation=observation,
+                           outcome=outcome, error_type=error_type))
 
     def interrupted(signum, frame):
+        for side in connections:
+            archive('interrupted', side, None, None, 'interrupted', signal.Signals(signum).name)
         raise KeyboardInterrupt("client interrupted")
 
     signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
 
-    def observe(result):
+    def observe(result, partial=None):
         assert result, "libpq returned no result"
+        obs = partial if partial is not None else {}
         try:
-            return {
-                "status": result_status(result),
-                "state": (error_field(result, ord("C")) or b"").decode(),
-                "fields": [(field_name(result, col).decode(), field_type(result, col),
-                            field_size(result, col), field_mod(result, col))
-                           for col in range(columns(result))],
-                "rows": [[None if is_null(result, row, col) else
-                          value(result, row, col).decode()
-                          for col in range(columns(result))]
-                         for row in range(rows(result))],
-                "params": [param_type(result, i) for i in range(nparams(result))],
-            }
+            obs['status'] = result_status(result)
+            obs['state'] = (error_field(result, ord('C')) or b'').decode()
+            obs['fields'] = [(field_name(result, col).decode(), field_type(result, col),
+                              field_size(result, col), field_mod(result, col))
+                             for col in range(columns(result))]
+            obs['params'] = [param_type(result, i) for i in range(nparams(result))]
+            obs['formats'] = [field_format(result, col) for col in range(columns(result))]
+            obs['command_tag'] = (command_status(result) or b'').decode()
+            obs['affected_rows'] = (command_rows(result) or b'').decode()
+            obs['table_origins'] = None
+            obs['rows'], obs['cells'] = [], []
+            for row in range(rows(result)):
+                values, cells = [], []
+                obs['rows'].append(values)
+                obs['cells'].append(cells)
+                for col in range(columns(result)):
+                    if is_null(result, row, col):
+                        values.append(None)
+                        cells.append({'kind': 'null', 'length': get_length(result, row, col)})
+                    else:
+                        length = get_length(result, row, col)
+                        payload = c.string_at(raw_value(result, row, col), length)
+                        cells.append({'kind': 'value', 'length': length, 'hex': payload.hex()})
+                        values.append(payload.decode())
+            return obs
         finally:
             clear(result)
 
     def equal(case, actual, reference):
-        assert actual == reference, (case, actual, reference)
+        keys = ('status', 'state', 'fields', 'rows', 'params')
+        assert {k: actual[k] for k in keys} == {k: reference[k] for k in keys}, (case, actual, reference)
 
     def check(case, family, operation, expected_status=2, expected_rows=None,
               expected_state="", expected_params=None):
         actual_input, send = operation
         registered_input = registry.claim(case, family, actual_input)
         for side, connection in connections.items():
-            obs = observe(send(connection))
+            partial = {}
+            try:
+                obs = observe(send(connection), partial)
+            except BaseException as exc:
+                append_observation(evidence_dir, dict(run=run_id, case_id=case, side=side,
+                                   attempt=attempt, input=registered_input, observation=partial or None,
+                                   outcome='collection_failed', error_type=type(exc).__name__))
+                raise
+            append_observation(evidence_dir, dict(run=run_id, case_id=case, side=side,
+                               attempt=attempt, input=registered_input, observation=obs,
+                               outcome='collected'))
             observations[side][case] = obs
             assert obs["status"] == expected_status, (side, case, obs)
             assert obs["state"] == expected_state, (side, case, obs)
@@ -156,10 +197,20 @@ def integer_differential(aster_dsn):
             assert status(connection) == 0, f"{side} connection failed"
             print(side, "protocol:", protocol(connection), "server build:",
                   parameter_status(connection, b"server_version").decode(), flush=True)
-        ref = observe(execute(connections["reference"],
-                              b"SELECT version(), current_setting('server_version_num')"))
+        (evidence_dir / 'environment.json').write_text(json.dumps({
+            'libpq_version': version(), 'libpq_library': str(Path(library).resolve()),
+            'python': sys.version, 'endpoints': {
+                side: {'protocol': protocol(conn),
+                       'server_version': parameter_status(conn, b'server_version').decode()}
+                for side, conn in connections.items()}}, sort_keys=True))
+        version_sql = "SELECT version(), current_setting('server_version_num'), '' AS archive_empty, NULL::int4 AS archive_null"
+        ref = observe(execute(connections['reference'], version_sql.encode()))
+        archive('reference_version', 'reference', {'command': version_sql}, ref)
         assert ref["status"] == 2, "reference version query failed"
-        build, number = ref["rows"][0]
+        build, number = ref['rows'][0][:2]
+        assert ref['rows'][0][2:] == ['', None]
+        assert ref['cells'][0][2:] == [
+            {'kind': 'value', 'length': 0, 'hex': ''}, {'kind': 'null', 'length': 0}]
         assert 180000 <= int(number) < 190000, "reference must be real PostgreSQL 18.x"
         assert "PostgreSQL 18." in build and "AsterSQL" not in build
         print("reference build:", build, "server_version_num:", number, flush=True)
@@ -228,6 +279,7 @@ def integer_differential(aster_dsn):
                 f"CREATE TABLE {table} (id INT PRIMARY KEY, n BIGINT)".encode()))
             assert obs["status"] == 1, (side, obs)
             created.add(side)
+            archive('create_table', side, {'command': f'CREATE TABLE {table} (id INT PRIMARY KEY, n BIGINT)'}, obs)
         sql("write", "write", f"INSERT INTO {table} VALUES (1, '9007199254740993'::int8), (2, NULL)",
             expected_status=1)
         sql("readback", "readback", f"SELECT CAST(id AS int8) AS id, n::int8 AS n FROM {table} ORDER BY id",
@@ -267,22 +319,40 @@ def integer_differential(aster_dsn):
         print("registered inputs: business=91 self_check=3 missing=0 duplicate=0", flush=True)
         print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
     finally:
+        business_failed = sys.exc_info()[0] is not None
         cleanup_errors = []
         try:
             for side in sorted(created):
+                management = None
                 try:
                     connection = connections[side]
+                    if status(connection) != 0:
+                        # A failed socket cannot recover a transaction. A separate
+                        # connection may only remove this run's unique table.
+                        dsn = aster_dsn if side == 'aster' else reference_dsn
+                        management = connect(dsn.encode())
+                        assert management and status(management) == 0, 'cleanup connection failed'
+                        connection = management
                     # Rollback first so cleanup also works after a failed transaction assertion.
-                    observe(execute(connection, b"ROLLBACK"))
+                    rollback = observe(execute(connection, b"ROLLBACK"))
+                    archive('cleanup_rollback', side, {'command': 'ROLLBACK'}, rollback)
                     obs = observe(execute(connection, f"DROP TABLE {table}".encode()))
+                    archive('cleanup_drop', side, {'command': f'DROP TABLE {table}'}, obs)
                     assert obs["status"] == 1, (side, "table cleanup failed")
                 except Exception as exc:
-                    cleanup_errors.append((side, str(exc)))
-            assert not cleanup_errors, cleanup_errors
-            print("unique-table cleanup passed for", len(created), "endpoints", flush=True)
+                    archive('cleanup_failed', side, None, None, 'cleanup_failed', type(exc).__name__)
+                    cleanup_errors.append((side, type(exc).__name__))
+                finally:
+                    if management:
+                        finish(management)
+            if cleanup_errors and not business_failed:
+                raise AssertionError(cleanup_errors)
+            if not cleanup_errors:
+                print("unique-table cleanup passed for", len(created), "endpoints", flush=True)
         finally:
-            for connection in connections.values():
+            for side, connection in connections.items():
                 finish(connection)
+                archive('connection_closed', side, None, None, 'closed')
 
 
 conninfo = (

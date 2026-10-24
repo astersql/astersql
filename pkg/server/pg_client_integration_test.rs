@@ -109,6 +109,20 @@ fn pg_core_libpq_integer_differential() {
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
         "PG18_REFERENCE_DSN is required (no skip)"
     );
+    let run = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-core-evidence")
+        .join(&run);
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    std::fs::create_dir(&evidence).unwrap();
+    println!("PG_CORE_EVIDENCE_DIR={}", evidence.display());
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let server = start_client_server(domain, Some(0));
     let _close = CloseServer(&server);
@@ -118,29 +132,62 @@ fn pg_core_libpq_integer_differential() {
         .execute(&format!("CREATE DATABASE {database}"))
         .unwrap();
     let mysql_address = server.listener_addr().unwrap();
+    // Declared before the child guard: on unwind, Python finishes its cleanup first.
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = || {
+        server.close();
+        let dropped = native.execute(&format!("DROP DATABASE {database}")).is_ok();
+        let record = serde_json::json!({"database_dropped": dropped,
+            "postgres_port_closed": TcpStream::connect(address).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err()});
+        let _ = std::fs::write(evidence.join("rust-cleanup.json"), record.to_string());
+    };
+    let cleanup_guard = Cleanup(cleanup);
     let mut mysql = TcpStream::connect(mysql_address).unwrap();
     mysql
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     mysql_handshake(&mut mysql);
     mysql_isolation(&mut mysql);
-    let checkpoint = |mysql: &mut TcpStream| {
+    let checkpoint = |mysql: &mut TcpStream, phase: &str| {
+        let sql = "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation";
+        let actual = mysql_query(mysql, sql);
+        let record = serde_json::json!({"run": run, "case_id": phase,
+            "side": "mysql", "attempt": 1, "input": {"command": sql},
+            "observation": {"rows": actual}, "outcome": "bypass_health"});
+        use std::fs::OpenOptions;
+        let mut archive = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(evidence.join("mysql.jsonl"))
+            .unwrap();
+        writeln!(archive, "{record}").unwrap();
+        archive.sync_all().unwrap();
         assert_eq!(
-            mysql_query(
-                mysql,
-                "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation"
-            ),
+            actual,
             vec![vec![Some(b"31".to_vec()), Some(b"-17".to_vec())]]
         );
     };
-    checkpoint(&mut mysql);
-    struct ChildGuard(std::process::Child);
+    checkpoint(&mut mysql, "before");
+    struct ChildGuard(std::process::Child, std::path::PathBuf);
     impl Drop for ChildGuard {
         fn drop(&mut self) {
             // EOF releases the Python checkpoint even if a MySQL assertion panics,
             // allowing its finally block to clean the reference endpoint as well.
             drop(self.0.stdin.take());
-            let _ = self.0.wait();
+            if let Ok(status) = self.0.wait() {
+                let _ = std::fs::write(
+                    &self.1,
+                    serde_json::json!({
+                    "success": status.success(), "code": status.code(), "status": status.to_string()})
+                    .to_string(),
+                );
+            }
         }
     }
     let mut child = ChildGuard(
@@ -154,11 +201,13 @@ fn pg_core_libpq_integer_differential() {
                 database.clone(),
                 "integer-differential".into(),
             ])
+            .env("PG_CORE_EVIDENCE_DIR", &evidence)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
             .expect("Python 3 is required"),
+        evidence.join("child-exit.json"),
     );
     let stdout = child.0.stdout.take().unwrap();
     let mut middle = false;
@@ -166,7 +215,7 @@ fn pg_core_libpq_integer_differential() {
         let line = line.unwrap();
         println!("{line}");
         if line == "PG_DIFFERENTIAL_MID" {
-            checkpoint(&mut mysql);
+            checkpoint(&mut mysql, "during");
             middle = true;
             child
                 .0
@@ -178,18 +227,21 @@ fn pg_core_libpq_integer_differential() {
         }
     }
     let status = child.0.wait().unwrap();
-    checkpoint(&mut mysql);
+    checkpoint(&mut mysql, "after");
     mysql_query(&mut mysql, "DROP DATABASE public");
     mysql_packet(&mut mysql, 0, &[0x01]);
-    server.close();
-    native
-        .execute(&format!("DROP DATABASE {database}"))
-        .unwrap();
-    assert!(TcpStream::connect(address).is_err(), "PG listener leaked");
-    assert!(
-        TcpStream::connect(mysql_address).is_err(),
-        "MySQL listener leaked"
-    );
+    std::fs::write(
+        evidence.join("child-exit.json"),
+        serde_json::json!({"success": status.success(), "code": status.code(), "status": status.to_string()}).to_string(),
+    )
+    .unwrap();
+    drop(cleanup_guard);
+    let cleanup: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("rust-cleanup.json")).unwrap())
+            .unwrap();
+    assert_eq!(cleanup["database_dropped"], true);
+    assert_eq!(cleanup["postgres_port_closed"], true);
+    assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "integer differential client failed");
     assert!(middle, "missing middle MySQL checkpoint");
     println!(
