@@ -5572,6 +5572,19 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 协议层负责进入/退出输入状态、连续字节流、错误同步及取消所有权；SQL 方言层负责 COPY 语法、列/选项和真实名称解析；共享内核负责类型转换、约束、授权与事务写入。第 3 章拥有列身份/codec，第 5 章拥有 I/T/E 与原子性，第 6 章拥有对象/角色/权限事实；缺少必需接口先登记依赖，不能在协议层维护影子表或另建写入引擎。
 
+#### COPY OUT 证据与读取职责
+
+本域于 2026-10-24 在基线 `dedd63d88ce85dc0caa7844f12a86e6b0d901c97` 静态取证。批次6 COPY IN正文及该提交、传递批次1–5的 `d30bc34cd9`、`e7d9bcbb2d`、`a692d03226`、`9b21e4b7a5`、`8dba64486a` 与第1–6章相关契约已核对，满足文档依赖。RustCodeGraph status及精确文件读取用于核实以下源码和独立测试意图；本轮有效运行用例 **0**，COPY真实读取、PG18.6、客户端和性能均**未验证**。
+
+| 来源与符号 | 静态事实与限制 |
+| --- | --- |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService::negotiate / with_query / close | Q调用共享context.execute_query取得results后才write_result；扩展回调调用execute_prepared_statement。已读连接分派没有COPY OUT读取/输出状态。with_query的执行活动边界与其后的发送不同，不能据此宣称发送期间取消有效；socket/context关闭路径只作未来所有权入口。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::command / encode_formats / write_result | 分类无COPY分支；普通结果先构造完整T/D/C消息向量，再逐帧写出。SELECT行编码、OID推导或把命令字符串换成COPY不能提供H/d/c及真实COPY格式；当前解析/分类拒绝的精确阶段与诊断仍待运行采集。 |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Portal / Extended::handle / process | portal.messages保存全部编码结果，Execute以offset/maxRows切片并可能回PortalSuspended；分派只处理P/B/D/E/C/S/H，前端H是Flush，不能与后端H的CopyOutResponse混淆。没有COPY读取状态，分页不证明执行器流式或背压。 |
+| 独立 [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::pg_introspection_clients / run_clients / LIBPQ_WORKFLOW / JDBC_WORKFLOW | 真实表普通CRUD、NULL值与事务断言是可扩展位置；LIBPQ_WORKFLOW的query只接受普通结果状态1/2并取PQntuples，没有PQgetCopyData消费路径，JDBC用Statement/PreparedStatement而非COPY API。既有客户端及历史运行记录不能算COPY验证。 |
+
+协议层拥有H/d/c/C帧、请求模式恢复与发送生命周期；COPY方言/名称解析拥有表/查询来源、列顺序和选项门禁；共享执行链拥有真实读取、快照/事务与授权。第3章拥有类型身份/codec，第5章拥有事务与快照，第6章拥有目录/角色权限。真实读取接口、取消与发送活动边界不足时登记依赖，不在协议层造数据或补建另一套扫描器。
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5690,6 +5703,33 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 
 真实写入还须逐列核验输入列顺序、遗漏列默认值、NOT NULL/唯一键及适用CHECK；默认值/identity/触发器能力沿第5章的独立门槛，不能因普通INSERT可执行就扩大COPY支持。序列消耗等非事务副作用单列，不把表行原子性扩大成“所有外部副作用撤销”。真实角色、schema USAGE及表/列INSERT权限沿第6章；不能因为开发root能导入就声明非owner授权正确。
 
+#### COPY OUT 真实读取
+
+以下仅为目标。2026-10-24查阅 PostgreSQL **18** [§54.2.6 COPY Operations](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-COPY)、[§54.7 Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 和 [SQL COPY](https://www.postgresql.org/docs/18/sql-copy.html)。binary及表头分块另核固定tag **REL_18_0** [copyto.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/commands/copyto.c)::SendCopyBegin/CopySendEndOfRow/CopyToBinaryStart/CopyToBinaryEnd。均为规范/源码阅读，精确18.6构建与错误阶段/SQLSTATE/文本**未采集**，不将页面版本或当前拒绝当参考端实测。
+
+| 阶段 | 目标消息与真实读取契约 |
+| --- | --- |
+| 启动与授权 | Q `COPY public.wire_copy_out_probe (id,v) TO STDOUT WITH (FORMAT text)`，或Parse/Bind/Execute同一命令。先核真实库/schema/表/列身份、SELECT权限、事务门禁及格式/选项；查询来源为 `COPY (SELECT id,v FROM public.wire_copy_out_probe WHERE id>1 ORDER BY id) TO STDOUT`，真实求值过滤/投影/排序。不得用缓存常量或空流替代对象读取；Describe不是开始传输。 |
+| CopyOutResponse | 后端H，L=7+2N（包括Int32长度字，不含tag），体为整体格式Int8、列数Int16、每列格式Int16。text/CSV整体0且列码全0；binary整体1、当前每列1。N和列序来自实际选择列/查询输出；SQL FORMAT决定COPY格式，Bind结果格式不将它改成普通DataRow。H不携带列名/OID/typmod，类型身份必须另沿真实元数据及第3/6章核验。 |
+| 数据输出 | 服务端d的L=4+载荷字节数，载荷无隐含NUL；读取并编码真实行，不回普通RowDescription/DataRow。规范行数据按一行一个CopyData输出，CSV一条逻辑记录可以含引用换行；HEADER和binary封装另核源码边界。TCP read/recv可把帧任意拆分或合并，客户端须先复原帧再消费数据流，不能把socket读取次数当行数。可穿插NoticeResponse/ParameterStatus等异步消息，不能混入数据字节。 |
+| 正常结束与恢复 | 成功发服务端CopyDone c（L=4、空体），再CommandComplete C（NUL终止的COPY n，n为实际数据行数，排除HEADER/头尾/包数）。Q回到简单查询，单COPY最终Z；同Q后续语句沿查询域继续。扩展回到Execute处理，Sync后Z，不因传输c就提前Z或提交显式T。COPY不按Execute maxRows分页，不借PortalSuspended表示读取结束；未来单列maxRows=0/1验证无截断/重复读取。 |
+| 执行/编码错误 | H前权限/名称/选项失败不得开始数据流；H后读取、转换或编码失败，若还能发送完整消息则ErrorResponse结束COPY，无成功c/C；客户端必须将已收到前缀标失败，不能把可解码前缀当完整导出。Q跳过同Q剩余语句再Z；扩展丢弃到Sync再Z。I/T两种起点的事务失败/恢复沿第5章：Sync只恢复协议，显式E需ROLLBACK。 |
+| 取消与传输失败 | 客户端不能靠前端CopyDone/CopyFail结束COPY OUT，应使用独立CancelRequest或关闭连接；错误方向消息的实际拒绝/关闭阶段另采，不伪装成功。活动取消须证明读取或发送确在进行且未结束，可恢复轮ErrorResponse及同步/事务处理同上。接收端提前关闭、半帧写失败/超时及停服可能已无法发送错误，直接关闭/回收，不追加成功标签、不保证连接可继续；不能往已写半帧后拼ErrorResponse。 |
+
+输出格式目标与COPY IN共享逻辑值和类型责任，但不复用其任意前端分块规则：
+
+| 格式 | 输出内容、边界与未来断言 |
+| --- | --- |
+| text | 默认TAB分列、LF结束记录；NULL为`\N`，空文本为空字段，字面量反斜杠N输出`\\N`。逐字节验证TAB/换行/CR/反斜杠转义、多字节UTF8、定制DELIMITER/NULL及ENCODING；`\.`作为数据须正确转义，不人为追加脚本结束行。文本呈现受DateStyle/时区等真实设置约束，沿第3章，不从字符串猜类型。 |
+| CSV | 默认逗号、双引号；NULL为未引用空字段，空文本为`""`；逗号/引号/CR/LF需规范引用/转义，一条多行记录仍是一个数据行。独立验证HEADER、FORCE_QUOTE及定制NULL/QUOTE/ESCAPE/ENCODING；HEADER不计入COPY n，不能用换行数计行。NULL即使FORCE_QUOTE也不当普通非NULL引用。HEADER MATCH为输入专用，输出拒绝；不默默忽略非法选项。 |
+| binary | 网络字节序的11字节签名`PGCOPY\n\377\r\n\0`、Int32 flags及Int32扩展长度，固定头19字节；当前固定源码输出flags=0、扩展长0。逐行Int16列数、每列Int32长度及真实类型binary载荷，NULL=-1无字节、空=0；最后Int16 -1尾标，随后才协议c。文件不携带OID，不允许用text载荷冒充binary。固定源码头缓存在首行d前缀、尾标单独d，零行仍输出头/尾；因此d数不恒等于n，不能套用“零行必无d”。 |
+
+真实表读取无ORDER BY时按行多重集比较，允许合法扫描顺序差异；查询来源显式ORDER BY时逐行有序比较。列清单重排/子集、过滤为零行、全NULL/空值及第3章各已开放类型分别验；缺codec/真实身份不降级空流或text。表形式与查询形式的对象范围按SQL COPY区分，不把视图/继承/分区直接表形式自动等同SELECT；生成列与复杂来源沿第5/6章门槛，未开放显式拒绝。
+
+快照与事务沿第5章：A导出自己未提交修改、B新快照仍见提交基线；ROLLBACK后新导出恢复基线，COMMIT后B新导出见新值。用受控扫描屏障和B并发提交验证同次COPY的语句快照，不能将客户端接收慢造成的时间差当混合快照。COPY本身只读不改变源表，但错误可能回滚同事务先前写入；收到c/C也不代表显式事务已提交。已发出的数据不能随ROLLBACK或网络失败撤回。查询写入RETURNING、带副作用函数、RLS另立依赖/拒绝门槛，不在此开放完整子系统或承诺撤销已提交/非事务副作用。
+
+背压目标为有界待发送字节、扫描/编码/发送协作及取消/关闭能释放所有权；具体预算和期限交取消/资源域。逐行发包、portal切片或TCP阻塞均不能独自证明执行器流式。数据正确性与吞吐/首字节延迟/峰值内存/暂停接收成本分别验收；这里没有性能通过结论。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
@@ -5713,6 +5753,10 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 #### COPY IN 范围与拒绝边界
 
 本域只写应用 `COPY FROM STDIN` 契约，不实现parser、状态机、导入接口、事务/权限子系统或客户端运行器。COPY OUT归下一批，取消密钥/背压/总字节/行大小/字段数/期限与连接预算归取消资源域，本域仅提出交接验收。服务器文件路径与PROGRAM（FROM/TO两个方向）均不在首批范围，即使角色有服务器文件/程序权限也应在文件打开/进程启动前明确能力拒绝、无副作用；客户端`\copy`通过STDIN传输与服务器文件访问分开。逻辑/物理复制和START_REPLICATION/CopyBoth拒绝沿启动域，不发W、不因应用COPY开放复制。FREEZE、WHERE、DEFAULT标志、ON_ERROR ignore/REJECT_LIMIT等高级选项及分区/继承/触发器/identity组合未取证前不开放，明确拒绝；默认ON_ERROR stop的失败原子性不能被这些选项悄悄放宽。
+
+#### COPY OUT 范围与读取边界
+
+本域仅定义表及SELECT查询到STDOUT的真实读取文档；不实现扫描器、协议状态机、客户端API或性能平台。服务器文件TO/FROM、PROGRAM及CopyBoth/复制沿COPY IN拒绝边界，不能以高权限开放或回虚假H/W。客户端psql的\copy写客户端文件与服务器路径不同，可作未来STDOUT消费入口（待新增），不能用文件存在替代逐值/逐字节核验。RETURNING/副作用查询、RLS、分区/继承和未开放codec保留独立能力门槛；快照/锁/事务由第5章，类型由第3章，权限/身份由第6章负责，不扩大实施范围。
 
 ### 验收
 
@@ -5818,6 +5862,24 @@ binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://r
 
 清理：错误扩展连接先新Sync，存活T/E先ROLLBACK，关闭对象/连接并确认资源回收，再事务外DROP夹具。记录能力/用例ID、双方完整SHA/版本、客户端/协议3.0与3.2/授权与会话设置、SQL及安全输入样本、G字段与原始d/c/f帧序、实际行/类型/值和COPY计数、C/Z/Sync时点及I/T/E、B可见性、错误阶段/SQLSTATE/安全诊断、资源前后值、命令退出码和有效断言数；敏感行/CopyFail原文不得无界写日志。精确18.6、真实导入、性能/峰值内存/背压/失败回收期限均未验证。
 
+#### COPY OUT 真实读取验收
+
+`WIRE-COPY-OUT-*` 均为**待新增/待运行**。未来夹具：同Server同库真实授权连接A/B，协议3.0/3.2、UTF8/UTC/ISO；事务外建 `public.wire_copy_out_probe(id integer PRIMARY KEY, v text)`，S0为(1,NULL)、(2,'')、(3,'é')、(4,含TAB/逗号/双引号/反斜杠/CR/LF的文本)、(5,字面量反斜杠N)。每轮恢复S0，B用新快照SELECT逐值核对。Q和Parse/Bind/Execute分别启动，客户端必须用COPY消费路径，不用等待普通结果/Z的助手。原始消息、共享读取屏障/编码失败/写失败注入、资源观测及真实客户端COPY API均待新增；TLS/SCRAM/权限前置未满足须登记门槛，不以root开发模式代替授权验收。
+
+| ID / 未来独立入口 | 数据、状态、失败与清理断言 |
+| --- | --- |
+| TABLE / QUERY / COLUMN；pg_client_integration_test.rs | text/CSV/binary分别导出全表、(v,id)子集重排和上述WHERE/ORDER BY查询；H列数/码符合，独立解码后与A/B真实SELECT相符，表按多重集、查询按显式序比较；精确COPY 5或过滤后的COPY 4。修改实际表值后再导出必须跟随新值，不接受固定帧/空流。 |
+| TEXT / CSV / BINARY / EMPTY；同文件及pg_types_test.rs | S0的NULL/空值/多字节/特殊字符逐字节与参考端比对，类型/OID从真实元数据单独核验；binary int4固定4字节及text UTF8载荷、头19字节与尾-1。零行text/CSV默认无行d，HEADER轮仍有表头；binary零行仍有合法头尾，均c/COPY 0。全NULL/未开放codec、定制选项分别独立轮，未开放拒绝不能以NULL/零行绕过类型门槛。 |
+| FRAME / CLIENT / ASYNC；pg_extended_test.rs及pg_client_integration_test.rs | TCP层每字节分拆H/d长度、UTF8/CSV引号/binary整数和跨帧合并读取后重组，行/字节不丢不重；保留COPY OUT行帧边界，不仿COPY IN随意切d。核HEADER及binary头尾d，注入合法异步消息不污染载荷。真实libpq COPY消费API、psql及JDBC COPY入口待新增，核完整数据、最终结果/错误和资源释放，不能只看命令返回码/打印标签。 |
+| SYNC / LIMIT / MULTI；pg_extended_test.rs | 扩展Execute maxRows=0/1分别得到完整COPY，无s分页/重复副作用，H/d/c/C后Sync才Z；Q成功后同Q的SELECT继续，失败后同Q的INSERT必须跳过且B无副作用。扩展失败后带INSERT的P/B/E丢弃至Sync，恢复轮新SELECT 1成功。前端c/f不能提早结束输出，其实际拒绝/关闭按参考端采证，不强塞COPY IN规则。 |
+| TXN / SNAPSHOT；pg_transaction_test.rs及读取屏障待新增 | A BEGIN后先UPDATE v，A导出含自己新值、B仍S0；分别ROLLBACK恢复和COMMIT后B新快照导出新值，Z为T直至事务结束。扫描屏障期间B提交变更，同次导出按第5章语句快照，下一语句按隔离级别取值；无BEGIN扩展同步段提交时点另外采集，c/C不等于提交证明。 |
+| AUTHZ / OPTION / REJECT；真实权限与副作用入口待新增 | owner、非owner有SELECT、仅列SELECT、撤权、无schema USAGE/无表权限独立轮；授权组读真实行，拒绝组不发H/d且不泄露行。未知表/列、非法或输入专用选项、未开放类型在最早可判定阶段拒绝。服务器文件/PROGRAM/START_REPLICATION拒绝，无文件写入/进程/复制状态/意外W，不因高权限绕过范围。 |
+| READ / ENCODE；共享读取及编码失败注入待新增 | H前失败与H后至少一行已发再失败分别运行；后者完整ErrorResponse、无c/成功C，已收前缀标失败。I/T起点各验Q到Z(I/E)、扩展Sync到Z(I/E)，T先前UPDATE不得提交，ROLLBACK后B S0；错误诊断/字段安全、阶段及SQLSTATE实际采集，不编造18.6文本。 |
+| CANCEL / DISCONNECT / SEND / STOP；pg_client_integration_test.rs及受控注入待新增 | 在活动读取、已发一行和慢客户端阻塞发送三个独立屏障取消，不能用idle cancel冒充。可恢复轮错误后按Q/扩展同步、T/E先ROLLBACK再新COPY成功；早关接收端、半帧写失败、超时、停服走关闭，无追加成功/半帧后错误包，A2新连接与B查询健康。覆盖最后数据/c/C附近竞态并记录实际完成边界，不承诺取消总能战胜成功。 |
+| BACKPRESSURE / RELEASE；资源计数及测量入口待新增 | 慢读/暂停/恢复时逐字节一致且不丢行；取消/断连/停服后释放扫描/快照/锁/行缓冲/待发送帧/portal/prepared/context/socket/连接登记，B写源表可完成，无未提交写入泄漏。另在固定行宽/大单行及递增总行数下测吞吐、首字节延迟、峰值内存、缓冲上限和回收期限；先记录构建/预算/环境再测，不以本轮文档或portal分页声称通过。 |
+
+清理：可恢复扩展失败先Sync，存活T/E先ROLLBACK，Close对象并关闭连接，确认读句柄/快照/锁与连接资源回收后，事务外DROP夹具。失败输出的客户端临时产物标失败并删除，不作为可用备份。每例记录第1章能力/用例ID、双方完整SHA/实际版本、客户端及协议/授权/会话、源表SELECT与输入SQL、H字段、原始帧/接收字节/解码值/真实类型、COPY n与c/C/Z/Sync顺序、I/T/E和B观察、错误阶段/SQLSTATE/安全诊断、资源前后值、命令退出码及有效断言数。敏感行不无界写日志；精确18.6、真实读取/客户端、取消/清理和性能均未验证，当前运行数0。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5853,5 +5915,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 另立窄任务顺序为：①COPY语法/列/选项门禁与真实对象授权依赖；②G/d/c/f状态及Simple/Extended恢复，复用连接生命周期；③text连续流到共享批量写入及原子性，先证明真实回读与失败回滚；④CSV/binary各自格式/类型与分块回归，不能把text完成当全格式完成；⑤真实客户端、活动取消/中断/资源回收。扩展同目录独立pg_dml_test.rs、pg_client_integration_test.rs，必要消息回归放pg_extended_test.rs；所有新夹具、共享导入接口与注入入口均**待新增**，不在本轮创建、不递归补建共享内核。
 
 需求映射：本任务步骤1→COPY证据表及共享职责；步骤2→消息/恢复表及COMMIT/SYNC/BAD；步骤3→三格式表及TEXT/CSV/BINARY/FORMAT/CHUNK/BINARY-BAD；步骤4→真实夹具、COMMIT/ROLLBACK/CONSTRAINT/FAIL/CANCEL/EOF/STOP/SEND；步骤5→AUTHZ/REJECT及资源交接。对应来源步骤1/2/4的COPY IN、失败恢复、真实身份和真实写入要求。Ready文档检查为五节/稳定子标题、需求/异常轨迹映射、官方规范/本地链接、前后章契约及章节外字节不变；验证技能路径再查仍缺失，采用人工等效检查。正确性风险为静态推断与输入/提交竞态遗漏，兼容性风险为CSV18结束规则、格式与第3/5/6章交接及误称18.6实测，性能尚未测量。本域完成只表示文档完成；下一批补COPY OUT契约。
+
+#### COPY OUT 后续实施切口
+
+后续另立窄任务：①表/SELECT来源、列/选项门禁与真实SELECT授权；②H/d/c/C及Simple/Extended恢复，复用已有连接所有权；③共享读取与text格式，先证明真实客户端内容而非消息回复；④CSV/binary与第3章codec、NULL/空值/头尾及独立回归；⑤读取/发送活动取消、慢读背压、传输失败与资源回收。复用pg_conn/pg_extended/pg_result边界，扩展同目录独立pg_client_integration_test.rs、pg_extended_test.rs、pg_types_test.rs、pg_transaction_test.rs；共享读取接口、夹具/注入/客户端入口均**待新增**，不在本轮创建，不因接口缺口递归扩建执行器。
+
+需求映射：本任务步骤1→读取证据表与TABLE/QUERY；步骤2→阶段表及SYNC/LIMIT/MULTI/FRAME；步骤3→三格式表及COLUMN/TEXT/CSV/BINARY/EMPTY/CLIENT；步骤4→AUTHZ/READ/ENCODE/CANCEL/DISCONNECT/SEND/STOP/TXN；步骤5→SNAPSHOT/BACKPRESSURE/RELEASE及范围拒绝。对应来源步骤1/2/4的COPY OUT、传输/取消/清理和真实读出。Ready文档检查为本章五节、稳定子标题、来源/本地链接、需求与失败轨迹、前后章一致及章节外字节不变；验证技能路径再次确认缺失，采用人工等效检查。正确性风险为静态证据与异常竞态遗漏，兼容性风险为把输入分块/普通结果格式套到输出或误称PG18.6实测，吞吐/内存均未测。本域完成仅指文档交付；下一批由取消与资源域定义密钥路由、预算和期限。
 
 ## 8. 客户端与双方言共存验收
