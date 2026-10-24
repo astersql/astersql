@@ -6081,6 +6081,32 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 | 清理与复验 | 存活失败连接按第5/7章先Sync（适用时）、ROLLBACK、Close对象再关闭；已关闭连接由独立管理连接清理，不向死连接发送恢复。记录仅属本轮的对象/临时产物删除、资源前后值与回收期限、每步退出码，禁止清理共享业务对象；清理失败独立记失败并保留最小诊断。复验关联原记录、变更SHA、相同输入/新初态、再次准备与清理结果，旧失败保留，不能覆写成成功。 |
 | 结论与限制 | 按能力与层次输出实际结论，列未采集/未比较字段、环境限制及未覆盖客户端/类型/配置；全部适用证据齐全才可通过。文档检查成功只表示契约可交接。 |
 
+#### libpq端到端流程
+
+本流程是待实施的单连接验收契约，全部新用例/观测入口**待新增、待运行**。静态入口 `pg_introspection_clients → run_clients → LIBPQ_WORKFLOW` 位于 [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)，别名 `postgres_client_protocol_versions` 仍转调同一流程，不重复计有效用例。现有 Python 3 通过 ctypes.CDLL 加载系统库：优先 `PG_LIBPQ_LIBRARY`，否则 macOS 使用源码内默认位置，其他平台用 ctypes.util.find_library('pq')；这些是现状定位，不把本机路径作为通用安装要求。后续准备须记录 Python、实际加载库路径/产物摘要、`PQlibVersion` 精确值及依赖来源；现有代码要求 libpq >=18，缺库、缺符号或版本不符直接记录准备失败，不换成mock或跳过后报通过。历史说明仅记部分CRUD与事务实测，本轮有效客户端运行数0、有效行为断言数0。
+
+每个协议配置在两端分别从独立初态运行完整流程，业务步骤只用同一个PGconn，不以重连掩盖错误恢复。默认连接不设协议上下限，记录实际协议版本；当前脚本断言30000（3.0），这不是所有libpq默认协商的通用保证。另以 `min_protocol_version=3.2 max_protocol_version=3.2` 强制3.2，目标 `PQfullProtocolVersion=30002`，禁止回退；保留请求设置、实际协商及第7章VERSION相关wire证据。`PQserverVersion`/server_version不能替代参考端构建身份。生产流程依赖第7章 `WIRE-TLS/pg`、SCRAM/启动身份及第6章授权契约；当前run_clients使用 `InsecureRootOnly`，明文开发配置 `sslmode=disable gssencmode=disable` 必须单列，只证明开发模式场景，不能验收生产认证。每轮明确真实数据库、用户/对象权限、UTF8、UTC、search_path和初始空闲状态；缺前置能力即记录依赖阻塞。
+
+以下 `CLIENT-LIBPQ/<步骤>/pg` 是**待新增登记**的能力ID，case_id另带协议配置和格式，按第1章关联而非声明支持。固定每轮唯一安全标识生成表名L，业务SQL使用限定对象名（标识符按规则引用，不用值参数绑定标识符）；参考端与AsterSQL各自初态为空。O=`SELECT id,v FROM L ORDER BY id`。参数化DML均经PQexecParams，不字符串插值；int4 OID23、text OID25，基线参数/结果格式均0（text），控制命令和DDL用单条PQexec。格式1只在第3章对应codec前置已满足后另跑同流程，记录int4网络序及text字节，不由text通过推导binary通过。
+
+| 步骤 / 能力ID后缀 | 输入、真实结果与失败门槛 |
+| --- | --- |
+| CONNECT / CREATE | PQconnectdb后核PQstatus成功及协议版本；事务外 `CREATE TABLE L(id integer PRIMARY KEY,v text)`，O为零行但列描述仍完整。准备失败不进入成功计数；DDL不放事务内，避免吞入第5章事务DDL范围。 |
+| INSERT / READ / NULL | 绑定 `INSERT INTO L(id,v) VALUES ($1,$2)`，先(1,'one')，再(2,SQL NULL)；NULL用paramValues对应空指针，不能用字符串NULL或空串。O必须为[(1,'one'),(2,SQL NULL)]；各写入命令成功且影响1行。另绑定id查询无匹配时零行，不能用固定SELECT 1替代真实回读。 |
+| UPDATE / EMPTY | 绑定 `UPDATE L SET v=$2 WHERE id=$1` 参数(1,'two')，再(2,'')；每次影响1行，O为[(1,'two'),(2,'')]，证明SQL NULL与空串区别。 |
+| COMMIT | BEGIN后事务状态INTRANS；绑定插入(3,'committed')，COMMIT后IDLE；同连接O必须包含第三行，前两行不变。此处只证同连接提交后结果，跨连接可见性和重连持久化按第5章另验，不夸大结论。 |
+| ROLLBACK | BEGIN、绑定更新(1,'rolled back')、事务内回读确认修改确实发生；ROLLBACK后IDLE，O恢复[(1,'two'),(2,''),(3,'committed')]，不能只断言状态标签。 |
+| ERROR / RECOVER | BEGIN先绑定插入(4,'discard')成功，再重复主键1插入触发23505；核错误阶段及PQresultErrorField的SQLSTATE、事务INERROR，后续SELECT为25P02。ROLLBACK后IDLE且O无第4行，原三行不变，再合法绑定查询id1得到'two'。同步API完成后的wire Sync/Z关联第7章WIRE-QUERY错误恢复；Sync不能清除失败事务。网络/库调用失败不冒充预期SQL错误。 |
+| DELETE / DROP / CLOSE | 绑定 `DELETE FROM L WHERE id=$1` 参数3，影响1行；O只剩[(1,'two'),(2,'')]。事务外DROP L，确认仅本轮对象消失。每个非空PGresult在成功/错误分支均PQclear；先复制需要的值/诊断再释放，最终对每个PGconn执行PQfinish（含连接失败对象）。关闭/回滚/对象清理及资源回收证据缺失，流程不通过。 |
+
+每一步记录SQL、参数数组/OID/NULL/长度与格式、结果格式、PQresultStatus、PQcmdStatus/PQcmdTuples及实际行列数；查询逐列保留PQfname/PQftype/PQfsize/PQfmod/PQfformat和适用来源身份，id为23、v为25，typlen/typmod服从第3章，零行不省略描述。用PQgetisnull区分NULL，PQgetlength与长度感知字节读取保留真实结果，binary不能用C字符串截断；客户端未暴露的协议字段关联wire证据，不能猜值。无RETURNING的写入没有结果列，成功SQLSTATE记不适用；每步保存预期与实际、事务状态和退出码，失败后健康检查不覆盖先前失败。
+
+能力关联：NULL/空值与零行→第3章TYPE-MAP-NULL、TYPE-MAP-EMPTY及TYPE-ACCEPT相应族/方向；text/binary与元数据连续性→第3章META及第7章Bind/DataRow契约；COMMIT/ROLLBACK/ERROR→第5章事务与第7章WIRE-QUERY恢复；CONNECT→第7章启动VERSION、TLS/认证。现有LIBPQ_WORKFLOW已有字面量CRUD、单int4参数回读和I/T/E断言，但不等于本流程参数化写入、typed NULL、全元数据及清理观测齐全。它还断言失败事务COMMIT返回25P02并保持E；这是现状，不自动作为PG目标，后续若验COMMIT-in-error必须依第5章与参考端独立取证，本流程用ROLLBACK恢复，不在此修改实现或前序契约。
+
+清理放在finally路径：尚存活且T/E的连接先ROLLBACK，释放全部结果/已建准备对象，再DROP本轮表并PQfinish；连接已断则由独立管理连接只清理本轮对象，该连接不参与业务成功断言。异常发生于CREATE前后分别记录实际创建集合，不删除共享对象；清理失败单独失败。每轮列发现/执行/有效/失败/跳过数、有效断言数、原始记录、资源前后值/期限与退出码；只有完整满足表中适用断言的唯一流程才计有效，两个测试别名或重试不重复计数。参考端18.6精确构建未采集，所有功能仍未验证。
+
+规范依据（2026-10-24查阅）：PostgreSQL 18 [§32.3执行与结果API](https://www.postgresql.org/docs/18/libpq-exec.html)定义参数、NULL及结果访问/释放；[§32.2连接状态](https://www.postgresql.org/docs/18/libpq-status.html)定义协议和事务观测；[§32.1连接控制](https://www.postgresql.org/docs/18/libpq-connect.html)定义连接设置与关闭。以上为大版本规范来源，具体流程和计数是项目验收约定，不能据此声称18.6实测。
+
 #### 差异白名单
 
 白名单当前为空；以下仅定义登记规则，不预先授权任何差异。每项必须列唯一白名单ID、能力ID/case_id、官方版本/章节/链接与必要参考端证据、差异字段及原因、适用SQL/类型/客户端/环境、确定的比较转换、仍需保留的原始观测、审核依据及复审条件（参考版本、实现、客户端或配置变化即复审）。无ORDER BY的行序、动态时间或用户对象OID也不能笼统忽略：分别按第1章重复行规则、第4章时间语义、第6章真实身份关联约束取证后再逐项登记。白名单只解释有依据的可比差异，不能吞掉未实现、未知错误、类型丢失、错误恢复或副作用失败；未获依据的差异保持失败/未验证。
@@ -6100,6 +6126,8 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 
 ### 验收
 
+libpq主题须按“libpq端到端流程”核对加载库、默认/强制3.2、参数化CRUD与NULL、真实结果及元数据、提交/回滚、错误后恢复、释放和关闭；未来功能通过需完整运行与清理证据，当前仅验文档交接。
+
 本主题文档通过条件是五主小节与“四层验收”可定位，四层均有目标/依赖/失败门槛；证据格式覆盖版本、准备、初态、SQL/参数/类型/格式、实际值/NULL/元数据/错误、退出码/有效计数、失败定位、清理和复验；白名单有逐项登记与禁止掩盖缺口的规则。检查既有来源路径存在、新入口标待新增、四种证据来源分开、第1–7章交接一致，且第8章之前字节SHA256不变。此为Ready文档范围检查；功能验收须另按四层采集真实记录，本轮不宣称功能通过。
 
 ### 后续细分
@@ -6107,3 +6135,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 先由后续文档任务冻结一个客户端精确版本和单能力流程，再另立窄实施任务补一个缺失断言/夹具、真实参考端差分及同输入复验；按能力复用同目录独立测试，缺共享能力只登记依赖，不扩建完整子系统。当前不创建这些入口。
 
 需求映射：任务步骤1→五主小节与四层表；步骤2→第1章复用规则及证据字段；步骤3→依赖/隔离初态/失败/清理复验字段与差异白名单；步骤4→证据来源四分表；步骤5→验收与本节交接。后续客户端任务沿同一字段取证，保持当前状态未验证。正确性风险为契约遗漏与静态推断，兼容性风险为历史/目标被误读为当前18.6通过；性能、峰值内存和清理期限未实测。
+
+#### libpq交接与窄实施切口
+
+验收交接：按“libpq端到端流程”逐行审查现状、依赖、输入/真实值/元数据、成功与失败、恢复和清理证据，默认与强制3.2分别采证。文档完成不代表客户端功能通过。
+
+后续先另立一个参数化INSERT及真实回读窄任务，复用现存pg_client_integration_test.rs入口；再拆typed NULL/空值与零行元数据、单次提交/回滚、23505后恢复、资源释放观测，分别关联pg_query_test.rs、pg_types_test.rs、pg_extended_test.rs既有独立测试路径。新增用例/夹具/单流程筛选入口均待新增，现有run_clients还会运行JDBC与MySQL，不能冒称它是已存在的libpq单流程命令；本轮不给未经验证的运行命令、不创建平台。依赖缺口只登记，不补codec、认证或事务子系统。
+
+本主题需求映射：任务步骤1→加载库及静态入口；步骤2→单连接CRUD/提交回滚/错误恢复/释放表；步骤3→协议、NULL、类型与第3/5/7章能力关联；步骤4→唯一流程计数、真实结果及清理；步骤5→本节验收交接与实施切口。正确性风险是异常路径或静态意图被误作实测；兼容性风险是默认协议、失败事务COMMIT及开发认证被推广；性能未实测。
