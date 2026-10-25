@@ -640,3 +640,22 @@ fn pg_scalar_21_relational_text_identity() {
     }
     pg.execute("DROP TABLE pg_scalar_21_row").unwrap();
 }
+
+#[test]
+fn pg_scalar_22_varchar_relational() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_22_row (v VARCHAR(20))")
+        .unwrap();
+    for (value, expected) in [("é😀x", "é😀"), ("e\u{301}x", "e\u{301}"), ("a  ", "a ")] {
+        pg.execute(&format!("INSERT INTO pg_scalar_22_row VALUES ('{value}')"))
+            .unwrap();
+        let mut result = pg
+            .execute("SELECT CAST(v AS varchar(2)) FROM pg_scalar_22_row")
+            .unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec![expected]);
+        pg.execute("DELETE FROM pg_scalar_22_row").unwrap();
+    }
+    pg.execute("DROP TABLE pg_scalar_22_row").unwrap();
+}

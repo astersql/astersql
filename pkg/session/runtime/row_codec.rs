@@ -344,6 +344,15 @@ pub(super) fn runtime_value_to_datum(
     let Some(value) = value else {
         return Ok(astersql_types::datum::Datum::default());
     };
+    if column.FieldType.PostgreSQLTextOid() == Some(1043) {
+        return pg_varchar_relational_value(Some(value.clone()), &column.FieldType, false).map(
+            |value| {
+                value
+                    .map(astersql_types::datum::NewStringDatum)
+                    .unwrap_or_default()
+            },
+        );
+    }
     if is_binary_string_column(column) && binary_runtime_bytes(value).is_some() {
         // Store the reversible ASCII marker in rowcodec. Raw non-UTF8 bytes are
         // recovered only at the protocol boundary, which keeps row offsets

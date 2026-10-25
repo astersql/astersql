@@ -128,3 +128,7 @@ ConnError新增PgFloat8结构化变体，保留严格float8输入错误身份。
 ## 2026-10-26 文本族身份边界（任务21）
 
 NativeType 传递可选 postgresql_text_oid，独立于 MySQL code/flags/length/decimal。
+
+### 2026-10-26 varchar 字符长度（任务22）
+
+共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。

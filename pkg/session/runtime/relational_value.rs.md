@@ -208,3 +208,7 @@ PostgreSQLFloat8行表达式Cast使用pg_float8_relational_value，复用pg_cast
 ## 2026-10-26 文本族身份边界（任务21）
 
 关系投影的 CAST 类型推导沿用目标 FieldType 的独立文本身份，避免普通值、NULL和零行投影回落到未定身份的字符串。对应 relational_value_test.rs::pg_scalar_21_relational_text_identity。
+
+### 2026-10-26 varchar 字符长度（任务22）
+
+共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。

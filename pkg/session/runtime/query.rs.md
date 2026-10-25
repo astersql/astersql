@@ -178,3 +178,7 @@ PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；
 ### 2026-10-26 浮点真实客户端差分（任务20）
 
 PostgreSQLFloat8关系查询Cast分支复用pg_float8_relational_value，与写入表达式保持相同严格解析及结构化错误。
+
+### 2026-10-26 varchar 字符长度（任务22）
+
+共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。

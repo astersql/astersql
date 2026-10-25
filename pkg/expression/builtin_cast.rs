@@ -2074,3 +2074,46 @@ pub fn pg_cast_float8(value: Option<&str>) -> Result<Option<f64>, PgFloat8Error>
     }
     Ok(Some(number))
 }
+
+/// PostgreSQL varchar modifiers count Unicode scalar values, including combining marks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PgTextError {
+    #[error("length for type character varying must be between 1 and 10485760")]
+    InvalidLength,
+    #[error("value too long for type character varying")]
+    TooLong,
+}
+impl PgTextError {
+    pub fn sqlstate(self) -> &'static str {
+        match self {
+            Self::InvalidLength => "22023",
+            Self::TooLong => "22001",
+        }
+    }
+}
+pub fn pg_varchar_length(length: isize) -> Result<(), PgTextError> {
+    if length == -1 || (1..=10485760).contains(&length) {
+        Ok(())
+    } else {
+        Err(PgTextError::InvalidLength)
+    }
+}
+/// Explicit casts truncate any excess; assignment accepts only excess U+0020.
+pub fn pg_varchar(
+    value: Option<&str>,
+    length: isize,
+    explicit: bool,
+) -> Result<Option<String>, PgTextError> {
+    pg_varchar_length(length)?;
+    let Some(value) = value else { return Ok(None) };
+    if length == -1 {
+        return Ok(Some(value.to_owned()));
+    }
+    let Some((end, _)) = value.char_indices().nth(length as usize) else {
+        return Ok(Some(value.to_owned()));
+    };
+    if !explicit && !value[end..].chars().all(|c| c == ' ') {
+        return Err(PgTextError::TooLong);
+    }
+    Ok(Some(value[..end].to_owned()))
+}

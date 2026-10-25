@@ -2424,6 +2424,15 @@ impl ConcreteSession {
                         relational_expression_value(expression, &row)?,
                         &column_info.unwrap().FieldType,
                     )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info
+                        .is_some_and(|column| column.FieldType.PostgreSQLTextOid() == Some(1043))
+                {
+                    pg_varchar_relational_value(
+                        relational_expression_value(expression, &row)?,
+                        &column_info.unwrap().FieldType,
+                        false,
+                    )?
                 } else if let Some(column_info) =
                     column_info.filter(|_| is_typed_literal(expression))
                 {
@@ -3606,7 +3615,16 @@ impl ConcreteSession {
                     continue;
                 };
                 let column_info = table.Columns.iter().find(|info| info.Name.L == *column);
-                let mut value = if let Some(column_info) =
+                let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info
+                        .is_some_and(|column| column.FieldType.PostgreSQLTextOid() == Some(1043))
+                {
+                    pg_varchar_relational_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        &column_info.unwrap().FieldType,
+                        false,
+                    )?
+                } else if let Some(column_info) =
                     column_info.filter(|_| is_typed_literal(expression))
                 {
                     typed_literal_to_runtime_value(expression, column_info, flags)?

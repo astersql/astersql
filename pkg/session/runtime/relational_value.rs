@@ -1300,6 +1300,13 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
+            if Tp.PostgreSQLTextOid() == Some(1043) {
+                return pg_varchar_relational_value(
+                    relational_expression_value(Expr, row)?,
+                    Tp,
+                    true,
+                );
+            }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat8 {
                 return pg_float8_relational_value(relational_expression_value(Expr, row)?);
             }
@@ -3698,4 +3705,14 @@ pub(super) fn pg_float8_relational_value(value: Option<String>) -> SessionResult
         .map_err(|error| {
             SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
         })
+}
+
+pub(super) fn pg_varchar_relational_value(
+    value: Option<String>,
+    target: &astersql_parser_types::types::FieldType,
+    explicit: bool,
+) -> SessionResult<Option<String>> {
+    astersql_expression::pg_varchar(value.as_deref(), target.GetFlen(), explicit).map_err(|error| {
+        SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+    })
 }

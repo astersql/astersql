@@ -715,6 +715,18 @@ impl ConcreteSession {
             // Keep PG modifiers from the AST, including unconstrained numeric
             // and negative scale, rather than MySQL DECIMAL defaults.
             for (column, definition) in table.Columns.iter_mut().zip(&statement.Cols) {
+                if column.GetType() == astersql_parser_mysql::r#type::TypeVarchar {
+                    astersql_expression::pg_varchar_length(definition.Tp.GetFlen()).map_err(
+                        |error| {
+                            SessionError::with_source(
+                                error.to_string(),
+                                astersql_errors::SharedError::new(error),
+                            )
+                        },
+                    )?;
+                    column.FieldType.SetPostgreSQLTextOid(1043);
+                    column.SetFlen(definition.Tp.GetFlen());
+                }
                 if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
                     column.SetFlen(definition.Tp.GetFlen());
                     column.SetDecimal(definition.Tp.GetDecimal());

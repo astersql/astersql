@@ -5438,3 +5438,283 @@ fn pg_scalar_21() {
         "pg_scalar_21: 9 value/NULL parameter cases, 6 binary/text inputs, 18 encoding Bind errors/Sync/ROLLBACK/no-write, 12 cast/NULL cases, 4 inferred parameters, 4 empty/Describe lifecycles, 3 MySQL value/metadata/warning reads"
     );
 }
+
+#[test]
+fn pg_scalar_22() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain.clone(), Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE pg_scalar_22_mysql (v VARCHAR(30))",
+    );
+    mysql_query(&mut mysql, "INSERT INTO pg_scalar_22_mysql VALUES ('é')");
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT v FROM pg_scalar_22_mysql");
+        assert_eq!(mysql_read(socket), vec![1]);
+        let metadata = mysql_read(socket);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), "\u{2}é".as_bytes());
+        assert_eq!(&mysql_read(socket)[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        metadata
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (input, n, expected) in [
+        ("é😀x", 2, "é😀"),
+        ("e\u{301}x", 2, "e\u{301}"),
+        ("a  ", 2, "a "),
+        ("é", 1, "é"),
+    ] {
+        let sql = format!("SELECT CAST('{input}' AS varchar({n}))");
+        let messages = query(&mut socket, &sql);
+        assert_eq!(messages[0].0, b'T', "{sql}: {messages:?}");
+        assert_eq!(messages[1], (b'D', row(&[Some(expected)])), "{sql}");
+    }
+
+    let describe = |message: &(u8, Vec<u8>), length: i32| {
+        assert_eq!(message.0, b'T', "{message:?}");
+        let mut normalized = message.clone();
+        let offset = 3 + normalized.1[2..].iter().position(|b| *b == 0).unwrap();
+        assert_eq!(
+            i32::from_be_bytes(normalized.1[offset + 12..offset + 16].try_into().unwrap()),
+            length + 4
+        );
+        normalized.1[offset + 12..offset + 16].copy_from_slice(&(-1i32).to_be_bytes());
+        scalar_types(&normalized, &[1043]);
+    };
+    for n in [1, 10485760] {
+        for null in [false, true] {
+            let sql = format!("SELECT {}::varchar({n})", if null { "NULL" } else { "'é'" });
+            let messages = query(&mut socket, &sql);
+            describe(&messages[0], n);
+            assert_eq!(
+                messages[1],
+                (b'D', row(&[if null { None } else { Some("é") }]))
+            );
+        }
+        let empty = query(
+            &mut socket,
+            &format!("SELECT NULL::varchar({n}) WHERE FALSE"),
+        );
+        describe(&empty[0], n);
+        assert_eq!(empty[1].0, b'C');
+        parse(
+            &mut socket,
+            "length22",
+            &format!("SELECT $1::varchar({n})"),
+            &[],
+        );
+        assert_eq!(read(&mut socket).0, b'1');
+        send(&mut socket, b'D', b"Slength22\0");
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &1043u32.to_be_bytes()].concat()
+            )
+        );
+        let description = read(&mut socket);
+        describe(&description, n);
+        bind(&mut socket, "", "length22", &[Some("éx")]);
+        assert_eq!(read(&mut socket).0, b'2');
+        send(&mut socket, b'D', b"P\0");
+        assert_eq!(read(&mut socket), description);
+        execute(&mut socket, "", 0);
+        assert_eq!(
+            read(&mut socket),
+            (b'D', row(&[Some(if n == 1 { "é" } else { "éx" })]))
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+        send(&mut socket, b'C', b"Slength22\0");
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    for n in [0, 10485761] {
+        for suffix in ["", " WHERE FALSE"] {
+            let messages = query(&mut socket, &format!("SELECT NULL::varchar({n}){suffix}"));
+            assert_state(&messages[0], "22023");
+        }
+    }
+    for n in [0, 10485761] {
+        let messages = query(
+            &mut socket,
+            &format!("CREATE TABLE public.pg_scalar_22_invalid (v varchar({n}))"),
+        );
+        assert_state(&messages[0], "22023");
+    }
+    let created = query(
+        &mut socket,
+        "CREATE TABLE public.pg_scalar_22_one (v varchar(1))",
+    );
+    assert_eq!(created[0].0, b'C');
+    query(&mut socket, "DROP TABLE public.pg_scalar_22_one");
+    // Construct the maximum value in SQL, within the listener's input limit.
+    let maximum = "é".repeat(10485760);
+    send(
+        &mut socket,
+        b'Q',
+        b"SELECT repeat('\xc3\xa9',10485760)::varchar(10485760)\0",
+    );
+    describe(&read(&mut socket), 10485760);
+    // The generic fixture reader caps allocations at 1 MiB; this one result has
+    // an exact known size, so read it locally without weakening other tests.
+    let expected = row(&[Some(&maximum)]);
+    let mut header = [0; 5];
+    socket.read_exact(&mut header).unwrap();
+    assert_eq!(header[0], b'D');
+    assert_eq!(
+        u32::from_be_bytes(header[1..].try_into().unwrap()) as usize,
+        expected.len() + 4
+    );
+    let mut actual = vec![0; expected.len()];
+    socket.read_exact(&mut actual).unwrap();
+    assert!(
+        actual == expected,
+        "maximum varchar value must retain every UTF8 character"
+    );
+    assert_eq!(read(&mut socket).0, b'C');
+    assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+    let created = query(
+        &mut socket,
+        "CREATE TABLE public.pg_scalar_22_max (v VARCHAR(10485760))",
+    );
+    assert_eq!(created[0].0, b'C');
+    query(&mut socket, "DROP TABLE public.pg_scalar_22_max");
+    query(
+        &mut socket,
+        "CREATE TABLE public.pg_scalar_22 (v varchar(2))",
+    );
+    for (input, expected) in [
+        (Some("é😀"), Some("é😀")),
+        (Some("e\u{301} "), Some("e\u{301}")),
+        (Some("a  "), Some("a ")),
+        (None, None),
+    ] {
+        parse(
+            &mut socket,
+            "write22",
+            "INSERT INTO public.pg_scalar_22 VALUES ($1)",
+            &[1043],
+        );
+        assert_eq!(read(&mut socket).0, b'1');
+        bind(&mut socket, "", "write22", &[input]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        let written = read(&mut socket);
+        assert_eq!(written.0, b'C', "{input:?}: {written:?}");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+        let result = query(&mut socket, "SELECT v FROM public.pg_scalar_22");
+        describe(&result[0], 2);
+        assert_eq!(result[1], (b'D', row(&[expected])));
+        query(&mut socket, "DELETE FROM public.pg_scalar_22");
+        send(&mut socket, b'C', b"Swrite22\0");
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    for transaction in [false, true] {
+        for input in ["é😀x", "a \t", "a \u{a0}"] {
+            if transaction {
+                query(&mut socket, "BEGIN");
+            }
+            parse(
+                &mut socket,
+                "bad22",
+                "INSERT INTO public.pg_scalar_22 VALUES ($1)",
+                &[1043],
+            );
+            assert_eq!(read(&mut socket).0, b'1');
+            bind(&mut socket, "", "bad22", &[Some(input)]);
+            assert_eq!(read(&mut socket).0, b'2');
+            execute(&mut socket, "", 0);
+            assert_state(&read(&mut socket), "22001");
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                read(&mut socket),
+                (b'Z', vec![if transaction { b'E' } else { b'I' }])
+            );
+            if transaction {
+                query(&mut socket, "ROLLBACK");
+            }
+            assert_eq!(
+                query(&mut socket, "SELECT count(*) FROM public.pg_scalar_22")[1],
+                (b'D', row(&[Some("0")]))
+            );
+            send(&mut socket, b'C', b"Sbad22\0");
+            assert_eq!(read(&mut socket).0, b'3');
+        }
+    }
+    assert_eq!(
+        query(
+            &mut socket,
+            "INSERT INTO public.pg_scalar_22 VALUES ('é😀x'::varchar(2))"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg_scalar_22")[1],
+        (b'D', row(&[Some("é😀")]))
+    );
+    assert_state(
+        &query(&mut socket, "UPDATE public.pg_scalar_22 SET v='abc'")[0],
+        "22001",
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg_scalar_22")[1],
+        (b'D', row(&[Some("é😀")]))
+    );
+    assert_eq!(
+        query(&mut socket, "UPDATE public.pg_scalar_22 SET v='a  '")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg_scalar_22")[1],
+        (b'D', row(&[Some("a ")]))
+    );
+    query(&mut socket, "DELETE FROM public.pg_scalar_22");
+    assert_state(
+        &query(
+            &mut socket,
+            "INSERT INTO public.pg_scalar_22 VALUES ('ok'),('abc')",
+        )[0],
+        "22001",
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT count(*) FROM public.pg_scalar_22")[1],
+        (b'D', row(&[Some("0")]))
+    );
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    query(&mut socket, "DROP TABLE public.pg_scalar_22");
+    println!(
+        "pg_scalar_22: 4 explicit casts; 8 endpoint/NULL/empty/Describe cases; 6 invalid modifiers; 2 declaration endpoints; 4 DML atomicity/cast/update checks; 1 actual 10485760-character value (20 MiB UTF8); 4 assignments; 6 Execute errors/Sync/ROLLBACK/no-write; 3 MySQL checkpoints"
+    );
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    mysql_query(&mut mysql, "DROP TABLE pg_scalar_22_mysql");
+}

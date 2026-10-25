@@ -1257,6 +1257,13 @@ impl ConcreteSession {
                         return result;
                     }
                 }
+                if Tp.PostgreSQLTextOid() == Some(1043) {
+                    return pg_varchar_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                        Tp,
+                        true,
+                    );
+                }
                 if *FunctionType == ast::CastFunctionType::PostgreSQLFloat8 {
                     return pg_float8_relational_value(
                         self.relational_query_expression_value(Expr, row, group_rows)?,
@@ -2100,6 +2107,7 @@ impl ConcreteSession {
             unsupported: bool,
             boolean_error: Option<astersql_expression::PgBoolError>,
             numeric_error: Option<astersql_types::pg_numeric::PgNumericError>,
+            text_error: Option<astersql_expression::PgTextError>,
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
@@ -2115,6 +2123,13 @@ impl ConcreteSession {
                     )
                     .err()
                     .or(self.numeric_error);
+                }
+                if let ast::ExprKind::Cast { Tp, .. } = &input.Kind {
+                    if Tp.PostgreSQLTextOid() == Some(1043) {
+                        self.text_error = astersql_expression::pg_varchar_length(Tp.GetFlen())
+                            .err()
+                            .or(self.text_error);
+                    }
                 }
                 if let ast::ExprKind::Cast { Expr, Tp, .. } = &input.Kind {
                     let source = pg_integer_literal_type(Expr)
@@ -2158,9 +2173,16 @@ impl ConcreteSession {
             unsupported: false,
             boolean_error: None,
             numeric_error: None,
+            text_error: None,
         };
         for expr in expressions {
             let _ = expr.Accept(&mut visitor);
+        }
+        if let Some(error) = visitor.text_error {
+            return Err(SessionError::with_source(
+                error.to_string(),
+                astersql_errors::SharedError::new(error),
+            ));
         }
         if let Some(error) = visitor.numeric_error {
             return Err(SessionError::with_source(

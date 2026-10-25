@@ -118,3 +118,7 @@ PG INSERT中的CAST表达式局部接入现有关系求值器及共享布尔转�
 INSERT 在已声明的共享 unsigned 整数目标列处精确校验来源宽度：拒绝负值、上界之外和非整数字符串，携带 PgNumericError::OutOfRange 到 PG 协议。此分支只在 PostgreSQL 方言启用，不从 PG OID 反推 unsigned；MySQL 既有转换与 warning 分支保留。NULL 继续沿列元数据保存目标身份；验证在发布 mutation 前进行。覆盖见 pg_extended_test::pg_scalar_13 和 relational_value_test::pg_scalar_13_unsigned_target。
 
 批次15：新增表的PostgreSQLNumericText标记明确物理编码，缺省false保留既有表解码；声明numeric列的INSERT目标转换复用PgNumeric，物理行复用字符串Datum保留大精度/scale/特殊值，读取仅覆盖物理解码字段类型，逻辑目录numeric及typmod不变。MySQL创建表继续原MyDecimal路径；numeric索引/算术及DDL类型重建不在此接线范围。
+
+### 2026-10-26 varchar 字符长度（任务22）
+
+共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。

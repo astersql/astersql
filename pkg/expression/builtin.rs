@@ -6921,6 +6921,27 @@ pub mod formal_registry {
                     errors::Error::from(crate::contextutil::errors::SharedError::new(error))
                 })?;
             }
+            if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                && self.base.return_type.PostgreSQLTextOid() == Some(1043)
+            {
+                crate::pg_varchar_length(self.base.return_type.GetFlen()).map_err(|error| {
+                    errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                })?;
+                let datum = self.base.args[0].Eval(ctx, row)?;
+                let text = if datum.IsNull() {
+                    None
+                } else {
+                    Some(datum.ToString()?)
+                };
+                let text =
+                    crate::pg_varchar(text.as_deref(), self.base.return_type.GetFlen(), true)
+                        .map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        })?;
+                return Ok(text.map_or((types::Datum::default(), true), |text| {
+                    (types::NewStringDatum(text), false)
+                }));
+            }
             let datum = self.base.args[0].Eval(ctx, row)?;
             let boolean_kind = if self.kind == DynamicKind::PgBoolean {
                 Some(
