@@ -2680,7 +2680,8 @@ pub(super) fn relational_expression_type(
                 | ast::CastFunctionType::PostgreSQLInt4
                 | ast::CastFunctionType::PostgreSQLInt8
                 | ast::CastFunctionType::PostgreSQLNumeric
-                | ast::CastFunctionType::PostgreSQLFloat4,
+                | ast::CastFunctionType::PostgreSQLFloat4
+                | ast::CastFunctionType::PostgreSQLFloat8,
             ..
         } => Tp.clone(),
         ast::ExprKind::Column(column) => table

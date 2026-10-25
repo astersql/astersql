@@ -170,3 +170,7 @@ protocol_parameter_types保留显式OID21并由PostgreSQLInt2推断未指定参�
 ## PostgreSQL float4 文本输入（任务16）
 
 PG OID700和PostgreSQLFloat4约束进入已有参数类型推断，不影响MySQL参数推断。
+
+## PostgreSQL float8 文本参数（任务17）
+
+PG显式OID701与700一同进入现有参数类型约束，避免准备阶段退为text。

@@ -343,13 +343,29 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_le_bytes()
                 .to_vec(),
         ),
-        701 => (
-            5,
-            text.parse::<f64>()
-                .map_err(|_| invalid())?
-                .to_le_bytes()
-                .to_vec(),
-        ),
+        701 => {
+            let text =
+                text.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
+            let number = text.parse::<f64>().map_err(|_| invalid())?;
+            let lower = text.to_ascii_lowercase();
+            let unsigned = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
+            let special = matches!(unsigned, "nan" | "inf" | "infinity");
+            let nonzero = text
+                .split(['e', 'E'])
+                .next()
+                .unwrap_or("")
+                .bytes()
+                .any(|c| matches!(c, b'1'..=b'9'));
+            // Explicit infinities are valid; finite overflow and nonzero
+            // decimal input rounded to zero are PostgreSQL range errors.
+            if !special && (!number.is_finite() || (number == 0.0 && nonzero)) {
+                return Err(error(
+                    "22003",
+                    "value out of range for type double precision",
+                ));
+            }
+            (5, number.to_le_bytes().to_vec())
+        }
         25 | 1043 | 1042 => (253, value.to_vec()),
         1700 => {
             let numeric = text

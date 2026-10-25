@@ -2005,6 +2005,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         parser_ast::CastFunctionType::PostgreSQLInt8
                     } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeFloat {
                         parser_ast::CastFunctionType::PostgreSQLFloat4
+                    } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeDouble {
+                        parser_ast::CastFunctionType::PostgreSQLFloat8
                     } else if pg_cast
                         && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal
                     {

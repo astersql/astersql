@@ -4908,3 +4908,35 @@ fn pg_scalar_16_float4_cast_type() {
         );
     }
 }
+
+#[test]
+fn pg_scalar_17_double_parameter_cast_identity() {
+    for (dialect, expected) in [
+        (
+            parser_ast::SqlDialect::PostgreSQL,
+            crate::ast::CastFunctionType::PostgreSQLFloat8,
+        ),
+        (
+            parser_ast::SqlDialect::MySQL,
+            crate::ast::CastFunctionType::Cast,
+        ),
+    ] {
+        let mut parser = crate::Parser::with_dialect(dialect);
+        let stmt = parser
+            .ParseOneStmt("SELECT CAST('-0' AS DOUBLE)", "", "")
+            .unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<crate::ast::SelectStmt>()
+            .unwrap();
+        let expression = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let crate::ast::ExprKind::Cast {
+            Tp, FunctionType, ..
+        } = &expression.Kind
+        else {
+            panic!("cast")
+        };
+        assert_eq!(Tp.GetType(), parser_mysql::r#type::TypeDouble);
+        assert_eq!(*FunctionType, expected);
+    }
+}

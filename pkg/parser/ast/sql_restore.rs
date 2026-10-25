@@ -370,6 +370,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             if *FunctionType == CastFunctionType::PostgreSQLFloat4 {
                 return Ok(format!("CAST({value} AS FLOAT4)"));
             }
+            if *FunctionType == CastFunctionType::PostgreSQLFloat8 {
+                return Ok(format!("CAST({value} AS DOUBLE)"));
+            }
             if *FunctionType == CastFunctionType::PostgreSQLNumeric {
                 let modifier = if Tp.GetFlen() >= 0 {
                     format!("({},{})", Tp.GetFlen(), Tp.GetDecimal())
@@ -391,7 +394,8 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 | CastFunctionType::PostgreSQLInt4
                 | CastFunctionType::PostgreSQLInt8
                 | CastFunctionType::PostgreSQLNumeric
-                | CastFunctionType::PostgreSQLFloat4 => {
+                | CastFunctionType::PostgreSQLFloat4
+                | CastFunctionType::PostgreSQLFloat8 => {
                     format!("CAST({value} AS {target})")
                 }
                 CastFunctionType::Convert => format!("CONVERT({value}, {target})"),

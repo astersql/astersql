@@ -448,3 +448,52 @@ fn pg_scalar_16_float4_relational_consumers() {
     );
     pg.execute("DROP TABLE pg_float4_16").unwrap();
 }
+
+#[test]
+fn pg_scalar_17_float8_prepared_identity() {
+    use crate::runtime::{ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT ?", &[701]).unwrap(),
+        [701]
+    );
+    let (id, count, fields) = pg
+        .prepare_protocol_statement_with_parameter_types("SELECT ?", &[701])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.GetType(),
+        astersql_parser_mysql::r#type::TypeDouble
+    );
+    for expected in [
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
+        -0.0,
+        f64::INFINITY,
+        f64::NAN,
+    ] {
+        let mut result = pg
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Float(expected)])
+            .unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypeDouble
+        );
+        let actual = result[0].next_row().unwrap().unwrap()[0]
+            .parse::<f64>()
+            .unwrap();
+        if expected.is_nan() {
+            assert!(actual.is_nan());
+        } else {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+}

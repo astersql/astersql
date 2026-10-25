@@ -120,3 +120,7 @@ PostgreSQLNumeric的工具AST恢复入口同样保留(p,s)，与共享AST恢复�
 ## PostgreSQL float4 文本输入（任务16）
 
 PostgreSQLFloat4恢复为FLOAT4目标，避免类型动作在SQL恢复过程中丢失。
+
+## float8 参数局部接线（任务17）
+
+PostgreSQLFloat8使用既有DOUBLE类型文本还原，保证现有AST消费者可处理新增身份。

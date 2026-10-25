@@ -110,3 +110,7 @@ OID1700 文本参数经 PgNumeric 验值规范化；用文本共享参数载荷�
 ## PostgreSQL float4 文本输入（任务16）
 
 OID700文本参数复用 pg_cast_float4；在Bind阶段检查词法、ASCII空白及binary32溢出/下溢，UTF-8/NUL仍由既有22021检查负责。
+
+## PostgreSQL float8 文本参数（任务17）
+
+OID701文本参数按binary64直接解析，允许ASCII空白和显式特殊值，有限溢出及非零下溢为零拒绝22003；非法文本22P02和编码22021保持原入口。

@@ -166,3 +166,7 @@ PgNumericOpt仅为PG显式numeric/decimal转换保存precision及有符号scale�
 ## PostgreSQL float4 文本输入（任务16）
 
 FLOAT4 转换目标构造 TypeFloat/PostgreSQLFloat4；现有双方言门禁保持，未补完整浮点类型或转换矩阵。
+
+## float8 参数局部接线（任务17）
+
+PostgreSQL下既有DOUBLE Cast标记PostgreSQLFloat8，供OID701绑定保留目标类型；MySQL仍为Cast，不添加语法规则。

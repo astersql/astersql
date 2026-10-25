@@ -190,3 +190,7 @@ pg_numeric_relational_value验证声明并调用PgNumeric.apply_modifier，常�
 ## PostgreSQL float4 文本输入（任务16）
 
 PostgreSQLFloat4 的目标类型在元数据推导中保留；行求值与参数使用相同直接f32文本解析器。返回扩宽后的值文本以承接既有结果容器，最短float4输出归后续任务。
+
+## PostgreSQL float8 文本参数（任务17）
+
+PostgreSQLFloat8 Cast节点在关系类型推导中保留目标FieldType，服务float8参数执行结果稳定描述；MySQL Cast类型推导不变。

@@ -144,3 +144,7 @@ OID21与既有bool参数一样在Prepare保留原生TypeShort，直接参数NULL
 ## PostgreSQL float4 文本输入（任务16）
 
 PG supplied OID700 在prepare保留TypeFloat，并按类型构造FLOAT4参数表达式；已验证浮点值作为安全数值字符串传递，以保留负零、NaN及Infinity，NULL也保留目标身份。
+
+## PostgreSQL float8 文本参数（任务17）
+
+PG OID701准备描述保留DOUBLE类型；已验证参数通过既有CAST(... AS DOUBLE)绑定，保留NULL、负零和特殊值，不增加语法或完整转换矩阵。

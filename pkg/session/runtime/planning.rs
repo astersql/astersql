@@ -2789,7 +2789,7 @@ impl ConcreteSession {
         let mut oids = vec![0; markers.len()];
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             for (oid, supplied) in oids.iter_mut().zip(supplied) {
-                if matches!(*supplied, 16 | 21 | 700) {
+                if matches!(*supplied, 16 | 21 | 700 | 701) {
                     *oid = *supplied;
                 }
             }

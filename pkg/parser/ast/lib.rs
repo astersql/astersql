@@ -682,6 +682,7 @@ pub enum CastFunctionType {
     PostgreSQLNumeric,
     /// PostgreSQL binary32 text conversion used by typed float4 parameters.
     PostgreSQLFloat4,
+    PostgreSQLFloat8,
     Convert,
     Binary,
 }

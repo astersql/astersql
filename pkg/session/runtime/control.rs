@@ -1789,7 +1789,9 @@ impl ConcreteSession {
         };
         let has_pg_values = !array_types.is_empty() || !record_types.is_empty();
         let has_scalar_parameters = self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && supplied.iter().any(|oid| matches!(oid, 16 | 21 | 700));
+            && supplied
+                .iter()
+                .any(|oid| matches!(oid, 16 | 21 | 700 | 701));
         let constructor_oids = array_oids
             .iter()
             .copied()
@@ -1838,8 +1840,10 @@ impl ConcreteSession {
                             .iter()
                             .position(|marker| marker.offset == Offset)
                             .and_then(|index| supplied.get(index));
-                        if let Some(oid @ (16 | 21 | 700)) = oid {
-                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 700 {
+                        if let Some(oid @ (16 | 21 | 700 | 701)) = oid {
+                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 701 {
+                                astersql_parser_mysql::r#type::TypeDouble
+                            } else if *oid == 700 {
                                 astersql_parser_mysql::r#type::TypeFloat
                             } else if *oid == 16 {
                                 astersql_parser_mysql::r#type::TypeTiny
@@ -1887,7 +1891,7 @@ impl ConcreteSession {
                     let mut oids = constructor_oids;
                     oids.resize(supplied.len(), 0);
                     for (oid, supplied) in oids.iter_mut().zip(supplied) {
-                        if matches!(*supplied, 16 | 21 | 700) {
+                        if matches!(*supplied, 16 | 21 | 700 | 701) {
                             *oid = *supplied;
                         }
                     }
@@ -1985,6 +1989,20 @@ impl ConcreteSession {
                         }
                         _ => Err(SessionError::new(
                             "float4 parameter requires a floating-point value",
+                        )),
+                    };
+                }
+                // OID701 was decoded and range-checked before execution.
+                // Keep its binary64 identity, NULL, -0 and special values
+                // through the existing typed SQL binder.
+                if constructor_oids.get(index) == Some(&701) {
+                    return match argument {
+                        ConcretePreparedArgument::Null => Ok("CAST(NULL AS DOUBLE)".to_owned()),
+                        ConcretePreparedArgument::Float(number) => {
+                            Ok(format!("CAST('{}' AS DOUBLE)", number))
+                        }
+                        _ => Err(SessionError::new(
+                            "float8 parameter requires a floating-point value",
                         )),
                     };
                 }
