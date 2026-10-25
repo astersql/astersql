@@ -39,6 +39,19 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Resolve the parser's dialect-owned relation identity through the shared snapshot.
+pub(crate) fn model_table_for_ast(
+    schema: &dyn infoschema::InfoSchema,
+    database: &infoschema::CiString,
+    table: &ast::TableName,
+) -> Result<Arc<model_dependency::TableInfo>, infoschema::InfoSchemaError> {
+    if let Some(part) = table.PostgreSQLParts.last() {
+        schema.ModelTableInfoByExactName(database, &part.Lookup)
+    } else {
+        schema.ModelTableInfoByName(database, &infoschema::CiString::new(&table.Name.O))
+    }
+}
+
 /// 共享可变的 CTE 构建状态引用。
 pub type CteInfoRef = std::rc::Rc<RefCell<CteInfo>>;
 
@@ -1489,10 +1502,7 @@ impl PlanBuilder {
             return Err(expression::errors::New("No database selected"));
         }
         let schema_key = infoschema::infoschema::CiString::from(schema_name.as_str());
-        let table_key = infoschema::infoschema::CiString::from(table_source.Source.Name.O.as_str());
-        let table_info = self
-            .is
-            .ModelTableInfoByName(&schema_key, &table_key)
+        let table_info = model_table_for_ast(self.is.as_ref(), &schema_key, &table_source.Source)
             .map_err(|error| expression::errors::New(error.to_string()))?;
         if table_info.IsView() {
             return Err(expression::errors::New(format!(

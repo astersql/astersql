@@ -1507,7 +1507,7 @@ pub(super) fn named_prepared_partial_index_cacheable(
     } else {
         source.Source.Schema.L.clone()
     };
-    let table_name = source.Source.Name.L.clone();
+    let table_name = relation_name(&source.Source).to_owned();
     let Some(table) = session.metadata_table(&database, &table_name)? else {
         return Ok(true);
     };
@@ -1574,7 +1574,7 @@ pub(super) fn negative_unsigned_equality_parameter(
     } else {
         source.Source.Schema.L.clone()
     };
-    let Some(table) = session.metadata_table(&database, &source.Source.Name.L)? else {
+    let Some(table) = session.metadata_table(&database, relation_name(&source.Source))? else {
         return Ok(false);
     };
     Ok(table.Columns.iter().any(|column| {
@@ -1686,7 +1686,7 @@ impl ConcreteSession {
     pub fn OptimizeRootPlanIDForTest(&self, sql: &str) -> SessionResult<i32> {
         let current_database = self.current_database();
         let info_schema = self.domain.info_schema();
-        let mut statements = parse(sql)?;
+        let mut statements = parse_in_dialect(sql, self.sql_dialect())?;
         if statements.len() != 1 || !statements[0].as_any().is::<ast::SelectStmt>() {
             return Err(SessionError::new(
                 "plan-ID observation requires exactly one SELECT",
@@ -1706,14 +1706,7 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                info_schema
-                    .ModelTableInfoByName(
-                        &astersql_infoschema::infoschema::CiString::from(schema),
-                        &astersql_infoschema::infoschema::CiString::from(
-                            source.Source.Name.L.as_str(),
-                        ),
-                    )
-                    .ok()
+                self.snapshot_table(&info_schema, schema, relation_name(&source.Source))
                     .map(|table| table.ID)
             })
             .flatten()
@@ -1848,14 +1841,7 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                info_schema
-                    .ModelTableInfoByName(
-                        &astersql_infoschema::infoschema::CiString::from(schema),
-                        &astersql_infoschema::infoschema::CiString::from(
-                            source.Source.Name.L.as_str(),
-                        ),
-                    )
-                    .ok()
+                self.snapshot_table(&info_schema, schema, relation_name(&source.Source))
                     .map(|table| table.ID)
             })
             .flatten()
@@ -2048,14 +2034,7 @@ impl ConcreteSession {
                     } else {
                         source.Source.Schema.L.as_str()
                     };
-                    info_schema
-                        .ModelTableInfoByName(
-                            &astersql_infoschema::infoschema::CiString::from(schema),
-                            &astersql_infoschema::infoschema::CiString::from(
-                                source.Source.Name.L.as_str(),
-                            ),
-                        )
-                        .ok()
+                    self.snapshot_table(&info_schema, schema, relation_name(&source.Source))
                         .map(|table| table.ID)
                 })
                 .flatten()
@@ -2369,14 +2348,7 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                planning_schema
-                    .ModelTableInfoByName(
-                        &astersql_infoschema::infoschema::CiString::from(schema),
-                        &astersql_infoschema::infoschema::CiString::from(
-                            source.Source.Name.L.as_str(),
-                        ),
-                    )
-                    .ok()
+                self.snapshot_table(&planning_schema, schema, relation_name(&source.Source))
                     .map(|table| table.ID)
             })
             .flatten()

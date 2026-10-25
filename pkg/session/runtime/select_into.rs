@@ -153,7 +153,7 @@ impl ConcreteSession {
             source.Source.Schema.L.clone()
         };
         let secondary_index = self
-            .metadata_table(&database, &source.Source.Name.L)
+            .metadata_table(&database, relation_name(&source.Source))
             .ok()
             .flatten()
             .and_then(|table| {

@@ -1772,7 +1772,7 @@ impl ConcreteSession {
             } else {
                 source.Source.Schema.L.as_str()
             };
-            self.mdl_stats_table(database, &source.Source.Name.L)
+            self.mdl_stats_table(database, relation_name(&source.Source))
                 .is_some_and(|(_, table)| table.View.is_some())
         });
         let has_derived_source = select.From.as_ref().is_some_and(|from| {
@@ -2088,7 +2088,9 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                if let Some(table) = self.resolve_runtime_table(database, &source.Source.Name.L) {
+                if let Some(table) =
+                    self.resolve_runtime_table(database, relation_name(&source.Source))
+                {
                     self.record_transaction_locking_table(&table);
                 }
             }
@@ -2157,7 +2159,7 @@ impl ConcreteSession {
         // Unqualified visible CTEs win over catalog tables. These fields were
         // derived before registering the next definition, just like execution.
         if source.Source.Schema.L.is_empty()
-            && let Some(cte_fields) = ctes.get(&source.Source.Name.L)
+            && let Some(cte_fields) = ctes.get(relation_name(&source.Source))
         {
             let alias = if source.AsName.L.is_empty() {
                 &source.Source.Name
@@ -2180,7 +2182,7 @@ impl ConcreteSession {
             source.Source.Schema.L.as_str()
         };
         let physical_table = self
-            .mdl_stats_table(database, &source.Source.Name.L)
+            .mdl_stats_table(database, relation_name(&source.Source))
             .map(|(_, table)| table);
         let virtual_table = super::system_query::virtual_system_catalog()?.get(&(
             database.to_ascii_lowercase(),
@@ -2728,7 +2730,7 @@ impl ConcreteSession {
                                 && self
                                     .mdl_stats_table(
                                         &self.current_database(),
-                                        &source.Source.Name.L,
+                                        relation_name(&source.Source),
                                     )
                                     .is_none()
                         });
@@ -3062,7 +3064,7 @@ impl ConcreteSession {
                     user,
                     host,
                     table_database,
-                    &table_source.Source.Name.L,
+                    relation_name(&table_source.Source),
                     "",
                     astersql_privilege_privileges::SelectPriv,
                 ) {
@@ -3112,7 +3114,7 @@ impl ConcreteSession {
             statement_read_ts.get_or_insert(read_ts);
         }
         let table = self
-            .local_temporary_table(database, &source.Source.Name.L)
+            .local_temporary_table(database, relation_name(&source.Source))
             .or_else(|| {
                 if let Some(read_ts) = statement_read_ts
                     .or(self.state.borrow().transaction_stale_read_ts)
@@ -3134,11 +3136,11 @@ impl ConcreteSession {
                         })
                         .map(|(_, table)| table)
                         .or_else(|| {
-                            self.mdl_stats_table(database, &source.Source.Name.L)
+                            self.mdl_stats_table(database, relation_name(&source.Source))
                                 .map(|(_, table)| table)
                         })
                 } else {
-                    self.mdl_stats_table(database, &source.Source.Name.L)
+                    self.mdl_stats_table(database, relation_name(&source.Source))
                         .map(|(_, table)| table)
                 }
             });
@@ -3204,7 +3206,7 @@ impl ConcreteSession {
                 right_source.Source.Schema.L.as_str()
             };
             let table = self
-                .local_temporary_table(right_database, &right_source.Source.Name.L)
+                .local_temporary_table(right_database, relation_name(&right_source.Source))
                 .or_else(|| {
                     if let Some(read_ts) = statement_read_ts
                         .or(self.state.borrow().transaction_stale_read_ts)
@@ -3226,11 +3228,14 @@ impl ConcreteSession {
                             })
                             .map(|(_, table)| table)
                             .or_else(|| {
-                                self.mdl_stats_table(right_database, &right_source.Source.Name.L)
-                                    .map(|(_, table)| table)
+                                self.mdl_stats_table(
+                                    right_database,
+                                    relation_name(&right_source.Source),
+                                )
+                                .map(|(_, table)| table)
                             })
                     } else {
-                        self.mdl_stats_table(right_database, &right_source.Source.Name.L)
+                        self.mdl_stats_table(right_database, relation_name(&right_source.Source))
                             .map(|(_, table)| table)
                     }
                 });

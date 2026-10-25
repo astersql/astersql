@@ -2138,7 +2138,7 @@ impl ConcreteSession {
                         } else {
                             source.Source.Schema.L.clone()
                         };
-                        self.mdl_stats_table(&database, &source.Source.Name.L)
+                        self.mdl_stats_table(&database, relation_name(&source.Source))
                             .map(|(_, table)| !table.Indices.is_empty())
                     })
                     .flatten()
@@ -2902,7 +2902,9 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                let Some((_, table)) = self.mdl_stats_table(database, &source.Source.Name.L) else {
+                let Some((_, table)) =
+                    self.mdl_stats_table(database, relation_name(&source.Source))
+                else {
                     continue;
                 };
                 if visited.insert(table.ID) {

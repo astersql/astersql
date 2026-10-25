@@ -335,6 +335,25 @@ pub trait InfoSchema: Send + Sync {
     ) -> Result<Arc<model_dependency::TableInfo>, InfoSchemaError> {
         self.TableByName(schema, table)?.ModelMeta()
     }
+    /// Resolve decoded PostgreSQL spelling in this schema snapshot; return a real object.
+    fn ModelTableInfoByExactName(
+        &self,
+        schema: &CiString,
+        name: &str,
+    ) -> Result<Arc<model_dependency::TableInfo>, InfoSchemaError> {
+        let table = self
+            .SchemaTableInfos(schema)?
+            .into_iter()
+            .find(|t| t.name.original == name)
+            .ok_or_else(|| InfoSchemaError {
+                code: ErrTableNotExists.mysql_name,
+                message: format!("{}.{}", schema.original, name),
+            })?;
+        table.model_meta.clone().ok_or_else(|| InfoSchemaError {
+            code: "ErrTableMetadataUnavailable",
+            message: name.to_owned(),
+        })
+    }
     fn TableByID(&self, id: i64) -> Option<Table>;
     fn TableItemByID(&self, id: i64) -> Option<TableItem>;
     /// Return all tables in a schema; a missing schema yields an empty list.
@@ -474,7 +493,12 @@ impl infoSchema {
         let mut by_name = HashMap::new();
         db.tables = tables.iter().map(|table| table.0.clone()).collect();
         for table in &tables {
-            by_name.insert(table.Meta().name.lower.clone(), table.clone());
+            // MySQL keeps its folded lookup; prefer the canonical lowercase
+            // object when PostgreSQL has introduced a case-distinct sibling.
+            let key = table.Meta().name.lower.clone();
+            if !by_name.contains_key(&key) || table.Meta().name.original == key {
+                by_name.insert(key, table.clone());
+            }
             let bucket = tableBucketIdx(table.Meta().id);
             self.sorted_table_buckets[bucket].push(table.clone());
             self.addReferredForeignKeys(&db.name, table.Meta());
@@ -1281,7 +1305,33 @@ impl SessionExtendedInfoSchema {
     }
     /// Pin complete metadata used under MDL, preserving dropped schema lookup.
     pub fn UpdateTableInfo(&mut self, db: DBInfo, table: Table) -> Result<(), InfoSchemaError> {
-        self.mdl_tables.AddTable(db, table)
+        // MDL pins physical metadata, so case-distinct objects must coexist.
+        if self.mdl_tables.table_ids.contains_key(&table.Meta().id)
+            || self
+                .mdl_tables
+                .schemas
+                .get(&db.name.lower)
+                .is_some_and(|s| s.tables.contains_key(&table.Meta().name.original))
+        {
+            return Err(InfoSchemaError {
+                code: "ErrTableExists",
+                message: table.Meta().name.original.clone(),
+            });
+        }
+        assert_eq!(db.id, table.Meta().db_id);
+        self.mdl_tables
+            .table_ids
+            .insert(table.Meta().id, table.clone());
+        self.mdl_tables
+            .schemas
+            .entry(db.name.lower.clone())
+            .or_insert_with(|| schemaTables {
+                db_info: Arc::new(db),
+                tables: HashMap::new(),
+            })
+            .tables
+            .insert(table.Meta().name.original.clone(), table);
+        Ok(())
     }
 
     /// 先查会话临时表，再回落到底层 InfoSchema。
@@ -1336,6 +1386,22 @@ impl InfoSchema for SessionExtendedInfoSchema {
     }
     fn TableByName(&self, schema: &CiString, table: &CiString) -> Result<Table, InfoSchemaError> {
         self.TableByName(schema, table)
+    }
+    fn ModelTableInfoByExactName(
+        &self,
+        schema: &CiString,
+        name: &str,
+    ) -> Result<Arc<model_dependency::TableInfo>, InfoSchemaError> {
+        for tables in [&self.temporary, &self.mdl_tables] {
+            if let Some(table) = tables
+                .schemas
+                .get(&schema.lower)
+                .and_then(|db| db.tables.values().find(|t| t.Meta().name.original == name))
+            {
+                return table.ModelMeta();
+            }
+        }
+        self.base.ModelTableInfoByExactName(schema, name)
     }
     fn TableByID(&self, id: i64) -> Option<Table> {
         self.TableByID(id)

@@ -458,9 +458,14 @@ fn postgres_create_table_extended_query() {
     send(&mut socket, b'S', b"");
     assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
 
-    let catalog = query(
+    let folded = query(
         &mut socket,
         "SELECT a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod) FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.pgcreateextended'::regclass::oid ORDER BY a.attnum",
+    );
+    assert_state(&folded[0], "42P01");
+    let catalog = query(
+        &mut socket,
+        "SELECT a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod) FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.\"PgCreateExtended\"'::regclass::oid ORDER BY a.attnum",
     );
     for expected in [
         row(&[Some("id"), Some("integer")]),

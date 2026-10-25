@@ -4214,7 +4214,10 @@ pub fn ftsNativeViable(
         }
         let database_name = infoschema::CiString::new(database_name.O.clone());
         let table_name = infoschema::CiString::new(table_name.O.clone());
-        let Ok(table_info) = builder.is.ModelTableInfoByName(&database_name, &table_name) else {
+        let Ok(table_info) = builder
+            .is
+            .ModelTableInfoByExactName(&database_name, &table_name.original)
+        else {
             return false;
         };
         let Some(replica) = table_info.TiFlashReplica.as_ref() else {
@@ -5519,7 +5522,7 @@ pub fn evalDefaultExprWithPlanCtx(
     let table_info = match plan_context
         .builder
         .is
-        .ModelTableInfoByName(&database_name, &table_name)
+        .ModelTableInfoByExactName(&database_name, &table_name.original)
     {
         Ok(table_info) => table_info,
         Err(error) => {

@@ -79,3 +79,95 @@ fn init_uses_the_session_no_decorrelate_setting_like_go() {
 
     assert!(builder.noDecorrelate);
 }
+
+#[test]
+fn pg_dialect_15_planner_uses_exact_physical_identity() {
+    use infoschema_dependency::{CiString, DBInfo, Table, infoschema::infoSchema};
+    use logicalop_dependency::LogicalPlan;
+    crate::InstallPlannerExpressionFactory().unwrap();
+    let mut schema = infoSchema::new(1);
+    let tables = [(11, "foo"), (12, "Foo")].map(|(id, name)| {
+        Table::from_model(model_dependency::TableInfo {
+            ID: id,
+            DBID: 1,
+            Name: crate::ast::NewCIStr(name),
+            ExactName: true,
+            State: model_dependency::StatePublic,
+            Columns: vec![model_dependency::ColumnInfo {
+                ID: 1,
+                Name: crate::ast::NewCIStr("id"),
+                State: model_dependency::StatePublic,
+                FieldType: *expression::types::NewFieldType(expression::mysql::TypeLong),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+    });
+    schema.add_schema(
+        DBInfo {
+            id: 1,
+            name: CiString::new("names"),
+            ..Default::default()
+        },
+        tables.to_vec(),
+    );
+    let schema: Arc<dyn infoschema_dependency::InfoSchema> = Arc::new(schema);
+    fn source_ids(plan: &dyn LogicalPlan, result: &mut Vec<i64>) {
+        if let Some(source) = plan
+            .as_any()
+            .downcast_ref::<logicalop_dependency::DataSource>()
+        {
+            result.push(source.PhysicalTableID);
+        }
+        for child in plan.Children() {
+            source_ids(child.as_ref(), result);
+        }
+    }
+    for (dialect, sql, expected) in [
+        (
+            crate::ast::SqlDialect::PostgreSQL,
+            "SELECT id FROM names.foo",
+            11,
+        ),
+        (
+            crate::ast::SqlDialect::PostgreSQL,
+            "SELECT id FROM names.Foo",
+            11,
+        ),
+        (
+            crate::ast::SqlDialect::PostgreSQL,
+            "SELECT id FROM names.\"Foo\"",
+            12,
+        ),
+        (
+            crate::ast::SqlDialect::MySQL,
+            "SELECT id FROM names.Foo",
+            11,
+        ),
+    ] {
+        let context: base::ContextRef = Arc::new(TestPlanContext {
+            plan_id: AtomicI32::new(0),
+            session_vars: Default::default(),
+            expr_ctx: exprstatic_dependency::NewExprContext(Vec::new()),
+            builtin_function_usage: Default::default(),
+        });
+        let node = crate::ast::NodeRef::new(
+            parser_dependency::Parser::with_dialect(dialect)
+                .ParseOneStmt(sql, "", "")
+                .unwrap(),
+        );
+        let (mut builder, _) = crate::NewPlanBuilder().Init(
+            context,
+            schema.clone(),
+            hint_dependency::NewQBHintHandler(None),
+        );
+        let crate::BuiltRuntimePlan::Logical(plan) =
+            builder.BuildNodeRef(crate::context::TODO(), &node).unwrap()
+        else {
+            panic!("SELECT must build a real plan")
+        };
+        let mut ids = Vec::new();
+        source_ids(plan.as_ref(), &mut ids);
+        assert_eq!(ids, vec![expected], "{sql}");
+    }
+}

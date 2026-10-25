@@ -90,7 +90,13 @@ pub(crate) fn create_table(
             return Err(cancel(job, "[schema:1049]Unknown database ''"));
         }
         let existing = meta.list_tables(job.schema_id)?;
-        if existing.iter().any(|t| t.Name.L == table.Name.L) {
+        if existing.iter().any(|t| {
+            if table.ExactName {
+                t.Name.O == table.Name.O
+            } else {
+                t.Name.L == table.Name.L
+            }
+        }) {
             return Err(cancel(
                 job,
                 format!("[schema:1050]Table '{}' already exists", table.Name.O),

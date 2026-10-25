@@ -75,6 +75,9 @@ pub struct TableInfo {
     /// 表名。
     #[serde(rename = "name")]
     pub Name: ast::CIStr,
+    /// PostgreSQL relation names use exact decoded spelling in the durable catalog.
+    #[serde(rename = "exact_name", skip_serializing_if = "std::ops::Not::not")]
+    pub ExactName: bool,
     /// 默认字符集。
     #[serde(rename = "charset")]
     pub Charset: String,

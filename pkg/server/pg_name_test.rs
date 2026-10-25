@@ -117,10 +117,7 @@ fn pg_dialect_13_name_boundary() {
         rewrite("CREATE TABLE public.\"Foo\" (id int)", "db", true).unwrap(),
         "CREATE TABLE `db`.\"Foo\" (id int)"
     );
-    for sql in [
-        "SELECT \"Foo\" FROM public.t",
-        "SELECT foo FROM public.\"Foo\"",
-    ] {
+    for sql in ["SELECT \"Foo\" FROM public.t"] {
         assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000");
     }
 }
@@ -483,4 +480,111 @@ fn pg_dialect_24_behavior() {
     }
     assert_eq!(checks, 48);
     println!("pg_dialect_24_behavior: {checks} semantic assertions; 3 reuse/error/reset cycles");
+}
+
+#[test]
+fn pg_dialect_15_behavior() {
+    use astersql_parser_ast as ast;
+    use astersql_session::testutil::TestRecordSet;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pg = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain.clone(),
+        ast::SqlDialect::PostgreSQL,
+    );
+    pg.execute("CREATE DATABASE pg_name_exact").unwrap();
+    pg.execute("USE pg_name_exact").unwrap();
+    for sql in [
+        "CREATE TABLE foo(id int4)",
+        "CREATE TABLE \"Foo\"(id int4)",
+        "CREATE TABLE \"a\"\"b\"(id int4)",
+        "INSERT INTO foo VALUES (1)",
+        "INSERT INTO \"Foo\" VALUES (2)",
+        "INSERT INTO \"a\"\"b\" VALUES (3)",
+    ] {
+        pg.execute(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    pg.execute("BEGIN").unwrap();
+    for (sql, expected) in [
+        ("SELECT id FROM foo", "1"),
+        ("SELECT id FROM Foo", "1"),
+        ("SELECT id FROM \"foo\"", "1"),
+        ("SELECT id FROM \"Foo\"", "2"),
+        ("SELECT id FROM \"a\"\"b\"", "3"),
+        ("SELECT a.id FROM \"Foo\" a WHERE a.id=2::int4", "2"),
+    ] {
+        let parsed = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "")
+            .unwrap();
+        let select = parsed.as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let ast::ResultSetNode::TableSource(source) = select
+            .From
+            .as_ref()
+            .unwrap()
+            .TableRefs
+            .Left
+            .as_deref()
+            .unwrap()
+        else {
+            panic!("formal relation AST")
+        };
+        let part = source.Source.PostgreSQLParts.last().unwrap();
+        assert_eq!(&sql[part.Span.0..part.Span.1], part.Original);
+        assert_eq!(
+            part.Lookup,
+            if expected == "1" {
+                "foo"
+            } else if expected == "2" {
+                "Foo"
+            } else {
+                "a\"b"
+            }
+        );
+        let adapted = rewrite(sql, "pg_name_exact", true).unwrap();
+        let mut rows = pg.execute(&adapted).unwrap().remove(0);
+        assert_eq!(
+            rows.Next().unwrap(),
+            Some(vec![expected.to_owned()]),
+            "{sql}"
+        );
+        assert_eq!(rows.Next().unwrap(), None);
+    }
+    pg.execute("COMMIT").unwrap();
+    let snapshot = domain.info_schema();
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg_name_exact"))
+        .unwrap();
+    let lower = tables.iter().find(|t| t.name.original == "foo").unwrap();
+    let upper = tables.iter().find(|t| t.name.original == "Foo").unwrap();
+    assert_ne!(lower.id, upper.id);
+    for table in [lower, upper] {
+        let model = table.model_meta.as_ref().unwrap();
+        let encoded = astersql_meta_model::EncodeTableInfo(model).unwrap();
+        let restored = astersql_meta_model::DecodeTableInfo(&encoded).unwrap();
+        assert!(restored.ExactName);
+        assert_eq!(restored.ID, table.id);
+        assert_eq!(restored.Name.O, table.name.original);
+    }
+    let mysql = astersql_session::runtime::ConcreteSession::new(domain);
+    mysql.execute("USE pg_name_exact").unwrap();
+    let mut rows = mysql.execute("SELECT id FROM Foo").unwrap().remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["1".to_owned()]));
+    pg.execute("DROP TABLE \"Foo\"").unwrap();
+    assert!(pg.execute("SELECT id FROM \"Foo\"").is_err());
+    let mut rows = pg.execute("SELECT id FROM foo").unwrap().remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["1".to_owned()]));
+    pg.execute("CREATE TABLE \"Foo\"(id int4)").unwrap();
+    pg.execute("INSERT INTO \"Foo\" VALUES(2)").unwrap();
+    pg.execute("DROP TABLE foo").unwrap();
+    let mut rows = mysql.execute("SELECT id FROM Foo").unwrap().remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["2".to_owned()]));
+    mysql.execute("DROP TABLE Foo").unwrap();
+    assert!(pg.execute("SELECT id FROM \"Foo\"").is_err());
+    pg.execute("DROP DATABASE pg_name_exact").unwrap();
+    for sql in [
+        "WITH x AS (SELECT 1) SELECT id FROM \"Foo\"",
+        "CREATE TEMPORARY TABLE \"Foo\"(id int4)",
+    ] {
+        assert_eq!(rewrite(sql, "pg_name_exact", true).unwrap_err().0, "0A000");
+    }
+    println!("pg_dialect_15_behavior: exact identities, six reads, MySQL isolation, exact drop");
 }

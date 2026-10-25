@@ -293,7 +293,7 @@ fn table_name(table: &ast::TableRefsClause) -> SessionResult<&str> {
     }
     match table.TableRefs.Left.as_deref() {
         Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none() => {
-            Ok(source.Source.Name.L.as_str())
+            Ok(super::runtime::relation_name(&source.Source))
         }
         _ => Err(SessionError::new("expected one physical table")),
     }

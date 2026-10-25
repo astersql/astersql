@@ -3474,7 +3474,11 @@ impl ConcreteSession {
             return Ok(None);
         }
         if select.Where.as_ref().is_some_and(|predicate| {
-            !self.simple_typed_indexed_predicate(&database, &source.Source.Name.L, predicate)
+            !self.simple_typed_indexed_predicate(
+                &database,
+                relation_name(&source.Source),
+                predicate,
+            )
         }) {
             return Ok(None);
         }
@@ -3489,7 +3493,7 @@ impl ConcreteSession {
         });
         let parameters = if let Some(column_name) = in_column {
             let Some(field_type) = self
-                .mdl_stats_table(&database, &source.Source.Name.L)
+                .mdl_stats_table(&database, relation_name(&source.Source))
                 .and_then(|(_, table)| {
                     table
                         .Columns
@@ -3819,7 +3823,7 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                self.mdl_stats_table(schema, &source.Source.Name.L)
+                self.mdl_stats_table(schema, relation_name(&source.Source))
                     .map(|(_, table)| table.GetPartitionInfo().is_some())
             })
             .unwrap_or(false);

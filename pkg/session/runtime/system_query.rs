@@ -1035,7 +1035,12 @@ impl ConcreteSession {
         if historical {
             return Ok(self.metadata_catalog()?.remove(&key));
         }
-        let persistent = self.domain.stats_context().catalog_table(&key.0, &key.1);
+        let persistent = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            self.mdl_stats_table(database, table)
+                .map(|(_, table)| table)
+        } else {
+            self.domain.stats_context().catalog_table(&key.0, &key.1)
+        };
         // Initialize/validate the virtual registry just as metadata_catalog does,
         // even when a persistent table wins on this name.
         let virtual_catalog = virtual_system_catalog()?;

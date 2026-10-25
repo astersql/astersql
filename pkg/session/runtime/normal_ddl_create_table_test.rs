@@ -2174,3 +2174,37 @@ fn external_ttl_two_managers_elect_one_owner_and_release_on_close() {
     follower.domain.close();
     assert!(!successor.IsOwner());
 }
+
+#[test]
+fn pg_dialect_15_durable_name_policy() {
+    for version in [JobVersion::V1, JobVersion::V2] {
+        for exact in [false, true] {
+            let f = Fixture::new();
+            let mut lower = table(&f);
+            lower.Name = astersql_meta_model::ast::NewCIStr("foo");
+            f.domain
+                .ddl_create_table("test", lower.clone(), false)
+                .unwrap();
+            let mut upper = lower.clone();
+            upper.ID += 1;
+            upper.Name = astersql_meta_model::ast::NewCIStr("Foo");
+            upper.ExactName = exact;
+            let job = insert(&f, &upper, version);
+            run(&f);
+            let retained = f.reader().get_table(f.db, lower.ID).unwrap().unwrap();
+            assert_eq!(retained.Name.O, "foo");
+            if exact {
+                let created = f.reader().get_table(f.db, upper.ID).unwrap().unwrap();
+                assert_eq!(created.Name.O, "Foo");
+                assert!(created.ExactName);
+                assert_ne!(created.ID, retained.ID);
+                assert_eq!(f.queue(job.id).unwrap().state, JobState::Done);
+                run(&f);
+                assert_eq!(durable(&f, job.id).state, JobState::Synced);
+            } else {
+                assert!(f.reader().get_table(f.db, upper.ID).unwrap().is_none());
+                assert_eq!(durable(&f, job.id).state, JobState::Cancelled);
+            }
+        }
+    }
+}

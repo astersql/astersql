@@ -313,16 +313,22 @@ impl Resolver<'_> {
         if self.database.is_empty() {
             return Err(error("3D000", "no current database selected"));
         }
-        // In an ordinary WITH, only earlier CTEs took the return above.
-        // A remaining reference must resolve as a real table, even when a later
-        // definition has the same spelling. Diagnose it at the original token.
-        if self.cte_statement
+        // Earlier visible CTEs took the return above. Resolve physical names
+        // exactly in the owning connection's snapshot before native folding,
+        // and diagnose missing objects at the original token.
+        if (self.cte_statement
+            || (self.tokens[i - 1].quoted
+                && parts
+                    .last()
+                    .unwrap()
+                    .chars()
+                    .any(|ch| ch.is_ascii_uppercase())))
             && !allow_columns
             && let Some(snapshot) = &self.snapshot
             && snapshot
-                .ModelTableInfoByName(
+                .ModelTableInfoByExactName(
                     &astersql_infoschema::CiString::new(self.database),
-                    &astersql_infoschema::CiString::new(parts.last().unwrap()),
+                    parts.last().unwrap(),
                 )
                 .is_err()
         {
@@ -489,7 +495,7 @@ fn rewrite_with_snapshot(
     snapshot: Option<astersql_infoschema::SchemaRef>,
 ) -> ParseResult<String> {
     *position = None;
-    let allowed_aliases = alias_scope(sql, None, database, position)?;
+    let allowed_aliases = alias_scope(sql, snapshot.clone(), database, position)?;
     let parts: BTreeMap<_, _> = identifier_parts(sql, &allowed_aliases)?
         .into_iter()
         .map(|part| (part.Span, part))
@@ -545,6 +551,7 @@ fn identifier_parts(
         blocked: bool,
         parts: Vec<ast::PostgreSQLIdentifier>,
         declarations: HashSet<(usize, usize)>,
+        exact_relations: bool,
     }
     impl Gate {
         fn consume(&mut self, parts: &[ast::PostgreSQLIdentifier]) {
@@ -558,6 +565,16 @@ fn identifier_parts(
     }
     impl ast::Visitor for Gate {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            // CTE range names still use their existing native binding keys.
+            // Do not release their former mixed-case gate as a side effect of
+            // enabling exact physical objects in this task.
+            if node
+                .as_any()
+                .downcast_ref::<ast::SelectStmt>()
+                .is_some_and(|s| s.With.is_some())
+            {
+                self.exact_relations = false;
+            }
             let parts = if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
                 if let ast::ExprKind::Column(column) = &expr.Kind {
                     Some(&column.PostgreSQLParts)
@@ -573,13 +590,17 @@ fn identifier_parts(
             false
         }
         fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+            if !self.exact_relations {
+                self.consume(&table.PostgreSQLParts);
+                return false;
+            }
             if table.PostgreSQLParts.len() == 3 {
                 // Database identity is checked exactly by Resolver::relation,
                 // independently of the backend's case-insensitive catalog.
                 self.parts.push(table.PostgreSQLParts[0].clone());
-                self.consume(&table.PostgreSQLParts[1..]);
+                self.parts.extend_from_slice(&table.PostgreSQLParts[1..]);
             } else {
-                self.consume(&table.PostgreSQLParts);
+                self.parts.extend_from_slice(&table.PostgreSQLParts);
             }
             false
         }
@@ -591,10 +612,30 @@ fn identifier_parts(
         blocked: false,
         parts: Vec::new(),
         declarations: aliases.clone(),
+        exact_relations: false,
     };
     for statement in statements {
-        // Declarations are not references. Preserve their existing admission;
-        // backend case-distinct object creation belongs to the binding work.
+        if let Some(create) = statement.as_any().downcast_ref::<ast::CreateTableStmt>()
+            && create.TemporaryKeyword != ast::TemporaryKeyword::None
+            && create
+                .Table
+                .PostgreSQLParts
+                .iter()
+                .any(|p| p.Quoted && p.Lookup.chars().any(|ch| ch.is_ascii_uppercase()))
+        {
+            return Err(error(
+                "0A000",
+                "case-distinct temporary relations require exact temporary namespace binding",
+            ));
+        }
+        // Release the gate only for consumers that preserve physical identity.
+        // Other DDL/DML operations retain their previous capability boundary.
+        gate.exact_relations = statement.as_any().is::<ast::SelectStmt>()
+            || statement.as_any().is::<ast::SetOprStmt>()
+            || statement.as_any().is::<ast::InsertStmt>()
+            || statement.as_any().is::<ast::DropTableStmt>();
+        // Declarations are not references; CREATE TABLE persists their decoded
+        // spelling and matching policy in the normal shared catalog.
         let declaration =
             if let Some(create) = statement.as_any().downcast_ref::<ast::CreateTableStmt>() {
                 Some(&create.Table)
@@ -698,9 +739,11 @@ fn alias_scope(
                             .as_ref()
                             .and_then(|schema| {
                                 schema
-                                    .ModelTableInfoByName(
+                                    .ModelTableInfoByExactName(
                                         &astersql_infoschema::CiString::new(self.database),
-                                        &astersql_infoschema::CiString::new(&source.Source.Name.L),
+                                        parts.last().map_or(source.Source.Name.L.as_str(), |p| {
+                                            p.Lookup.as_str()
+                                        }),
                                     )
                                     .ok()
                             })
@@ -751,6 +794,30 @@ fn alias_scope(
             if self.failure.is_none()
                 && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
                 && let ast::ExprKind::Column(column) = &expr.Kind
+                && column.PostgreSQLParts.len() == 1
+                && let Some(bindings) = self.scopes.last()
+                && (!bindings.is_empty()
+                    || (self.scopes.len() == 1 && column.PostgreSQLParts[0].Quoted))
+                && bindings.iter().all(|b| b.columns.is_some())
+            {
+                let part = &column.PostgreSQLParts[0];
+                if bindings.iter().any(|b| {
+                    b.columns
+                        .as_ref()
+                        .is_some_and(|cols| cols.contains(&part.Lookup))
+                }) {
+                    self.allowed.insert(part.Span);
+                } else {
+                    self.failure = Some((
+                        "42703",
+                        "column does not exist in the visible relation",
+                        part.Span.0,
+                    ));
+                }
+            }
+            if self.failure.is_none()
+                && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && let ast::ExprKind::Column(column) = &expr.Kind
                 && column.PostgreSQLParts.len() == 2
                 && !self.scopes.is_empty()
             {
@@ -772,9 +839,12 @@ fn alias_scope(
                             qualifier.Span.0,
                         ));
                     } else {
-                        // Only this successfully bound qualifier bypasses the
-                        // object-name gate. Quoted column/object names retain it.
+                        // Only names validated against this visible binding may
+                        // bypass the old mixed-case capability gate.
                         self.allowed.insert(qualifier.Span);
+                        if binding.columns.is_some() {
+                            self.allowed.insert(column.PostgreSQLParts[1].Span);
+                        }
                     }
                 } else {
                     self.failure = Some((
@@ -820,6 +890,8 @@ pub(crate) fn adapt(
     let public = session.has_public();
     match rewrite_with_position(sql, "", public, &mut session.relation_error_position) {
         Err(("3D000", _)) => {}
+        Err(("0A000", message))
+            if message == "quoted mixed-case identifiers require exact name binding support" => {}
         result => return result,
     }
     let current = context

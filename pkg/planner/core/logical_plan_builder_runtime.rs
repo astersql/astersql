@@ -4707,12 +4707,12 @@ fn build_table_source_runtime(
         return Err(expression::errors::New("No database selected"));
     }
     let schema_key = infoschema_dependency::infoschema::CiString::from(schema_name.as_str());
-    let table_key =
-        infoschema_dependency::infoschema::CiString::from(table_source.Source.Name.O.as_str());
-    let table_info = builder
-        .is
-        .ModelTableInfoByName(&schema_key, &table_key)
-        .map_err(|error| expression::errors::New(error.to_string()))?;
+    let table_info = crate::planbuilder_runtime::model_table_for_ast(
+        builder.is.as_ref(),
+        &schema_key,
+        &table_source.Source,
+    )
+    .map_err(|error| expression::errors::New(error.to_string()))?;
     let auth_error = builder.ctx.GetSessionVars().User.as_ref().map(|user| {
         plannererrors::ErrTableaccessDenied
             .FastGenByArgs(&[

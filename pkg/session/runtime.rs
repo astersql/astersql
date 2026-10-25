@@ -1330,6 +1330,14 @@ fn parse_with_dialect(
         })
 }
 
+/// Name identity supplied by the owning parser, without changing shared CIStr folding.
+pub(super) fn relation_name(table: &ast::TableName) -> &str {
+    table
+        .PostgreSQLParts
+        .last()
+        .map_or(table.Name.L.as_str(), |p| p.Lookup.as_str())
+}
+
 /// 从 TableRefsClause 取出表名。
 fn table_name(table: &ast::TableRefsClause) -> SessionResult<&str> {
     if table.TableRefs.Right.is_some() {
@@ -1339,7 +1347,7 @@ fn table_name(table: &ast::TableRefsClause) -> SessionResult<&str> {
     }
     match table.TableRefs.Left.as_deref() {
         Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none() => {
-            Ok(source.Source.Name.L.as_str())
+            Ok(relation_name(&source.Source))
         }
         _ => Err(SessionError::new("expected one physical table")),
     }

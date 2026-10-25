@@ -1174,6 +1174,11 @@ fn pg_dialect_14_libpq() {
 }
 
 #[test]
+fn pg_dialect_15_libpq() {
+    pg_dialect_libpq(15);
+}
+
+#[test]
 fn pg_dialect_16_libpq() {
     pg_dialect_libpq(16);
 }
@@ -2695,7 +2700,7 @@ fn pg_dialect_libpq(task: u8) {
                 writeln!(file,"{}",serde_json::json!({"phase":phase,"sql":sql,"error_code":1064,"sqlstate":"42000","packet":response,"current_value":1,"other_value":2})).unwrap();
             }
         }
-        if task == 13 {
+        if matches!(task, 13 | 15) {
             mysql_query(socket, "SET SESSION sql_mode = ''");
             assert_eq!(
                 mysql_query(socket, "SELECT \"Foo\""),
@@ -2729,6 +2734,20 @@ fn pg_dialect_libpq(task: u8) {
                 );
             }
             mysql_query(socket, "SET SESSION sql_mode = ''");
+        }
+        if task == 15 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            mysql_query(socket, &format!("USE {database}"));
+            for sql in [
+                "SELECT id FROM foo",
+                "SELECT id FROM Foo",
+                "SELECT ID FROM foo",
+            ] {
+                assert_eq!(mysql_query(socket, sql), vec![vec![Some(b"1".to_vec())]]);
+            }
+            assert_eq!(
+                mysql_query(socket, "SELECT \"Foo\""),
+                vec![vec![Some(b"Foo".to_vec())]]
+            );
         }
         if task == 24 {
             let sql = "SELECT CAST(1 AS SIGNED) AS pg_core_mysql_identity_24";
@@ -3065,6 +3084,23 @@ fn pg_dialect_libpq(task: u8) {
         assert_eq!(summary["unique_effective"], 5);
         return;
     }
+    if task == 15 {
+        assert_eq!(checkpoints, 8);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 8);
+        assert!(summary["assertions"].as_u64().unwrap() > 0);
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("mysql-identifier-isolation.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            10
+        );
+        return;
+    }
     if task == 14 {
         assert_eq!(checkpoints, 11);
         assert_eq!(cleanup["other_database_dropped"], true);
@@ -3084,14 +3120,14 @@ fn pg_dialect_libpq(task: u8) {
                 .unwrap();
         assert_eq!(summary["cleanup_ok"], true);
         assert_eq!(summary["syntax_eligible"], 9);
-        assert_eq!(summary["gate_cases"], 1);
+        assert_eq!(summary["gate_cases"], 0);
         assert_eq!(summary["value_type_cases"], 6);
-        assert_eq!(summary["unique_effective"], 8);
+        assert_eq!(summary["unique_effective"], 9);
         assert_eq!(summary["origin_metadata_mismatch_cases"], 0);
         assert_eq!(
             summary["unique_effective"].as_u64().unwrap()
                 + summary["origin_metadata_mismatch_cases"].as_u64().unwrap(),
-            8
+            9
         );
         assert_eq!(
             std::fs::read_to_string(evidence.join("mysql-local.jsonl"))

@@ -1360,8 +1360,50 @@ impl ConcreteSession {
         self.state
             .borrow()
             .local_temporary_tables
-            .get(&(database.to_ascii_lowercase(), table.to_ascii_lowercase()))
+            .get(&(
+                database.to_ascii_lowercase(),
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    table.to_owned()
+                } else {
+                    table.to_ascii_lowercase()
+                },
+            ))
             .cloned()
+    }
+
+    pub(super) fn snapshot_table(
+        &self,
+        schema: &astersql_infoschema::SchemaRef,
+        database: &str,
+        name: &str,
+    ) -> Option<Arc<astersql_meta_model::TableInfo>> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            schema
+                .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(database), name)
+                .ok()
+        } else {
+            schema
+                .ModelTableInfoByName(
+                    &astersql_infoschema::CiString::new(database),
+                    &astersql_infoschema::CiString::new(name),
+                )
+                .ok()
+        }
+    }
+
+    pub(super) fn runtime_stats_table(
+        &self,
+        database: &str,
+        name: &str,
+    ) -> Option<(
+        astersql_statistics_handle::StatsTableKey,
+        astersql_meta_model::TableInfo,
+    )> {
+        let table = self.snapshot_table(&self.domain.info_schema(), database, name)?;
+        Some((
+            astersql_statistics_handle::StatsTableKey::new(database, name, table.ID),
+            (*table).clone(),
+        ))
     }
 
     /// Resolve names through the session catalog before the shared Domain.
@@ -1397,9 +1439,16 @@ impl ConcreteSession {
                 && state.snapshot_read_ts.is_none()
         };
         if !lock {
-            return self.domain.stats_table(database, name);
+            return self.runtime_stats_table(database, name);
         }
-        let key = (database.to_lowercase(), name.to_lowercase());
+        let key = (
+            database.to_lowercase(),
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                name.to_owned()
+            } else {
+                name.to_lowercase()
+            },
+        );
         if let Some(table) = self.mdl_tables.borrow().get(&key) {
             return Some(table.clone());
         }
@@ -1408,21 +1457,14 @@ impl ConcreteSession {
             .borrow()
             .transaction_info_schema
             .as_ref()
-            .and_then(|schema| {
-                schema
-                    .ModelTableInfoByName(
-                        &astersql_infoschema::CiString::new(database),
-                        &astersql_infoschema::CiString::new(name),
-                    )
-                    .ok()
-            })
+            .and_then(|schema| self.snapshot_table(schema, database, name))
             .map(|table| {
                 (
                     astersql_statistics_handle::StatsTableKey::new(database, name, table.ID),
                     (*table).clone(),
                 )
             })
-            .or_else(|| self.domain.stats_table(database, name))?;
+            .or_else(|| self.runtime_stats_table(database, name))?;
         if initial.1.TempTableType == astersql_meta_model::TempTableLocal {
             return Some(initial);
         }
@@ -1431,13 +1473,9 @@ impl ConcreteSession {
             self.transaction_mdl.begin_table(initial.1.ID);
         }
         let schema = self.domain.info_schema();
-        let table = schema
-            .TableByName(
-                &astersql_infoschema::CiString::new(database),
-                &astersql_infoschema::CiString::new(name),
-            )
-            .ok()
-            .and_then(|t| t.Meta().model_meta.as_ref().map(|m| (**m).clone()));
+        let table = self
+            .snapshot_table(&schema, database, name)
+            .map(|m| (*m).clone());
         let Some(mut table) = table else {
             self.transaction_mdl.remove_table(initial.1.ID);
             return None;

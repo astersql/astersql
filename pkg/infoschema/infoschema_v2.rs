@@ -661,13 +661,11 @@ impl infoschemaV2 {
     ) -> Result<Vec<Arc<TableInfo>>, InfoSchemaError> {
         let data = self.Data.inner.read().expect("infoschema v2 lock poisoned");
         Ok(data
-            .by_name
-            .iter()
-            .filter(|((db, _), _)| db == &schema.lower)
-            .filter_map(|(_, history)| {
-                visible_table(Some(history), self.schema_meta_version)
-                    .and_then(|record| record.table.map(|table| table.0))
-            })
+            .by_id
+            .values()
+            .filter_map(|history| visible_table(Some(history), self.schema_meta_version))
+            .filter(|record| record.db_name.lower == schema.lower)
+            .filter_map(|record| record.table.map(|table| table.0))
             .collect())
     }
     /// 当前版本可见的全部 schema 名。
@@ -769,11 +767,21 @@ impl InfoSchema for infoschemaV2 {
                 return Ok(found.clone());
             }
         }
+        // Ordinary lowercase objects keep the indexed fast path. Resolve a
+        // folded sibling through real IDs only when that name has diverged.
         let record = visible_table(
             data.by_name
                 .get(&(schema.lower.clone(), table.lower.clone())),
             self.schema_meta_version,
         )
+        .filter(|r| r.table_name.original == table.lower)
+        .or_else(|| {
+            data.by_id
+                .values()
+                .filter_map(|history| visible_table(Some(history), self.schema_meta_version))
+                .filter(|r| r.db_name.lower == schema.lower && r.table_name.lower == table.lower)
+                .min_by_key(|r| (r.table_name.original != table.lower, r.table_id))
+        })
         .ok_or_else(|| InfoSchemaError {
             code: "ErrNoSuchTable",
             message: format!("{}.{}", schema.original, table.original),

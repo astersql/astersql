@@ -1373,10 +1373,20 @@ impl DomainStatsContext {
         database: &str,
         table: &str,
     ) -> Option<astersql_meta_model::TableInfo> {
-        self.catalog
+        let database = database.to_lowercase();
+        let table = table.to_lowercase();
+        let catalog = self
+            .catalog
             .read()
-            .expect("domain stats catalog lock poisoned")
-            .get(&(database.to_lowercase(), table.to_lowercase()))
+            .expect("domain stats catalog lock poisoned");
+        catalog
+            .get(&(database.clone(), table.clone()))
+            .or_else(|| {
+                catalog
+                    .iter()
+                    .find(|((db, _), (_, info))| db == &database && info.Name.L == table)
+                    .map(|(_, entry)| entry)
+            })
             .map(|(_, table)| table.clone())
     }
 
@@ -3374,7 +3384,14 @@ impl Domain {
             })
             .collect::<Vec<_>>();
         for (database, table) in tables {
-            let key = (database.to_ascii_lowercase(), table.Name.L.clone());
+            let key = (
+                database.to_ascii_lowercase(),
+                if table.ExactName {
+                    table.Name.O.clone()
+                } else {
+                    table.Name.L.clone()
+                },
+            );
             let column_ids = table
                 .Columns
                 .iter()
@@ -3822,6 +3839,17 @@ impl Domain {
             })
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
         self.publish_ddl_metadata_change(change).map(|_| ())
+    }
+
+    /// Drop precisely the bound physical objects through the canonical DDL transaction.
+    pub fn ddl_drop_table_ids(&self, ids: &[i64]) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| self.ddl_metadata.drop_table_ids(store, ids))
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        let change = self.publish_ddl_metadata_change(change)?;
+        self.remove_ttl_tables_from_external_workload(&change.old_tables)?;
+        self.remove_tiflash_rules_for_dropped_tables(&change.old_tables)
     }
 
     /// DDL 删表后清理统计。
@@ -6095,7 +6123,14 @@ impl Domain {
                         .filter_map(move |table| {
                             table.model_meta.as_ref().map(|meta| {
                                 (
-                                    (name.clone(), meta.Name.L.clone()),
+                                    (
+                                        name.clone(),
+                                        if meta.ExactName {
+                                            meta.Name.O.clone()
+                                        } else {
+                                            meta.Name.L.clone()
+                                        },
+                                    ),
                                     (
                                         StatsTableKey::new(&name, &meta.Name.L, meta.ID),
                                         meta.as_ref().clone(),

@@ -428,8 +428,7 @@ impl ConcreteSession {
             self.local_temporary_table(&database, &statement.Table.Name.L)
                 .is_some()
         } else {
-            self.domain
-                .stats_table(&database, &statement.Table.Name.L)
+            self.runtime_stats_table(&database, relation_name(&statement.Table))
                 .is_some()
         };
         if already_exists {
@@ -706,9 +705,10 @@ impl ConcreteSession {
         Self::validate_enum_set_lengths(&table.Columns)?;
         self.validate_create_table_foreign_key_parents(&database, statement)?;
         self.validate_create_table_index_lengths(&mut table)?;
-        // Domain lookup is case-insensitive, while INFORMATION_SCHEMA exposes
-        // the canonical lower-case identifier used by the Go session layer.
-        table.Name = ast::NewCIStr(&statement.Table.Name.L);
+        // Preserve the owning dialect's decoded relation identity in the
+        // existing durable catalog; MySQL keeps its canonical folded spelling.
+        table.Name = ast::NewCIStr(relation_name(&statement.Table));
+        table.ExactName = self.sql_dialect() == ast::SqlDialect::PostgreSQL;
         if is_local_temporary {
             // Go local temporary tables live in SessionExtendedInfoSchema rather
             // than the shared InfoSchema. A process-wide high ID gives the
@@ -754,7 +754,7 @@ impl ConcreteSession {
             self.domain
                 .ddl_create_table(&database, table, statement.IfNotExists)
                 .map_err(|error| session_error("persist CREATE TABLE metadata", error))?;
-            self.pre_split_and_scatter(&database, &statement.Table.Name.L)?;
+            self.pre_split_and_scatter(&database, relation_name(&statement.Table))?;
             self.update_self_version_with_retry()?;
             self.domain.record_cross_keyspace_ddl(&database, false);
             if let Some(available) = auto_random_available {
@@ -775,8 +775,7 @@ impl ConcreteSession {
     /// production boundary before deriving the table's physical regions.
     pub(super) fn pre_split_and_scatter(&self, database: &str, table: &str) -> SessionResult<()> {
         let (_, table_info) = self
-            .domain
-            .stats_table(database, table)
+            .runtime_stats_table(database, table)
             .ok_or_else(|| SessionError::new(format!("unknown table {database}.{table}")))?;
         let scope = self.state.borrow().scatter_region.clone();
         const FAILPOINT: &str = "github.com/pingcap/tidb/pkg/ddl/preSplitAndScatter";
@@ -891,7 +890,10 @@ impl ConcreteSession {
                     .local_temporary_auto_ids
                     .retain(|(table_id, _), _| *table_id != local.ID);
             } else {
-                if statement.IfExists && self.domain.stats_table(&database, &table.Name.L).is_none()
+                if statement.IfExists
+                    && self
+                        .runtime_stats_table(&database, relation_name(table))
+                        .is_none()
                 {
                     self.state
                         .borrow_mut()
@@ -901,7 +903,7 @@ impl ConcreteSession {
                             format!("Unknown table '{}.{}'", database, table.Name.O),
                         ));
                 }
-                shared_tables.push((database, table.Name.L.clone()));
+                shared_tables.push((database, relation_name(table).to_owned()));
             }
         }
         if shared_tables.is_empty() {
@@ -930,17 +932,26 @@ impl ConcreteSession {
         let old_tables = shared_tables
             .iter()
             .filter_map(|(database, table)| {
-                self.domain
-                    .stats_table(database, table)
+                self.runtime_stats_table(database, table)
                     .map(|(_, info)| (database.clone(), info))
             })
             .collect();
         attach_runtime_ddl_snapshot(job_id, old_tables);
-        let result = self
-            .domain
-            .ddl_drop_tables(shared_tables, statement.IfExists)
-            .map_err(|error| session_error("persist DROP TABLE metadata", error))
-            .and_then(|_| self.update_self_version_with_retry());
+        let result = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            let ids = shared_tables
+                .iter()
+                .filter_map(|(db, name)| self.runtime_stats_table(db, name).map(|(_, t)| t.ID))
+                .collect::<Vec<_>>();
+            if !statement.IfExists && ids.len() != shared_tables.len() {
+                return Err(SessionError::new("unknown table in exact DROP"));
+            }
+            self.domain.ddl_drop_table_ids(&ids)
+        } else {
+            self.domain
+                .ddl_drop_tables(shared_tables, statement.IfExists)
+        }
+        .map_err(|error| session_error("persist DROP TABLE metadata", error))
+        .and_then(|_| self.update_self_version_with_retry());
         job_guard.finish(&result);
         result
     }

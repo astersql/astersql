@@ -320,3 +320,119 @@ fn test_bundles_via_apply_diff_policy() {
     let is = builder.Build(1);
     assert_eq!(1, is.SchemaMetaVersion());
 }
+
+#[test]
+fn pg_dialect_15_exact_snapshot_identity() {
+    let db = DBInfo {
+        id: 1,
+        name: ci("names"),
+        ..Default::default()
+    };
+    let make = |id, name: &str| {
+        Table::from_model(astersql_meta_model::TableInfo {
+            ID: id,
+            DBID: 1,
+            Name: astersql_parser_ast::NewCIStr(name),
+            ExactName: true,
+            State: astersql_meta_model::StatePublic,
+            ..Default::default()
+        })
+    };
+    let lower = make(11, "foo");
+    let upper = make(12, "Foo");
+    let mut v1 = crate::infoschema::infoSchema::new(3);
+    v1.add_schema(db.clone(), vec![lower.clone(), upper.clone()]);
+    assert_eq!(
+        v1.ModelTableInfoByExactName(&ci("names"), "foo")
+            .unwrap()
+            .ID,
+        11
+    );
+    assert_eq!(
+        v1.ModelTableInfoByExactName(&ci("names"), "Foo")
+            .unwrap()
+            .ID,
+        12
+    );
+    assert_eq!(
+        v1.TableByName(&ci("names"), &ci("Foo")).unwrap().Meta().id,
+        11
+    );
+    assert_eq!(v1.SchemaTableInfos(&ci("names")).unwrap().len(), 2);
+    let mut pinned = crate::infoschema::SessionExtendedInfoSchema::new(Arc::new(v1));
+    pinned.UpdateTableInfo(db.clone(), lower.clone()).unwrap();
+    pinned.UpdateTableInfo(db.clone(), upper.clone()).unwrap();
+    assert_eq!(
+        pinned
+            .ModelTableInfoByExactName(&ci("names"), "foo")
+            .unwrap()
+            .ID,
+        11
+    );
+    assert_eq!(
+        pinned
+            .ModelTableInfoByExactName(&ci("names"), "Foo")
+            .unwrap()
+            .ID,
+        12
+    );
+    let data = NewData();
+    data.addDB(1, db.clone());
+    data.add(&db, lower, 2);
+    let before = NewInfoSchemaV2(data.clone(), 2, 100);
+    data.add(&db, upper, 3);
+    let both = NewInfoSchemaV2(data.clone(), 3, 101);
+    assert!(
+        before
+            .ModelTableInfoByExactName(&ci("names"), "Foo")
+            .is_err()
+    );
+    assert_eq!(
+        both.ModelTableInfoByExactName(&ci("names"), "foo")
+            .unwrap()
+            .ID,
+        11
+    );
+    assert_eq!(
+        both.ModelTableInfoByExactName(&ci("names"), "Foo")
+            .unwrap()
+            .ID,
+        12
+    );
+    assert_eq!(both.SchemaTableInfos(&ci("names")).unwrap().len(), 2);
+    assert_eq!(
+        both.TableByName(&ci("names"), &ci("Foo"))
+            .unwrap()
+            .Meta()
+            .id,
+        11
+    );
+    data.remove(ci("names"), 1, ci("Foo"), 12, 4);
+    let after = NewInfoSchemaV2(data, 4, 102);
+    assert!(
+        after
+            .ModelTableInfoByExactName(&ci("names"), "Foo")
+            .is_err()
+    );
+    assert_eq!(
+        after
+            .ModelTableInfoByExactName(&ci("names"), "foo")
+            .unwrap()
+            .ID,
+        11
+    );
+    assert_eq!(
+        after
+            .TableByName(&ci("names"), &ci("Foo"))
+            .unwrap()
+            .Meta()
+            .id,
+        11
+    );
+    assert_eq!(
+        both.ModelTableInfoByExactName(&ci("names"), "Foo")
+            .unwrap()
+            .ID,
+        12
+    );
+}

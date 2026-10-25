@@ -33,6 +33,14 @@ use astersql_parser_ast as ast;
 /// 规范 DDL 目录在 KV 中的持久化键。
 const DDL_CATALOG_KEY: &[u8] = b"mDDL:canonical-catalog:v1";
 
+fn catalog_table_name(table: &TableInfo) -> String {
+    if table.ExactName {
+        table.Name.O.clone()
+    } else {
+        table.Name.L.clone()
+    }
+}
+
 #[derive(Clone, Default)]
 /// 内存中的 DDL 目录：版本、ID 分配器、库表集合。
 pub(crate) struct MetadataCatalog {
@@ -157,7 +165,7 @@ impl DdlMetadataService {
             table.UpdateTS = start_ts;
             if let Some(catalog_table) = catalog
                 .tables
-                .get_mut(&(database.clone(), table.Name.L.clone()))
+                .get_mut(&(database.clone(), catalog_table_name(&table)))
             {
                 catalog_table.UpdateTS = start_ts;
             }
@@ -350,8 +358,17 @@ impl DdlMetadataService {
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let database = database.to_ascii_lowercase();
         self.mutate(store, move |catalog| {
-            let key = (database.clone(), table.Name.L.clone());
-            if let Some(existing) = catalog.tables.get(&key) {
+            let key = (database.clone(), catalog_table_name(&table));
+            let existing = if table.ExactName {
+                catalog.tables.get(&key)
+            } else {
+                catalog
+                    .tables
+                    .iter()
+                    .find(|((db, _), t)| db == &database && t.Name.L == table.Name.L)
+                    .map(|(_, t)| t)
+            };
+            if let Some(existing) = existing {
                 if if_not_exists {
                     return Ok(DdlMetadataChange {
                         new_tables: vec![(database, existing.clone())],
@@ -551,7 +568,33 @@ impl DdlMetadataService {
         })
     }
 
-    /// 批量删表；`if_exists` 为 false 时缺表报错。
+    /// Delete the bound physical identities atomically, without folding their names.
+    pub fn drop_table_ids(
+        &self,
+        store: &dyn kv::Storage,
+        ids: &[i64],
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate(store, |catalog| {
+            let mut old_tables = Vec::new();
+            for id in ids {
+                let key = catalog
+                    .tables
+                    .iter()
+                    .find(|(_, t)| t.ID == *id)
+                    .map(|(k, _)| k.clone())
+                    .ok_or_else(|| kv::errors::New("table identity changed before DROP"))?;
+                let table = catalog.tables.remove(&key).expect("identity checked");
+                old_tables.push((key.0, table));
+            }
+            Ok(DdlMetadataChange {
+                changed: !old_tables.is_empty(),
+                old_tables,
+                ..Default::default()
+            })
+        })
+    }
+
+    /// Batch drop using MySQL's folded name rules.
     pub fn drop_tables(
         &self,
         store: &dyn kv::Storage,
@@ -563,7 +606,18 @@ impl DdlMetadataService {
             for (database, table) in tables {
                 let database = database.to_ascii_lowercase();
                 let table = table.to_ascii_lowercase();
-                if let Some(old) = catalog.tables.remove(&(database.clone(), table.clone())) {
+                let folded = (database.clone(), table.clone());
+                let key = if catalog.tables.contains_key(&folded) {
+                    folded
+                } else {
+                    catalog
+                        .tables
+                        .iter()
+                        .find(|((db, _), t)| db == &database && t.Name.L == table)
+                        .map(|(key, _)| key.clone())
+                        .unwrap_or(folded)
+                };
+                if let Some(old) = catalog.tables.remove(&key) {
                     old_tables.push((database, old));
                 } else if !if_exists {
                     return Err(kv::errors::New(format!("unknown table {database}.{table}")));
@@ -1797,7 +1851,7 @@ fn read_catalog(retriever: &dyn kv::Retriever) -> Result<MetadataCatalog, kv::er
             table.DBID = database.ID;
             catalog
                 .tables
-                .insert((name.clone(), table.Name.L.clone()), table);
+                .insert((name.clone(), catalog_table_name(&table)), table);
         }
         catalog.databases.insert(name, database);
     }
@@ -1968,7 +2022,7 @@ fn decode_catalog(bytes: &[u8]) -> Result<MetadataCatalog, kv::errors::SharedErr
             .get(&database)
             .map(|info: &DBInfo| info.ID)
             .ok_or_else(|| kv::errors::New(format!("table has unknown database {database}")))?;
-        tables.insert((database, table.Name.L.clone()), table);
+        tables.insert((database, catalog_table_name(&table)), table);
     }
     if !decoder.is_exhausted() {
         return Err(kv::errors::New("trailing bytes in canonical DDL metadata"));

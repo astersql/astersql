@@ -138,9 +138,8 @@ impl super::ConcreteSession {
         args: serde_json::Value,
     ) -> super::SessionResult<()> {
         let info = self
-            .domain
-            .table_by_name(database, table)
-            .map_err(|e| super::SessionError::new(e.to_string()))?;
+            .snapshot_table(&self.domain.info_schema(), database, table)
+            .ok_or_else(|| super::SessionError::new(format!("unknown table {database}.{table}")))?;
         let db = self
             .domain
             .info_schema()
