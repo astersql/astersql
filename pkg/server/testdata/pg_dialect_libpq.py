@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -252,6 +252,16 @@ if task == 18:
         ('forward_missing','/*中*/ WITH a AS (SELECT v FROM absent18), absent18 AS (SELECT 2 AS v) SELECT v FROM a',[]),
         ('forward_table','WITH a AS (SELECT v FROM @t@), @t@ AS (SELECT 2 AS v) SELECT v FROM a',[]),
         ('self_table','WITH @t@ AS (SELECT v FROM @t@) SELECT v FROM @t@',[]),
+    ]
+if task == 19:
+    cte_table='t19_'+evidence.name.replace('-','_')
+    cases=[
+        ('nested','WITH @t@ AS (SELECT 1 AS v) SELECT @t@.v,q.v FROM @t@ CROSS JOIN (WITH @t@ AS (SELECT 2 AS v) SELECT v FROM @t@) q',[]),
+        ('inner_release','SELECT @t@.v,q.v FROM (WITH @t@ AS (SELECT 2 AS v) SELECT v FROM @t@) q CROSS JOIN @t@',[]),
+        ('statement_release','SELECT v FROM @t@',[]),
+        ('quoted','WITH "T" AS (SELECT 1 AS v), @t@ AS (SELECT 2 AS v) SELECT "T".v,@t@.v FROM "T" CROSS JOIN @t@',[]),
+        ('folded','WITH "T" AS (SELECT 1 AS v) SELECT v FROM @t@',[]),
+        ('after_drop','/*中*/ SELECT v FROM @t@',[]),
     ]
 def conflict_ignore_handoff():
     """Compare conflict syntax and read-only metadata before execution gates."""
@@ -1197,7 +1207,7 @@ if task == 15:
              ('escaped','SELECT id FROM "a""b"',[]), ('typed_null','SELECT NULL::int4 AS "TypedNull"',[]),
              ('missing_relation','SELECT id FROM "Missing"',[]), ('missing_column','SELECT "Missing" FROM foo',[])]
 
-assert len({case[0] for case in cases}) == (8 if task == 15 else 10 if task in (11,12) else (10 if task == 6 else 6 if task in (5,8,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11,12) else (8 if task in (4,10) else 10)))))
+assert len({case[0] for case in cases}) == (8 if task == 15 else 10 if task in (11,12) else (10 if task == 6 else 6 if task in (5,8,18,19,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11,12) else (8 if task in (4,10) else 10)))))
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.row.syntax' if task in (11,12) else ('pg.dialect.array.nesting' if task == 10 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence')))), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=((['5','7'] if task == 10 else (['7','9'] if task in (9,11,12) else [None]*len(oids))) if oids else []),
@@ -1275,7 +1285,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,24) else None))
     finally:
         clear(result)
 
@@ -3862,6 +3872,229 @@ def cte_handoff():
     assert done and clean, 'completion/cleanup: '+str(failures)
     print(json.dumps(summary),flush=True)
 
+def cte_nesting_handoff():
+    conns,prepared,created={ },[],[]
+    physical_created=[]
+    checks=self_checks=eligible=0
+    done=False;clean=True;collecting=False;failures=[]
+    def check(ok,message):
+        nonlocal checks
+        if not ok:
+            if collecting: failures.append(message)
+            else: raise AssertionError(message)
+        checks+=1
+    def record(name,label,data,result):
+        archive(name,'aster' if label.startswith('aster') else label,{k:v for k,v in data.items() if k in {'phase','sql','statement','parameter_oids','arguments','parameter_formats','result_format','command'}},dict(result,connection=label,context=data,transaction_after=({0:'I',2:'T',3:'E'}.get(transaction(conns[label])) if label in conns else None)))
+    def recover(label,name):
+        conn=conns[label]
+        if transaction(conn) in (2,3):check(query(conn,'ROLLBACK')['status']==1,'rollback')
+        result=query(conn,'SELECT 1::int4');record(name+'_recovery',label,dict(phase='Q',sql='SELECT 1::int4'),result)
+        check(result['rows']==[['1']] and transaction(conn)==0,'same connection recovery '+label)
+    try:
+        local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference','aster','aster_b','aster_observer']:
+            conn=connect((os.environ['PG18_REFERENCE_DSN'] if label=='reference' else local).encode());conns[label]=conn
+            check(bool(conn) and status(conn)==0,'connect '+label)
+            if label=='reference':check(query(conn,"SET TIME ZONE 'UTC'")['status']==1,'timezone')
+            check(query(conn,'SET search_path TO public')['status']==1,'search path')
+            check(parameter_status(conn,b'client_encoding')==b'UTF8' and parameter_status(conn,b'TimeZone')==b'UTC','encoding/timezone')
+        identity=query(conns['reference'],"SELECT version(),current_setting('server_version_num')")['rows'][0]
+        check(identity[1]=='180006','exact reference')
+        build=json.loads((evidence/'rust-build.json').read_text());build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,
+            reference=dict(version=identity[0],server_version_num=identity[1]),reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),endpoints={s:endpoint(conns[s]) for s in conns},storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
+        bad=copy.deepcopy(provenance);bad['reference_build']['server_version_num']=180004
+        check(not validate_provenance(bad,provenance),'provenance negative');self_checks+=1
+        for label in ['reference','aster']:
+            sql='CREATE TABLE public.'+cte_table+'(v integer)';result=query(conns[label],sql)
+            record('setup',label,dict(phase='Q',sql=sql),result);check(result['status']==1,'create fixture');created.append(label)
+            check(query(conns[label],'INSERT INTO public.'+cte_table+' VALUES (9)')['status']==1,'insert fixture')
+        oids={}
+        for label in ['aster','reference']:
+            sql="SELECT oid FROM pg_catalog.pg_class WHERE relname='"+cte_table+"'"
+            result=query(conns[label],sql);record('relation_oid',label,dict(phase='Q',sql=sql),result)
+            check(result['status']==2 and len(result['rows'])==1,'physical OID');oids[label]=int(result['rows'][0][0])
+        sql='SELECT v FROM public.'+cte_table;initial=query(conns['aster_observer'],sql)
+        record('observer_initial','aster_observer',dict(phase='Q',sql=sql),initial);check(initial['rows']==[['9']],'initial observer')
+        if os.environ.get('PG_DIALECT_19_TEST_SIGINT')=='1':
+            os.kill(os.getpid(),signal.SIGINT)
+        registry=[]
+        collecting=True
+        for index,(name,template,param_oids) in enumerate(cases):
+            sql=template.replace('@t@',cte_table)
+            if name=='after_drop':
+                for label in ['aster','reference']:
+                    result=query(conns[label],'DROP TABLE public.'+cte_table)
+                    record('drop_before_missing',label,dict(phase='Q',sql='DROP TABLE public.'+cte_table),result)
+                    check(result['status']==1,'drop fixture')
+                for label in ['aster','aster_b','reference']:
+                    check(query(conns[label],'SELECT 1::int4')['rows']==[['1']],'post-drop health')
+            expected_state='42P01' if name=='after_drop' else ''
+            expected_rows={'nested':[['1','2']],'inner_release':[['9','2']],'statement_release':[['9']],'quoted':[['1','2']],'folded':[['9']],'after_drop':[]}[name]
+            expected_position=str(sql.index(cte_table)+1) if expected_state else ''
+            data=dict(capability_id='pg.dialect.cte.nesting',case_id=name,phase='PQprepare',sql=sql,parameter_oids=[],arguments=[],parameter_formats=[],result_format=0,
+                encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping={'aster':'current_database.public.'+cte_table,'reference':'public.'+cte_table},
+                expected_basis='task19 exact PostgreSQL18.6 CTE binding',expected_state=expected_state,expected_position=expected_position,
+                roles={s:connection_user(conns[s]).decode() for s in ['aster','reference']})
+            registry.append(data);(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+            results={};descs={}
+            order=['aster','reference'] if index%2==0 else ['reference','aster_b']
+            for label in order:
+                side='reference' if label=='reference' else 'aster';conn=conns[label]
+                check(transaction(conn)==0,'initial idle')
+                statement=('cte_'+str(index)).encode()
+                result=observe(prepare(conn,statement,sql.encode(),0,None));record(name,label,data,result)
+                check(result['state']==expected_state and result['status']==(7 if expected_state else 1),'prepare '+name+' '+label+': '+str(result))
+                if result['status']==1:prepared.append((conn,statement))
+                if expected_state:
+                    check(result['position']==expected_position,'original prepare position '+name+' '+label)
+                    bad=copy.deepcopy(result);bad['state']='XX000';check(bad['state']!=expected_state,'state negative');self_checks+=1
+                else:
+                    desc=observe(describe(conn,statement));descs[side]=desc
+                    record(name+'_describe',label,dict(data,phase='Describe'),desc)
+                    result=observe(exec_prepared(conn,statement,0,None,None,None,0));results[side]=result
+                    record(name+'_execute',label,dict(data,phase='Bind/Execute'),result)
+                    check(result['status']==2 and result['rows']==expected_rows and result['command_tag']=='SELECT 1','execute '+name)
+                recover(label,name)
+                result=query(conn,sql);record(name+'_simple',label,dict(data,phase='Q'),result)
+                check(result['state']==expected_state and result['status']==(7 if expected_state else 2),'Q diagnostic '+name)
+                if expected_state:check(result['position']==expected_position,'Q position '+name)
+                else:check(result['rows']==expected_rows and result['fields']==results[side]['fields'] and result['table_origins']==results[side]['table_origins'] and result['formats']==[0]*len(expected_rows[0]) and result['command_tag']=='SELECT 1','Q rows/metadata/origins/tag')
+                recover(label,name+'_simple')
+            if descs:
+                check(compare_metadata(descs['aster'],descs['reference'],'describe'),'Describe differential '+name)
+                check(descs['aster']['params']==[] and descs['aster']['formats']==[0]*len(expected_rows[0]),'params/format')
+                for side in ['aster','reference']:
+                    expected_origins=([[oids[side],1],[0,0]] if name=='inner_release' else [[oids[side],1]] if name in ('statement_release','folded') else [[0,0]]*2)
+                    check(descs[side]['table_origins']==expected_origins and results[side]['table_origins']==expected_origins,'actual mapped physical origins '+name+' '+side)
+                check(results['aster']['fields']==results['reference']['fields'] and results['aster']['rows']==results['reference']['rows'],'execution differential')
+                bad=copy.deepcopy(descs['aster']);
+                if bad['fields']:bad['fields'][0][1]=99999
+                check(not compare_metadata(bad,descs['reference'],'describe'),'metadata negative');self_checks+=1
+            print('PG_DIALECT_CHECKPOINT '+name,flush=True);check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
+            for label in (['aster_b','aster'] if index%2==0 else ['aster','aster_b']):recover(label,name+'_isolation')
+            sql='SELECT v FROM public.'+cte_table;result=query(conns['aster_observer'],sql)
+            record(name+'_observer','aster_observer',dict(phase='Q',sql=sql),result);check((result['state']=='42P01' if name=='after_drop' else result['rows']==initial['rows']),'observer unchanged until intentional drop')
+            eligible+=1
+        # A WITH clause must preserve the already supported physical identity
+        # of case-distinct quoted catalog objects, rather than revive an old gate.
+        physical='Q19_'+evidence.name.replace('-','_')
+        physical_oids={}
+        for label in ['aster','reference']:
+            for table,want in [(physical.lower(),'5'),(physical,'6')]:
+                quoted='"'+table+'"'
+                sql='CREATE TABLE public.'+quoted+'(v integer)'
+                result=query(conns[label],sql);record('physical_setup',label,dict(phase='Q',sql=sql),result)
+                check(result['status']==1,'case distinct physical setup');physical_created.append((label,quoted))
+                check(query(conns[label],'INSERT INTO public.'+quoted+' VALUES('+want+')')['status']==1,'physical value setup')
+                result=query(conns[label],"SELECT oid FROM pg_catalog.pg_class WHERE relname='"+table+"'")
+                record('physical_oid',label,dict(phase='Q',sql="SELECT oid FROM pg_catalog.pg_class WHERE relname='"+table+"'"),result)
+                check(result['status']==2 and len(result['rows'])==1,'real physical identity')
+                physical_oids[label,table]=int(result['rows'][0][0])
+            check(physical_oids[label,physical]!=physical_oids[label,physical.lower()],'two distinct actual catalog objects')
+        physical_registry=[]
+        for name,reference_name,table,want in [('quoted_physical','"'+physical+'"',physical,'6'),('folded_physical',physical,physical.lower(),'5'),('quoted_lower_physical','"'+physical.lower()+'"',physical.lower(),'5')]:
+            sql='WITH x AS (SELECT 1 AS v) SELECT v FROM '+reference_name
+            data=dict(capability_id='pg.dialect.cte.physical.identity',case_id=name,phase='PQprepare',sql=sql,parameter_oids=[],arguments=[],parameter_formats=[],result_format=0,
+                encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping={label:physical_oids[label,table] for label in ['aster','reference']},expected_basis='PostgreSQL18.6 actual physical identities through WITH; task15 capability retained',expected=dict(rows=[[want]],fields=[['v',23,4,-1]]))
+            physical_registry.append(data);(evidence/'physical-cases.json').write_text(json.dumps(physical_registry,indent=2))
+            for label in ['reference','aster','aster_b']:
+                conn=conns[label];side='reference' if label=='reference' else 'aster';statement=name.encode()
+                result=observe(prepare(conn,statement,sql.encode(),0,None));record(name,label,data,result)
+                check(result['status']==1,'physical WITH Prepare '+name+' '+label)
+                if result['status']==1:prepared.append((conn,statement))
+                desc=observe(describe(conn,statement));record(name+'_describe',label,dict(data,phase='Describe'),desc)
+                origin=[[physical_oids[side,table],1]]
+                check(desc['fields']==data['expected']['fields'] and desc['params']==[] and desc['formats']==[0] and desc['table_origins']==origin,'physical WITH actual Describe '+name+' '+label)
+                result=observe(exec_prepared(conn,statement,0,None,None,None,0));record(name+'_execute',label,dict(data,phase='Bind/Execute'),result)
+                check(result['rows']==[[want]] and result['fields']==desc['fields'] and result['table_origins']==origin and result['command_tag']=='SELECT 1','physical WITH Execute '+name+' '+label)
+                result=query(conn,sql);record(name+'_simple',label,dict(data,phase='Q'),result)
+                check(result['rows']==[[want]] and result['fields']==desc['fields'] and result['table_origins']==origin,'physical WITH Q '+name+' '+label)
+                recover(label,name)
+        # A quoted and folded spelling with the same native lowercase key must
+        # still refer to two different CTE objects in the shared consumer.
+        for label in ['aster','reference']:
+            sql='WITH "T" AS (SELECT 1 AS v), t AS (SELECT 2 AS v) SELECT "T".v,t.v FROM "T" CROSS JOIN t'
+            result=observe(prepare(conns[label],b'case_distinct_ctes',sql.encode(),0,None))
+            record('case_distinct_ctes',label,dict(phase='PQprepare',sql=sql),result)
+            check(result['status']==1,'case distinct CTE prepare');prepared.append((conns[label],b'case_distinct_ctes'))
+            desc=observe(describe(conns[label],b'case_distinct_ctes'))
+            record('case_distinct_ctes_describe',label,dict(phase='Describe',sql=sql),desc)
+            check(desc['fields']==[['v',23,4,-1],['v',23,4,-1]] and desc['table_origins']==[[0,0],[0,0]] and desc['params']==[],'case distinct Describe')
+            result=observe(exec_prepared(conns[label],b'case_distinct_ctes',0,None,None,None,0))
+            record('case_distinct_ctes_execute',label,dict(phase='Bind/Execute',sql=sql),result)
+            check(result['status']==2 and result['rows']==[['1','2']] and result['fields']==desc['fields'] and result['table_origins']==desc['table_origins'],'case distinct shared execution')
+            result=query(conns[label],sql)
+            record('case_distinct_ctes_simple',label,dict(phase='Q',sql=sql),result)
+            check(result['rows']==[['1','2']] and result['fields']==desc['fields'] and result['table_origins']==desc['table_origins'],'case distinct Q')
+        parameter_results={}
+        for label in ['aster','reference']:
+            conn=conns[label];sql='/*中*/ WITH t(x) AS (SELECT $1::int4 AS v) SELECT t.x,q.x FROM t CROSS JOIN (WITH t(x) AS (SELECT $2::int4 AS v) SELECT x FROM t) q /* public.t $1 */'
+            data=dict(phase='PQprepare',sql=sql,parameter_oids=[23,23],arguments=['1','9'],parameter_formats=[0,0],result_format=0)
+            result=observe(prepare(conn,b'cte_parameters',sql.encode(),2,(c.c_uint*2)(23,23)))
+            record('parameters',label,data,result);check(result['status']==1,'qualified parameter prepare');prepared.append((conn,b'cte_parameters'))
+            desc=observe(describe(conn,b'cte_parameters'));record('parameters_describe',label,dict(data,phase='Describe'),desc)
+            check(desc['params']==[23,23] and [field[1] for field in desc['fields']]==[23,23],'explicit parameter identity')
+            for argument,want in [(b'9','9'),(None,None)]:
+                result=observe(exec_prepared(conn,b'cte_parameters',2,(text*2)(b'1',argument),None,None,0))
+                record('parameters_null' if argument is None else 'parameters_execute',label,dict(data,phase='Bind/Execute',arguments=['1',want]),result)
+                check(result['status']==2 and result['rows']==[['1',want]] and result['fields']==[['x',23,4,-1],['x',23,4,-1]] and result['table_origins']==[[0,0],[0,0]],'qualified value/NULL parameters')
+            parameter_results[label]=desc
+        check(compare_metadata(parameter_results['aster'],parameter_results['reference'],'describe'),'parameter Describe differential')
+        for label in ['aster','reference']:
+            check(query(conns[label],'BEGIN')['status']==1,'begin transaction')
+            sql='/*中*/ SELECT v FROM '+cte_table
+            result=observe(prepare(conns[label],b'cte_tx_error',sql.encode(),0,None))
+            record('transaction_error',label,dict(phase='PQprepare',sql=sql),result)
+            check(result['state']=='42P01' and result['position']==str(sql.index(cte_table)+1) and transaction(conns[label])==3,'transaction becomes failed with original position');recover(label,'transaction')
+        observer_sql='SELECT v FROM public.'+cte_table
+        observed=query(conns['aster_observer'],observer_sql)
+        record('final_observer','aster_observer',dict(phase='Q',sql=observer_sql),observed)
+        check(observed['state']=='42P01','observer confirms intentional removal')
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql):
+            p=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            return dict(sql=sql,code=p.returncode,output=p.stdout.splitlines(),error=p.stderr)
+        mysql_db='ref19_'+evidence.name.replace('-','_')
+        try:
+            result=mysql_ref('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; SELECT @@sql_mode,@@character_set_connection,@@collation_connection; CREATE DATABASE '+mysql_db+'; CREATE TABLE '+mysql_db+'.t(v INT); INSERT INTO '+mysql_db+'.t VALUES(9)')
+            record('mysql_identity','mysql',{},result);check(result['code']==0,'MySQL fixture')
+            for name,template,_ in cases:
+                sql=template.replace('@t@','t')
+                if name=='after_drop':check(mysql_ref('DROP TABLE '+mysql_db+'.t')['code']==0,'MySQL drop')
+                result=mysql_ref('USE '+mysql_db+'; SET SESSION sql_mode=\'ANSI_QUOTES\'; '+sql);record(name,'mysql',dict(phase='Q',sql=sql),result)
+                if name=='after_drop':check(result['code']!=0 and '1146 (42S02)' in result['error'],'MySQL missing diagnostic')
+                else:check(result['code']==0 and result['output']==({'nested':['1\t2'],'inner_release':['9\t2'],'quoted':['1\t2'],'statement_release':['9'],'folded':['9']}[name]),'MySQL CTE '+name+': '+str(result))
+            sql="USE "+mysql_db+"; PREPARE s FROM 'WITH t AS (SELECT ? AS v) SELECT v FROM t'; SET @v=9; EXECUTE s USING @v; DEALLOCATE PREPARE s"
+            result=mysql_ref(sql);record('cte_prepare','mysql',dict(phase='PREPARE/EXECUTE',sql=sql),result);check(result['code']==0 and result['output']==['9'],'MySQL CTE prepare')
+
+        finally:
+            result=mysql_ref('DROP DATABASE IF EXISTS '+mysql_db);record('cleanup','mysql',{},result);clean=result['code']==0 and clean
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        check(validate_provenance(provenance,final),'source unchanged');done=not failures
+    finally:
+        for conn,statement in prepared:clean=observe(close_prepared(conn,statement))['status']==1 and clean
+        for conn in conns.values():
+            if conn and transaction(conn) in (2,3):clean=query(conn,'ROLLBACK')['status']==1 and clean
+        for label,quoted in physical_created:
+            result=query(conns[label],'DROP TABLE IF EXISTS public.'+quoted);record('physical_cleanup',label,dict(phase='Q',sql='DROP TABLE IF EXISTS public.'+quoted),result);clean=result['status']==1 and clean
+        for label in created:
+            sql='DROP TABLE IF EXISTS public.'+cte_table;result=query(conns[label],sql);record('cleanup',label,dict(phase='Q',sql=sql),result);clean=result['status']==1 and clean
+        for conn in conns.values():
+            if conn:finish(conn)
+        summary=dict(cases=6,primary_prepare_cases=5 if done and clean else 0,primary_describe_cases=5 if done and clean else 0,
+            primary_execute_cases=5 if done and clean else 0,diagnostic_cases=1 if done and clean else 0,
+            physical_dependency_cases=3 if done and clean else 0,failures=failures,assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,cleanup_ok=clean)
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    assert done and clean, 'completion/cleanup: '+str(failures)
+    print(json.dumps(summary),flush=True)
+
 def lifecycle_handoff():
     """Connection lifecycle through libpq18; named portals need a wire supplement."""
     import socket
@@ -4124,6 +4357,10 @@ if task == 17:
 
 if task == 24:
     lifecycle_handoff()
+    sys.exit(0)
+
+if task == 19:
+    cte_nesting_handoff()
     sys.exit(0)
 
 if task == 18:

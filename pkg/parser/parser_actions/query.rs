@@ -960,7 +960,11 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 .cloned()
                 .unwrap_or_default();
             out.item = Some(Box::new(parser_ast::CommonTableExpression {
-                Name: parser_ast::NewCIStr(&rhs[rhs_len - (3)].ident),
+                Name: {
+                    let (mut name, identity) = super::identifier(parser_state, &rhs[rhs_len - 3]);
+                    if let Some(identity) = identity { name.L = identity.Lookup; }
+                    name
+                },
                 ColNameList: columns,
                 Query: query,
                 IsRecursive: false,
@@ -2875,4 +2879,92 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
     }
     Ok(true)
+}
+
+/// Give CTE declarations and their unaliased range references the same PG key.
+/// Physical catalog names keep their native CIStr key and typed source identity.
+/// The runtime still owns visibility order and pushes/pops materialized scopes.
+pub(crate) fn bind_postgresql_cte_ranges(node: &mut dyn parser_ast::Node) {
+    use parser_ast as ast;
+    use std::collections::HashSet;
+    #[derive(Default)]
+    struct Ranges {
+        ctes: Vec<HashSet<String>>,
+        ranges: Vec<HashSet<String>>,
+    }
+    fn sources(
+        node: &mut ast::ResultSetNode,
+        ctes: &HashSet<String>,
+        ranges: &mut HashSet<String>,
+    ) {
+        match node {
+            ast::ResultSetNode::Join(join) => {
+                for child in [join.Left.as_deref_mut(), join.Right.as_deref_mut()]
+                    .into_iter()
+                    .flatten()
+                {
+                    sources(child, ctes, ranges);
+                }
+            }
+            ast::ResultSetNode::TableSource(source) => {
+                if source.QuerySource.is_none()
+                    && source.Source.Schema.L.is_empty()
+                    && let Some(identity) = source.Source.PostgreSQLParts.last()
+                    && ctes.contains(&identity.Lookup)
+                {
+                    source.Source.Name.L = identity.Lookup.clone();
+                    if source.AsName.L.is_empty() {
+                        ranges.insert(identity.Lookup.clone());
+                    }
+                }
+            }
+        }
+    }
+    impl ast::InPlaceVisitor for Ranges {
+        fn enter(&mut self, node: &mut dyn ast::Node) -> bool {
+            if let Some(select) = node.as_any_mut().downcast_mut::<ast::SelectStmt>() {
+                let mut ctes = self.ctes.last().cloned().unwrap_or_default();
+                if let Some(with) = &select.With {
+                    ctes.extend(with.borrow().CTEs.iter().map(|cte| cte.Name.L.clone()));
+                }
+                let mut ranges = HashSet::new();
+                if let Some(from) = &mut select.From {
+                    for source in [
+                        from.TableRefs.Left.as_deref_mut(),
+                        from.TableRefs.Right.as_deref_mut(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        sources(source, &ctes, &mut ranges);
+                    }
+                }
+                self.ctes.push(ctes);
+                self.ranges.push(ranges);
+            }
+            false
+        }
+        fn enter_column_name(&mut self, column: &mut ast::ColumnName) -> bool {
+            if column.PostgreSQLParts.len() == 2 {
+                let identity = &column.PostgreSQLParts[0];
+                if self
+                    .ranges
+                    .iter()
+                    .rev()
+                    .any(|ranges| ranges.contains(&identity.Lookup))
+                {
+                    column.Table.L = identity.Lookup.clone();
+                }
+            }
+            false
+        }
+        fn leave(&mut self, node: &mut dyn ast::Node) -> bool {
+            if node.as_any().is::<ast::SelectStmt>() {
+                self.ctes.pop();
+                self.ranges.pop();
+            }
+            true
+        }
+    }
+    ast::Walk(node, &mut Ranges::default());
 }

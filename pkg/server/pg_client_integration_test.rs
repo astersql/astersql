@@ -1194,6 +1194,11 @@ fn pg_dialect_18_libpq() {
 }
 
 #[test]
+fn pg_dialect_19_libpq() {
+    pg_dialect_libpq(19);
+}
+
+#[test]
 fn pg_dialect_24_libpq() {
     pg_dialect_libpq(24);
 }
@@ -2111,6 +2116,11 @@ fn pg_dialect_libpq(task: u8) {
             let _ = self.0.wait();
         }
     }
+    if task == 19 {
+        mysql_query(&mut mysql, &format!("USE {database}"));
+        mysql_query(&mut mysql, "CREATE TABLE t(v INT)");
+        mysql_query(&mut mysql, "INSERT INTO t VALUES(9)");
+    }
     let mut child = ChildGuard(
         Command::new("python3")
             .arg(concat!(
@@ -2594,6 +2604,33 @@ fn pg_dialect_libpq(task: u8) {
                 )
                 .unwrap();
             }
+        }
+        if task == 19 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            mysql_query(socket, &format!("USE {database}"));
+            for (sql, expected) in [
+                (
+                    "WITH t AS (SELECT 1 AS v) SELECT t.v,q.v FROM t CROSS JOIN (WITH t AS (SELECT 2 AS v) SELECT v FROM t) q",
+                    vec![Some(b"1".to_vec()), Some(b"2".to_vec())],
+                ),
+                (
+                    "SELECT t.v,q.v FROM (WITH t AS (SELECT 2 AS v) SELECT v FROM t) q CROSS JOIN t",
+                    vec![Some(b"9".to_vec()), Some(b"2".to_vec())],
+                ),
+                ("SELECT v FROM t", vec![Some(b"9".to_vec())]),
+            ] {
+                assert_eq!(mysql_query(socket, sql), vec![expected]);
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-ctes.jsonl"))
+                .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"phase":phase,"nested":[1,2],"released":[9,2],"statement":[9]})
+            )
+            .unwrap();
         }
         if task == 18 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let table = format!("t18_{}_{}", std::process::id(), address.port());
@@ -3104,6 +3141,21 @@ fn pg_dialect_libpq(task: u8) {
             );
             assert!(entries.iter().all(|(_, actual)| *actual == dialect));
         }
+        return;
+    }
+    if task == 19 {
+        assert_eq!(checkpoints, 6);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 6);
+        assert_eq!(summary["physical_dependency_cases"], 3);
+        assert_eq!(summary["primary_prepare_cases"], 5);
+        assert_eq!(summary["primary_describe_cases"], 5);
+        assert_eq!(summary["primary_execute_cases"], 5);
+        assert_eq!(summary["diagnostic_cases"], 1);
+        assert_eq!(summary["failures"], serde_json::json!([]));
         return;
     }
     if task == 18 {

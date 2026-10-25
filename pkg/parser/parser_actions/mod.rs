@@ -66,6 +66,7 @@ mod expression;
 mod misc;
 mod mview;
 mod query;
+pub(super) use query::bind_postgresql_cte_ranges;
 mod security;
 
 #[cfg(test)]

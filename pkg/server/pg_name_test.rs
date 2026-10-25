@@ -580,12 +580,25 @@ fn pg_dialect_15_behavior() {
     mysql.execute("DROP TABLE Foo").unwrap();
     assert!(pg.execute("SELECT id FROM \"Foo\"").is_err());
     pg.execute("DROP DATABASE pg_name_exact").unwrap();
-    for sql in [
-        "WITH x AS (SELECT 1) SELECT id FROM \"Foo\"",
-        "CREATE TEMPORARY TABLE \"Foo\"(id int4)",
-    ] {
-        assert_eq!(rewrite(sql, "pg_name_exact", true).unwrap_err().0, "0A000");
-    }
+    assert_eq!(
+        rewrite(
+            "WITH x AS (SELECT 1) SELECT id FROM \"Foo\"",
+            "pg_name_exact",
+            true
+        )
+        .unwrap(),
+        "WITH x AS (SELECT 1) SELECT id FROM `pg_name_exact`.\"Foo\""
+    );
+    assert_eq!(
+        rewrite(
+            "CREATE TEMPORARY TABLE \"Foo\"(id int4)",
+            "pg_name_exact",
+            true
+        )
+        .unwrap_err()
+        .0,
+        "0A000"
+    );
     println!("pg_dialect_15_behavior: exact identities, six reads, MySQL isolation, exact drop");
 }
 
@@ -676,5 +689,85 @@ fn pg_dialect_17_behavior() {
     checks += 2;
     println!(
         "pg_dialect_17_behavior: {checks} assertions; 6 primary binding shapes plus source/parameter/dialect guards"
+    );
+}
+
+#[test]
+fn pg_dialect_19_behavior() {
+    use astersql_parser_ast as ast;
+    let sql = "WITH t AS (SELECT 1 AS v) SELECT t.v,q.v FROM t CROSS JOIN (WITH t AS (SELECT 2 AS v) SELECT v FROM t) q";
+    let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .unwrap();
+    let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+    assert_eq!(select.With.as_ref().unwrap().borrow().CTEs[0].Name.O, "t");
+    assert_eq!(select.Fields.Fields.len(), 2);
+    assert_eq!(rewrite(sql, "db", false).unwrap(), sql);
+    #[derive(Default)]
+    struct Blocks(Vec<String>);
+    impl ast::Visitor for Blocks {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>()
+                && let Some(with) = &select.With
+            {
+                self.0
+                    .extend(with.borrow().CTEs.iter().map(|cte| cte.Name.L.clone()));
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut blocks = Blocks::default();
+    ast::Node::accept(select, &mut blocks);
+    assert_eq!(blocks.0, vec!["t", "t"]);
+    let release = "SELECT t.v,q.v FROM (WITH t AS (SELECT 2 AS v) SELECT v FROM t) q CROSS JOIN t";
+    assert_eq!(
+        rewrite(release, "db", true).unwrap(),
+        "SELECT t.v,q.v FROM (WITH t AS (SELECT 2 AS v) SELECT v FROM t) q CROSS JOIN `db`.t"
+    );
+    assert_eq!(
+        rewrite("SELECT v FROM t", "db", true).unwrap(),
+        "SELECT v FROM `db`.t"
+    );
+    assert_eq!(
+        rewrite("SELECT v FROM t", "db", false).unwrap_err().0,
+        "42P01"
+    );
+    let quoted = "WITH \"T\" AS (SELECT 1 AS v), t AS (SELECT 2 AS v) SELECT \"T\".v,t.v FROM \"T\" CROSS JOIN t";
+    assert!(
+        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+            .ParseSQL(quoted, &[])
+            .is_ok()
+    );
+    assert!(rewrite(quoted, "db", false).is_ok());
+    let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(quoted, &[])
+        .unwrap();
+    let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+    assert_eq!(
+        select
+            .With
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .CTEs
+            .iter()
+            .map(|cte| cte.Name.L.as_str())
+            .collect::<Vec<_>>(),
+        vec!["T", "t"]
+    );
+    for (field, expected) in select.Fields.Fields.iter().zip(["T", "t"]) {
+        let ast::ExprKind::Column(column) = &field.Expr.as_ref().unwrap().Kind else {
+            panic!("column")
+        };
+        assert_eq!(column.Table.L, expected);
+        for part in &column.PostgreSQLParts {
+            assert_eq!(&quoted[part.Span.0..part.Span.1], part.Original);
+        }
+    }
+    println!(
+        "pg_dialect_19_behavior: assertions=16; actual bindings and lifecycle verified by libpq"
     );
 }

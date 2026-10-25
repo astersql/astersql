@@ -194,7 +194,6 @@ struct Resolver<'a> {
     public: bool,
     edits: BTreeMap<usize, (usize, String)>,
     error_position: Option<usize>,
-    cte_statement: bool,
     snapshot: Option<astersql_infoschema::SchemaRef>,
 }
 impl Resolver<'_> {
@@ -316,14 +315,10 @@ impl Resolver<'_> {
         // Earlier visible CTEs took the return above. Resolve physical names
         // exactly in the owning connection's snapshot before native folding,
         // and diagnose missing objects at the original token.
-        if (self.cte_statement
-            || (self.tokens[i - 1].quoted
-                && parts
-                    .last()
-                    .unwrap()
-                    .chars()
-                    .any(|ch| ch.is_ascii_uppercase())))
-            && !allow_columns
+        if !allow_columns
+            // Catalog relations are owned by the catalog parser/provider,
+            // including invalid-parameter diagnostics before native fallback.
+            && !(parts.len() == 1 && crate::pg_catalog_query::is_catalog_relation(&parts[0]))
             && let Some(snapshot) = &self.snapshot
             && snapshot
                 .ModelTableInfoByExactName(
@@ -511,7 +506,6 @@ fn rewrite_with_snapshot(
         }
     }
     let mut resolver = Resolver {
-        cte_statement: tokens.first().is_some_and(|token| token.word("with")),
         snapshot,
         tokens,
         sql,
@@ -565,16 +559,6 @@ fn identifier_parts(
     }
     impl ast::Visitor for Gate {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
-            // CTE range names still use their existing native binding keys.
-            // Do not release their former mixed-case gate as a side effect of
-            // enabling exact physical objects in this task.
-            if node
-                .as_any()
-                .downcast_ref::<ast::SelectStmt>()
-                .is_some_and(|s| s.With.is_some())
-            {
-                self.exact_relations = false;
-            }
             let parts = if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
                 if let ast::ExprKind::Column(column) = &expr.Kind {
                     Some(&column.PostgreSQLParts)
@@ -688,6 +672,7 @@ fn alias_scope(
     struct Binding {
         name: String,
         columns: Option<HashSet<String>>,
+        exact_range: bool,
     }
     struct Scope<'a> {
         tokens: Vec<Token>,
@@ -761,8 +746,11 @@ fn alias_scope(
                     };
                     // Native range keys fold case. Refuse the one shape that
                     // would merge two distinct PG aliases before native binding.
+                    let exact_range = source.AsName.L.is_empty() && source.Source.Name.L == name;
                     if bindings.iter().any(|binding| {
-                        binding.name != name && binding.name.to_lowercase() == name.to_lowercase()
+                        binding.name != name
+                            && binding.name.to_lowercase() == name.to_lowercase()
+                            && !(binding.exact_range && exact_range)
                     }) {
                         self.failure = Some((
                             "0A000",
@@ -770,7 +758,11 @@ fn alias_scope(
                             parts.last().map_or(0, |part| part.Span.0),
                         ));
                     }
-                    bindings.push(Binding { name, columns });
+                    bindings.push(Binding {
+                        name,
+                        columns,
+                        exact_range,
+                    });
                 }
             }
         }
@@ -817,6 +809,7 @@ fn alias_scope(
                         if let Some(binding) = target.first() {
                             self.scopes.last_mut().unwrap().push(Binding {
                                 name: "excluded".into(),
+                                exact_range: false,
                                 columns: binding.columns.clone(),
                             });
                         }

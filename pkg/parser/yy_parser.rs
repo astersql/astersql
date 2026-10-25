@@ -436,6 +436,9 @@ impl Parser {
         {
             for statement in &mut self.result {
                 check_ast_depth_limit(statement.as_mut(), MAX_AST_DEPTH)?;
+                if self.dialect == parser_ast::SqlDialect::PostgreSQL {
+                    parser_actions::bind_postgresql_cte_ranges(statement.as_mut());
+                }
                 parser_ast::SetFlag(statement.as_ref());
             }
             return Ok((std::mem::take(&mut self.result), warnings));
