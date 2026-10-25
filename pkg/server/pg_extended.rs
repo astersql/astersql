@@ -475,6 +475,8 @@ fn temporal(oid: u32, text: &str) -> Result<(u8, Vec<u8>)> {
     Ok((if oid == 1082 { 10 } else { 12 }, bytes))
 }
 struct Statement {
+    original_sql: String,
+    path: Vec<String>,
     catalog: Option<crate::pg_catalog::CatalogQuery>,
     session_query: Option<crate::pg_session::SessionQuery>,
     metadata: PreparedMetadata,
@@ -509,6 +511,8 @@ pub(crate) struct Extended {
     statements: HashMap<String, Statement>,
     portals: HashMap<String, Portal>,
     failed: bool,
+    // A bound portal pins its engine plan across Statement reanalysis.
+    retired_statements: Vec<u32>,
 }
 impl Extended {
     pub(crate) fn new(startup_epoch_micros: u128) -> Self {
@@ -526,6 +530,7 @@ impl Extended {
             self.portals.retain(|_, p| !p.statement_name.is_empty());
         }
         self.portals.remove("");
+        self.collect_retired(context);
     }
     pub(crate) fn handle(
         &mut self,
@@ -560,6 +565,7 @@ impl Extended {
             if !context.in_transaction() {
                 self.portals.clear();
             }
+            self.collect_retired(context);
             write_message(
                 socket,
                 b'Z',
@@ -571,6 +577,25 @@ impl Extended {
             return Ok(true);
         }
         self.session.relation_error_position = None;
+        // PostgreSQL sends ParameterDescription before revalidating the result
+        // descriptor. Its parameter contract survives a later analysis error.
+        if tag == b'D' {
+            let mut reader = Reader { bytes: body };
+            if reader.take(1).ok() == Some(b"S".as_slice()) {
+                if let Ok(name) = reader.string() {
+                    if reader.end().is_ok() {
+                        if let Some(statement) = self.statements.get(&name) {
+                            let mut parameters =
+                                (statement.oids.len() as i16).to_be_bytes().to_vec();
+                            for oid in &statement.oids {
+                                parameters.extend_from_slice(&oid.to_be_bytes());
+                            }
+                            write_message(socket, b't', &parameters)?;
+                        }
+                    }
+                }
+            }
+        }
         match self.process(tag, body, context, execute) {
             Ok(messages) => {
                 for (tag, body) in messages {
@@ -583,6 +608,16 @@ impl Extended {
                 let original_sql = if tag == b'P' {
                     let mut reader = Reader { bytes: body };
                     reader.string().and_then(|_| reader.string()).ok()
+                } else if tag == b'B' || tag == b'D' {
+                    let mut reader = Reader { bytes: body };
+                    let name = if tag == b'B' {
+                        reader.string().and_then(|_| reader.string()).ok()
+                    } else if reader.take(1).ok() == Some(b"S".as_slice()) {
+                        reader.string().ok()
+                    } else {
+                        None
+                    };
+                    name.and_then(|name| self.statements.get(&name).map(|s| s.original_sql.clone()))
                 } else {
                     None
                 };
@@ -599,8 +634,212 @@ impl Extended {
                 }
             }
         }
+        self.collect_retired(context);
         Ok(true)
     }
+    fn prepare(
+        &mut self,
+        sql: String,
+        mut oids: Vec<u32>,
+        context: &Arc<dyn TiDBContext>,
+    ) -> Result<Statement> {
+        let count = oids.len();
+        let original_sql = sql.clone();
+        let path = self
+            .session
+            .effective_explicit_path(context.as_ref())
+            .map_err(engine)?;
+        let session_query = crate::pg_session::SessionQuery::parse(&sql)?;
+        let catalog = if session_query.is_some() {
+            None
+        } else {
+            crate::pg_catalog::CatalogQuery::parse_session_with_types(
+                &sql,
+                context.as_ref(),
+                &self.session,
+                &oids,
+            )?
+        };
+        let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
+            (sql, Vec::new())
+        } else {
+            let sql = crate::pg_name::adapt(&sql, context.as_ref(), &mut self.session)?;
+            let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
+            markers(&sql)?
+        };
+        let sql = if catalog.is_some() || session_query.is_some() {
+            std::borrow::Cow::Borrowed(sql.as_str())
+        } else {
+            crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?
+        };
+        let n = catalog.as_ref().map_or_else(
+            || mapping.iter().max().map_or(0, |n| n + 1),
+            |query| query.parameter_oids().len(),
+        );
+        if let Some(query) = &catalog {
+            oids = query.parameter_oids().to_vec();
+        }
+        if count > n {
+            return Err(error("08P01", "too many parameter OIDs"));
+        }
+        oids.resize(n, 0);
+        for oid in &oids {
+            if catalog.is_none()
+                && !matches!(
+                    *oid,
+                    0 | 16
+                        | 17
+                        | 20
+                        | 21
+                        | 23
+                        | 25
+                        | 700
+                        | 701
+                        | 1042
+                        | 1043
+                        | 1082
+                        | 1083
+                        | 1114
+                        | 1700
+                )
+            {
+                return Err(error("0A000", "unsupported text parameter OID"));
+            }
+        }
+        let (command, returning, postgresql_conflict, analysis_sql) =
+            if let Some(query) = &session_query {
+                (Some(query.command()), false, None, None)
+            } else if catalog.is_some() {
+                (Some("SELECT"), false, None, None)
+            } else {
+                let plan = crate::pg_result::prepare_command(&sql)?;
+                (
+                    plan.command,
+                    plan.returning,
+                    plan.postgresql_conflict,
+                    plan.analysis_sql,
+                )
+            };
+        let analysis_mapping = analysis_parameter_mapping(
+            &sql,
+            &mapping,
+            postgresql_conflict
+                .as_ref()
+                .map(|conflict| conflict.SourceSpan),
+        )?;
+        if command.is_none() {
+            return Err(error("0A000", "empty prepared statements are unsupported"));
+        }
+        self.session
+            .check_transaction_command(command, context.as_ref())?;
+        let metadata = if let Some(query) = &session_query {
+            query.metadata()
+        } else if let Some(catalog) = &catalog {
+            catalog.metadata()
+        } else {
+            let analysis_sql = analysis_sql.as_deref().unwrap_or(&sql);
+            context
+                .prepare_statement_with_parameter_types(
+                    analysis_sql,
+                    &analysis_mapping
+                        .iter()
+                        .map(|index| oids[*index])
+                        .collect::<Vec<_>>(),
+                    &CancellationToken::new(),
+                )
+                .map_err(|error| {
+                    if let crate::conn::ConnError::PgArray(array) = &error {
+                        self.session.relation_error_position = array.position.and_then(|offset| {
+                            analysis_sql
+                                .get(..offset)
+                                .map(|prefix| prefix.chars().count() + 1)
+                        });
+                    }
+                    engine(error)
+                })?
+        };
+        if catalog.is_none() && metadata.parameter_count != analysis_mapping.len() {
+            if catalog.is_none() && session_query.is_none() {
+                let _ = context.close_prepared_statement(metadata.statement_id);
+            }
+            return Err(error("0A000", "engine parameter count mismatch"));
+        }
+        // Inference comes from parsed engine expressions, in occurrence
+        // order. Fold those constraints into PostgreSQL parameter order;
+        // the first direct cast fixes an unspecified source type.
+        for (index, oid) in analysis_mapping.iter().zip(&metadata.parameter_cast_oids) {
+            if oids[*index] == 0 {
+                oids[*index] = *oid;
+            }
+        }
+        if oids.contains(&0) {
+            if catalog.is_none() && session_query.is_none() {
+                let _ = context.close_prepared_statement(metadata.statement_id);
+            }
+            return Err(error("42P18", "could not determine data type of parameter"));
+        }
+        Ok(Statement {
+            original_sql,
+            path,
+            session_query,
+            catalog,
+            metadata,
+            oids,
+            mapping,
+            command,
+            returning,
+            postgresql_conflict,
+        })
+    }
+    fn collect_retired(&mut self, context: &Arc<dyn TiDBContext>) {
+        self.retired_statements.retain(|id| {
+            if self.portals.values().any(|portal| portal.statement == *id) {
+                true
+            } else {
+                let _ = context.close_prepared_statement(*id);
+                false
+            }
+        });
+    }
+
+    fn reanalyze(&mut self, name: &str, context: &Arc<dyn TiDBContext>) -> Result<()> {
+        let statement = self
+            .statements
+            .get(name)
+            .ok_or_else(|| error("26000", "unknown prepared statement"))?;
+        let path = self
+            .session
+            .effective_explicit_path(context.as_ref())
+            .map_err(engine)?;
+        if statement.path == path {
+            return Ok(());
+        }
+        let original_sql = statement.original_sql.clone();
+        let oids = statement.oids.clone();
+        let previous_shape =
+            result_shape(&statement.metadata, statement.command.unwrap_or("SELECT"))?;
+        let replacement = self.prepare(original_sql, oids, context)?;
+        if result_shape(
+            &replacement.metadata,
+            replacement.command.unwrap_or("SELECT"),
+        )? != previous_shape
+        {
+            if replacement.catalog.is_none() && replacement.session_query.is_none() {
+                let _ = context.close_prepared_statement(replacement.metadata.statement_id);
+            }
+            return Err(error("0A000", "cached plan must not change result type"));
+        }
+        let previous = self
+            .statements
+            .insert(name.to_owned(), replacement)
+            .unwrap();
+        if previous.catalog.is_none() && previous.session_query.is_none() {
+            self.retired_statements.push(previous.metadata.statement_id);
+        }
+        self.collect_retired(context);
+        Ok(())
+    }
+
     fn process(
         &mut self,
         tag: u8,
@@ -626,136 +865,7 @@ impl Extended {
                 if !name.is_empty() && self.statements.contains_key(&name) {
                     return Err(error("42P05", "prepared statement already exists"));
                 }
-                let session_query = crate::pg_session::SessionQuery::parse(&sql)?;
-                let catalog = if session_query.is_some() {
-                    None
-                } else {
-                    crate::pg_catalog::CatalogQuery::parse_session_with_types(
-                        &sql,
-                        context.as_ref(),
-                        &self.session,
-                        &oids,
-                    )?
-                };
-                let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
-                    (sql, Vec::new())
-                } else {
-                    let sql = crate::pg_name::adapt(&sql, context.as_ref(), &mut self.session)?;
-                    let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
-                    markers(&sql)?
-                };
-                let sql = if catalog.is_some() || session_query.is_some() {
-                    std::borrow::Cow::Borrowed(sql.as_str())
-                } else {
-                    crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?
-                };
-                let n = catalog.as_ref().map_or_else(
-                    || mapping.iter().max().map_or(0, |n| n + 1),
-                    |query| query.parameter_oids().len(),
-                );
-                if let Some(query) = &catalog {
-                    oids = query.parameter_oids().to_vec();
-                }
-                if count > n {
-                    return Err(error("08P01", "too many parameter OIDs"));
-                }
-                oids.resize(n, 0);
-                for oid in &oids {
-                    if catalog.is_none()
-                        && !matches!(
-                            *oid,
-                            0 | 16
-                                | 17
-                                | 20
-                                | 21
-                                | 23
-                                | 25
-                                | 700
-                                | 701
-                                | 1042
-                                | 1043
-                                | 1082
-                                | 1083
-                                | 1114
-                                | 1700
-                        )
-                    {
-                        return Err(error("0A000", "unsupported text parameter OID"));
-                    }
-                }
-                let (command, returning, postgresql_conflict, analysis_sql) =
-                    if let Some(query) = &session_query {
-                        (Some(query.command()), false, None, None)
-                    } else if catalog.is_some() {
-                        (Some("SELECT"), false, None, None)
-                    } else {
-                        let plan = crate::pg_result::prepare_command(&sql)?;
-                        (
-                            plan.command,
-                            plan.returning,
-                            plan.postgresql_conflict,
-                            plan.analysis_sql,
-                        )
-                    };
-                let analysis_mapping = analysis_parameter_mapping(
-                    &sql,
-                    &mapping,
-                    postgresql_conflict
-                        .as_ref()
-                        .map(|conflict| conflict.SourceSpan),
-                )?;
-                if command.is_none() {
-                    return Err(error("0A000", "empty prepared statements are unsupported"));
-                }
-                self.session
-                    .check_transaction_command(command, context.as_ref())?;
-                let metadata = if let Some(query) = &session_query {
-                    query.metadata()
-                } else if let Some(catalog) = &catalog {
-                    catalog.metadata()
-                } else {
-                    let analysis_sql = analysis_sql.as_deref().unwrap_or(&sql);
-                    context
-                        .prepare_statement_with_parameter_types(
-                            analysis_sql,
-                            &analysis_mapping
-                                .iter()
-                                .map(|index| oids[*index])
-                                .collect::<Vec<_>>(),
-                            &CancellationToken::new(),
-                        )
-                        .map_err(|error| {
-                            if let crate::conn::ConnError::PgArray(array) = &error {
-                                self.session.relation_error_position =
-                                    array.position.and_then(|offset| {
-                                        analysis_sql
-                                            .get(..offset)
-                                            .map(|prefix| prefix.chars().count() + 1)
-                                    });
-                            }
-                            engine(error)
-                        })?
-                };
-                if catalog.is_none() && metadata.parameter_count != analysis_mapping.len() {
-                    if catalog.is_none() && session_query.is_none() {
-                        let _ = context.close_prepared_statement(metadata.statement_id);
-                    }
-                    return Err(error("0A000", "engine parameter count mismatch"));
-                }
-                // Inference comes from parsed engine expressions, in occurrence
-                // order. Fold those constraints into PostgreSQL parameter order;
-                // the first direct cast fixes an unspecified source type.
-                for (index, oid) in analysis_mapping.iter().zip(&metadata.parameter_cast_oids) {
-                    if oids[*index] == 0 {
-                        oids[*index] = *oid;
-                    }
-                }
-                if oids.contains(&0) {
-                    if catalog.is_none() && session_query.is_none() {
-                        let _ = context.close_prepared_statement(metadata.statement_id);
-                    }
-                    return Err(error("42P18", "could not determine data type of parameter"));
-                }
+                let statement = self.prepare(sql, oids, context)?;
                 if let Some(previous) = self.statements.remove(&name) {
                     if previous.catalog.is_none() && previous.session_query.is_none() {
                         context
@@ -767,19 +877,7 @@ impl Extended {
                 if name.is_empty() {
                     self.portals.remove("");
                 }
-                self.statements.insert(
-                    name,
-                    Statement {
-                        session_query,
-                        catalog,
-                        metadata,
-                        oids,
-                        mapping,
-                        command,
-                        returning,
-                        postgresql_conflict,
-                    },
-                );
+                self.statements.insert(name, statement);
                 Ok(vec![(b'1', vec![])])
             }
             b'B' => {
@@ -788,6 +886,7 @@ impl Extended {
                 if !name.is_empty() && self.portals.contains_key(&name) {
                     return Err(error("42P03", "portal already exists"));
                 }
+                self.reanalyze(&statement_name, context)?;
                 let statement = self
                     .statements
                     .get(&statement_name)
@@ -901,15 +1000,12 @@ impl Extended {
                 reader.end()?;
                 match kind {
                     b'S' => {
+                        self.reanalyze(&name, context)?;
                         let statement = self
                             .statements
                             .get(&name)
                             .ok_or_else(|| error("26000", "unknown prepared statement"))?;
-                        let mut parameters = (statement.oids.len() as i16).to_be_bytes().to_vec();
-                        for oid in &statement.oids {
-                            parameters.extend_from_slice(&oid.to_be_bytes());
-                        }
-                        let mut messages = vec![(b't', parameters)];
+                        let mut messages = Vec::new();
                         messages.push(
                             description(
                                 &statement.metadata,
@@ -1074,6 +1170,14 @@ impl Extended {
             _ => unreachable!(),
         }
     }
+}
+// PostgreSQL's fixed result contract compares names and types, not origin IDs:
+// another relation with the same row type is a valid reanalysis target.
+fn result_shape(metadata: &PreparedMetadata, command: &str) -> Result<Option<Vec<u8>>> {
+    let mut shape = metadata.clone();
+    shape.column_origins.clear();
+    shape.catalog_column_origins.clear();
+    description(&shape, command)
 }
 fn description(metadata: &PreparedMetadata, command: &str) -> Result<Option<Vec<u8>>> {
     description_formats(metadata, &[], command)

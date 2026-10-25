@@ -1012,3 +1012,133 @@ fn pg_dialect_23_behavior() {
     assert!(rewritten.contains("$1::int4"));
     println!("pg_dialect_23_behavior: syntax_cases=10 protected_rewrite=1");
 }
+
+#[test]
+fn pg_dialect_25_behavior() {
+    use crate::runtime::{BootstrapAuthMode, CanonicalConnectionDomain, ConcreteSessionDriver};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+    fn send(s: &mut TcpStream, tag: u8, body: &[u8]) {
+        s.write_all(&[tag]).unwrap();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(body).unwrap();
+    }
+    fn read(s: &mut TcpStream) -> (u8, Vec<u8>) {
+        let mut h = [0; 5];
+        s.read_exact(&mut h).unwrap();
+        let mut b = vec![0; u32::from_be_bytes(h[1..].try_into().unwrap()) as usize - 4];
+        s.read_exact(&mut b).unwrap();
+        (h[0], b)
+    }
+    fn query(s: &mut TcpStream, sql: &str) {
+        send(s, b'Q', &[sql.as_bytes(), b"\0"].concat());
+        loop {
+            let (tag, b) = read(s);
+            assert_ne!(tag, b'E', "{sql}: {b:?}");
+            if tag == b'Z' {
+                assert_eq!(b, b"I");
+                break;
+            }
+        }
+    }
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE test.reanalysis25(id INT)")
+        .unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = crate::pg_conn::PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+    let sql = "/*中*/ SELECT id,$1::int4,'public.reanalysis25 $2' FROM \"reanalysis25\"";
+    let (stmts, _) =
+        astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+    let select = stmts[0]
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::SelectStmt>()
+        .unwrap();
+    let astersql_parser_ast::ExprKind::Cast { Expr, .. } =
+        &select.Fields.Fields[1].Expr.as_ref().unwrap().Kind
+    else {
+        panic!("parameter cast")
+    };
+    assert_eq!(Expr.PostgreSQLParameterIndex(), Some(1));
+    assert!(
+        matches!(&select.Fields.Fields[2].Expr.as_ref().unwrap().Kind,astersql_parser_ast::ExprKind::Value(v) if v=="public.reanalysis25 $2")
+    );
+    let parse = [
+        b"same\0".as_slice(),
+        sql.as_bytes(),
+        b"\0",
+        &1u16.to_be_bytes(),
+        &23u32.to_be_bytes(),
+    ]
+    .concat();
+    send(&mut s, b'P', &parse);
+    assert_eq!(read(&mut s), (b'1', vec![]));
+    send(&mut s, b'S', &[]);
+    assert_eq!(read(&mut s), (b'Z', b"I".to_vec()));
+    query(&mut s, "SET search_path TO ''");
+    send(&mut s, b'D', b"Ssame\0");
+    send(&mut s, b'S', &[]);
+    assert_eq!(
+        read(&mut s),
+        (
+            b't',
+            [1u16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+        )
+    );
+    let (tag, error) = read(&mut s);
+    assert_eq!(
+        tag, b'E',
+        "Describe must reanalyze original query, got {error:?}"
+    );
+    assert!(error.windows(6).any(|s| s == b"42P01\0"));
+    let expected = format!("P{}\0", sql.chars().position(|c| c == '\"').unwrap() + 1);
+    assert!(
+        error
+            .windows(expected.len())
+            .any(|s| s == expected.as_bytes()),
+        "{error:?}"
+    );
+    assert_eq!(read(&mut s), (b'Z', b"I".to_vec()));
+    query(&mut s, "SELECT 1::int4");
+    query(&mut s, "SET search_path TO public");
+    send(&mut s, b'D', b"Ssame\0");
+    send(&mut s, b'S', &[]);
+    assert_eq!(read(&mut s).0, b't');
+    assert_eq!(read(&mut s).0, b'T');
+    assert_eq!(read(&mut s), (b'Z', b"I".to_vec()));
+    send(&mut s, b'X', &[]);
+    drop(s);
+    service.close();
+    native.execute("DROP TABLE test.reanalysis25").unwrap();
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg_dialect_25_behavior: same Statement Describe invalidation/restoration; original Unicode position, typed parameter/literal, recovery and listener cleanup"
+    );
+}

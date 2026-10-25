@@ -1219,6 +1219,11 @@ fn pg_dialect_23_libpq() {
 }
 
 #[test]
+fn pg_dialect_25_libpq() {
+    pg_dialect_libpq(25);
+}
+
+#[test]
 fn pg_dialect_24_libpq() {
     pg_dialect_libpq(24);
 }
@@ -3214,6 +3219,15 @@ fn pg_dialect_libpq(task: u8) {
         assert!(summary["assertions"].as_u64().unwrap_or_default() > 0);
         assert_eq!(summary["using_gate_cases"], 2);
         assert_eq!(summary["semantic_returning_success"], 0);
+        assert_eq!(summary["cleanup_ok"], true);
+        return;
+    }
+    if task == 25 {
+        assert_eq!(checkpoints, 8);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["unique_effective"], 8);
         assert_eq!(summary["cleanup_ok"], true);
         return;
     }

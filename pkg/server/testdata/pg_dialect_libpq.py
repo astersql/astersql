@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -1323,7 +1323,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25) else None))
     finally:
         clear(result)
 
@@ -5122,6 +5122,216 @@ def lifecycle_handoff():
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     check(done and clean,'completion/cleanup')
     print(json.dumps(summary),flush=True)
+
+def reanalysis_handoff():
+    """Reuse actual named Statements and Portals across search_path changes."""
+    import socket, struct
+    conns, prepared, created, sockets = {}, [], [], []
+    checks = self_checks = eligible = 0
+    done = False
+    clean = True
+    registry = []
+    current = 'setup'
+    scope = 'reanalysis25_'+evidence.name.replace('-','_')
+    sql = '/*中*/ SELECT id,$1::int4 AS arg FROM "'+scope+'"'
+    qualified = '/*中*/ SELECT id,$1::int4 AS arg FROM public."'+scope+'"'
+    def check(ok, message):
+        nonlocal checks
+        checks += 1
+        assert ok, message
+    def record(label, phase, query_sql, result, **extra):
+        archive(current,'aster' if label.startswith('aster') else 'reference' if label.startswith('reference') else label,
+                dict(phase=phase,sql=query_sql,**extra),dict(result,connection=label))
+    def q(label, text_sql):
+        result=query(conns[label],text_sql);record(label,'Q',text_sql,result)
+        return result
+    def setting(label,path):
+        check(q(label,'SET search_path TO '+path)['status']==1,'SET '+label)
+    def recovery(label):
+        if transaction(conns[label]) in (2,3):check(q(label,'ROLLBACK')['status']==1,'rollback')
+        check(q(label,'SELECT 1::int4')['rows']==[['1']] and transaction(conns[label])==0,'same connection recovery '+label)
+    def prep(label, query_sql, name=b'same', oids=(23,)):
+        result=observe(prepare(conns[label],name,query_sql.encode(),len(oids),(c.c_uint*len(oids))(*oids) if oids else None))
+        record(label,'Parse',query_sql,result,statement=name.decode(),parameter_oids=list(oids))
+        check(result['status']==1,'Parse '+label+': '+str(result));prepared.append((label,name))
+    def desc(label,query_sql,name=b'same'):
+        result=observe(describe(conns[label],name));record(label,'Describe',query_sql,result,statement=name.decode());return result
+    def run(label,query_sql,arg='7',name=b'same'):
+        result=observe(exec_prepared(conns[label],name,1,(text*1)(None if arg is None else arg.encode()),None,(integer*1)(0),0))
+        record(label,'Bind/Execute',query_sql,result,statement=name.decode(),arguments=[arg],parameter_formats=[0],result_format=0);return result
+    origins={}
+    def good(label,result,arg='7',description=False):
+        side='reference' if label.startswith('reference') else 'aster'
+        check(result['status']==(1 if description else 2) and result['state']=='' and result['position']=='','success '+label+': '+str(result))
+        check(result['fields']==[['id',23,4,-1],['arg',23,4,-1]] and result['formats']==[0,0],'exact result metadata '+label+': '+str(result))
+        check(result['table_origins']==[[origins[side],1],[0,0]],'physical identity '+label+': '+str(result))
+        if description:check(result['params']==[23] and result['param_count']==1,'parameter metadata')
+        else:check(result['rows']==[['31',arg]] and result['command_tag']=='SELECT 1','value/NULL/row count/tag '+label)
+    def missing(result):return result['status']==7 and result['state']=='42P01' and result['position']==str(sql.index('"')+1)
+    def observers():
+        for label in ['aster_observer','reference_observer']:
+            r=q(label,'SELECT id FROM public."'+scope+'"');check(r['rows']==[['31']],'independent physical table unchanged')
+            r=q(label,'SELECT nspname FROM public.pg_namespace');check(r['rows']==[['user_marker']],'independent shadow table unchanged')
+    def checkpoint():
+        recovery('aster_b');print('PG_DIALECT_CHECKPOINT '+current,flush=True)
+        check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
+        for label in ['aster','aster_b','reference','reference_b']:recovery(label)
+        observers()
+    def wire_portal(label):
+        # Own socket: never bypass libpq's internal buffers. Named portals survive
+        # a SET and Statement revalidation inside this explicit transaction.
+        host,port,user,db=('127.0.0.1',int(sys.argv[2]),'root',sys.argv[3])
+        if label=='reference':
+            host=api('PQhost',text,ptr)(conns[label]).decode();port=int(api('PQport',text,ptr)(conns[label]));user=connection_user(conns[label]).decode();db=api('PQdb',text,ptr)(conns[label]).decode()
+        sock=socket.create_connection((host,port),timeout=10);sockets.append(sock)
+        def exact(n):
+            b=b''
+            while len(b)<n:
+                part=sock.recv(n-len(b));check(bool(part),'wire EOF');b+=part
+            return b
+        def send(t,b):sock.sendall(t+struct.pack('!I',len(b)+4)+b)
+        def receive():
+            h=exact(5);return h[:1],exact(struct.unpack('!I',h[1:])[0]-4)
+        def until(end):
+            messages=[]
+            while True:
+                t,b=receive();messages.append((t,b))
+                if t==end:return messages
+        startup=struct.pack('!I',196608)+b'user\0'+user.encode()+b'\0database\0'+db.encode()+b'\0\0'
+        sock.sendall(struct.pack('!I',len(startup)+4)+startup)
+        start=until(b'Z');check(start[-1][1]==b'I','wire initial idle')
+        settings={b.split(b'\0')[0]:b.split(b'\0')[1] for t,b in start if t==b'S'}
+        check(settings.get(b'client_encoding')==b'UTF8','wire UTF8')
+        def wq(s):
+            send(b'Q',s.encode()+b'\0');messages=until(b'Z');record(label,'Q',s,dict(wire=[(t.decode(),b.hex()) for t,b in messages]));check(not any(t==b'E' for t,b in messages),'wire Q '+s);return messages
+        if label=='reference':wq("SET TIME ZONE 'UTC'")
+        wq('SET search_path TO public');wq('BEGIN')
+        send(b'P',b'pinned\0'+sql.encode()+b'\0'+struct.pack('!HI',1,23));send(b'H',b'');check(receive()==(b'1',b''),'wire Parse')
+        wq("SET search_path TO ''")
+        send(b'D',b'Spinned\0');send(b'S',b'');failed=until(b'Z');record(label,'Describe',sql,dict(wire=[(t.decode(),b.hex()) for t,b in failed]))
+        check([t for t,b in failed if t!=b'S']==[b't',b'E',b'Z'] and failed[0][1]==struct.pack('!HI',1,23) and b'C42P01\0' in failed[1][1] and ('P'+str(sql.index('"')+1)).encode()+b'\0' in failed[1][1] and failed[-1][1]==b'E','Statement invalidation aborts transaction '+label+': '+str(failed))
+        # Rollback would discard the portal. Test its binding on a fresh explicit
+        # transaction, and separately revalidate successfully with a changed but
+        # equivalent effective path while the old portal remains alive.
+        wq('ROLLBACK');wq('SET search_path TO public');wq('BEGIN')
+        send(b'B',b'old\0pinned\0'+struct.pack('!HHI',0,1,1)+b'7'+struct.pack('!H',0));send(b'H',b'');check(receive()==(b'2',b''),'rebind after recovery')
+        wq('SET search_path TO pg_catalog, public')
+        send(b'D',b'Spinned\0');send(b'H',b'');d=receive();t=receive();check(d==(b't',struct.pack('!HI',1,23)) and t[0]==b'T','revalidated Statement description')
+        wq("SET search_path TO ''")
+        send(b'D',b'Pold\0');send(b'E',b'old\0'+struct.pack('!I',0));send(b'S',b'');messages=until(b'Z')
+        record(label,'DescribePortal/Execute',sql,dict(wire=[(t.decode(),b.hex()) for t,b in messages],portal='old'),statement='pinned',arguments=['7'])
+        check([t for t,b in messages]==[b'T',b'D',b'C',b'Z'],'bound portal survives path changes '+label+': '+str(messages))
+        check(messages[1][1]==struct.pack('!HI',2,2)+b'31'+struct.pack('!I',1)+b'7' and messages[2][1]==b'SELECT 1\0' and messages[3][1]==b'T','portal frozen value/tag/transaction')
+        body=messages[0][1];off=2;fields=[]
+        for _ in range(2):
+            end=body.index(b'\0',off);name=body[off:end].decode();oid,col,typ,size,mod,fmt=struct.unpack('!IhIhih',body[end+1:end+19]);fields.append((name,oid,col,typ,size,mod,fmt));off=end+19
+        check(fields==[('id',origins[label],1,23,4,-1,0),('arg',0,0,23,4,-1,0)],'portal actual object/type metadata '+label)
+        wq('ROLLBACK');wq('SELECT 1::int4');send(b'C',b'Spinned\0');send(b'S',b'');check(until(b'Z')==[(b'3',b''),(b'Z',b'I')],'wire close');send(b'X',b'');sock.close();sockets.remove(sock)
+    try:
+        local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference','reference_b','reference_observer','aster','aster_b','aster_observer']:
+            conns[label]=connect((os.environ['PG18_REFERENCE_DSN'] if label.startswith('reference') else local).encode());check(bool(conns[label]) and status(conns[label])==0,'connect '+label)
+            if label.startswith('reference'):check(q(label,"SET TIME ZONE 'UTC'")['status']==1,'UTC')
+            setting(label,'public');check(endpoint(conns[label])['encoding']=='UTF8' and endpoint(conns[label])['timezone']=='UTC','environment')
+        identity=q('reference',"SELECT version(),current_setting('server_version_num')")['rows'][0];check(identity[1]=='180006','exact reference')
+        build=json.loads((evidence/'rust-build.json').read_text());build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,reference=dict(version=identity[0],server_version_num=identity[1]),reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),os=platform.platform(),endpoints={k:endpoint(v) for k,v in conns.items()},storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2));check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
+        bad=copy.deepcopy(provenance);bad['reference_build']['server_version_num']=180004
+        check(not validate_provenance(bad,provenance),'negative provenance');self_checks+=1
+        for label in ['reference','aster']:
+            check(q(label,'CREATE TABLE public."'+scope+'"(id integer)')['status']==1,'create physical table');created.append(label)
+            check(q(label,'INSERT INTO public."'+scope+'" VALUES(31)')['status']==1,'insert')
+            r=q(label,"SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname='"+scope+"'")
+            check(len(r['rows'])==1,'catalog physical identity');origins[label]=int(r['rows'][0][0])
+        shadow_origins={}
+        for label in ['reference','aster']:
+            check(q(label,'CREATE TABLE public.pg_namespace(nspname text)')['status']==1,'shadow create')
+            check(q(label,"INSERT INTO public.pg_namespace VALUES('user_marker')")['status']==1,'shadow insert')
+            r=q(label,"SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname='pg_namespace'")
+            shadow_origins[label]=int(r['rows'][0][0])
+        for index,name in enumerate(['removed_describe','removed_bind','qualified','restored_null','connections','bound_portal','catalog_rebind','fixed_shape']):
+            current=name;source=qualified if name=='qualified' else sql
+            data=dict(case_id=name,capability_id='pg.dialect.prepared.reanalysis',sql=source,phase='Parse/Bind/Describe/Execute',parameter_oids=[23],arguments=[None if name=='restored_null' else '7'],parameter_formats=[0],result_format=0,encoding='UTF8',timezone='UTC',search_path='public -> empty -> public',initial_state='I',object_mapping={k:dict(table='public.'+scope,oid=v,attribute=1) for k,v in origins.items()},roles={k:connection_user(v).decode() for k,v in conns.items()},expected_basis='PostgreSQL18.6 observed Describe/Bind revalidation; bound Portal retains original physical object')
+            registry.append(data);(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+            if name in ('catalog_rebind','fixed_shape'):
+                source=("SELECT 1::integer AS marker" if name=='catalog_rebind' else "SELECT nspname AS nspname")+" FROM pg_namespace WHERE nspname='pg_catalog'"
+                data.update(sql=source,parameter_oids=[],arguments=[],parameter_formats=[],search_path='public, pg_catalog -> pg_catalog, public',object_mapping={'catalog':dict(oid=2615,attribute=2),'public':shadow_origins})
+                (evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+                for label in ['reference','aster']:
+                    setting(label,'public, pg_catalog');prep(label,source,oids=())
+                    result=desc(label,source);check(result['fields']==([['marker',23,4,-1]] if name=='catalog_rebind' else [['nspname',25,-1,-1]]) and result['params']==[] and result['table_origins']==([[0,0]] if name=='catalog_rebind' else [[shadow_origins[label],1]]),'initial user table binding')
+                    first=observe(exec_prepared(conns[label],b'same',0,None,None,None,0));record(label,'Bind/Execute',source,first)
+                    check(first['rows']==[] and first['command_tag']=='SELECT 0','user object rows')
+                    setting(label,'pg_catalog, public');result=desc(label,source)
+                    if name=='fixed_shape':
+                        check(result['state']=='0A000' and result['status']==7 and result['position']=='','PG fixed-result contract '+label+': '+str(result))
+                        recovery(label)
+                    else:
+                        check(result['status']==1 and result['fields']==[['marker',23,4,-1]] and result['params']==[] and result['formats']==[0] and result['table_origins']==[[0,0]],'catalog rebind type/identity '+label+': '+str(result))
+                        result=observe(exec_prepared(conns[label],b'same',0,None,None,None,0));record(label,'Bind/Execute',source,result)
+                        check(result['status']==2 and result['rows']==[['1']] and result['fields']==[['marker',23,4,-1]] and result['table_origins']==[[0,0]] and result['command_tag']=='SELECT 1','changed physical object/value '+label+': '+str(result))
+                    setting(label,'public, pg_catalog');result=desc(label,source)
+                    check(result['status']==1 and result['table_origins']==([[0,0]] if name=='catalog_rebind' else [[shadow_origins[label],1]]),'restored user object')
+                    restored=observe(exec_prepared(conns[label],b'same',0,None,None,None,0));record(label,'Bind/Execute',source,restored);check(restored['status']==2 and restored['rows']==[] and restored['command_tag']=='SELECT 0','restored physical object execution')
+                    check(observe(close_prepared(conns[label],b'same'))['status']==1,'Close');prepared.remove((label,b'same'))
+            elif name=='bound_portal':
+                for label in ['reference','aster']:wire_portal(label)
+            else:
+                outputs={}
+                for label in (['reference','aster'] if index%2 else ['aster','reference']):
+                    setting(label,'public');prep(label,source);good(label,desc(label,source),description=True)
+                    setting(label,"''")
+                    if name=='qualified':good(label,desc(label,source),description=True);good(label,run(label,source))
+                    else:
+                        result=desc(label,source) if name in ('removed_describe','connections') else run(label,source)
+                        check(missing(result),'original SQL reanalysis diagnostic '+label+': '+str(result))
+                        for key,val in [('state','XX000'),('position','1')]:
+                            bad=copy.deepcopy(result);bad[key]=val;check(not missing(bad),'diagnostic negative '+key);self_checks+=1
+                        if name=='connections':
+                            other=label+'_b';setting(other,'public');prep(other,source);good(other,run(other,source));recovery(other)
+                        recovery(label);setting(label,'missing, public');good(label,desc(label,source),description=True)
+                        good(label,run(label,source,None if name=='restored_null' else '7'),None if name=='restored_null' else '7')
+                    outputs[label]=desc(label,source);good(label,outputs[label],description=True)
+                    check(observe(close_prepared(conns[label],b'same'))['status']==1,'Close');prepared.remove((label,b'same'))
+                check(compare_metadata(outputs['aster'],outputs['reference'],'describe'),'Describe differential')
+                bad=copy.deepcopy(outputs['aster']);bad['fields'][0][1]=20;check(not compare_metadata(bad,outputs['reference'],'describe'),'metadata negative');self_checks+=1
+            checkpoint();eligible+=1
+        # Independent MySQL reference freezes its own prepared binding and types.
+        current='mysql_reference';parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql(sql):
+            p=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            result=dict(sql=sql,code=p.returncode,output=p.stdout.splitlines(),error=p.stderr);record('mysql','Q',sql,result);return result
+        db='mysql_'+scope
+        try:
+            r=mysql('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; CREATE DATABASE '+db+'; CREATE TABLE '+db+'.t(id INT); INSERT INTO '+db+'.t VALUES(31)');check(r['code']==0,'MySQL fixture')
+            for case in registry:
+                current=case['case_id'];r=mysql('USE '+db+"; PREPARE s FROM 'SELECT id FROM t WHERE id=?'; SET @v=31; EXECUTE s USING @v; DEALLOCATE PREPARE s; SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE FROM information_schema.columns WHERE TABLE_SCHEMA='"+db+"' AND TABLE_NAME='t'")
+                check(r['code']==0 and r['output']==['31','int\tint\tYES'],'MySQL own prepared value/type')
+                r=mysql('SET search_path TO public');check(r['code']!=0 and '1064 (42000)' in r['error'],'MySQL independent PG syntax error')
+        finally:clean=mysql('DROP DATABASE IF EXISTS '+db)['code']==0 and clean
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest();final['client']['sha256']=hashlib.sha256(library.read_bytes()).hexdigest();final['reference_build']=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        check(validate_provenance(provenance,final),'stable source/build/reference/client');done=True
+    finally:
+        for sock in sockets:sock.close()
+        for label,name in prepared:
+            if transaction(conns[label]) in (2,3):clean=q(label,'ROLLBACK')['status']==1 and clean
+            clean=observe(close_prepared(conns[label],name))['status']==1 and clean
+        for label in reversed(created):
+            clean=q(label,'DROP TABLE IF EXISTS public.pg_namespace')['status']==1 and clean
+            clean=q(label,'DROP TABLE IF EXISTS public."'+scope+'"')['status']==1 and clean
+        for conn in conns.values():
+            if conn:
+                if transaction(conn) in (2,3):clean=query(conn,'ROLLBACK')['status']==1 and clean
+                clean=query(conn,'RESET search_path')['status']==1 and clean;finish(conn)
+        summary=dict(cases=8,assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,prepare_cases=8 if done and clean else 0,describe_cases=8 if done and clean else 0,execute_cases=8 if done and clean else 0,libpq_cases=7,named_portal_cases=1,mysql_reference_cases=8 if done else 0,cleanup_ok=clean)
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    check(done and clean,'completion/cleanup');print(json.dumps(summary),flush=True)
+
+if task == 25:
+    reanalysis_handoff()
+    sys.exit(0)
 
 if task == 17:
     excluded_handoff()
