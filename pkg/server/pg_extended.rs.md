@@ -121,8 +121,12 @@ OID701文本参数改为复用pg_cast_float8，保持原合法值和溢出/下�
 
 ## bytea hex 输入
 
-OID17文本参数允许\\x后的字节对之间及首尾出现空格、tab、LF、CR；逐对解码，半字节内部空白、奇数及非法数字仍为22P02。空hex保留空bytes，00/ff及前后零不做字符转换。UTF8/NUL检查仍在解码前执行（22021），NULL独立处理。
+OID17文本参数允许\\x后的字节对之间及首尾出现空格、tab、LF、CR；逐对解码，半字节内部空白、奇数及非法数字返回22023。空hex保留空bytes，00/ff及前后零不做字符转换。UTF8/NUL检查仍在解码前执行（22021），NULL独立处理。
 
 ## bytea escape 文本输入
 
 OID 17 的文本 Bind 保留 hex 解码，并支持普通 UTF-8 字节、双反斜线和三位八进制 000–377。非法或截断 escape 返回 22P02；原始 NUL/非法 UTF-8 仍返回 22021，解码后的任意字节允许进入既有 bytea 桥接。`pg_extended_test::pg_scalar_26` 通过真实 TCP 验证值、NULL、描述、拒绝写入和恢复，以及 MySQL 隔离。
+
+## bytea 真实客户端差分诊断
+
+PostgreSQL 18.6/libpq 实测要求非法 hex 字符及不完整字节对返回 `22023`；OID 17 文本 Bind 的 hex 分支保留这一诊断，escape 格式错误仍为 `22P02`，无效 UTF-8/NUL 文本仍为 `22021`。`pg_scalar_28` 独立双端差分与 `pg_scalar_25` 协议拒绝/恢复回归覆盖此局部修正。

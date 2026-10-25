@@ -6077,9 +6077,9 @@ fn pg_scalar_25() {
     assert_eq!(read(&mut socket).0, b'1');
     for transaction in [false, true] {
         for (input, state) in [
-            (b"\\x0 0".as_slice(), "22P02"),
-            (b"\\x0", "22P02"),
-            (b"\\xgg", "22P02"),
+            (b"\\x0 0".as_slice(), "22023"),
+            (b"\\x0", "22023"),
+            (b"\\xgg", "22023"),
             (b"\\x00\0", "22021"),
             (b"\\x\xff", "22021"),
         ] {

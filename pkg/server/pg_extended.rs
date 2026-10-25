@@ -363,15 +363,16 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
         17 => {
             let mut bytes = Vec::new();
             if let Some(hex) = text.strip_prefix("\\x") {
+                let invalid_hex = || error("22023", "invalid hexadecimal bytea input");
                 let mut digits = hex.bytes();
                 while let Some(high) = digits.next() {
                     // PostgreSQL permits whitespace only between complete bytes.
                     if matches!(high, b' ' | b'\t' | b'\n' | b'\r') {
                         continue;
                     }
-                    let high = (high as char).to_digit(16).ok_or_else(invalid)?;
-                    let low = digits.next().ok_or_else(invalid)?;
-                    let low = (low as char).to_digit(16).ok_or_else(invalid)?;
+                    let high = (high as char).to_digit(16).ok_or_else(invalid_hex)?;
+                    let low = digits.next().ok_or_else(invalid_hex)?;
+                    let low = (low as char).to_digit(16).ok_or_else(invalid_hex)?;
                     bytes.push((high * 16 + low) as u8);
                 }
             } else {

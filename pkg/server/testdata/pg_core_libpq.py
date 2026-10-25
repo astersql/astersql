@@ -1134,6 +1134,223 @@ def float20_differential(aster_dsn):
     print('float20 differential:',json.dumps(summary),flush=True)
 
 
+def bytea28_differential(aster_dsn):
+    """Bytea family only: collect each endpoint independently before comparison."""
+    import copy
+    import hashlib
+    import json
+    import signal
+    import time
+    import resource
+    from pathlib import Path
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    name = api('PQfname', text, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    transaction = api('PQtransactionStatus', integer, ptr)
+    evidence = Path(os.environ['PG_BYTEA28_EVIDENCE_DIR'])
+    reference = os.environ['PG18_REFERENCE_DSN']
+    table = f'public.pg_bytea28_{os.getpid()}'
+    observations = {}
+    cleanup = {}
+    resources = {}
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('bytea28 client interrupted')
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    def observe(result, phase):
+        assert result
+        try:
+            state = ef(result, ord('C'))
+            if state == b'XX000':
+                print('bytea28 internal error:',result_error(result).decode(),flush=True)
+            return dict(phase=phase, status=result_status(result),
+                        sqlstate=state.decode() if state else None,
+                        metadata=[(name(result,i).decode(),field_type(result,i),size(result,i),mod(result,i)) for i in range(columns(result))],
+                        parameters=[pt(result,i) for i in range(np(result))],
+                        rows=[[None if is_null(result,r,i) else value(result,r,i).decode() for i in range(columns(result))] for r in range(rows(result))])
+        finally:
+            clear(result)
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn)==0, f'{side} connection failed'
+        collected = {}
+        resources[side] = {}
+        def q(case, sql, state=None, command=False):
+            started = time.perf_counter()
+            result = observe(execute(conn,sql.encode()), 'query')
+            if len(sql)>1000 or case.startswith('max-'):
+                resources[side][case] = {'elapsed_seconds':time.perf_counter()-started,'input_bytes':len(sql.encode()),'python_maxrss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'maxrss_unit':'bytes on macOS, KiB on Linux'}
+            result['input'] = sql
+            collected[case] = result
+            assert result['status']==(7 if state else 1 if command else 2), (side,case,result)
+            assert result['sqlstate']==state, (side,case,result)
+            return result
+        try:
+            if side=='reference':
+                identity=q('identity', "SELECT version(), current_setting('server_version_num')")
+                assert identity['rows'][0][1]=='180006', 'exact PostgreSQL 18.6 required'
+                (evidence/'reference-identity.json').write_text(json.dumps(collected.pop('identity')))
+                build_path=Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE'])
+                build=json.loads(build_path.read_text())
+                assert hashlib.sha256(Path(build['artifact_path']).read_bytes()).hexdigest()==build['artifact_sha256']
+                (evidence/'reference-build.json').write_text(json.dumps(build))
+                (evidence/'client.json').write_text(json.dumps({'version':version(),'sha256':hashlib.sha256(Path(library).read_bytes()).hexdigest()}))
+            q('create',f'CREATE TABLE {table} (id INT PRIMARY KEY, b BYTEA)',command=True)
+            empty=q('empty',f'SELECT b FROM {table}')
+            assert empty['rows']==[] and empty['metadata']==[('b',17,-1,-1)]
+            inputs=[('',b''),(None,None),(r'\x00ff00',bytes([0,255,0])),
+                    (r'\000\377\000',bytes([0,255,0])),(r'a\\z',b'a\\z'),
+                    (r'\303\050',bytes([195,40])),(r'\x00000100',bytes([0,0,1,0]))]
+            def canonical(raw):
+                return None if raw is None else '\\x'+raw.hex()
+            inputs.append(('\\x'+bytes(range(256)).hex(),bytes(range(256))))
+            # Reuse the OID17 parameter interface delivered by tasks 25–27.
+            for declared in [17]:
+                statement=f'bytea28_{declared}'.encode()
+                key=f'prepare-{declared}'
+                collected[key]=observe(prepare(conn,statement,b'SELECT $1 AS n',1,(c.c_uint*1)(declared) if declared else None),'prepare')
+                assert collected[key]['status']==1
+                desc=observe(describe(conn,statement),'describe')
+                collected[f'describe-{declared}']=desc
+                assert desc['parameters']==[17] and desc['metadata']==[('n',17,-1,-1)]
+                for i,(item,raw) in enumerate(inputs):
+                    for encoding,encoded in [('input',item),('canonical',canonical(raw))]:
+                        result=observe(prepared(conn,statement,1,(text*1)(None if encoded is None else encoded.encode()),None,None,0),'execute')
+                        collected[f'param-{declared}-{i}-{encoding}']=result
+                        assert result['status']==2 and result['rows']==[[canonical(raw)]],(side,i,result)
+                        assert result['metadata']==[('n',17,-1,-1)]
+            for i,(item,raw) in enumerate(inputs):
+                result=observe(params(conn,b'SELECT $1 AS n',1,(c.c_uint*1)(17),(text*1)(None if item is None else item.encode()),None,None,0),'execute')
+                collected[f'direct-{i}']=result
+                assert result['rows']==[[canonical(raw)]] and result['metadata']==[('n',17,-1,-1)]
+                result=observe(params(conn,f'INSERT INTO {table} VALUES ({i},$1)'.encode(),1,(c.c_uint*1)(17),(text*1)(None if item is None else item.encode()),None,None,0),'execute')
+                collected[f'write-{i}']=result
+                assert result['status']==1
+            read=q('read',f'SELECT b FROM {table} ORDER BY id')
+            assert read['rows']==[[canonical(raw)] for _,raw in inputs]
+            # Capture reference escape output, then rebind those bytes on both sides.
+            # AsterSQL's bytea_output session setting belongs to the session workflow.
+            if side=='reference':
+                clear(execute(conn,b"SET bytea_output='escape'"))
+                escape_rows=observe(execute(conn,f'SELECT b FROM {table} ORDER BY id'.encode()),'query')['rows']
+                (evidence/'reference-escape.json').write_text(json.dumps(escape_rows))
+                clear(execute(conn,b"SET bytea_output='hex'"))
+            for i,([encoded],(_,raw)) in enumerate(zip(escape_rows,inputs)):
+                result=observe(prepared(conn,b'bytea28_17',1,(text*1)(None if encoded is None else encoded.encode()),None,None,0),'execute')
+                collected[f'escape-output-rebind-{i}']=result
+                assert result['rows']==[[canonical(raw)]] and result['status']==2
+            for i,(item,error_state) in enumerate([(r'\x0','22023'),(r'\xgg','22023'),(r'\400','22P02'),(r'\08','22P02'),(r'\q','22P02'),('\\','22P02')]):
+                assert q(f'recover-literal-{i}','SELECT 1 AS n')['rows']==[['1']]
+                result=observe(params(conn,f'INSERT INTO {table} VALUES (99,$1)'.encode(),1,(c.c_uint*1)(17),(text*1)(item.encode()),None,None,0),'bind')
+                collected[f'reject-write-{i}']=result
+                assert result['status']==7 and result['sqlstate']==error_state,(side,i,result)
+                assert q(f'no-write-{i}',f'SELECT b FROM {table} ORDER BY id')['rows']==read['rows']
+            import socket, struct
+            pq_socket=api('PQsocket',integer,ptr)
+            raw_conn=connect(dsn.encode())
+            assert raw_conn and status(raw_conn)==0
+            raw=socket.socket(fileno=os.dup(pq_socket(raw_conn)))
+            original_blocking=os.get_blocking(pq_socket(raw_conn))
+            raw.settimeout(10)
+            def frame(tag,payload):
+                return tag+struct.pack('!I',len(payload)+4)+payload
+            def exact(n):
+                data=b''
+                while len(data)<n:
+                    part=raw.recv(n-len(data))
+                    assert part
+                    data+=part
+                return data
+            try:
+                for oid in [17]:
+                    parse=b'\x00SELECT $1 AS n\x00'+struct.pack('!HI',1,oid)
+                    bind=b'\x00\x00'+struct.pack('!HHI',0,1,0)+struct.pack('!H',0)
+                    raw.sendall(frame(b'P',parse)+frame(b'B',bind)+frame(b'D',b'P\x00')+frame(b'E',b'\x00'+struct.pack('!I',0))+frame(b'S',b''))
+                    portal=[]
+                    while True:
+                        tag=exact(1)
+                        body=exact(struct.unpack('!I',exact(4))[0]-4)
+                        if tag==b'T':
+                            assert struct.unpack('!H',body[:2])[0]==1
+                            offset=body.index(b'\x00',2)+1
+                            _,_,actual_oid,width,modifier,fmt=struct.unpack('!IHIhih',body[offset:])
+                            assert (actual_oid,width,modifier,fmt)==(oid,-1,-1,0)
+                            portal.append(['metadata',actual_oid,width,modifier,fmt])
+                        elif tag==b'D':
+                            assert body==struct.pack('!HI',1,2)+b'\\x'
+                            portal.append(['empty','\\x'])
+                        elif tag==b'E':
+                            raise AssertionError((side,oid,body))
+                        if tag==b'Z':break
+                    assert len(portal)==2
+                    collected[f'portal-{oid}']=portal
+                    for i,(payload,expected_state) in enumerate([(b'a\x00z','22021'),(b'\xff','22021'),(b'\xc3','22021'),(b'\\x0','22023'),(b'\\xgg','22023'),(b'\\400','22P02'),(b'\\q','22P02')]):
+                        parse=b'\x00SELECT $1 AS n\x00'+struct.pack('!HI',1,oid)
+                        bind=b'\x00\x00'+struct.pack('!HHI',0,1,len(payload))+payload+struct.pack('!H',0)
+                        raw.sendall(frame(b'P',parse)+frame(b'B',bind)+frame(b'E',b'\x00'+struct.pack('!I',0))+frame(b'S',b''))
+                        tags=[]
+                        error_state=None
+                        while True:
+                            tag=exact(1)
+                            body=exact(struct.unpack('!I',exact(4))[0]-4)
+                            tags.append(tag.decode())
+                            if tag==b'E':
+                                error_state=next(x[1:].decode() for x in body.split(b'\x00') if x.startswith(b'C'))
+                            if tag==b'Z':
+                                assert body==b'I'
+                                break
+                        observed={'tags':tags,'sqlstate':error_state,'phase':'bind'}
+                        collected[f'raw-{oid}-{i}']=observed
+                        assert tags==['1','E','Z'] and error_state==expected_state,(side,oid,i,observed)
+                        recovered=observe(execute(raw_conn,b'SELECT 1 AS n'),'query')
+                        assert recovered['rows']==[['1']]
+                        collected[f'raw-sync-{oid}-{i}']=recovered
+            finally:
+                raw.setblocking(original_blocking)
+                raw.close()
+                finish(raw_conn)
+            q('begin','BEGIN',command=True)
+            result=observe(params(conn,f'INSERT INTO {table} VALUES (99,$1)'.encode(),1,(c.c_uint*1)(17),(text*1)(b'\\xgg'),None,None,0),'bind')
+            collected['transaction-error']=result
+            assert result['status']==7 and result['sqlstate']=='22023'
+            assert transaction(conn)==3
+            q('failed-transaction','SELECT 1',state='25P02')
+            q('rollback','ROLLBACK',command=True)
+            assert transaction(conn)==0
+            assert q('rollback-recovery',f'SELECT b FROM {table} ORDER BY id')['rows']==read['rows']
+            if side=='aster':
+                print('PG_BYTEA28_MID',flush=True)
+                assert sys.stdin.readline().strip()=='continue'
+            observations[side]=collected
+        finally:
+            (evidence/f'{side}.json').write_text(json.dumps(collected,sort_keys=True))
+            try:
+                clear(execute(conn,b'ROLLBACK'))
+                result=observe(execute(conn,f'DROP TABLE IF EXISTS {table}'.encode()),'cleanup')
+                cleanup[side]=result['status']==1
+            finally:
+                finish(conn)
+                (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+                (evidence/'resources.json').write_text(json.dumps(resources))
+    assert observations['aster']==observations['reference'], next(((k,observations['aster'].get(k),v) for k,v in observations['reference'].items() if observations['aster'].get(k)!=v),'different cases')
+    for field,replacement in [('rows',[['perturbed']]),('metadata',[('n',999,2,-1)]),('sqlstate','XXXXX')]:
+        changed=copy.deepcopy(observations['aster'])
+        changed['direct-0'][field]=replacement
+        assert changed!=observations['reference'],field
+    assert all(cleanup.values()) and len(cleanup)==2
+    summary={'cases':len(observations['aster']),'negative_controls':3,'cleanup':cleanup,'target_version':'18.6'}
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('bytea28 differential:',json.dumps(summary),flush=True)
+
+
+
 def text24_differential(aster_dsn):
     """Float family only: collect each endpoint independently before comparison."""
     import copy
@@ -1447,6 +1664,9 @@ conninfo = (
     f"host=127.0.0.1 port={int(sys.argv[1])} user=root dbname={sys.argv[2]} "
     "sslmode=disable gssencmode=disable connect_timeout=5"
 )
+if len(sys.argv) > 3 and sys.argv[3] == "bytea28-differential":
+    bytea28_differential(conninfo)
+    sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "text24-differential":
     text24_differential(conninfo)
     sys.exit(0)
