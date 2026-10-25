@@ -152,3 +152,7 @@ PG OID701准备描述保留DOUBLE类型；已验证参数通过既有CAST(... AS
 ## 2026-10-26 文本族身份边界（任务21）
 
 协议准备保留显式文本参数的身份；执行沿已有参数字面量绑定器加入类型化 CAST，避免 text/varchar/bpchar 在 NULL或空值中丢失身份。
+
+## bytea 参数描述
+
+PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collation 的 Blob FieldType，保持 Statement/Portal 描述为 17/-1/-1，不能退回 text。该分支仅作用于 PostgreSQL supplied OID，与 MySQL 无关。

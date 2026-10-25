@@ -216,3 +216,9 @@ PostgreSQLFloat8行表达式Cast使用pg_float8_relational_value，复用pg_cast
 ### 2026-10-26 定长文本（任务23）
 
 pg_text_relational_cast 从现有 PgCastTable 与 AST 取得源类型，调用共享 pg_text_cast；pg_varchar_relational_value 继续承担列赋值，扩展覆盖 bpchar 补空格。
+
+## bytea hex 输入的局部接线
+
+二进制字符串 CAST 的关系类型推断保留 AST 中的 binary charset，避免 OID 17 参数通过既有 BINARY 绑定后被推断为 text。值路径仍使用原始字节的 hex marker，不引入字符解码。回归位于 relational_value_test.rs::pg_scalar_25_bytea_prepared_identity。
+
+`binary_cast_literal_value`仅对binary字符串CAST内的HexLiteral/Bytes生成既有字节marker，保留空序列、00/ff和前后零；不把0x展示文本当值。query消费者同步复用。

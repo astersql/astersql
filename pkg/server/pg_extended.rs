@@ -364,18 +364,18 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             let hex = text
                 .strip_prefix("\\x")
                 .ok_or_else(|| error("0A000", "only hex bytea parameters are supported"))?;
-            if hex.len() % 2 != 0 {
-                return Err(invalid());
+            let mut digits = hex.bytes();
+            let mut bytes = Vec::new();
+            while let Some(high) = digits.next() {
+                // PostgreSQL permits whitespace only between complete bytes.
+                if matches!(high, b' ' | b'\t' | b'\n' | b'\r') {
+                    continue;
+                }
+                let high = (high as char).to_digit(16).ok_or_else(invalid)?;
+                let low = digits.next().ok_or_else(invalid)?;
+                let low = (low as char).to_digit(16).ok_or_else(invalid)?;
+                bytes.push((high * 16 + low) as u8);
             }
-            let bytes = hex
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|pair| {
-                    let a = (pair[0] as char).to_digit(16).ok_or_else(invalid)?;
-                    let b = (pair[1] as char).to_digit(16).ok_or_else(invalid)?;
-                    Ok((a * 16 + b) as u8)
-                })
-                .collect::<Result<Vec<_>>>()?;
             (252, bytes)
         }
         1082 | 1083 | 1114 => temporal(oid, text)?,

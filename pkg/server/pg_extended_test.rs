@@ -5985,3 +5985,126 @@ fn pg_scalar_23() {
         "pg_scalar_23: 15 casts, 3 NULL/zero-row/statement/portal lifecycles with 6 parameter executions, 6 invalid modifier cases, 4 assignments with column text/varchar conversion, 2 Execute errors/Sync/ROLLBACK/no-write, atomic insert and update rejection, default char declaration, 3 MySQL checkpoints"
     );
 }
+
+#[test]
+fn pg_scalar_25() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain.clone(), Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(&mut mysql, "CREATE TABLE hex25_mysql (v VARBINARY(4))");
+    mysql_query(&mut mysql, "INSERT INTO hex25_mysql VALUES (X'00aaff00')");
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT v FROM hex25_mysql");
+        assert_eq!(mysql_read(socket), vec![1]);
+        let metadata = mysql_read(socket);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x04\x00\xaa\xff\x00");
+        assert_eq!(&mysql_read(socket)[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        metadata
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    let describe = |m: &(u8, Vec<u8>)| {
+        assert_eq!(m.0, b'T', "{m:?}");
+        let offset = 3 + m.1[2..].iter().position(|b| *b == 0).unwrap();
+        assert_eq!(&m.1[offset + 6..offset + 10], &17u32.to_be_bytes());
+        assert_eq!(&m.1[offset + 10..offset + 12], &(-1i16).to_be_bytes());
+        assert_eq!(&m.1[offset + 12..offset + 16], &(-1i32).to_be_bytes());
+    };
+    query(&mut socket, "CREATE TABLE public.hex25 (v bytea)");
+    describe(&query(&mut socket, "SELECT v FROM public.hex25 WHERE FALSE")[0]);
+    parse(&mut socket, "hex25", "SELECT $1", &[17]);
+    assert_eq!(read(&mut socket).0, b'1');
+    send(&mut socket, b'D', b"Shex25\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [1i16.to_be_bytes().as_slice(), &17u32.to_be_bytes()].concat()
+        )
+    );
+    describe(&read(&mut socket));
+    for (input, expected) in [
+        (Some("\\x"), Some("\\x")),
+        (Some("\\x00aAff00"), Some("\\x00aaff00")),
+        (Some("\\x 00\tAA\nff\r00 "), Some("\\x00aaff00")),
+        (Some("\\x \t\n\r"), Some("\\x")),
+        (None, None),
+    ] {
+        bind(&mut socket, "", "hex25", &[input]);
+        assert_eq!(read(&mut socket).0, b'2', "{input:?}");
+        send(&mut socket, b'D', b"P\0");
+        describe(&read(&mut socket));
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[expected])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+    }
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    parse(
+        &mut socket,
+        "write25",
+        "INSERT INTO public.hex25 VALUES ($1)",
+        &[17],
+    );
+    assert_eq!(read(&mut socket).0, b'1');
+    for transaction in [false, true] {
+        for (input, state) in [
+            (b"\\x0 0".as_slice(), "22P02"),
+            (b"\\x0", "22P02"),
+            (b"\\xgg", "22P02"),
+            (b"\\x00\0", "22021"),
+            (b"\\x\xff", "22021"),
+        ] {
+            if transaction {
+                query(&mut socket, "BEGIN");
+            }
+            bind_formats(&mut socket, "write25", &[0], &[Some(input)]);
+            assert_state(&read(&mut socket), state);
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                read(&mut socket),
+                (b'Z', vec![if transaction { b'E' } else { b'I' }])
+            );
+            if transaction {
+                query(&mut socket, "ROLLBACK");
+            }
+            assert_eq!(
+                query(&mut socket, "SELECT count(*) FROM public.hex25")[1],
+                (b'D', row(&[Some("0")]))
+            );
+        }
+    }
+    query(&mut socket, "DROP TABLE public.hex25");
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    eprintln!(
+        "pg_scalar_25: 5 value/NULL cases, zero-row and statement/portal metadata, 10 Bind rejection/Sync/ROLLBACK/no-write cases, 3 MySQL checkpoints"
+    );
+}

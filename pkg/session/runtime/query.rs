@@ -1257,6 +1257,12 @@ impl ConcreteSession {
                         return result;
                     }
                 }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && let Some(value) =
+                        super::relational_value::binary_cast_literal_value(Expr, Tp)
+                {
+                    return Ok(Some(value));
+                }
                 if Tp.PostgreSQLTextOid().is_some() {
                     return pg_text_relational_cast(
                         Expr,

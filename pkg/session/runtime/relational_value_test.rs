@@ -698,3 +698,32 @@ fn pg_scalar_23_bpchar_relational() {
     pg.execute("DROP TABLE pg_scalar_23_varchar").unwrap();
     pg.execute("DROP TABLE pg_scalar_23_row").unwrap();
 }
+
+#[test]
+fn pg_scalar_25_bytea_prepared_identity() {
+    use crate::runtime::{ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let (id, count, fields) = pg
+        .prepare_protocol_statement_with_parameter_types("SELECT ?", &[17])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(fields[0].column.FieldType.GetCharset(), "binary");
+    for bytes in [vec![], vec![0, 170, 255, 0]] {
+        let mut result = pg
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Bytes(bytes.clone())])
+            .unwrap();
+        let field = &result[0].result_fields()[0]
+            .as_ref()
+            .unwrap()
+            .column
+            .FieldType;
+        assert_eq!(field.GetCharset(), "binary");
+        let expected = format!(
+            "__astersql_binary_hex__:{}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        assert_eq!(result[0].next_row().unwrap().unwrap()[0], expected);
+    }
+}

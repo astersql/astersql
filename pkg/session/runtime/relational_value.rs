@@ -1300,6 +1300,9 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
+            if let Some(value) = binary_cast_literal_value(Expr, Tp) {
+                return Ok(Some(value));
+            }
             if Tp.PostgreSQLTextOid().is_some() {
                 return pg_text_relational_cast(
                     Expr,
@@ -2649,6 +2652,31 @@ pub(super) fn expression_contains_cast(expression: &ast::ExprNode) -> bool {
     }
 }
 
+pub(super) fn binary_cast_literal_value(
+    expression: &ast::ExprNode,
+    target: &astersql_parser_types::types::FieldType,
+) -> Option<String> {
+    if target.GetCharset() != "binary"
+        || !matches!(
+            target.GetType(),
+            astersql_parser_mysql::r#type::TypeString
+                | astersql_parser_mysql::r#type::TypeVarString
+        )
+    {
+        return None;
+    }
+    let ast::ExprKind::Value(value) = &expression.Kind else {
+        return None;
+    };
+    let (ast::ValueDatum::HexLiteral(bytes) | ast::ValueDatum::Bytes(bytes)) = &value.Datum else {
+        return None;
+    };
+    Some(format!(
+        "__astersql_binary_hex__:{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ))
+}
+
 pub(super) fn relational_expression_type(
     expression: &ast::ExprNode,
     table: &astersql_meta_model::TableInfo,
@@ -2682,6 +2710,12 @@ pub(super) fn relational_expression_type(
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }
             if Tp.PostgreSQLTextOid().is_some()
+                || (Tp.GetCharset() == "binary"
+                    && matches!(
+                        Tp.GetType(),
+                        astersql_parser_mysql::r#type::TypeString
+                            | astersql_parser_mysql::r#type::TypeVarString
+                    ))
                 || Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
         {
             Tp.clone()

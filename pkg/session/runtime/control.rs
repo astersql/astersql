@@ -1791,7 +1791,7 @@ impl ConcreteSession {
         let has_scalar_parameters = self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && supplied
                 .iter()
-                .any(|oid| matches!(oid, 16 | 21 | 25 | 1042 | 1043 | 700 | 701));
+                .any(|oid| matches!(oid, 16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701));
         let constructor_oids = array_oids
             .iter()
             .copied()
@@ -1840,8 +1840,10 @@ impl ConcreteSession {
                             .iter()
                             .position(|marker| marker.offset == Offset)
                             .and_then(|index| supplied.get(index));
-                        if let Some(oid @ (16 | 21 | 25 | 1042 | 1043 | 700 | 701)) = oid {
-                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 701 {
+                        if let Some(oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701)) = oid {
+                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
+                                astersql_parser_mysql::r#type::TypeBlob
+                            } else if *oid == 701 {
                                 astersql_parser_mysql::r#type::TypeDouble
                             } else if *oid == 700 {
                                 astersql_parser_mysql::r#type::TypeFloat
@@ -1852,6 +1854,10 @@ impl ConcreteSession {
                             } else {
                                 astersql_parser_mysql::r#type::TypeShort
                             });
+                            if *oid == 17 {
+                                tp.SetCharset("binary".into());
+                                tp.SetCollate("binary".into());
+                            }
                             if matches!(*oid, 25 | 1042 | 1043) {
                                 tp.SetPostgreSQLTextOid(*oid);
                                 tp.SetCharset("utf8mb4".into());
@@ -1898,7 +1904,7 @@ impl ConcreteSession {
                     let mut oids = constructor_oids;
                     oids.resize(supplied.len(), 0);
                     for (oid, supplied) in oids.iter_mut().zip(supplied) {
-                        if matches!(*supplied, 16 | 21 | 25 | 1042 | 1043 | 700 | 701) {
+                        if matches!(*supplied, 16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701) {
                             *oid = *supplied;
                         }
                     }
@@ -2014,6 +2020,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&17) {
+                    return Ok(format!("CAST({literal} AS BINARY)"));
+                }
                 // Reuse the typed SQL binder so empty strings and NULL retain
                 // the prepared text identity rather than being inferred anew.
                 if let Some(oid @ (25 | 1042 | 1043)) = constructor_oids.get(index) {

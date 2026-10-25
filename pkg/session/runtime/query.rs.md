@@ -188,3 +188,7 @@ PostgreSQLFloat8关系查询Cast分支复用pg_float8_relational_value，与写�
 文本 CAST 与零行/NULL 长度校验覆盖 bpchar；通过现有 PgCastTable 绑定类型判断源身份。INSERT SELECT 在构造值 AST 时保留来源 bpchar 身份，供目标赋值转换使用。
 
 派生表 bpchar 输出以已绑定投影别名作为后续源列名，保证 `SELECT x::text FROM (SELECT v AS x ...)` 的转换使用实际 bpchar 类型。
+
+## bytea hex 输入接线
+
+PostgreSQL既有参数绑定使用binary CAST承载OID17。对该CAST内的HexLiteral/Bytes直接保留原始字节marker，不能使用ValueExpr.text()的0x展示字符串作为实际字节。与relational_value消费者共用binary_cast_literal_value。
