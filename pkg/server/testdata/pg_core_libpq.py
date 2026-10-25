@@ -688,10 +688,111 @@ def integer_differential(aster_dsn):
                     assert summary['passed'], 'incomplete differential evidence'
 
 
+def boolean_differential(aster_dsn):
+    """Compare independently collected text bool observations; never infer a side."""
+    import copy
+    import json
+    prepare = api("PQprepare", ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api("PQdescribePrepared", ptr, ptr, text)
+    prepared = api("PQexecPrepared", ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api("PQfsize", integer, ptr, integer)
+    mod = api("PQfmod", integer, ptr, integer)
+    name = api("PQfname", text, ptr, integer)
+    np = api("PQnparams", integer, ptr)
+    pt = api("PQparamtype", c.c_uint, ptr, integer)
+    ef = api("PQresultErrorField", text, ptr, integer)
+    observations = {}
+    table = f"public.pg_bool_{os.getpid()}"
+    reference = os.environ.get("PG18_REFERENCE_DSN")
+    assert reference, "PG18_REFERENCE_DSN is required (no skip)"
+    def observe(result, phase):
+        assert result
+        try:
+            state = ef(result, ord('C'))
+            return dict(phase=phase, status=result_status(result),
+                        sqlstate=state.decode() if state else None,
+                        metadata=[(name(result,i).decode(),field_type(result,i),size(result,i),mod(result,i)) for i in range(columns(result))],
+                        parameters=[pt(result,i) for i in range(np(result))],
+                        rows=[[None if is_null(result,r,i) else value(result,r,i).decode() for i in range(columns(result))] for r in range(rows(result))])
+        finally:
+            clear(result)
+    for side, dsn in [('reference',reference),('aster',aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn)==0, f"{side} connection failed"
+        collected = {}
+        def q(case,sql):
+            result=observe(execute(conn,sql.encode()),'query')
+            result['input']=sql
+            collected[case]=result
+            return result
+        try:
+            if side=='reference':
+                identity=q('identity',"SELECT version(), current_setting('server_version_num')")
+                print('reference identity:',json.dumps(identity),flush=True)
+                assert int(identity['rows'][0][1])==int(os.environ.get('PG_BOOLEAN_REFERENCE_VERSION','180006')), 'exact reference version mismatch'
+                reference_identity=collected.pop('identity')
+                from pathlib import Path
+                evidence=Path(os.environ['PG_BOOLEAN_EVIDENCE_DIR'])
+                evidence.mkdir(parents=True,exist_ok=True)
+                (evidence/'reference-identity.json').write_text(json.dumps(reference_identity))
+            assert q('create',f'CREATE TABLE {table} (id INT PRIMARY KEY, b BOOLEAN)')['status']==1
+            q('literals','SELECT TRUE AS b, FALSE AS f, CAST(NULL AS BOOLEAN) AS n')
+            q('empty',f'SELECT b FROM {table}')
+            q('write',f"INSERT INTO {table} VALUES (1, TRUE), (2, FALSE), (3, NULL)")
+            q('read',f'SELECT b FROM {table} ORDER BY id')
+            if side=='aster':
+                print('PG_BOOLEAN_MID',flush=True)
+                assert sys.stdin.readline().strip()=='continue'
+            for declared in (0,16):
+                stmt=f'b{declared}'.encode()
+                oid=(c.c_uint*1)(declared) if declared else None
+                collected[f'prepare-{declared}']=observe(prepare(conn,stmt,b'SELECT CAST($1 AS BOOLEAN) AS b',1,oid),'prepare')
+                collected[f'describe-{declared}']=observe(describe(conn,stmt),'describe')
+                vocabulary=['true','false','yes','no','on','off','1','0','t','tr','tru','f','fa','fal','fals','y','ye','n','of','  TrUe \t',None,'','o','2','truth','unknown']
+                for i,item in enumerate(vocabulary):
+                    args=(text*1)(None if item is None else item.encode())
+                    result=observe(prepared(conn,stmt,1,args,None,None,0),'execute')
+                    result['input']={'value':item,'oid':declared}
+                    collected[f'param-{declared}-{i}']=result
+                    assert result['status'] in (2,7)
+                    if item in ('','o','2','truth','unknown'): assert result['sqlstate']=='22P02', (side,i,result)
+                    elif result['status']!=2: raise AssertionError((side,i,result))
+                q(f'recovery-{declared}','SELECT TRUE AS b')
+            for i,sql in enumerate(["SELECT CAST(2 AS BOOLEAN) AS b", "SELECT CAST(TRUE AS INT) AS b", "SELECT CAST(TRUE AS TEXT) AS b", "SELECT CAST(NULL AS TEXT) AS b", "SELECT TRUE AS b WHERE 1", f'INSERT INTO {table} VALUES (4, 2)']):
+                q(f'conversion-{i}',sql)
+            q('begin','BEGIN')
+            q('transaction-error',"SELECT CAST('o' AS BOOLEAN) AS b")
+            q('rollback','ROLLBACK')
+            q('recovered','SELECT TRUE AS b')
+            q('no-write',f'SELECT b FROM {table} ORDER BY id')
+            observations[side]=collected
+        finally:
+            from pathlib import Path
+            evidence = Path(os.environ['PG_BOOLEAN_EVIDENCE_DIR'])
+            evidence.mkdir(parents=True, exist_ok=True)
+            (evidence / f'{side}.json').write_text(json.dumps(collected,sort_keys=True))
+            try:
+                clear(execute(conn,b'ROLLBACK'))
+                cleanup=observe(execute(conn,f'DROP TABLE IF EXISTS {table}'.encode()),'cleanup')
+                assert cleanup['status']==1, (side,'cleanup failed',cleanup)
+            finally:
+                finish(conn)
+    assert observations['aster']==observations['reference'], next(((k,observations['aster'][k],v) for k,v in observations['reference'].items() if observations['aster'][k]!=v), 'different cases')
+    for field,replacement in [('rows',[['perturbed']]),('metadata',[('b',23,4,-1)]),('sqlstate','XXXXX')]:
+        changed=copy.deepcopy(observations['reference'])
+        changed['literals'][field]=replacement
+        assert observations['aster']!=changed, field
+    print(f"boolean differential: {len(observations['aster'])} cases, 3 comparator perturbations passed",flush=True)
+
+
 conninfo = (
     f"host=127.0.0.1 port={int(sys.argv[1])} user=root dbname={sys.argv[2]} "
     "sslmode=disable gssencmode=disable connect_timeout=5"
 )
+if len(sys.argv) > 3 and sys.argv[3] == "boolean-differential":
+    boolean_differential(conninfo)
+    sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "integer-differential":
     integer_differential(conninfo)
     sys.exit(0)

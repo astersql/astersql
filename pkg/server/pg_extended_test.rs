@@ -1683,7 +1683,7 @@ fn pg_dialect_26_source_parameter_contract() {
     assert!(engine.ends_with("RETURNING ?::int4,'$1'"));
 }
 
-fn scalar_mysql_check(socket: &mut TcpStream) -> Vec<Vec<u8>> {
+pub(super) fn scalar_mysql_check(socket: &mut TcpStream) -> Vec<Vec<u8>> {
     use crate::pg_client_integration_test::{mysql_packet, mysql_query, mysql_read};
     mysql_packet(
         socket,
