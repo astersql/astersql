@@ -526,6 +526,168 @@ fn pg_scalar_20() {
 }
 
 #[test]
+fn pg_scalar_24() {
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN is required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg_text24_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        server.close();
+        native
+            .execute(&format!("DROP DATABASE {database}"))
+            .unwrap();
+    });
+    struct Client(std::process::Child);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_isolation(&mut mysql);
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-text24-evidence")
+        .join(&database);
+    std::fs::create_dir_all(&evidence).unwrap();
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    std::fs::write(evidence.join("aster-head.txt"), head.stdout).unwrap();
+    println!("PG_TEXT24_EVIDENCE_DIR={}", evidence.display());
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE pg_scalar_24_mysql (f CHAR(3), d VARCHAR(3))",
+    );
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO pg_scalar_24_mysql VALUES ('a  ','a  ')",
+    );
+    let text_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT f,d FROM pg_scalar_24_mysql");
+        assert_eq!(mysql_read(socket), vec![2]);
+        let metadata = (0..2).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        for (column, expected) in metadata.iter().zip([254, 253]) {
+            let mut offset = 0;
+            for _ in 0..6 {
+                offset += 1 + usize::from(column[offset]);
+            }
+            assert_eq!(column[offset], 12);
+            assert_eq!(column[offset + 7], expected);
+            assert_eq!(&column[offset + 1..offset + 3], &46u16.to_le_bytes());
+            assert_eq!(&column[offset + 3..offset + 7], &12u32.to_le_bytes());
+            assert_eq!(&column[offset + 8..offset + 11], &[0, 0, 0]);
+        }
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x03a  \x03a  ");
+        let eof = mysql_read(socket);
+        assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        metadata
+    };
+    let text_baseline = text_check(&mut mysql);
+    std::fs::write(
+        evidence.join("mysql-text-before.json"),
+        serde_json::to_vec(&text_baseline).unwrap(),
+    )
+    .unwrap();
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    std::fs::write(
+        evidence.join("mysql-before.json"),
+        serde_json::to_vec(&baseline).unwrap(),
+    )
+    .unwrap();
+    let mut child = Client(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_core_libpq.py"
+            ))
+            .args([
+                address.port().to_string(),
+                database.clone(),
+                "text24-differential".into(),
+            ])
+            .env("PG_TEXT24_EVIDENCE_DIR", &evidence)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("Python 3 is required"),
+    );
+    use std::io::BufRead;
+    let mut middle = false;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG_TEXT24_MID" {
+            assert_eq!(
+                crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+                baseline
+            );
+            assert_eq!(text_check(&mut mysql), text_baseline);
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    assert_eq!(text_check(&mut mysql), text_baseline);
+    let actual = mysql_query(
+        &mut mysql,
+        "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation",
+    );
+    mysql_query(&mut mysql, "DROP DATABASE public");
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(child);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    assert!(TcpStream::connect(mysql_address).is_err());
+    assert_eq!(
+        actual,
+        vec![vec![Some(b"31".to_vec()), Some(b"-17".to_vec())]]
+    );
+    assert!(status.success(), "text24 differential failed");
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert!(summary["cases"].as_u64().unwrap() >= 60);
+    assert_eq!(summary["negative_controls"], 3);
+    assert_eq!(summary["cleanup"]["reference"], true);
+    assert_eq!(summary["cleanup"]["aster"], true);
+    assert!(middle, "missing MySQL middle checkpoint");
+}
+
+#[test]
 fn pg_scalar_14() {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),

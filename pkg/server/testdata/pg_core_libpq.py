@@ -1134,6 +1134,217 @@ def float20_differential(aster_dsn):
     print('float20 differential:',json.dumps(summary),flush=True)
 
 
+def text24_differential(aster_dsn):
+    """Float family only: collect each endpoint independently before comparison."""
+    import copy
+    import hashlib
+    import json
+    import signal
+    import time
+    import resource
+    from pathlib import Path
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    name = api('PQfname', text, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    transaction = api('PQtransactionStatus', integer, ptr)
+    evidence = Path(os.environ['PG_TEXT24_EVIDENCE_DIR'])
+    reference = os.environ['PG18_REFERENCE_DSN']
+    table = f'public.pg_text24_{os.getpid()}'
+    observations = {}
+    cleanup = {}
+    resources = {}
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('text24 client interrupted')
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    def compact(item):
+        if isinstance(item,str) and len(item)>256:
+            return {'length':len(item),'sha256':hashlib.sha256(item.encode()).hexdigest()}
+        return item
+    def observe(result, phase):
+        assert result
+        try:
+            state = ef(result, ord('C'))
+            if state == b'XX000':
+                print('text24 internal error:',result_error(result).decode(),flush=True)
+            return dict(phase=phase, status=result_status(result),
+                        sqlstate=state.decode() if state else None,
+                        metadata=[(name(result,i).decode(),field_type(result,i),size(result,i),mod(result,i)) for i in range(columns(result))],
+                        parameters=[pt(result,i) for i in range(np(result))],
+                        rows=[[None if is_null(result,r,i) else compact(value(result,r,i).decode()) for i in range(columns(result))] for r in range(rows(result))])
+        finally:
+            clear(result)
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn)==0, f'{side} connection failed'
+        collected = {}
+        resources[side] = {}
+        def q(case, sql, state=None, command=False):
+            started = time.perf_counter()
+            result = observe(execute(conn,sql.encode()), 'query')
+            if len(sql)>1000 or case.startswith('max-'):
+                resources[side][case] = {'elapsed_seconds':time.perf_counter()-started,'input_bytes':len(sql.encode()),'python_maxrss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'maxrss_unit':'bytes on macOS, KiB on Linux'}
+            result['input'] = compact(sql)
+            collected[case] = result
+            assert result['status']==(7 if state else 1 if command else 2), (side,case,result)
+            assert result['sqlstate']==state, (side,case,result)
+            return result
+        try:
+            if side=='reference':
+                identity=q('identity', "SELECT version(), current_setting('server_version_num')")
+                assert identity['rows'][0][1]=='180006', 'exact PostgreSQL 18.6 required'
+                (evidence/'reference-identity.json').write_text(json.dumps(collected.pop('identity')))
+                build_path=Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE'])
+                build=json.loads(build_path.read_text())
+                assert hashlib.sha256(Path(build['artifact_path']).read_bytes()).hexdigest()==build['artifact_sha256']
+                (evidence/'reference-build.json').write_text(json.dumps(build))
+                (evidence/'client.json').write_text(json.dumps({'version':version(),'sha256':hashlib.sha256(Path(library).read_bytes()).hexdigest()}))
+            q('create',f'CREATE TABLE {table} (id INT PRIMARY KEY, t TEXT, v VARCHAR(2), c CHAR(2))',command=True)
+            empty=q('empty',f'SELECT t,v,c FROM {table}')
+            assert empty['metadata']==[('t',25,-1,-1),('v',1043,-1,6),('c',1042,-1,6)]
+            q('write',f"INSERT INTO {table} VALUES (1,'é中','é中','é'),(2,'','',''),(3,NULL,NULL,NULL)",command=True)
+            read=q('read',f'SELECT t,v,c FROM {table} ORDER BY id')
+            assert read['rows']==[['é中','é中','é '],['','','  '],[None,None,None]]
+            for typ,oid,modifier in [('text',25,-1),('varchar',1043,-1),('bpchar',1042,-1),('varchar(2)',1043,6),('char(2)',1042,6),('varchar(1)',1043,5),('char',1042,5)]:
+                for declared in (0,oid):
+                    statement=f't{oid}_{modifier}_{declared}'.encode()
+                    collected[f'prepare-{statement!r}']=observe(prepare(conn,statement,f'SELECT CAST($1 AS {typ}) AS n'.encode(),1,(c.c_uint*1)(declared) if declared else None),'prepare')
+                    desc=observe(describe(conn,statement),'describe')
+                    collected[f'describe-{statement!r}']=desc
+                    assert desc['parameters']==[oid] and desc['metadata']==[('n',oid,-1,modifier)],(side,desc)
+                    for i,item in enumerate(['','a','é中','éx','abc','a  ',None]):
+                        case=f'param-{statement!r}-{i}'
+                        result=observe(prepared(conn,statement,1,(text*1)(None if item is None else item.encode()),None,None,0),'execute')
+                        collected[case]=result
+                        assert result['status']==2 and result['metadata']==desc['metadata'],(side,case,result)
+            for i,sql in enumerate(["SELECT CAST('éx' AS varchar(2)) AS n", "SELECT CAST('é' AS char(2)) AS n", "SELECT CAST(CAST('a' AS char(3)) AS text) AS n", "SELECT CAST(CAST('a' AS char(3)) AS varchar) AS n", "SELECT CAST(NULL AS text) AS n,CAST(NULL AS varchar(2)) AS v,CAST(NULL AS char(2)) AS c"]):
+                q(f'literal-{i}',sql)
+            # libpq text APIs use C strings; send explicit-length text Bind on
+            # its idle socket so embedded NUL cannot be silently truncated.
+            import socket, struct
+            pq_socket=api('PQsocket',integer,ptr)
+            raw_conn=connect(dsn.encode())
+            assert raw_conn and status(raw_conn)==0
+            raw=socket.socket(fileno=os.dup(pq_socket(raw_conn)))
+            original_blocking=os.get_blocking(pq_socket(raw_conn))
+            raw.settimeout(10)
+            def frame(tag,payload):
+                return tag+struct.pack('!I',len(payload)+4)+payload
+            def exact(n):
+                data=b''
+                while len(data)<n:
+                    part=raw.recv(n-len(data))
+                    assert part
+                    data+=part
+                return data
+            try:
+                for oid in [25,1043,1042]:
+                    parse=b'\x00SELECT $1 AS n\x00'+struct.pack('!HI',1,oid)
+                    bind=b'\x00\x00'+struct.pack('!HHI',0,1,0)+struct.pack('!H',0)
+                    raw.sendall(frame(b'P',parse)+frame(b'B',bind)+frame(b'D',b'P\x00')+frame(b'E',b'\x00'+struct.pack('!I',0))+frame(b'S',b''))
+                    portal=[]
+                    while True:
+                        tag=exact(1)
+                        body=exact(struct.unpack('!I',exact(4))[0]-4)
+                        if tag==b'T':
+                            assert struct.unpack('!H',body[:2])[0]==1
+                            offset=body.index(b'\x00',2)+1
+                            _,_,actual_oid,width,modifier,fmt=struct.unpack('!IHIhih',body[offset:])
+                            assert (actual_oid,width,modifier,fmt)==(oid,-1,-1,0)
+                            portal.append(['metadata',actual_oid,width,modifier,fmt])
+                        elif tag==b'D':
+                            assert body==struct.pack('!HI',1,0)
+                            portal.append(['empty',''])
+                        elif tag==b'E':
+                            raise AssertionError((side,oid,body))
+                        if tag==b'Z':break
+                    assert len(portal)==2
+                    collected[f'portal-{oid}']=portal
+                    for i,payload in enumerate([b'a\x00z',b'\xff',b'\xc3']):
+                        parse=b'\x00SELECT $1 AS n\x00'+struct.pack('!HI',1,oid)
+                        bind=b'\x00\x00'+struct.pack('!HHI',0,1,len(payload))+payload+struct.pack('!H',0)
+                        raw.sendall(frame(b'P',parse)+frame(b'B',bind)+frame(b'E',b'\x00'+struct.pack('!I',0))+frame(b'S',b''))
+                        tags=[]
+                        error_state=None
+                        while True:
+                            tag=exact(1)
+                            body=exact(struct.unpack('!I',exact(4))[0]-4)
+                            tags.append(tag.decode())
+                            if tag==b'E':
+                                error_state=next(x[1:].decode() for x in body.split(b'\x00') if x.startswith(b'C'))
+                            if tag==b'Z':
+                                assert body==b'I'
+                                break
+                        observed={'tags':tags,'sqlstate':error_state,'phase':'bind'}
+                        collected[f'raw-{oid}-{i}']=observed
+                        assert tags==['1','E','Z'] and error_state=='22021',(side,oid,i,observed)
+                        recovered=observe(execute(raw_conn,b'SELECT 1 AS n'),'query')
+                        assert recovered['rows']==[['1']]
+                        collected[f'raw-sync-{oid}-{i}']=recovered
+            finally:
+                raw.setblocking(original_blocking)
+                raw.close()
+                finish(raw_conn)
+            for typ in ['varchar','char']:
+                maximum=q('max-declaration-'+typ,f"SELECT CAST('é' AS {typ}(10485760)) AS n")
+                expected='é' if typ=='varchar' else 'é'+' '*10485759
+                assert maximum['rows']==[[compact(expected)]]
+                assert maximum['metadata']==[('n',1043 if typ=='varchar' else 1042,-1,10485764)]
+            # The frontend currently caps messages at 1MiB. Verify a substantial
+            # input within that transport domain; max char above emits 10MiB.
+            boundary='a'*65536
+            statement=b'max_text24'
+            collected['max-prepare']=observe(prepare(conn,statement,b'SELECT CAST($1 AS varchar(10485760)) AS n',1,(c.c_uint*1)(25)),'prepare')
+            started=time.perf_counter()
+            collected['max-varchar-input']=observe(prepared(conn,statement,1,(text*1)(boundary.encode()),None,None,0),'execute')
+            assert collected['max-varchar-input']['status']==2
+            assert collected['max-varchar-input']['rows']==[[compact(boundary)]]
+            resources[side]['max-varchar-input']={'elapsed_seconds':time.perf_counter()-started,'input_bytes':len(boundary),'python_maxrss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'maxrss_unit':'bytes on macOS, KiB on Linux'}
+            for col in ['v','c']:
+                q('spaces-'+col,f"INSERT INTO {table} (id,{col}) VALUES (4,'ab  ')",command=True)
+                q('spaces-read-'+col,f'SELECT {col} FROM {table} WHERE id=4')
+                q('spaces-delete-'+col,f'DELETE FROM {table} WHERE id=4',command=True)
+                q('reject-'+col,f"INSERT INTO {table} (id,{col}) VALUES (4,'abc')",state='22001')
+                assert q('no-write-'+col,f'SELECT t,v,c FROM {table} ORDER BY id')['rows']==read['rows']
+            q('begin','BEGIN',command=True)
+            q('transaction-error',f"INSERT INTO {table} (id,v) VALUES (4,'abc')",state='22001')
+            assert transaction(conn)==3
+            q('failed-transaction','SELECT 1',state='25P02')
+            q('rollback','ROLLBACK',command=True)
+            assert transaction(conn)==0
+            q('rollback-recovery',f'SELECT t,v,c FROM {table} ORDER BY id')
+            if side=='aster':
+                print('PG_TEXT24_MID',flush=True)
+                assert sys.stdin.readline().strip()=='continue'
+            observations[side]=collected
+        finally:
+            (evidence/f'{side}.json').write_text(json.dumps(collected,sort_keys=True))
+            try:
+                clear(execute(conn,b'ROLLBACK'))
+                result=observe(execute(conn,f'DROP TABLE IF EXISTS {table}'.encode()),'cleanup')
+                cleanup[side]=result['status']==1
+            finally:
+                finish(conn)
+                (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+                (evidence/'resources.json').write_text(json.dumps(resources))
+    assert observations['aster']==observations['reference'], next(((k,observations['aster'].get(k),v) for k,v in observations['reference'].items() if observations['aster'].get(k)!=v),'different cases')
+    for field,replacement in [('rows',[['perturbed']]),('metadata',[('n',999,2,-1)]),('sqlstate','XXXXX')]:
+        changed=copy.deepcopy(observations['aster'])
+        changed['literal-0'][field]=replacement
+        assert changed!=observations['reference'],field
+    assert all(cleanup.values()) and len(cleanup)==2
+    summary={'cases':len(observations['aster']),'negative_controls':3,'cleanup':cleanup,'target_version':'18.6'}
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('text24 differential:',json.dumps(summary),flush=True)
+
+
 def boolean_differential(aster_dsn):
     """Compare independently collected text bool observations; never infer a side."""
     import copy
@@ -1236,6 +1447,9 @@ conninfo = (
     f"host=127.0.0.1 port={int(sys.argv[1])} user=root dbname={sys.argv[2]} "
     "sslmode=disable gssencmode=disable connect_timeout=5"
 )
+if len(sys.argv) > 3 and sys.argv[3] == "text24-differential":
+    text24_differential(conninfo)
+    sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "float20-differential":
     float20_differential(conninfo)
     sys.exit(0)
