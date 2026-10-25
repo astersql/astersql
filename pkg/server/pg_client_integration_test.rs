@@ -1134,6 +1134,11 @@ fn pg_dialect_06_libpq() {
 }
 
 #[test]
+fn pg_dialect_07_libpq() {
+    pg_dialect_libpq(7);
+}
+
+#[test]
 fn pg_dialect_09_libpq() {
     pg_dialect_libpq(9);
 }
@@ -1174,7 +1179,7 @@ fn pg_dialect_libpq(task: u8) {
     assert!(std::env::var_os("PG18_REFERENCE_DSN").is_some());
     assert!(std::env::var_os("PG_CORE_REFERENCE_BUILD_FILE").is_some());
     assert!(std::env::var_os("MYSQL_REFERENCE_DSN").is_some());
-    if task == 6 {
+    if matches!(task, 6 | 7) {
         assert!(std::env::var_os("MYSQL_REFERENCE_BUILD_FILE").is_some());
     }
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
@@ -1239,6 +1244,16 @@ fn pg_dialect_libpq(task: u8) {
             ))
             .unwrap();
     }
+    if task == 7 {
+        native
+            .execute(&format!(
+                "CREATE TABLE {database}.t (id INT NOT NULL PRIMARY KEY)"
+            ))
+            .unwrap();
+        native
+            .execute(&format!("INSERT INTO {database}.t VALUES (31)"))
+            .unwrap();
+    }
     if task == 14 {
         native
             .execute(&format!("CREATE DATABASE {database}_other"))
@@ -1285,6 +1300,92 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 7 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            use std::io::Write;
+
+            let case_id = phase
+                .strip_prefix("PG_DIALECT_CHECKPOINT ")
+                .expect("checkpoint prefix");
+            let sql = match case_id {
+                "omitted_target" => {
+                    "INSERT INTO public.t(id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id"
+                }
+                "inference_predicate" => {
+                    "INSERT INTO public.t(id) VALUES (2) ON CONFLICT (id) WHERE id > 0 DO NOTHING"
+                }
+                "constraint_target" => {
+                    "INSERT INTO public.t(id) VALUES (3) ON CONFLICT ON CONSTRAINT t_pkey DO NOTHING"
+                }
+                "missing_action" => "INSERT INTO public.t(id) VALUES (4) ON CONFLICT",
+                "empty_target" => "INSERT INTO public.t(id) VALUES (5) ON CONFLICT () DO NOTHING",
+                "target_missing_action" => {
+                    "INSERT INTO public.t(id) VALUES (6) ON CONFLICT (id) DO"
+                }
+                "quoted_conflict_keyword" => {
+                    "INSERT INTO public.t(id) VALUES (7) ON \"CONFLICT\" DO NOTHING"
+                }
+                "quoted_action_keyword" => {
+                    "INSERT INTO public.t(id) VALUES (8) ON CONFLICT DO \"NOTHING\""
+                }
+                _ => panic!("unregistered MySQL checkpoint: {case_id}"),
+            };
+            let mysql_sql = sql.replace("public.t", "t").replace("$1", "31");
+            mysql_query(socket, &format!("USE {database}"));
+            let before = mysql_query(socket, "SELECT id FROM t ORDER BY id");
+            assert_eq!(before, vec![vec![Some(b"31".to_vec())]]);
+
+            let legal = "INSERT INTO t(id) VALUES (31) ON DUPLICATE KEY UPDATE id=VALUES(id)";
+            let mut prepare = vec![0x16];
+            prepare.extend_from_slice(legal.as_bytes());
+            mysql_packet(socket, 0, &prepare);
+            let prepared = mysql_read(socket);
+            assert_eq!(prepared[0], 0, "MySQL ON DUPLICATE prepare baseline");
+            assert!(prepared.len() >= 9);
+            assert_eq!(u16::from_le_bytes(prepared[5..7].try_into().unwrap()), 0);
+            assert_eq!(u16::from_le_bytes(prepared[7..9].try_into().unwrap()), 0);
+            let mut close = vec![0x19];
+            close.extend_from_slice(&prepared[1..5]);
+            mysql_packet(socket, 0, &close);
+
+            let mut request = vec![3];
+            request.extend_from_slice(mysql_sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(response[0], 0xff, "MySQL accepted PostgreSQL ON CONFLICT");
+            let error_code = u16::from_le_bytes(response[1..3].try_into().unwrap());
+            let sqlstate = String::from_utf8_lossy(&response[4..9]).to_string();
+            assert_eq!(error_code, 1064);
+            assert_eq!(sqlstate, "42000");
+            let after = mysql_query(socket, "SELECT id FROM t ORDER BY id");
+            assert_eq!(after, before, "rejected MySQL input changed the row");
+            assert_eq!(
+                mysql_query(socket, "SELECT 1"),
+                vec![vec![Some(b"1".to_vec())]],
+                "MySQL connection did not recover after the syntax error"
+            );
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-local.jsonl"))
+                .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "case_id": case_id,
+                    "phase": phase,
+                    "postgresql_sql": sql,
+                    "mysql_sql": mysql_sql,
+                    "mysql_error_code": error_code,
+                    "mysql_sqlstate": sqlstate,
+                    "before": before,
+                    "after": after,
+                    "mysql_on_duplicate_prepared": true,
+                    "packet": response
+                })
+            )
+            .unwrap();
+        }
         if task == 5 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             mysql_query(socket, &format!("USE {database}"));
             assert_eq!(
@@ -1958,6 +2059,57 @@ fn pg_dialect_libpq(task: u8) {
                 .starts_with("8.4.7\t")
         );
         assert_ne!(mysql["update_from"]["code"], 0);
+        return;
+    }
+    if task == 7 {
+        assert_eq!(checkpoints, 8);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cases"], 8);
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["syntax_eligible"], 8);
+        assert_eq!(summary["reference_syntax_cases"], 3);
+        assert_eq!(summary["reference_describe_cases"], 3);
+        assert_eq!(summary["local_prepare_describe_cases"], 3);
+        assert_eq!(summary["local_simple_query_gate_cases"], 3);
+        assert_eq!(summary["local_execute_gate_cases"], 3);
+        assert_eq!(summary["mysql_rejection_cases"], 8);
+        assert_eq!(summary["unique_effective"], 0);
+        assert_eq!(summary["full_dml_semantic_successes"], 0);
+        let mysql_local = std::fs::read_to_string(evidence.join("mysql-local.jsonl")).unwrap();
+        let task_cases = mysql_local
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|record| record["mysql_on_duplicate_prepared"] == true)
+            .collect::<Vec<_>>();
+        assert_eq!(task_cases.len(), 8);
+        let case_ids = task_cases
+            .iter()
+            .filter_map(|record| record["case_id"].as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(case_ids.len(), 8);
+        let cases: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("cases.json")).unwrap())
+                .unwrap();
+        assert_eq!(cases.as_array().unwrap().len(), 8);
+        for case in cases
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|case| case["kind"] == "valid")
+        {
+            assert_eq!(
+                case["expected"]["aster"],
+                "Prepare/Describe success; Execute 0A000"
+            );
+            assert_eq!(case["execution_input"]["phase"], "PQexecPrepared");
+        }
+        let mysql: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence.join("mysql-reference.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(mysql["identity"][0].as_str().unwrap().starts_with("8.4.7"));
         return;
     }
     assert_eq!(checkpoints, if task == 4 { 8 } else { 10 });

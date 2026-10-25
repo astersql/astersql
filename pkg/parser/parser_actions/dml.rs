@@ -64,7 +64,14 @@ enum DmlRule {
     ImportFromSelectStmtAlt04,
     ImportIntoStmtAlt01,
     ImportIntoStmtAlt02,
+    ConflictTargetPredicateOptAlt01,
+    ConflictTargetPredicateOptAlt02,
     InsertIntoStmtAlt01,
+    InsertOnClauseAlt01,
+    InsertOnClauseAlt02,
+    InsertOnClauseAlt03,
+    InsertOnClauseAlt04,
+    InsertOnClauseAlt05,
     InsertRowAliasOptAlt01,
     InsertRowAliasOptAlt02,
     InsertRowAliasOptAlt03,
@@ -100,8 +107,6 @@ enum DmlRule {
     LowPriorityOptAlt01,
     LowPriorityOptAlt02,
     NonTransactionalDmlStmtAlt01,
-    OnDuplicateKeyUpdateAlt01,
-    OnDuplicateKeyUpdateAlt02,
     OptionalShardColumnAlt01,
     OptionalShardColumnAlt02,
     QuickOptionalAlt01,
@@ -206,8 +211,21 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "importintostmt_import_into_tablename_columnnameo--0d7a8d564098e762" => {
             DmlRule::ImportIntoStmtAlt02
         }
-        "insertintostmt_insert_tableoptimizerhintsopt_pri--e1191d04033aaa81" => {
+        "insertintostmt_insert_tableoptimizerhintsopt_pri--52aa8fe840ae2f74" => {
             DmlRule::InsertIntoStmtAlt01
+        }
+        "insertonclause_prec_empty--205eeb9aca732bea" => DmlRule::InsertOnClauseAlt01,
+        "insertonclause_on_duplicate_key_update_assignmen--596d558711761c90" => {
+            DmlRule::InsertOnClauseAlt02
+        }
+        "insertonclause_on_identifier_do_identifier--6263e521f96106b7" => {
+            DmlRule::InsertOnClauseAlt03
+        }
+        "insertonclause_on_identifier_columnnamelist_conf--adf28edd3ec5e132" => {
+            DmlRule::InsertOnClauseAlt04
+        }
+        "insertonclause_on_identifier_on_constraint_ident--e3e958280f69341a" => {
+            DmlRule::InsertOnClauseAlt05
         }
         "insertrowaliasopt_prec_empty--ac3acd5bb9ed41e3" => DmlRule::InsertRowAliasOptAlt01,
         "insertrowaliasopt_as_identifier--8d529d6bb0d121cf" => DmlRule::InsertRowAliasOptAlt02,
@@ -270,9 +288,11 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "nontransactionaldmlstmt_batch_optionalshardcolum--20064cecd92e889e" => {
             DmlRule::NonTransactionalDmlStmtAlt01
         }
-        "onduplicatekeyupdate--4ba77cbda3967f79" => DmlRule::OnDuplicateKeyUpdateAlt01,
-        "onduplicatekeyupdate_on_duplicate_key_update_ass--9008950315974051" => {
-            DmlRule::OnDuplicateKeyUpdateAlt02
+        "conflicttargetpredicateopt--e6d6a85b39cf6444" => {
+            DmlRule::ConflictTargetPredicateOptAlt01
+        }
+        "conflicttargetpredicateopt_where_expression--933b8c07629f80d0" => {
+            DmlRule::ConflictTargetPredicateOptAlt02
         }
         "optionalshardcolumn--92eca09a88777dcd" => DmlRule::OptionalShardColumnAlt01,
         "optionalshardcolumn_on_columnname--29b125a9b217c2e4" => DmlRule::OptionalShardColumnAlt02,
@@ -340,8 +360,13 @@ fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool,
             | DmlRule::InsertValuesAlt11
             | DmlRule::ColumnSetValueListAlt01
             | DmlRule::ColumnSetValueListAlt02
-            | DmlRule::OnDuplicateKeyUpdateAlt01
-            | DmlRule::OnDuplicateKeyUpdateAlt02
+            | DmlRule::InsertOnClauseAlt01
+            | DmlRule::InsertOnClauseAlt02
+            | DmlRule::InsertOnClauseAlt03
+            | DmlRule::InsertOnClauseAlt04
+            | DmlRule::InsertOnClauseAlt05
+            | DmlRule::ConflictTargetPredicateOptAlt01
+            | DmlRule::ConflictTargetPredicateOptAlt02
             | DmlRule::ReplaceIntoStmtAlt01
             | DmlRule::ReturningClauseAlt01
             | DmlRule::ReturningClauseAlt02
@@ -976,11 +1001,49 @@ fn apply_general_rule(
     Ok(true)
 }
 
+fn conflict_keyword_is_unquoted(
+    parser_state: &Parser,
+    symbol: &yySymType,
+    expected: &str,
+) -> bool {
+    super::identifier(parser_state, symbol).1.is_some_and(|identifier| {
+        !identifier.Quoted && identifier.Decoded.eq_ignore_ascii_case(expected)
+    })
+}
+
+fn make_postgresql_conflict_clause(
+    parser_state: &Parser,
+    rhs: &Rhs<'_>,
+    target: parser_ast::PostgreSQLConflictTarget,
+    columns: Vec<parser_ast::ColumnName>,
+    constraint: Option<parser_ast::PostgreSQLIdentifier>,
+    predicate: Option<parser_ast::ExprNode>,
+) -> Result<parser_ast::PostgreSQLConflictClause, isize> {
+    let start = usize::try_from(rhs[1].offset).map_err(|_| 1isize)?;
+    let end = rhs[rhs.len()].end_offset;
+    let original = parser_state.src.get(start..end).ok_or(1isize)?.to_owned();
+    Ok(parser_ast::PostgreSQLConflictClause {
+        Target: target,
+        Columns: columns,
+        Constraint: constraint,
+        Predicate: predicate,
+        Action: parser_ast::PostgreSQLConflictAction::DoNothing,
+        SourceSpan: (start, end),
+        OriginalText: original,
+    })
+}
+
+#[derive(Clone)]
+enum InsertOnClauseAction {
+    OnDuplicate(Vec<parser_ast::Assignment>),
+    PostgreSQLConflict(parser_ast::PostgreSQLConflictClause),
+}
+
 fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<bool, isize> {
     let rhs_len = rhs.len();
     let Context {
         output: out,
-        parser_state: _,
+        parser_state,
         lexer: yylex,
     } = context;
     match rule {
@@ -1035,12 +1098,21 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .and_then(|item| item.downcast_ref::<Vec<parser_ast::CIStr>>())
                 .cloned()
                 .unwrap_or_default();
-            statement.OnDuplicate = rhs[rhs_len - 1]
+            let on_clause = rhs[rhs_len - 1]
                 .item
                 .as_deref()
-                .and_then(|item| item.downcast_ref::<Vec<parser_ast::Assignment>>())
+                .and_then(|item| item.downcast_ref::<Option<InsertOnClauseAction>>())
                 .cloned()
                 .unwrap_or_default();
+            match on_clause {
+                Some(InsertOnClauseAction::OnDuplicate(assignments)) => {
+                    statement.OnDuplicate = assignments;
+                }
+                Some(InsertOnClauseAction::PostgreSQLConflict(conflict)) => {
+                    statement.PostgreSQLConflict = Some(conflict);
+                }
+                None => {}
+            }
             statement.Returning = rhs[rhs_len]
                 .item
                 .as_deref()
@@ -1216,8 +1288,99 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             out.item = Some(Box::new(statement));
         }
         DmlRule::InsertRowAliasOptAlt01
-        | DmlRule::OnDuplicateKeyUpdateAlt01
         | DmlRule::ReturningClauseAlt01 => out.item = None,
+        DmlRule::InsertOnClauseAlt01 => {
+            out.item = Some(Box::new(None::<InsertOnClauseAction>));
+        }
+        DmlRule::InsertOnClauseAlt02 => {
+            let assignments = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::Assignment>>())
+                .cloned()
+                .unwrap_or_default();
+            out.item = Some(Box::new(Some(InsertOnClauseAction::OnDuplicate(
+                assignments,
+            ))));
+        }
+        DmlRule::ConflictTargetPredicateOptAlt01 => out.expr = None,
+        DmlRule::ConflictTargetPredicateOptAlt02 => out.expr = rhs[rhs_len].expr.clone(),
+        DmlRule::InsertOnClauseAlt03
+        | DmlRule::InsertOnClauseAlt04
+        | DmlRule::InsertOnClauseAlt05 => {
+            let conflict_word = &rhs[2];
+            let action_word = &rhs[rhs_len];
+            let conflict_is_unquoted =
+                conflict_keyword_is_unquoted(parser_state, conflict_word, "CONFLICT");
+            let action_is_unquoted =
+                conflict_keyword_is_unquoted(parser_state, action_word, "NOTHING");
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                || !conflict_is_unquoted
+                || !action_is_unquoted
+            {
+                yylex.AppendError(yylex.Errorf(
+                    "expected unquoted PostgreSQL ON CONFLICT DO NOTHING keywords",
+                    &[],
+                ));
+                if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                    let offset = if conflict_is_unquoted {
+                        action_word.offset
+                    } else {
+                        conflict_word.offset
+                    };
+                    if let Ok(offset) = usize::try_from(offset) {
+                        yylex.set_postgresql_syntax_error_offset(offset);
+                    }
+                }
+                return Err(1);
+            }
+            let (target, columns, constraint, predicate) = match rule {
+                DmlRule::InsertOnClauseAlt03 => (
+                    parser_ast::PostgreSQLConflictTarget::Any,
+                    Vec::new(),
+                    None,
+                    None,
+                ),
+                DmlRule::InsertOnClauseAlt04 => {
+                    let columns = rhs[4]
+                        .item
+                        .as_deref()
+                        .and_then(|item| item.downcast_ref::<Vec<parser_ast::ColumnName>>())
+                        .cloned()
+                        .unwrap_or_default();
+                    (
+                        parser_ast::PostgreSQLConflictTarget::Inference,
+                        columns,
+                        None,
+                        rhs[6].expr.clone(),
+                    )
+                }
+                DmlRule::InsertOnClauseAlt05 => {
+                    let constraint = super::identifier(parser_state, &rhs[5]).1;
+                    let Some(constraint) = constraint else {
+                        return Err(1);
+                    };
+                    (
+                        parser_ast::PostgreSQLConflictTarget::Constraint,
+                        Vec::new(),
+                        Some(constraint),
+                        None,
+                    )
+                }
+                _ => unreachable!(),
+            };
+            let clause = make_postgresql_conflict_clause(
+                parser_state,
+                &rhs,
+                target,
+                columns,
+                constraint,
+                predicate,
+            )?;
+            out.item = Some(Box::new(Some(
+                InsertOnClauseAction::PostgreSQLConflict(clause),
+            )));
+        }
         DmlRule::InsertRowAliasOptAlt02 | DmlRule::InsertRowAliasOptAlt03 => {
             out.item = Some(Box::new(insertRowAlias {
                 rowAlias: parser_ast::NewCIStr(
@@ -1241,9 +1404,7 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 },
             }));
         }
-        DmlRule::OnDuplicateKeyUpdateAlt02 | DmlRule::ReturningClauseAlt02 => {
-            out.item = rhs[rhs_len].item.take()
-        }
+        DmlRule::ReturningClauseAlt02 => out.item = rhs[rhs_len].item.take(),
         DmlRule::ReplaceIntoStmtAlt01 => {
             let Some(mut statement) = rhs[rhs_len]
                 .item

@@ -734,6 +734,11 @@ impl yyLexer for Scanner {
         }
         self.errs.push(err);
     }
+    fn set_postgresql_syntax_error_offset(&mut self, offset: usize) {
+        if self.postgres && self.errs.len() == 1 {
+            self.syntaxErrorOffset = Some(offset);
+        }
+    }
     fn AppendWarn(&mut self, err: ParserError) {
         self.warns.push(err);
     }

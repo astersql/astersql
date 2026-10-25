@@ -3411,6 +3411,184 @@ fn pg_dialect_06_behavior() {
 }
 
 #[test]
+fn pg_dialect_07_behavior() {
+    use parser_ast::{
+        ExprKind, Node, PostgreSQLConflictAction, PostgreSQLConflictTarget, SqlDialect,
+    };
+
+    fn insert(sql: &str, dialect: SqlDialect) -> parser_ast::InsertStmt {
+        let statement = parser::Parser::with_dialect(dialect)
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        *statement
+            .into_any()
+            .downcast::<parser_ast::InsertStmt>()
+            .ok()
+            .expect("INSERT AST")
+    }
+
+    let mysql = insert(
+        "INSERT INTO t(conflict, nothing) VALUES (1, 2) ON DUPLICATE KEY UPDATE conflict=VALUES(conflict)",
+        SqlDialect::MySQL,
+    );
+    assert_eq!(mysql.OnDuplicate.len(), 1);
+    assert!(mysql.PostgreSQLConflict.is_none());
+
+    let omitted_sql =
+        "/*中*/ INSERT INTO public.t(id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id";
+    let omitted = insert(omitted_sql, SqlDialect::PostgreSQL);
+    let clause = omitted
+        .PostgreSQLConflict
+        .as_ref()
+        .expect("conflict clause");
+    assert_eq!(clause.Target, PostgreSQLConflictTarget::Any);
+    assert_eq!(clause.Action, PostgreSQLConflictAction::DoNothing);
+    assert!(clause.Columns.is_empty());
+    assert!(clause.Constraint.is_none());
+    assert!(clause.Predicate.is_none());
+    let start = omitted_sql.find("ON CONFLICT").unwrap();
+    let end = omitted_sql.find(" RETURNING").unwrap();
+    assert_eq!(clause.SourceSpan, (start, end));
+    assert_eq!(clause.OriginalText, &omitted_sql[start..end]);
+    assert_eq!(omitted.Lists[0][0].PostgreSQLParameterIndex(), Some(1));
+    assert_eq!(omitted.Returning.len(), 1);
+
+    let inference_sql =
+        "INSERT INTO public.t(id) VALUES (2) ON CONFLICT (id) WHERE id > 0 DO NOTHING";
+    let inference = insert(inference_sql, SqlDialect::PostgreSQL);
+    let clause = inference
+        .PostgreSQLConflict
+        .as_ref()
+        .expect("conflict clause");
+    assert_eq!(clause.Target, PostgreSQLConflictTarget::Inference);
+    assert_eq!(clause.Columns.len(), 1);
+    assert_eq!(clause.Columns[0].Name.O, "id");
+    assert_eq!(clause.Columns[0].PostgreSQLParts[0].Original, "id");
+    let predicate = clause.Predicate.as_ref().expect("inference predicate");
+    assert!(matches!(&predicate.Kind, ExprKind::Binary { Op, L, R }
+        if Op == ">"
+            && matches!(&L.Kind, ExprKind::Column(column) if column.Name.O == "id")
+            && matches!(&R.Kind, ExprKind::Value(value) if value.text() == "0")));
+    let start = inference_sql.find("ON CONFLICT").unwrap();
+    let end = inference_sql.find("DO NOTHING").unwrap() + "DO NOTHING".len();
+    assert_eq!(clause.SourceSpan, (start, end));
+    assert_eq!(clause.OriginalText, &inference_sql[start..end]);
+
+    struct ConflictWalk {
+        columns: usize,
+        predicates: usize,
+    }
+    impl parser_ast::Visitor for ConflictWalk {
+        fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+            if let Some(expression) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                self.predicates += usize::from(matches!(expression.Kind, ExprKind::Binary { .. }));
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+            true
+        }
+        fn enter_column_name(&mut self, _: &parser_ast::ColumnName) -> bool {
+            self.columns += 1;
+            false
+        }
+    }
+    let mut walk = ConflictWalk {
+        columns: 0,
+        predicates: 0,
+    };
+    inference.accept(&mut walk);
+    assert!(
+        walk.columns >= 2,
+        "INSERT and conflict target columns must be visited"
+    );
+    assert_eq!(
+        walk.predicates, 1,
+        "conflict target predicate must be visited"
+    );
+
+    let constraint_sql =
+        "INSERT INTO public.t(id) VALUES (3) ON CONFLICT ON CONSTRAINT \"t_pkey\" DO NOTHING";
+    let constraint = insert(constraint_sql, SqlDialect::PostgreSQL);
+    let clause = constraint
+        .PostgreSQLConflict
+        .as_ref()
+        .expect("conflict clause");
+    assert_eq!(clause.Target, PostgreSQLConflictTarget::Constraint);
+    let name = clause.Constraint.as_ref().expect("constraint identifier");
+    assert_eq!(name.Original, "\"t_pkey\"");
+    assert_eq!(name.Decoded, "t_pkey");
+    assert!(name.Quoted);
+    let start = constraint_sql.find("ON CONFLICT").unwrap();
+    let end = constraint_sql.find("DO NOTHING").unwrap() + "DO NOTHING".len();
+    assert_eq!(clause.SourceSpan, (start, end));
+    assert_eq!(clause.OriginalText, &constraint_sql[start..end]);
+
+    for (sql, position) in [
+        (
+            "/*中*/ INSERT INTO public.t(id) VALUES (4) ON CONFLICT",
+            "/*中*/ INSERT INTO public.t(id) VALUES (4) ON CONFLICT"
+                .chars()
+                .count()
+                + 1,
+        ),
+        (
+            "INSERT INTO public.t(id) VALUES (5) ON CONFLICT () DO NOTHING",
+            "INSERT INTO public.t(id) VALUES (5) ON CONFLICT () DO NOTHING"
+                .find(") DO")
+                .unwrap()
+                + 1,
+        ),
+        (
+            "INSERT INTO public.t(id) VALUES (6) ON CONFLICT (id) DO",
+            "INSERT INTO public.t(id) VALUES (6) ON CONFLICT (id) DO"
+                .chars()
+                .count()
+                + 1,
+        ),
+    ] {
+        let mut pg = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(pg.ParseOneStmt(sql, "", "").is_err(), "{sql}");
+        assert_eq!(pg.PostgreSQLSyntaxErrorPosition(), Some(position), "{sql}");
+        assert!(pg.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+        assert_eq!(pg.PostgreSQLSyntaxErrorPosition(), None);
+    }
+
+    for (sql, keyword) in [
+        (
+            "INSERT INTO public.t(id) VALUES (7) ON \"CONFLICT\" DO NOTHING",
+            "\"CONFLICT\"",
+        ),
+        (
+            "INSERT INTO public.t(id) VALUES (8) ON CONFLICT DO \"NOTHING\"",
+            "\"NOTHING\"",
+        ),
+    ] {
+        let mut pg = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(
+            pg.ParseOneStmt(sql, "", "").is_err(),
+            "quoted identifier must not be treated as a grammar keyword: {sql}"
+        );
+        assert_eq!(
+            pg.PostgreSQLSyntaxErrorPosition(),
+            Some(sql.find(keyword).unwrap() + 1),
+            "quoted grammar keyword error position: {sql}"
+        );
+    }
+    let protected = insert(
+        "INSERT INTO public.t(id) VALUES ('ON CONFLICT DO NOTHING') /* ON CONFLICT DO NOTHING */",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(protected.PostgreSQLConflict.is_none());
+    assert!(matches!(&protected.Lists[0][0].Kind, ExprKind::Value(value)
+        if value.text() == "ON CONFLICT DO NOTHING"));
+
+    println!(
+        "pg_dialect_07_behavior: three targets, predicate visitor/source spans, syntax positions, quoted keywords and MySQL duplicate baseline"
+    );
+}
+
+#[test]
 fn pg_dialect_09_behavior() {
     use parser_ast::{ExprKind, SqlDialect};
     fn expression(sql: &str) -> parser_ast::ExprNode {

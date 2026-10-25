@@ -159,25 +159,37 @@ pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'sta
 /// Parse before execution: a batched engine error cannot preserve prior results.
 /// No SQL rewriting or multi-statement partial-success claims are permitted.
 pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, String)> {
-    command_for_phase(sql, false).map(|(tag, _)| tag)
+    command_for_phase(sql, false).map(|plan| plan.command)
+}
+
+/// Analysis plan for PostgreSQL extended-protocol Prepare.
+///
+/// A conflict clause remains attached to the prepared statement for the later
+/// execution gate. `analysis_sql` exists only so the shared engine can produce
+/// ordinary read-only parameter and result metadata for the INSERT itself.
+pub(crate) struct PrepareCommand {
+    pub command: Option<&'static str>,
+    pub returning: bool,
+    pub postgresql_conflict: Option<ast::PostgreSQLConflictClause>,
+    pub analysis_sql: Option<String>,
 }
 
 /// Preparing RETURNING binds metadata without permitting DML execution.
-pub(crate) fn prepare_command(
-    sql: &str,
-) -> Result<(Option<&'static str>, bool), (&'static str, String)> {
+pub(crate) fn prepare_command(sql: &str) -> Result<PrepareCommand, (&'static str, String)> {
     command_for_phase(sql, true)
 }
 
-fn command_for_phase(
-    sql: &str,
-    prepare: bool,
-) -> Result<(Option<&'static str>, bool), (&'static str, String)> {
+fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'static str, String)> {
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|e| ("42601", e.to_string()))?;
     if statements.is_empty() {
-        return Ok((None, false));
+        return Ok(PrepareCommand {
+            command: None,
+            returning: false,
+            postgresql_conflict: None,
+            analysis_sql: None,
+        });
     }
     if statements.len() != 1 {
         return Err((
@@ -228,11 +240,19 @@ fn command_for_phase(
         ));
     }
     let node = statements[0].as_any();
+    let mut postgresql_conflict = None;
     let tag = if node.is::<ast::SelectStmt>() || node.is::<ast::SetOprStmt>() {
         "SELECT"
     } else if let Some(insert) = node.downcast_ref::<ast::InsertStmt>() {
         if insert.IsReplace {
             return Err(("0A000", "REPLACE is not a PostgreSQL command".into()));
+        }
+        postgresql_conflict = insert.PostgreSQLConflict.clone();
+        if postgresql_conflict.is_some() && !prepare {
+            return Err((
+                "0A000",
+                "PostgreSQL ON CONFLICT DO NOTHING is unsupported by the shared executor".into(),
+            ));
         }
         if !insert.Returning.is_empty() && !prepare {
             return Err((
@@ -301,17 +321,45 @@ fn command_for_phase(
             "unsupported PostgreSQL simple-query command".into(),
         ));
     };
-    Ok((
-        Some(tag),
-        node.downcast_ref::<ast::InsertStmt>()
-            .is_some_and(|insert| !insert.Returning.is_empty())
-            || node
-                .downcast_ref::<ast::UpdateStmt>()
-                .is_some_and(|update| !update.Returning.is_empty())
-            || node
-                .downcast_ref::<ast::DeleteStmt>()
-                .is_some_and(|delete| !delete.Returning.is_empty()),
-    ))
+    let returning = node
+        .downcast_ref::<ast::InsertStmt>()
+        .is_some_and(|insert| !insert.Returning.is_empty())
+        || node
+            .downcast_ref::<ast::UpdateStmt>()
+            .is_some_and(|update| !update.Returning.is_empty())
+        || node
+            .downcast_ref::<ast::DeleteStmt>()
+            .is_some_and(|delete| !delete.Returning.is_empty());
+    let analysis_sql = if let Some(conflict) = &postgresql_conflict {
+        let (start, end) = conflict.SourceSpan;
+        if start >= end || sql.get(start..end) != Some(conflict.OriginalText.as_str()) {
+            return Err((
+                "0A000",
+                "invalid PostgreSQL conflict-clause source span".into(),
+            ));
+        }
+        let before = sql.get(..start).ok_or_else(|| {
+            (
+                "0A000",
+                "invalid PostgreSQL conflict-clause source span".into(),
+            )
+        })?;
+        let after = sql.get(end..).ok_or_else(|| {
+            (
+                "0A000",
+                "invalid PostgreSQL conflict-clause source span".into(),
+            )
+        })?;
+        Some(format!("{before}{after}"))
+    } else {
+        None
+    };
+    Ok(PrepareCommand {
+        command: Some(tag),
+        returning,
+        postgresql_conflict,
+        analysis_sql,
+    })
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)

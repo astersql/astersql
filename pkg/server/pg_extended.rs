@@ -407,6 +407,7 @@ struct Statement {
     mapping: Vec<usize>,
     command: Option<&'static str>,
     returning: bool,
+    postgresql_conflict: Option<astersql_parser_ast::PostgreSQLConflictClause>,
 }
 struct Portal {
     integer_parameters: bool,
@@ -422,6 +423,7 @@ struct Portal {
     formats: Vec<usize>,
     command: Option<&'static str>,
     returning: bool,
+    postgresql_conflict: Option<astersql_parser_ast::PostgreSQLConflictClause>,
     messages: Option<Vec<(u8, Vec<u8>)>>,
     offset: usize,
 }
@@ -606,13 +608,20 @@ impl Extended {
                         return Err(error("0A000", "unsupported text parameter OID"));
                     }
                 }
-                let (command, returning) = if let Some(query) = &session_query {
-                    (Some(query.command()), false)
-                } else if catalog.is_some() {
-                    (Some("SELECT"), false)
-                } else {
-                    crate::pg_result::prepare_command(&sql)?
-                };
+                let (command, returning, postgresql_conflict, analysis_sql) =
+                    if let Some(query) = &session_query {
+                        (Some(query.command()), false, None, None)
+                    } else if catalog.is_some() {
+                        (Some("SELECT"), false, None, None)
+                    } else {
+                        let plan = crate::pg_result::prepare_command(&sql)?;
+                        (
+                            plan.command,
+                            plan.returning,
+                            plan.postgresql_conflict,
+                            plan.analysis_sql,
+                        )
+                    };
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
                 }
@@ -624,7 +633,10 @@ impl Extended {
                     catalog.metadata()
                 } else {
                     context
-                        .prepare_statement(&sql, &CancellationToken::new())
+                        .prepare_statement(
+                            analysis_sql.as_deref().unwrap_or(&sql),
+                            &CancellationToken::new(),
+                        )
                         .map_err(engine)?
                 };
                 if catalog.is_none() && metadata.parameter_count != mapping.len() {
@@ -668,6 +680,7 @@ impl Extended {
                         mapping,
                         command,
                         returning,
+                        postgresql_conflict,
                     },
                 );
                 Ok(vec![(b'1', vec![])])
@@ -778,6 +791,7 @@ impl Extended {
                         formats: result_formats,
                         command: statement.command,
                         returning: statement.returning,
+                        postgresql_conflict: statement.postgresql_conflict.clone(),
                         messages: None,
                         offset: 0,
                     },
@@ -834,6 +848,12 @@ impl Extended {
                     .portals
                     .get_mut(&name)
                     .ok_or_else(|| error("34000", "unknown portal"))?;
+                if portal.postgresql_conflict.is_some() {
+                    return Err(error(
+                        "0A000",
+                        "PostgreSQL ON CONFLICT DO NOTHING is unsupported by the shared executor",
+                    ));
+                }
                 if portal.returning {
                     return Err(error(
                         "0A000",

@@ -1546,6 +1546,39 @@ pub struct Assignment {
     pub Expr: ExprNode,
 }
 
+/// PostgreSQL `ON CONFLICT` target form retained separately from MySQL's
+/// `ON DUPLICATE KEY UPDATE` assignments.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PostgreSQLConflictTarget {
+    /// No index inference target was specified.
+    #[default]
+    Any,
+    /// A column inference target, optionally restricted by a predicate.
+    Inference,
+    /// A named unique or exclusion constraint target.
+    Constraint,
+}
+
+/// PostgreSQL conflict action currently accepted at the parser boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PostgreSQLConflictAction {
+    #[default]
+    DoNothing,
+}
+
+/// PostgreSQL conflict-ignore clause with its exact source span.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PostgreSQLConflictClause {
+    pub Target: PostgreSQLConflictTarget,
+    pub Columns: Vec<ColumnName>,
+    pub Constraint: Option<PostgreSQLIdentifier>,
+    pub Predicate: Option<ExprNode>,
+    pub Action: PostgreSQLConflictAction,
+    /// Half-open UTF-8 byte range in the original input.
+    pub SourceSpan: (usize, usize),
+    pub OriginalText: String,
+}
+
 /// INSERT 语句 AST。
 #[derive(Default)]
 pub struct InsertStmt {
@@ -1562,6 +1595,7 @@ pub struct InsertStmt {
     pub TableHints: Vec<TableOptimizerHint>,
     pub PartitionNames: Vec<CIStr>,
     pub Returning: Vec<SelectField>,
+    pub PostgreSQLConflict: Option<PostgreSQLConflictClause>,
     pub RowAlias: CIStr,
     pub ColumnAliases: Vec<CIStr>,
 }

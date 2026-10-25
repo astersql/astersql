@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -216,6 +216,377 @@ if task == 18:
         ('forward_table','WITH a AS (SELECT v FROM @t@), @t@ AS (SELECT 2 AS v) SELECT v FROM a',[]),
         ('self_table','WITH @t@ AS (SELECT v FROM @t@) SELECT v FROM @t@',[]),
     ]
+def conflict_ignore_handoff():
+    """Compare conflict syntax and read-only metadata before execution gates."""
+    scope = f'dialect_07_{os.getpid()}_{int(sys.argv[2])}'
+    local_dsn = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+    reference_dsn = os.environ['PG18_REFERENCE_DSN']
+    mysql_dsn = urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
+    mysql_env = dict(os.environ, MYSQL_PWD=mysql_dsn.password or '')
+    mysql_args = [
+        'mysql', '--protocol=TCP', '--connect-timeout=5', '-h', mysql_dsn.hostname,
+        '-P', str(mysql_dsn.port or 3306), '-u', mysql_dsn.username or 'root',
+        '--batch', '--raw', '--skip-column-names',
+    ]
+    cases = [
+        ('omitted_target', 'valid',
+         'INSERT INTO public.t(id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id', [23]),
+        ('inference_predicate', 'valid',
+         'INSERT INTO public.t(id) VALUES (2) ON CONFLICT (id) WHERE id > 0 DO NOTHING', []),
+        ('constraint_target', 'valid',
+         'INSERT INTO public.t(id) VALUES (3) ON CONFLICT ON CONSTRAINT t_pkey DO NOTHING', []),
+        ('missing_action', 'invalid',
+         '/*中*/ INSERT INTO public.t(id) VALUES (4) ON CONFLICT', []),
+        ('empty_target', 'invalid',
+         'INSERT INTO public.t(id) VALUES (5) ON CONFLICT () DO NOTHING', []),
+        ('target_missing_action', 'invalid',
+         'INSERT INTO public.t(id) VALUES (6) ON CONFLICT (id) DO', []),
+        ('quoted_conflict_keyword', 'invalid',
+         'INSERT INTO public.t(id) VALUES (7) ON "CONFLICT" DO NOTHING', []),
+        ('quoted_action_keyword', 'invalid',
+         'INSERT INTO public.t(id) VALUES (8) ON CONFLICT DO "NOTHING"', []),
+    ]
+    connections = {}
+    open_statements = []
+    failures = []
+    checks = 0
+    reference_syntax = 0
+    reference_describe_cases = 0
+    local_prepare_describe_cases = 0
+    local_simple_query_gate_cases = 0
+    local_execute_gate_cases = 0
+    mysql_rejections = 0
+    cleanup_ok = True
+    schema_created = False
+    completed = False
+
+    def check(condition, message):
+        nonlocal checks
+        checks += 1
+        if not condition:
+            failures.append(message)
+
+    def archive(case_id, side, data, result, attempt=0):
+        append_observation(evidence, dict(run=evidence.name, case_id=case_id, side=side,
+                                          attempt=attempt, input=data, observation=result))
+
+    def mysql_reference(sql):
+        setup = ("SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "
+                 "USE mysql; CREATE TEMPORARY TABLE t (id INT PRIMARY KEY); "
+                 "INSERT INTO t VALUES (31); ")
+        return subprocess.run(mysql_args + ['-e', setup + sql], env=mysql_env,
+                              capture_output=True, text=True, timeout=20)
+
+    def recover(conn, side, case_id):
+        nonlocal checks
+        state = transaction(conn)
+        if state in (2, 3):
+            rolled_back = query(conn, 'ROLLBACK')
+            check(rolled_back['status'] == 1, side + ' rollback after error')
+        probe = query(conn, 'SELECT 1::int4')
+        archive(case_id + '_recovery', 'reference' if side.startswith('reference') else 'aster',
+                dict(phase='PQexec', sql='SELECT 1::int4'), dict(probe, endpoint=side))
+        check(probe['status'] == 2 and probe['rows'] == [['1']] and transaction(conn) == 0,
+              side + ' same-connection recovery')
+
+    try:
+        for label, dsn in [('reference', reference_dsn), ('reference_observer', reference_dsn),
+                           ('aster', local_dsn), ('aster_b', local_dsn), ('aster_observer', local_dsn)]:
+            conn = connect(dsn.encode())
+            connections[label] = conn
+            check(bool(conn) and status(conn) == 0, label + ' connection failed')
+            if label.startswith('reference'):
+                check(query(conn, "SET TIME ZONE 'UTC'")['status'] == 1, label + ' timezone')
+            check(parameter_status(conn, b'client_encoding') == b'UTF8', label + ' encoding')
+            check(parameter_status(conn, b'TimeZone') == b'UTC', label + ' timezone status')
+            check(query(conn, 'SET search_path TO public')['status'] == 1, label + ' search_path')
+
+        ref = connections['reference']
+        reference_identity = query(ref, "SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(reference_identity[1] == '180006', 'exact PostgreSQL 18.6 reference required')
+        reference_build = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        mysql_identity = mysql_reference(
+            'SELECT VERSION(), @@version_compile_os, @@version_compile_machine; '
+            'SELECT @@sql_mode, @@character_set_connection, @@collation_connection')
+        mysql_lines = mysql_identity.stdout.splitlines()
+        check(mysql_identity.returncode == 0 and len(mysql_lines) == 2, 'MySQL reference identity')
+        check(mysql_lines[0].startswith('8.4.7'), 'exact MySQL 8.4.7 reference required')
+        mysql_build = json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text())
+        check(mysql_build.get('version') == '8.4.7' and mysql_build.get('image_digest'),
+              'MySQL image provenance must identify the 8.4.7 build')
+        check(mysql_lines[1].split('\t') == ['', 'utf8mb4', 'utf8mb4_general_ci'],
+              'MySQL reference SQL mode/charset/collation')
+        (evidence / 'mysql-reference.json').write_text(json.dumps({
+            'identity': mysql_lines, 'build': mysql_build,
+            'sql_mode': '', 'character_set_connection': 'utf8mb4',
+            'collation_connection': 'utf8mb4_general_ci',
+        }, indent=2))
+
+        build = json.loads((evidence / 'rust-build.json').read_text())
+        build['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance = dict(
+            run=evidence.name, target_version='18.6', source=source_snapshot(root), build=build,
+            client=dict(python=sys.version, library=str(library),
+                        sha256=hashlib.sha256(library.read_bytes()).hexdigest(), PQlibVersion=version()),
+            os=platform.platform(), storage='CreateAnalyzeSession test storage',
+            authentication='InsecureRootOnly',
+            reference=dict(version=reference_identity[0], server_version_num=reference_identity[1]),
+            reference_build=reference_build, mysql_reference= mysql_build,
+            endpoints={label: endpoint(connections[label]) for label in
+                       ['aster', 'aster_b', 'reference']})
+        (evidence / 'provenance.json').write_text(json.dumps(provenance, indent=2))
+        check(validate_provenance(provenance, copy.deepcopy(provenance)), 'provenance gate')
+        damaged = copy.deepcopy(provenance)
+        damaged['reference_build']['server_version_num'] = 180004
+        check(not validate_provenance(damaged, provenance), 'negative provenance check')
+
+        check(query(ref, f'CREATE SCHEMA {scope}')['status'] == 1, 'reference schema setup')
+        schema_created = True
+        check(query(ref, f'CREATE TABLE {scope}.t (id integer CONSTRAINT t_pkey PRIMARY KEY)')['status'] == 1,
+              'reference target table setup')
+        check(query(ref, f'CREATE UNIQUE INDEX {scope}_positive_id ON {scope}.t(id) WHERE id > 0')['status'] == 1,
+              'reference partial index setup')
+        check(query(ref, f'INSERT INTO {scope}.t VALUES (31)')['status'] == 1,
+              'reference initial row setup')
+
+        registered = []
+        for index, (case_id, kind, sql, oids) in enumerate(cases):
+            reference_sql = sql.replace('public.t', f'{scope}.t')
+            data = dict(phase='PQprepare', sql=sql, statement=f'case_{case_id}',
+                        parameter_oids=oids, arguments=None, parameter_formats=None, result_format=0)
+            registered.append(dict(case_id=case_id, capability_id='pg.dialect.insert.conflict_ignore.syntax',
+                                   kind=kind, input=data, reference_sql=reference_sql,
+                                   encoding='UTF8', timezone='UTC', search_path='public',
+                                   initial_state='I', role={'aster': 'root', 'aster_b': 'root', 'reference': 'postgres'},
+                                   object_mapping={'aster': f'{sys.argv[3]}.t', 'reference': f'{scope}.t'},
+                                   expected={'reference': '42601' if kind == 'invalid' else 'Prepare/Describe success',
+                                             'aster': '42601' if kind == 'invalid' else 'Prepare/Describe success; Execute 0A000',
+                                             'mysql': 1064},
+                                   execution_input=(dict(phase='PQexecPrepared', statement=f'{case_id}_aster',
+                                                         parameter_oids=oids,
+                                                         arguments=['31'] if case_id == 'omitted_target' else [],
+                                                         parameter_formats=[0] if case_id == 'omitted_target' else [],
+                                                         result_format=0) if kind == 'valid' else None),
+                                   scope='syntax and read-only metadata handoff; simple Query and Execute are gated before writes'))
+            (evidence / 'cases.json').write_text(json.dumps(registered, indent=2))
+            initial_local = query(connections['aster_observer'], 'SELECT id FROM public.t ORDER BY id')
+            initial_reference = query(connections['reference_observer'],
+                                      f'SELECT id FROM {scope}.t ORDER BY id')
+            check(initial_local['status'] == 2 and initial_local['rows'] == [['31']],
+                  case_id + ' local initial state')
+            check(initial_reference['status'] == 2 and initial_reference['rows'] == [['31']],
+                  case_id + ' reference initial state')
+
+            reference_result = observe(prepare(
+                ref, data['statement'].encode(), reference_sql.encode(), len(oids),
+                (c.c_uint * len(oids))(*oids) if oids else None))
+            reference_result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(ref))
+            archive(case_id, 'reference', dict(data, sql=reference_sql), reference_result)
+            local_results = {}
+            local_descriptions = {}
+            order = ['aster', 'aster_b'] if index % 2 == 0 else ['aster_b', 'aster']
+            for ordinal, side in enumerate(order):
+                conn = connections[side]
+                local_data = dict(data, statement=f'{case_id}_{side}')
+                result = observe(prepare(
+                    conn, local_data['statement'].encode(), sql.encode(), len(oids),
+                    (c.c_uint * len(oids))(*oids) if oids else None))
+                result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))
+                local_results[side] = result
+                archive(case_id, 'aster', local_data, dict(result, endpoint=side), ordinal)
+                if kind == 'valid' and result['status'] == 1:
+                    open_statements.append((conn, local_data['statement']))
+                    description = observe(describe(conn, local_data['statement'].encode()))
+                    archive(case_id + '_describe', 'aster',
+                            dict(phase='PQdescribePrepared', statement=local_data['statement']), description)
+                    check(description['status'] == 1 and description['state'] == '',
+                          side + ' read-only Describe success')
+                    local_descriptions[side] = description
+                recover(conn, side, case_id)
+                if ordinal == 0:
+                    print('PG_DIALECT_CHECKPOINT ' + case_id, flush=True)
+                    check(sys.stdin.readline().strip() == 'continue', 'MySQL checkpoint aborted')
+
+            if kind == 'valid':
+                check(reference_result['status'] == 1 and reference_result['state'] == ''
+                      and reference_result['transaction_after'] == 'I', case_id + ' PG18 parse/analysis')
+                local_prepare_ok = all(result['status'] == 1 and result['state'] == ''
+                                       and result['transaction_after'] == 'I'
+                                       for result in local_results.values())
+                check(local_prepare_ok, case_id + ' local read-only Parse')
+                reference_description = None
+                if reference_result['status'] == 1:
+                    reference_description = observe(describe(ref, data['statement'].encode()))
+                    archive(case_id + '_describe', 'reference',
+                            dict(phase='PQdescribePrepared', statement=data['statement']), reference_description)
+                    check(reference_description['status'] == 1, case_id + ' PG18 Describe')
+                    reference_describe_cases += int(reference_description['status'] == 1)
+                    if case_id == 'omitted_target' and reference_description['status'] == 1:
+                        check(reference_description['param_count'] == 1 and reference_description['params'] == [23],
+                              'explicit int4 parameter Describe')
+                        check(reference_description['fields'][0][0] == 'id' and reference_description['fields'][0][1] == 23,
+                              'RETURNING id Describe metadata')
+                    reference_syntax += 1
+                    close_result = observe(close_prepared(ref, data['statement'].encode()))
+                    check(close_result['status'] == 1, 'reference statement close')
+                metadata_matches = local_prepare_ok and all(
+                    side in local_descriptions
+                    and local_descriptions[side]['status'] == 1
+                    and local_descriptions[side]['state'] == ''
+                    and reference_description is not None
+                    and reference_description['status'] == 1
+                    and compare_metadata(local_descriptions[side], reference_description, 'describe')
+                    for side in local_results
+                )
+                check(metadata_matches, case_id + ' local/reference Describe metadata')
+                if metadata_matches:
+                    local_prepare_describe_cases += 1
+
+                # Simple Query and extended Execute stay separate from successful
+                # read-only Prepare/Describe. Both paths reject before a write.
+                simple_sql = sql.replace('$1', '31')
+                all_simple_gated = True
+                all_execute_gated = True
+                for side in local_results:
+                    conn = connections[side]
+                    simple_result = query(conn, simple_sql)
+                    archive(case_id + '_simple_query_gate', 'aster',
+                            dict(phase='PQexec', sql=simple_sql),
+                            dict(simple_result, endpoint=side))
+                    simple_gated = (simple_result['status'] == 7 and simple_result['state'] == '0A000'
+                                    and transaction(conn) == 0)
+                    check(simple_gated, side + ' simple Query pre-write 0A000 gate')
+                    all_simple_gated &= simple_gated
+                    recover(conn, side, case_id + '_simple_query_gate')
+
+                    arguments = ['31'] if case_id == 'omitted_target' else []
+                    argument_values = ((c.c_char_p * len(arguments))(
+                        *[argument.encode() for argument in arguments]) if arguments else None)
+                    execution_statement = f'{case_id}_{side}'
+                    execution_result = observe(exec_prepared(
+                        conn, execution_statement.encode(), len(arguments), argument_values,
+                        None, None, 0))
+                    execution_result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))
+                    execution_data = dict(phase='PQexecPrepared', statement=execution_statement,
+                                          parameter_oids=oids, arguments=arguments,
+                                          parameter_formats=[0] * len(arguments), result_format=0)
+                    archive(case_id + '_execute_gate', 'aster', execution_data,
+                            dict(execution_result, endpoint=side))
+                    execute_gated = (execution_result['status'] == 7
+                                     and execution_result['state'] == '0A000'
+                                     and execution_result['transaction_after'] == 'I')
+                    check(execute_gated, side + ' extended Execute pre-write 0A000 gate')
+                    all_execute_gated &= execute_gated
+                    recover(conn, side, case_id + '_execute_gate')
+                    closed = observe(close_prepared(conn, execution_statement.encode()))
+                    if (conn, execution_statement) in open_statements:
+                        open_statements.remove((conn, execution_statement))
+                    check(closed['status'] == 1, side + ' statement close')
+
+                local_after = query(connections['aster_observer'], 'SELECT id FROM public.t ORDER BY id')
+                check(local_after['status'] == 2 and local_after['rows'] == [['31']],
+                      case_id + ' local row unchanged after both execution gates')
+                local_simple_query_gate_cases += int(all_simple_gated)
+                local_execute_gate_cases += int(all_execute_gated)
+            else:
+                check(reference_result['status'] == 7 and reference_result['state'] == '42601',
+                      case_id + ' PG18 syntax error')
+                mapped_position_delta = len(f'{scope}.t') - len('public.t')
+                expected_local_position = str(int(reference_result['position']) - mapped_position_delta)
+                check(all(result['status'] == 7 and result['state'] == '42601'
+                          and result['position'] == expected_local_position
+                          and result['transaction_after'] == 'I' for result in local_results.values()),
+                      case_id + ' same source position and error recovery')
+                recover(ref, 'reference', case_id)
+            check(query(connections[order[0]], 'SELECT 1::int4')['rows'] == [['1']],
+                  case_id + ' first PG endpoint after second endpoint')
+
+            mysql_sql = sql.replace('public.t', 't').replace('$1', '31')
+            mysql_result = mysql_reference(mysql_sql)
+            combined_error = mysql_result.stderr
+            match = re.search(r'ERROR\s+(\d+)\s+\(([^)]+)\)', combined_error)
+            code = int(match.group(1)) if match else None
+            state = match.group(2) if match else None
+            check(mysql_result.returncode != 0 and code == 1064 and state == '42000',
+                  case_id + ' MySQL 8.4.7 must reject PG conflict syntax')
+            mysql_location = ('near \'"CONFLICT"' if case_id == 'quoted_conflict_keyword'
+                              else "near 'CONFLICT")
+            check(mysql_location in combined_error, case_id + ' MySQL syntax location')
+            if code == 1064 and state == '42000':
+                mysql_rejections += 1
+            archive(case_id, 'mysql', dict(phase='mysql-query', command=mysql_sql),
+                    dict(code=mysql_result.returncode, error_code=code, sqlstate=state,
+                         error=combined_error, sql_mode='', character_set='utf8mb4',
+                         collation='utf8mb4_general_ci'))
+
+            final_local = query(connections['aster_observer'], 'SELECT id FROM public.t ORDER BY id')
+            final_reference = query(connections['reference_observer'],
+                                    f'SELECT id FROM {scope}.t ORDER BY id')
+            check(final_local['rows'] == initial_local['rows'], case_id + ' local prepare side effects')
+            check(final_reference['rows'] == initial_reference['rows'], case_id + ' reference prepare side effects')
+
+        final_reference = query(ref, "SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(final_reference == reference_identity, 'PostgreSQL reference identity changed')
+        provenance_final = copy.deepcopy(provenance)
+        provenance_final['source'] = source_snapshot(root)
+        provenance_final['build']['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance_final['client']['sha256'] = hashlib.sha256(library.read_bytes()).hexdigest()
+        provenance_final['reference_build'] = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        check(validate_provenance(provenance, provenance_final), 'provenance changed during run')
+        completed = True
+    finally:
+        for conn, statement in open_statements:
+            try:
+                close_prepared(conn, statement.encode())
+            except Exception:
+                cleanup_ok = False
+        for conn in connections.values():
+            if conn:
+                try:
+                    if transaction(conn) in (2, 3):
+                        cleanup_ok = query(conn, 'ROLLBACK')['status'] == 1 and cleanup_ok
+                    finish(conn)
+                except Exception:
+                    cleanup_ok = False
+        if schema_created:
+            cleanup_conn = connect(reference_dsn.encode())
+            try:
+                cleanup_ok = status(cleanup_conn) == 0 and query(
+                    cleanup_conn, f'DROP SCHEMA {scope} CASCADE')['status'] == 1 and cleanup_ok
+            finally:
+                finish(cleanup_conn)
+        reference_probe = connect(reference_dsn.encode())
+        try:
+            cleanup_ok = status(reference_probe) == 0 and query(
+                reference_probe, 'SELECT 1::int4')['rows'] == [['1']] and cleanup_ok
+        finally:
+            finish(reference_probe)
+        cleanup = dict(cleanup_ok=cleanup_ok, reference_schema_dropped=schema_created,
+                       local_rows_preserved=True, temporary_mysql_tables_connection_scoped=True)
+        (evidence / 'reference-cleanup.json').write_text(json.dumps(cleanup, indent=2))
+        summary = dict(cases=len(cases), assertions=checks, failures=failures,
+                       reference_syntax_cases=reference_syntax,
+                       reference_describe_cases=reference_describe_cases,
+                       local_prepare_describe_cases=local_prepare_describe_cases,
+                       local_simple_query_gate_cases=local_simple_query_gate_cases,
+                       local_execute_gate_cases=local_execute_gate_cases,
+                       mysql_rejection_cases=mysql_rejections,
+                       syntax_eligible=(len(cases) if completed and cleanup_ok and not failures
+                                        and reference_syntax == 3 and reference_describe_cases == 3
+                                        and local_prepare_describe_cases == 3
+                                        and local_simple_query_gate_cases == 3
+                                        and local_execute_gate_cases == 3
+                                        and mysql_rejections == len(cases) else 0),
+                       unique_effective=0,
+                       full_dml_semantic_successes=0,
+                       scope='syntax and read-only target/parameter metadata handoff; simple Query and Execute gated before writes; no conflict DML executed',
+                       cleanup_ok=cleanup_ok)
+        (evidence / 'summary.json').write_text(json.dumps(summary, indent=2))
+    if failures:
+        raise AssertionError('conflict-ignore handoff failures: ' + '; '.join(failures))
+    assert summary['syntax_eligible'] == len(cases), 'all registered conflict cases must be applicable'
+    print(json.dumps(summary), flush=True)
+
 if task == 24:
     cases = [(name,sql,oids) for name,sql,oids in [
         ('coexist','SELECT $1::int4 AS v',[23]),
@@ -2402,6 +2773,10 @@ if task == 5:
 
 if task == 6:
     delete_returning_handoff()
+    sys.exit(0)
+
+if task == 7:
+    conflict_ignore_handoff()
     sys.exit(0)
 
 if task == 4:

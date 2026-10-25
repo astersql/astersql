@@ -429,6 +429,30 @@ fn simple_query_encoding_rejects_unrepresentable_results() {
 }
 
 #[test]
+fn pg_conflict_prepare_retains_clause_and_builds_analysis_sql_from_its_span() {
+    let sql = "INSERT INTO t(id) VALUES (2) ON CONFLICT (id) WHERE id > 0 DO NOTHING RETURNING id";
+    let plan = crate::pg_result::prepare_command(sql).unwrap();
+    assert_eq!(plan.command, Some("INSERT"));
+    assert!(plan.returning);
+    let conflict = plan.postgresql_conflict.expect("conflict clause retained");
+    assert_eq!(
+        conflict.Target,
+        astersql_parser_ast::PostgreSQLConflictTarget::Inference
+    );
+    let (start, end) = conflict.SourceSpan;
+    assert_eq!(sql.get(start..end), Some(conflict.OriginalText.as_str()));
+    let analysis_sql = plan.analysis_sql.expect("read-only analysis SQL");
+    assert_eq!(analysis_sql, format!("{}{}", &sql[..start], &sql[end..]));
+    assert!(!analysis_sql.contains("ON CONFLICT"));
+    assert!(analysis_sql.contains("RETURNING id"));
+    assert_eq!(
+        crate::pg_result::command(sql).unwrap_err().0,
+        "0A000",
+        "simple Query remains gated before DML execution"
+    );
+}
+
+#[test]
 fn startup_time_probe_preserves_sql_boundaries() {
     use crate::pg_result::adapt_session_query;
     for sql in [

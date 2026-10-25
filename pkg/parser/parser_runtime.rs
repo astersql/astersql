@@ -77,6 +77,7 @@ pub trait yyLexer {
     fn AppendError(&mut self, err: ParserError);
     fn AppendWarn(&mut self, err: ParserError);
     fn LastErrorAsWarn(&mut self) {}
+    fn set_postgresql_syntax_error_offset(&mut self, _offset: usize) {}
     fn Errors(&self) -> (Vec<ParserError>, Vec<ParserError>);
     // Go's optional stmtTexter contract: only real scanners own source slices.
     fn statement_text(&mut self) -> Option<(charset::encoding::EncodingRef, String)> {

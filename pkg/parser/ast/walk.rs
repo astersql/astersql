@@ -352,7 +352,8 @@ children!(FieldList => Fields);
 children!(ByItem => Expr);
 children!(Limit => Count, Offset);
 children!(Assignment => Column, Expr);
-children!(InsertStmt => Select, Table, Columns, Lists, OnDuplicate, Returning);
+children!(PostgreSQLConflictClause => Columns, Predicate);
+children!(InsertStmt => Select, Table, Columns, Lists, OnDuplicate, Returning, PostgreSQLConflict);
 children!(UpdateStmt => With, TableRefs, From, List, Where, Order, Limit, Returning);
 children!(DeleteStmt => With, TableRefs, Using, Tables, Where, Order, Limit, Returning);
 children!(ColumnOption => Expr);
@@ -913,6 +914,7 @@ embedded!(
     PartitionMethod,
     PartitionOptions,
     PrivElem,
+    PostgreSQLConflictClause,
     ProcedureDecl,
     QueryWatchOption,
     QueryWatchResourceGroupOption,

@@ -2880,6 +2880,7 @@ impl ConcreteSession {
             Lists: lists,
             Setlist: statement.Setlist,
             OnDuplicate: statement.OnDuplicate.clone(),
+            PostgreSQLConflict: None,
             Select: None,
             TableHints: statement.TableHints.clone(),
             PartitionNames: statement.PartitionNames.clone(),
