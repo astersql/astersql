@@ -168,7 +168,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "deletewithoutusingstmt_delete_tableoptimizerhint--faae84a6dc3987c3" => {
             DmlRule::DeleteWithoutUsingStmtAlt02
         }
-        "deletewithusingstmt_delete_tableoptimizerhintsop--1b793bf2a3433d41" => {
+        "deletewithusingstmt_delete_tableoptimizerhintsop--94fda1000b3570a7" => {
             DmlRule::DeleteWithUsingStmtAlt01
         }
         "dryrunoptions--8950917b07763fb3" => DmlRule::DryRunOptionsAlt01,
@@ -485,7 +485,7 @@ fn apply_general_rule(
     let rhs_len = rhs.len();
     let Context {
         output: out,
-        parser_state: _,
+        parser_state,
         lexer: _,
     } = context;
     match rule {
@@ -595,6 +595,7 @@ fn apply_general_rule(
             }));
         }
         DmlRule::DeleteWithoutUsingStmtAlt02 | DmlRule::DeleteWithUsingStmtAlt01 => {
+            let using_clause = rule == DmlRule::DeleteWithUsingStmtAlt01;
             let (
                 priority_back,
                 quick_back,
@@ -603,10 +604,10 @@ fn apply_general_rule(
                 join_back,
                 hints_back,
                 before_from,
-            ) = if rule == DmlRule::DeleteWithoutUsingStmtAlt02 {
+            ) = if !using_clause {
                 (6, 5, 4, 3, 1, 7, true)
             } else {
-                (7, 6, 5, 3, 1, 8, false)
+                (8, 7, 6, 4, 2, 9, false)
             };
             let Some(join) = rhs[rhs_len - join_back]
                 .item
@@ -615,6 +616,45 @@ fn apply_general_rule(
                 .cloned()
             else {
                 return Ok(false);
+            };
+            let targets = rhs[rhs_len - tables_back]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::TableSource>>())
+                .cloned()
+                .unwrap_or_default();
+            let returning = if using_clause {
+                rhs[rhs_len]
+                    .item
+                    .as_deref()
+                    .and_then(|item| item.downcast_ref::<Vec<parser_ast::SelectField>>())
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if using_clause
+                && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                && !returning.is_empty()
+            {
+                return Err(1);
+            }
+            let is_postgresql_using =
+                using_clause && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL;
+            if is_postgresql_using && targets.len() != 1 {
+                return Err(1);
+            }
+            let target_refs = if is_postgresql_using {
+                parser_ast::TableRefsClause {
+                    TableRefs: parser_ast::Join {
+                        Left: Some(Box::new(parser_ast::ResultSetNode::TableSource(
+                            targets[0].clone(),
+                        ))),
+                        ..Default::default()
+                    },
+                }
+            } else {
+                parser_ast::TableRefsClause { TableRefs: join.clone() }
             };
             out.statement = Some(Box::new(parser_ast::DeleteStmt {
                 Priority: rhs[rhs_len - priority_back]
@@ -634,26 +674,33 @@ fn apply_general_rule(
                     .and_then(|item| item.downcast_ref::<bool>())
                     .copied()
                     .unwrap_or(false),
-                IsMultiTable: true,
+                IsMultiTable: using_clause && !is_postgresql_using,
                 BeforeFrom: before_from,
-                Tables: rhs[rhs_len - tables_back]
-                    .item
-                    .as_deref()
-                    .and_then(|item| item.downcast_ref::<Vec<parser_ast::TableName>>())
-                    .cloned()
-                    .unwrap_or_default(),
-                TableRefs: Some(parser_ast::TableRefsClause { TableRefs: join }),
+                Tables: if is_postgresql_using {
+                    Vec::new()
+                } else {
+                    targets
+                        .iter()
+                        .map(|target| target.Source.clone())
+                        .collect()
+                },
+                TableRefs: Some(target_refs),
+                Using: is_postgresql_using
+                    .then_some(parser_ast::TableRefsClause { TableRefs: join }),
+                UsingOffset: is_postgresql_using
+                    .then_some(rhs[rhs_len - 3].offset.max(0) as usize),
                 TableHints: rhs[rhs_len - hints_back]
                     .item
                     .as_deref()
                     .and_then(|item| item.downcast_ref::<Vec<parser_ast::TableOptimizerHint>>())
                     .cloned()
                     .unwrap_or_default(),
-                Where: rhs[rhs_len]
+                Where: rhs[rhs_len - usize::from(using_clause)]
                     .item
                     .as_deref()
                     .and_then(|item| item.downcast_ref::<parser_ast::ExprNode>())
                     .cloned(),
+                Returning: returning,
                 ..Default::default()
             }));
         }

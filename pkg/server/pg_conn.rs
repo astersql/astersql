@@ -706,6 +706,22 @@ pub(crate) fn write_sql_error(
         } else {
             None
         }
+    } else if state == "0A000"
+        && message == "PostgreSQL DELETE USING is unsupported by the shared executor"
+    {
+        let mut parser =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL);
+        parser
+            .ParseSQL(original_sql, &[])
+            .ok()
+            .and_then(|(statements, _)| {
+                statements.first().and_then(|statement| {
+                    statement
+                        .as_any()
+                        .downcast_ref::<astersql_parser_ast::DeleteStmt>()
+                        .and_then(|delete| delete.UsingOffset.map(|offset| offset + 1))
+                })
+            })
     } else {
         None
     };

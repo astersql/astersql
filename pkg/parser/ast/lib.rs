@@ -1591,6 +1591,10 @@ pub struct DeleteStmt {
     pub node_text: base::AstNode,
     pub Priority: i32,
     pub TableRefs: Option<TableRefsClause>,
+    /// PostgreSQL DELETE USING sources, kept separate from the delete target.
+    pub Using: Option<TableRefsClause>,
+    /// Zero-based byte offset of the PostgreSQL USING keyword in the source SQL.
+    pub UsingOffset: Option<usize>,
     pub Tables: Vec<TableName>,
     pub Where: Option<ExprNode>,
     pub Order: Vec<ByItem>,

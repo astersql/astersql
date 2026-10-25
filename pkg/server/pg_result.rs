@@ -258,7 +258,13 @@ fn command_for_phase(
         }
         "UPDATE"
     } else if let Some(delete) = node.downcast_ref::<ast::DeleteStmt>() {
-        if !delete.Returning.is_empty() {
+        if delete.Using.is_some() {
+            return Err((
+                "0A000",
+                "PostgreSQL DELETE USING is unsupported by the shared executor".into(),
+            ));
+        }
+        if !delete.Returning.is_empty() && !prepare {
             return Err((
                 "0A000",
                 "DML RETURNING is unsupported by the PostgreSQL listener".into(),
@@ -301,7 +307,10 @@ fn command_for_phase(
             .is_some_and(|insert| !insert.Returning.is_empty())
             || node
                 .downcast_ref::<ast::UpdateStmt>()
-                .is_some_and(|update| !update.Returning.is_empty()),
+                .is_some_and(|update| !update.Returning.is_empty())
+            || node
+                .downcast_ref::<ast::DeleteStmt>()
+                .is_some_and(|delete| !delete.Returning.is_empty()),
     ))
 }
 fn invalid(message: &str) -> io::Error {
@@ -675,7 +684,7 @@ pub(crate) fn encode_formats(
             .enumerate()
             .map(|(i, c)| {
                 let native = result.native_types.get(i);
-                if matches!(command, "INSERT" | "UPDATE")
+                if matches!(command, "INSERT" | "UPDATE" | "DELETE")
                     && c.charset != 63
                     && native.is_some_and(|tp| tp.code == 15)
                 {
@@ -704,7 +713,7 @@ pub(crate) fn encode_formats(
             body.extend_from_slice(&attribute.to_be_bytes());
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
-            let typmod = if matches!(command, "INSERT" | "UPDATE") && *oid == 1043 {
+            let typmod = if matches!(command, "INSERT" | "UPDATE" | "DELETE") && *oid == 1043 {
                 result
                     .native_types
                     .get(index)

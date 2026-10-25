@@ -66,6 +66,9 @@ enum QueryRule {
     TableNameOptWildAlt02,
     TableAliasRefListAlt01,
     TableAliasRefListAlt02,
+    DeleteUsingTargetAlt01,
+    DeleteUsingTargetListAlt01,
+    DeleteUsingTargetListAlt02,
     SelectStmtBasicAlt01,
     SelectStmtFromDualTableAlt01,
     SelectStmtFromTableAlt01,
@@ -326,6 +329,15 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         }
         "tablealiasreflist_tablealiasreflist_tablenameopt--871549a2ee9ebc78" => {
             Some(QueryRule::TableAliasRefListAlt02)
+        }
+        "deleteusingtarget_tablename_partitionnamelistopt--085503236ca5f2a8" => {
+            Some(QueryRule::DeleteUsingTargetAlt01)
+        }
+        "deleteusingtargetlist_deleteusingtarget--fa826cd0052eab0e" => {
+            Some(QueryRule::DeleteUsingTargetListAlt01)
+        }
+        "deleteusingtargetlist_deleteusingtargetlist_dele--e2b7749782a32e5a" => {
+            Some(QueryRule::DeleteUsingTargetListAlt02)
         }
         "selectstmtbasic_select_selectstmtopts_selectstmt--27a6c1194444bd40" => {
             Some(QueryRule::SelectStmtBasicAlt01)
@@ -2386,6 +2398,60 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 tables.push(table.clone());
             }
             out.item = Some(Box::new(tables));
+        }
+        QueryRule::DeleteUsingTargetAlt01 => {
+            let Some(mut table) = rhs[rhs_len - 2]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<parser_ast::TableName>())
+                .cloned()
+            else {
+                return Ok(false);
+            };
+            table.PartitionNames = rhs[rhs_len - 1]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::CIStr>>())
+                .cloned()
+                .unwrap_or_default();
+            let alias = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<parser_ast::CIStr>())
+                .cloned()
+                .unwrap_or_default();
+            out.item = Some(Box::new(parser_ast::TableSource {
+                Source: table,
+                AsName: alias,
+                ..Default::default()
+            }));
+        }
+        QueryRule::DeleteUsingTargetListAlt01 => {
+            let Some(target) = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<parser_ast::TableSource>())
+                .cloned()
+            else {
+                return Ok(false);
+            };
+            out.item = Some(Box::new(vec![target]));
+        }
+        QueryRule::DeleteUsingTargetListAlt02 => {
+            let mut targets = rhs[rhs_len - 2]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::TableSource>>())
+                .cloned()
+                .unwrap_or_default();
+            if let Some(target) = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<parser_ast::TableSource>())
+            {
+                targets.push(target.clone());
+            }
+            out.item = Some(Box::new(targets));
         }
         QueryRule::TableRefsClauseAlt01 => {
             let join = rhs[rhs_len - (0)]

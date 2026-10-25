@@ -126,6 +126,20 @@ fn pg_dialect_13_name_boundary() {
 }
 
 #[test]
+fn pg_dialect_06_delete_using_name_adaptation() {
+    let sql = "DELETE FROM public.t AS a USING public.s AS b WHERE a.id=b.id RETURNING a.id, b.id AS source_id";
+    assert_eq!(
+        rewrite(sql, "db", true).unwrap(),
+        "DELETE FROM `db`.t AS a USING `db`.s AS b WHERE a.id=b.id RETURNING a.id, b.id AS source_id"
+    );
+    let unaliased = "DELETE FROM public.t USING public.s WHERE public.t.id=public.s.id RETURNING public.t.id, public.s.id AS source_id";
+    assert_eq!(
+        rewrite(unaliased, "db", true).unwrap(),
+        "DELETE FROM `db`.t USING `db`.s WHERE public.t.id=public.s.id RETURNING public.t.id, public.s.id AS source_id"
+    );
+}
+
+#[test]
 fn pg_dialect_14_behavior() {
     use astersql_parser_ast as ast;
     let mut assertions = 0;

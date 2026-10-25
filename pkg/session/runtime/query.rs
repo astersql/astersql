@@ -2352,6 +2352,56 @@ impl ConcreteSession {
         Ok(fields)
     }
 
+    /// Bind DELETE output against its target relation without executing the
+    /// deletion. PostgreSQL USING remains outside this target-only metadata path.
+    pub(super) fn delete_returning_fields(
+        &self,
+        delete: &ast::DeleteStmt,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
+        if delete.Using.is_some() {
+            return Err(SessionError::new(
+                "PostgreSQL DELETE USING metadata is unsupported",
+            ));
+        }
+        let select = ast::SelectStmt {
+            From: delete.TableRefs.clone(),
+            Fields: ast::FieldList {
+                Fields: delete.Returning.clone(),
+            },
+            ..Default::default()
+        };
+        let sources = self.relational_select_source_fields(&select)?;
+        if sources.is_empty() {
+            return Err(SessionError::new(
+                "PostgreSQL DELETE RETURNING target metadata is unavailable",
+            ));
+        }
+        let mut fields = self.relational_query_node_result_fields(&select, &[])?;
+        let mut index = 0;
+        for projection in &delete.Returning {
+            if let Some(wildcard) = &projection.WildCard {
+                let count = sources
+                    .iter()
+                    .filter(|source| {
+                        wildcard.Table.L.is_empty() || wildcard.Table.L == source.table_as_name.L
+                    })
+                    .count();
+                if count == 0 {
+                    return Err(SessionError::new(format!(
+                        "Unknown column '{}.*' in 'field list'",
+                        wildcard.Table.O
+                    )));
+                }
+                index += count;
+            } else if let Some(expression) = &projection.Expr {
+                fields[index].column.FieldType =
+                    pg_returning_expression_type(expression, &sources)?;
+                index += 1;
+            }
+        }
+        Ok(fields)
+    }
+
     pub(super) fn insert_parameter_constraints(
         &self,
         insert: &ast::InsertStmt,

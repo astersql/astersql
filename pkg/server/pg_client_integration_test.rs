@@ -1129,6 +1129,11 @@ fn pg_dialect_05_libpq() {
 }
 
 #[test]
+fn pg_dialect_06_libpq() {
+    pg_dialect_libpq(6);
+}
+
+#[test]
 fn pg_dialect_09_libpq() {
     pg_dialect_libpq(9);
 }
@@ -1169,6 +1174,9 @@ fn pg_dialect_libpq(task: u8) {
     assert!(std::env::var_os("PG18_REFERENCE_DSN").is_some());
     assert!(std::env::var_os("PG_CORE_REFERENCE_BUILD_FILE").is_some());
     assert!(std::env::var_os("MYSQL_REFERENCE_DSN").is_some());
+    if task == 6 {
+        assert!(std::env::var_os("MYSQL_REFERENCE_BUILD_FILE").is_some());
+    }
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let server = start_client_server(domain, Some(0));
     let _close = CloseServer(&server);
@@ -1209,6 +1217,28 @@ fn pg_dialect_libpq(task: u8) {
     native
         .execute(&format!("CREATE DATABASE {database}"))
         .unwrap();
+    if task == 6 {
+        native
+            .execute(&format!(
+                "CREATE TABLE {database}.dialect_06_baseline_t (id INT)"
+            ))
+            .unwrap();
+        native
+            .execute(&format!(
+                "CREATE TABLE {database}.dialect_06_baseline_s (id INT)"
+            ))
+            .unwrap();
+        native
+            .execute(&format!(
+                "INSERT INTO {database}.dialect_06_baseline_t VALUES (31)"
+            ))
+            .unwrap();
+        native
+            .execute(&format!(
+                "INSERT INTO {database}.dialect_06_baseline_s VALUES (31)"
+            ))
+            .unwrap();
+    }
     if task == 14 {
         native
             .execute(&format!("CREATE DATABASE {database}_other"))
@@ -1283,6 +1313,59 @@ fn pg_dialect_libpq(task: u8) {
                 .unwrap();
             use std::io::Write;
             writeln!(file, "{}", serde_json::json!({"phase":phase,"sql":sql,"error_code":1064,"sqlstate":"42000","packet":response})).unwrap();
+        }
+        if task == 6 {
+            mysql_query(socket, &format!("USE {database}"));
+            assert_eq!(
+                mysql_query(socket, "SELECT id FROM dialect_06_baseline_t ORDER BY id"),
+                vec![vec![Some(b"31".to_vec())]],
+                "the same MySQL connection lost its own table state"
+            );
+            mysql_query(socket, "DELETE FROM dialect_06_baseline_t WHERE id=999");
+            assert_eq!(
+                mysql_query(socket, "SELECT id FROM dialect_06_baseline_t ORDER BY id"),
+                vec![vec![Some(b"31".to_vec())]],
+                "MySQL control DML changed its fixture"
+            );
+            if phase == "before" {
+                let sql = "DELETE FROM dialect_06_baseline_t WHERE id=31 RETURNING id";
+                let mut request = vec![0x16]; // COM_STMT_PREPARE; do not execute the DML.
+                request.extend_from_slice(sql.as_bytes());
+                mysql_packet(socket, 0, &request);
+                let response = mysql_read(socket);
+                let accepted = response.first() == Some(&0);
+                if accepted {
+                    assert!(response.len() >= 9);
+                    let columns = u16::from_le_bytes(response[5..7].try_into().unwrap()) as usize;
+                    let parameters =
+                        u16::from_le_bytes(response[7..9].try_into().unwrap()) as usize;
+                    for count in [parameters, columns] {
+                        for _ in 0..count {
+                            mysql_read(socket);
+                        }
+                        if count > 0 {
+                            assert_eq!(mysql_read(socket).first(), Some(&0xfe));
+                        }
+                    }
+                    let mut close = vec![0x19];
+                    close.extend_from_slice(&response[1..5]);
+                    mysql_packet(socket, 0, &close);
+                }
+                let baseline = serde_json::json!({
+                    "phase": "before PG Parse",
+                    "sql": sql,
+                    "accepted": accepted,
+                    "error_code": if response.first() == Some(&0xff) && response.len() >= 3 { Some(u16::from_le_bytes([response[1], response[2]])) } else { None },
+                    "sqlstate": if response.first() == Some(&0xff) && response.len() >= 9 { Some(String::from_utf8_lossy(&response[4..9]).to_string()) } else { None },
+                    "packet": response,
+                    "executed": false
+                });
+                std::fs::write(
+                    evidence.join("mysql-local-delete-baseline.json"),
+                    baseline.to_string(),
+                )
+                .unwrap();
+            }
         }
         if task == 18 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let table = format!("t18_{}_{}", std::process::id(), address.port());
@@ -1689,6 +1772,26 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 6 {
+        assert_eq!(checkpoints, 10, "one libpq checkpoint per DELETE case");
+        let baseline: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence.join("mysql-local-delete-baseline.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(baseline["phase"], "before PG Parse");
+        assert_eq!(baseline["accepted"], true);
+        assert_eq!(baseline["executed"], false);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cases"], 10);
+        assert_eq!(summary["unique_effective"], 6);
+        assert!(summary["assertions"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(summary["using_gate_cases"], 2);
+        assert_eq!(summary["semantic_returning_success"], 0);
+        assert_eq!(summary["cleanup_ok"], true);
+        return;
+    }
     if task == 24 {
         assert_eq!(checkpoints, 6);
         let summary: serde_json::Value =

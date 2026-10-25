@@ -3270,6 +3270,147 @@ fn pg_dialect_05_behavior() {
 }
 
 #[test]
+fn pg_dialect_06_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+
+    fn delete(sql: &str, dialect: SqlDialect) -> parser_ast::DeleteStmt {
+        let node = parser::Parser::with_dialect(dialect)
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        *node
+            .into_any()
+            .downcast::<parser_ast::DeleteStmt>()
+            .ok()
+            .expect("DELETE AST")
+    }
+
+    let sql = "/*中*/ DELETE FROM public.t AS a WHERE id=$1 RETURNING a.id, a.*";
+    let statement = delete(sql, SqlDialect::PostgreSQL);
+    assert_eq!(statement.Returning.len(), 2);
+    assert!(matches!(
+        &statement.Returning[0].Expr.as_ref().unwrap().Kind,
+        ExprKind::Column(column) if column.Table.O == "a" && column.Name.O == "id"
+    ));
+    assert_eq!(
+        statement.Returning[1].WildCard.as_ref().unwrap().Table.O,
+        "a"
+    );
+    let parameter = statement.Where.as_ref().unwrap();
+    let ExprKind::Binary { Op, L, R } = &parameter.Kind else {
+        panic!("DELETE predicate should be an equality")
+    };
+    assert_eq!(Op, "=");
+    assert!(matches!(&L.Kind, ExprKind::Column(column) if column.Name.O == "id"));
+    assert!(matches!(R.Kind, ExprKind::ParamMarker { Offset }
+        if Offset == sql.find("$1").unwrap()));
+    assert_eq!(R.PostgreSQLParameterIndex(), Some(1));
+    assert_eq!(R.OriginTextPosition as usize, sql.find("$1").unwrap());
+    for (field, original) in statement.Returning.iter().zip(["a.id", "a.*"]) {
+        assert_eq!(field.OriginalText, original);
+        assert_eq!(
+            &sql[field.Offset..field.Offset + field.OriginalText.len()],
+            original
+        );
+        assert!(sql.is_char_boundary(field.Offset));
+    }
+
+    let using_sql = "DELETE FROM public.t AS a USING public.s AS b WHERE a.id=b.id RETURNING a.id, b.id AS source_id";
+    let mut pg = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    let using = pg
+        .ParseOneStmt(using_sql, "", "")
+        .unwrap_or_else(|error| panic!("PostgreSQL DELETE USING: {error}"));
+    let using = *using
+        .into_any()
+        .downcast::<parser_ast::DeleteStmt>()
+        .ok()
+        .expect("DELETE USING AST");
+    let target = using.TableRefs.as_ref().unwrap().TableRefs.Left.as_deref();
+    let Some(parser_ast::ResultSetNode::TableSource(target)) = target else {
+        panic!("DELETE target must remain separate from USING sources");
+    };
+    assert_eq!(target.Source.Name.O, "t");
+    assert_eq!(target.Source.Schema.O, "public");
+    assert_eq!(target.AsName.O, "a");
+    let source = using.Using.as_ref().unwrap().TableRefs.Left.as_deref();
+    let Some(parser_ast::ResultSetNode::TableSource(source)) = source else {
+        panic!("DELETE USING source must be retained independently");
+    };
+    assert_eq!(source.Source.Name.O, "s");
+    assert_eq!(source.Source.Schema.O, "public");
+    assert_eq!(source.AsName.O, "b");
+    assert_eq!(using.UsingOffset, Some(using_sql.find("USING").unwrap()));
+    assert!(matches!(
+        &using.Where.as_ref().unwrap().Kind,
+        ExprKind::Binary { L, R, .. }
+            if matches!(&L.Kind, ExprKind::Column(column) if column.Table.O == "a" && column.Name.O == "id")
+                && matches!(&R.Kind, ExprKind::Column(column) if column.Table.O == "b" && column.Name.O == "id")
+    ));
+    assert_eq!(using.Returning.len(), 2);
+    assert!(matches!(
+        &using.Returning[1].Expr.as_ref().unwrap().Kind,
+        ExprKind::Column(column) if column.Table.O == "b" && column.Name.O == "id"
+    ));
+    assert_eq!(using.Returning[1].AsName.O, "source_id");
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseOneStmt(using_sql, "", "")
+            .is_err()
+    );
+
+    let unaliased_using = delete(
+        "DELETE FROM public.t USING public.s WHERE public.t.id=public.s.id RETURNING public.t.id, public.s.id AS source_id",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(unaliased_using.Using.is_some());
+    assert!(unaliased_using.Returning.len() == 2);
+
+    let null_projection = delete(
+        "DELETE FROM public.t WHERE id IS NULL RETURNING *",
+        SqlDialect::PostgreSQL,
+    );
+    assert_eq!(null_projection.Returning.len(), 1);
+    assert!(null_projection.Returning[0].WildCard.is_some());
+
+    let protected = delete(
+        "DELETE FROM public.t WHERE id=1 /* RETURNING $2 */",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(protected.Returning.is_empty());
+
+    for (invalid, expected_position) in [
+        (
+            "DELETE FROM public.t WHERE id=1 RETURNING",
+            "DELETE FROM public.t WHERE id=1 RETURNING".chars().count() + 1,
+        ),
+        (
+            "DELETE FROM public.t RETURNING id WHERE id=1",
+            "DELETE FROM public.t RETURNING id ".chars().count() + 1,
+        ),
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(invalid, "", "").is_err(), "{invalid}");
+        assert_eq!(
+            parser.PostgreSQLSyntaxErrorPosition(),
+            Some(expected_position)
+        );
+        assert!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+    }
+
+    // Preserve the pre-existing MySQL DELETE RETURNING extension.
+    let mysql = delete("DELETE FROM t WHERE id=1 RETURNING t.*", SqlDialect::MySQL);
+    assert_eq!(mysql.Returning.len(), 1);
+    assert_eq!(mysql.Returning[0].WildCard.as_ref().unwrap().Table.O, "t");
+    let mysql_using = delete("DELETE FROM t USING s WHERE t.id=s.id", SqlDialect::MySQL);
+    assert!(mysql_using.IsMultiTable);
+    assert!(mysql_using.Using.is_none());
+    assert_eq!(mysql_using.Tables.len(), 1);
+    assert_eq!(mysql_using.Tables[0].Name.O, "t");
+    println!(
+        "pg_dialect_06_behavior: projection/span, parameter, USING, NULL, malformed SQL, lexical guard and MySQL baseline"
+    );
+}
+
+#[test]
 fn pg_dialect_09_behavior() {
     use parser_ast::{ExprKind, SqlDialect};
     fn expression(sql: &str) -> parser_ast::ExprNode {

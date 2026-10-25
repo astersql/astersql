@@ -416,6 +416,12 @@ impl Resolver<'_> {
             if (select || delete || insert) && self.word(i, "from") || self.word(i, "join") {
                 expect = true;
                 list = true;
+            } else if delete && self.word(i, "using") {
+                // DELETE USING introduces another relation list, distinct from
+                // the target following FROM. Resolve its names at the same
+                // PostgreSQL relation boundary before the pre-write executor gate.
+                expect = true;
+                list = true;
             } else if insert && self.word(i, "into") || update && self.word(i, "update") {
                 expect = true;
                 list = update;

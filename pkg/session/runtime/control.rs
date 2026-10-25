@@ -1713,6 +1713,13 @@ impl ConcreteSession {
         {
             return self.update_returning_fields(update);
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(delete) = statement.as_any().downcast_ref::<ast::DeleteStmt>()
+            && !delete.Returning.is_empty()
+            && delete.Using.is_none()
+        {
+            return self.delete_returning_fields(delete);
+        }
         if statement.as_any().is::<ast::SelectStmt>() || statement.as_any().is::<ast::SetOprStmt>()
         {
             let mut fields = self.relational_query_node_result_fields(statement.as_ref(), &[])?;
@@ -1769,6 +1776,12 @@ impl ConcreteSession {
             && update.From.is_none()
         {
             self.update_returning_fields(update)?
+        } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(delete) = statement.as_any().downcast_ref::<ast::DeleteStmt>()
+            && !delete.Returning.is_empty()
+            && delete.Using.is_none()
+        {
+            self.delete_returning_fields(delete)?
         } else if statement.as_any().is::<ast::SelectStmt>()
             || statement.as_any().is::<ast::SetOprStmt>()
             || statement.as_any().is::<ast::SetOprSelectList>()
