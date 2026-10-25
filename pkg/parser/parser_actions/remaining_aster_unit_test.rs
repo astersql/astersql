@@ -75,3 +75,15 @@ fn remaining_modules_have_no_numeric_fallback() {
     assert!(!dispatcher.contains("mod legacy"));
     assert!(!dispatcher.contains("legacy::"));
 }
+
+#[test]
+fn pg_scalar_05_int2_rules_have_one_owner() {
+    for name in ["pgcasttype_smallint--6be73d74a71dda92", "pgcasttype_int2--726db66dacb613ed"] {
+        let rule = RULE_IDS_BY_REDUCTION.iter().copied().find(|rule|rule.as_str()==name).expect("generated int2 target");
+        assert!(expression::owns(rule));
+        assert!(super::has_semantic_action(rule));
+        assert!(!admin::owns(rule) && !ddl::owns(rule) && !dml::owns(rule) && !query::owns(rule)
+            && !security::owns(rule) && !misc::owns(rule) && !mview::owns(rule));
+        assert_eq!(super::owner(rule),super::identify_owner(rule));
+    }
+}

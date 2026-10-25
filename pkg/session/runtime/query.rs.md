@@ -145,3 +145,7 @@ PG CAST 投影也走已有完整关系查询路径，确保显式 OID 参数的�
 ### PostgreSQL限定布尔显式转换（任务3）
 
 PG SELECT在行求值前检查布尔显式转换资格（含空扫描）与整数WHERE拒绝；关系查询作用域使用PgCastTable传递catalog字段类型，并将显式布尔转换接到共享内核。
+
+## PostgreSQL signed16（任务5）
+
+PostgreSQLInt2加入现有整数转换的结果类型、返回投影、输入验证及关系求值分发，保持TypeShort和NULL身份；不扩展算术/比较重载。

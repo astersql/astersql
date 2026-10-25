@@ -165,3 +165,7 @@ CAST的明确bool目标字段直接保留到关系结果类型，即使NULL或�
 ### PostgreSQL限定布尔显式转换（任务3）
 
 关系字符串载体的布尔CAST使用AST/catalog源类型选择共享转换核；PgCastTable在线程内保存当前查询源字段，嵌套作用域及异常退出恢复父上下文，避免从值或首行推断身份。无会话关系消费者通过PG目标标记选择语义。
+
+## PostgreSQL signed16（任务5）
+
+PostgreSQLInt2在关系表达式类型推导中保留Tp，在关系求值中调用pg_cast_int2并保留22003错误来源；同步独立relational_value_test signed16边界回归。

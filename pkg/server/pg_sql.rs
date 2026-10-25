@@ -198,7 +198,7 @@ fn mapped_type(tokens: &[Token], start: usize) -> ParseResult<Option<(usize, &'s
             "serial identity columns are unsupported until native identity metadata is available",
         ));
     }
-    let (last, native) = if ty.word("smallint") {
+    let (last, native) = if ty.word("smallint") || ty.word("int2") {
         (start, "SMALLINT")
     } else if ty.word("integer") || ty.word("int") {
         (start, "INT")

@@ -145,3 +145,7 @@ PG BOOL/BOOLEAN转换目标构造TypeTiny+IsBooleanFlag，仅PG方言接受；�
 ### PostgreSQL限定布尔显式转换（任务3）
 
 PgCastType增加本次bool↔text转换必需的TEXT目标（TypeVarString、utf8mb4/utf8mb4_bin），由现有后缀转换及CAST语法共用；仍仅PG接受，不扩展varchar/bpchar或其他转换矩阵。
+
+## PostgreSQL signed16（任务5）
+
+PgCastType新增SMALLINT/INT2目标并映射TypeShort；后缀与CAST均构造PostgreSQLInt2。只在PG方言启用；int2数组仍显式拒绝，未开放数组或完整转换矩阵。

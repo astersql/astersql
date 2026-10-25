@@ -107,3 +107,7 @@
 ## 2026-10-26 PG scalar 03
 
 为限定bool↔text转换的TEXT目标增加一条PgCastType产生式后，由astersql-parsergen generate整体重生成；动作稳定ID为pgcasttype_text--298413db6f8b6803。未新增token。配套parser_test::pg_scalar_03_text_cast_target覆盖后缀/CAST及MySQL隔离，parser_manifest检查元数据映射，parsergen check检查生成一致性。
+
+## PostgreSQL signed16（任务5）
+
+按用户授权为PgCastType增加SMALLINT与INT2两条产生式，使用astersql-parsergen generate生成，动作由expression.rs按稳定RuleId承接；未增加token。

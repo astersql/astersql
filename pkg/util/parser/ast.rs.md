@@ -103,3 +103,7 @@ PG int4 标记专门恢复为 CAST(expr AS INT4)，不复用带显示宽度的 M
 
 
 2026-10-24 int8：RestoreWithoutDB 对 PostgreSQLInt8 专门输出 INT8，避免共享恢复丢失 PostgreSQL 目标身份。
+
+## PostgreSQL signed16（任务5）
+
+共享AST新增PostgreSQLInt2时，SQL restore的穷尽分发必须同步恢复为CAST(... AS INT2)，保持signed16目标而不退化为MySQL格式。独立ast_test覆盖smallint/int2两个拼写。

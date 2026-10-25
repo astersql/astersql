@@ -111,3 +111,7 @@ PostgreSQLInt4 CastFunctionType 恢复成 CAST(expr AS INT4)，保留严格 int4
 ## 2026-10-25 PG scalar 01
 
 带明确bool目标身份的CAST恢复为BOOLEAN，避免重解析退化成SIGNED。
+
+## PostgreSQL signed16（任务5）
+
+PostgreSQLInt2恢复为CAST(... AS INT2)，保留signed16目标身份并支持重新解析；不通过MySQL显示宽度或当前值推断类型。

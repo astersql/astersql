@@ -821,7 +821,9 @@ pub(super) fn pg_returning_expression_type(
             Expr,
             Tp,
             FunctionType:
-                ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8,
+                ast::CastFunctionType::PostgreSQLInt2
+                | ast::CastFunctionType::PostgreSQLInt4
+                | ast::CastFunctionType::PostgreSQLInt8,
             ..
         } => {
             if !matches!(Expr.Kind, ast::ExprKind::ParamMarker { .. }) {
@@ -1252,7 +1254,9 @@ impl ConcreteSession {
                 }
                 if matches!(
                     FunctionType,
-                    ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8
+                    ast::CastFunctionType::PostgreSQLInt2
+                        | ast::CastFunctionType::PostgreSQLInt4
+                        | ast::CastFunctionType::PostgreSQLInt8
                 ) {
                     return pg_integer_relational_value(
                         Expr,
@@ -2086,7 +2090,9 @@ impl ConcreteSession {
                 if let ast::ExprKind::Cast {
                     Expr,
                     FunctionType:
-                        ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8,
+                        ast::CastFunctionType::PostgreSQLInt2
+                        | ast::CastFunctionType::PostgreSQLInt4
+                        | ast::CastFunctionType::PostgreSQLInt8,
                     ..
                 } = &input.Kind
                 {

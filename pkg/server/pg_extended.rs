@@ -322,13 +322,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 _ => return Err(invalid()),
             }],
         ),
-        21 => (
-            2,
-            text.parse::<i16>()
-                .map_err(|_| invalid())?
-                .to_le_bytes()
-                .to_vec(),
-        ),
+        21 => (2, integer_parameter::<i16>(text)?.to_le_bytes().to_vec()),
         23 => (3, integer_parameter::<i32>(text)?.to_le_bytes().to_vec()),
         20 => (8, integer_parameter::<i64>(text)?.to_le_bytes().to_vec()),
         700 => (

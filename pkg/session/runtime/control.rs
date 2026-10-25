@@ -1788,8 +1788,8 @@ impl ConcreteSession {
             (HashMap::new(), Vec::new())
         };
         let has_pg_values = !array_types.is_empty() || !record_types.is_empty();
-        let has_bool_parameters =
-            self.sql_dialect() == ast::SqlDialect::PostgreSQL && supplied.contains(&16);
+        let has_scalar_parameters = self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && supplied.iter().any(|oid| matches!(oid, 16 | 21));
         let constructor_oids = array_oids
             .iter()
             .copied()
@@ -1830,20 +1830,23 @@ impl ConcreteSession {
                     while let ast::ExprKind::Parentheses(inner) = &source.Kind {
                         source = inner;
                     }
-                    if has_bool_parameters
+                    if has_scalar_parameters
                         && let ast::ExprKind::ParamMarker { Offset } = source.Kind
                     {
                         let markers = parameter_markers(sql);
-                        if markers
+                        let oid = markers
                             .iter()
                             .position(|marker| marker.offset == Offset)
-                            .and_then(|index| supplied.get(index))
-                            == Some(&16)
-                        {
-                            let mut tp = astersql_parser_types::NewFieldType(
-                                astersql_parser_mysql::r#type::TypeTiny,
-                            );
-                            tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                            .and_then(|index| supplied.get(index));
+                        if let Some(oid @ (16 | 21)) = oid {
+                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 16 {
+                                astersql_parser_mysql::r#type::TypeTiny
+                            } else {
+                                astersql_parser_mysql::r#type::TypeShort
+                            });
+                            if *oid == 16 {
+                                tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                            }
                             field.column.FieldType = tp;
                         }
                     }
@@ -1878,12 +1881,12 @@ impl ConcreteSession {
                 dialect: self.sql_dialect(),
                 planned: false,
                 has_pg_constructors: has_pg_values,
-                constructor_parameter_oids: if has_bool_parameters {
+                constructor_parameter_oids: if has_scalar_parameters {
                     let mut oids = constructor_oids;
                     oids.resize(supplied.len(), 0);
                     for (oid, supplied) in oids.iter_mut().zip(supplied) {
-                        if *supplied == 16 {
-                            *oid = 16;
+                        if matches!(*supplied, 16 | 21) {
+                            *oid = *supplied;
                         }
                     }
                     oids
@@ -1973,10 +1976,14 @@ impl ConcreteSession {
                 if constructor_oids.get(index) == Some(&16) {
                     return Ok(format!("CAST({literal} AS BOOLEAN)"));
                 }
-                if let Some(oid @ (23 | 20)) = constructor_oids.get(index) {
+                if let Some(oid @ (21 | 23 | 20)) = constructor_oids.get(index) {
                     return Ok(format!(
                         "CAST({literal} AS {})",
-                        if *oid == 23 { "INT4" } else { "INT8" }
+                        match *oid {
+                            21 => "INT2",
+                            23 => "INT4",
+                            _ => "INT8",
+                        }
                     ));
                 }
                 // A parameter is an atomic expression. Without parentheses,

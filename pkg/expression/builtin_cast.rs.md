@@ -101,3 +101,7 @@ pg_cast_int4 是严格十进制 int4 共享内核：SQL NULL 透传，ASCII SQL 
 ### PostgreSQL限定布尔显式转换（任务3）
 
 PG限定显式布尔转换由pg_boolean_cast_kind按源/目标类型选择，pg_boolean_cast统一归一化int4非零与解析text输入；bool→text产生true/false，bool wire仍由协议层输出t/f。PgBoolError保留22P02/42804/0A000/XX000。NULL先经过资格判断再保留目标空值。
+
+## PostgreSQL signed16（任务5）
+
+新增pg_cast_int2，复用pg_cast_int8的严格文本解析后以i16::try_from检查signed16边界，NULL仍为None，越界通过既有PgInt4Error保留22003。

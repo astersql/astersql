@@ -334,7 +334,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
             Some(ExpressionRule::PgArrayNestedNext)
         }
         "pgarrayrow_pgarraylist--f75d26ccaf8553d2" => Some(ExpressionRule::PgArrayRow),
-        "pgcasttype_text--298413db6f8b6803" | "pgcasttype_bool--d9658361f98a2bfa" | "pgcasttype_boolean--3e6aa45e36d3b626" | "pgcasttype_bigint--ae5884bd608717ab"
+        "pgcasttype_smallint--6be73d74a71dda92" | "pgcasttype_int2--726db66dacb613ed" | "pgcasttype_text--298413db6f8b6803" | "pgcasttype_bool--d9658361f98a2bfa" | "pgcasttype_boolean--3e6aa45e36d3b626" | "pgcasttype_bigint--ae5884bd608717ab"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
         | "pgcasttype_integer--a6fba6c5af1a8564"
@@ -1179,6 +1179,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::PgCastType => {
             let spelling = &rhs[1].ident;
             let tp = match spelling.to_ascii_lowercase().as_str() {
+                "int2" | "smallint" => parser_mysql::r#type::TypeShort,
                 "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
                 "bool" | "boolean" => parser_mysql::r#type::TypeTiny,
@@ -1230,7 +1231,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Kind: parser_ast::ExprKind::Cast {
                     Expr: Box::new(expr),
                     Tp: tp.clone(),
-                    FunctionType: if tp.GetType() == parser_mysql::r#type::TypeLong {
+                    FunctionType: if tp.GetType() == parser_mysql::r#type::TypeShort {
+                        parser_ast::CastFunctionType::PostgreSQLInt2
+                    } else if tp.GetType() == parser_mysql::r#type::TypeLong {
                         parser_ast::CastFunctionType::PostgreSQLInt4
                     } else if tp.GetType() == parser_mysql::r#type::TypeLonglong {
                         parser_ast::CastFunctionType::PostgreSQLInt8
@@ -1824,7 +1827,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 && is_array
                 && matches!(
                     field_type.GetType(),
-                    parser_mysql::r#type::TypeLong | parser_mysql::r#type::TypeLonglong
+                    parser_mysql::r#type::TypeShort | parser_mysql::r#type::TypeLong | parser_mysql::r#type::TypeLonglong
                 )
             {
                 yylex.AppendError(
@@ -1856,7 +1859,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 parser_ast::ExprKind::Cast {
                     Expr: Box::new(expr),
                     Tp: field_type.clone(),
-                    FunctionType: if pg_cast
+                    FunctionType: if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeShort {
+                        parser_ast::CastFunctionType::PostgreSQLInt2
+                    } else if pg_cast
                         && field_type.GetType() == parser_mysql::r#type::TypeLong
                     {
                         parser_ast::CastFunctionType::PostgreSQLInt4

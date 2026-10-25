@@ -157,3 +157,7 @@ PG参数约束保留供给OID16，并从带bool目标身份的CAST推导16，复
 ### PostgreSQL限定布尔显式转换（任务3）
 
 protocol_parameter_types对直接TEXT目标的参数约束推导OID25，供$1::text::boolean在未提供OID时保留源text身份；只补现有直接CAST约束，不扩展通用推导矩阵。
+
+## PostgreSQL signed16（任务5）
+
+protocol_parameter_types保留显式OID21并由PostgreSQLInt2推断未指定参数为21；复用现有参数发生位置及约束合并逻辑。

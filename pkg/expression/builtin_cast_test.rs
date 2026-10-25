@@ -341,3 +341,63 @@ fn pg_scalar_03_formal_rejects_int8_boolean_cast_even_for_null() {
         );
     }
 }
+
+#[test]
+fn pg_scalar_05_int2_kernel_and_formal_cast() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, pg_cast_int2, types};
+    assert_eq!(pg_cast_int2(None), Ok(None));
+    for (text, expected) in [("-32768", i16::MIN), ("32767", i16::MAX), ("0", 0)] {
+        assert_eq!(pg_cast_int2(Some(text)), Ok(Some(expected)));
+    }
+    for text in [
+        "-32769",
+        "32768",
+        "9223372036854775807",
+        "18446744073709551615",
+    ] {
+        assert_eq!(pg_cast_int2(Some(text)), Err(PgInt4Error::OutOfRange));
+    }
+    assert_eq!(pg_cast_int2(Some("1x")), Err(PgInt4Error::InvalidSyntax));
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for (datum, source_type, expected) in [
+        (
+            types::NewIntDatum(-32768),
+            mysql::TypeLong,
+            Ok((-32768, false)),
+        ),
+        (
+            types::NewIntDatum(32767),
+            mysql::TypeLonglong,
+            Ok((32767, false)),
+        ),
+        (
+            types::NewStringDatum("32767".into()),
+            mysql::TypeVarString,
+            Ok((32767, false)),
+        ),
+        (types::NewIntDatum(-32769), mysql::TypeLong, Err(())),
+        (types::NewIntDatum(32768), mysql::TypeLonglong, Err(())),
+        (types::NewUintDatum(u64::MAX), mysql::TypeLonglong, Err(())),
+        (types::Datum::default(), mysql::TypeNull, Ok((0, true))),
+    ] {
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(source_type),
+        ));
+        let cast = crate::formal_registry::BuildCastFunction(
+            &pg,
+            &source,
+            &types::NewFieldType(mysql::TypeShort),
+        );
+        assert_eq!(cast.GetType(pg.GetEvalCtx()).GetType(), mysql::TypeShort);
+        assert_eq!(
+            cast.EvalInt(pg.GetEvalCtx(), crate::chunk::Row::default())
+                .map_err(|_| ()),
+            expected
+        );
+    }
+}

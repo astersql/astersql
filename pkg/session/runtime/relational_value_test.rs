@@ -196,3 +196,34 @@ fn pg_scalar_03_relational_boolean_conversions() {
         assert!(pg.execute(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn pg_scalar_05_relational_int2_cast() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT (-32768)::smallint,32767::int2,NULL::int2",
+        "SELECT CAST(-32768 AS int2),CAST(32767 AS smallint),NULL::int8::int2",
+    ] {
+        let mut results = pg.execute(sql).unwrap();
+        assert_eq!(
+            results[0].next_row().unwrap().unwrap(),
+            vec!["-32768", "32767", "<nil>"]
+        );
+    }
+    for sql in [
+        "SELECT (-32769)::int4::int2",
+        "SELECT 32768::int8::smallint",
+    ] {
+        let error = match pg.execute(sql) {
+            Ok(_) => panic!("must reject {sql}"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            error.pg_int4_error(),
+            Some(astersql_expression::PgInt4Error::OutOfRange)
+        );
+    }
+}

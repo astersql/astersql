@@ -1287,7 +1287,8 @@ pub(super) fn relational_expression_value(
                 Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
                     || matches!(
                         FunctionType,
-                        ast::CastFunctionType::PostgreSQLInt4
+                        ast::CastFunctionType::PostgreSQLInt2
+                            | ast::CastFunctionType::PostgreSQLInt4
                             | ast::CastFunctionType::PostgreSQLInt8
                     ),
             ) {
@@ -1295,7 +1296,9 @@ pub(super) fn relational_expression_value(
             }
             if matches!(
                 FunctionType,
-                ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8
+                ast::CastFunctionType::PostgreSQLInt2
+                    | ast::CastFunctionType::PostgreSQLInt4
+                    | ast::CastFunctionType::PostgreSQLInt8
             ) {
                 return pg_integer_relational_value(
                     Expr,
@@ -2661,7 +2664,9 @@ pub(super) fn relational_expression_type(
         ast::ExprKind::Cast {
             Tp,
             FunctionType:
-                ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8,
+                ast::CastFunctionType::PostgreSQLInt2
+                | ast::CastFunctionType::PostgreSQLInt4
+                | ast::CastFunctionType::PostgreSQLInt8,
             ..
         } => Tp.clone(),
         ast::ExprKind::Column(column) => table
@@ -3432,7 +3437,7 @@ pub(super) fn pg_integer_relational_value(
     value: Option<String>,
     target: ast::CastFunctionType,
 ) -> SessionResult<Option<String>> {
-    use astersql_expression::{PgInt4Error, pg_cast_int4, pg_cast_int8};
+    use astersql_expression::{PgInt4Error, pg_cast_int2, pg_cast_int4, pg_cast_int8};
     fn supported(expr: &ast::ExprNode) -> bool {
         match &expr.Kind {
             ast::ExprKind::Value(v) => matches!(
@@ -3452,6 +3457,8 @@ pub(super) fn pg_integer_relational_value(
     let result = if supported(expression) {
         if target == ast::CastFunctionType::PostgreSQLInt8 {
             pg_cast_int8(value.as_deref())
+        } else if target == ast::CastFunctionType::PostgreSQLInt2 {
+            pg_cast_int2(value.as_deref()).map(|v| v.map(i64::from))
         } else {
             pg_cast_int4(value.as_deref()).map(|v| v.map(i64::from))
         }

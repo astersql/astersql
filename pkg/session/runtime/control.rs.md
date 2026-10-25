@@ -135,3 +135,7 @@ execute_protocol_statement 仅在 PostgreSQL 连接中为负 Signed 参数的 SQ
 ### PostgreSQL限定布尔显式转换（任务3）
 
 PG INSERT VALUES在生成写入副作用之前按目标布尔列和表达式类型拒绝未显式转换的整数，返回42804；MySQL既有赋值规则不变。
+
+## PostgreSQL signed16（任务5）
+
+OID21与既有bool参数一样在Prepare保留原生TypeShort，直接参数NULL和空结果无需依赖执行值定型。Bind后的现有token参数渲染用CAST(... AS INT2)保持目标身份，与正式SQL解析/求值共用严格内核。

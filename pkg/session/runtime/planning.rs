@@ -2789,8 +2789,8 @@ impl ConcreteSession {
         let mut oids = vec![0; markers.len()];
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             for (oid, supplied) in oids.iter_mut().zip(supplied) {
-                if *supplied == 16 {
-                    *oid = 16;
+                if matches!(*supplied, 16 | 21) {
+                    *oid = *supplied;
                 }
             }
         }
@@ -2809,6 +2809,7 @@ impl ConcreteSession {
                 {
                     let oid = match FunctionType {
                         _ if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 => 16,
+                        ast::CastFunctionType::PostgreSQLInt2 => 21,
                         ast::CastFunctionType::PostgreSQLInt4 => 23,
                         ast::CastFunctionType::PostgreSQLInt8 => 20,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeVarString => 25,

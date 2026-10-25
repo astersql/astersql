@@ -358,6 +358,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             if Tp.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0 {
                 return Ok(format!("CAST({value} AS BOOLEAN)"));
             }
+            if *FunctionType == CastFunctionType::PostgreSQLInt2 {
+                return Ok(format!("CAST({value} AS INT2)"));
+            }
             if *FunctionType == CastFunctionType::PostgreSQLInt4 {
                 return Ok(format!("CAST({value} AS INT4)"));
             }
@@ -373,6 +376,7 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             let target = String::from_utf8(encoded).map_err(|e| e.to_string())?;
             Ok(match FunctionType {
                 CastFunctionType::Cast
+                | CastFunctionType::PostgreSQLInt2
                 | CastFunctionType::PostgreSQLInt4
                 | CastFunctionType::PostgreSQLInt8 => {
                     format!("CAST({value} AS {target})")

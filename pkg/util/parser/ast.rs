@@ -634,6 +634,9 @@ impl<'a> Restorer<'a> {
                 FunctionType,
                 ..
             } => match FunctionType {
+                ast::CastFunctionType::PostgreSQLInt2 => {
+                    Ok(format!("CAST({} AS INT2)", self.expr(Expr)?))
+                }
                 ast::CastFunctionType::PostgreSQLInt4 => {
                     Ok(format!("CAST({} AS INT4)", self.expr(Expr)?))
                 }

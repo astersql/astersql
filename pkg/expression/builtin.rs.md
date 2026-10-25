@@ -121,3 +121,7 @@ formal_registry::BuildCastFunction 使用已有 BuildContext::SQLDialect，在 P
 ### PostgreSQL限定布尔显式转换（任务3）
 
 BuildCastFunction仅在PG方言及源/目标布尔身份存在时选择PgBoolean动态签名，正式表达式复用限定布尔内核，禁用MySQL转换与pushdown签名；MySQL继续原分派。
+
+## PostgreSQL signed16（任务5）
+
+正式BuildCastFunction在PG方言、TypeShort目标下复用严格整数DynamicBuiltin路径，调用pg_cast_int2并保持TypeShort返回身份；MySQL继续原有CAST/告警路径。

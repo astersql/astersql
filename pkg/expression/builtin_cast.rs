@@ -1779,6 +1779,13 @@ impl PgInt4Error {
     }
 }
 
+/// Strict signed16 narrowing; never clip, wrap or pass through floating point.
+pub fn pg_cast_int2(value: Option<&str>) -> Result<Option<i16>, PgInt4Error> {
+    pg_cast_int8(value)?
+        .map(|number| i16::try_from(number).map_err(|_| PgInt4Error::OutOfRange))
+        .transpose()
+}
+
 pub fn pg_cast_int4(value: Option<&str>) -> Result<Option<i32>, PgInt4Error> {
     pg_cast_int8(value)?
         .map(|number| i32::try_from(number).map_err(|_| PgInt4Error::OutOfRange))

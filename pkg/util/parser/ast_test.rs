@@ -198,3 +198,16 @@ fn pg_dialect_11_restore_boundary() {
         "SELECT ROW(1, 2) = ROW(1, 2)"
     );
 }
+
+#[test]
+fn pg_scalar_05_restore_preserves_int2_target() {
+    for target in ["smallint", "int2"] {
+        let statement = parser::Parser::with_dialect(parser::ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(&format!("SELECT '32767'::{target}"), "", "")
+            .unwrap();
+        assert_eq!(
+            utilparser::RestoreWithoutDB(statement.as_ref()),
+            "SELECT CAST('32767' AS INT2)"
+        );
+    }
+}

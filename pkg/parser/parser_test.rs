@@ -2346,6 +2346,8 @@ fn pg_core_integer_cast_syntax() {
         "SELECT CAST(1 AS int)",
         "SELECT CAST(1 AS int8)",
         "SELECT CAST(1 AS bigint)",
+        "SELECT CAST(1 AS int2)",
+        "SELECT 1::text",
         "SELECT ($1)::int4",
         "SELECT '::int4' /* ::int8 */",
     ] {
@@ -2370,8 +2372,6 @@ fn pg_core_integer_cast_syntax() {
     }
     for sql in [
         "SELECT 1::",
-        "SELECT 1::text",
-        "SELECT CAST(1 AS int2)",
         "SELECT CAST(1 AS int4 ARRAY)",
         "SELECT 1::int4(2)",
     ] {
@@ -4734,4 +4734,49 @@ fn pg_scalar_03_text_cast_target() {
             "{sql}"
         );
     }
+}
+
+#[test]
+fn pg_scalar_05_smallint_ast_and_roundtrip() {
+    use parser_ast::{CastFunctionType, ExprKind, SqlDialect};
+    let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT 1::smallint",
+        "SELECT 1::int2",
+        "SELECT CAST(1 AS SMALLINT)",
+        "SELECT CAST(1 AS INT2)",
+        "SELECT NULL::int2",
+    ] {
+        let stmt = pg.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert!(
+            matches!(&expr.Kind,ExprKind::Cast{FunctionType:CastFunctionType::PostgreSQLInt2,Tp,..} if Tp.GetType()==parser_mysql::r#type::TypeShort)
+        );
+        let restored = parser_ast::sql_restore::restore_expr(expr).unwrap();
+        let again = pg
+            .ParseOneStmt(&format!("SELECT {restored}"), "", "")
+            .unwrap();
+        let again = again
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert_eq!(
+            parser_ast::sql_restore::restore_expr(again.Fields.Fields[0].Expr.as_ref().unwrap())
+                .unwrap(),
+            restored
+        );
+        assert!(
+            crate::Parser::with_dialect(SqlDialect::MySQL)
+                .ParseOneStmt(sql, "", "")
+                .is_err()
+        );
+    }
+    assert!(
+        pg.ParseOneStmt("SELECT CAST(1 AS int2 ARRAY)", "", "")
+            .is_err()
+    );
 }
