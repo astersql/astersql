@@ -113,3 +113,5 @@ U64 来源 code=8 + UnsignedFlag 提升为无约束 numeric；其 MySQL 显示�
 ## 2026-10-26 文本族身份边界（任务21）
 
 结果 OID 优先使用共享内核文本身份，varchar/bpchar 的 typmod 来自声明长度；无长度为 -1，NULL及零行沿用固定元数据。
+
+任务27：`bytea_escape(&[u8])` 提供会话 bytea_output 工作流可复用的纯字节 escape 编码（可打印 ASCII 直出、反斜杠双写、其他字节三位八进制）。默认结果仍沿 `bytea` 小写 hex；本任务不接线会话设置。独立 pg_types_test 覆盖全部256字节及空序列。

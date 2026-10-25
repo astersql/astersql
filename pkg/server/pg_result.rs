@@ -1029,6 +1029,26 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
     }
     Ok(output)
 }
+/// Legacy bytea text encoding for the session bytea_output workflow.
+/// Printable ASCII is literal; backslash doubles and other bytes use octal.
+#[allow(dead_code)] // Session setting integration belongs to its own workflow.
+pub(crate) fn bytea_escape(bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for &byte in bytes {
+        match byte {
+            b'\\' => result.extend_from_slice(b"\\\\"),
+            0x20..=0x7e => result.push(byte),
+            _ => result.extend_from_slice(&[
+                b'\\',
+                b'0' + (byte >> 6),
+                b'0' + ((byte >> 3) & 7),
+                b'0' + (byte & 7),
+            ]),
+        }
+    }
+    result
+}
+
 fn bytea(bytes: &[u8]) -> Vec<u8> {
     let mut result = String::from("\\x");
     for byte in bytes {

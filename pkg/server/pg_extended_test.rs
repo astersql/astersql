@@ -6240,3 +6240,138 @@ fn pg_scalar_26() {
         "pg_scalar_26: 8 value/NULL cases, zero-row and statement/portal metadata, 16 Bind rejection/Sync/ROLLBACK/no-write cases, 3 MySQL checkpoints"
     );
 }
+
+#[test]
+fn pg_scalar_27() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain.clone(), Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(&mut mysql, "CREATE TABLE output27_mysql (v VARBINARY(4))");
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO output27_mysql VALUES (X'00aaff00')",
+    );
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT v FROM output27_mysql");
+        assert_eq!(mysql_read(socket), vec![1]);
+        let metadata = mysql_read(socket);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x04\x00\xaa\xff\x00");
+        assert_eq!(&mysql_read(socket)[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        metadata
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    let describe = |m: &(u8, Vec<u8>)| {
+        assert_eq!(m.0, b'T', "{m:?}");
+        let offset = 3 + m.1[2..].iter().position(|b| *b == 0).unwrap();
+        assert_eq!(&m.1[offset + 6..offset + 10], &17u32.to_be_bytes());
+        assert_eq!(&m.1[offset + 10..offset + 12], &(-1i16).to_be_bytes());
+        assert_eq!(&m.1[offset + 12..offset + 16], &(-1i32).to_be_bytes());
+    };
+    query(&mut socket, "CREATE TABLE public.output27 (v bytea)");
+    describe(&query(&mut socket, "SELECT v FROM public.output27 WHERE FALSE")[0]);
+    parse(&mut socket, "output27", "SELECT $1", &[17]);
+    assert_eq!(read(&mut socket).0, b'1');
+    send(&mut socket, b'D', b"Soutput27\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [1i16.to_be_bytes().as_slice(), &17u32.to_be_bytes()].concat()
+        )
+    );
+    describe(&read(&mut socket));
+    for (input, expected) in [
+        (Some(""), Some("\\x")),
+        (Some("\\000\\377\\\\"), Some("\\x00ff5c")),
+        (Some("\\x0000ff5c00"), Some("\\x0000ff5c00")),
+        (Some("\\303\\050"), Some("\\xc328")),
+        (None, None),
+    ] {
+        // Rebind the canonical output to prove text round trips without UTF-8 loss.
+        for value in [input, expected] {
+            bind(&mut socket, "", "output27", &[value]);
+            assert_eq!(read(&mut socket).0, b'2', "{value:?}");
+            send(&mut socket, b'D', b"P\0");
+            describe(&read(&mut socket));
+            execute(&mut socket, "", 0);
+            let message = read(&mut socket);
+            assert_eq!(message, (b'D', row(&[expected])));
+            let length = i32::from_be_bytes(message.1[2..6].try_into().unwrap());
+            assert_eq!(length, expected.map_or(-1, |v| v.len() as i32));
+            assert_eq!(read(&mut socket).0, b'C');
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+        }
+    }
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    parse(
+        &mut socket,
+        "write27",
+        "INSERT INTO public.output27 VALUES ($1)",
+        &[17],
+    );
+    assert_eq!(read(&mut socket).0, b'1');
+    for transaction in [false, true] {
+        for (input, state) in [
+            (b"\\400".as_slice(), "22P02"),
+            (b"\\08", "22P02"),
+            (b"\\q", "22P02"),
+            (b"\\", "22P02"),
+            (b"\\00", "22P02"),
+            (b"\\378", "22P02"),
+            (b"a\0b", "22021"),
+            (b"\xff", "22021"),
+        ] {
+            if transaction {
+                query(&mut socket, "BEGIN");
+            }
+            bind_formats(&mut socket, "write27", &[0], &[Some(input)]);
+            assert_state(&read(&mut socket), state);
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                read(&mut socket),
+                (b'Z', vec![if transaction { b'E' } else { b'I' }])
+            );
+            if transaction {
+                query(&mut socket, "ROLLBACK");
+            }
+            assert_eq!(
+                query(&mut socket, "SELECT count(*) FROM public.output27")[1],
+                (b'D', row(&[Some("0")]))
+            );
+        }
+    }
+    query(&mut socket, "DROP TABLE public.output27");
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    eprintln!(
+        "pg_scalar_27: 5 value/NULL roundtrip cases (10 executions), zero-row and statement/portal metadata, 16 Bind rejection/Sync/ROLLBACK/no-write cases, 3 MySQL checkpoints"
+    );
+}

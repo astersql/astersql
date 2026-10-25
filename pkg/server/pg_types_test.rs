@@ -413,3 +413,19 @@ fn pg_binary_native_results() {
     result.rows = vec![vec![Value::Signed(i64::MAX)]];
     assert!(crate::pg_result::encode_formats(&result, "SELECT", &[1]).is_err());
 }
+
+#[test]
+fn pg_scalar_27_escape_output() {
+    use crate::pg_result::bytea_escape;
+    assert_eq!(bytea_escape(b""), b"");
+    assert_eq!(bytea_escape(b" A~\\\x00\xff"), b" A~\\\\\\000\\377");
+    for byte in 0..=255u8 {
+        let encoded = bytea_escape(&[byte]);
+        let expected = match byte {
+            b'\\' => "\\\\".to_owned(),
+            0x20..=0x7e => char::from(byte).to_string(),
+            _ => format!("\\{byte:03o}"),
+        };
+        assert_eq!(encoded, expected.as_bytes(), "byte {byte}");
+    }
+}
