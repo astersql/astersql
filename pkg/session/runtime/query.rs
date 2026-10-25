@@ -756,9 +756,11 @@ pub(super) fn pg_integer_literal_type(
             _ => None,
         }
     }
-    let value = i64::try_from(integer(expression)?).ok()?;
+    let value = integer(expression)?;
     Some(astersql_parser_types::NewFieldType(
-        if i32::try_from(value).is_ok() {
+        if i64::try_from(value).is_err() {
+            astersql_parser_mysql::r#type::TypeNewDecimal
+        } else if i32::try_from(value).is_ok() {
             astersql_parser_mysql::r#type::TypeLong
         } else {
             astersql_parser_mysql::r#type::TypeLonglong
@@ -1039,6 +1041,9 @@ impl ConcreteSession {
         row: &HashMap<String, Option<String>>,
         group_rows: Option<&[HashMap<String, Option<String>>]>,
     ) -> SessionResult<Option<String>> {
+        if let Some(value) = pg_numeric_literal_value(expression) {
+            return value.map(Some);
+        }
         match &expression.Kind {
             ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 super::pg_record::value_with(expression, &|field| {

@@ -181,3 +181,7 @@ pg_numeric_relational_value验证声明并调用PgNumeric.apply_modifier，常�
 ## 精确数值到整数转换（任务11）
 
 显式 numeric 表达式到 int2/int4/int8 在 pg_integer_relational_value 中复用精确舍入后检查域，两个关系求值入口共享。
+
+## 默认数值常量（任务12）
+
+任务12：pg_numeric_literal_value 依据 PG Decimal AST 的无约束类型处理原始十进制、指数和一元符号，复用 PgNumeric 域校验与规范输出；表表达式和通用关系求值共享该入口，MySQL 常量保留原声明长度。

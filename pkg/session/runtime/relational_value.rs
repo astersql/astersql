@@ -196,6 +196,9 @@ pub(super) fn relational_table_expression_value(
     table: &astersql_meta_model::TableInfo,
 ) -> SessionResult<Option<String>> {
     check_pg_escape_evaluation(expression)?;
+    if let Some(value) = pg_numeric_literal_value(expression) {
+        return value.map(Some);
+    }
     match &expression.Kind {
         ast::ExprKind::Parentheses(inner) => relational_table_expression_value(inner, row, table),
         ast::ExprKind::Binary { Op, L, R } if Op.eq_ignore_ascii_case("and") => {
@@ -810,6 +813,9 @@ pub(super) fn relational_expression_value(
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<Option<String>> {
     check_pg_escape_evaluation(expression)?;
+    if let Some(value) = pg_numeric_literal_value(expression) {
+        return value.map(Some);
+    }
     match &expression.Kind {
         ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
             super::pg_record::value(expression, row)
@@ -3572,4 +3578,38 @@ pub(super) fn pg_numeric_relational_value(
                 })
         })
         .transpose()
+}
+
+/// Exact PG decimal literal evaluation, including unary signs. The unspecified
+/// decimal type marks PG literals; MySQL decimal inference retains its typmod.
+pub(super) fn pg_numeric_literal_value(
+    expression: &ast::ExprNode,
+) -> Option<SessionResult<String>> {
+    fn spelling(expression: &ast::ExprNode) -> Option<String> {
+        match &expression.Kind {
+            ast::ExprKind::Value(value) if value.Type.GetFlen() == -1 => match &value.Datum {
+                ast::ValueDatum::Decimal(text) => Some(text.clone()),
+                _ => None,
+            },
+            ast::ExprKind::Parentheses(inner) => spelling(inner),
+            ast::ExprKind::Unary { Op, V } if Op == "+" => spelling(V),
+            ast::ExprKind::Unary { Op, V } if Op == "-" => spelling(V).map(|text| {
+                text.strip_prefix('-')
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("-{text}"))
+            }),
+            _ => None,
+        }
+    }
+    Some(
+        spelling(expression)?
+            .parse::<astersql_types::pg_numeric::PgNumeric>()
+            .map(|value| value.to_string())
+            .map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            }),
+    )
 }

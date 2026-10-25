@@ -111,3 +111,7 @@ Rust 保留了 Go 的主要符号顺序和行为：`Pos`/`Scanner` 字段、`Lex
 PostgreSQL 方言由 Parser 在每次 ParseSQL 时注入 Scanner，并由 InheritScanner 继承用于深度预扫描。仅该方言合并相邻 :: 为 pgTypecast，识别未引用的 $1…$65535 参数；字符串、注释和引用标识符不被转换。参数语义值保留原拼写及原 SQL 字节偏移。
 
 PG Errorf 的行列由原 SQL token 起始字节偏移转换为一基字符行列，含 EOF 与 UTF-8；AST 的 Offset/OriginTextPosition 仍为字节偏移。MySQL 诊断规则保留。
+
+## 默认数值常量（任务12）
+
+PG 数值常量在 Lex 保留小数、指数及超 u64 的原始文本，交给十进制 AST 动作和共享 PgNumeric 校验，不经过 f64/MyDecimal。MySQL 分支保持原转换。

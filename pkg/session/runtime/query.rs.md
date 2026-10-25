@@ -161,3 +161,7 @@ PG numeric求值传入声明FieldType；SELECT准备阶段验证precision/scale�
 ## 精确数值到整数转换（任务11）
 
 整数输入验证接收显式 numeric 表达式；不开放 float 或完整隐式转换矩阵。
+
+## 默认数值常量（任务12）
+
+任务12：pg_integer_literal_type 对超 i64 的无符号整数字面量返回无约束 numeric；关系查询在替换一元操作数前通过 pg_numeric_literal_value 精确求值 PG 小数/指数常量，维持 Prepare、零行和执行身份一致。

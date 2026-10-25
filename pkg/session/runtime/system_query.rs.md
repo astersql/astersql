@@ -114,3 +114,7 @@ Rust 版本只在无表常量 SELECT 专用路径中直接匹配这些函数，�
 - 扩展共享状态：明确键的隔离维度、所有者和释放时机；临界区不得包围网络或 embedding 调用。若新增测试，应放在同目录独立 `*_test.rs` 文件，不能内嵌到生产源文件。
 - 测试入口：FIELD_LIST 语义扩展 `pkg/session/runtime/system_query_test.rs`；系统表/常量函数可在同目录新增或扩展独立测试，并参考 Go 的 `pkg/session/session_test.go`、`pkg/executor/infoschema_reader.go` 邻近测试及 `pkg/infoschema/test`。修改 Rust 行为时应保持 Go 边界和错误意图，不以空结果或桩替代。
 - 兼容风险集中在列顺序/类型/NULL 表示、权限过滤、快照一致性和 MySQL 错误文本；性能风险集中在每次查询克隆整个目录、为所有候选行构造字符串 HashMap、内存排序，以及持全局 mutex 扫描锁历史。
+
+## 默认数值常量（任务12）
+
+无表 execute_constant_select 的 Value 快捷分支同样调用 pg_numeric_literal_value，避免直接 literal.text() 绕过 PG 指数规范化与域校验。

@@ -311,3 +311,28 @@ fn signed_numeric_defaults_keep_numliteral_datum_and_type() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_12_parser_preserves_numeric_spelling() {
+    for text in [
+        "1.2300e0",
+        "1e131072",
+        "1234567890123456789012345678901234567890",
+    ] {
+        let stmt = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(&format!("SELECT {text}"), "", "")
+            .unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Value(value) =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("numeric literal")
+        };
+        assert_eq!(value.Datum, parser_ast::ValueDatum::Decimal(text.into()));
+        assert_eq!(value.Type.GetFlen(), -1);
+        assert_eq!(value.Type.GetDecimal(), -1);
+    }
+}

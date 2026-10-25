@@ -3849,7 +3849,9 @@ impl ConcreteSession {
                 .Expr
                 .as_ref()
                 .ok_or_else(|| SessionError::new("constant SELECT field requires an expression"))?;
+            let numeric_literal = pg_numeric_literal_value(expr).transpose()?;
             let value = match &expr.Kind {
+                _ if numeric_literal.is_some() => numeric_literal.unwrap(),
                 ast::ExprKind::Value(literal) => match &literal.Datum {
                     ast::ValueDatum::Null => CONCRETE_NULL_VALUE.to_owned(),
                     ast::ValueDatum::Bool(value) => if *value { "1" } else { "0" }.to_owned(),

@@ -1453,7 +1453,20 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 yylex.AppendError(yylex.Errorf("missing numeric semantic value", &[]));
                 return Err(1);
             };
-            let value = semantic_value_expr(value, &parser_state.charset, &parser_state.collation);
+            let value = if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                if let Some(text) = value.downcast_ref::<String>() {
+                    let mut expr = parser_ast::ExprNode::DecimalValue(text.clone());
+                    if let parser_ast::ExprKind::Value(value) = &mut expr.Kind {
+                        value.Type.SetFlen(-1);
+                        value.Type.SetDecimal(-1);
+                    }
+                    expr
+                } else {
+                    semantic_value_expr(value, &parser_state.charset, &parser_state.collation)
+                }
+            } else {
+                semantic_value_expr(value, &parser_state.charset, &parser_state.collation)
+            };
             out.expr = Some(parser_ast::ExprNode::Unary(
                 if rule == ExpressionRule::SignedLiteralAlt02 {
                     "+"
@@ -1572,9 +1585,37 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         | ExpressionRule::LiteralAlt06
         | ExpressionRule::LiteralAlt09
         | ExpressionRule::LiteralAlt10 => {
-            out.expr = rhs[rhs_len - (0)].item.as_deref().map(|value| {
-                semantic_value_expr(value, &parser_state.charset, &parser_state.collation)
-            });
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                && matches!(
+                    rule,
+                    ExpressionRule::LiteralAlt04
+                        | ExpressionRule::LiteralAlt05
+                        | ExpressionRule::LiteralAlt06
+                )
+            {
+                let text = &rhs[rhs_len].ident;
+                let mut expr = match text.parse::<u64>() {
+                    Ok(value) if rule == ExpressionRule::LiteralAlt06 => {
+                        if value <= i64::MAX as u64 {
+                            parser_ast::ExprNode::IntValue(value as i64)
+                        } else {
+                            parser_ast::ExprNode::UintValue(value)
+                        }
+                    }
+                    _ => parser_ast::ExprNode::DecimalValue(text.clone()),
+                };
+                if let parser_ast::ExprKind::Value(value) = &mut expr.Kind {
+                    if matches!(value.Datum, parser_ast::ValueDatum::Decimal(_)) {
+                        value.Type.SetFlen(-1);
+                        value.Type.SetDecimal(-1);
+                    }
+                }
+                out.expr = Some(expr);
+            } else {
+                out.expr = rhs[rhs_len].item.as_deref().map(|value| {
+                    semantic_value_expr(value, &parser_state.charset, &parser_state.collation)
+                });
+            }
         }
         ExpressionRule::StringLiteralAlt01 => {
             out.expr = Some(parser_ast::ExprNode::Value(

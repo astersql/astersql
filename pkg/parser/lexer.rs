@@ -383,6 +383,15 @@ impl Scanner {
             return token::optionallyEnclosedBy;
         }
 
+        // PG numeric literals retain their spelling until the shared numeric
+        // evaluator validates them; exponent forms must never pass through f64.
+        if self.postgres
+            && (tok == floatLit || tok == decLit
+                || (tok == intLit && lit.parse::<u64>().is_err()))
+        {
+            v.item = Some(Box::new(lit));
+            return decLit;
+        }
         match tok {
             t if t == intLit => return toInt(self, v, &lit),
             t if t == floatLit => return toFloat(self, v, &lit),

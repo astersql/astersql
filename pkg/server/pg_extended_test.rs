@@ -4120,3 +4120,165 @@ fn pg_scalar_11() {
         "pg_scalar_11: {count} value/NULL/metadata/parameter/empty cases; {errors} error/recovery/no-write cases"
     );
 }
+
+#[test]
+fn pg_scalar_12() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let addr = cleanup.0.postgres_listener_addr().unwrap();
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT 1,2147483648,1.5,1e0");
+        assert_eq!(mysql_read(socket), vec![4]);
+        let columns = (0..4).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x011\x0a2147483648\x031.5\x011");
+        let eof = mysql_read(socket);
+        assert_eq!(eof[0], 0xfe);
+        assert_eq!(&eof[1..3], &[0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        columns
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let cases = [
+        ("1", 23, "1"),
+        ("2147483647", 23, "2147483647"),
+        ("2147483648", 20, "2147483648"),
+        ("9223372036854775807", 20, "9223372036854775807"),
+        ("9223372036854775808", 1700, "9223372036854775808"),
+        ("1.5", 1700, "1.5"),
+        ("1e0", 1700, "1"),
+        ("-2147483648", 23, "-2147483648"),
+        ("-2147483649", 20, "-2147483649"),
+        ("-9223372036854775808", 20, "-9223372036854775808"),
+        ("-9223372036854775809", 1700, "-9223372036854775809"),
+        ("18446744073709551616", 1700, "18446744073709551616"),
+        ("1.2300e0", 1700, "1.2300"),
+        (
+            "-123456789012345678901234567890.123456789",
+            1700,
+            "-123456789012345678901234567890.123456789",
+        ),
+        ("+(1e0)", 1700, "1"),
+    ];
+    for (input, oid, expected) in cases {
+        let sql = format!("SELECT {input}");
+        let messages = query(&mut socket, &sql);
+        assert_eq!(
+            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCZ",
+            "{sql}: {messages:?}"
+        );
+        scalar_types(&messages[0], &[oid]);
+        assert_eq!(messages[1], (b'D', row(&[Some(expected)])), "{sql}");
+        parse(&mut socket, "n12", &sql, &[]);
+        assert_eq!(read(&mut socket).0, b'1');
+        send(&mut socket, b'D', b"Sn12\0");
+        assert_eq!(read(&mut socket), (b't', vec![0, 0]));
+        let desc = read(&mut socket);
+        scalar_types(&desc, &[oid]);
+        bind(&mut socket, "", "n12", &[]);
+        assert_eq!(read(&mut socket).0, b'2');
+        send(&mut socket, b'D', b"P\0");
+        assert_eq!(read(&mut socket), desc);
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[Some(expected)])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+        send(&mut socket, b'C', b"Sn12\0");
+        assert_eq!(read(&mut socket).0, b'3');
+        let empty = query(&mut socket, &format!("{sql} WHERE FALSE"));
+        assert_eq!(empty.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+        scalar_types(&empty[0], &[oid]);
+    }
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    for (literal, oid) in [("1", 23), ("2147483648", 20), ("1.5", 1700)] {
+        let target = match oid {
+            23 => "int4",
+            20 => "int8",
+            _ => "numeric",
+        };
+        let m = query(&mut socket, &format!("SELECT {literal},NULL::{target}"));
+        scalar_types(&m[0], &[oid, oid]);
+        assert_eq!(m[1], (b'D', row(&[Some(literal), None])));
+    }
+    mysql_query(&mut mysql, "CREATE DATABASE IF NOT EXISTS test");
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE test.pg_scalar_12 (id INT PRIMARY KEY,v LONGTEXT)",
+    );
+    for sql in [
+        "SELECT 1e131072",
+        "INSERT INTO public.pg_scalar_12 VALUES (1,(1e131072)::text)",
+    ] {
+        let m = query(&mut socket, sql);
+        assert_state(&m[0], "22003");
+        assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    }
+    for transaction in [false, true] {
+        if transaction {
+            query(&mut socket, "BEGIN");
+        }
+        parse(&mut socket, "bad12", "SELECT 1e131072", &[]);
+        let parsed = read(&mut socket);
+        let error = if parsed.0 == b'1' {
+            bind(&mut socket, "", "bad12", &[]);
+            let bound = read(&mut socket);
+            if bound.0 == b'2' {
+                execute(&mut socket, "", 0);
+                read(&mut socket)
+            } else {
+                bound
+            }
+        } else {
+            parsed
+        };
+        assert_state(&error, "22003");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(
+            read(&mut socket),
+            (b'Z', vec![if transaction { b'E' } else { b'I' }])
+        );
+        if transaction {
+            query(&mut socket, "ROLLBACK");
+        }
+        assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+        send(&mut socket, b'C', b"Sbad12\0");
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT count(*) FROM public.pg_scalar_12")[1],
+        (b'D', row(&[Some("0")]))
+    );
+    query(&mut socket, "DROP TABLE public.pg_scalar_12");
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    println!(
+        "pg_scalar_12: 15 domains x simple/extended/empty, 3 typed NULL, 4 overflow/recovery/no-write cases, 3 MySQL reads"
+    );
+}

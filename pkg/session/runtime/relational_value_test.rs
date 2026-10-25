@@ -332,3 +332,42 @@ fn pg_scalar_11_relational_numeric_integer() {
     }
     pg.execute("DROP TABLE pg_scalar_11_rows").unwrap();
 }
+
+#[test]
+fn pg_scalar_12_relational_literal_precision() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_12_rows (v TEXT)")
+        .unwrap();
+    pg.execute("INSERT INTO pg_scalar_12_rows VALUES ('row')")
+        .unwrap();
+    for (literal, expected) in [
+        ("1.2300e0", "1.2300"),
+        (
+            "-123456789012345678901234567890.123456789",
+            "-123456789012345678901234567890.123456789",
+        ),
+    ] {
+        assert_eq!(
+            pg.execute(&format!("SELECT {literal} FROM pg_scalar_12_rows"))
+                .unwrap()[0]
+                .next_row()
+                .unwrap()
+                .unwrap(),
+            vec![expected]
+        );
+        pg.execute(&format!("INSERT INTO pg_scalar_12_rows SELECT ({literal})::text FROM pg_scalar_12_rows WHERE v='row'")).unwrap();
+        assert_eq!(
+            pg.execute(&format!(
+                "SELECT v FROM pg_scalar_12_rows WHERE v='{expected}'"
+            ))
+            .unwrap()[0]
+                .next_row()
+                .unwrap()
+                .unwrap(),
+            vec![expected]
+        );
+    }
+    pg.execute("DROP TABLE pg_scalar_12_rows").unwrap();
+}
