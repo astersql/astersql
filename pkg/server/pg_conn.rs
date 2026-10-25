@@ -838,6 +838,7 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
     use crate::conn::ConnError;
     match error {
         ConnError::PgInt4(error) => error.sqlstate(),
+        ConnError::PgBool(error) => error.sqlstate(),
         ConnError::PgArray(error) => error.state,
         ConnError::AccessDenied { .. } => "28000",
         ConnError::UnsupportedCommand(_) => "0A000",

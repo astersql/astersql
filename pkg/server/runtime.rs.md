@@ -101,3 +101,7 @@ session_protocol_error 在普通执行、预处理执行与 recordset 收取边�
 ## 整数参数元数据接线
 
 Prepare worker 先调用 `ConcreteSession::protocol_integer_parameter_types` 获取连接方言下共享 AST 的直接整数约束，再准备真实 statement；约束放入 `PreparedMetadata.parameter_cast_oids` 返回 PG 消费者。MySQL 连接返回零约束且不改变原有 prepared 执行语义。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+session_protocol_error优先保留PgBoolError，而不是降级为通用会话文本错误。

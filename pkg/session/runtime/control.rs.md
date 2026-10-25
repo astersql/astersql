@@ -131,3 +131,7 @@ execute_protocol_statement 仅在 PostgreSQL 连接中为负 Signed 参数的 SQ
 ## 2026-10-25 PG scalar 01
 
 准备时按参数源偏移与已定型OID16描述直接投影；保存OID16并在既有结构化参数绑定时生成BOOLEAN转换，NULL同样携带目标身份，继续核对实际执行描述。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+PG INSERT VALUES在生成写入副作用之前按目标布尔列和表达式类型拒绝未显式转换的整数，返回42804；MySQL既有赋值规则不变。

@@ -97,3 +97,7 @@ pg_cast_int4 是严格十进制 int4 共享内核：SQL NULL 透传，ASCII SQL 
 
 
 2026-10-24 int8：PG int8 共用严格十进制扫描，以 i64 checked 累积（负数直接减）涵盖最小值，不经 f64；int4 在同一内核结果上执行 i32 范围检查。NULL 和 typed SQLSTATE 错误沿用现有通路。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+PG限定显式布尔转换由pg_boolean_cast_kind按源/目标类型选择，pg_boolean_cast统一归一化int4非零与解析text输入；bool→text产生true/false，bool wire仍由协议层输出t/f。PgBoolError保留22P02/42804/0A000/XX000。NULL先经过资格判断再保留目标空值。

@@ -141,3 +141,7 @@ PG int4 Cast 消费者复用 pg_integer_relational_value。关系 SELECT 在行�
 2026-10-24 int8：两个现有 Cast 求值路径按 PostgreSQLInt8 复用严格 i64 转换；行扫描前的输入族检查也覆盖 int8，嵌套逐层求值并执行中间 int4 范围检查。
 
 PG CAST 投影也走已有完整关系查询路径，确保显式 OID 参数的执行结果具有引擎来源字段类型；避免无表快速投影缺失 native_types 而无法编码，不以 SQL 子串或值猜测 OID。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+PG SELECT在行求值前检查布尔显式转换资格（含空扫描）与整数WHERE拒绝；关系查询作用域使用PgCastTable传递catalog字段类型，并将显式布尔转换接到共享内核。

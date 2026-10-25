@@ -108,3 +108,7 @@ INSERT 的主流程位于 `execute_relational_insert_with_load_counts`：
 - 新的 commit 期检查应放在 `apply_relational_mutations_with_autocommit` 的真实 `Commit` 前，并保证每个错误分支回滚和释放锁；若它也适用于显式事务，还必须接入外层 transaction commit，而不能只改 autocommit。
 - 新的派生写（例如日志或统计）应尽量与 base row mutation 保持同一事务，并明确失败是否必须回滚主写。性能评审应关注全表扫描、写前/写后行集合复制、唯一/FK 预取次数、全局 mutex 临界区和 mutation 数量。
 - 修改 Rust 逻辑时须遵守仓库规则：同步修改独立测试、保持 Go 语义、先做失败回归再修复，完成后运行 `cargo fmt --all`；本说明任务本身未修改 Rust，因此未运行 Cargo。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+PG INSERT中的CAST表达式局部接入现有关系求值器及共享布尔转换核；按目标表保存类型上下文，写入前完成归一化，避免DML字符串转换绕过int4→bool规范化。MySQL继续现有DML求值。

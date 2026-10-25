@@ -1249,6 +1249,9 @@ pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::Sq
     Mutex::new(Vec::new());
 
 fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
+    if let Some(boolean) = error.pg_bool_error() {
+        return ConnError::PgBool(boolean);
+    }
     if let Some(array) = error.pg_array_error() {
         return ConnError::PgArray(array);
     }

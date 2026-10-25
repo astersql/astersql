@@ -4695,3 +4695,43 @@ fn pg_scalar_01_boolean_ast_identity() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_03_text_cast_target() {
+    use parser_ast::{CastFunctionType, ExprKind, SqlDialect};
+    for sql in [
+        "SELECT TRUE::text",
+        "SELECT CAST(FALSE AS text)",
+        "SELECT 'yes'::text::boolean",
+        "SELECT NULL::text",
+    ] {
+        let (statements, _) = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        let select = statements[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert!(matches!(
+            select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+            ExprKind::Cast {
+                FunctionType: CastFunctionType::Cast,
+                ..
+            }
+        ));
+        if !sql.ends_with("boolean") {
+            let ExprKind::Cast { Tp, .. } = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+            else {
+                unreachable!()
+            };
+            assert_eq!(Tp.GetType(), parser_mysql::r#type::TypeVarString);
+            assert_eq!(Tp.GetCharset(), "utf8mb4");
+        }
+        assert!(
+            crate::Parser::with_dialect(SqlDialect::MySQL)
+                .ParseSQL(sql, &[])
+                .is_err(),
+            "{sql}"
+        );
+    }
+}

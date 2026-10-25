@@ -153,3 +153,7 @@ PreparePlannedKVSelect 作为普通 SQL PREPARE 表查询的实际计划准备�
 ## 2026-10-25 PG scalar 01
 
 PG参数约束保留供给OID16，并从带bool目标身份的CAST推导16，复用原有参数源位置映射。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+protocol_parameter_types对直接TEXT目标的参数约束推导OID25，供$1::text::boolean在未提供OID时保留源text身份；只补现有直接CAST约束，不扩展通用推导矩阵。

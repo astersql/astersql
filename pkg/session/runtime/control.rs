@@ -1704,6 +1704,7 @@ impl ConcreteSession {
             return Err(SessionError::new("result metadata requires one statement"));
         }
         let statement = &statements[0];
+        self.validate_pg_boolean_statement(statement.as_ref())?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
             && !insert.Returning.is_empty()
@@ -1796,6 +1797,7 @@ impl ConcreteSession {
             .map(|(array, record)| if record != 0 { record } else { array })
             .collect::<Vec<_>>();
         let statement = &statements[0];
+        self.validate_pg_boolean_statement(statement.as_ref())?;
         let mut fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
             && !insert.Returning.is_empty()
@@ -2356,12 +2358,89 @@ impl ConcreteSession {
         Ok(())
     }
 
+    fn validate_pg_boolean_insert(&self, statement: &ast::InsertStmt) -> SessionResult<()> {
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
+            return Ok(());
+        }
+        let Some(ast::ResultSetNode::TableSource(source)) = statement
+            .Table
+            .as_ref()
+            .and_then(|table| table.TableRefs.Left.as_deref())
+        else {
+            return Ok(());
+        };
+        let current_database = self.current_database();
+        let database = if source.Source.Schema.L.is_empty() {
+            &current_database
+        } else {
+            &source.Source.Schema.L
+        };
+        let Some(table) = self.resolve_runtime_table(database, relation_name(&source.Source))
+        else {
+            return Ok(());
+        };
+        let columns = if statement.Columns.is_empty() {
+            table
+                .Columns
+                .iter()
+                .filter(|column| {
+                    column.State == astersql_meta_model::StatePublic
+                        && !column.Hidden
+                        && !column.IsGenerated()
+                })
+                .map(Some)
+                .collect::<Vec<_>>()
+        } else {
+            statement
+                .Columns
+                .iter()
+                .map(|name| {
+                    table
+                        .Columns
+                        .iter()
+                        .find(|column| column.Name.L == name.Name.L)
+                })
+                .collect()
+        };
+        for values in &statement.Lists {
+            for (value, column) in values.iter().zip(&columns) {
+                let Some(column) = column else {
+                    continue;
+                };
+                let source = relational_expression_type(value, &table);
+                if column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+                    && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+                    && source.EvalType() == astersql_parser_types::eval_type::ETInt
+                    && source.GetType() != astersql_parser_mysql::r#type::TypeNull
+                {
+                    return Err(pg_bool_session_error(
+                        astersql_expression::PgBoolError::TypeMismatch,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_pg_boolean_statement(&self, statement: &dyn ast::Node) -> SessionResult<()> {
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
+            return Ok(());
+        }
+        if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
+            self.validate_pg_integer_select_inputs(select)?;
+        } else if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() {
+            self.validate_pg_boolean_insert(insert)?;
+        }
+        Ok(())
+    }
+
     /// 执行面向会话 KV 表的 INSERT AST。
     pub(super) fn execute_insert(&self, statement: &ast::InsertStmt) -> SessionResult<()> {
         if statement.Select.is_some() {
             return self.execute_insert_select(statement);
         }
         let plan = crate::dml_runtime::PlanInsert(statement)?;
+        self.validate_pg_boolean_insert(statement)?;
         if plan.Table != SESSION_KV_TABLE {
             return self.execute_relational_insert(statement, plan, false, None);
         }

@@ -1814,3 +1814,104 @@ pub fn pg_cast_int8(value: Option<&str>) -> Result<Option<i64>, PgInt4Error> {
     }
     Ok(Some(number))
 }
+
+/// Errors specific to PostgreSQL's limited explicit boolean conversions.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum PgBoolError {
+    #[error("invalid input syntax for type boolean")]
+    InvalidSyntax,
+    #[error("argument or assignment requires type boolean")]
+    TypeMismatch,
+    #[error("unsupported explicit boolean conversion")]
+    Unsupported,
+    #[error("invalid internal boolean value")]
+    InvalidValue,
+}
+impl PgBoolError {
+    pub fn sqlstate(self) -> &'static str {
+        match self {
+            Self::InvalidSyntax => "22P02",
+            Self::TypeMismatch => "42804",
+            Self::Unsupported => "0A000",
+            Self::InvalidValue => "XX000",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PgBooleanCast {
+    Int4ToBool,
+    TextToBool,
+    BoolToInt4,
+    BoolToText,
+    Identity,
+}
+
+/// Decide eligibility from declared types, even for NULL and empty results.
+pub fn pg_boolean_cast_kind(
+    source: &crate::types::FieldType,
+    target: &crate::types::FieldType,
+) -> Result<Option<PgBooleanCast>, PgBoolError> {
+    use crate::mysql;
+    let source_bool = mysql::HasIsBooleanFlag(source.GetFlag());
+    let target_bool = mysql::HasIsBooleanFlag(target.GetFlag());
+    if !source_bool && !target_bool {
+        return Ok(None);
+    }
+    if target_bool {
+        return Ok(Some(
+            if source_bool || source.GetType() == mysql::TypeNull {
+                PgBooleanCast::Identity
+            } else if source.GetType() == mysql::TypeLong {
+                PgBooleanCast::Int4ToBool
+            } else if source.EvalType() == crate::types::ETString {
+                PgBooleanCast::TextToBool
+            } else {
+                return Err(PgBoolError::Unsupported);
+            },
+        ));
+    }
+    Ok(Some(if target.GetType() == mysql::TypeLong {
+        PgBooleanCast::BoolToInt4
+    } else if target.EvalType() == crate::types::ETString {
+        PgBooleanCast::BoolToText
+    } else {
+        return Err(PgBoolError::Unsupported);
+    }))
+}
+
+pub fn pg_boolean_cast(
+    value: Option<&str>,
+    kind: PgBooleanCast,
+) -> Result<Option<String>, PgBoolError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let truth = match kind {
+        PgBooleanCast::Int4ToBool => {
+            pg_cast_int4(Some(value))
+                .map_err(|_| PgBoolError::InvalidValue)?
+                .unwrap()
+                != 0
+        }
+        PgBooleanCast::TextToBool => match value
+            .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "t" | "tr" | "tru" | "true" | "y" | "ye" | "yes" | "on" | "1" => true,
+            "f" | "fa" | "fal" | "fals" | "false" | "n" | "no" | "of" | "off" | "0" => false,
+            _ => return Err(PgBoolError::InvalidSyntax),
+        },
+        _ => match value {
+            "1" | "true" => true,
+            "0" | "false" => false,
+            _ => return Err(PgBoolError::InvalidValue),
+        },
+    };
+    Ok(Some(if kind == PgBooleanCast::BoolToText {
+        truth.to_string()
+    } else {
+        i32::from(truth).to_string()
+    }))
+}

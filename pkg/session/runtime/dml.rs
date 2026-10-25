@@ -2202,6 +2202,11 @@ impl ConcreteSession {
         let mut table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            Some(PgCastTable::enter_table(&table))
+        } else {
+            None
+        };
         let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
         let has_foreign_key_checks = !table.ForeignKeys.is_empty();
         self.record_transaction_table_write(&table);
@@ -2450,7 +2455,10 @@ impl ConcreteSession {
                         }
                         Err(error) => return Err(error),
                     }
-                } else if matches!(expression.Kind, ast::ExprKind::Function { .. }) {
+                } else if matches!(expression.Kind, ast::ExprKind::Function { .. })
+                    || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && expression_contains_cast(expression))
+                {
                     match relational_expression_value(expression, &row) {
                         Ok(value) => value,
                         Err(error) if plan.Ignore => {

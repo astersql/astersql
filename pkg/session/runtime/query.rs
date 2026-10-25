@@ -740,7 +740,7 @@ pub(super) fn format_unix_timestamp(value: f64, fractional_seconds_precision: us
 // Analyze integer constants at the shared PG expression boundary, before
 // result fields are bound through a CTE or mapped to protocol types. Apply the
 // unary sign before choosing the width, including the int4/int8 lower bounds.
-fn pg_integer_literal_type(
+pub(super) fn pg_integer_literal_type(
     expression: &ast::ExprNode,
 ) -> Option<astersql_parser_types::types::FieldType> {
     fn integer(expression: &ast::ExprNode) -> Option<i128> {
@@ -1240,6 +1240,16 @@ impl ConcreteSession {
                 FunctionType,
                 ..
             } => {
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    if let Some(result) = pg_boolean_relational_value(
+                        Expr,
+                        Tp,
+                        || self.relational_query_expression_value(Expr, row, group_rows),
+                        true,
+                    ) {
+                        return result;
+                    }
+                }
                 if matches!(
                     FunctionType,
                     ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8
@@ -2014,7 +2024,10 @@ impl ConcreteSession {
 
     /// Reject unsupported numeric source types before row evaluation, including
     /// empty scans: relational rows carry text and cannot recover source types.
-    fn validate_pg_integer_select_inputs(&self, select: &ast::SelectStmt) -> SessionResult<()> {
+    pub(super) fn validate_pg_integer_select_inputs(
+        &self,
+        select: &ast::SelectStmt,
+    ) -> SessionResult<()> {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
             return Ok(());
         }
@@ -2025,21 +2038,51 @@ impl ConcreteSession {
             .filter_map(|field| field.Expr.as_ref())
             .chain(select.Where.as_ref())
             .collect::<Vec<_>>();
-        if !expressions
-            .iter()
-            .any(|expr| expression_contains_cast(expr))
-        {
-            return Ok(());
-        }
         let sources = self.relational_select_source_fields(select)?;
         let mut table = astersql_meta_model::TableInfo::default();
         table.Columns = sources.iter().map(|field| field.column.clone()).collect();
+        // Comparisons already produce SQL predicates, whereas scalar integer
+        // expressions cannot acquire boolean meaning merely by appearing in WHERE.
+        fn scalar_predicate(expr: &ast::ExprNode) -> bool {
+            match &expr.Kind {
+                ast::ExprKind::Parentheses(inner) | ast::ExprKind::Collate { Expr: inner, .. } => {
+                    scalar_predicate(inner)
+                }
+                ast::ExprKind::Unary { Op, .. } => matches!(Op.as_str(), "+" | "-"),
+                ast::ExprKind::Binary { Op, .. } => {
+                    matches!(Op.as_str(), "+" | "-" | "*" | "/" | "%")
+                }
+                ast::ExprKind::Value(_) | ast::ExprKind::Cast { .. } | ast::ExprKind::Column(_) => {
+                    true
+                }
+                _ => false,
+            }
+        }
+        if let Some(predicate) = &select.Where {
+            let source = self.relational_query_expression_type_from_sources(predicate, &sources);
+            if source.EvalType() == astersql_parser_types::eval_type::ETInt
+                && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+                && scalar_predicate(predicate)
+            {
+                return Err(pg_bool_session_error(
+                    astersql_expression::PgBoolError::TypeMismatch,
+                ));
+            }
+        }
         struct Inputs<'a> {
             table: &'a astersql_meta_model::TableInfo,
             unsupported: bool,
+            boolean_error: Option<astersql_expression::PgBoolError>,
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::Cast { Expr, Tp, .. } = &input.Kind {
+                    let source = pg_integer_literal_type(Expr)
+                        .unwrap_or_else(|| relational_expression_type(Expr, self.table));
+                    if let Err(error) = astersql_expression::pg_boolean_cast_kind(&source, Tp) {
+                        self.boolean_error = Some(error);
+                    }
+                }
                 if let ast::ExprKind::Cast {
                     Expr,
                     FunctionType:
@@ -2064,9 +2107,13 @@ impl ConcreteSession {
         let mut visitor = Inputs {
             table: &table,
             unsupported: false,
+            boolean_error: None,
         };
         for expr in expressions {
             let _ = expr.Accept(&mut visitor);
+        }
+        if let Some(error) = visitor.boolean_error {
+            return Err(pg_bool_session_error(error));
         }
         if visitor.unsupported {
             let error = astersql_expression::PgInt4Error::Unsupported;
@@ -2083,6 +2130,13 @@ impl ConcreteSession {
         select: &ast::SelectStmt,
     ) -> SessionResult<ConcreteRecordSet> {
         self.validate_pg_integer_select_inputs(select)?;
+        let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            Some(PgCastTable::enter(
+                &self.relational_select_source_fields(select)?,
+            ))
+        } else {
+            None
+        };
         let statement_read_ts = self.full_query_statement_read_ts(select)?;
         let previous_snapshot_read_ts = {
             let mut state = self.state.borrow_mut();
@@ -3026,6 +3080,13 @@ impl ConcreteSession {
         statement_sql: Option<&str>,
     ) -> SessionResult<Option<ConcreteRecordSet>> {
         self.validate_pg_integer_select_inputs(statement)?;
+        let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            Some(PgCastTable::enter(
+                &self.relational_select_source_fields(statement)?,
+            ))
+        } else {
+            None
+        };
         let Some(from) = statement.From.as_ref() else {
             return Ok(None);
         };

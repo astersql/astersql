@@ -120,6 +120,7 @@ pub enum ConnError {
     ClientQuit,
     Session(String),
     PgInt4(astersql_expression::PgInt4Error),
+    PgBool(astersql_expression::PgBoolError),
     PgArray(astersql_session::runtime::PgArrayError),
     Poisoned(&'static str),
 }
@@ -131,6 +132,7 @@ impl fmt::Display for ConnError {
                 f.write_str(message)
             }
             Self::PgInt4(error) => error.fmt(f),
+            Self::PgBool(error) => error.fmt(f),
             Self::PgArray(error) => error.fmt(f),
             Self::NetPacketTooLarge => write!(
                 f,

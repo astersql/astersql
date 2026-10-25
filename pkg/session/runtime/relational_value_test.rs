@@ -167,3 +167,32 @@ fn pg_scalar_01_boolean_type_and_null() {
         );
     }
 }
+
+#[test]
+fn pg_scalar_03_relational_boolean_conversions() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        ("SELECT (-1)::int4::boolean", "1"),
+        ("SELECT 2::int4::boolean", "1"),
+        ("SELECT FALSE::int4", "0"),
+        ("SELECT TRUE::text", "true"),
+        ("SELECT 'of'::text::boolean", "0"),
+    ] {
+        assert_eq!(
+            pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+            vec![expected],
+            "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT 1 WHERE 1",
+        "SELECT '2'::text::boolean",
+        "SELECT 2::int8::boolean",
+        "SELECT NULL::int8::boolean LIMIT 0",
+    ] {
+        assert!(pg.execute(sql).is_err(), "{sql}");
+    }
+}

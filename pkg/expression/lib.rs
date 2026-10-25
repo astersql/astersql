@@ -172,7 +172,10 @@ mod builtin_arithmetic_kernel;
 mod builtin_arithmetic_vec_kernel;
 #[path = "builtin_cast.rs"]
 mod builtin_cast_kernel;
-pub use builtin_cast_kernel::{PgInt4Error, pg_cast_int4, pg_cast_int8};
+pub use builtin_cast_kernel::{
+    PgBoolError, PgBooleanCast, PgInt4Error, pg_boolean_cast, pg_boolean_cast_kind, pg_cast_int4,
+    pg_cast_int8,
+};
 #[path = "builtin_cast_vec.rs"]
 mod builtin_cast_vec_kernel;
 #[path = "builtin_compare.rs"]

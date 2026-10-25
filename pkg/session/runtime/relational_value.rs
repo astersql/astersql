@@ -1280,6 +1280,19 @@ pub(super) fn relational_expression_value(
             FunctionType,
             ..
         } => {
+            if let Some(result) = pg_boolean_relational_value(
+                Expr,
+                Tp,
+                || relational_expression_value(Expr, row),
+                Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+                    || matches!(
+                        FunctionType,
+                        ast::CastFunctionType::PostgreSQLInt4
+                            | ast::CastFunctionType::PostgreSQLInt8
+                    ),
+            ) {
+                return result;
+            }
             if matches!(
                 FunctionType,
                 ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8
@@ -3448,4 +3461,57 @@ pub(super) fn pg_integer_relational_value(
     result.map(|v| v.map(|n| n.to_string())).map_err(|error| {
         SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
     })
+}
+
+thread_local! {
+    static PG_CAST_TABLE: std::cell::RefCell<Option<astersql_meta_model::TableInfo>> = const { std::cell::RefCell::new(None) };
+}
+pub(super) struct PgCastTable(Option<astersql_meta_model::TableInfo>);
+impl PgCastTable {
+    pub(super) fn enter(fields: &[ConcreteResultField]) -> Self {
+        let mut table = astersql_meta_model::TableInfo::default();
+        table.Columns = fields.iter().map(|f| f.column.clone()).collect();
+        Self::enter_table(&table)
+    }
+    pub(super) fn enter_table(table: &astersql_meta_model::TableInfo) -> Self {
+        Self(PG_CAST_TABLE.with(|slot| slot.replace(Some(table.clone()))))
+    }
+}
+impl Drop for PgCastTable {
+    fn drop(&mut self) {
+        PG_CAST_TABLE.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
+}
+pub(super) fn pg_bool_session_error(error: astersql_expression::PgBoolError) -> SessionError {
+    SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+}
+
+/// The relational value carrier is text, so use catalog/AST types before converting.
+pub(super) fn pg_boolean_relational_value(
+    expression: &ast::ExprNode,
+    target: &astersql_parser_types::types::FieldType,
+    value: impl FnOnce() -> SessionResult<Option<String>>,
+    enabled: bool,
+) -> Option<SessionResult<Option<String>>> {
+    let kind = PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        if !enabled && table.is_none() {
+            return Ok(None);
+        }
+        let empty = astersql_meta_model::TableInfo::default();
+        let source = super::query::pg_integer_literal_type(expression).unwrap_or_else(|| {
+            relational_expression_type(expression, table.as_ref().unwrap_or(&empty))
+        });
+        astersql_expression::pg_boolean_cast_kind(&source, target)
+    });
+    match kind {
+        Ok(Some(kind)) => Some(value().and_then(|value| {
+            astersql_expression::pg_boolean_cast(value.as_deref(), kind)
+                .map_err(pg_bool_session_error)
+        })),
+        Ok(None) => None,
+        Err(error) => Some(Err(pg_bool_session_error(error))),
+    }
 }

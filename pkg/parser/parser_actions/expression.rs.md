@@ -141,3 +141,7 @@ PgCastType 仅在 PostgreSQL 身份下接受 int4/integer/int 和 int8/bigint，
 ## 2026-10-25 PG scalar 01
 
 PG BOOL/BOOLEAN转换目标构造TypeTiny+IsBooleanFlag，仅PG方言接受；后缀和CAST共用目标动作。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+PgCastType增加本次bool↔text转换必需的TEXT目标（TypeVarString、utf8mb4/utf8mb4_bin），由现有后缀转换及CAST语法共用；仍仅PG接受，不扩展varchar/bpchar或其他转换矩阵。

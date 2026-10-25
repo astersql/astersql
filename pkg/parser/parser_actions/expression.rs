@@ -334,7 +334,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
             Some(ExpressionRule::PgArrayNestedNext)
         }
         "pgarrayrow_pgarraylist--f75d26ccaf8553d2" => Some(ExpressionRule::PgArrayRow),
-        "pgcasttype_bool--d9658361f98a2bfa" | "pgcasttype_boolean--3e6aa45e36d3b626" | "pgcasttype_bigint--ae5884bd608717ab"
+        "pgcasttype_text--298413db6f8b6803" | "pgcasttype_bool--d9658361f98a2bfa" | "pgcasttype_boolean--3e6aa45e36d3b626" | "pgcasttype_bigint--ae5884bd608717ab"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
         | "pgcasttype_integer--a6fba6c5af1a8564"
@@ -1182,6 +1182,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
                 "bool" | "boolean" => parser_mysql::r#type::TypeTiny,
+                "text" => parser_mysql::r#type::TypeVarString,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
                     return Err(1);
@@ -1198,8 +1199,13 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let (flen, decimal) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
             field_type.SetFlen(flen);
             field_type.SetDecimal(decimal);
-            field_type.SetCharset("binary".to_owned());
-            field_type.SetCollate("binary".to_owned());
+            if tp == parser_mysql::r#type::TypeVarString {
+                field_type.SetCharset("utf8mb4".to_owned());
+                field_type.SetCollate("utf8mb4_bin".to_owned());
+            } else {
+                field_type.SetCharset("binary".to_owned());
+                field_type.SetCollate("binary".to_owned());
+            }
             out.item = Some(Box::new(field_type));
         }
         ExpressionRule::PgPostfixCast => {

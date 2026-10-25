@@ -2811,6 +2811,7 @@ impl ConcreteSession {
                         _ if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 => 16,
                         ast::CastFunctionType::PostgreSQLInt4 => 23,
                         ast::CastFunctionType::PostgreSQLInt8 => 20,
+                        _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeVarString => 25,
                         _ => 0,
                     };
                     let mut source = Expr.as_ref();

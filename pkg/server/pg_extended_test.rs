@@ -1729,7 +1729,11 @@ fn scalar_types(message: &(u8, Vec<u8>), oids: &[u32]) {
         );
         assert_eq!(
             i16::from_be_bytes(message.1[offset + 10..offset + 12].try_into().unwrap()),
-            if *oid == 16 { 1 } else { 4 }
+            match *oid {
+                16 => 1,
+                25 => -1,
+                _ => 4,
+            }
         );
         assert_eq!(
             i32::from_be_bytes(message.1[offset + 12..offset + 16].try_into().unwrap()),
@@ -2064,5 +2068,331 @@ fn pg_scalar_02() {
     send(&mut socket, b'X', &[]);
     println!(
         "pg_scalar_02: 44 parameter values (21 spellings + NULL x 2), 18 rejected writes/recovery (9 inputs x 2), two zero-row descriptions, MySQL before/during/after"
+    );
+}
+
+#[test]
+fn pg_scalar_03() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let mysql_metadata = scalar_mysql_check(&mut mysql);
+    let mysql_cast_check = |socket: &mut TcpStream| {
+        assert_eq!(
+            mysql_query(socket, "SELECT CAST(2 AS SIGNED),CAST(TRUE AS CHAR)"),
+            vec![vec![Some(b"2".to_vec()), Some(b"1".to_vec())]]
+        );
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+    };
+    mysql_cast_check(&mut mysql);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for sql in [
+        "CREATE TABLE public.pg_scalar_03 (id INT PRIMARY KEY,b BOOLEAN,i INT)",
+        "INSERT INTO public.pg_scalar_03 VALUES (1,NULL,0),(2,TRUE,-1),(3,FALSE,2)",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+    }
+    for (id, sql, oids, expected) in [
+        ("zero", "SELECT 0::int4::boolean", vec![16], vec![Some("f")]),
+        (
+            "negative",
+            "SELECT (-1)::int4::boolean",
+            vec![16],
+            vec![Some("t")],
+        ),
+        ("two", "SELECT 2::int4::boolean", vec![16], vec![Some("t")]),
+        ("true_int", "SELECT TRUE::int4", vec![23], vec![Some("1")]),
+        ("false_int", "SELECT FALSE::int4", vec![23], vec![Some("0")]),
+        (
+            "true_text",
+            "SELECT TRUE::text",
+            vec![25],
+            vec![Some("true")],
+        ),
+        (
+            "false_text",
+            "SELECT FALSE::text",
+            vec![25],
+            vec![Some("false")],
+        ),
+        (
+            "text_bool",
+            "SELECT 'yes'::text::boolean",
+            vec![16],
+            vec![Some("t")],
+        ),
+        (
+            "null_bool",
+            "SELECT NULL::int4::boolean",
+            vec![16],
+            vec![None],
+        ),
+        (
+            "null_int",
+            "SELECT NULL::boolean::int4",
+            vec![23],
+            vec![None],
+        ),
+        (
+            "null_text",
+            "SELECT NULL::boolean::text",
+            vec![25],
+            vec![None],
+        ),
+        (
+            "null_text_bool",
+            "SELECT NULL::text::boolean",
+            vec![16],
+            vec![None],
+        ),
+        (
+            "column",
+            "SELECT b::int4,i::boolean,b::text FROM public.pg_scalar_03 WHERE id=2",
+            vec![23, 16, 25],
+            vec![Some("1"), Some("t"), Some("true")],
+        ),
+        (
+            "column_null",
+            "SELECT b::int4,i::boolean,b::text FROM public.pg_scalar_03 WHERE id=1",
+            vec![23, 16, 25],
+            vec![None, Some("f"), None],
+        ),
+        (
+            "column_false",
+            "SELECT b::int4,i::boolean,b::text FROM public.pg_scalar_03 WHERE id=3",
+            vec![23, 16, 25],
+            vec![Some("0"), Some("t"), Some("false")],
+        ),
+    ] {
+        println!("pg_scalar_03 scenario {id}");
+        parse(&mut socket, id, sql, &[]);
+        assert_eq!(read(&mut socket), (b'1', vec![]), "{id}");
+        send(&mut socket, b'D', &[b"S", id.as_bytes(), b"\0"].concat());
+        assert_eq!(
+            read(&mut socket),
+            (b't', 0i16.to_be_bytes().to_vec()),
+            "{id}"
+        );
+        let description = read(&mut socket);
+        scalar_types(&description, &oids);
+        bind(&mut socket, "", id, &[]);
+        assert_eq!(read(&mut socket).0, b'2', "{id}");
+        send(&mut socket, b'D', b"P\0");
+        assert_eq!(read(&mut socket), description, "{id}");
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&expected)), "{id}");
+        assert_eq!(read(&mut socket).0, b'C', "{id}");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    assert_eq!(scalar_mysql_check(&mut mysql), mysql_metadata);
+    mysql_cast_check(&mut mysql);
+    for (name, sql, param_oid, result_oid, values) in [
+        (
+            "int_bool",
+            "SELECT $1::int4::boolean",
+            23,
+            16,
+            vec![
+                (Some("0"), Some("f")),
+                (Some("-1"), Some("t")),
+                (Some("2"), Some("t")),
+                (Some("-2147483648"), Some("t")),
+                (Some("2147483647"), Some("t")),
+                (None, None),
+            ],
+        ),
+        (
+            "bool_int",
+            "SELECT $1::boolean::int4",
+            16,
+            23,
+            vec![
+                (Some("true"), Some("1")),
+                (Some("false"), Some("0")),
+                (None, None),
+            ],
+        ),
+        (
+            "bool_text",
+            "SELECT $1::boolean::text",
+            16,
+            25,
+            vec![
+                (Some("true"), Some("true")),
+                (Some("false"), Some("false")),
+                (None, None),
+            ],
+        ),
+        (
+            "text_bool",
+            "SELECT $1::text::boolean",
+            25,
+            16,
+            vec![
+                (Some("yes"), Some("t")),
+                (Some("off"), Some("f")),
+                (None, None),
+            ],
+        ),
+    ] {
+        for infer in [false, true] {
+            let statement_name = format!("param_{name}_{infer}");
+            let name = statement_name.as_str();
+            let supplied = if infer { vec![] } else { vec![param_oid] };
+            parse(&mut socket, name, sql, &supplied);
+            assert_eq!(read(&mut socket), (b'1', vec![]), "{name}");
+            send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+            assert_eq!(
+                read(&mut socket),
+                (
+                    b't',
+                    [1i16.to_be_bytes().as_slice(), &param_oid.to_be_bytes()].concat()
+                )
+            );
+            let description = read(&mut socket);
+            scalar_types(&description, &[result_oid]);
+            for (input, expected) in values.iter().copied() {
+                bind(&mut socket, "", name, &[input]);
+                assert_eq!(read(&mut socket).0, b'2', "{name}: {input:?}");
+                send(&mut socket, b'D', b"P\0");
+                assert_eq!(read(&mut socket), description);
+                execute(&mut socket, "", 0);
+                assert_eq!(
+                    read(&mut socket),
+                    (b'D', row(&[expected])),
+                    "{name}: {input:?}"
+                );
+                assert_eq!(read(&mut socket).0, b'C');
+                send(&mut socket, b'S', &[]);
+                assert_eq!(read(&mut socket).0, b'Z');
+            }
+        }
+    }
+    for (name, sql, oids) in [
+        (
+            "empty_cast",
+            "SELECT b::int4,i::boolean,b::text FROM public.pg_scalar_03 LIMIT 0",
+            vec![23, 16, 25],
+        ),
+        (
+            "empty_null",
+            "SELECT NULL::boolean::text,NULL::text::boolean LIMIT 0",
+            vec![25, 16],
+        ),
+    ] {
+        parse(&mut socket, name, sql, &[]);
+        assert_eq!(read(&mut socket).0, b'1');
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket), (b't', 0i16.to_be_bytes().to_vec()));
+        let description = read(&mut socket);
+        scalar_types(&description, &oids);
+        bind(&mut socket, "", name, &[]);
+        assert_eq!(read(&mut socket).0, b'2');
+        send(&mut socket, b'D', b"P\0");
+        assert_eq!(read(&mut socket), description);
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    let messages = query(
+        &mut socket,
+        "INSERT INTO public.pg_scalar_03 VALUES (4,2::int4::boolean,FALSE::int4)",
+    );
+    assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT b,i FROM public.pg_scalar_03 WHERE id=4"
+        )[1],
+        (b'D', row(&[Some("t"), Some("0")]))
+    );
+    assert_eq!(
+        query(&mut socket, "DELETE FROM public.pg_scalar_03 WHERE id=4")[0].0,
+        b'C'
+    );
+    for transaction in [false, true] {
+        for (id, sql, state) in [
+            ("where_int", "SELECT 1 WHERE 1", "42804"),
+            ("where_paren", "SELECT 1 WHERE (1)", "42804"),
+            ("where_negative", "SELECT 1 WHERE -1", "42804"),
+            ("where_sum", "SELECT 1 WHERE 1+0", "42804"),
+            (
+                "insert_int",
+                "INSERT INTO public.pg_scalar_03 VALUES (4,2,0)",
+                "42804",
+            ),
+            ("text_invalid", "SELECT '2'::text::boolean", "22P02"),
+            ("int8_bool", "SELECT 2::int8::boolean", "0A000"),
+        ] {
+            if transaction {
+                assert_eq!(query(&mut socket, "BEGIN")[0].0, b'C');
+            }
+            let statement_name = format!("{id}_{transaction}");
+            parse(&mut socket, &statement_name, sql, &[]);
+            let response = read(&mut socket);
+            if id == "text_invalid" {
+                assert_eq!(response.0, b'1', "{id}: rejection must occur at Execute");
+                bind(&mut socket, "", &statement_name, &[]);
+                assert_eq!(read(&mut socket).0, b'2', "{id}");
+                execute(&mut socket, "", 0);
+                assert_state(&read(&mut socket), state);
+            } else {
+                assert_state(&response, state);
+            }
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                read(&mut socket),
+                (b'Z', vec![if transaction { b'E' } else { b'I' }])
+            );
+            if transaction {
+                assert_eq!(query(&mut socket, "ROLLBACK")[0].0, b'C');
+            }
+            assert_eq!(
+                query(&mut socket, "SELECT count(*) FROM public.pg_scalar_03")[1],
+                (b'D', row(&[Some("3")]))
+            );
+        }
+    }
+    assert_eq!(scalar_mysql_check(&mut mysql), mysql_metadata);
+    mysql_cast_check(&mut mysql);
+    assert_eq!(
+        query(&mut socket, "DROP TABLE public.pg_scalar_03")[0].0,
+        b'C'
+    );
+    assert_eq!(scalar_mysql_check(&mut mysql), mysql_metadata);
+    mysql_cast_check(&mut mysql);
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(2 AS SIGNED),CAST(TRUE AS CHAR)"),
+        vec![vec![Some(b"2".to_vec()), Some(b"1".to_vec())]]
+    );
+    send(&mut socket, b'X', &[]);
+    println!(
+        "pg_scalar_03: 17 scalar/column, 30 parameter, 2 empty descriptions, 14 errors/recovery, MySQL before/during/after"
     );
 }

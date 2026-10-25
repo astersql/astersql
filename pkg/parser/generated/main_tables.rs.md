@@ -103,3 +103,7 @@
 ## 2026-10-25 PG scalar 01
 
 按main.astergram新增BOOL/BOOLEAN目标规则后由astersql-parsergen generate重新生成表，配套手写AST动作。
+
+## 2026-10-26 PG scalar 03
+
+为限定bool↔text转换的TEXT目标增加一条PgCastType产生式后，由astersql-parsergen generate整体重生成；动作稳定ID为pgcasttype_text--298413db6f8b6803。未新增token。配套parser_test::pg_scalar_03_text_cast_target覆盖后缀/CAST及MySQL隔离，parser_manifest检查元数据映射，parsergen check检查生成一致性。

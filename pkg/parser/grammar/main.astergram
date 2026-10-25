@@ -4305,4 +4305,5 @@ PgCastType : "INTEGER" @action;
 PgCastType : "BIGINT" @action;
 PgCastType : "BOOL" @action;
 PgCastType : "BOOLEAN" @action;
+PgCastType : "TEXT" @action;
 CastType : PgCastType;

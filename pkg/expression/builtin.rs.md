@@ -117,3 +117,7 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 ## PostgreSQL int4 显式转换（2026-10-24）
 
 formal_registry::BuildCastFunction 使用已有 BuildContext::SQLDialect，在 PostgreSQL 且目标 TypeLong 时构造 PgInt4 动态签名。求值仅接受 NULL、整数或文本 Datum，复用 pg_cast_int4；不赋予 MySQL CAST protobuf 签名。MySQL 构造、警告和转换保持原路径。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+BuildCastFunction仅在PG方言及源/目标布尔身份存在时选择PgBoolean动态签名，正式表达式复用限定布尔内核，禁用MySQL转换与pushdown签名；MySQL继续原分派。

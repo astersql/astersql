@@ -107,3 +107,7 @@ ConnError::PgInt4 保留严格 int4 转换的有类型错误，Display 只提供
 ## 整数参数元数据接线
 
 `PreparedMetadata.parameter_cast_oids` 按 engine marker 出现顺序承接共享 AST 的直接整数转换约束（0 表示本里程碑不能定型）；PG 层据此生成编号参数描述，不从 Bind 值推断。
+
+### PostgreSQL限定布尔显式转换（任务3）
+
+ConnError::PgBool保存共享PG布尔转换错误身份，供协议SQLSTATE映射。
