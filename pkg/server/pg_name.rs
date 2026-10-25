@@ -357,12 +357,25 @@ impl Resolver<'_> {
             if self.word(i, "recursive") {
                 return Err(error("0A000", "recursive PG CTEs are unsupported"));
             }
+            // Duplicate declarations belong to this WITH list, independently
+            // of inherited names that may legally be shadowed. Check the list
+            // before resolving bodies, as PostgreSQL does during CTE analysis.
+            let mut declared = HashSet::new();
+            let mut definitions = Vec::new();
             loop {
                 let name = self
                     .tokens
                     .get(i)
                     .and_then(|t| t.name.clone())
                     .ok_or_else(|| error("42601", "expected CTE name"))?;
+                if !declared.insert(name.clone()) {
+                    self.error_position =
+                        Some(self.sql[..self.tokens[i].start].chars().count() + 1);
+                    return Err(error(
+                        "42712",
+                        &format!("WITH query name \"{name}\" specified more than once"),
+                    ));
+                }
                 i += 1;
                 if self.symbol(i, b'(') {
                     i = self.close(i, end)? + 1;
@@ -372,13 +385,16 @@ impl Resolver<'_> {
                 }
                 i += 1;
                 let close = self.close(i, end)?;
-                self.scope(i + 1, close, &ctes)?;
-                ctes.insert(name);
+                definitions.push((name, i + 1, close));
                 i = close + 1;
                 if !self.symbol(i, b',') {
                     break;
                 }
                 i += 1;
+            }
+            for (name, start, close) in definitions {
+                self.scope(start, close, &ctes)?;
+                ctes.insert(name);
             }
         }
         let select = self.word(i, "select");

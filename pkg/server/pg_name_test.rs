@@ -771,3 +771,51 @@ fn pg_dialect_19_behavior() {
         "pg_dialect_19_behavior: assertions=16; actual bindings and lifecycle verified by libpq"
     );
 }
+
+#[test]
+fn pg_dialect_20_behavior() {
+    for sql in [
+        "WITH t AS (SELECT 1), t AS (SELECT 2) SELECT * FROM t",
+        "WITH t AS (SELECT 1), T AS (SELECT 2) SELECT * FROM t",
+        r#"/*中文*/ WITH t AS (SELECT 1), "t" AS (SELECT 2) SELECT * FROM t"#,
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "42712", "{sql}");
+    }
+    for sql in [
+        r#"WITH t AS (SELECT 1 AS v), "T" AS (SELECT 2 AS v) SELECT t.v,"T".v FROM t CROSS JOIN "T""#,
+        "WITH t AS (SELECT 1 AS v) SELECT t.v,q.v FROM t CROSS JOIN (WITH t AS (SELECT 2 AS v) SELECT v FROM t) q",
+    ] {
+        assert_eq!(rewrite(sql, "db", false).unwrap(), sql);
+        let (nodes, _) =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(sql, &[])
+                .unwrap();
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::SelectStmt>()
+            .unwrap();
+        let with = select.With.as_ref().unwrap().borrow();
+        assert_eq!(with.CTEs[0].Name.L, "t");
+        assert!(
+            with.CTEs[0]
+                .Query
+                .as_any()
+                .is::<astersql_parser_ast::SelectStmt>()
+        );
+        if with.CTEs.len() == 2 {
+            assert_eq!(with.CTEs[1].Name.L, "T");
+        }
+        for field in &select.Fields.Fields {
+            let astersql_parser_ast::ExprKind::Column(column) = &field.Expr.as_ref().unwrap().Kind
+            else {
+                panic!("column");
+            };
+            for part in &column.PostgreSQLParts {
+                assert_eq!(&sql[part.Span.0..part.Span.1], part.Original);
+            }
+        }
+    }
+    println!(
+        "pg_dialect_20_behavior: cases=5; duplicate diagnostics, shared AST identities, query bodies and source spans verified"
+    );
+}

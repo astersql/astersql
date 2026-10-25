@@ -1199,6 +1199,11 @@ fn pg_dialect_19_libpq() {
 }
 
 #[test]
+fn pg_dialect_20_libpq() {
+    pg_dialect_libpq(20);
+}
+
+#[test]
 fn pg_dialect_24_libpq() {
     pg_dialect_libpq(24);
 }
@@ -2116,7 +2121,7 @@ fn pg_dialect_libpq(task: u8) {
             let _ = self.0.wait();
         }
     }
-    if task == 19 {
+    if matches!(task, 19 | 20) {
         mysql_query(&mut mysql, &format!("USE {database}"));
         mysql_query(&mut mysql, "CREATE TABLE t(v INT)");
         mysql_query(&mut mysql, "INSERT INTO t VALUES(9)");
@@ -2605,7 +2610,7 @@ fn pg_dialect_libpq(task: u8) {
                 .unwrap();
             }
         }
-        if task == 19 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+        if matches!(task, 19 | 20) && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             mysql_query(socket, &format!("USE {database}"));
             for (sql, expected) in [
                 (
@@ -3141,6 +3146,24 @@ fn pg_dialect_libpq(task: u8) {
             );
             assert!(entries.iter().all(|(_, actual)| *actual == dialect));
         }
+        return;
+    }
+    if task == 20 {
+        assert_eq!(checkpoints, 5);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        for (key, count) in [
+            ("unique_effective", 5),
+            ("primary_prepare_cases", 2),
+            ("primary_describe_cases", 2),
+            ("primary_execute_cases", 2),
+            ("diagnostic_cases", 3),
+        ] {
+            assert_eq!(summary[key], count);
+        }
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["failures"], serde_json::json!([]));
         return;
     }
     if task == 19 {
