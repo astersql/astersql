@@ -688,6 +688,149 @@ def integer_differential(aster_dsn):
                     assert summary['passed'], 'incomplete differential evidence'
 
 
+def integer14_differential(aster_dsn):
+    """Integer family only: collect each endpoint independently before comparison."""
+    import copy
+    import hashlib
+    import json
+    import signal
+    from pathlib import Path
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    name = api('PQfname', text, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    transaction = api('PQtransactionStatus', integer, ptr)
+    evidence = Path(os.environ['PG_INTEGER14_EVIDENCE_DIR'])
+    reference = os.environ['PG18_REFERENCE_DSN']
+    table = f'public.pg_integer14_{os.getpid()}'
+    observations = {}
+    bridges = {}
+    cleanup = {}
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('integer14 client interrupted')
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    def observe(result, phase):
+        assert result
+        try:
+            state = ef(result, ord('C'))
+            return dict(phase=phase, status=result_status(result),
+                        sqlstate=state.decode() if state else None,
+                        metadata=[(name(result,i).decode(),field_type(result,i),size(result,i),mod(result,i)) for i in range(columns(result))],
+                        parameters=[pt(result,i) for i in range(np(result))],
+                        rows=[[None if is_null(result,r,i) else value(result,r,i).decode() for i in range(columns(result))] for r in range(rows(result))])
+        finally:
+            clear(result)
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn)==0, f'{side} connection failed'
+        collected = {}
+        def q(case, sql, state=None, command=False):
+            result = observe(execute(conn,sql.encode()), 'query')
+            result['input'] = sql
+            collected[case] = result
+            assert result['status']==(7 if state else 1 if command else 2), (side,case,result)
+            assert result['sqlstate']==state, (side,case,result)
+            return result
+        try:
+            if side=='reference':
+                identity=q('identity', "SELECT version(), current_setting('server_version_num')")
+                assert identity['rows'][0][1]=='180006', 'exact PostgreSQL 18.6 required'
+                (evidence/'reference-identity.json').write_text(json.dumps(collected.pop('identity')))
+                build_path=Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE'])
+                build=json.loads(build_path.read_text())
+                assert hashlib.sha256(Path(build['artifact_path']).read_bytes()).hexdigest()==build['artifact_sha256']
+                (evidence/'reference-build.json').write_text(json.dumps(build))
+                (evidence/'client.json').write_text(json.dumps({'version':version(),'sha256':hashlib.sha256(Path(library).read_bytes()).hexdigest()}))
+            if side=='reference':
+                q('bridge-create',f'CREATE TABLE {table}_bridge (id INT PRIMARY KEY,a SMALLINT,b INT,c INT,d BIGINT,e NUMERIC)',command=True)
+                q('bridge-write',f'INSERT INTO {table}_bridge VALUES (1,0,0,0,0,0),(2,255,65535,16777215,4294967295,18446744073709551615),(3,NULL,NULL,NULL,NULL,NULL)',command=True)
+                collected.pop('bridge-create'); collected.pop('bridge-write')
+            q('create',f'CREATE TABLE {table} (id INT PRIMARY KEY, n SMALLINT)',command=True)
+            q('empty',f'SELECT n FROM {table}')
+            q('write',f'INSERT INTO {table} VALUES (1,-32768),(2,32767),(3,NULL)',command=True)
+            q('read',f'SELECT n FROM {table} ORDER BY id')
+            for type_name,oid,lower,upper in [('int2',21,-32768,32767),('int4',23,-2147483648,2147483647),('int8',20,-9223372036854775808,9223372036854775807)]:
+                for label,item in [('min',str(lower)),('max',str(upper)),('null',None),('space',' \t+17\n'),('hex','0x7f'),('octal','0o17'),('binary','0b101'),('separator','1_2')]:
+                    sql=f"SELECT CAST({'NULL' if item is None else chr(39)+item+chr(39)} AS {type_name}) AS n"
+                    q(f'{type_name}-literal-{label}',sql)
+                for declared in (0,oid):
+                    statement=f'i{oid}_{declared}'.encode()
+                    oids=(c.c_uint*1)(declared) if declared else None
+                    query=f'SELECT CAST($1 AS {type_name}) AS n'.encode()
+                    result=observe(prepare(conn,statement,query,1,oids),'prepare')
+                    collected[f'{type_name}-prepare-{declared}']=result
+                    assert result['status']==1,(side,result)
+                    result=observe(describe(conn,statement),'describe')
+                    collected[f'{type_name}-describe-{declared}']=result
+                    assert result['parameters']==[oid],(side,result)
+                    vocabulary=[str(lower),str(upper),None,' +17 ','0x7f','0o17','0b101','1_2','0x_FF','', '1x','1.5','_1','1_','1__2','0x',str(lower-1),str(upper+1)]
+                    for i,item in enumerate(vocabulary):
+                        args=(text*1)(None if item is None else item.encode())
+                        result=observe(prepared(conn,statement,1,args,None,None,0),'execute')
+                        result['input']={'value':item,'declared_oid':declared}
+                        collected[f'{type_name}-param-{declared}-{i}']=result
+                        expected='22003' if i>=len(vocabulary)-2 else '22P02' if i>=9 else None
+                        assert result['sqlstate']==expected,(side,type_name,i,result)
+                        assert result['status']==(7 if expected else 2),(side,type_name,i,result)
+                        if expected: q(f'{type_name}-sync-{declared}-{i}','SELECT 1 AS n')
+            for i,item in enumerate(['0','2147483647','2147483648','9223372036854775807','9223372036854775808','-2147483648','-2147483649','-9223372036854775808','-9223372036854775809','1.0','1e0']):
+                q(f'default-{i}',f'SELECT {item} AS n')
+            for i,item in enumerate(['32768','-32769','bad','']):
+                q(f'reject-write-{i}',f"INSERT INTO {table} VALUES (4, CAST('{item}' AS int2))",state='22003' if i<2 else '22P02')
+                q(f'reject-write-recovery-{i}',f'SELECT n FROM {table} ORDER BY id')
+            q('begin','BEGIN',command=True)
+            q('transaction-error',"SELECT CAST('bad' AS int2)",state='22P02')
+            assert transaction(conn)==3
+            q('failed-transaction','SELECT 1',state='25P02')
+            q('rollback','ROLLBACK',command=True)
+            assert transaction(conn)==0
+            q('rollback-recovery',f'SELECT n FROM {table} ORDER BY id')
+            if side=='aster':
+                # Reference has signed/numeric declarations covering the widened
+                # domains, never MySQL unsigned syntax.
+                print('PG_INTEGER14_MID',flush=True)
+                assert sys.stdin.readline().strip()=='continue'
+            unsigned={}
+            source='public.unsigned_source' if side=='aster' else table+'_bridge'
+            for case,sql in [('rows',f'SELECT a,b,c,d,e FROM {source} ORDER BY id'),('empty',f'SELECT a,b,c,d,e FROM {source} WHERE FALSE')]:
+                unsigned[case]=observe(execute(conn,sql.encode()),'query')
+                assert unsigned[case]['status']==2,unsigned[case]
+                assert [field[1:] for field in unsigned[case]['metadata']]==[(21,2,-1),(23,4,-1),(23,4,-1),(20,8,-1),(1700,-1,-1)]
+            assert unsigned['rows']['rows']==[['0']*5,['255','65535','16777215','4294967295','18446744073709551615'],[None]*5]
+            bridges[side]=unsigned
+            (evidence/f'unsigned-{side}.json').write_text(json.dumps({'source':source,'observations':unsigned}))
+            observations[side]=collected
+        finally:
+            (evidence/f'{side}.json').write_text(json.dumps(collected,sort_keys=True))
+            try:
+                clear(execute(conn,b'ROLLBACK'))
+                result=observe(execute(conn,f'DROP TABLE IF EXISTS {table}'.encode()),'cleanup')
+                cleanup[side]=result['status']==1
+                if side=='reference':
+                    result=observe(execute(conn,f'DROP TABLE IF EXISTS {table}_bridge'.encode()),'cleanup')
+                    cleanup[side]=cleanup[side] and result['status']==1
+            finally:
+                finish(conn)
+                (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+    assert observations['aster']==observations['reference'], next(((k,observations['aster'].get(k),v) for k,v in observations['reference'].items() if observations['aster'].get(k)!=v),'different cases')
+    assert bridges['aster']==bridges['reference'], bridges
+    for field,replacement in [('rows',[['perturbed']]),('metadata',[('n',999,2,-1)]),('sqlstate','XXXXX')]:
+        changed=copy.deepcopy(observations['aster'])
+        changed['int2-literal-min'][field]=replacement
+        assert changed!=observations['reference'],field
+    assert all(cleanup.values()) and len(cleanup)==2
+    summary={'cases':len(observations['aster']),'negative_controls':3,'unsigned_cells':15,'unsigned_empty':1,'cleanup':cleanup,'target_version':'18.6'}
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('integer14 differential:',json.dumps(summary),flush=True)
+
+
 def boolean_differential(aster_dsn):
     """Compare independently collected text bool observations; never infer a side."""
     import copy
@@ -790,6 +933,9 @@ conninfo = (
     f"host=127.0.0.1 port={int(sys.argv[1])} user=root dbname={sys.argv[2]} "
     "sslmode=disable gssencmode=disable connect_timeout=5"
 )
+if len(sys.argv) > 3 and sys.argv[3] == "integer14-differential":
+    integer14_differential(conninfo)
+    sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "boolean-differential":
     boolean_differential(conninfo)
     sys.exit(0)
