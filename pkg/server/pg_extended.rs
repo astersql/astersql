@@ -361,20 +361,42 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             (253, numeric.to_string().into_bytes())
         }
         17 => {
-            let hex = text
-                .strip_prefix("\\x")
-                .ok_or_else(|| error("0A000", "only hex bytea parameters are supported"))?;
-            let mut digits = hex.bytes();
             let mut bytes = Vec::new();
-            while let Some(high) = digits.next() {
-                // PostgreSQL permits whitespace only between complete bytes.
-                if matches!(high, b' ' | b'\t' | b'\n' | b'\r') {
-                    continue;
+            if let Some(hex) = text.strip_prefix("\\x") {
+                let mut digits = hex.bytes();
+                while let Some(high) = digits.next() {
+                    // PostgreSQL permits whitespace only between complete bytes.
+                    if matches!(high, b' ' | b'\t' | b'\n' | b'\r') {
+                        continue;
+                    }
+                    let high = (high as char).to_digit(16).ok_or_else(invalid)?;
+                    let low = digits.next().ok_or_else(invalid)?;
+                    let low = (low as char).to_digit(16).ok_or_else(invalid)?;
+                    bytes.push((high * 16 + low) as u8);
                 }
-                let high = (high as char).to_digit(16).ok_or_else(invalid)?;
-                let low = digits.next().ok_or_else(invalid)?;
-                let low = (low as char).to_digit(16).ok_or_else(invalid)?;
-                bytes.push((high * 16 + low) as u8);
+            } else {
+                let mut input = value.iter().copied();
+                while let Some(byte) = input.next() {
+                    if byte != b'\\' {
+                        bytes.push(byte);
+                        continue;
+                    }
+                    let first = input.next().ok_or_else(invalid)?;
+                    if first == b'\\' {
+                        bytes.push(b'\\');
+                        continue;
+                    }
+                    // Exactly three octal digits must fit in one byte (000–377).
+                    let second = input.next().ok_or_else(invalid)?;
+                    let third = input.next().ok_or_else(invalid)?;
+                    if !(b'0'..=b'3').contains(&first)
+                        || !(b'0'..=b'7').contains(&second)
+                        || !(b'0'..=b'7').contains(&third)
+                    {
+                        return Err(invalid());
+                    }
+                    bytes.push((first - b'0') * 64 + (second - b'0') * 8 + (third - b'0'));
+                }
             }
             (252, bytes)
         }
