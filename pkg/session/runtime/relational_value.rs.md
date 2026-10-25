@@ -177,3 +177,7 @@ PostgreSQLInt2在关系表达式类型推导中保留Tp，在关系求值中调�
 ## PostgreSQL numeric 声明与舍入
 
 pg_numeric_relational_value验证声明并调用PgNumeric.apply_modifier，常量、行及参数路径共用先舍入后检查精度的行为；不改MySQL Decimal。
+
+## 精确数值到整数转换（任务11）
+
+显式 numeric 表达式到 int2/int4/int8 在 pg_integer_relational_value 中复用精确舍入后检查域，两个关系求值入口共享。

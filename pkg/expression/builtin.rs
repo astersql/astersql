@@ -6983,7 +6983,25 @@ pub mod formal_registry {
                         ));
                     }
                 };
-                let number = if self.base.return_type.GetType() == mysql::TypeShort {
+                let number = if self.base.args[0].GetType(ctx).GetType() == mysql::TypeNewDecimal {
+                    let bits = match self.base.return_type.GetType() {
+                        mysql::TypeShort => 16,
+                        mysql::TypeLong => 32,
+                        _ => 64,
+                    };
+                    Some(
+                        input
+                            .parse::<types_dependency::pg_numeric::PgNumeric>()
+                            .and_then(|value| value.to_signed(bits))
+                            .map_err(|error| {
+                                errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                    error,
+                                ))
+                            })?,
+                    )
+                    .ok_or(PgInt4Error::OutOfRange)
+                    .map(Some)
+                } else if self.base.return_type.GetType() == mysql::TypeShort {
                     pg_cast_int2(Some(&input)).map(|v| v.map(i64::from))
                 } else if self.base.return_type.GetType() == mysql::TypeLong {
                     pg_cast_int4(Some(&input)).map(|v| v.map(i64::from))

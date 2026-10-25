@@ -112,3 +112,32 @@ fn pg_numeric_test_special_values() {
         );
     }
 }
+
+#[test]
+fn signed_integer_rounding() {
+    use super::pg_numeric::PgNumeric;
+    for bits in [16, 32, 64] {
+        for (text, expected) in [
+            ("1.5", 2),
+            ("2.5", 3),
+            ("-1.5", -2),
+            ("-2.5", -3),
+            ("0.00000000001", 0),
+        ] {
+            assert_eq!(
+                text.parse::<PgNumeric>().unwrap().to_signed(bits),
+                Ok(expected)
+            );
+        }
+        for text in ["NaN", "Infinity", "-Infinity", "1e1000"] {
+            assert_eq!(
+                text.parse::<PgNumeric>()
+                    .unwrap()
+                    .to_signed(bits)
+                    .unwrap_err()
+                    .sqlstate(),
+                "22003"
+            );
+        }
+    }
+}

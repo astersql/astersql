@@ -2117,7 +2117,13 @@ impl ConcreteSession {
                 } = &input.Kind
                 {
                     let source = relational_expression_type(Expr, self.table);
-                    self.unsupported |= source.GetType() != astersql_parser_mysql::r#type::TypeNull
+                    self.unsupported |= relational_expression_type(
+                        Expr,
+                        &astersql_meta_model::TableInfo::default(),
+                    )
+                    .GetType()
+                        != astersql_parser_mysql::r#type::TypeNewDecimal
+                        && source.GetType() != astersql_parser_mysql::r#type::TypeNull
                         && !matches!(
                             source.EvalType(),
                             astersql_parser_types::eval_type::ETInt

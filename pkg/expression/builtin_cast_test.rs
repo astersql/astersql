@@ -544,3 +544,39 @@ fn pg_numeric_modifier_cast_factory() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_11_formal_numeric_integer() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for target in [mysql::TypeShort, mysql::TypeLong, mysql::TypeLonglong] {
+        for (input, expected) in [
+            ("1.5", Some(2)),
+            ("2.5", Some(3)),
+            ("-1.5", Some(-2)),
+            ("-2.5", Some(-3)),
+            ("NaN", None),
+            ("Infinity", None),
+            ("-Infinity", None),
+        ] {
+            let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+                types::NewStringDatum(input.into()),
+                *types::NewFieldType(mysql::TypeNewDecimal),
+            ));
+            let cast = crate::formal_registry::BuildCastFunction(
+                &pg,
+                &source,
+                &types::NewFieldType(target),
+            );
+            let actual = cast.EvalInt(pg.GetEvalCtx(), crate::chunk::Row::default());
+            match expected {
+                Some(v) => assert_eq!(actual.unwrap(), (v, false)),
+                None => assert!(actual.is_err()),
+            }
+        }
+    }
+}

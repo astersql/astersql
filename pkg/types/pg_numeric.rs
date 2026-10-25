@@ -43,6 +43,24 @@ pub struct PgNumeric {
     scale: usize,
 }
 impl PgNumeric {
+    /// Round ties away from zero before checking the signed SQL integer domain.
+    pub fn to_signed(self, bits: u32) -> Result<i64, PgNumericError> {
+        if self.kind != NumericKind::Finite || !matches!(bits, 16 | 32 | 64) {
+            return Err(PgNumericError::OutOfRange);
+        }
+        // Anything exceeding this precision also exceeds every signed target.
+        let rounded = self.apply_modifier(1000, 0)?;
+        let value = rounded
+            .to_string()
+            .parse::<i64>()
+            .map_err(|_| PgNumericError::OutOfRange)?;
+        let limit = 1i128 << (bits - 1);
+        if (value as i128) < -limit || (value as i128) >= limit {
+            return Err(PgNumericError::OutOfRange);
+        }
+        Ok(value)
+    }
+
     /// Validate declaration independently of values, including NULL and empty scans.
     pub fn validate_modifier(precision: isize, scale: isize) -> Result<(), PgNumericError> {
         if (precision == -1 && scale == -1)

@@ -312,3 +312,23 @@ fn pg_numeric_special_relational_consumers() {
     }
     pg.execute("DROP TABLE pg_numeric_special_rows").unwrap();
 }
+
+#[test]
+fn pg_scalar_11_relational_numeric_integer() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_11_rows (v TEXT)")
+        .unwrap();
+    pg.execute("INSERT INTO pg_scalar_11_rows VALUES ('-2.5')")
+        .unwrap();
+    for target in ["int2", "int4", "int8"] {
+        let sql = format!("SELECT (v::numeric)::{target} FROM pg_scalar_11_rows");
+        assert_eq!(
+            pg.execute(&sql).unwrap()[0].next_row().unwrap().unwrap(),
+            vec!["-3"]
+        );
+        pg.execute(&format!("INSERT INTO pg_scalar_11_rows SELECT ((v::numeric)::{target})::text FROM pg_scalar_11_rows WHERE v='-2.5'")).unwrap();
+    }
+    pg.execute("DROP TABLE pg_scalar_11_rows").unwrap();
+}

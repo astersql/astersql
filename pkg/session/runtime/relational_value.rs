@@ -3458,6 +3458,28 @@ pub(super) fn pg_integer_relational_value(
             _ => true, // Column types are checked before relational SELECT evaluation.
         }
     }
+    if relational_expression_type(expression, &astersql_meta_model::TableInfo::default()).GetType()
+        == astersql_parser_mysql::r#type::TypeNewDecimal
+    {
+        let bits = match target {
+            ast::CastFunctionType::PostgreSQLInt2 => 16,
+            ast::CastFunctionType::PostgreSQLInt4 => 32,
+            _ => 64,
+        };
+        return value
+            .map(|text| {
+                text.parse::<astersql_types::pg_numeric::PgNumeric>()
+                    .and_then(|n| n.to_signed(bits))
+                    .map(|n| n.to_string())
+                    .map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })
+            })
+            .transpose();
+    }
     let result = if supported(expression) {
         if target == ast::CastFunctionType::PostgreSQLInt8 {
             pg_cast_int8(value.as_deref())

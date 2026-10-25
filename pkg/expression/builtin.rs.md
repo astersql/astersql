@@ -141,3 +141,7 @@ DynamicBuiltin::cast在求值前验证声明（包括NULL），规范PgNumeric�
 ### PG numeric 特殊值（任务10）
 
 PG numeric CAST 的规范路径适用于无约束和有 typmod 的目标：复用 PgNumeric 解析、特殊值标签和 apply_modifier；NaN 可进入受限类型，无穷返回22003。正式 Eval 保留规范文本载荷，不经 MyDecimal 的有限值 API，MySQL 分支保持原状。
+
+## 精确数值到整数转换（任务11）
+
+PG numeric→signed CAST 使用 PgNumeric::to_signed，保持精确舍入和 22003；文本输入沿用严格整数解析。

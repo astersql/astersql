@@ -157,3 +157,7 @@ PostgreSQLInt2加入现有整数转换的结果类型、返回投影、输入验
 ## PostgreSQL numeric 声明与舍入
 
 PG numeric求值传入声明FieldType；SELECT准备阶段验证precision/scale，NULL与空扫描也拒绝非法声明(22023)。
+
+## 精确数值到整数转换（任务11）
+
+整数输入验证接收显式 numeric 表达式；不开放 float 或完整隐式转换矩阵。
