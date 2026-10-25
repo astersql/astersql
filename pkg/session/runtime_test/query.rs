@@ -713,3 +713,53 @@ fn pg_dialect_18_shared_cte_binding() {
     assert!(fields[0].column_origin.is_none());
     session.execute("DROP DATABASE cte_scope_18").unwrap();
 }
+
+#[test]
+fn pg_dialect_18_integer_literal_types() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, native) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let pg = crate::runtime::ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let mut assertions = 0;
+    for (expression, code, value) in [
+        ("1", 3, "1"),
+        ("2147483647", 3, "2147483647"),
+        ("2147483648", 8, "2147483648"),
+        ("9223372036854775807", 8, "9223372036854775807"),
+        ("-2147483648", 3, "-2147483648"),
+        ("-2147483649", 8, "-2147483649"),
+        ("-9223372036854775808", 8, "-9223372036854775808"),
+        ("(1)", 3, "1"),
+        ("CAST(1 AS bigint)", 8, "1"),
+    ] {
+        for sql in [
+            format!("SELECT {expression} AS v"),
+            format!("WITH t AS (SELECT {expression} AS v) SELECT v FROM t"),
+        ] {
+            let described = pg.describe_result_fields(&sql).unwrap();
+            assert_eq!(described[0].column.FieldType.GetType(), code, "{sql}");
+            let (id, count, fields) = pg.prepare_protocol_statement(&sql).unwrap();
+            assert_eq!(count, 0);
+            assert_eq!(fields[0].column.FieldType.GetType(), code, "{sql}");
+            assert!(fields[0].column_origin.is_none());
+            let mut result = pg.execute_protocol_statement(id, &[]).unwrap();
+            assert_eq!(
+                result[0].Next().unwrap(),
+                Some(vec![value.to_owned()]),
+                "{sql}"
+            );
+            pg.close_protocol_statement(id).unwrap();
+            assertions += 5;
+        }
+    }
+    assert_eq!(
+        native.describe_result_fields("SELECT 1 AS v").unwrap()[0]
+            .column
+            .FieldType
+            .GetType(),
+        8
+    );
+    println!(
+        "pg_dialect_18_integer_literal_types: assertions={} expressions=9 dialects=2",
+        assertions + 1
+    );
+}

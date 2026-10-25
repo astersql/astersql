@@ -737,6 +737,35 @@ pub(super) fn format_unix_timestamp(value: f64, fractional_seconds_precision: us
     }
 }
 
+// Analyze integer constants at the shared PG expression boundary, before
+// result fields are bound through a CTE or mapped to protocol types. Apply the
+// unary sign before choosing the width, including the int4/int8 lower bounds.
+fn pg_integer_literal_type(
+    expression: &ast::ExprNode,
+) -> Option<astersql_parser_types::types::FieldType> {
+    fn integer(expression: &ast::ExprNode) -> Option<i128> {
+        match &expression.Kind {
+            ast::ExprKind::Value(value) => match value.Datum {
+                ast::ValueDatum::Int64(value) => Some(i128::from(value)),
+                ast::ValueDatum::Uint64(value) => Some(i128::from(value)),
+                _ => None,
+            },
+            ast::ExprKind::Parentheses(inner) => integer(inner),
+            ast::ExprKind::Unary { Op, V } if Op == "+" => integer(V),
+            ast::ExprKind::Unary { Op, V } if Op == "-" => integer(V)?.checked_neg(),
+            _ => None,
+        }
+    }
+    let value = i64::try_from(integer(expression)?).ok()?;
+    Some(astersql_parser_types::NewFieldType(
+        if i32::try_from(value).is_ok() {
+            astersql_parser_mysql::r#type::TypeLong
+        } else {
+            astersql_parser_mysql::r#type::TypeLonglong
+        },
+    ))
+}
+
 // RETURNING uses PostgreSQL integer widths, while the shared MySQL projection
 // analyzer intentionally promotes integer arithmetic to BIGINT. Admit the
 // required integer/column/literal forms here and reject unknown type families.
@@ -745,6 +774,9 @@ pub(super) fn pg_returning_expression_type(
     sources: &[ConcreteResultField],
 ) -> SessionResult<astersql_parser_types::types::FieldType> {
     use astersql_parser_mysql::r#type::{TypeLong, TypeLonglong};
+    if let Some(tp) = pg_integer_literal_type(expression) {
+        return Ok(tp);
+    }
     let unsupported = || SessionError::new("PostgreSQL RETURNING expression type is unsupported");
     Ok(match &expression.Kind {
         ast::ExprKind::Column(column) => sources
@@ -2284,14 +2316,11 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if let Some(tp) = pg_integer_literal_type(expression) {
+                return tp;
+            }
             match &expression.Kind {
                 ast::ExprKind::Parentheses(inner) => {
-                    if matches!(&inner.Kind,ast::ExprKind::Value(value) if matches!(value.Datum,ast::ValueDatum::Int64(_)|ast::ValueDatum::Uint64(_)))
-                    {
-                        if let Ok(tp) = pg_returning_expression_type(inner, source_fields) {
-                            return tp;
-                        }
-                    }
                     return self
                         .relational_query_expression_type_from_sources(inner, source_fields);
                 }
@@ -2314,18 +2343,7 @@ impl ConcreteSession {
                     self.relational_query_node_result_fields(node, &[])
                         .ok()
                         .and_then(|fields| {
-                            fields.first().map(|field| {
-                                if self.sql_dialect()==ast::SqlDialect::PostgreSQL {
-                                    if let Some(select)=node.as_any().downcast_ref::<ast::SelectStmt>() {
-                                        if let Some(expr)=select.Fields.Fields.first().and_then(|f|f.Expr.as_ref()) {
-                                            if matches!(&expr.Kind,ast::ExprKind::Value(value) if matches!(value.Datum,ast::ValueDatum::Int64(_)|ast::ValueDatum::Uint64(_))) {
-                                                if let Ok(tp)=pg_returning_expression_type(expr,&[]) {return tp;}
-                                            }
-                                        }
-                                    }
-                                }
-                                field.column.FieldType.clone()
-                            })
+                            fields.first().map(|field| field.column.FieldType.clone())
                         })
                 })
                 .flatten()

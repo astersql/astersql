@@ -218,7 +218,7 @@ fn simple_query_roundtrip() {
     let name_end = result[0].1[2..].iter().position(|b| *b == 0).unwrap() + 2;
     let metadata = &result[0].1[name_end + 1..];
     assert_eq!(metadata.len(), 18);
-    assert_eq!(&metadata[6..10], &20u32.to_be_bytes());
+    assert_eq!(&metadata[6..10], &23u32.to_be_bytes());
     assert_eq!(&metadata[16..], &0i16.to_be_bytes());
     for sql in [
         "SELECT current_catalog",

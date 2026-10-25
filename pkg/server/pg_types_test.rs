@@ -90,7 +90,7 @@ fn common_type_oids_and_values() {
     for (sql, expected_oids, values) in [
         (
             "SELECT 1, -2, TRUE, FALSE, 'hello', NULL",
-            vec![20, 20, 16, 16, 25, 25],
+            vec![23, 23, 16, 16, 25, 25],
             vec![
                 Some("1"),
                 Some("-2"),

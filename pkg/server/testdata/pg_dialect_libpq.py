@@ -3710,6 +3710,8 @@ def cte_handoff():
             check(result['status']==2 and len(result['rows'])==1,'physical OID');oids[label]=int(result['rows'][0][0])
         sql='SELECT v FROM public.'+cte_table;initial=query(conns['aster_observer'],sql)
         record('observer_initial','aster_observer',dict(phase='Q',sql=sql),initial);check(initial['rows']==[['9']],'initial observer')
+        if os.environ.get('PG_DIALECT_18_TEST_SIGINT')=='1':
+            os.kill(os.getpid(),signal.SIGINT)
         registry=[]
         collecting=True
         for index,(name,template,param_oids) in enumerate(cases):
@@ -3760,6 +3762,46 @@ def cte_handoff():
             sql='SELECT v FROM public.'+cte_table;result=query(conns['aster_observer'],sql)
             record(name+'_observer','aster_observer',dict(phase='Q',sql=sql),result);check(result['rows']==initial['rows'],'observer unchanged')
             eligible+=1
+        # Dependency coverage stays separate from the six frozen primary CTE cases.
+        literal_registry=[]
+        for index,(expression,want,oid) in enumerate([
+            ('1','1',23),('2147483647','2147483647',23),
+            ('2147483648','2147483648',20),('9223372036854775807','9223372036854775807',20),
+            ('-2147483648','-2147483648',23),('-2147483649','-2147483649',20),
+            ('-9223372036854775808','-9223372036854775808',20),('(1)','1',23),
+            ('CAST(1 AS bigint)','1',20),
+        ]):
+            for shape in ['plain','cte']:
+                name=f'literal_{index}_{shape}'
+                sql=(f'SELECT {expression} AS v' if shape=='plain' else
+                     f'WITH t AS (SELECT {expression} AS v) SELECT v FROM t')
+                data=dict(capability_id='pg.dialect.integer.default.cte',case_id=name,phase='PQprepare',sql=sql,
+                    parameter_oids=[],arguments=[],parameter_formats=[],result_format=0,
+                    encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',
+                    expected_basis='exact PostgreSQL18.6 integer literal oracle; same shared analysis through CTE',
+                    expected=dict(rows=[[want]],fields=[['v',oid,4 if oid==23 else 8,-1]],origins=[[0,0]]),
+                    object_mapping={},roles={s:connection_user(conns[s]).decode() for s in ['aster','reference']})
+                literal_registry.append(data)
+                (evidence/'integer-cases.json').write_text(json.dumps(literal_registry,indent=2))
+                descriptors={}
+                for label in ['reference','aster','aster_b']:
+                    conn=conns[label];statement=name.encode()
+                    result=observe(prepare(conn,statement,sql.encode(),0,None));record(name,label,data,result)
+                    check(result['status']==1 and result['state']=='','literal prepare '+name+' '+label)
+                    if result['status']==1:prepared.append((conn,statement))
+                    desc=observe(describe(conn,statement));descriptors[label]=desc
+                    record(name+'_describe',label,dict(data,phase='Describe'),desc)
+                    check(desc['fields']==data['expected']['fields'] and desc['params']==[] and desc['formats']==[0] and desc['table_origins']==[[0,0]],'literal Describe '+name+' '+label)
+                    result=observe(exec_prepared(conn,statement,0,None,None,None,0))
+                    record(name+'_execute',label,dict(data,phase='Bind/Execute'),result)
+                    check(result['status']==2 and result['rows']==[[want]] and result['fields']==desc['fields'] and result['table_origins']==[[0,0]] and result['command_tag']=='SELECT 1','literal Execute '+name+' '+label)
+                    result=query(conn,sql);record(name+'_simple',label,dict(data,phase='Q'),result)
+                    check(result['status']==2 and result['rows']==[[want]] and result['fields']==desc['fields'] and result['table_origins']==[[0,0]],'literal Q '+name+' '+label)
+                    recover(label,name)
+                for label in ['aster','aster_b']:
+                    check(compare_metadata(descriptors[label],descriptors['reference'],'describe'),'literal metadata differential '+name+' '+label)
+                print('PG_DIALECT_CHECKPOINT '+name,flush=True)
+                check(sys.stdin.readline().strip()=='continue','literal MySQL checkpoint')
         parameter_results={}
         for label in ['aster','reference']:
             conn=conns[label];sql='/*中*/ WITH t AS (SELECT $2::int4 AS v) SELECT v,$1::int4 AS p FROM t /* public.t $1 */'
@@ -3780,6 +3822,10 @@ def cte_handoff():
             result=observe(prepare(conns[label],b'cte_tx_error',sql.encode(),0,None))
             record('transaction_error',label,dict(phase='PQprepare',sql=sql),result)
             check(result['state']=='42P01' and transaction(conns[label])==3,'transaction becomes failed');recover(label,'transaction')
+        observer_sql='SELECT v FROM public.'+cte_table
+        observed=query(conns['aster_observer'],observer_sql)
+        record('final_observer','aster_observer',dict(phase='Q',sql=observer_sql),observed)
+        check(observed['rows']==initial['rows'],'observer unchanged after dependency/NULL/recovery checks')
         parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
         args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
         def mysql_ref(sql):
@@ -3809,7 +3855,9 @@ def cte_handoff():
             sql='DROP TABLE IF EXISTS public.'+cte_table;result=query(conns[label],sql);record('cleanup',label,dict(phase='Q',sql=sql),result);clean=result['status']==1 and clean
         for conn in conns.values():
             if conn:finish(conn)
-        summary=dict(cases=6,failures=failures,assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,cleanup_ok=clean)
+        summary=dict(cases=6,primary_prepare_cases=5 if done and clean else 0,primary_describe_cases=5 if done and clean else 0,
+            primary_execute_cases=5 if done and clean else 0,diagnostic_cases=1 if done and clean else 0,
+            integer_dependency_cases=18 if done and clean else 0,failures=failures,assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,cleanup_ok=clean)
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and clean, 'completion/cleanup: '+str(failures)
     print(json.dumps(summary),flush=True)

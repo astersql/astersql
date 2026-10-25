@@ -3107,12 +3107,17 @@ fn pg_dialect_libpq(task: u8) {
         return;
     }
     if task == 18 {
-        assert_eq!(checkpoints, 6);
+        assert_eq!(checkpoints, 24);
         let summary: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
                 .unwrap();
         assert_eq!(summary["cleanup_ok"], true);
         assert_eq!(summary["unique_effective"], 6);
+        assert_eq!(summary["integer_dependency_cases"], 18);
+        assert_eq!(summary["primary_prepare_cases"], 5);
+        assert_eq!(summary["primary_describe_cases"], 5);
+        assert_eq!(summary["primary_execute_cases"], 5);
+        assert_eq!(summary["diagnostic_cases"], 1);
         assert_eq!(summary["failures"], serde_json::json!([]));
         return;
     }
