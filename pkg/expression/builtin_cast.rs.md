@@ -124,3 +124,7 @@ PgFloat4Error新增InvalidPrecision诊断（SQLSTATE22023），供PG解析精度
 PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；正式表达式和关系消费者共同覆盖，MySQL路径保持原逻辑。
 
 浮点源收窄使用pg_narrow_float4直接二进制转换，避免精确中点经最短十进制中转改变舍入方向；有限溢出/非零下溢拒绝22003，NaN/无穷允许。
+
+### 2026-10-26 浮点真实客户端差分（任务20）
+
+pg_cast_float8提取原OID701参数解析规则，统一有限溢出/非零下溢、NaN/无穷、负零及NULL；PgFloat8Error给出22P02/22003。

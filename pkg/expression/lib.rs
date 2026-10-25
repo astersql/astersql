@@ -173,9 +173,9 @@ mod builtin_arithmetic_vec_kernel;
 #[path = "builtin_cast.rs"]
 mod builtin_cast_kernel;
 pub use builtin_cast_kernel::{
-    PgBoolError, PgBooleanCast, PgFloat4Error, PgInt4Error, pg_boolean_cast, pg_boolean_cast_kind,
-    pg_cast_float4, pg_cast_int2, pg_cast_int4, pg_cast_int8, pg_float_to_integer,
-    pg_narrow_float4,
+    PgBoolError, PgBooleanCast, PgFloat4Error, PgFloat8Error, PgInt4Error, pg_boolean_cast,
+    pg_boolean_cast_kind, pg_cast_float4, pg_cast_float8, pg_cast_int2, pg_cast_int4, pg_cast_int8,
+    pg_float_to_integer, pg_narrow_float4,
 };
 #[path = "builtin_cast_vec.rs"]
 mod builtin_cast_vec_kernel;

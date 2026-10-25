@@ -1049,9 +1049,17 @@ pub(super) fn decode_relational_row_value(
     // PG-created relations. Only the physical decoder view changes; query
     // metadata continues to use the declared numeric type and modifier.
     let mut storage_fields = fields.clone();
-    if table.PostgreSQLNumericText {
+    if table.PostgreSQLNumericText || table.PostgreSQLFloatText {
         for column in &table.Columns {
-            if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
+            if (table.PostgreSQLNumericText
+                && column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal)
+                || (table.PostgreSQLFloatText
+                    && matches!(
+                        column.GetType(),
+                        astersql_parser_mysql::r#type::TypeFloat
+                            | astersql_parser_mysql::r#type::TypeDouble
+                    ))
+            {
                 if let Some(field) = storage_fields.get_mut(&column.ID) {
                     field.SetType(astersql_parser_mysql::r#type::TypeVarchar);
                 }

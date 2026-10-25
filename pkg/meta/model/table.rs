@@ -85,6 +85,10 @@ pub struct TableInfo {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub PostgreSQLNumericText: bool,
+    /// PG float text storage preserves signed zero across both row formats.
+    /// Older tables keep their original binary float representation.
+    #[serde(rename = "postgresql_float_text", skip_serializing_if = "std::ops::Not::not")]
+    pub PostgreSQLFloatText: bool,
     /// 默认字符集。
     #[serde(rename = "charset")]
     pub Charset: String,

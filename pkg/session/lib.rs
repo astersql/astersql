@@ -47,6 +47,13 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_float8_error(&self) -> Option<astersql_expression::PgFloat8Error> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<astersql_expression::PgFloat8Error>()
+            .copied()
+    }
+
     pub fn pg_numeric_error(&self) -> Option<astersql_types::pg_numeric::PgNumericError> {
         self.source
             .as_ref()?

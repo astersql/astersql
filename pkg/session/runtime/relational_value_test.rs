@@ -577,3 +577,28 @@ fn pg_scalar_19_relational_float_integer() {
     );
     pg.execute("DROP TABLE pg_scalar_19_row").unwrap();
 }
+
+#[test]
+fn pg_scalar_20_relational_float8() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_20_row (id INT, d DOUBLE)")
+        .unwrap();
+    for (input, state) in [("bad", "22P02"), ("1e9999", "22003"), ("1e-9999", "22003")] {
+        let error = pg
+            .execute(&format!(
+                "INSERT INTO pg_scalar_20_row VALUES (1,CAST('{input}' AS float8))"
+            ))
+            .err()
+            .expect("float8 input must be rejected");
+        assert_eq!(error.pg_float8_error().unwrap().sqlstate(), state);
+    }
+    assert!(
+        pg.execute("SELECT d FROM pg_scalar_20_row").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .is_none()
+    );
+    pg.execute("DROP TABLE pg_scalar_20_row").unwrap();
+}

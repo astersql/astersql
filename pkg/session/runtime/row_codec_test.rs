@@ -210,3 +210,61 @@ fn pg_scalar_15_numeric_row_formats_and_legacy_metadata() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_20_float_signed_zero_row_formats() {
+    use astersql_meta_model::{ColumnInfo, SchemaState, TableInfo};
+    use std::collections::HashMap;
+    for ty in [4, 5] {
+        for new_format in [false, true] {
+            let mut column = ColumnInfo::default();
+            column.ID = 1;
+            column.Name = astersql_parser_ast::NewCIStr("f");
+            column.State = SchemaState::Public;
+            column.SetType(ty);
+            let table = TableInfo {
+                ID: 9820,
+                PostgreSQLFloatText: true,
+                Columns: vec![column],
+                ..Default::default()
+            };
+            let table: TableInfo =
+                serde_json::from_slice(&serde_json::to_vec(&table).unwrap()).unwrap();
+            assert!(table.PostgreSQLFloatText);
+            assert!(!TableInfo::default().PostgreSQLFloatText);
+            for input in [
+                Some("-0".to_owned()),
+                Some("1.5".to_owned()),
+                Some("NaN".to_owned()),
+                None,
+            ] {
+                let row = HashMap::from([
+                    ("f".to_owned(), input.clone()),
+                    ("_tidb_rowid".to_owned(), Some("1".to_owned())),
+                ]);
+                let (_, bytes) = super::row_codec::encode_relational_row_with_format(
+                    &table,
+                    &row,
+                    astersql_types::Flags::default(),
+                    new_format,
+                )
+                .unwrap();
+                let fields = table
+                    .Columns
+                    .iter()
+                    .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                    .collect();
+                let handle = astersql_tablecodec::kv::IntHandle(1);
+                let (_, decoded) = super::relational_scan::decode_relational_row_value(
+                    &table, &fields, &handle, &bytes,
+                )
+                .unwrap();
+                assert_eq!(
+                    decoded.get("f").cloned().flatten(),
+                    input,
+                    "type={ty} new_format={new_format}"
+                );
+            }
+        }
+    }
+}

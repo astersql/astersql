@@ -987,6 +987,153 @@ def numeric15_differential(aster_dsn):
     print('numeric15 differential:',json.dumps(summary),flush=True)
 
 
+def float20_differential(aster_dsn):
+    """Float family only: collect each endpoint independently before comparison."""
+    import copy
+    import hashlib
+    import json
+    import signal
+    import time
+    import resource
+    from pathlib import Path
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    name = api('PQfname', text, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    transaction = api('PQtransactionStatus', integer, ptr)
+    evidence = Path(os.environ['PG_FLOAT20_EVIDENCE_DIR'])
+    reference = os.environ['PG18_REFERENCE_DSN']
+    table = f'public.pg_float20_{os.getpid()}'
+    observations = {}
+    cleanup = {}
+    resources = {}
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('float20 client interrupted')
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    def compact(item):
+        if isinstance(item,str) and len(item)>256:
+            return {'length':len(item),'sha256':hashlib.sha256(item.encode()).hexdigest()}
+        return item
+    def observe(result, phase):
+        assert result
+        try:
+            state = ef(result, ord('C'))
+            if state == b'XX000':
+                print('float20 internal error:',result_error(result).decode(),flush=True)
+            return dict(phase=phase, status=result_status(result),
+                        sqlstate=state.decode() if state else None,
+                        metadata=[(name(result,i).decode(),field_type(result,i),size(result,i),mod(result,i)) for i in range(columns(result))],
+                        parameters=[pt(result,i) for i in range(np(result))],
+                        rows=[[None if is_null(result,r,i) else compact(value(result,r,i).decode()) for i in range(columns(result))] for r in range(rows(result))])
+        finally:
+            clear(result)
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn)==0, f'{side} connection failed'
+        collected = {}
+        resources[side] = {}
+        def q(case, sql, state=None, command=False):
+            started = time.perf_counter()
+            result = observe(execute(conn,sql.encode()), 'query')
+            if len(sql)>1000:
+                resources[side][case] = {'elapsed_seconds':time.perf_counter()-started,'input_bytes':len(sql.encode()),'python_maxrss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'maxrss_unit':'bytes on macOS, KiB on Linux'}
+            result['input'] = compact(sql)
+            collected[case] = result
+            assert result['status']==(7 if state else 1 if command else 2), (side,case,result)
+            assert result['sqlstate']==state, (side,case,result)
+            return result
+        try:
+            if side=='reference':
+                identity=q('identity', "SELECT version(), current_setting('server_version_num')")
+                assert identity['rows'][0][1]=='180006', 'exact PostgreSQL 18.6 required'
+                (evidence/'reference-identity.json').write_text(json.dumps(collected.pop('identity')))
+                build_path=Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE'])
+                build=json.loads(build_path.read_text())
+                assert hashlib.sha256(Path(build['artifact_path']).read_bytes()).hexdigest()==build['artifact_sha256']
+                (evidence/'reference-build.json').write_text(json.dumps(build))
+                (evidence/'client.json').write_text(json.dumps({'version':version(),'sha256':hashlib.sha256(Path(library).read_bytes()).hexdigest()}))
+            q('create',f'CREATE TABLE {table} (id INT PRIMARY KEY, f FLOAT4, d FLOAT8)',command=True)
+            q('empty',f'SELECT f,d FROM {table}')
+            q('write',f"INSERT INTO {table} VALUES (1,CAST('-0' AS float4),CAST('-0' AS float8)),(2,NULL,NULL)",command=True)
+            q('read',f'SELECT f,d FROM {table} ORDER BY id')
+            for typ,oid,width,items in [
+                ('float4',700,4,['0','-0','0.1','1.000000059604644775390625','1.000000059604644775390626','16777217','3.4028234663852886e38','1.1754943508222875e-38','1.401298464324817e-45','NaN','Infinity','-Infinity']),
+                ('float8',701,8,['0','-0','0.1','1.00000000000000011102230246251565404236316680908203125','9007199254740993','1.7976931348623157e308','2.2250738585072014e-308','4.9406564584124654e-324','NaN','Infinity','-Infinity'])]:
+                for declared in (0,oid):
+                    statement=f'f{oid}_{declared}'.encode()
+                    collected[f'prepare-{oid}-{declared}']=observe(prepare(conn,statement,f'SELECT CAST($1 AS {typ}) AS n'.encode(),1,(c.c_uint*1)(declared) if declared else None),'prepare')
+                    desc=observe(describe(conn,statement),'describe')
+                    collected[f'describe-{oid}-{declared}']=desc
+                    assert desc['parameters']==[oid] and desc['metadata']==[('n',oid,width,-1)],(side,desc)
+                    for i,item in enumerate(items+[None,'bad','','1e9999','1e-9999']):
+                        case=f'param-{oid}-{declared}-{i}'
+                        result=observe(prepared(conn,statement,1,(text*1)(None if item is None else item.encode()),None,None,0),'execute')
+                        result['input']=item
+                        collected[case]=result
+                        state='22P02' if item in ('bad','') else '22003' if item in ('1e9999','1e-9999') else None
+                        assert result['sqlstate']==state and result['status']==(7 if state else 2),(side,case,result)
+                        if state:q(case+'-sync','SELECT 1 AS n')
+                        else:
+                            assert result['metadata']==[('n',oid,width,-1)],(side,case,result)
+                            if item is not None:
+                                text_value=result['rows'][0][0]
+                                import math, struct
+                                number=float(text_value)
+                                # NaNs compare by category; finite values and signed zero by target-width bits.
+                                bits='NaN' if math.isnan(number) else struct.pack('!f' if width==4 else '!d',number).hex()
+                                result['target_bits']=bits
+                                roundtrip=q(case+'-roundtrip',f"SELECT CAST('{text_value}' AS {typ}) AS n")
+                                assert roundtrip['rows']==result['rows'] and roundtrip['metadata']==result['metadata'],(side,case,roundtrip)
+                for i,item in enumerate(items):
+                    q(f'literal-{oid}-{i}',f"SELECT CAST('{item}' AS {typ}) AS n")
+                for i,(item,state) in enumerate([('bad','22P02'),('1e9999','22003'),('1e-9999','22003')]):
+                    q(f'reject-write-{oid}-{i}',f"INSERT INTO {table} (id,{'f' if width==4 else 'd'}) VALUES (3,CAST('{item}' AS {typ}))",state=state)
+                    unchanged=q(f'no-write-{oid}-{i}',f'SELECT f,d FROM {table} ORDER BY id')
+                    assert unchanged['rows']==collected['read']['rows']
+            for i,(item,source,target) in enumerate([('2.5','float4','int2'),('-2.5','float8','int4'),('32767.4','float8','int2'),('2147483646.5','float8','int4'),('9223372036854774784','float8','int8'),('1.000000059604644775390625','float8','float4'),('-0','float4','float8'),('NaN','float8','float4')]):
+                q(f'cast-{i}',f"SELECT CAST(CAST('{item}' AS {source}) AS {target}) AS n")
+            for i,(item,target) in enumerate([('32767.5','int2'),('2147483647.5','int4'),('9223372036854775808','int8'),('NaN','int4'),('Infinity','int8'),('3.5e38','float4'),('1e-50','float4')]):
+                q(f'cast-error-{i}',f"SELECT CAST(CAST('{item}' AS float8) AS {target}) AS n",state='22003')
+                q(f'cast-sync-{i}','SELECT 1 AS n')
+            q('begin','BEGIN',command=True)
+            q('transaction-error',"SELECT CAST('bad' AS float4)",state='22P02')
+            assert transaction(conn)==3
+            q('failed-transaction','SELECT 1',state='25P02')
+            q('rollback','ROLLBACK',command=True)
+            assert transaction(conn)==0
+            q('rollback-recovery',f'SELECT f,d FROM {table} ORDER BY id')
+            if side=='aster':
+                print('PG_FLOAT20_MID',flush=True)
+                assert sys.stdin.readline().strip()=='continue'
+            observations[side]=collected
+        finally:
+            (evidence/f'{side}.json').write_text(json.dumps(collected,sort_keys=True))
+            try:
+                clear(execute(conn,b'ROLLBACK'))
+                result=observe(execute(conn,f'DROP TABLE IF EXISTS {table}'.encode()),'cleanup')
+                cleanup[side]=result['status']==1
+            finally:
+                finish(conn)
+                (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+                (evidence/'resources.json').write_text(json.dumps(resources))
+    assert observations['aster']==observations['reference'], next(((k,observations['aster'].get(k),v) for k,v in observations['reference'].items() if observations['aster'].get(k)!=v),'different cases')
+    for field,replacement in [('rows',[['perturbed']]),('metadata',[('n',999,2,-1)]),('sqlstate','XXXXX')]:
+        changed=copy.deepcopy(observations['aster'])
+        changed['literal-700-0'][field]=replacement
+        assert changed!=observations['reference'],field
+    assert all(cleanup.values()) and len(cleanup)==2
+    summary={'cases':len(observations['aster']),'negative_controls':3,'cleanup':cleanup,'target_version':'18.6'}
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('float20 differential:',json.dumps(summary),flush=True)
+
+
 def boolean_differential(aster_dsn):
     """Compare independently collected text bool observations; never infer a side."""
     import copy
@@ -1089,6 +1236,9 @@ conninfo = (
     f"host=127.0.0.1 port={int(sys.argv[1])} user=root dbname={sys.argv[2]} "
     "sslmode=disable gssencmode=disable connect_timeout=5"
 )
+if len(sys.argv) > 3 and sys.argv[3] == "float20-differential":
+    float20_differential(conninfo)
+    sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "numeric15-differential":
     numeric15_differential(conninfo)
     sys.exit(0)

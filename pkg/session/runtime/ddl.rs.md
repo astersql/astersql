@@ -91,3 +91,7 @@ RustCodeGraph 的精确 `callees` 为 `execute_alter_table` 找到 `stats_table`
 - 兼容风险集中在 error code/message、IF EXISTS warning、权限访问顺序和 action JSON ABI；性能风险集中在 `scan_registered_table` 的全表唯一/外键校验、分区批量变更和同步预切分。
 
 PG新建表设置PostgreSQLNumericText并保留AST numeric precision及scale，避免MySQL默认化；CREATE LIKE沿用源表编码标记，不自动改写历史表。
+
+### 2026-10-26 浮点文本持久化（任务20）
+
+新建PG表在现有元数据构造处开启PostgreSQLFloatText标记，不迁移旧表。

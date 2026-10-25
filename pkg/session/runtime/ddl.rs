@@ -711,6 +711,7 @@ impl ConcreteSession {
         table.ExactName = self.sql_dialect() == ast::SqlDialect::PostgreSQL;
         if table.ExactName && statement.ReferTable.is_none() {
             table.PostgreSQLNumericText = true;
+            table.PostgreSQLFloatText = true;
             // Keep PG modifiers from the AST, including unconstrained numeric
             // and negative scale, rather than MySQL DECIMAL defaults.
             for (column, definition) in table.Columns.iter_mut().zip(&statement.Cols) {

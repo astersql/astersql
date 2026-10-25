@@ -6893,6 +6893,7 @@ pub mod formal_registry {
         PgInteger,
         PgNumeric,
         PgFloat4,
+        PgFloat8,
         PgBoolean,
         GetVar,
         ToBinary(String),
@@ -6971,6 +6972,14 @@ pub mod formal_registry {
                         errors::Error::from(crate::contextutil::errors::SharedError::new(error))
                     })?;
                 return Ok((types::NewStringDatum(value.to_string()), false));
+            }
+            if self.kind == DynamicKind::PgFloat8 {
+                let number = crate::pg_cast_float8(Some(&datum.ToString()?))
+                    .map_err(|error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    })?
+                    .expect("non-null input");
+                return Ok((types::NewFloat64Datum(number), false));
             }
             if self.kind == DynamicKind::PgFloat4 {
                 let text = datum.ToString()?;
@@ -7216,7 +7225,8 @@ pub mod formal_registry {
                 DynamicKind::Cast
                 | DynamicKind::PgInteger
                 | DynamicKind::PgBoolean
-                | DynamicKind::PgFloat4 => {
+                | DynamicKind::PgFloat4
+                | DynamicKind::PgFloat8 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { 0.0 } else { d.GetFloat64() }, n))
                 }
@@ -7233,7 +7243,8 @@ pub mod formal_registry {
                 | DynamicKind::PgInteger
                 | DynamicKind::PgBoolean
                 | DynamicKind::PgNumeric
-                | DynamicKind::PgFloat4 => {
+                | DynamicKind::PgFloat4
+                | DynamicKind::PgFloat8 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { String::new() } else { d.ToString()? }, n))
                 }
@@ -7493,7 +7504,9 @@ pub mod formal_registry {
             && target.GetType() == mysql::TypeNewDecimal;
         let pg_float4 = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
             && target.GetType() == mysql::TypeFloat;
-        if !pg_integer && !pg_boolean && !pg_numeric && !pg_float4 {
+        let pg_float8 = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+            && target.GetType() == mysql::TypeDouble;
+        if !pg_integer && !pg_boolean && !pg_numeric && !pg_float4 && !pg_float8 {
             base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
         }
         let f = Box::new(DynamicBuiltin {
@@ -7502,6 +7515,8 @@ pub mod formal_registry {
                 DynamicKind::PgBoolean
             } else if pg_numeric {
                 DynamicKind::PgNumeric
+            } else if pg_float8 {
+                DynamicKind::PgFloat8
             } else if pg_float4 {
                 DynamicKind::PgFloat4
             } else if pg_integer {

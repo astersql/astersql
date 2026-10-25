@@ -1249,6 +1249,9 @@ pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::Sq
     Mutex::new(Vec::new());
 
 fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
+    if let Some(float8) = error.pg_float8_error() {
+        return ConnError::PgFloat8(float8);
+    }
     if let Some(float4) = error.pg_float4_error() {
         return ConnError::PgFloat4(float4);
     }

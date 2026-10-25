@@ -99,3 +99,7 @@ Index merge 是本文件唯一显式多线程区域：`std::thread::scope` 让 w
 现有物理扫描规划上下文调用补传所属连接方言，不改变扫描、存储或语法能力。
 
 批次15：新增表的PostgreSQLNumericText标记明确物理编码，缺省false保留既有表解码；声明numeric列的INSERT目标转换复用PgNumeric，物理行复用字符串Datum保留大精度/scale/特殊值，读取仅覆盖物理解码字段类型，逻辑目录numeric及typmod不变。MySQL创建表继续原MyDecimal路径；numeric索引/算术及DDL类型重建不在此接线范围。
+
+### 2026-10-26 浮点文本持久化（任务20）
+
+按PostgreSQLFloatText标记将浮点列的物理解码视图设为VARCHAR；查询描述仍为声明float4/8。

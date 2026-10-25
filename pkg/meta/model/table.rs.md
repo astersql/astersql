@@ -82,3 +82,7 @@ Go 的指针/`nil` 多映射为 Rust 的引用/`Option`，Go 的手写深拷贝�
 - 测试必须继续放在独立文件，优先扩展 `pkg/meta/model/table_test.rs` 或 `table_4_aster_unit_test.rs`，并用 `pkg/meta/model/table_test.go` 校验 Go 意图；不要把测试内嵌到 `table.rs`。
 
 PostgreSQLNumericText持久标记PG声明numeric列使用现有字符串Datum编码；缺省false，避免把历史MyDecimal行误解码。
+
+### 2026-10-26 浮点文本持久化（任务20）
+
+PostgreSQLFloatText是默认false且false不输出JSON的独立持久标记，仅新建PG表开启；旧PG及MySQL表继续读原float编码。

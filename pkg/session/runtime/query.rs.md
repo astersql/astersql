@@ -174,3 +174,7 @@ PG numeric求值传入声明FieldType；SELECT准备阶段验证precision/scale�
 ### 2026-10-26 浮点显式整数转换
 
 PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；正式表达式和关系消费者共同覆盖，MySQL路径保持原逻辑。
+
+### 2026-10-26 浮点真实客户端差分（任务20）
+
+PostgreSQLFloat8关系查询Cast分支复用pg_float8_relational_value，与写入表达式保持相同严格解析及结构化错误。

@@ -2035,3 +2035,42 @@ pub fn pg_narrow_float4(value: f64) -> Result<f32, PgFloat4Error> {
     }
     Ok(narrowed)
 }
+
+/// Strict PostgreSQL binary64 text input shared by parameters and SQL casts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PgFloat8Error {
+    #[error("invalid input syntax for type double precision")]
+    InvalidSyntax,
+    #[error("value out of range for type double precision")]
+    OutOfRange,
+}
+impl PgFloat8Error {
+    pub fn sqlstate(self) -> &'static str {
+        match self {
+            Self::InvalidSyntax => "22P02",
+            Self::OutOfRange => "22003",
+        }
+    }
+}
+pub fn pg_cast_float8(value: Option<&str>) -> Result<Option<f64>, PgFloat8Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let text = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
+    let number = text
+        .parse::<f64>()
+        .map_err(|_| PgFloat8Error::InvalidSyntax)?;
+    let lower = text.to_ascii_lowercase();
+    let unsigned = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
+    let special = matches!(unsigned, "nan" | "inf" | "infinity");
+    let nonzero = text
+        .split(['e', 'E'])
+        .next()
+        .unwrap_or("")
+        .bytes()
+        .any(|c| matches!(c, b'1'..=b'9'));
+    if !special && (!number.is_finite() || (number == 0.0 && nonzero)) {
+        return Err(PgFloat8Error::OutOfRange);
+    }
+    Ok(Some(number))
+}

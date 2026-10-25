@@ -1300,6 +1300,9 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
+            if *FunctionType == ast::CastFunctionType::PostgreSQLFloat8 {
+                return pg_float8_relational_value(relational_expression_value(Expr, row)?);
+            }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
                 return pg_float4_relational_value(Expr, relational_expression_value(Expr, row)?);
             }
@@ -3683,6 +3686,14 @@ pub(super) fn pg_float4_relational_value(
     };
     result
         .map(|value| value.map(|number| f64::from(number).to_string()))
+        .map_err(|error| {
+            SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+        })
+}
+
+pub(super) fn pg_float8_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+    astersql_expression::pg_cast_float8(value.as_deref())
+        .map(|value| value.map(|number| number.to_string()))
         .map_err(|error| {
             SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
         })

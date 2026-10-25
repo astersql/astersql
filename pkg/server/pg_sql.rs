@@ -204,8 +204,10 @@ fn mapped_type(tokens: &[Token], start: usize) -> ParseResult<Option<(usize, &'s
         (start, "INT")
     } else if ty.word("bigint") {
         (start, "BIGINT")
-    } else if ty.word("real") {
+    } else if ty.word("real") || ty.word("float4") {
         (start, "FLOAT")
+    } else if ty.word("float8") {
+        (start, "DOUBLE")
     } else if ty.word("double") && tokens.get(start + 1).is_some_and(|t| t.word("precision")) {
         (start + 1, "DOUBLE")
     } else if ty.word("numeric") || ty.word("decimal") {

@@ -589,6 +589,38 @@ pub(super) fn encode_relational_row_with_format(
                     &column.FieldType,
                 )
                 .map_err(|e| SessionError::new(e.to_string()))?
+        } else if table.PostgreSQLFloatText
+            && matches!(
+                column.GetType(),
+                astersql_parser_mysql::r#type::TypeFloat
+                    | astersql_parser_mysql::r#type::TypeDouble
+            )
+        {
+            // Reuse string Datum storage: the MySQL binary codec normalizes -0.
+            let text = row.get(&column.Name.L).cloned().flatten();
+            if column.GetType() == astersql_parser_mysql::r#type::TypeFloat {
+                astersql_expression::pg_cast_float4(text.as_deref())
+                    .map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?
+                    .map(|number| {
+                        astersql_types::datum::NewStringDatum(f64::from(number).to_string())
+                    })
+                    .unwrap_or_default()
+            } else {
+                astersql_expression::pg_cast_float8(text.as_deref())
+                    .map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?
+                    .map(|number| astersql_types::datum::NewStringDatum(number.to_string()))
+                    .unwrap_or_default()
+            }
         } else if table.PostgreSQLNumericText
             && column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
         {

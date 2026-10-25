@@ -112,3 +112,11 @@ fn postgres_alter_column_mapping() {
         assert_eq!(crate::pg_sql::adapt(sql).unwrap_err().0, "0A000", "{sql}");
     }
 }
+
+#[test]
+fn pg_scalar_20_float_column_aliases() {
+    assert_eq!(
+        crate::pg_sql::adapt("CREATE TABLE t (f FLOAT4, d FLOAT8)").unwrap(),
+        "CREATE TABLE t (f FLOAT, d DOUBLE)"
+    );
+}

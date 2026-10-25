@@ -731,3 +731,67 @@ fn pg_scalar_19_float_integer_formal() {
         );
     }
 }
+
+#[test]
+fn pg_scalar_20_float8_text() {
+    use crate::{PgFloat8Error, pg_cast_float8};
+    assert_eq!(pg_cast_float8(None), Ok(None));
+    assert_eq!(
+        pg_cast_float8(Some("-0")).unwrap().unwrap().to_bits(),
+        (-0.0_f64).to_bits()
+    );
+    assert_eq!(
+        pg_cast_float8(Some("4.9406564584124654e-324"))
+            .unwrap()
+            .unwrap()
+            .to_bits(),
+        1
+    );
+    for input in ["bad", ""] {
+        assert_eq!(
+            pg_cast_float8(Some(input)),
+            Err(PgFloat8Error::InvalidSyntax)
+        );
+    }
+    for input in ["1e9999", "1e-9999"] {
+        assert_eq!(pg_cast_float8(Some(input)), Err(PgFloat8Error::OutOfRange));
+    }
+}
+
+#[test]
+fn pg_scalar_20_formal_float8_cast() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for input in [
+        "-0",
+        "0.1",
+        "4.9406564584124654e-324",
+        "bad",
+        "1e9999",
+        "1e-9999",
+    ] {
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            types::NewStringDatum(input.into()),
+            *types::NewFieldType(mysql::TypeVarString),
+        ));
+        let cast = crate::formal_registry::BuildCastFunction(
+            &pg,
+            &source,
+            &types::NewFieldType(mysql::TypeDouble),
+        );
+        let actual = cast.EvalReal(pg.GetEvalCtx(), crate::chunk::Row::default());
+        match crate::pg_cast_float8(Some(input)) {
+            Ok(Some(expected)) => {
+                let (value, null) = actual.unwrap();
+                assert!(!null);
+                assert_eq!(value.to_bits(), expected.to_bits());
+            }
+            Err(_) => assert!(actual.is_err(), "{input}"),
+            _ => unreachable!(),
+        }
+    }
+}

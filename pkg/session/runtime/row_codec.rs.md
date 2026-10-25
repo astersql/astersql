@@ -109,3 +109,7 @@ RustCodeGraph 的精确 `query` 为 `encode_relational_row`、`encode_relational
 - 本文件所有 API 都是 runtime 私有边界。若要复用，优先在 session runtime 内新增窄接口，不应直接扩大为跨 crate 公共 API，除非同时定义清晰的字符串行不变量。
 
 批次15：新增表的PostgreSQLNumericText标记明确物理编码，缺省false保留既有表解码；声明numeric列的INSERT目标转换复用PgNumeric，物理行复用字符串Datum保留大精度/scale/特殊值，读取仅覆盖物理解码字段类型，逻辑目录numeric及typmod不变。MySQL创建表继续原MyDecimal路径；numeric索引/算术及DDL类型重建不在此接线范围。
+
+### 2026-10-26 浮点文本持久化（任务20）
+
+PostgreSQLFloatText标记的float4/8列使用现有string Datum存储规范目标宽度文本，避开MySQL浮点codec负零归一化；新旧行格式共用。

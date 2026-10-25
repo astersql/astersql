@@ -107,3 +107,7 @@ PgNumeric 错误按其 SQLSTATE 输出，复用原 Sync/事务恢复状态机。
 ## PostgreSQL float4 文本输入（任务16）
 
 PgFloat4 错误按共享错误身份返回22P02或22003，避免落入通用XX000。
+
+### 2026-10-26 浮点真实客户端差分（任务20）
+
+SQLSTATE映射使用PgFloat8Error自身22P02/22003，不匹配错误消息或输入SQL。

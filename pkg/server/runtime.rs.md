@@ -114,3 +114,7 @@ session_protocol_error优先保留PgBoolError，而不是降级为通用会话�
 ## PostgreSQL float4 文本输入（任务16）
 
 session_protocol_error 保留 PgFloat4Error 到协议连接层；FLOAT4参数继续复用现有f32小端解码。
+
+### 2026-10-26 浮点真实客户端差分（任务20）
+
+session_protocol_error将SessionError中PgFloat8Error源转换为ConnError::PgFloat8。
