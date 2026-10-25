@@ -374,3 +374,57 @@ fn pg_dialect_04_returning_metadata() {
     }
     session.execute("DROP DATABASE returning_metadata").unwrap();
 }
+
+#[test]
+fn pg_dialect_05_update_returning_metadata() {
+    use astersql_parser_ast::SqlDialect;
+    use astersql_parser_mysql::r#type::{TypeLong, TypeVarchar};
+    let (domain, mysql_session) = CreateAnalyzeSession().unwrap();
+    mysql_session
+        .execute("CREATE DATABASE update_returning_metadata")
+        .unwrap();
+    mysql_session
+        .execute("USE update_returning_metadata")
+        .unwrap();
+    mysql_session
+        .execute("CREATE TABLE t(id INT, v VARCHAR(20))")
+        .unwrap();
+    mysql_session
+        .execute("INSERT INTO t VALUES (1, 'one'), (2, 'two')")
+        .unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    session.execute("USE update_returning_metadata").unwrap();
+
+    let sql = "UPDATE t AS a SET id=? WHERE id=1 RETURNING a.id AS \"ID\", a.*";
+    let (id, params, fields) = session.prepare_protocol_statement(sql).unwrap();
+    assert_eq!(params, 1);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.column_as_name.O.as_str())
+            .collect::<Vec<_>>(),
+        ["ID", "id", "v"]
+    );
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.column.FieldType.GetType())
+            .collect::<Vec<_>>(),
+        [TypeLong, TypeLong, TypeVarchar]
+    );
+    assert_eq!(session.protocol_integer_parameter_types(sql).unwrap(), [23]);
+    assert_eq!(session.describe_result_fields(sql).unwrap().len(), 3);
+    session.close_protocol_statement(id).unwrap();
+
+    let zero_rows = "UPDATE t AS a SET id=$1 WHERE FALSE RETURNING a.id";
+    assert_eq!(session.describe_result_fields(zero_rows).unwrap().len(), 1);
+    let mut rows = session.execute("SELECT id FROM t ORDER BY id").unwrap();
+    let mut rows = rows.remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1".to_owned()]);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["2".to_owned()]);
+    assert!(rows.next_row().unwrap().is_none());
+    rows.close().unwrap();
+    session
+        .execute("DROP DATABASE update_returning_metadata")
+        .unwrap();
+}

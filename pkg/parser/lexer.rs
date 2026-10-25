@@ -57,6 +57,7 @@ pub struct Scanner {
     parenDepth: usize,
     depthLimitError: Option<usize>,
     identifierQuoteError: Option<usize>,
+    syntaxErrorOffset: Option<usize>,
 }
 
 impl Scanner {
@@ -76,6 +77,12 @@ impl Scanner {
     pub(super) fn PostgreSQLClosingParenErrorPosition(&self) -> Option<usize> {
         let offset = usize::try_from(self.lastScanOffset).ok()?;
         (self.postgres && self.errs.len() == 1 && self.r.s.as_bytes().get(offset) == Some(&b')'))
+            .then(|| self.r.s[..offset].chars().count() + 1)
+    }
+
+    pub(super) fn PostgreSQLSyntaxErrorPosition(&self) -> Option<usize> {
+        let offset = self.syntaxErrorOffset?;
+        (self.postgres && self.errs.len() == 1)
             .then(|| self.r.s[..offset].chars().count() + 1)
     }
 
@@ -106,6 +113,7 @@ impl Scanner {
         self.parenDepth = 0;
         self.depthLimitError = None;
         self.identifierQuoteError = None;
+        self.syntaxErrorOffset = None;
     }
 
     // stmtText 截取当前语句，并按 Go 逻辑只修剪边界上的一个换行。
@@ -695,6 +703,7 @@ impl Scanner {
             parenDepth: 0,
             depthLimitError: None,
             identifierQuoteError: None,
+            syntaxErrorOffset: None,
         }
     }
 }
@@ -720,6 +729,9 @@ impl yyLexer for Scanner {
         Scanner::Errorf(self, format)
     }
     fn AppendError(&mut self, err: ParserError) {
+        if self.postgres && self.errs.is_empty() {
+            self.syntaxErrorOffset = usize::try_from(self.lastScanOffset).ok();
+        }
         self.errs.push(err);
     }
     fn AppendWarn(&mut self, err: ParserError) {

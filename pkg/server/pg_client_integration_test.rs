@@ -1124,6 +1124,11 @@ fn pg_dialect_04_libpq() {
 }
 
 #[test]
+fn pg_dialect_05_libpq() {
+    pg_dialect_libpq(5);
+}
+
+#[test]
 fn pg_dialect_09_libpq() {
     pg_dialect_libpq(9);
 }
@@ -1250,6 +1255,35 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 5 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            mysql_query(socket, &format!("USE {database}"));
+            assert_eq!(
+                mysql_query(socket, "SELECT id, v FROM t ORDER BY id"),
+                vec![
+                    vec![Some(b"1".to_vec()), Some(b"one".to_vec())],
+                    vec![Some(b"2".to_vec()), Some(b"two".to_vec())]
+                ],
+                "UPDATE RETURNING Prepare/Describe must not modify rows"
+            );
+            let sql = "UPDATE t AS a SET id=3 FROM s AS b WHERE a.id=b.id RETURNING b.id";
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(
+                response[0], 0xff,
+                "MySQL must reject PostgreSQL UPDATE FROM"
+            );
+            assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1064);
+            assert_eq!(&response[4..9], b"42000");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-update-from.jsonl"))
+                .unwrap();
+            use std::io::Write;
+            writeln!(file, "{}", serde_json::json!({"phase":phase,"sql":sql,"error_code":1064,"sqlstate":"42000","packet":response})).unwrap();
+        }
         if task == 18 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let table = format!("t18_{}_{}", std::process::id(), address.port());
             mysql_query(socket, &format!("USE {database}"));
@@ -1784,6 +1818,43 @@ fn pg_dialect_libpq(task: u8) {
                 .count(),
             8
         );
+        return;
+    }
+    if task == 5 {
+        assert_eq!(checkpoints, 6);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cases"], 6);
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["syntax_eligible"], 6);
+        assert_eq!(summary["unique_effective"], 5);
+        assert_eq!(summary["update_from_gate_cases"], 1);
+        assert_eq!(summary["update_execute_gate_cases"], 1);
+        assert_eq!(summary["mysql_reference_cases"], 2);
+        assert!(summary["assertions"].as_u64().unwrap() >= 100);
+        assert_eq!(
+            std::fs::read_to_string(evidence.join("mysql-update-from.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            6
+        );
+        let cases: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("cases.json")).unwrap())
+                .unwrap();
+        assert_eq!(cases.as_array().unwrap().len(), 6);
+        let mysql: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence.join("mysql-reference.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            mysql["identity"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("8.4.7\t")
+        );
+        assert_ne!(mysql["update_from"]["code"], 0);
         return;
     }
     assert_eq!(checkpoints, if task == 4 { 8 } else { 10 });

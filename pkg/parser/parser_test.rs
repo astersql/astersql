@@ -3174,6 +3174,102 @@ fn pg_dialect_04_behavior() {
 }
 
 #[test]
+fn pg_dialect_05_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    fn update(sql: &str, dialect: SqlDialect) -> parser_ast::UpdateStmt {
+        let node = parser::Parser::with_dialect(dialect)
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        *node
+            .into_any()
+            .downcast::<parser_ast::UpdateStmt>()
+            .ok()
+            .expect("UPDATE AST")
+    }
+
+    let sql = "/*中*/ UPDATE public.t AS a SET id=$1 WHERE id=1 RETURNING a.id AS \"ID\", a.*";
+    let stmt = update(sql, SqlDialect::PostgreSQL);
+    assert_eq!(stmt.List.len(), 1);
+    assert_eq!(stmt.List[0].Column.Name.O, "id");
+    assert_eq!(stmt.List[0].Expr.PostgreSQLParameterIndex(), Some(1));
+    assert_eq!(stmt.Returning.len(), 2);
+    assert!(matches!(&stmt.Returning[0].Expr.as_ref().unwrap().Kind,
+        ExprKind::Column(column) if column.Table.O == "a" && column.Name.O == "id"));
+    assert_eq!(stmt.Returning[0].AsName.O, "ID");
+    assert_eq!(stmt.Returning[0].OriginalText, "a.id AS \"ID\"");
+    assert_eq!(stmt.Returning[1].OriginalText, "a.*");
+    for field in &stmt.Returning {
+        assert_eq!(
+            &sql[field.Offset..field.Offset + field.OriginalText.len()],
+            field.OriginalText
+        );
+        assert!(sql.is_char_boundary(field.Offset));
+    }
+    let zero_rows = update(
+        "UPDATE public.t AS a SET id=$1 WHERE FALSE RETURNING a.id",
+        SqlDialect::PostgreSQL,
+    );
+    assert!(matches!(
+        zero_rows.Where.as_ref().unwrap().Kind,
+        ExprKind::Value(_)
+    ));
+    assert_eq!(zero_rows.Returning[0].OriginalText, "a.id");
+
+    // PostgreSQL UPDATE FROM retains both the FROM source and the ordered projection.
+    let from_sql = "UPDATE public.t AS a SET id=$1 FROM public.s AS b WHERE a.id=b.id RETURNING b.id AS source_id, a.*";
+    let from = update(from_sql, SqlDialect::PostgreSQL);
+    assert!(matches!(
+        from.From.as_ref().unwrap().TableRefs.Left.as_deref(),
+        Some(parser_ast::ResultSetNode::TableSource(source)) if source.AsName.O == "b"
+    ));
+    assert!(matches!(
+        from.TableRefs.as_ref().unwrap().TableRefs.Left.as_deref(),
+        Some(parser_ast::ResultSetNode::TableSource(source)) if source.AsName.O == "a"
+    ));
+    assert!(matches!(
+        from.Where.as_ref().unwrap().Kind,
+        ExprKind::Binary { .. }
+    ));
+    assert_eq!(from.Returning.len(), 2);
+    assert_eq!(from.Returning[0].AsName.O, "source_id");
+    assert_eq!(from.Returning[0].OriginalText, "b.id AS source_id");
+    assert_eq!(from.Returning[1].OriginalText, "a.*");
+    let mut mysql = parser::Parser::with_dialect(SqlDialect::MySQL);
+    assert!(mysql.ParseOneStmt(from_sql, "", "").is_err());
+
+    for invalid in [
+        "UPDATE public.t SET id=1 RETURNING",
+        "/*中*/ UPDATE public.t SET id=1 RETURNING id,",
+        "UPDATE public.t SET id=1 RETURNING id WHERE id=1",
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(invalid, "", "").is_err(), "{invalid}");
+        assert!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+    }
+
+    let misplaced = "/*中*/ UPDATE public.t SET id=1 RETURNING id WHERE id=1";
+    let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    assert!(parser.ParseOneStmt(misplaced, "", "").is_err());
+    assert_eq!(
+        parser.PostgreSQLSyntaxErrorPosition(),
+        Some(
+            misplaced[..misplaced.find("WHERE").unwrap()]
+                .chars()
+                .count()
+                + 1
+        )
+    );
+
+    // Preserve the pre-existing shared MySQL UPDATE RETURNING extension.
+    let mysql_update = update("UPDATE t SET id=1 RETURNING id", SqlDialect::MySQL);
+    assert_eq!(mysql_update.Returning.len(), 1);
+    assert_eq!(mysql_update.Returning[0].OriginalText, "id");
+    println!(
+        "pg_dialect_05_behavior: base, zero-row, UPDATE FROM, malformed clause, spans, aliases, parameters and MySQL baseline"
+    );
+}
+
+#[test]
 fn pg_dialect_09_behavior() {
     use parser_ast::{ExprKind, SqlDialect};
     fn expression(sql: &str) -> parser_ast::ExprNode {

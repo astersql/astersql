@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -127,6 +127,15 @@ if task == 4:
         ('bare_alias', 'INSERT INTO public.t(id) VALUES (9) RETURNING id label', []),
         ('missing_trailing', '/*中*/ INSERT INTO public.t(id) VALUES (10) RETURNING id,', []),
     ]
+if task == 5:
+    cases = [
+        ('projection', 'UPDATE public.t AS a SET id=$1 WHERE id=1 RETURNING a.id AS "ID", a.*', []),
+        ('zero_rows', 'UPDATE public.t AS a SET id=7 WHERE FALSE RETURNING a.id', []),
+        ('from_returning', 'UPDATE public.t AS a SET id=$1 FROM public.s AS b WHERE a.id=b.id RETURNING b.id AS source_id, a.*', []),
+        ('missing_projection', 'UPDATE public.t SET id=1 RETURNING', []),
+        ('misplaced_where', 'UPDATE public.t SET id=1 RETURNING id WHERE id=1', []),
+        ('protected', "UPDATE public.t SET v='RETURNING $1' WHERE id=1 RETURNING id", []),
+    ]
 if task == 9:
     cases = [
         ('list', 'SELECT ARRAY[1,2]', []),
@@ -203,7 +212,7 @@ if task == 24:
         ('reconnect','SELECT $1::int4 AS v',[23]),
         ('transaction_error','/*中*/ SELECT )',[]),
     ]]
-assert len({case[0] for case in cases}) == (6 if task in (18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
+assert len({case[0] for case in cases}) == (6 if task in (5,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'))), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task in (9,11) else [None]*len(oids)) if oids else []),
@@ -257,7 +266,7 @@ def observe(result):
                     rows=[[None if is_null(result, r, col) else value(result, r, col).decode()
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,13,14,16,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -564,6 +573,264 @@ def returning_handoff():
         (evidence/'summary.json').write_text(json.dumps(summary, indent=2))
     assert done and cleanup_ok, 'incomplete run/cleanup'
     print(json.dumps(summary), flush=True)
+
+def update_returning_handoff():
+    """Bind UPDATE RETURNING read-only and keep UPDATE FROM behind its gate."""
+    scope = f'dialect_05_{os.getpid()}_{int(sys.argv[2])}'
+    local_dsn = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+    connections = {}
+    prepared = []
+    checks = 0
+    self_checks = 0
+    effective = 0
+    gate_cases = 0
+    reference_schema_created = False
+    done = False
+    cleanup_ok = True
+    registry = []
+
+    def check(condition, message):
+        nonlocal checks
+        assert condition, message
+        checks += 1
+
+    def recovery(conn, side, name):
+        if transaction(conn) in (2, 3):
+            check(query(conn, 'ROLLBACK')['status'] == 1, name + ': rollback failed')
+        probe = query(conn, 'SELECT 1::int4')
+        archive(name + '_recovery', side, dict(phase='PQexec', sql='SELECT 1::int4'), probe)
+        check(probe['status'] == 2 and probe['rows'] == [['1']] and transaction(conn) == 0,
+              name + ': same-connection recovery failed')
+
+    def snapshot(side):
+        conn = connections[side + '_observer']
+        relation = f'{scope}.t' if side == 'reference' else 'public.t'
+        result = query(conn, f'SELECT id, v FROM {relation} ORDER BY id')
+        check(result['status'] == 2 and result['state'] == '', side + ': observer failed')
+        return result['rows']
+
+    try:
+        reference_dsn = os.environ['PG18_REFERENCE_DSN']
+        for label in ['reference', 'reference_observer', 'aster', 'aster_b', 'aster_observer']:
+            dsn = reference_dsn if label.startswith('reference') else local_dsn
+            conn = connect(dsn.encode())
+            connections[label] = conn
+            check(bool(conn) and status(conn) == 0, label + ': connection failed')
+            if label.startswith('reference'):
+                check(query(conn, "SET TIME ZONE 'UTC'")['status'] == 1, 'reference timezone setup failed')
+            check(parameter_status(conn, b'client_encoding') == b'UTF8', label + ': encoding mismatch')
+            check(parameter_status(conn, b'TimeZone') == b'UTC', label + ': timezone mismatch')
+            check(query(conn, 'SET search_path TO public')['status'] == 1, label + ': search_path failed')
+
+        reference_version = query(connections['reference'],
+                                  "SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(reference_version[1] == '180006', 'exact PostgreSQL 18.6 reference required')
+        reference_build = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        build = json.loads((evidence / 'rust-build.json').read_text())
+        build['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance = dict(
+            run=evidence.name, target_version='18.6', source=source_snapshot(root), build=build,
+            client=dict(python=sys.version, library=str(library),
+                        sha256=hashlib.sha256(library.read_bytes()).hexdigest(), PQlibVersion=version()),
+            os=platform.platform(), storage='CreateAnalyzeSession test storage',
+            authentication='InsecureRootOnly',
+            reference=dict(version=reference_version[0], server_version_num=reference_version[1]),
+            reference_build=reference_build,
+            endpoints={side: endpoint(connections[side]) for side in ['aster', 'aster_b', 'reference']})
+        (evidence / 'provenance.json').write_text(json.dumps(provenance, indent=2))
+        check(validate_provenance(provenance, copy.deepcopy(provenance)), 'provenance self-check failed')
+        damaged = copy.deepcopy(provenance)
+        damaged['reference']['server_version_num'] = '180004'
+        check(not validate_provenance(damaged, provenance), 'provenance tamper check failed')
+        self_checks += 1
+
+        reference = connections['reference']
+        check(query(reference, f'CREATE SCHEMA {scope}')['status'] == 1, 'reference schema creation failed')
+        reference_schema_created = True
+        for side in ['reference', 'aster']:
+            prefix = f'{scope}.' if side == 'reference' else 'public.'
+            conn = connections[side]
+            check(query(conn, f'CREATE TABLE {prefix}t (id INT, v VARCHAR(20))')['status'] == 1,
+                  side + ': target table creation failed')
+            check(query(conn, f'CREATE TABLE {prefix}s (id INT)')['status'] == 1,
+                  side + ': source table creation failed')
+            check(query(conn, f"INSERT INTO {prefix}t VALUES (1, 'one'), (2, 'two')")['status'] == 1,
+                  side + ': target seed failed')
+            check(query(conn, f'INSERT INTO {prefix}s VALUES (1), (2)')['status'] == 1,
+                  side + ': source seed failed')
+
+        expected_fields = {
+            'projection': [['ID', 23, 4, -1], ['id', 23, 4, -1], ['v', 1043, -1, 24]],
+            'zero_rows': [['id', 23, 4, -1]],
+            'from_returning': [['source_id', 23, 4, -1], ['id', 23, 4, -1], ['v', 1043, -1, 24]],
+            'protected': [['id', 23, 4, -1]],
+        }
+        expected_params = {'projection': [23], 'from_returning': [23]}
+        for index, (name, sql, oids) in enumerate(cases):
+            is_invalid = name in ('missing_projection', 'misplaced_where')
+            is_gate = name == 'from_returning'
+            ref_sql = sql.replace('public.t', f'{scope}.t').replace('public.s', f'{scope}.s')
+            entry = dict(
+                case_id=name, capability_id='pg.dialect.update.returning.metadata',
+                sql=sql, reference_sql=ref_sql, phase='PQprepare', parameter_oids=oids,
+                arguments=None, parameter_formats=None, result_format=0, encoding='UTF8', timezone='UTC',
+                role={side: connection_user(connections[side]).decode() for side in ['aster', 'reference']},
+                search_path='public', initial_state='I',
+                object_mapping={'aster': f'{sys.argv[3]}.public.t', 'reference': f'{scope}.t'},
+                expected_basis='task5 ordered UPDATE RETURNING projection and PostgreSQL18.6/libpq18',
+                expected={'reference': '42601' if is_invalid else 'success',
+                          'aster': '42601' if is_invalid else ('0A000' if is_gate else 'success')},
+                execution='Prepare/Describe only on both references; one local Execute probes the pre-write gate',
+                side_effects='independent snapshots before/after every case must remain unchanged')
+            registry.append(entry)
+            (evidence / 'cases.json').write_text(json.dumps(registry, indent=2))
+            before = {side: snapshot(side) for side in ['reference', 'aster']}
+            observations = {}
+            descriptions = {}
+            for side in ['reference', 'aster']:
+                conn = connections['reference' if side == 'reference' else ('aster_b' if index % 2 else 'aster')]
+                actual_sql = ref_sql if side == 'reference' else sql
+                statement = f'update_{index}'.encode()
+                type_array = (c.c_uint * len(oids))(*oids) if oids else None
+                result = observe(prepare(conn, statement, actual_sql.encode(), len(oids), type_array))
+                result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))
+                archive(name, side, dict(phase='PQprepare', sql=actual_sql,
+                                         statement=statement.decode(), parameter_oids=oids), result)
+                observations[side] = result
+                if result['status'] == 1:
+                    prepared.append((conn, statement))
+                    desc = observe(describe(conn, statement))
+                    archive(name + '_describe', side,
+                            dict(phase='PQdescribePrepared', statement=statement.decode()), desc)
+                    descriptions[side] = desc
+                    check(desc['status'] == 1 and desc['state'] == '', side + ': Describe failed')
+                    check(desc['fields'] == expected_fields[name],
+                          f'{side}/{name}: projection order or types changed: {desc["fields"]}')
+                    check(desc['params'] == expected_params.get(name, []),
+                          f'{side}/{name}: inferred parameter type changed: {desc["params"]}')
+                    check(desc['formats'] == [0] * len(expected_fields[name]),
+                          side + ': text result format was not preserved')
+                    if name in ('projection', 'zero_rows') and side == 'aster':
+                        attributes = [1, 1, 2] if name == 'projection' else [1]
+                        check([origin[1] for origin in desc['table_origins']] == attributes,
+                              side + ': target column provenance changed')
+                        check(all(origin[0] != 0 for origin in desc['table_origins']),
+                              side + ': target table provenance is missing')
+                    if name == 'from_returning' and side == 'reference':
+                        check([origin[1] for origin in desc['table_origins']] == [1, 1, 2],
+                              'PostgreSQL UPDATE FROM lost source/target attribute provenance')
+                        check(all(origin[0] != 0 for origin in desc['table_origins']),
+                              'PostgreSQL UPDATE FROM source table identity is missing')
+                    if name == 'projection' and side == 'aster':
+                        values = (text * 1)(b'7')
+                        lengths = (integer * 1)(1)
+                        formats = (integer * 1)(0)
+                        execution = observe(exec_prepared(conn, statement, 1, values, lengths, formats, 0))
+                        execution['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))
+                        archive(name + '_execute_gate', side,
+                                dict(phase='PQexecPrepared', statement=statement.decode(),
+                                     arguments=['7'], parameter_formats=[0], result_format=0), execution)
+                        check(execution['status'] == 7 and execution['state'] == '0A000',
+                              'local UPDATE RETURNING Execute must stop before DML dispatch')
+                        check(execution['transaction_after'] == 'I',
+                              'rejected UPDATE RETURNING left the connection in a transaction error')
+                else:
+                    expected_state = '42601' if is_invalid else ('0A000' if is_gate and side == 'aster' else '')
+                    expected_status = 7 if expected_state else 1
+                    check(result['state'] == expected_state and result['status'] == expected_status,
+                          f'{side}/{name}: unexpected Parse result {result}')
+                    if is_invalid:
+                        expected_position = (len(actual_sql) + 1 if name == 'missing_projection'
+                                             else len(actual_sql[:actual_sql.index('WHERE', actual_sql.index('RETURNING'))]) + 1)
+                        check(result['position'] == str(expected_position),
+                              f'{side}/{name}: PostgreSQL error position changed: {result["position"]}')
+                    check(result['transaction_after'] == 'I', side + ': failed Parse left transaction dirty')
+
+            if not is_gate and not is_invalid:
+                check(compare_metadata(descriptions['aster'], descriptions['reference'], 'describe'),
+                      name + ': local/reference metadata differ')
+            if is_gate:
+                gate_cases += 1
+            else:
+                effective += 1
+            after = {side: snapshot(side) for side in ['reference', 'aster']}
+            check(after == before, name + ': Prepare/Describe changed rows')
+            print('PG_DIALECT_CHECKPOINT', name, flush=True)
+            check(sys.stdin.readline().strip() == 'continue', 'MySQL checkpoint aborted')
+            for label in ['aster', 'aster_b', 'reference']:
+                recovery(connections[label], 'reference' if label == 'reference' else 'aster',
+                         name + '_' + label)
+
+        parsed = urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
+        check(parsed.scheme == 'mysql' and bool(parsed.hostname) and bool(parsed.port), 'MySQL reference DSN malformed')
+        mysql_env = dict(os.environ, MYSQL_PWD=parsed.password or '')
+        mysql_args = ['mysql', '--protocol=TCP', '-h', parsed.hostname, '-P', str(parsed.port),
+                      '-u', parsed.username or 'root', '--batch', '--raw', '--skip-column-names']
+        def mysql_ref(sql):
+            return subprocess.run(mysql_args + ['-e', "SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; " + sql],
+                                  env=mysql_env, capture_output=True, text=True, timeout=15)
+        identity = mysql_ref('SELECT VERSION(), @@version_compile_os, @@version_compile_machine; SELECT @@sql_mode, @@character_set_connection, @@collation_connection')
+        archive('reference_identity', 'mysql', None,
+                dict(code=identity.returncode, output=identity.stdout.splitlines(), error=identity.stderr))
+        check(identity.returncode == 0 and bool(identity.stdout.strip()), 'MySQL reference identity unavailable')
+        check(identity.stdout.splitlines()[0].startswith('8.4.7\t'),
+              'exact MySQL 8.4.7 reference required')
+        raw_mysql_build = json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text())
+        raw_mysql_build = raw_mysql_build[0] if isinstance(raw_mysql_build, list) else raw_mysql_build
+        mysql_build = {
+            key: raw_mysql_build[key]
+            for key in ('Id', 'RepoDigests', 'Created', 'Architecture', 'Variant', 'Os', 'Size')
+            if key in raw_mysql_build
+        }
+        mysql_build['version'] = identity.stdout.splitlines()[0].split('\t')[0]
+        mysql_build['version_compile_os'] = identity.stdout.splitlines()[0].split('\t')[1]
+        mysql_build['version_compile_machine'] = identity.stdout.splitlines()[0].split('\t')[2]
+        (evidence / 'mysql-reference-build.json').write_text(json.dumps(mysql_build, indent=2))
+        mysql_sql = 'UPDATE t AS a SET id=3 FROM s AS b WHERE a.id=b.id RETURNING b.id'
+        mysql_result = mysql_ref(mysql_sql)
+        mysql_observation = dict(code=mysql_result.returncode, output=mysql_result.stdout.splitlines(),
+                                 error=mysql_result.stderr)
+        archive('update_from_syntax', 'mysql', dict(phase='query', sql=mysql_sql), mysql_observation)
+        check(mysql_result.returncode != 0 and 'ERROR 1064 (42000)' in mysql_result.stderr,
+              'MySQL reference did not reject PostgreSQL UPDATE FROM syntax')
+        (evidence / 'mysql-reference.json').write_text(json.dumps(
+            dict(identity=identity.stdout.splitlines(), sql_mode='empty', character_set='utf8mb4',
+                 build_file='mysql-reference-build.json',
+                 collation='utf8mb4_general_ci', update_from={'code': mysql_result.returncode,
+                 'error': mysql_result.stderr}), indent=2))
+
+        final = copy.deepcopy(provenance)
+        final['source'] = source_snapshot(root)
+        final['build']['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        final['client']['sha256'] = hashlib.sha256(library.read_bytes()).hexdigest()
+        final['reference_build'] = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        final['endpoints'] = {side: endpoint(connections[side]) for side in ['aster', 'aster_b', 'reference']}
+        check(validate_provenance(provenance, final), 'build/source/provenance changed during handoff')
+        done = True
+    finally:
+        for conn, statement in prepared:
+            if conn:
+                observe(close_prepared(conn, statement))
+        for conn in connections.values():
+            if conn and transaction(conn) in (2, 3):
+                cleanup_ok = query(conn, 'ROLLBACK')['status'] == 1 and cleanup_ok
+        if reference_schema_created and connections.get('reference'):
+            cleanup_ok = query(connections['reference'], f'DROP SCHEMA {scope} CASCADE')['status'] == 1 and cleanup_ok
+        for conn in connections.values():
+            if conn:
+                finish(conn)
+        summary = dict(cases=len(cases), assertions=checks + int(done), self_checks=self_checks,
+                       unique_effective=effective if done and cleanup_ok else 0,
+                       update_from_gate_cases=gate_cases if done and cleanup_ok else 0,
+                       update_execute_gate_cases=1 if done and cleanup_ok else 0,
+                       syntax_eligible=len(cases) if done and cleanup_ok else 0,
+                       mysql_reference_cases=2 if done and cleanup_ok else 0,
+                       cleanup_ok=cleanup_ok,
+                       scope='read-only UPDATE RETURNING Prepare/Describe; UPDATE FROM gate; no DML execution')
+        (evidence / 'summary.json').write_text(json.dumps(summary, indent=2))
+    check(done and cleanup_ok, 'completion/cleanup')
+    print(json.dumps(summary), flush=True)
+
 
 def array_handoff():
     """Array syntax/gate only; preserve separate reference type-analysis outcomes."""
@@ -1825,6 +2092,10 @@ if task == 11:
 
 if task == 9:
     array_handoff()
+    sys.exit(0)
+
+if task == 5:
+    update_returning_handoff()
     sys.exit(0)
 
 if task == 4:

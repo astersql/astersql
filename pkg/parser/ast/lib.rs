@@ -1572,6 +1572,8 @@ pub struct UpdateStmt {
     pub node_text: base::AstNode,
     pub Priority: i32,
     pub TableRefs: Option<TableRefsClause>,
+    /// PostgreSQL UPDATE FROM sources, kept separate from the target relation.
+    pub From: Option<TableRefsClause>,
     pub List: Vec<Assignment>,
     pub Where: Option<ExprNode>,
     pub Order: Vec<ByItem>,

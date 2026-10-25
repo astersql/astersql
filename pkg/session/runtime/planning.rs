@@ -2807,7 +2807,7 @@ impl astersql_executor::select::StatementContextRuntime for ConcreteSession {
 }
 
 impl ConcreteSession {
-    /// Infer direct integer casts and INSERT RETURNING target-column constraints.
+    /// Infer direct integer casts and DML RETURNING target-column constraints.
     /// Offsets refer to the unchanged engine SQL, including repeated markers.
     pub fn protocol_integer_parameter_types(&self, sql: &str) -> SessionResult<Vec<u32>> {
         let markers = parameter_markers(sql);
@@ -2872,6 +2872,27 @@ impl ConcreteSession {
                         .iter()
                         .filter_map(|field| field.Expr.as_ref()),
                 ) {
+                    let _ = expression.Accept(&mut constraints);
+                }
+            } else if let Some(update) = statement.as_any().downcast_ref::<ast::UpdateStmt>()
+                && !update.Returning.is_empty()
+                && update.From.is_none()
+            {
+                constraints
+                    .0
+                    .extend(self.update_parameter_constraints(update)?);
+                for expression in update
+                    .List
+                    .iter()
+                    .map(|assignment| &assignment.Expr)
+                    .chain(update.Where.iter())
+                    .chain(
+                        update
+                            .Returning
+                            .iter()
+                            .filter_map(|field| field.Expr.as_ref()),
+                    )
+                {
                     let _ = expression.Accept(&mut constraints);
                 }
             }

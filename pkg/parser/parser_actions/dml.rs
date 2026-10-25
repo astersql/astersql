@@ -114,6 +114,7 @@ enum DmlRule {
     UpdateStmtAlt01,
     UpdateStmtNoWithAlt01,
     UpdateStmtNoWithAlt02,
+    UpdateStmtNoWithAlt03,
 }
 
 fn identify(rule_id: RuleId) -> Option<DmlRule> {
@@ -291,6 +292,9 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "updatestmtnowith_update_tableoptimizerhintsopt_p--43fd3758bb95c07c" => {
             DmlRule::UpdateStmtNoWithAlt02
         }
+        "updatestmtnowith_update_tableoptimizerhintsopt_p--69a176d5eab67bc7" => {
+            DmlRule::UpdateStmtNoWithAlt03
+        }
         _ => return None,
     })
 }
@@ -315,7 +319,9 @@ pub(super) fn apply(
 }
 
 fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool, isize> {
-    if matches!(
+    if rule == DmlRule::UpdateStmtNoWithAlt03 {
+        apply_update_from_rule(rhs, context)
+    } else if matches!(
         rule,
         DmlRule::InsertIntoStmtAlt01
             | DmlRule::InsertRowAliasOptAlt01
@@ -394,6 +400,81 @@ fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool,
     } else {
         apply_general_rule(rule, rhs, context)
     }
+}
+
+fn apply_update_from_rule(mut rhs: Rhs<'_>, context: Context<'_>) -> Result<bool, isize> {
+    let rhs_len = rhs.len();
+    let Context {
+        output: out,
+        parser_state,
+        lexer: _,
+    } = context;
+    if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+        return Err(1);
+    }
+    let Some(target) = rhs[rhs_len - 6].item.as_deref().and_then(|item| {
+        if let Some(join) = item.downcast_ref::<parser_ast::Join>() {
+            Some(join.clone())
+        } else {
+            item.downcast_ref::<parser_ast::TableSource>()
+                .map(|source| parser_ast::Join {
+                    Left: Some(Box::new(parser_ast::ResultSetNode::TableSource(
+                        source.clone(),
+                    ))),
+                    ..Default::default()
+                })
+        }
+    }) else {
+        return Ok(false);
+    };
+    let Some(from) = rhs[rhs_len - 2]
+        .item
+        .as_deref()
+        .and_then(|item| item.downcast_ref::<parser_ast::Join>())
+        .cloned()
+    else {
+        return Ok(false);
+    };
+    out.statement = Some(Box::new(parser_ast::UpdateStmt {
+        Priority: rhs[rhs_len - 8]
+            .item
+            .as_deref()
+            .and_then(dml_numeric_isize)
+            .unwrap_or_default() as i32,
+        TableRefs: Some(parser_ast::TableRefsClause { TableRefs: target }),
+        From: Some(parser_ast::TableRefsClause { TableRefs: from }),
+        List: rhs[rhs_len - 4]
+            .item
+            .as_deref()
+            .and_then(|item| item.downcast_ref::<Vec<parser_ast::Assignment>>())
+            .cloned()
+            .unwrap_or_default(),
+        IgnoreErr: rhs[rhs_len - 7]
+            .item
+            .as_deref()
+            .and_then(|item| item.downcast_ref::<bool>())
+            .copied()
+            .unwrap_or(false),
+        Where: rhs[rhs_len - 1]
+            .item
+            .as_deref()
+            .and_then(|item| item.downcast_ref::<parser_ast::ExprNode>())
+            .cloned(),
+        TableHints: rhs[rhs_len - 9]
+            .item
+            .as_deref()
+            .and_then(|item| item.downcast_ref::<Vec<parser_ast::TableOptimizerHint>>())
+            .cloned()
+            .unwrap_or_default(),
+        Returning: rhs[rhs_len]
+            .item
+            .as_deref()
+            .and_then(|item| item.downcast_ref::<Vec<parser_ast::SelectField>>())
+            .cloned()
+            .unwrap_or_default(),
+        ..Default::default()
+    }));
+    Ok(true)
 }
 
 fn apply_general_rule(

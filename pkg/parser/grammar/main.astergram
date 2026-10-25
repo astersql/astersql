@@ -3775,6 +3775,7 @@ UpdateStmt : UpdateStmtNoWith;
 UpdateStmt : WithClause UpdateStmtNoWith @action;
 UpdateStmtNoWith : "UPDATE" TableOptimizerHintsOpt PriorityOpt IgnoreOptional TableRef "SET" AssignmentList WhereClauseOptional OrderByOptional LimitClause ReturningClause @action;
 UpdateStmtNoWith : "UPDATE" TableOptimizerHintsOpt PriorityOpt IgnoreOptional TableRefs "SET" AssignmentList WhereClauseOptional ReturningClause @action;
+UpdateStmtNoWith : "UPDATE" TableOptimizerHintsOpt PriorityOpt IgnoreOptional TableRef "SET" AssignmentList "FROM" TableRefs WhereClauseOptional ReturningClause @action;
 UseStmt : "USE" DBName @action;
 WhereClause : "WHERE" Expression @action;
 WhereClauseOptional : ε %prec empty @action;

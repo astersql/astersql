@@ -491,6 +491,7 @@ impl Parser {
         self.lexer
             .PostgreSQLIdentifierErrorPosition()
             .or_else(|| self.lexer.PostgreSQLClosingParenErrorPosition())
+            .or_else(|| self.lexer.PostgreSQLSyntaxErrorPosition())
             .or_else(|| self.PostgreSQLEofErrorPosition())
     }
 

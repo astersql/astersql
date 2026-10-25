@@ -242,11 +242,19 @@ fn command_for_phase(
         }
         "INSERT"
     } else if let Some(update) = node.downcast_ref::<ast::UpdateStmt>() {
-        if !update.Returning.is_empty() {
+        if update.From.is_some() {
             return Err((
                 "0A000",
-                "DML RETURNING is unsupported by the PostgreSQL listener".into(),
+                "PostgreSQL UPDATE FROM is unsupported by the shared executor".into(),
             ));
+        }
+        if !update.Returning.is_empty() {
+            if !prepare {
+                return Err((
+                    "0A000",
+                    "DML RETURNING is unsupported by the PostgreSQL listener".into(),
+                ));
+            }
         }
         "UPDATE"
     } else if let Some(delete) = node.downcast_ref::<ast::DeleteStmt>() {
@@ -290,7 +298,10 @@ fn command_for_phase(
     Ok((
         Some(tag),
         node.downcast_ref::<ast::InsertStmt>()
-            .is_some_and(|insert| !insert.Returning.is_empty()),
+            .is_some_and(|insert| !insert.Returning.is_empty())
+            || node
+                .downcast_ref::<ast::UpdateStmt>()
+                .is_some_and(|update| !update.Returning.is_empty()),
     ))
 }
 fn invalid(message: &str) -> io::Error {
@@ -664,7 +675,9 @@ pub(crate) fn encode_formats(
             .enumerate()
             .map(|(i, c)| {
                 let native = result.native_types.get(i);
-                if command == "INSERT" && c.charset != 63 && native.is_some_and(|tp| tp.code == 15)
+                if matches!(command, "INSERT" | "UPDATE")
+                    && c.charset != 63
+                    && native.is_some_and(|tp| tp.code == 15)
                 {
                     Ok((1043, -1))
                 } else {
@@ -691,7 +704,7 @@ pub(crate) fn encode_formats(
             body.extend_from_slice(&attribute.to_be_bytes());
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
-            let typmod = if command == "INSERT" && *oid == 1043 {
+            let typmod = if matches!(command, "INSERT" | "UPDATE") && *oid == 1043 {
                 result
                     .native_types
                     .get(index)

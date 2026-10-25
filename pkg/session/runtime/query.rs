@@ -2308,6 +2308,50 @@ impl ConcreteSession {
         Ok(fields)
     }
 
+    /// Bind UPDATE output against its target relation without executing the DML.
+    pub(super) fn update_returning_fields(
+        &self,
+        update: &ast::UpdateStmt,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
+        let select = ast::SelectStmt {
+            From: update.TableRefs.clone(),
+            Fields: ast::FieldList {
+                Fields: update.Returning.clone(),
+            },
+            ..Default::default()
+        };
+        let sources = self.relational_select_source_fields(&select)?;
+        if sources.is_empty() {
+            return Err(SessionError::new(
+                "PostgreSQL UPDATE RETURNING target metadata is unavailable",
+            ));
+        }
+        let mut fields = self.relational_query_node_result_fields(&select, &[])?;
+        let mut index = 0;
+        for projection in &update.Returning {
+            if let Some(wildcard) = &projection.WildCard {
+                let count = sources
+                    .iter()
+                    .filter(|source| {
+                        wildcard.Table.L.is_empty() || wildcard.Table.L == source.table_as_name.L
+                    })
+                    .count();
+                if count == 0 {
+                    return Err(SessionError::new(format!(
+                        "Unknown column '{}.*' in 'field list'",
+                        wildcard.Table.O
+                    )));
+                }
+                index += count;
+            } else if let Some(expression) = &projection.Expr {
+                fields[index].column.FieldType =
+                    pg_returning_expression_type(expression, &sources)?;
+                index += 1;
+            }
+        }
+        Ok(fields)
+    }
+
     pub(super) fn insert_parameter_constraints(
         &self,
         insert: &ast::InsertStmt,
@@ -2354,6 +2398,42 @@ impl ConcreteSession {
                     };
                     constraints.push((Offset, oid));
                 }
+            }
+        }
+        Ok(constraints)
+    }
+
+    pub(super) fn update_parameter_constraints(
+        &self,
+        update: &ast::UpdateStmt,
+    ) -> SessionResult<Vec<(usize, u32)>> {
+        let select = ast::SelectStmt {
+            From: update.TableRefs.clone(),
+            ..Default::default()
+        };
+        let sources = self.relational_select_source_fields(&select)?;
+        let mut constraints = Vec::new();
+        for assignment in &update.List {
+            let Some(column) = sources
+                .iter()
+                .find(|source| source.column.Name.L == assignment.Column.Name.L)
+            else {
+                continue;
+            };
+            let mut expression = &assignment.Expr;
+            while let ast::ExprKind::Parentheses(inner) = &expression.Kind {
+                expression = inner;
+            }
+            if let ast::ExprKind::ParamMarker { Offset } = expression.Kind {
+                let oid = match column.column.FieldType.GetType() {
+                    2 => 21,
+                    3 => 23,
+                    8 => 20,
+                    15 => 1043,
+                    253 | 254 => 25,
+                    _ => 0,
+                };
+                constraints.push((Offset, oid));
             }
         }
         Ok(constraints)
