@@ -1219,6 +1219,11 @@ fn pg_dialect_23_libpq() {
 }
 
 #[test]
+fn pg_dialect_26_libpq() {
+    pg_dialect_libpq(26);
+}
+
+#[test]
 fn pg_dialect_25_libpq() {
     pg_dialect_libpq(25);
 }
@@ -2936,6 +2941,28 @@ fn pg_dialect_libpq(task: u8) {
                 vec![vec![Some(b"Foo".to_vec())]]
             );
         }
+        if task == 26 {
+            let sql = "SELECT ARRAY[$2::int4,$1::int4,$2::int4]";
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(response[0], 0xff);
+            assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1064);
+            assert_eq!(&response[4..9], b"42000");
+            let mut output = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-parameter-isolation.jsonl"))
+                .unwrap();
+            writeln!(
+                output,
+                "{}",
+                serde_json::json!({"phase":phase,"sql":sql,
+                "code":1064,"sqlstate":"42000","packet":response})
+            )
+            .unwrap();
+        }
         if task == 24 {
             let sql = "SELECT CAST(1 AS SIGNED) AS pg_core_mysql_identity_24";
             let mut request = vec![3];
@@ -3219,6 +3246,18 @@ fn pg_dialect_libpq(task: u8) {
         assert!(summary["assertions"].as_u64().unwrap_or_default() > 0);
         assert_eq!(summary["using_gate_cases"], 2);
         assert_eq!(summary["semantic_returning_success"], 0);
+        assert_eq!(summary["cleanup_ok"], true);
+        return;
+    }
+    if task == 26 {
+        assert_eq!(checkpoints, 17);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["unique_effective"], 17);
+        assert_eq!(summary["prepare_describe_cases"], 15);
+        assert_eq!(summary["execution_cases"], 10);
+        assert_eq!(summary["full_dml_execution_cases"], 0);
         assert_eq!(summary["cleanup_ok"], true);
         return;
     }

@@ -2320,6 +2320,15 @@ impl ConcreteSession {
                 return tp;
             }
             match &expression.Kind {
+                // PG LIKE/ILIKE (including a bound ESCAPE) yields boolean.
+                // Preserve that identity for Prepare and Execute metadata.
+                ast::ExprKind::Like { .. } => {
+                    let mut tp = astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeTiny,
+                    );
+                    tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                    return tp;
+                }
                 ast::ExprKind::Parentheses(inner) => {
                     return self
                         .relational_query_expression_type_from_sources(inner, source_fields);
@@ -2539,6 +2548,7 @@ impl ConcreteSession {
                         3 => 23,
                         8 => 20,
                         15 => 1043,
+                        249..=252 if column.column.FieldType.GetCharset() != "binary" => 25,
                         253 | 254 => 25,
                         _ => 0,
                     };

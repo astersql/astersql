@@ -1967,7 +1967,13 @@ impl ConcreteSession {
         }
         drop(state);
         execution.and_then(|mut records| {
-            if has_pg_constructors {
+            if has_pg_constructors
+                || (dialect == ast::SqlDialect::PostgreSQL
+                    && records.len() == 1
+                    && !records[0].columns.is_empty()
+                    && records[0].result_fields.iter().flatten().count()
+                        != records[0].columns.len())
+            {
                 // Constant record sets may omit fields. Resolve from the actual
                 // bound AST, not from parameter values or cached portal OIDs.
                 let fields = self.describe_result_fields(&bound)?;

@@ -4077,7 +4077,20 @@ impl ConcreteSession {
             columns.push(column);
             row.push(value);
         }
-        Ok(Some(ConcreteRecordSet::new(columns, vec![row])))
+        // A table-free PG projection still has a WHERE filter. Keep its
+        // descriptor even when the single candidate row is rejected.
+        let visible = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(predicate) = &statement.Where
+        {
+            relational_truth(relational_expression_value(predicate, &HashMap::new())?.as_deref())
+                == Some(true)
+        } else {
+            true
+        };
+        Ok(Some(ConcreteRecordSet::new(
+            columns,
+            if visible { vec![row] } else { Vec::new() },
+        )))
     }
 
     /// Execute constant SELECT set operations through the AST. This preserves

@@ -4556,3 +4556,82 @@ fn pg_dialect_12_behavior() {
         count.get()
     );
 }
+
+#[test]
+fn pg_dialect_26_behavior() {
+    use parser_ast::{ExprKind, Node, SqlDialect, Visitor};
+    struct Parameters(Vec<(u16, usize)>);
+    impl Visitor for Parameters {
+        fn enter(&mut self, node: &dyn Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                if let Some(index) = expr.PostgreSQLParameterIndex() {
+                    let ExprKind::ParamMarker { Offset } = expr.Kind else {
+                        panic!("indexed marker tree")
+                    };
+                    assert_eq!(expr.OriginTextPosition as usize, Offset);
+                    self.0.push((index, Offset));
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn Node) -> bool {
+            true
+        }
+    }
+    let sqls = [
+        "SELECT $2::int4,CAST($1 AS int4),$2::int4",
+        "SELECT 'A_b' ILIKE 'a!_b' ESCAPE $2, $1, $2",
+        "INSERT INTO public.t(id) VALUES($2) RETURNING $1::int4,$2::int4",
+        "UPDATE public.t SET id=$2 WHERE id=$1 RETURNING $2::int4",
+        "DELETE FROM public.t WHERE id=$2 RETURNING $1::int4,$2::int4",
+        "INSERT INTO public.t(id) VALUES($2) ON CONFLICT(id) WHERE id>$1 DO NOTHING RETURNING $2::int4",
+        "INSERT INTO public.t(id) VALUES($2) ON CONFLICT(id) WHERE id>$1 DO UPDATE SET id=$2 WHERE t.id>$1 RETURNING $2::int4",
+        "SELECT ARRAY[$2::int4,$1::int4,$2::int4]",
+        "SELECT ARRAY[ARRAY[$2::int4,$1::int4],ARRAY[$2::int4,$1::int4]]",
+        "SELECT ROW($2::int4,$1::int4,$2::int4)",
+        "SELECT ($2::int4,$1::int4,$2::int4)",
+        "SELECT ($2::int4),($1::int4),($2::int4)",
+        "SELECT ARRAY[$12::int4,$1::int4,$12::int4]",
+    ];
+    let mut assertions = 0;
+    for source in sqls {
+        let sql = format!("/*中 $3*/ {source} /* $3 */");
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        let stmt = parser.ParseOneStmt(&sql, "", "").unwrap();
+        let mut visitor = Parameters(vec![]);
+        stmt.accept(&mut visitor);
+        let expected = sql
+            .match_indices('$')
+            .filter_map(|(offset, _)| {
+                if offset < "/*中 $3*/ ".len() || offset >= sql.rfind("/*").unwrap() {
+                    return None;
+                }
+                let digits: String = sql[offset + 1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                Some((digits.parse::<u16>().unwrap(), offset))
+            })
+            .collect::<Vec<_>>();
+        // DML visitors group RETURNING and conflict nodes by ownership;
+        // source offsets, rather than traversal order, define occurrence order.
+        visitor.0.sort_by_key(|(_, offset)| *offset);
+        assert_eq!(visitor.0, expected, "{sql}");
+        assertions += visitor.0.len() + 1;
+        let protected = "SELECT '$1' /* $3 */";
+        let stmt = parser.ParseOneStmt(protected, "", "").unwrap();
+        let mut v = Parameters(vec![]);
+        stmt.accept(&mut v);
+        assert!(v.0.is_empty());
+        assertions += 1;
+    }
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseOneStmt("SELECT ARRAY[$2,$1,$2]", "", "")
+            .is_err()
+    );
+    println!(
+        "pg_dialect_26_behavior: 13 syntax trees; {} identity/span/protection assertions",
+        assertions + 1
+    );
+}

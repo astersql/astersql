@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -1323,7 +1323,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26) else None))
     finally:
         clear(result)
 
@@ -5328,6 +5328,177 @@ def reanalysis_handoff():
         summary=dict(cases=8,assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,prepare_cases=8 if done and clean else 0,describe_cases=8 if done and clean else 0,execute_cases=8 if done and clean else 0,libpq_cases=7,named_portal_cases=1,mysql_reference_cases=8 if done else 0,cleanup_ok=clean)
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     check(done and clean,'completion/cleanup');print(json.dumps(summary),flush=True)
+
+def parameters_handoff():
+    """Indexed PG identity through real AST preparation and repeated Bind."""
+    conns, prepared, created = {}, [], []
+    checks = self_checks = eligible = describe_cases = execution_cases = 0
+    done, clean = False, True
+    current = 'setup'
+    scope = 'parameters26_'+evidence.name.replace('-','_')
+    table = 'public."'+scope+'"'
+    registry=[]
+    current_phase='setup'
+    checks_by_case,checks_by_phase,negative_by_case={},{},{}
+    def check(ok, message):
+        nonlocal checks
+        checks += 1
+        checks_by_case[current]=checks_by_case.get(current,0)+1
+        checks_by_phase[current_phase]=checks_by_phase.get(current_phase,0)+1
+        if message.startswith('negative'):
+            negative_by_case[current]=negative_by_case.get(current,0)+1
+        assert ok, message
+    def record(label, phase, sql, result, **extra):
+        nonlocal current_phase
+        current_phase=phase
+        archive(current,'aster' if label.startswith('aster') else 'reference' if label.startswith('reference') else label,
+                dict(phase=phase,sql=sql,**extra),dict(result,connection=label,transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conns[label])) if label in conns else None))
+    def q(label,sql):
+        r=query(conns[label],sql);record(label,'Q',sql,r);return r
+    def recovery(label):
+        if transaction(conns[label]) in (2,3):check(q(label,'ROLLBACK')['status']==1,'ROLLBACK '+label)
+        check(q(label,'SELECT 1::int4')['rows']==[['1']] and transaction(conns[label])==0,'same connection health '+label)
+    def observers():
+        for label in ['aster_observer','reference_observer']:
+            r=q(label,'SELECT id,v FROM '+table+' ORDER BY id');check(r['rows']==[['31','original']],'Prepare/Describe no DML side effect '+label)
+    def checkpoint():
+        recovery('aster_b');print('PG_DIALECT_CHECKPOINT '+current,flush=True)
+        check(sys.stdin.readline().strip()=='continue','MySQL local checkpoint')
+        for label in (['aster_b','aster','reference_b','reference'] if index%2==0 else ['aster','aster_b','reference','reference_b']):recovery(label)
+        observers()
+    cases=[
+        ('cast','SELECT $2::int4 AS b,CAST($1 AS int4) AS a,$2::int4 AS c',[23,23],[23,23,23],True),
+        ('escape',"SELECT $1 ILIKE 'a!_b' ESCAPE $2 AS v,$1 AS a,$2 AS b",[25,25],[16,25,25],True),
+        ('array','SELECT ARRAY[$2::int4,$1::int4,$2::int4] AS v',[23,23],[1007],True),
+        ('nested_array','SELECT ARRAY[ARRAY[$2::int4,$1::int4],ARRAY[$2::int4,$1::int4]] AS v',[23,23],[1007],True),
+        ('row','SELECT ROW($2::int4,$1::int4,$2::int4) AS v',[23,23],[2249],True),
+        ('implicit_row','SELECT ($2::int4,$1::int4,$2::int4) AS v',[23,23],[2249],True),
+        ('grouping','SELECT ($2::int4) AS b,($1::int4) AS a,($2::int4) AS c',[23,23],[23,23,23],True),
+        ('twelve',"SELECT ARRAY[$12::int4,$1::int4,$12::int4] AS v,'$1' AS protected",[23]*12,[1007,25],True),
+        ('inferred','SELECT ARRAY[$2::int4,$1::int4,$2::int4] AS v,$2::int8 AS wide',[],[1007,20],True),
+        ('zero_rows','SELECT ROW($2::int4,$1::int4,$2::int4) AS v WHERE false',[23,23],[2249],True),
+        ('insert','INSERT INTO '+table+'(id) VALUES($2) RETURNING $2::int4 AS b,$1::int4 AS a,$2::int4 AS c',[23,23],[23,23,23],False),
+        ('update','UPDATE '+table+' SET id=$2 WHERE id=$1 RETURNING $2::int4 AS b,$1::int4 AS a,$2::int4 AS c',[23,23],[23,23,23],False),
+        ('delete','DELETE FROM '+table+' WHERE id=$2 RETURNING $2::int4 AS b,$1::int4 AS a,$2::int4 AS c',[23,23],[23,23,23],False),
+        ('conflict_ignore','INSERT INTO '+table+'(id) VALUES($2) ON CONFLICT(id) WHERE id>$1 DO NOTHING RETURNING $2::int4 AS b,$1::int4 AS a,$2::int4 AS c',[23,23],[23,23,23],False),
+        ('conflict_update','INSERT INTO '+table+'(id) VALUES($2) ON CONFLICT(id) WHERE id>$1 DO UPDATE SET id=$2 WHERE '+ '"'+scope+'".id>$1 RETURNING $2::int4 AS b,$1::int4 AS a,$2::int4 AS c',[23,23],[23,23,23],False),
+        ('syntax_error','SELECT ROW($2::int4,$1::int4,$2::int4',[23,23],[],False),
+        ('inference_conflict','INSERT INTO '+table+'(id,v) VALUES($1,$1) RETURNING id',[],[],False),
+    ]
+    origins={}
+    try:
+        local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference','reference_b','reference_observer','aster','aster_b','aster_observer']:
+            conns[label]=connect((os.environ['PG18_REFERENCE_DSN'] if label.startswith('reference') else local).encode());check(bool(conns[label]) and status(conns[label])==0,'connect '+label)
+            if label.startswith('reference'):check(q(label,"SET TIME ZONE 'UTC'")['status']==1,'UTC')
+            check(q(label,'SET search_path TO public')['status']==1,'path')
+            check(endpoint(conns[label])['encoding']=='UTF8' and endpoint(conns[label])['timezone']=='UTC' and transaction(conns[label])==0,'initial environment')
+        identity=q('reference',"SELECT version(),current_setting('server_version_num')")['rows'][0];check(identity[1]=='180006','exact reference')
+        build=json.loads((evidence/'rust-build.json').read_text());build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,reference=dict(version=identity[0],server_version_num=identity[1]),reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),os=platform.platform(),endpoints={k:endpoint(v) for k,v in conns.items()},storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2));check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
+        bad=copy.deepcopy(provenance);bad['reference_build']['server_version_num']=180004;check(not validate_provenance(bad,provenance),'negative provenance');self_checks+=1
+        for label in ['reference','aster']:
+            check(q(label,'CREATE TABLE '+table+'(id integer PRIMARY KEY,v text)')['status']==1,'create');created.append(label)
+            check(q(label,"INSERT INTO "+table+" VALUES(31,'original')")['status']==1,'seed')
+            r=q(label,"SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname='"+scope+"'")
+            origins[label]=int(r['rows'][0][0])
+        for index,(name,source,oids,result_oids,execute_case) in enumerate(cases):
+            current=name;sql='/*中 $3*/ '+source+' /* $3 */';statement=('identity_'+name).encode()
+            count=12 if name=='twelve' else 1 if name=='inference_conflict' else 2
+            data=dict(case_id=name,capability_id='pg.dialect.parameter.identity',sql=sql,phase='Parse/Describe/Bind/Execute' if execute_case else 'Parse/Describe',parameter_oids=oids,parameter_count=count,parameter_formats=[0]*count,result_format=0,encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',roles={k:connection_user(v).decode() for k,v in conns.items()},object_mapping={k:dict(table=table,oid=v,attribute=1) for k,v in origins.items()},expected_basis='PostgreSQL18.6 indexed identity and actual inference; AST spans checked in pg_dialect_26_behavior',execution_scope='read-only expression execution' if execute_case else 'DML execution outside syntax/parameter handoff scope')
+            data['binding_runs']=([['A_b','!'],['a_b','!'],[None,'!']] if name=='escape' else [[str(i) for i in range(1,13)],[str(i+20) for i in range(1,13)],[None]+[str(i) for i in range(2,13)]] if name=='twelve' else [['7','9'],['11','13'],[None,'9'],['-2147483648','2147483647']]) if execute_case else []
+            registry.append(data);(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+            outputs={}
+            # Reference first freezes observed inference/conflict and diagnostics.
+            for label in ['reference','aster','aster_b','reference_b'] if index%2==0 else ['reference_b','aster_b','aster','reference']:
+                r=observe(prepare(conns[label],statement,sql.encode(),len(oids),(c.c_uint*len(oids))(*oids) if oids else None));record(label,'Parse',sql,r,parameter_oids=oids)
+                if name in ('syntax_error','inference_conflict'):
+                    expected='42601' if name=='syntax_error' else '42P08'
+                    check(r['status']==7 and r['state']==expected,'Parse error '+label+' '+name+': '+str(r));outputs[label]=r
+                    recovery(label);continue
+                check(r['status']==1 and not r['state'],'Parse '+label+' '+name+': '+str(r));prepared.append((label,statement))
+                d=observe(describe(conns[label],statement));record(label,'Describe',sql,d)
+                check(d['status']==1 and d['params']==([23]*count if not oids else oids) and d['param_count']==count,'PG parameter identity/count '+label+' '+name+': '+str(d))
+                check([f[1] for f in d['fields']]==result_oids and d['formats']==[0]*len(result_oids),'result types '+label+' '+name+': '+str(d))
+                check(d['table_origins']==[[0,0]]*len(result_oids),'expression source identity '+label)
+                outputs[label]=d
+                if execute_case:
+                    runs=[]
+                    bindings=(['A_b','!'],['a_b','!'],[None,'!']) if name=='escape' else (['7','9'],['11','13'],[None,'9'],['-2147483648','2147483647'])
+                    if name=='twelve':bindings=([str(i) for i in range(1,13)],[str(i+20) for i in range(1,13)],[None]+[str(i) for i in range(2,13)])
+                    for args in bindings:
+                        result=observe(exec_prepared(conns[label],statement,len(args),(text*len(args))(*(None if v is None else v.encode() for v in args)),None,(integer*len(args))(*([0]*len(args))),0))
+                        record(label,'Bind/Execute',sql,result,arguments=args,parameter_formats=[0]*len(args),result_format=0)
+                        check(result['status']==2 and result['state']=='' and result['position']=='','Execute '+label+' '+name+': '+str(result))
+                        check(result['fields']==d['fields'] and result['formats']==d['formats'] and result['table_origins']==d['table_origins'],'stable result metadata')
+                        check(result['command_tag']==('SELECT 0' if name=='zero_rows' else 'SELECT 1') and len(result['rows'])==(0 if name=='zero_rows' else 1),'row count/tag '+label+' '+name+': '+str(result))
+                        runs.append(result)
+                    outputs[label+'_runs']=runs
+                    if name=='inferred':
+                        for invalid,state in [('bad','22P02'),('2147483648','22003')]:
+                            args=['7',invalid]
+                            result=observe(exec_prepared(conns[label],statement,2,(text*2)(b'7',invalid.encode()),None,(integer*2)(0,0),0))
+                            record(label,'Bind/Sync',sql,result,arguments=args,parameter_formats=[0,0],result_format=0)
+                            check(result['status']==7 and result['state']==state and result['position']=='','inferred source int4 Bind error '+label+': '+str(result))
+                            recovery(label)
+                closed=observe(close_prepared(conns[label],statement));record(label,'Close',sql,closed)
+                check(closed['status']==1,'Close');prepared.remove((label,statement))
+            if name in ('syntax_error','inference_conflict'):
+                for label in ['aster','aster_b','reference_b']:
+                    check(outputs[label]['position']==outputs['reference']['position'] and bool(outputs[label]['position']),'original character error position '+name+': '+str(outputs))
+            else:
+                for label in ['aster','aster_b','reference_b']:
+                    check(compare_metadata(outputs[label],outputs['reference'],'describe'),'exact Describe '+label+' '+name)
+                    if execute_case:
+                        for actual,reference in zip(outputs[label+'_runs'],outputs['reference_runs']):
+                            check(actual['rows']==reference['rows'] and actual['fields']==reference['fields'] and actual['formats']==reference['formats'] and actual['table_origins']==reference['table_origins'] and actual['command_tag']==reference['command_tag'],'values/NULL/result differential '+label+' '+name+': '+str(actual)+' != '+str(reference))
+                bad=copy.deepcopy(outputs['aster']);bad['params'][0]=20 if bad['params'][0]!=20 else 23;check(not compare_metadata(bad,outputs['reference'],'describe'),'negative parameter identity comparator');self_checks+=1
+                describe_cases+=1;execution_cases+=int(execute_case)
+            checkpoint();eligible+=1
+        # Actual MySQL reference: own legal prepared parameters, values/NULL and
+        # column declarations. PG-specific syntax is independently rejected.
+        current='mysql_reference';parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql(sql):
+            p=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            result=dict(code=p.returncode,output=p.stdout.splitlines(),error=p.stderr);record('mysql','Q/Prepare/Execute',sql,result);return result
+        db='mysql_'+scope
+        try:
+            r=mysql('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; CREATE DATABASE '+db+'; CREATE TABLE '+db+'.t(id INT); INSERT INTO '+db+'.t VALUES(31)');check(r['code']==0,'MySQL fixture')
+            for case in registry:
+                current=case['case_id'];r=mysql('USE '+db+"; PREPARE s FROM 'SELECT id FROM t WHERE id=?'; SET @v=31; EXECUTE s USING @v; SET @v=NULL; EXECUTE s USING @v; DEALLOCATE PREPARE s; SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE FROM information_schema.columns WHERE TABLE_SCHEMA='"+db+"' AND TABLE_NAME='t'")
+                check(r['code']==0 and r['output']==['31','int\tint\tYES'],'MySQL own prepare/NULL/type')
+            r=mysql('SELECT ARRAY[$2::int4,$1::int4,$2::int4]');check(r['code']!=0 and '1064' in r['error'],'MySQL PG syntax rejection')
+        finally:clean=mysql('DROP DATABASE IF EXISTS '+db)['code']==0 and clean
+        current='recovery_transaction'
+        sql='/*中*/ SELECT ROW($2::int4,$1::int4,'
+        for label in ['aster','reference']:
+            check(q(label,'BEGIN')['status']==1,'BEGIN')
+            r=observe(prepare(conns[label],b'failure',sql.encode(),2,(c.c_uint*2)(23,23)));record(label,'Parse/Sync',sql,r)
+            check(r['state']=='42601' and r['position']==str(len(sql)+1) and transaction(conns[label])==3,'transaction error/Sync/position');recovery(label)
+        observers();final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest();final['client']['sha256']=hashlib.sha256(library.read_bytes()).hexdigest();final['reference_build']=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        identity=q('reference',"SELECT version(),current_setting('server_version_num')")['rows'][0];final['reference']=dict(version=identity[0],server_version_num=identity[1]);check(validate_provenance(provenance,final),'unchanged provenance');done=True
+    finally:
+        for label,statement in prepared:
+            if transaction(conns[label]) in (2,3):clean=query(conns[label],'ROLLBACK')['status']==1 and clean
+            clean=observe(close_prepared(conns[label],statement))['status']==1 and clean
+        for label in created:
+            if transaction(conns[label]) in (2,3):clean=query(conns[label],'ROLLBACK')['status']==1 and clean
+            r=q(label,'DROP TABLE IF EXISTS '+table);clean=r['status']==1 and clean
+        for conn in conns.values():
+            if conn:
+                if transaction(conn) in (2,3):clean=query(conn,'ROLLBACK')['status']==1 and clean
+                clean=query(conn,'RESET search_path')['status']==1 and clean
+                finish(conn)
+        summary=dict(cases=len(cases),assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,prepare_describe_cases=describe_cases if done and clean else 0,execution_cases=execution_cases if done and clean else 0,full_dml_execution_cases=0,cleanup_ok=clean,case_assertions=sum(checks_by_case.get(case[0],0)-negative_by_case.get(case[0],0) for case in cases),assertions_by_case=checks_by_case,assertions_by_phase=checks_by_phase,layers=dict(pg_connections=4,mysql_local_checkpoints=len(cases)+2 if done else 0,mysql_reference_cases=len(cases) if done else 0))
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    check(done and clean,'completion/cleanup');print(json.dumps(summary),flush=True)
+
+
+if task == 26:
+    parameters_handoff()
+    sys.exit(0)
 
 if task == 25:
     reanalysis_handoff()

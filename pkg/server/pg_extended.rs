@@ -144,6 +144,71 @@ pub(crate) fn markers(sql: &str) -> Result<(String, Vec<usize>)> {
     Ok((String::from_utf8(output).unwrap(), map))
 }
 
+/// Source AST identities, ordered by their original byte positions. Explicit
+/// casts can convert an already inferred source; direct assignment contexts
+/// must agree when multiple initially unknown nodes share the same PG index.
+pub(crate) fn indexed_parameter_contract(sql: &str) -> Result<Vec<(usize, usize, bool)>> {
+    use astersql_parser_ast::{ExprKind, ExprNode, Node, SqlDialect, Visitor};
+    #[derive(Default)]
+    struct Parameters {
+        markers: Vec<(usize, usize)>,
+        assignments: std::collections::HashSet<usize>,
+    }
+    impl Visitor for Parameters {
+        fn enter(&mut self, node: &dyn Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<ExprNode>() {
+                if let (Some(index), ExprKind::ParamMarker { Offset }) =
+                    (expr.PostgreSQLParameterIndex(), &expr.Kind)
+                {
+                    self.markers.push((usize::from(index) - 1, *Offset));
+                }
+            }
+            let assignments = if let Some(insert) = node
+                .as_any()
+                .downcast_ref::<astersql_parser_ast::InsertStmt>()
+            {
+                insert.Lists.iter().flatten().collect::<Vec<_>>()
+            } else if let Some(update) = node
+                .as_any()
+                .downcast_ref::<astersql_parser_ast::UpdateStmt>()
+            {
+                update
+                    .List
+                    .iter()
+                    .map(|assignment| &assignment.Expr)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for mut source in assignments {
+                while let ExprKind::Parentheses(inner) = &source.Kind {
+                    source = inner;
+                }
+                if let ExprKind::ParamMarker { Offset } = source.Kind {
+                    self.assignments.insert(Offset);
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn Node) -> bool {
+            true
+        }
+    }
+    let (statements, _) = astersql_parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .map_err(|_| error("42601", "invalid PostgreSQL parameter source"))?;
+    let mut visitor = Parameters::default();
+    for statement in statements {
+        statement.accept(&mut visitor);
+    }
+    visitor.markers.sort_by_key(|(_, offset)| *offset);
+    Ok(visitor
+        .markers
+        .into_iter()
+        .map(|(index, offset)| (index, offset, visitor.assignments.contains(&offset)))
+        .collect())
+}
+
 fn question_mark_positions(sql: &str) -> Result<Vec<usize>> {
     let bytes = sql.as_bytes();
     let mut positions = Vec::new();
@@ -644,6 +709,8 @@ impl Extended {
         context: &Arc<dyn TiDBContext>,
     ) -> Result<Statement> {
         let count = oids.len();
+        let supplied_oids = oids.clone();
+        let mut parameter_contract = Vec::new();
         let original_sql = sql.clone();
         let path = self
             .session
@@ -665,7 +732,21 @@ impl Extended {
         } else {
             let sql = crate::pg_name::adapt(&sql, context.as_ref(), &mut self.session)?;
             let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
-            markers(&sql)?
+            let (engine_sql, mapping) = markers(&sql)?;
+            if !mapping.is_empty() {
+                parameter_contract = indexed_parameter_contract(&original_sql)?;
+            }
+            let identities = parameter_contract
+                .iter()
+                .map(|(index, _, _)| *index)
+                .collect::<Vec<_>>();
+            if mapping != identities {
+                return Err(error(
+                    "XX000",
+                    "PostgreSQL parameter source identity mismatch",
+                ));
+            }
+            (engine_sql, identities)
         };
         let sql = if catalog.is_some() || session_query.is_some() {
             std::borrow::Cow::Borrowed(sql.as_str())
@@ -727,6 +808,13 @@ impl Extended {
                 .as_ref()
                 .map(|conflict| conflict.SourceSpan),
         )?;
+        let analysis_occurrences = analysis_parameter_mapping(
+            &sql,
+            &(0..mapping.len()).collect::<Vec<_>>(),
+            postgresql_conflict
+                .as_ref()
+                .map(|conflict| conflict.SourceSpan),
+        )?;
         if command.is_none() {
             return Err(error("0A000", "empty prepared statements are unsupported"));
         }
@@ -767,9 +855,23 @@ impl Extended {
         // Inference comes from parsed engine expressions, in occurrence
         // order. Fold those constraints into PostgreSQL parameter order;
         // the first direct cast fixes an unspecified source type.
-        for (index, oid) in analysis_mapping.iter().zip(&metadata.parameter_cast_oids) {
+        for ((index, occurrence), oid) in analysis_mapping
+            .iter()
+            .zip(&analysis_occurrences)
+            .zip(&metadata.parameter_cast_oids)
+        {
             if oids[*index] == 0 {
                 oids[*index] = *oid;
+            } else if *oid != 0
+                && oids[*index] != *oid
+                && supplied_oids.get(*index).copied().unwrap_or(0) == 0
+                && let Some((_, offset, true)) = parameter_contract.get(*occurrence)
+            {
+                let _ = context.close_prepared_statement(metadata.statement_id);
+                self.session.relation_error_position = original_sql
+                    .get(..*offset)
+                    .map(|prefix| prefix.chars().count() + 1);
+                return Err(error("42P08", "inconsistent types deduced for parameter"));
             }
         }
         if oids.contains(&0) {

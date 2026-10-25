@@ -1665,3 +1665,20 @@ fn pg_core_integer_result_metadata() {
     cleanup.0.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg_dialect_26_source_parameter_contract() {
+    let sql = "/*中 $3*/ INSERT INTO public.t(id) VALUES($2) ON CONFLICT(id) WHERE id>$1 DO NOTHING RETURNING $2::int4,'$1'";
+    let contract = crate::pg_extended::indexed_parameter_contract(sql).unwrap();
+    assert_eq!(
+        contract,
+        vec![
+            (1, sql.find("VALUES($2").unwrap() + 7, true),
+            (0, sql.find("id>$1").unwrap() + 3, false),
+            (1, sql.find("RETURNING $2").unwrap() + 10, false)
+        ]
+    );
+    let (engine, mapping) = crate::pg_extended::markers(sql).unwrap();
+    assert_eq!(mapping, contract.iter().map(|v| v.0).collect::<Vec<_>>());
+    assert!(engine.ends_with("RETURNING ?::int4,'$1'"));
+}
