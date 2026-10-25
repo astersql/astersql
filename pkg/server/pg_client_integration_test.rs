@@ -1214,6 +1214,11 @@ fn pg_dialect_22_libpq() {
 }
 
 #[test]
+fn pg_dialect_23_libpq() {
+    pg_dialect_libpq(23);
+}
+
+#[test]
 fn pg_dialect_24_libpq() {
     pg_dialect_libpq(24);
 }
@@ -2165,7 +2170,59 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
-        if task == 22 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+        if task == 23 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            let case_id = phase.strip_prefix("PG_DIALECT_CHECKPOINT ").unwrap();
+            let registry: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(evidence.join("cases.json")).unwrap(),
+            )
+            .unwrap();
+            let sql = registry
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["case_id"] == case_id)
+                .unwrap()["sql"]
+                .as_str()
+                .unwrap();
+            if case_id == "duplicate" {
+                // Preserve the existing MySQL extension independently from PG's
+                // duplicate-name error; do not change shared MySQL semantics.
+                let values = mysql_query(socket, sql);
+                assert_eq!(values, vec![vec![Some(b"2".to_vec())]]);
+                std::fs::write(
+                    evidence.join("mysql-duplicate-baseline.json"),
+                    serde_json::json!({"sql":sql,"rows":values}).to_string(),
+                )
+                .unwrap();
+            } else {
+                let mut request = vec![3];
+                request.extend_from_slice(sql.as_bytes());
+                mysql_packet(socket, 0, &request);
+                let response = mysql_read(socket);
+                assert_eq!(
+                    response[0], 0xff,
+                    "MySQL existing rejection baseline: {sql}"
+                );
+                let expected = (1064, b"42000".as_slice());
+                assert_eq!(
+                    u16::from_le_bytes(response[1..3].try_into().unwrap()),
+                    expected.0,
+                    "{sql}"
+                );
+                assert_eq!(&response[4..9], expected.1, "{sql}");
+                let mut out = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(evidence.join("mysql-diagnostics.jsonl"))
+                    .unwrap();
+                writeln!(out, "{}", serde_json::json!({"case_id":case_id,"sql":sql,"packet":response,"error_code":expected.0,"sqlstate":String::from_utf8_lossy(expected.1)})).unwrap();
+            }
+            assert_eq!(
+                mysql_query(socket, "WITH c AS (SELECT 1 AS v) SELECT v FROM c"),
+                vec![vec![Some(b"1".to_vec())]]
+            );
+        }
+        if matches!(task, 22 | 23) && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let sql = format!("SELECT v FROM {database}.t");
             let values = mysql_query(socket, &sql);
             assert_eq!(values, vec![vec![Some(b"9".to_vec())]]);
@@ -3188,6 +3245,20 @@ fn pg_dialect_libpq(task: u8) {
             );
             assert!(entries.iter().all(|(_, actual)| *actual == dialect));
         }
+        return;
+    }
+    if task == 23 {
+        assert_eq!(checkpoints, 13);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["unique_effective"], 13);
+        assert_eq!(summary["diagnostic_cases"], 12);
+        assert_eq!(summary["primary_prepare_cases"], 1);
+        assert_eq!(summary["primary_describe_cases"], 1);
+        assert_eq!(summary["primary_execute_cases"], 1);
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["failures"], serde_json::json!([]));
         return;
     }
     if task == 22 {

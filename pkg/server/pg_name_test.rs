@@ -966,3 +966,49 @@ fn pg_dialect_22_behavior() {
         "pg_dialect_22_behavior: path_inputs=4 binding_cases=4; positions, original parameters/comments and CTE precedence"
     );
 }
+
+#[test]
+fn pg_dialect_23_behavior() {
+    use astersql_parser::{Parser, ast::SqlDialect};
+    let cases = [
+        ("SELECT )", 8),
+        ("/*中*/ SELECT )", 14),
+        ("/*中*/ SELECT v FROM public.t WHERE )", 36),
+        ("/*中*/ SELECT '未闭合", 14),
+        ("/*中*/ SELECT \"未闭合", 14),
+        ("/*中*/ SELECT ARRAY[1,", 22),
+        ("/*中*/ SELECT ROW(1,", 20),
+        ("/*中*/ SELECT 1 WHERE 'a' ILIKE", 31),
+        ("INSERT INTO public.t VALUES (1) RETURNING", 42),
+        ("INSERT INTO public.t VALUES (1) ON CONFLICT (v) DO", 51),
+    ];
+    for (sql, expected) in cases {
+        let mut parser = Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseSQL(sql, &[]).is_err(), "{sql}");
+        assert_eq!(
+            parser.PostgreSQLSyntaxErrorPosition(),
+            Some(expected),
+            "{sql}"
+        );
+    }
+    let sql = "/*中*/ SELECT $1::int4, 'public.t ''中'' $2' FROM public.t /* public.t $3 */";
+    let (statements, _) = Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .unwrap();
+    let select = statements[0]
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::SelectStmt>()
+        .unwrap();
+    let astersql_parser_ast::ExprKind::Cast { Expr, .. } =
+        &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+    else {
+        panic!("typed parameter tree");
+    };
+    assert_eq!(Expr.PostgreSQLParameterIndex(), Some(1));
+    assert_eq!(&sql[Expr.OriginTextPosition as usize..][..2], "$1");
+    let rewritten = rewrite(sql, "a_very_long_database_name", true).unwrap();
+    assert!(rewritten.contains("'public.t ''中'' $2'"));
+    assert!(rewritten.ends_with("/* public.t $3 */"));
+    assert!(rewritten.contains("$1::int4"));
+    println!("pg_dialect_23_behavior: syntax_cases=10 protected_rewrite=1");
+}
