@@ -15,7 +15,7 @@ fn error(state: &'static str, message: impl Into<String>, position: Option<usize
 }
 fn scalar_type(expr: &ast::ExprNode, parameters: &HashMap<usize, u32>) -> SessionResult<Field> {
     let oid = match &expr.Kind {
-        ast::ExprKind::ExplicitRow { .. } => {
+        ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
             return Ok(Field {
                 oid: 2249,
                 fields: Some(record_type(expr, parameters)?),
@@ -65,7 +65,9 @@ pub(super) fn record_type(
     expr: &ast::ExprNode,
     parameters: &HashMap<usize, u32>,
 ) -> SessionResult<Vec<Field>> {
-    let ast::ExprKind::ExplicitRow { Fields, .. } = &expr.Kind else {
+    let (ast::ExprKind::ExplicitRow { Fields, .. } | ast::ExprKind::ImplicitRow { Fields, .. }) =
+        &expr.Kind
+    else {
         unreachable!()
     };
     Fields
@@ -73,6 +75,72 @@ pub(super) fn record_type(
         .map(|field| scalar_type(field, parameters))
         .collect()
 }
+// Column and scalar-subquery fields need the same catalog/query metadata used
+// by ordinary SELECT. Resolve only those fields here; literals and parameters
+// keep the existing anonymous-record rules (notably unknown OID705).
+pub(super) fn record_type_in_context(
+    session: &ConcreteSession,
+    expr: &ast::ExprNode,
+    parameters: &HashMap<usize, u32>,
+    sources: &[ConcreteResultField],
+) -> SessionResult<Vec<Field>> {
+    let (ast::ExprKind::ExplicitRow { Fields, .. } | ast::ExprKind::ImplicitRow { Fields, .. }) =
+        &expr.Kind
+    else {
+        unreachable!()
+    };
+    Fields
+        .iter()
+        .map(|field| {
+            let mut source = field;
+            while let ast::ExprKind::Parentheses(inner) = &source.Kind {
+                source = inner;
+            }
+            if matches!(
+                source.Kind,
+                ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. }
+            ) {
+                return Ok(Field {
+                    oid: 2249,
+                    fields: Some(record_type_in_context(
+                        session, source, parameters, sources,
+                    )?),
+                });
+            }
+            if matches!(
+                source.Kind,
+                ast::ExprKind::Column(_) | ast::ExprKind::Subquery { .. }
+            ) {
+                let tp = if matches!(source.Kind, ast::ExprKind::Column(_)) {
+                    super::query::pg_returning_expression_type(source, sources)?
+                } else {
+                    session.relational_query_expression_type_from_sources(source, sources)
+                };
+                let oid = if tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 {
+                    16
+                } else {
+                    match tp.GetType() {
+                        1 | 2 => 21,
+                        3 | 9 => 23,
+                        8 => 20,
+                        0 | 246 => 1700,
+                        15 | 253 | 254 => 25,
+                        _ => {
+                            return Err(error(
+                                "0A000",
+                                "record source field type is not supported",
+                                None,
+                            ));
+                        }
+                    }
+                };
+                return Ok(Field { oid, fields: None });
+            }
+            scalar_type(source, parameters)
+        })
+        .collect()
+}
+
 pub(super) fn field_type(fields: Vec<Field>) -> astersql_parser_types::FieldType {
     // The legacy scalar code is only the shared transport carrier; record
     // identity, equality, serialization and wire metadata use this typed layout.
@@ -84,9 +152,24 @@ pub(super) fn field_type(fields: Vec<Field>) -> astersql_parser_types::FieldType
     result
 }
 
+#[cfg(test)]
 pub(super) fn analyze(
     statements: &[Box<dyn ast::Node>],
     supplied: Option<&[u32]>,
+) -> SessionResult<(HashMap<usize, Vec<Field>>, Vec<u32>)> {
+    analyze_impl(statements, supplied, None)
+}
+pub(super) fn analyze_in_session(
+    session: &ConcreteSession,
+    statements: &[Box<dyn ast::Node>],
+    supplied: Option<&[u32]>,
+) -> SessionResult<(HashMap<usize, Vec<Field>>, Vec<u32>)> {
+    analyze_impl(statements, supplied, Some(session))
+}
+fn analyze_impl(
+    statements: &[Box<dyn ast::Node>],
+    supplied: Option<&[u32]>,
+    session: Option<&ConcreteSession>,
 ) -> SessionResult<(HashMap<usize, Vec<Field>>, Vec<u32>)> {
     struct Markers {
         markers: Vec<(usize, Option<usize>)>,
@@ -169,13 +252,21 @@ pub(super) fn analyze(
             .into_iter()
             .flat_map(|select| select.Fields.Fields.iter())
             .filter_map(|field| field.Expr.as_ref())
-            .filter(|expr| matches!(expr.Kind, ast::ExprKind::ExplicitRow { .. }))
+            .filter(|expr| {
+                matches!(
+                    expr.Kind,
+                    ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. }
+                )
+            })
             .collect::<Vec<_>>();
         struct Positions(std::collections::HashSet<usize>);
         impl ast::Visitor for Positions {
             fn enter(&mut self, node: &dyn ast::Node) -> bool {
                 if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
-                    if matches!(expr.Kind, ast::ExprKind::ExplicitRow { .. }) {
+                    if matches!(
+                        expr.Kind,
+                        ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. }
+                    ) {
                         self.0.insert(expr.OriginTextPosition as usize);
                     }
                 }
@@ -207,7 +298,16 @@ pub(super) fn analyze(
             }
             types.insert(
                 root.OriginTextPosition as usize,
-                record_type(root, &parameters)?,
+                if let Some(session) = session {
+                    let select = statement
+                        .as_any()
+                        .downcast_ref::<ast::SelectStmt>()
+                        .unwrap();
+                    let sources = session.relational_select_source_fields(select)?;
+                    record_type_in_context(session, root, &parameters, &sources)?
+                } else {
+                    record_type(root, &parameters)?
+                },
             );
         }
     }
@@ -223,20 +323,33 @@ pub(super) fn value(
     expr: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<Option<String>> {
-    let ast::ExprKind::ExplicitRow { Fields, .. } = &expr.Kind else {
+    value_with(expr, &|field| {
+        super::relational_value::relational_expression_value(field, row)
+    })
+}
+pub(super) fn value_with(
+    expr: &ast::ExprNode,
+    evaluate: &impl Fn(&ast::ExprNode) -> SessionResult<Option<String>>,
+) -> SessionResult<Option<String>> {
+    let (ast::ExprKind::ExplicitRow { Fields, .. } | ast::ExprKind::ImplicitRow { Fields, .. }) =
+        &expr.Kind
+    else {
         unreachable!()
     };
     let mut values = Vec::with_capacity(Fields.len());
     for field in Fields {
-        let value = if matches!(field.Kind, ast::ExprKind::ExplicitRow { .. }) {
-            value(field, row)?
+        let value = if matches!(
+            field.Kind,
+            ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. }
+        ) {
+            value_with(field, evaluate)?
         } else {
-            super::relational_value::relational_expression_value(field, row)?
+            evaluate(field)?
         };
         values.push(match value {
             None => String::new(),
             Some(mut value) => {
-                if scalar_type(field, &HashMap::new())?.oid == 16 {
+                if scalar_type(field, &HashMap::new()).is_ok_and(|tp| tp.oid == 16) {
                     value = match value.as_str() {
                         "1" | "t" | "true" => "t".into(),
                         "0" | "f" | "false" => "f".into(),

@@ -1698,7 +1698,7 @@ impl ConcreteSession {
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             super::pg_array::analyze(sql, &statements, None)?;
-            super::pg_record::analyze(&statements, None)?;
+            super::pg_record::analyze_in_session(self, &statements, None)?;
         }
         if statements.len() != 1 {
             return Err(SessionError::new("result metadata requires one statement"));
@@ -1782,7 +1782,7 @@ impl ConcreteSession {
             (HashMap::new(), Vec::new())
         };
         let (record_types, record_oids) = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-            super::pg_record::analyze(&statements, Some(supplied))?
+            super::pg_record::analyze_in_session(self, &statements, Some(supplied))?
         } else {
             (HashMap::new(), Vec::new())
         };

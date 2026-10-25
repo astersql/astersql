@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -177,6 +177,19 @@ if task == 10:
         ('parameters', 'SELECT ARRAY[ARRAY[$2,$1],ARRAY[$1,$2]]', [23,23]),
         ('nulls', 'SELECT ARRAY[[NULL,1],[2,NULL]]', []),
         ('unclosed', '/*中*/ SELECT ARRAY[[1,2],[3,4]', []),
+    ]
+if task == 12:
+    cases = [
+        ('implicit', 'SELECT (1,2)', []),
+        ('grouped', 'SELECT (1)', []),
+        ('subquery', 'SELECT (SELECT 1)', []),
+        ('named_subquery', 'SELECT ROW(t.id,(SELECT 2)) FROM public.t t', []),
+        ('relation_group', 'SELECT * FROM (public.t) AS t', []),
+        ('parameters', 'SELECT (NULL,$2,$1,$2)', [23,23]),
+        ('nested', 'SELECT (1,(2,3))', []),
+        ('null_field', 'SELECT (NULL,1)', []),
+        ('missing_close', '/*中*/ SELECT (1,', []),
+        ('protected', "SELECT '(1,2)' /* ROW($2) */", []),
     ]
 if task == 11:
     cases = [
@@ -1178,10 +1191,10 @@ if task == 24:
         ('reconnect','SELECT $1::int4 AS v',[23]),
         ('transaction_error','/*中*/ SELECT )',[]),
     ]]
-assert len({case[0] for case in cases}) == (10 if task == 11 else (10 if task == 6 else 6 if task in (5,8,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task in (4,10) else 10)))))
+assert len({case[0] for case in cases}) == (10 if task in (11,12) else (10 if task == 6 else 6 if task in (5,8,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11,12) else (8 if task in (4,10) else 10)))))
 (evidence / 'cases.json').write_text(json.dumps([
-    dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.nesting' if task == 10 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence')))), sql=sql,
-         phase='PQprepare', parameter_oids=oids, arguments=((['5','7'] if task == 10 else (['7','9'] if task in (9,11) else [None]*len(oids))) if oids else []),
+    dict(case_id=name, capability_id='pg.dialect.row.syntax' if task in (11,12) else ('pg.dialect.array.nesting' if task == 10 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence')))), sql=sql,
+         phase='PQprepare', parameter_oids=oids, arguments=((['5','7'] if task == 10 else (['7','9'] if task in (9,11,12) else [None]*len(oids))) if oids else []),
          parameter_formats=([0]*len(oids) if oids else []), result_format=0,
          initial_state='I', expected_basis=f'dialect task {task} / PostgreSQL18.6 observation / roadmap chapter 2',
          expected_state='42601' if name.startswith('missing_') or name == 'misplaced_where' else '',
@@ -1256,7 +1269,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,13,14,16,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -1281,6 +1294,18 @@ if task == 11:
             execution='normal Prepare/Describe/Bind/Execute text and binary; Q with parameter errors independently observed',
             expected_result_oid=None if state else (25 if name=='protected' else 2249),
             side_effects='read-only main cases; outside-scope DML safety probe never counts as a main case')
+    (evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+
+if task == 12:
+    registry=json.loads((evidence/'cases.json').read_text())
+    for case in registry:
+        name=case['case_id']
+        case['capability_id']='pg.dialect.row.grouping'
+        case['expected_state']='42601' if name in ('missing_close','relation_group') else ''
+        case['expected_result_oid']=None if case['expected_state'] else (25 if name=='protected' else 23 if name in ('grouped','subquery') else 2249)
+        case['execution']='normal Q/Prepare/Describe/Bind/Execute, text/binary; parameter Q errors independent'
+        case['object_mapping']={'aster':'current_database.public.t','reference':'isolated_reference.public.t'}
+        case['side_effects']='read-only expressions; independent observer; bare relation syntax error'
     (evidence/'cases.json').write_text(json.dumps(registry,indent=2))
 
 def archive(name, side, data, observation):
@@ -2552,6 +2577,9 @@ def row_handoff():
                 'parameters':'(,9,7,9)','protected':'ROW(1,2)',
                 'quoted':'("","a,b","a""b","中 文",NULL)',
                 'null_field':'()','scalar_types':'(1.5,t,2147483648)'}
+    if task == 12:
+        expected={'implicit':'(1,2)','grouped':'1','subquery':'1','named_subquery':'(31,2)',
+                  'parameters':'(,9,7,9)','nested':'(1,"(2,3)")','null_field':'(,1)','protected':'(1,2)'}
     def check(condition,message):
         nonlocal checks
         assert condition,message
@@ -2592,11 +2620,18 @@ def row_handoff():
         check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
         damaged=copy.deepcopy(provenance);damaged['reference_build']['server_version_num']=180004
         check(not validate_provenance(damaged,provenance),'provenance negative');self_checks+=1
+        if task == 12:
+            for label in ['reference','aster']:
+                for sql in ['CREATE TABLE public.t (id integer)', 'INSERT INTO public.t VALUES(31)']:
+                    check(query(connections[label],sql)['status']==1,'row name fixture '+label)
         before=query(connections['aster_observer'],'SELECT id FROM public.dialect_isolation')['rows'];check(before==[['31']],'initial state')
+        if task==12:
+            observer=query(connections['aster_observer'],'SELECT id FROM public.t');record('table_initial','aster_observer',dict(phase='Q',sql='SELECT id FROM public.t'),observer)
+            check(observer['rows']==[['31']],'named table initial observer')
         for index,(name,sql,oids) in enumerate(cases):
-            base=dict(case_id=name,capability_id='pg.dialect.row.syntax',phase='PQprepare',sql=sql,parameter_oids=oids,
+            base=dict(case_id=name,capability_id='pg.dialect.row.grouping' if task==12 else 'pg.dialect.row.syntax',phase='PQprepare',sql=sql,parameter_oids=oids,
                 arguments=['7','9'] if oids else [],parameter_formats=[0]*len(oids),result_format=0,
-                role={k:connection_user(v).decode() for k,v in connections.items()},encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping={},
+                role={k:connection_user(v).decode() for k,v in connections.items()},encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping=({'aster':sys.argv[3]+'.public.t','reference':'public.t'} if task==12 and name in ('named_subquery','relation_group') else {}),
                 expected_basis='PostgreSQL18.6 frozen reference and anonymous record contract')
             results={};descriptions={};executions={}
             for label in ['reference','aster_b' if index%2 else 'aster']:
@@ -2605,14 +2640,14 @@ def row_handoff():
                 stmt=f'row_{index}_{label}'.encode()
                 result=observe(prepare(conn,stmt,sql.encode(),len(oids),(c.c_uint*len(oids))(*oids) if oids else None))
                 result['transaction_after']={0:'I',2:'T',3:'E'}.get(transaction(conn));record(name,label,base,result);results[side]=result
-                state={'missing_close':'42601','unknown_parameter':'42P18'}.get(name,'')
+                state={'missing_close':'42601','unknown_parameter':'42P18','relation_group':'42601'}.get(name,'')
                 check(result['state']==state and result['status']==(7 if state else 1),label+' Prepare '+name)
                 if state:
-                    check(result['position']==(str(len(sql)+1) if name=='missing_close' else ''),label+' original diagnostic position')
+                    check(result['position']==(str(len(sql)+1) if name=='missing_close' else ('24' if name=='relation_group' else '')),label+' original diagnostic position')
                 else:
                     prepared.append((conn,stmt));desc=observe(describe(conn,stmt));descriptions[side]=desc
                     record(name+'_describe',label,dict(base,phase='Describe'),desc)
-                    check(desc['fields']==[['?column?' if name=='protected' else 'row',25 if name=='protected' else 2249,-1,-1]],label+' result identity '+name)
+                    check(desc['fields']==[[('?column?' if name in ('protected','grouped','subquery') else 'row'), (25 if name=='protected' else (23 if name in ('grouped','subquery') else 2249)), (4 if name in ('grouped','subquery') else -1), -1]],label+' result identity '+name)
                     check(desc['params']==oids and desc['param_count']==len(oids) and desc['formats']==[0] and desc['table_origins']==[[0,0]],label+' Describe fields/parameters/origins '+name)
                     argsets=[['7','9'],[None,'9'],[None,None]] if oids else [[]]
                     for attempt,arguments in enumerate(argsets):
@@ -2641,21 +2676,24 @@ def row_handoff():
                 if name=='nested':
                     damaged=copy.deepcopy(executions[('aster',0,1)]);damaged['rows'][0][0]='00000000'+damaged['rows'][0][0][8:]
                     check(not compare_values(damaged,executions[('reference',0,1)]),'binary structure comparator negative');self_checks+=1
-                if name=='two':
+                if name in ('two','implicit'):
                     damaged=copy.deepcopy(descriptions['aster']);damaged['fields'][0][1]=25
                     check(not compare_metadata(damaged,descriptions['reference'],'describe'),'record-vs-string identity negative');self_checks+=1
             simple_results={}
             for label in ['reference','aster']:
                 result=query(connections[label],sql);simple_results[label]=result;record(name+'_Q',label,dict(base,phase='Q',arguments=[],parameter_oids=[]),result)
-                state='42601' if name=='missing_close' else ('42P02' if name in ('parameters','unknown_parameter') else '')
+                state='42601' if name in ('missing_close','relation_group') else ('42P02' if name in ('parameters','unknown_parameter') else '')
                 check(result['state']==state and result['status']==(7 if state else 2),label+' Q outcome '+name)
                 if not state:check(result['rows']==[[expected[name]]] and result['fields']==descriptions['reference']['fields'],label+' Q values/metadata '+name)
-                if name=='missing_close':check(result['position']==str(len(sql)+1),label+' Q position')
+                if name in ('missing_close','relation_group'):check(result['position']==(str(len(sql)+1) if name=='missing_close' else '24'),label+' Q position')
                 recover(label,name+'_Q')
             check(all(simple_results['aster'][key]==simple_results['reference'][key] for key in ('state','status','position')),'Q differential diagnostic '+name)
             if simple_results['reference']['status']==2:check(compare_values(simple_results['aster'],simple_results['reference']),'Q full value/metadata differential '+name)
             for label in (['aster','aster_b'] if index%2 else ['aster_b','aster']):recover(label,name+'_isolation')
             check(query(connections['aster_observer'],'SELECT id FROM public.dialect_isolation')['rows']==before,'observer unchanged')
+            if task==12:
+                observer=query(connections['aster_observer'],'SELECT id FROM public.t');record(name+'_table_observer','aster_observer',dict(phase='Q',sql='SELECT id FROM public.t'),observer)
+                check(observer['rows']==[['31']],'named table unchanged before cleanup')
             completed_cases.add(name)
             print('PG_DIALECT_CHECKPOINT '+name,flush=True);check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
             if os.environ.get('PG_DIALECT_ROW_SIGINT_CHECK')=='1':os.kill(os.getpid(),signal.SIGINT)
@@ -2670,14 +2708,39 @@ def row_handoff():
         parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
         args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
         def mysql(sql):
-            proc=subprocess.run(args+['-e',"SET sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            proc=subprocess.run(args+['-e',"SET sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+("SET time_zone='+00:00'; " if task==12 else "")+sql],env=env,capture_output=True,text=True,timeout=15)
             return dict(code=proc.returncode,output=proc.stdout.splitlines(),error=proc.stderr)
         result=mysql('SELECT VERSION(),@@version_compile_os,@@version_compile_machine');record('identity','mysql',None,result);check(result['code']==0,'MySQL reference identity')
-        for name,sql in [('two','SELECT ROW(1,2)'),('one','SELECT ROW(1)'),('nested','SELECT ROW(1,ROW(2,3))'),('missing_close','SELECT ROW(1,')]:
-            result=mysql(sql);record(name,'mysql',dict(phase='Q',sql=sql),result)
-            check(result['code']!=0 and ('ERROR '+('1241 (21000)' if name in ('two','nested') else '1064 (42000)')) in result['error'],'MySQL own row diagnostic')
-        result=mysql("SELECT (1); SELECT ROW(1,2)=ROW(1,2); PREPARE q FROM 'SELECT ROW(?,?)=ROW(?,?)'; SET @a=1; SET @b=2; EXECUTE q USING @a,@b,@a,@b; DEALLOCATE PREPARE q; SELECT 'ROW(1,2)' /* ROW() */")
-        record('legal_prepare','mysql',None,result);check(result['code']==0 and result['output']==['1','1','1','ROW(1,2)'],'MySQL legal comparison/prepared/literal')
+        if task == 12:
+            check(result['output'][0].startswith('8.4.7\t'),'exact MySQL reference 8.4.7')
+            settings=mysql('SELECT @@sql_mode,@@character_set_connection,@@collation_connection,@@time_zone')
+            record('settings','mysql',dict(phase='environment'),settings)
+            check(settings['code']==0 and settings['output']==['\tutf8mb4\tutf8mb4_general_ci\t+00:00'],'MySQL frozen settings')
+            sql="CREATE TEMPORARY TABLE mysql.row12_typed(id INT); INSERT INTO mysql.row12_typed VALUES(31); SELECT id AS v FROM mysql.row12_typed WHERE id=(31); PREPARE p FROM 'SELECT id AS v FROM mysql.row12_typed WHERE id=(?)'; SET @a=31; EXECUTE p USING @a; DEALLOCATE PREPARE p; DROP TEMPORARY TABLE mysql.row12_typed"
+            proc=subprocess.run([arg for arg in args if arg not in ('--batch','--skip-column-names')]+['--column-type-info','--table','-e',"SET sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; SET time_zone='+00:00'; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            typed=dict(code=proc.returncode,output=proc.stdout.splitlines(),error=proc.stderr)
+            record('typed_prepare','mysql',dict(phase='Q/Prepare/Execute',sql=sql),typed)
+            check(proc.returncode==0 and re.findall(r'Type:\s+(\w+)',proc.stdout)==['LONG','LONG'],'MySQL own prepared grouped column types')
+            check(sum(bool(re.fullmatch(r'\|\s*31\s*\|',line)) for line in typed['output'])==2,'MySQL own prepared grouped values')
+            for name,sql,oids in cases:
+                own_sql=sql.replace('public.t','mysql.t').replace('$1','7').replace('$2','9')
+                setup='CREATE TEMPORARY TABLE mysql.t(id INT); INSERT INTO mysql.t VALUES(31); '
+                result=mysql(setup+own_sql);record(name,'mysql',dict(phase='Q',sql=own_sql),result)
+                if name in ('grouped','subquery','protected'):
+                    check(result['code']==0 and result['output']==[expected[name]],'MySQL scalar grouping '+name)
+                elif name=='relation_group':
+                    check(result['code']!=0 and 'ERROR 1064 (42000)' in result['error'],'MySQL bare relation alias syntax boundary')
+                else:
+                    code='1064 (42000)' if name=='missing_close' else '1241 (21000)'
+                    check(result['code']!=0 and 'ERROR '+code in result['error'],'MySQL own row/syntax diagnostic '+name)
+            result=mysql("PREPARE q FROM 'SELECT (?), (SELECT ?)'; SET @a=7; SET @b=NULL; EXECUTE q USING @a,@b; DEALLOCATE PREPARE q")
+            record('legal_prepare','mysql',None,result);check(result['code']==0 and result['output']==['7\tNULL'],'MySQL grouped/subquery prepare and NULL')
+        else:
+            for name,sql in [('two','SELECT ROW(1,2)'),('one','SELECT ROW(1)'),('nested','SELECT ROW(1,ROW(2,3))'),('missing_close','SELECT ROW(1,')]:
+                result=mysql(sql);record(name,'mysql',dict(phase='Q',sql=sql),result)
+                check(result['code']!=0 and ('ERROR '+('1241 (21000)' if name in ('two','nested') else '1064 (42000)')) in result['error'],'MySQL own row diagnostic')
+            result=mysql("SELECT (1); SELECT ROW(1,2)=ROW(1,2); PREPARE q FROM 'SELECT ROW(?,?)=ROW(?,?)'; SET @a=1; SET @b=2; EXECUTE q USING @a,@b,@a,@b; DEALLOCATE PREPARE q; SELECT 'ROW(1,2)' /* ROW() */")
+            record('legal_prepare','mysql',None,result);check(result['code']==0 and result['output']==['1','1','1','ROW(1,2)'],'MySQL legal comparison/prepared/literal')
         final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest();final['endpoints']={s:endpoint(connections[s]) for s in ['reference','aster','aster_b']}
         final['client']['sha256']=hashlib.sha256(library.read_bytes()).hexdigest()
         final['reference_build']=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
@@ -2686,6 +2749,11 @@ def row_handoff():
         check(validate_provenance(provenance,final),'final input provenance')
         done=True
     finally:
+        if task == 12:
+            for label in ['reference','aster']:
+                if label in connections:
+                    if transaction(connections[label]) in (2,3):query(connections[label],'ROLLBACK')
+                    cleanup_ok=query(connections[label],'DROP TABLE IF EXISTS public.t')['status']==1 and cleanup_ok
         for conn,stmt in prepared:cleanup_ok=observe(close_prepared(conn,stmt))['status']==1 and cleanup_ok
         for conn in connections.values():
             if conn and transaction(conn) in (2,3):cleanup_ok=query(conn,'ROLLBACK')['status']==1 and cleanup_ok
@@ -2697,6 +2765,11 @@ def row_handoff():
             semantic_row_success=len(semantic_cases) if done and cleanup_ok else 0,
             syntax_eligible=len(completed_cases) if done and cleanup_ok else 0,gate_cases=0,cleanup_ok=cleanup_ok,
             outside_DML_counts_as_main_case=False)
+        if task == 12:
+            summary['semantic_expression_success']=summary['semantic_row_success']
+            summary['semantic_row_case_ids']=[name for name in summary['semantic_row_case_ids'] if name not in ('grouped','subquery')]
+            summary['semantic_row_success']=len(summary['semantic_row_case_ids'])
+            summary['scalar_grouping_subquery_success']=2 if done and cleanup_ok else 0
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and cleanup_ok,'incomplete row verification/cleanup'
     print(json.dumps(summary),flush=True)
@@ -3652,7 +3725,7 @@ if task == 13:
     identifiers_handoff()
     sys.exit(0)
 
-if task == 11:
+if task in (11,12):
     row_handoff()
     sys.exit(0)
 

@@ -21,13 +21,16 @@
 /// goyacc 语义值联合体：状态、偏移、标识符、表达式与语句。
 pub struct yySymType {
     yys: isize,
-    offset: i32, // offset
+    offset: i32,       // offset
     end_offset: usize, // Exclusive byte end of the consumed source tokens.
     item: Option<Box<dyn Any>>,
     ident: String,
     expr: Option<parser_ast::ExprNode>,
     statement: Option<Box<dyn parser_ast::Node>>,
     semantic_complete: bool,
+    // ExpressionList token spans and commas, carried only until an implicit row
+    // reduction. Keep punctuation from the lexer, including around comments.
+    expression_list_source: Vec<(usize, usize, Option<usize>)>,
 }
 
 impl Default for yySymType {
@@ -41,6 +44,7 @@ impl Default for yySymType {
             expr: None,
             statement: None,
             semantic_complete: true,
+            expression_list_source: Vec::new(),
         }
     }
 }

@@ -1159,6 +1159,11 @@ fn pg_dialect_11_libpq() {
 }
 
 #[test]
+fn pg_dialect_12_libpq() {
+    pg_dialect_libpq(12);
+}
+
+#[test]
 fn pg_dialect_13_libpq() {
     pg_dialect_libpq(13);
 }
@@ -2125,6 +2130,72 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 12 {
+            use std::io::Write;
+            mysql_query(socket, "SET time_zone='+00:00'");
+            assert_eq!(
+                mysql_query(socket, "SELECT @@time_zone"),
+                vec![vec![Some(b"+00:00".to_vec())]]
+            );
+            let mut record = serde_json::json!({"phase":phase});
+            if let Some(case) = phase.strip_prefix("PG_DIALECT_CHECKPOINT ") {
+                let registry: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(evidence.join("cases.json")).unwrap(),
+                )
+                .unwrap();
+                let original = registry
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["case_id"] == case)
+                    .unwrap()["sql"]
+                    .as_str()
+                    .unwrap();
+                let sql = original
+                    .replace("public.t", &format!("{database}.t"))
+                    .replace("$1", "7")
+                    .replace("$2", "9");
+                record["case_id"] = serde_json::json!(case);
+                record["sql"] = serde_json::json!(sql);
+                if matches!(case, "grouped" | "subquery" | "protected") {
+                    let values = mysql_query(socket, &sql);
+                    let expected = if case == "protected" {
+                        b"(1,2)".to_vec()
+                    } else {
+                        b"1".to_vec()
+                    };
+                    assert_eq!(values, vec![vec![Some(expected)]]);
+                    record["rows"] = serde_json::json!(values);
+                } else {
+                    let mut request = vec![3];
+                    request.extend_from_slice(sql.as_bytes());
+                    mysql_packet(socket, 0, &request);
+                    let error = mysql_read(socket);
+                    assert_eq!(error[0], 0xff);
+                    let code = u16::from_le_bytes(error[1..3].try_into().unwrap());
+                    let expected = if matches!(case, "missing_close" | "relation_group") {
+                        1064
+                    } else {
+                        1105
+                    };
+                    assert_eq!(code, expected, "MySQL existing row/scalar boundary {case}");
+                    assert_eq!(
+                        &error[4..9],
+                        if expected == 1064 { b"42000" } else { b"HY000" }
+                    );
+                    record["error_code"] = serde_json::json!(code);
+                    record["state"] = serde_json::json!(String::from_utf8_lossy(&error[4..9]));
+                    record["packet"] = serde_json::json!(error);
+                }
+                record["recovery"] = serde_json::json!(mysql_query(socket, "SELECT 1"));
+            }
+            let mut output = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-grouping-baseline.jsonl"))
+                .unwrap();
+            writeln!(output, "{record}").unwrap();
+        }
         if task == 10 {
             use std::io::Write;
 
@@ -2713,7 +2784,13 @@ fn pg_dialect_libpq(task: u8) {
         request.extend_from_slice(
             format!(
                 "SELECT id AS v FROM {database}.dialect_isolation WHERE id={}",
-                if task == 24 { "CAST(? AS SIGNED)" } else { "?" }
+                if task == 24 {
+                    "CAST(? AS SIGNED)"
+                } else if task == 12 {
+                    "(?)"
+                } else {
+                    "?"
+                }
             )
             .as_bytes(),
         );
@@ -3030,6 +3107,18 @@ fn pg_dialect_libpq(task: u8) {
                 .count(),
             11
         );
+        return;
+    }
+    if task == 12 {
+        assert_eq!(checkpoints, 10);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["unique_effective"], 10);
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["gate_cases"], 0);
+        assert_eq!(summary["semantic_row_success"], 5);
+        assert_eq!(summary["semantic_expression_success"], 7);
         return;
     }
     if task == 11 {

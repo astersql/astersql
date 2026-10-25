@@ -125,6 +125,7 @@ impl NameResolver<'_> {
             ExprKind::Function { Args, .. }
             | ExprKind::Row(Args)
             | ExprKind::ExplicitRow { Fields: Args, .. }
+            | ExprKind::ImplicitRow { Fields: Args, .. }
             | ExprKind::Array { Elements: Args, .. } => self.resolve_exprs(Args),
             ExprKind::AggregateFunction { Args, Order, .. } => {
                 self.resolve_exprs(Args)?;

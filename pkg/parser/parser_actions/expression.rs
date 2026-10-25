@@ -329,9 +329,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "pgarrayelements--6be43a6fd9578184" => Some(ExpressionRule::PgArrayEmpty),
         "pgarraylist_expression--6d01bd618a315b86" => Some(ExpressionRule::PgArrayFirst),
         "pgarraylist_pgarraylist_expression--5218f5a6838f5614" => Some(ExpressionRule::PgArrayNext),
-        "pgarrayrows_pgarrayrow--208a388e82b3b857" => {
-            Some(ExpressionRule::PgArrayNestedFirst)
-        }
+        "pgarrayrows_pgarrayrow--208a388e82b3b857" => Some(ExpressionRule::PgArrayNestedFirst),
         "pgarrayrows_pgarrayrows_pgarrayrow--38df4b937371de02" => {
             Some(ExpressionRule::PgArrayNestedNext)
         }
@@ -1716,13 +1714,34 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             if let Some(value) = rhs[rhs_len - (1)].expr.clone() {
                 values.push(value);
             }
+            let start = rhs[1].offset as usize;
+            let close = rhs[5].offset as usize;
+            let mut source = rhs[2].expression_list_source.clone();
+            source.push((
+                rhs[4].offset as usize,
+                rhs[4].end_offset,
+                Some(rhs[3].offset as usize),
+            ));
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(start as i32);
+            node_text.SetText(None, &parser_state.src[start..close + 1]);
             out.expr = Some(parser_ast::ExprNode {
-                node_text: Default::default(),
-                Kind: parser_ast::ExprKind::Row(values),
-                OriginTextPosition: 0,
+                node_text,
+                Kind: if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                    parser_ast::ExprKind::ImplicitRow {
+                        Fields: values,
+                        FieldSpans: source.iter().map(|&(start, end, _)| (start, end)).collect(),
+                        Parentheses: (start, close),
+                        Commas: source.iter().filter_map(|&(_, _, comma)| comma).collect(),
+                    }
+                } else {
+                    parser_ast::ExprKind::Row(values)
+                },
+                OriginTextPosition: start as i32,
                 Flag: Default::default(),
             });
         }
+
         ExpressionRule::SimpleExprAlt22 => {
             let Some(expr) = rhs[rhs_len - (1)].expr.clone() else {
                 return Ok(false);
@@ -3003,6 +3022,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::ExpressionListAlt01
         | ExpressionRule::MaxValueOrExpressionListAlt01
         | ExpressionRule::DefaultOrExpressionListAlt01 => {
+            if matches!(rule, ExpressionRule::ExpressionListAlt01) {
+                out.expression_list_source =
+                    vec![(rhs[1].offset as usize, rhs[1].end_offset, None)];
+            }
             out.item = Some(Box::new(
                 rhs[rhs_len - (0)]
                     .expr
@@ -3014,6 +3037,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::ExpressionListAlt02
         | ExpressionRule::MaxValueOrExpressionListAlt02
         | ExpressionRule::DefaultOrExpressionListAlt02 => {
+            if matches!(rule, ExpressionRule::ExpressionListAlt02) {
+                out.expression_list_source = rhs[1].expression_list_source.clone();
+                out.expression_list_source.push((
+                    rhs[3].offset as usize,
+                    rhs[3].end_offset,
+                    Some(rhs[2].offset as usize),
+                ));
+            }
             let mut values = rhs[rhs_len - (2)]
                 .item
                 .take()

@@ -53,3 +53,30 @@ fn pg_dialect_11_record_type_layout() {
     changed.SetType(astersql_parser_mysql::r#type::TypeLong);
     assert!(changed.PostgreSQLRecordFields().is_none());
 }
+
+#[test]
+fn pg_dialect_12_grouping_and_record_fields() {
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg_row12_unit").unwrap();
+    native
+        .execute("CREATE TABLE pg_row12_unit.t (id INT)")
+        .unwrap();
+    native
+        .execute("INSERT INTO pg_row12_unit.t VALUES(31)")
+        .unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.execute("USE pg_row12_unit").unwrap();
+    for (sql, expected, name) in [
+        ("SELECT (1,2)", "(1,2)", "row"),
+        ("SELECT (1)", "1", "?column?"),
+        ("SELECT (SELECT 1)", "1", "?column?"),
+        ("SELECT ROW(t.id,(SELECT 2)) FROM t t", "(31,2)", "row"),
+    ] {
+        let (id, _, fields) = session.prepare_protocol_statement(sql).unwrap();
+        assert_eq!(fields[0].column_as_name.O, name, "{sql}");
+        let rows = session.execute_protocol_statement(id, &[]).unwrap();
+        assert_eq!(rows[0].rows, vec![vec![expected.to_owned()]], "{sql}");
+        session.close_protocol_statement(id).unwrap();
+    }
+    native.execute("DROP DATABASE pg_row12_unit").unwrap();
+}

@@ -271,6 +271,8 @@ pub(super) fn relational_expression_has_aggregate(expression: &ast::ExprNode) ->
             true
         }
         ast::ExprKind::Function { Args, .. }
+        | ast::ExprKind::ExplicitRow { Fields: Args, .. }
+        | ast::ExprKind::ImplicitRow { Fields: Args, .. }
         | ast::ExprKind::Row(Args)
         | ast::ExprKind::WindowFunction { Args, .. } => {
             Args.iter().any(relational_expression_has_aggregate)
@@ -341,6 +343,8 @@ pub(super) fn relational_expression_has_tidb_row_checksum(expression: &ast::Expr
     match &expression.Kind {
         ast::ExprKind::Function { Args, .. }
         | ast::ExprKind::AggregateFunction { Args, .. }
+        | ast::ExprKind::ExplicitRow { Fields: Args, .. }
+        | ast::ExprKind::ImplicitRow { Fields: Args, .. }
         | ast::ExprKind::Row(Args)
         | ast::ExprKind::WindowFunction { Args, .. } => {
             Args.iter().any(relational_expression_has_tidb_row_checksum)
@@ -435,6 +439,8 @@ pub(super) fn relational_expression_has_subquery(expression: &ast::ExprNode) -> 
         | ast::ExprKind::ExistsSubquery { .. } => true,
         ast::ExprKind::Function { Args, .. }
         | ast::ExprKind::AggregateFunction { Args, .. }
+        | ast::ExprKind::ExplicitRow { Fields: Args, .. }
+        | ast::ExprKind::ImplicitRow { Fields: Args, .. }
         | ast::ExprKind::Row(Args) => Args.iter().any(relational_expression_has_subquery),
         ast::ExprKind::WindowFunction { Args, Spec, .. } => {
             Args.iter().any(relational_expression_has_subquery)
@@ -509,6 +515,8 @@ pub(super) fn relational_expression_has_window(expression: &ast::ExprNode) -> bo
         ast::ExprKind::WindowFunction { .. } => true,
         ast::ExprKind::Function { Args, .. }
         | ast::ExprKind::AggregateFunction { Args, .. }
+        | ast::ExprKind::ExplicitRow { Fields: Args, .. }
+        | ast::ExprKind::ImplicitRow { Fields: Args, .. }
         | ast::ExprKind::Row(Args) => Args.iter().any(relational_expression_has_window),
         ast::ExprKind::Binary { L, R, .. } => {
             relational_expression_has_window(L) || relational_expression_has_window(R)
@@ -575,6 +583,8 @@ pub(super) fn relational_expression_subquery(expression: &ast::ExprNode) -> Opti
         | ast::ExprKind::JSONSumCrc32 { Expr: Sel, .. } => relational_expression_subquery(Sel),
         ast::ExprKind::Function { Args, .. }
         | ast::ExprKind::AggregateFunction { Args, .. }
+        | ast::ExprKind::ExplicitRow { Fields: Args, .. }
+        | ast::ExprKind::ImplicitRow { Fields: Args, .. }
         | ast::ExprKind::Row(Args)
         | ast::ExprKind::WindowFunction { Args, .. } => {
             Args.iter().find_map(relational_expression_subquery)
@@ -730,7 +740,7 @@ pub(super) fn format_unix_timestamp(value: f64, fractional_seconds_precision: us
 // RETURNING uses PostgreSQL integer widths, while the shared MySQL projection
 // analyzer intentionally promotes integer arithmetic to BIGINT. Admit the
 // required integer/column/literal forms here and reject unknown type families.
-fn pg_returning_expression_type(
+pub(super) fn pg_returning_expression_type(
     expression: &ast::ExprNode,
     sources: &[ConcreteResultField],
 ) -> SessionResult<astersql_parser_types::types::FieldType> {
@@ -996,6 +1006,12 @@ impl ConcreteSession {
         group_rows: Option<&[HashMap<String, Option<String>>]>,
     ) -> SessionResult<Option<String>> {
         match &expression.Kind {
+            ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
+                super::pg_record::value_with(expression, &|field| {
+                    self.relational_query_expression_value(field, row, group_rows)
+                })
+            }
+
             ast::ExprKind::Column(column) => self.relational_query_column_value(column, row),
             ast::ExprKind::Variable {
                 Name,
@@ -2236,18 +2252,78 @@ impl ConcreteSession {
         Ok(fields)
     }
 
+    fn pg_grouped_projection_name(&self, expr: &ast::ExprNode) -> Option<String> {
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
+            return None;
+        }
+        match &expr.Kind {
+            ast::ExprKind::Parentheses(inner) => self.pg_grouped_projection_name(inner),
+            ast::ExprKind::Value(_) => Some("?column?".into()),
+            ast::ExprKind::Column(column) => Some(column.Name.O.clone()),
+            ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
+                Some("row".into())
+            }
+            ast::ExprKind::Subquery { Query, .. } => Query
+                .with_node(|node| {
+                    self.relational_query_node_result_fields(node, &[])
+                        .ok()
+                        .and_then(|fields| {
+                            fields.first().map(|field| field.column_as_name.O.clone())
+                        })
+                })
+                .flatten(),
+            _ => None,
+        }
+    }
+
     pub(super) fn relational_query_expression_type_from_sources(
         &self,
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            match &expression.Kind {
+                ast::ExprKind::Parentheses(inner) => {
+                    if matches!(&inner.Kind,ast::ExprKind::Value(value) if matches!(value.Datum,ast::ValueDatum::Int64(_)|ast::ValueDatum::Uint64(_)))
+                    {
+                        if let Ok(tp) = pg_returning_expression_type(inner, source_fields) {
+                            return tp;
+                        }
+                    }
+                    return self
+                        .relational_query_expression_type_from_sources(inner, source_fields);
+                }
+                ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
+                    return super::pg_record::record_type_in_context(
+                        self,
+                        expression,
+                        &HashMap::new(),
+                        source_fields,
+                    )
+                    .map(super::pg_record::field_type)
+                    .unwrap_or_default();
+                }
+                _ => {}
+            }
+        }
         if let ast::ExprKind::Subquery { Query, .. } = &expression.Kind
             && let Some(field_type) = Query
                 .with_node(|node| {
                     self.relational_query_node_result_fields(node, &[])
                         .ok()
                         .and_then(|fields| {
-                            fields.first().map(|field| field.column.FieldType.clone())
+                            fields.first().map(|field| {
+                                if self.sql_dialect()==ast::SqlDialect::PostgreSQL {
+                                    if let Some(select)=node.as_any().downcast_ref::<ast::SelectStmt>() {
+                                        if let Some(expr)=select.Fields.Fields.first().and_then(|f|f.Expr.as_ref()) {
+                                            if matches!(&expr.Kind,ast::ExprKind::Value(value) if matches!(value.Datum,ast::ValueDatum::Int64(_)|ast::ValueDatum::Uint64(_))) {
+                                                if let Ok(tp)=pg_returning_expression_type(expr,&[]) {return tp;}
+                                            }
+                                        }
+                                    }
+                                }
+                                field.column.FieldType.clone()
+                            })
                         })
                 })
                 .flatten()
@@ -2561,8 +2637,11 @@ impl ConcreteSession {
                 })?;
                 let output = (!field.AsName.O.is_empty())
                     .then(|| field.AsName.O.clone())
+                    .or_else(|| self.pg_grouped_projection_name(expression))
                     .or_else(|| match &expression.Kind {
-                        ast::ExprKind::ExplicitRow { .. } => Some("row".to_owned()),
+                        ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
+                            Some("row".to_owned())
+                        }
                         ast::ExprKind::Value(_)
                             if self.sql_dialect() == ast::SqlDialect::PostgreSQL =>
                         {

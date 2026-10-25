@@ -758,6 +758,7 @@ impl Children for ExprKind {
             } => Expr.visit(_v) && Pattern.visit(_v) && EscapeExpr.visit(_v),
             Self::Regexp { Expr, Pattern, .. } => Expr.visit(_v) && Pattern.visit(_v),
             Self::ExplicitRow { Fields: x0, .. }
+            | Self::ImplicitRow { Fields: x0, .. }
             | Self::Row(x0)
             | Self::Array { Elements: x0, .. } => x0.visit(_v),
             Self::Collate { Expr, .. } => Expr.visit(_v),
@@ -836,6 +837,7 @@ impl MutChildren for ExprKind {
             } => Expr.visit_mut(_v) && Pattern.visit_mut(_v) && EscapeExpr.visit_mut(_v),
             Self::Regexp { Expr, Pattern, .. } => Expr.visit_mut(_v) && Pattern.visit_mut(_v),
             Self::ExplicitRow { Fields: x0, .. }
+            | Self::ImplicitRow { Fields: x0, .. }
             | Self::Row(x0)
             | Self::Array { Elements: x0, .. } => x0.visit_mut(_v),
             Self::Collate { Expr, .. } => Expr.visit_mut(_v),

@@ -4398,3 +4398,161 @@ fn pg_dialect_13_behavior() {
         count.get()
     );
 }
+
+#[test]
+fn pg_dialect_12_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let count = std::cell::Cell::new(0usize);
+    macro_rules! check {($($arg:tt)*)=>{{count.set(count.get()+1);assert!($($arg)*);}};}
+    macro_rules! equal {($($arg:tt)*)=>{{count.set(count.get()+1);assert_eq!($($arg)*);}};}
+    fn expression(sql: &str) -> parser_ast::ExprNode {
+        let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "")
+            .unwrap();
+        stmt.as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap()
+            .Fields
+            .Fields[0]
+            .Expr
+            .clone()
+            .unwrap()
+    }
+    for (sql, expected) in [
+        ("SELECT (1,2)", "(1,2)"),
+        ("SELECT (1)", "(1)"),
+        ("SELECT (SELECT 1)", "(SELECT 1)"),
+    ] {
+        let expr = expression(sql);
+        equal!(
+            parser_ast::sql_restore::restore_expr(&expr).unwrap(),
+            expected
+        );
+        if sql == "SELECT (1)" {
+            check!(matches!(expr.Kind, ExprKind::Parentheses(_)));
+        }
+        if sql == "SELECT (SELECT 1)" {
+            check!(matches!(expr.Kind, ExprKind::Subquery { .. }));
+        }
+    }
+    for (sql, spellings) in [
+        ("SELECT (1,2)", vec!["1", "2"]),
+        ("SELECT (1,(2,3))", vec!["1", "(2,3)"]),
+        (
+            "/*中*/ SELECT (NULL, $2, $1, $2)",
+            vec!["NULL", "$2", "$1", "$2"],
+        ),
+        (
+            "SELECT ('中,文' /* , */, 1 + 2, (SELECT 2))",
+            vec!["'中,文'", "1 + 2", "(SELECT 2)"],
+        ),
+        (
+            "SELECT (\"t\".\"id\",(SELECT 2)) FROM public.t t",
+            vec!["\"t\".\"id\"", "(SELECT 2)"],
+        ),
+    ] {
+        let expr = expression(sql);
+        let ExprKind::ImplicitRow {
+            Fields,
+            FieldSpans,
+            Parentheses,
+            Commas,
+        } = &expr.Kind
+        else {
+            panic!("implicit row form lost");
+        };
+        equal!(Fields.len(), spellings.len());
+        equal!(FieldSpans.len(), Fields.len());
+        equal!(Commas.len(), Fields.len() - 1);
+        equal!(expr.OriginTextPosition as usize, Parentheses.0);
+        equal!(&sql[Parentheses.0..Parentheses.0 + 1], "(");
+        equal!(&sql[Parentheses.1..Parentheses.1 + 1], ")");
+        equal!(
+            expr.node_text.Text(),
+            &sql[Parentheses.0..Parentheses.1 + 1]
+        );
+        for ((field, &(start, end)), spelling) in Fields.iter().zip(FieldSpans).zip(spellings) {
+            equal!(&sql[start..end], spelling);
+            check!(sql.is_char_boundary(start) && sql.is_char_boundary(end));
+            equal!(field.OriginTextPosition as usize, start);
+            if spelling.starts_with('$') {
+                equal!(
+                    field.PostgreSQLParameterIndex(),
+                    Some(spelling[1..].parse().unwrap())
+                );
+                check!(matches!(field.Kind,ExprKind::ParamMarker{Offset} if Offset==start));
+            }
+        }
+        for &comma in Commas {
+            equal!(&sql[comma..comma + 1], ",");
+        }
+        if sql.contains("(2,3)") {
+            check!(matches!(Fields[1].Kind, ExprKind::ImplicitRow { .. }));
+        }
+        if sql.contains("NULL") {
+            check!(
+                matches!(&Fields[0].Kind,ExprKind::Value(v) if v.Datum==parser_ast::ValueDatum::Null)
+            );
+        }
+        struct Parameters(Vec<u16>);
+        impl parser_ast::Visitor for Parameters {
+            fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+                if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                    if let Some(i) = expr.PostgreSQLParameterIndex() {
+                        self.0.push(i);
+                    }
+                }
+                false
+            }
+            fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+                true
+            }
+        }
+        let mut params = Parameters(vec![]);
+        parser_ast::Node::accept(&expr, &mut params);
+        equal!(
+            params.0,
+            if sql.contains("$2") {
+                vec![2, 1, 2]
+            } else {
+                vec![]
+            }
+        );
+    }
+    let expr = expression("SELECT ROW(t.id,(SELECT 2)) FROM public.t t");
+    let ExprKind::ExplicitRow { Fields, .. } = expr.Kind else {
+        panic!("explicit ROW changed");
+    };
+    check!(matches!(Fields[0].Kind, ExprKind::Column(_)));
+    check!(matches!(Fields[1].Kind, ExprKind::Subquery { .. }));
+    let protected = expression("SELECT '(1,2)' /* ($2,$1) */");
+    check!(matches!(&protected.Kind,ExprKind::Value(v) if v.text()=="(1,2)"));
+    for sql in ["SELECT (1,", "/*中*/ SELECT (1,", "SELECT (,1)"] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        check!(parser.ParseOneStmt(sql, "", "").is_err());
+        if sql.ends_with(',') {
+            equal!(
+                parser.PostgreSQLEofErrorPosition(),
+                Some(sql.chars().count() + 1)
+            );
+        }
+        check!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+    }
+    // A bare relation in parentheses is rejected by PostgreSQL; it must not
+    // affect expression row constructors or scalar grouping.
+    check!(
+        parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt("SELECT * FROM (public.t) AS t", "", "")
+            .is_err()
+    );
+    let mysql = parser::Parser::with_dialect(SqlDialect::MySQL)
+        .ParseOneStmt("SELECT (1,2)", "", "")
+        .unwrap();
+    check!(
+        matches!(&mysql.as_any().downcast_ref::<parser_ast::SelectStmt>().unwrap().Fields.Fields[0].Expr.as_ref().unwrap().Kind,ExprKind::Row(fields) if fields.len()==2)
+    );
+    println!(
+        "pg_dialect_12_behavior: {} assertions, 5 core inputs plus nested/NULL/parameter/source/error/dialect coverage",
+        count.get()
+    );
+}

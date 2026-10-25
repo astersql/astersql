@@ -2986,7 +2986,7 @@ pub fn Leave(
             return Err(error);
         }
         match &input_node.Kind {
-            ast::ExprKind::ExplicitRow { .. } => {
+            ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 return Err(errors::New(
                     "ROW constructors require record type analysis support",
                 ));

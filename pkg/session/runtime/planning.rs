@@ -2848,7 +2848,8 @@ impl ConcreteSession {
         }
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
         let (_, array_oids) = super::pg_array::analyze(sql, &statements, Some(supplied))?;
-        let (_, record_oids) = super::pg_record::analyze(&statements, Some(supplied))?;
+        let (_, record_oids) =
+            super::pg_record::analyze_in_session(self, &statements, Some(supplied))?;
         for (oid, inferred) in oids.iter_mut().zip(record_oids) {
             if inferred != 0 {
                 *oid = inferred;

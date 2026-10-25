@@ -236,6 +236,18 @@ impl Resolver<'_> {
         }
         if self.symbol(i, b'(') {
             if !self.word(i + 1, "select") && !self.word(i + 1, "with") {
+                let close = self.close(i, end)?;
+                let bare = self.tokens[i + 1..close]
+                    .iter()
+                    .all(|token| token.name.is_some() || token.symbol == Some(b'.'));
+                if bare {
+                    self.error_position =
+                        Some(self.sql[..self.tokens[close].start].chars().count() + 1);
+                    return Err(error(
+                        "42601",
+                        "syntax error at or near closing relation parenthesis",
+                    ));
+                }
                 return Err(error(
                     "0A000",
                     "parenthesized relation groups are unsupported",

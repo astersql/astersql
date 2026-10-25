@@ -880,6 +880,14 @@ pub enum ExprKind {
         Parentheses: (usize, usize),
         Commas: Vec<usize>,
     },
+    /// Implicit PostgreSQL multi-field row; parentheses are not scalar grouping.
+    ImplicitRow {
+        Fields: Vec<ExprNode>,
+        /// Half-open original SQL byte spans; preserve UTF-8 character boundaries.
+        FieldSpans: Vec<(usize, usize)>,
+        Parentheses: (usize, usize),
+        Commas: Vec<usize>,
+    },
     Row(Vec<ExprNode>),
     Collate {
         Expr: Box<ExprNode>,
@@ -1332,6 +1340,7 @@ impl ExprNode {
                 accept_box(Expr, visitor) && accept_box(Pattern, visitor)
             }
             ExprKind::ExplicitRow { Fields: values, .. }
+            | ExprKind::ImplicitRow { Fields: values, .. }
             | ExprKind::Row(values)
             | ExprKind::Array {
                 Elements: values, ..

@@ -102,6 +102,7 @@ fn expression_flag(expr: &ExprNode) -> u64 {
         ExprKind::Regexp { Expr, Pattern, .. } => Expr.GetFlag() | Pattern.GetFlag(),
         ExprKind::ExistsSubquery { Sel, .. } => Sel.GetFlag(),
         ExprKind::ExplicitRow { Fields: args, .. }
+        | ExprKind::ImplicitRow { Fields: args, .. }
         | ExprKind::Row(args)
         | ExprKind::Array { Elements: args, .. } => flags(args),
         ExprKind::Case {
