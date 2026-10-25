@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -166,6 +166,17 @@ if task == 9:
         ('parameters', 'SELECT ARRAY[$2,$1,$2]', [23,23]),
         ('missing_close', '/*中*/ SELECT ARRAY[1,2', []),
         ('protected', "SELECT 'ARRAY[1,2]' /* ARRAY[] $2 */", []),
+    ]
+if task == 10:
+    cases = [
+        ('explicit', 'SELECT ARRAY[ARRAY[1,2],ARRAY[3,4]]', []),
+        ('implicit', 'SELECT ARRAY[[1,2],[3,4]]', []),
+        ('ragged', 'SELECT ARRAY[[1,2],[3]]', []),
+        ('numeric', 'SELECT ARRAY[1,2.5]', []),
+        ('mixed_types', '/*中*/ SELECT ARRAY[1,true]', []),
+        ('parameters', 'SELECT ARRAY[ARRAY[$2,$1],ARRAY[$1,$2]]', [23,23]),
+        ('nulls', 'SELECT ARRAY[[NULL,1],[2,NULL]]', []),
+        ('unclosed', '/*中*/ SELECT ARRAY[[1,2],[3,4]', []),
     ]
 if task == 11:
     cases = [
@@ -1163,10 +1174,10 @@ if task == 24:
         ('reconnect','SELECT $1::int4 AS v',[23]),
         ('transaction_error','/*中*/ SELECT )',[]),
     ]]
-assert len({case[0] for case in cases}) == (10 if task == 6 else 6 if task in (5,8,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
+assert len({case[0] for case in cases}) == (10 if task == 6 else 6 if task in (5,8,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task in (4,10) else 10))))
 (evidence / 'cases.json').write_text(json.dumps([
-    dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'))), sql=sql,
-         phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task in (9,11) else [None]*len(oids)) if oids else []),
+    dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.nesting' if task == 10 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence')))), sql=sql,
+         phase='PQprepare', parameter_oids=oids, arguments=((['5','7'] if task == 10 else (['7','9'] if task in (9,11) else [None]*len(oids))) if oids else []),
          parameter_formats=([0]*len(oids) if oids else []), result_format=0,
          initial_state='I', expected_basis=f'dialect task {task} / PostgreSQL18.6 observation / roadmap chapter 2',
          expected_state='42601' if name.startswith('missing_') or name == 'misplaced_where' else '',
@@ -1175,6 +1186,27 @@ assert len({case[0] for case in cases}) == (10 if task == 6 else 6 if task in (5
          execution='not applicable: parse/analyze handoff only')
     for name, sql, oids in cases], indent=2))
 
+
+if task == 10:
+    registry = json.loads((evidence/'cases.json').read_text())
+    for case in registry:
+        name = case['case_id']
+        case['expected_state_by_phase'] = {
+            'ragged': {'Execute': '2202E'},
+            'mixed_types': {'PQprepare': '42804'},
+            'unclosed': {'PQprepare': '42601'},
+            'parameters': {'PQexec': '42P02'},
+        }.get(name, {})
+        case['expected_rows'] = {
+            'explicit': [['{{1,2},{3,4}}']],
+            'implicit': [['{{1,2},{3,4}}']],
+            'numeric': [['{1,2.5}']],
+            'parameters': [['{{7,5},{5,7}}']],
+            'nulls': [['{{NULL,1},{2,NULL}}']],
+        }.get(name)
+        case['execution'] = 'PQprepare/Describe/Bind/Execute and Q; nested dimensions and common element OID compared in text and binary result formats where applicable'
+        case['side_effects'] = 'no writes; independent observer checks its fixture before and after'
+    (evidence/'cases.json').write_text(json.dumps(registry, indent=2))
 
 if task == 9:
     registry = json.loads((evidence/'cases.json').read_text())
@@ -1220,7 +1252,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,13,14,16,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -2264,6 +2296,247 @@ def array_handoff():
         summary=dict(cases=len(cases),assertions=checks,self_checks=self_checks,syntax_eligible=eligible if done and cleanup_ok else 0,
             gate_cases=0,unique_effective=eligible if done and cleanup_ok else 0,
             semantic_array_success=3 if done and cleanup_ok else 0,auxiliary_variants=5 if done and cleanup_ok else 0,cleanup_ok=cleanup_ok,scope='flat arrays through canonical prepare/bind/execute')
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    assert done and cleanup_ok,'incomplete run/cleanup'
+    print(json.dumps(summary),flush=True)
+
+def array_nesting_handoff():
+    """Compare nested array shape, common types and execution with PG18.6."""
+    connections, prepared = {}, []
+    checks = 0
+    self_checks = 0
+    eligible = 0
+    semantic_success = 0
+    semantic_errors = 0
+    done = False
+    cleanup_ok = True
+
+    def check(condition, message):
+        nonlocal checks
+        assert condition, message
+        checks += 1
+
+    def record(name, label, data, result):
+        allowed = {'phase','sql','statement','parameter_oids','arguments',
+                   'parameter_formats','result_format','command'}
+        append_observation(evidence, dict(
+            run=evidence.name, case_id=name,
+            side='aster' if label.startswith('aster') else label,
+            attempt=1,
+            input={key:value for key,value in (data or {}).items() if key in allowed},
+            observation=dict(result, connection=label)))
+
+    def recover(conn, label, name):
+        if transaction(conn) in (2,3):
+            check(query(conn, 'ROLLBACK')['status'] == 1, 'rollback failed: '+name)
+        result = query(conn, 'SELECT 1::int4')
+        record(name+'_recovery', label, dict(phase='PQexec',sql='SELECT 1::int4'), result)
+        check(result['rows']==[['1']] and result['state']=='' and transaction(conn)==0,
+              'same-connection recovery failed: '+name)
+
+    def same_diagnostic(actual, reference):
+        return all(actual[field] == reference[field] for field in ('state','status','position'))
+
+    expected_rows = {
+        'explicit': '{{1,2},{3,4}}',
+        'implicit': '{{1,2},{3,4}}',
+        'numeric': '{1,2.5}',
+        'parameters': '{{7,5},{5,7}}',
+        'nulls': '{{NULL,1},{2,NULL}}',
+    }
+    expected_oid = {'numeric': 1231}
+    for name in ('explicit','implicit','parameters','nulls'):
+        expected_oid[name] = 1007
+
+    def prepare_and_execute(conn, label, index, name, sql, oids, arguments):
+        statement = f'nested_array_{index}_{label}'.encode()
+        supplied = (c.c_uint*len(oids))(*oids) if oids else None
+        base = dict(capability_id='pg.dialect.array.nesting',case_id=name,sql=sql,
+                    phase='PQprepare',parameter_oids=oids,arguments=arguments,
+                    parameter_formats=[0]*len(oids),result_format=0,
+                    encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',
+                    object_mapping={},expected_basis='PostgreSQL18.6 direct PQprepare/Describe/Execute/Q observation')
+        check(transaction(conn)==0, label+' must start idle')
+        result = observe(prepare(conn,statement,sql.encode(),len(oids),supplied))
+        result['transaction_after']={0:'I',2:'T',3:'E'}.get(transaction(conn))
+        record(name,label,base,result)
+        expected_prepare = {'mixed_types':'42804','unclosed':'42601'}.get(name,'')
+        check(result['state']==expected_prepare and result['status']==(7 if expected_prepare else 1),
+              label+' Prepare SQLSTATE/status '+name)
+        if name == 'mixed_types':
+            check(result['position']==str(sql.index('true')+1),label+' type-error source position')
+        if name == 'unclosed':
+            check(result['position']==str(len(sql)+1),label+' EOF source position')
+        description = None
+        executions = {}
+        if not expected_prepare:
+            prepared.append((conn,statement))
+            description=observe(describe(conn,statement))
+            record(name+'_describe',label,dict(base,phase='Describe'),description)
+            oid=expected_oid.get(name,1007)
+            check(description['fields']==[['array',oid,-1,-1]],label+' array Describe identity '+name)
+            if oids:
+                check(description['param_count']==2 and description['params']==[23,23],
+                      label+' repeated parameter metadata')
+            if name == 'ragged':
+                executed=observe(exec_prepared(conn,statement,0,None,None,None,0))
+                record(name+'_execute',label,dict(base,phase='Execute'),executed)
+                check(executed['state']=='2202E' and executed['status']==7,
+                      label+' ragged dimensions must fail during Execute')
+                executions['text']=executed
+            elif name in expected_rows:
+                formats=[0,1]
+                values=(text*len(arguments))(*[None if value is None else value.encode() for value in arguments]) if arguments else None
+                for result_format in formats:
+                    executed=observe(exec_prepared(conn,statement,len(arguments),values,None,None,result_format),binary=result_format==1)
+                    record(name+'_execute_'+str(result_format),label,
+                           dict(base,phase='Bind/Execute',result_format=result_format),executed)
+                    check(executed['state']=='' and executed['status']==2 and
+                          executed['fields']==[['array',oid,-1,-1]] and
+                          executed['formats']==[result_format],label+' array Execute identity '+name)
+                    if result_format==0:
+                        check(executed['rows']==[[expected_rows[name]]],label+' nested array value '+name)
+                    executions[str(result_format)]=executed
+        recover(conn,label,name+'_prepare')
+        simple=query(conn,sql)
+        record(name+'_simple',label,dict(base,phase='Q',parameter_oids=[],arguments=[]),simple)
+        if name == 'unclosed':
+            check(simple['state']=='42601' and simple['position']==str(len(sql)+1),label+' Q EOF position')
+        elif name == 'mixed_types':
+            check(simple['state']=='42804' and simple['position']==str(sql.index('true')+1),label+' Q type error position')
+        elif name == 'parameters':
+            check(simple['state']=='42P02',label+' unbound Q parameter state')
+        elif name == 'ragged':
+            check(simple['state']=='2202E',label+' Q ragged shape state')
+        else:
+            check(simple['state']=='' and simple['rows']==[[expected_rows[name]]],label+' Q array value '+name)
+        recover(conn,label,name+'_simple')
+        return result,description,executions,simple
+
+    def mysql_reference(sql):
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
+        env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),
+              '-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        command="SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; SET time_zone='+00:00'; "+sql
+        proc=subprocess.run(args+['-e',command],env=env,capture_output=True,text=True,timeout=15)
+        return dict(code=proc.returncode,output=proc.stdout.splitlines(),error=proc.stderr)
+
+    try:
+        local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ('reference','aster','aster_b','aster_observer'):
+            conn=connect((os.environ['PG18_REFERENCE_DSN'] if label=='reference' else local).encode())
+            connections[label]=conn
+            check(bool(conn) and status(conn)==0,label+' connection failed')
+            if label=='reference':
+                check(query(conn,"SET TIME ZONE 'UTC'")['status']==1,'reference UTC setup')
+            check(parameter_status(conn,b'client_encoding')==b'UTF8' and
+                  parameter_status(conn,b'TimeZone')==b'UTC',label+' connection encoding/timezone')
+            check(query(conn,'SET search_path TO public')['status']==1,label+' search path')
+        ref=connections['reference']
+        ref_version=query(ref,"SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(ref_version[1]=='180006','exact PostgreSQL18.6 reference is required')
+        build=json.loads((evidence/'rust-build.json').read_text())
+        build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        mysql_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text())
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,
+            reference=dict(version=ref_version[0],server_version_num=ref_version[1]),
+            reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            mysql_reference_build=mysql_build,
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            endpoints={s:endpoint(connections[s]) for s in ('aster','aster_b','reference')})
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance validation')
+        damaged=copy.deepcopy(provenance);damaged['reference_build']['server_version_num']=180004
+        check(not validate_provenance(damaged,provenance),'provenance negative self-check');self_checks+=1
+        diagnostic={'state':'42804','status':7,'position':'28'}
+        damaged_diagnostic=dict(diagnostic,state='42601')
+        check(not same_diagnostic(damaged_diagnostic,diagnostic),
+              'diagnostic comparator must reject a wrong SQLSTATE')
+        self_checks+=1
+        before=query(connections['aster_observer'],'SELECT id FROM public.dialect_isolation')['rows']
+        check(before==[['31']],'observer initial state')
+
+        for index,(name,sql,oids) in enumerate(cases):
+            arguments=['5','7'] if name=='parameters' else []
+            reference=prepare_and_execute(ref,'reference',index,name,sql,oids,arguments)
+            local_a=prepare_and_execute(connections['aster'],'aster',index,name,sql,oids,arguments)
+            print('PG_DIALECT_CHECKPOINT '+name,flush=True)
+            check(sys.stdin.readline().strip()=='continue','MySQL checkpoint aborted')
+            local_b=prepare_and_execute(connections['aster_b'],'aster_b',index,name,sql,oids,arguments)
+
+            for candidate,label in ((local_a,'A'),(local_b,'B')):
+                check(same_diagnostic(candidate[0],reference[0]),
+                      label+' Prepare/reference contract '+name)
+                check(same_diagnostic(candidate[3],reference[3]),
+                      label+' Q/reference contract '+name)
+                if candidate[1] is not None and reference[1] is not None:
+                    check(candidate[1]['fields']==reference[1]['fields'] and
+                          candidate[1]['params']==reference[1]['params'],
+                          label+' Describe/reference contract '+name)
+                for fmt,actual in candidate[2].items():
+                    expected=reference[2][fmt]
+                    check(actual['state']==expected['state'] and actual['status']==expected['status'],
+                          label+' Execute/reference status '+name+' format '+fmt)
+                    if actual['status']==2:
+                        check(actual['fields']==expected['fields'] and actual['formats']==expected['formats'] and
+                              actual['rows']==expected['rows'] and actual['command_tag']==expected['command_tag'],
+                              label+' Execute/reference values '+name+' format '+fmt)
+
+            if name in ('explicit','implicit','numeric','parameters','nulls'):
+                semantic_success+=1
+            else:
+                semantic_errors+=1
+            for label in ('aster','aster_b','aster_observer'):
+                check(query(connections[label],'SELECT id FROM public.dialect_isolation')['rows']==before,
+                      label+' observer state changed')
+            eligible+=1
+
+        identity=mysql_reference('SELECT VERSION(), @@version_compile_os, @@version_compile_machine; SELECT @@sql_mode, @@character_set_connection, @@collation_connection, @@time_zone')
+        record('mysql_identity','mysql',dict(phase='environment'),identity)
+        check(identity['code']==0 and identity['output'] and identity['output'][0].startswith('8.4.7\t'),
+              'exact MySQL 8.4.7 build identity')
+        check(len(identity['output']) >= 2 and identity['output'][1].split('\t') ==
+              ['', 'utf8mb4', 'utf8mb4_general_ci', '+00:00'],
+              'MySQL reference SQL mode/charset/collation/timezone')
+        json_control=mysql_reference('SELECT JSON_ARRAY(1,2)')
+        record('mysql_json_control','mysql',dict(phase='control'),json_control)
+        check(json_control['code']==0 and json_control['output']==['[1, 2]'],'MySQL legal JSON_ARRAY baseline')
+        prepared_control=mysql_reference("PREPARE array_control FROM 'SELECT JSON_ARRAY(?,?)'; SET @a=1; SET @b=2; EXECUTE array_control USING @a,@b; DEALLOCATE PREPARE array_control")
+        record('mysql_json_prepared_control','mysql',dict(phase='prepared-control'),prepared_control)
+        check(prepared_control['code']==0 and prepared_control['output']==['[1, 2]'],
+              'MySQL legal prepared JSON_ARRAY control')
+        for name,sql,_ in cases:
+            result=mysql_reference(sql)
+            record(name,'mysql',dict(phase='Q',sql=sql),result)
+            check(result['code']!=0 and 'ERROR 1064 (42000)' in result['error'],
+                  'MySQL 8.4.7 must reject PostgreSQL ARRAY syntax: '+name)
+
+        final=copy.deepcopy(provenance)
+        final['source']=source_snapshot(root)
+        final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        final['client']['sha256']=hashlib.sha256(library.read_bytes()).hexdigest()
+        final['reference_build']=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        final['mysql_reference_build']=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text())
+        final['endpoints']={s:endpoint(connections[s]) for s in ('aster','aster_b','reference')}
+        check(validate_provenance(provenance,final),'provenance changed during run')
+        done=True
+    finally:
+        for conn,statement in prepared:
+            result=observe(close_prepared(conn,statement))
+            cleanup_ok=result['status']==1 and cleanup_ok
+        for conn in connections.values():
+            if conn and transaction(conn) in (2,3):
+                cleanup_ok=query(conn,'ROLLBACK')['status']==1 and cleanup_ok
+            if conn:
+                finish(conn)
+        summary=dict(cases=len(cases),assertions=checks,self_checks=self_checks,
+            syntax_eligible=eligible if done and cleanup_ok else 0,
+            semantic_array_success=semantic_success if done and cleanup_ok else 0,
+            semantic_error_cases=semantic_errors if done and cleanup_ok else 0,
+            gate_cases=0,unique_effective=eligible if done and cleanup_ok else 0,
+            cleanup_ok=cleanup_ok,scope='rectangular nested arrays, common element types, ragged execution error, parameter binding and dialect isolation')
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and cleanup_ok,'incomplete run/cleanup'
     print(json.dumps(summary),flush=True)
@@ -3386,6 +3659,10 @@ if task == 11:
 
 if task == 9:
     array_handoff()
+    sys.exit(0)
+
+if task == 10:
+    array_nesting_handoff()
     sys.exit(0)
 
 if task == 5:

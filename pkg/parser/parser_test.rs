@@ -3870,6 +3870,230 @@ fn pg_dialect_09_behavior() {
 }
 
 #[test]
+fn pg_dialect_10_behavior() {
+    use parser_ast::{ExprKind, SqlDialect};
+
+    fn expression(sql: &str) -> parser_ast::ExprNode {
+        let result = parser::Parser::with_dialect(SqlDialect::PostgreSQL).ParseOneStmt(sql, "", "");
+        assert!(
+            result.is_ok(),
+            "nested ARRAY syntax must reach the shared AST: {sql}: {}",
+            result.err().unwrap()
+        );
+        result
+            .unwrap()
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap()
+            .Fields
+            .Fields[0]
+            .Expr
+            .clone()
+            .unwrap()
+    }
+
+    fn array(
+        expr: &parser_ast::ExprNode,
+    ) -> (
+        &[parser_ast::ExprNode],
+        &[(usize, usize)],
+        (usize, usize),
+        &[usize],
+    ) {
+        let ExprKind::Array {
+            Elements,
+            ElementSpans,
+            Brackets,
+            Commas,
+        } = &expr.Kind
+        else {
+            panic!("nested constructor must remain an ARRAY node");
+        };
+        (Elements, ElementSpans, *Brackets, Commas)
+    }
+
+    fn shape(expr: &parser_ast::ExprNode) -> Vec<usize> {
+        let (elements, _, _, _) = array(expr);
+        let mut result = vec![elements.len()];
+        if let Some(first) = elements.first() {
+            if matches!(first.Kind, ExprKind::Array { .. }) {
+                let child = shape(first);
+                assert!(elements.iter().all(|element| {
+                    matches!(element.Kind, ExprKind::Array { .. }) && shape(element) == child
+                }));
+                result.extend(child);
+            }
+        }
+        result
+    }
+
+    let assertions = std::cell::Cell::new(0usize);
+    macro_rules! check {
+        ($condition:expr $(, $args:tt)*) => {{
+            assertions.set(assertions.get() + 1);
+            assert!($condition $(, $args)*);
+        }};
+    }
+    macro_rules! check_eq {
+        ($left:expr, $right:expr $(, $args:tt)*) => {{
+            assertions.set(assertions.get() + 1);
+            assert_eq!($left, $right $(, $args)*);
+        }};
+    }
+
+    for (sql, expected_elements) in [
+        (
+            "/*中*/ SELECT ARRAY[ARRAY[1,2],ARRAY[3,4]]",
+            ["ARRAY[1,2]", "ARRAY[3,4]"],
+        ),
+        ("/*中*/ SELECT ARRAY[[1,2],[3,4]]", ["[1,2]", "[3,4]"]),
+    ] {
+        let expr = expression(sql);
+        let (elements, spans, brackets, commas) = array(&expr);
+        check_eq!(elements.len(), 2);
+        check_eq!(commas.len(), 1);
+        check_eq!(shape(&expr), [2, 2]);
+        check_eq!(expr.OriginTextPosition as usize, sql.find("ARRAY").unwrap());
+        check_eq!(
+            expr.node_text.Text(),
+            &sql[sql.find("ARRAY").unwrap()..brackets.1 + 1]
+        );
+        check_eq!(&sql[brackets.0..brackets.0 + 1], "[");
+        check_eq!(&sql[brackets.1..brackets.1 + 1], "]");
+        check_eq!(&sql[commas[0]..commas[0] + 1], ",");
+        for ((element, &(start, end)), expected) in
+            elements.iter().zip(spans).zip(expected_elements)
+        {
+            check_eq!(&sql[start..end], expected);
+            check!(sql.is_char_boundary(start) && sql.is_char_boundary(end));
+            check_eq!(element.OriginTextPosition as usize, start);
+            check_eq!(element.node_text.Text(), expected);
+            let (inner, inner_spans, inner_brackets, inner_commas) = array(element);
+            check_eq!(inner.len(), 2);
+            check_eq!(inner_commas.len(), 1);
+            check_eq!(&sql[inner_brackets.0..inner_brackets.0 + 1], "[");
+            check_eq!(&sql[inner_brackets.1..inner_brackets.1 + 1], "]");
+            let inner_source = expected
+                .strip_prefix("ARRAY")
+                .unwrap_or(expected)
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            for ((start, end), value) in inner_spans.iter().zip(inner_source.split(',')) {
+                check_eq!(&sql[*start..*end], value);
+            }
+        }
+    }
+
+    let ragged_sql = "SELECT ARRAY[[1,2],[3]]";
+    let ragged = expression(ragged_sql);
+    let (outer, outer_spans, _, _) = array(&ragged);
+    check_eq!(outer.len(), 2);
+    check_eq!(shape(&outer[0]), [2]);
+    check_eq!(shape(&outer[1]), [1]);
+    check_eq!(&ragged_sql[outer_spans[0].0..outer_spans[0].1], "[1,2]");
+    check_eq!(&ragged_sql[outer_spans[1].0..outer_spans[1].1], "[3]");
+    check!(!ragged_sql.contains("NULL"));
+
+    let parameters_sql = "SELECT ARRAY[ARRAY[$2,$1],ARRAY[$1,$2]]";
+    let parameters = expression(parameters_sql);
+    struct ParameterIndexes(Vec<usize>);
+    impl parser_ast::Visitor for ParameterIndexes {
+        fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                if let Some(index) = expr.PostgreSQLParameterIndex() {
+                    self.0.push(usize::from(index));
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+            true
+        }
+    }
+    let mut indexes = ParameterIndexes(vec![]);
+    parser_ast::Node::accept(&parameters, &mut indexes);
+    check_eq!(indexes.0, [2, 1, 1, 2]);
+    let (outer, spans, _, _) = array(&parameters);
+    for ((element, &(start, end)), expected) in outer
+        .iter()
+        .zip(spans)
+        .zip(["ARRAY[$2,$1]", "ARRAY[$1,$2]"])
+    {
+        check_eq!(&parameters_sql[start..end], expected);
+        check_eq!(element.node_text.Text(), expected);
+    }
+
+    let nulls = expression("SELECT ARRAY[[NULL,1],[2,NULL]]");
+    let (rows, _, _, _) = array(&nulls);
+    check_eq!(rows.len(), 2);
+    for row in rows {
+        let (elements, _, _, _) = array(row);
+        check_eq!(elements.len(), 2);
+    }
+    check!(matches!(
+        array(&rows[0]).0[0].Kind,
+        ExprKind::Value(ref value) if value.Datum == parser_ast::ValueDatum::Null
+    ));
+    check!(matches!(
+        array(&rows[1]).0[1].Kind,
+        ExprKind::Value(ref value) if value.Datum == parser_ast::ValueDatum::Null
+    ));
+
+    let numeric = expression("SELECT ARRAY[1,2.5]");
+    let (elements, _, _, _) = array(&numeric);
+    check_eq!(elements.len(), 2);
+    check!(
+        matches!(elements[0].Kind, ExprKind::Value(ref value) if value.Datum == parser_ast::ValueDatum::Int64(1))
+    );
+    check!(
+        matches!(elements[1].Kind, ExprKind::Value(ref value) if matches!(value.Datum, parser_ast::ValueDatum::Decimal(_)))
+    );
+
+    let mixed_types = expression("SELECT ARRAY[1,true]");
+    let (elements, spans, _, _) = array(&mixed_types);
+    check_eq!(elements.len(), 2);
+    check_eq!(
+        &mixed_types.node_text.Text()[spans[0].0 - mixed_types.OriginTextPosition as usize
+            ..spans[1].1 - mixed_types.OriginTextPosition as usize],
+        "1,true"
+    );
+
+    for sql in [
+        "/*中*/ SELECT ARRAY[[1,2],[3,4]",
+        "/*中*/ SELECT ARRAY[ARRAY[1,2],ARRAY[3,4]",
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        check!(parser.ParseOneStmt(sql, "", "").is_err());
+        check_eq!(
+            parser.PostgreSQLEofErrorPosition(),
+            Some(sql.chars().count() + 1)
+        );
+        check!(parser.ParseOneStmt("SELECT 1::int4", "", "").is_ok());
+    }
+
+    let protected = expression("SELECT 'ARRAY[[1,2],[3,4]]' /* ARRAY[] $2 */");
+    check!(matches!(
+        protected.Kind,
+        ExprKind::Value(ref value) if value.text() == "ARRAY[[1,2],[3,4]]"
+    ));
+    for sql in [
+        "SELECT ARRAY[ARRAY[1,2],ARRAY[3,4]]",
+        "SELECT ARRAY[[1,2],[3,4]]",
+    ] {
+        check!(
+            parser::Parser::with_dialect(SqlDialect::MySQL)
+                .ParseOneStmt(sql, "", "")
+                .is_err(),
+            "PostgreSQL nested ARRAY leaked into MySQL: {sql}"
+        );
+    }
+    println!(
+        "pg_dialect_10_behavior: 10 unique nested/type/parameter/error inputs; {} tree, source, NULL, recovery and dialect assertions",
+        assertions.get()
+    );
+}
+
+#[test]
 fn pg_dialect_11_behavior() {
     use parser_ast::{ExprKind, SqlDialect};
     fn expression(sql: &str) -> parser_ast::ExprNode {

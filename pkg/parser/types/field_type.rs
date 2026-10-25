@@ -37,10 +37,10 @@ pub static mut TiDBStrictIntegerDisplayWidth: bool = false;
 
 /// PostgreSQL array element identity, separate from MySQL JSON/multi-valued indexes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum PostgreSQLArrayElement { Int4, Int8, Text }
+pub enum PostgreSQLArrayElement { Int4, Int8, Numeric, Bool, Text }
 impl PostgreSQLArrayElement {
-    pub fn oid(self) -> u32 { match self { Self::Int4 => 23, Self::Int8 => 20, Self::Text => 25 } }
-    pub fn array_oid(self) -> u32 { match self { Self::Int4 => 1007, Self::Int8 => 1016, Self::Text => 1009 } }
+    pub fn oid(self) -> u32 { match self { Self::Int4 => 23, Self::Int8 => 20, Self::Numeric => 1700, Self::Bool => 16, Self::Text => 25 } }
+    pub fn array_oid(self) -> u32 { match self { Self::Int4 => 1007, Self::Int8 => 1016, Self::Numeric => 1231, Self::Bool => 1000, Self::Text => 1009 } }
 }
 
 /// FieldType 是列/表达式的完整类型描述，字段布局对齐 Go 同名结构。

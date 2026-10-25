@@ -417,12 +417,26 @@ impl PgService {
                                 )?,
                                 Err(error) => {
                                     extended.session.record_error(context.as_ref());
-                                    write_error(
-                                        socket,
-                                        "ERROR",
-                                        sqlstate(&error),
-                                        &error.to_string(),
-                                    )?
+                                    if let crate::conn::ConnError::PgArray(array) = &error {
+                                        let position = array.position.and_then(|offset| {
+                                            sql.get(..offset)
+                                                .map(|prefix| prefix.chars().count() + 1)
+                                        });
+                                        write_sql_error(
+                                            socket,
+                                            array.state,
+                                            &error.to_string(),
+                                            sql,
+                                            position,
+                                        )?;
+                                    } else {
+                                        write_error(
+                                            socket,
+                                            "ERROR",
+                                            sqlstate(&error),
+                                            &error.to_string(),
+                                        )?
+                                    }
                                 }
                             }
                             write_message(
@@ -537,12 +551,22 @@ impl PgService {
                                     Err(error) => {
                                         extended.session.record_error(context.as_ref());
                                         if matches!(&error, crate::conn::ConnError::PgArray(_)) {
+                                            let position = match &error {
+                                                crate::conn::ConnError::PgArray(array) => {
+                                                    array.position.and_then(|offset| {
+                                                        original_sql.get(..offset).map(|prefix| {
+                                                            prefix.chars().count() + 1
+                                                        })
+                                                    })
+                                                }
+                                                _ => None,
+                                            };
                                             write_sql_error(
                                                 socket,
                                                 sqlstate(&error),
                                                 &error.to_string(),
                                                 original_sql,
-                                                None,
+                                                position,
                                             )?;
                                         } else {
                                             write_error(

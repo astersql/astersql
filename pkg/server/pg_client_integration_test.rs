@@ -1149,6 +1149,11 @@ fn pg_dialect_09_libpq() {
 }
 
 #[test]
+fn pg_dialect_10_libpq() {
+    pg_dialect_libpq(10);
+}
+
+#[test]
 fn pg_dialect_11_libpq() {
     pg_dialect_libpq(11);
 }
@@ -1989,7 +1994,7 @@ fn pg_dialect_libpq(task: u8) {
     assert!(std::env::var_os("PG18_REFERENCE_DSN").is_some());
     assert!(std::env::var_os("PG_CORE_REFERENCE_BUILD_FILE").is_some());
     assert!(std::env::var_os("MYSQL_REFERENCE_DSN").is_some());
-    if matches!(task, 6 | 7 | 8) {
+    if matches!(task, 6 | 7 | 8 | 10) {
         assert!(std::env::var_os("MYSQL_REFERENCE_BUILD_FILE").is_some());
     }
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
@@ -2120,6 +2125,144 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 10 {
+            use std::io::Write;
+
+            mysql_query(socket, "SET SESSION sql_mode=''");
+            mysql_query(socket, "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci");
+            mysql_query(socket, "SET time_zone='+00:00'");
+            let sql = if let Some(case_id) = phase.strip_prefix("PG_DIALECT_CHECKPOINT ") {
+                let cases: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(evidence.join("cases.json")).unwrap(),
+                )
+                .unwrap();
+                Some(
+                    cases
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|case| case["case_id"] == case_id)
+                        .unwrap_or_else(|| panic!("unregistered MySQL checkpoint: {case_id}"))["sql"]
+                        .as_str()
+                        .expect("original PostgreSQL SQL in task case registry")
+                        .to_owned(),
+                )
+            } else {
+                None
+            };
+            let before = mysql_query(socket, "SELECT 1");
+            assert_eq!(before, vec![vec![Some(b"1".to_vec())]]);
+            let isolation_sql = format!("SELECT id FROM {database}.dialect_isolation");
+            let isolation_before = mysql_query(socket, &isolation_sql);
+            assert_eq!(isolation_before, vec![vec![Some(b"31".to_vec())]]);
+            if phase == "before" {
+                let mut prepare = vec![0x16];
+                prepare.extend_from_slice(b"SELECT JSON_ARRAY(1,2)");
+                mysql_packet(socket, 0, &prepare);
+                let prepared = mysql_read(socket);
+                assert_eq!(prepared[0], 0, "MySQL JSON_ARRAY prepare control");
+                let columns = u16::from_le_bytes(prepared[5..7].try_into().unwrap());
+                let parameters = u16::from_le_bytes(prepared[7..9].try_into().unwrap());
+                assert_eq!((columns, parameters), (1, 0));
+                let column = mysql_read(socket);
+                let local_type = column_type(&column);
+                assert_eq!(
+                    local_type, 253,
+                    "freeze local MySQL JSON_ARRAY metadata baseline"
+                );
+                assert_eq!(mysql_read(socket)[0], 0xfe);
+                let mut close = vec![0x19];
+                close.extend_from_slice(&prepared[1..5]);
+                mysql_packet(socket, 0, &close);
+                let mut prepare_isolation = vec![0x16];
+                prepare_isolation.extend_from_slice(isolation_sql.as_bytes());
+                mysql_packet(socket, 0, &prepare_isolation);
+                let prepared_isolation = mysql_read(socket);
+                assert_eq!(prepared_isolation[0], 0);
+                assert_eq!(
+                    (
+                        u16::from_le_bytes(prepared_isolation[5..7].try_into().unwrap()),
+                        u16::from_le_bytes(prepared_isolation[7..9].try_into().unwrap())
+                    ),
+                    (1, 0)
+                );
+                let isolation_column = mysql_read(socket);
+                let isolation_type = column_type(&isolation_column);
+                assert_eq!(isolation_type, 3, "freeze local INT column type");
+                assert_eq!(mysql_read(socket)[0], 0xfe);
+                let mut close_isolation = vec![0x19];
+                close_isolation.extend_from_slice(&prepared_isolation[1..5]);
+                mysql_packet(socket, 0, &close_isolation);
+                assert_eq!(mysql_query(socket, "SELECT 1"), before);
+                std::fs::write(
+                    evidence.join("mysql-local-prepare.json"),
+                    serde_json::json!({
+                        "sql": "SELECT JSON_ARRAY(1,2)",
+                        "prepared": true,
+                        "columns": columns,
+                        "parameters": parameters,
+                        "mysql_type": local_type,
+                        "isolation_column_type": isolation_type,
+                        "statement_closed": true
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+            }
+            if let Some(case_id) = phase.strip_prefix("PG_DIALECT_CHECKPOINT ") {
+                let mut request = vec![3];
+                request.extend_from_slice(sql.as_deref().unwrap().as_bytes());
+                mysql_packet(socket, 0, &request);
+                let response = mysql_read(socket);
+                assert_eq!(response[0], 0xff, "MySQL accepted PostgreSQL ARRAY input");
+                let error_code = u16::from_le_bytes(response[1..3].try_into().unwrap());
+                let sqlstate = String::from_utf8_lossy(&response[4..9]).to_string();
+                assert_eq!(error_code, 1064);
+                assert_eq!(sqlstate, "42000");
+                let control = mysql_query(socket, "SELECT JSON_ARRAY(1,2)");
+                assert_eq!(control, vec![vec![Some(b"[1, 2]".to_vec())]]);
+                let isolation_after = mysql_query(socket, &isolation_sql);
+                assert_eq!(
+                    isolation_after, isolation_before,
+                    "rejected input changed the MySQL fixture"
+                );
+                let recovery = mysql_query(socket, "SELECT 1");
+                assert_eq!(
+                    recovery, before,
+                    "MySQL did not recover on the same connection"
+                );
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(evidence.join("mysql-local.jsonl"))
+                    .unwrap();
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "phase": phase,
+                        "postgresql_sql": sql,
+                        "mysql_error_code": error_code,
+                        "mysql_sqlstate": sqlstate,
+                        "before": before,
+                        "isolation_before": isolation_before,
+                        "isolation_after": isolation_after,
+                        "json_array_control": control,
+                        "recovery": recovery,
+                        "sql_mode": "",
+                        "character_set": "utf8mb4",
+                        "collation": "utf8mb4_general_ci",
+                        "time_zone": "+00:00",
+                        "packet": response
+                    })
+                )
+                .unwrap();
+            } else {
+                assert_eq!(mysql_query(socket, "SELECT 1"), before);
+                assert_eq!(mysql_query(socket, &isolation_sql), isolation_before);
+            }
+        }
         if task == 7 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             use std::io::Write;
 
@@ -2925,6 +3068,42 @@ fn pg_dialect_libpq(task: u8) {
                 .count(),
             8
         );
+        return;
+    }
+    if task == 10 {
+        assert_eq!(checkpoints, 8);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cases"], 8);
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["syntax_eligible"], 8);
+        assert_eq!(summary["gate_cases"], 0);
+        assert_eq!(summary["semantic_array_success"], 5);
+        assert_eq!(summary["semantic_error_cases"], 3);
+        assert_eq!(summary["unique_effective"], 8);
+        assert!(summary["assertions"].as_u64().unwrap() >= 100);
+        assert_eq!(summary["self_checks"], 2);
+        let mysql_local = pg_dialect_jsonl(&evidence.join("mysql-local.jsonl"));
+        let mysql_array_cases = mysql_local
+            .iter()
+            .filter(|record| record["mysql_error_code"].as_u64() == Some(1064))
+            .filter_map(|record| record["case_id"].as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(mysql_array_cases.len(), 8);
+        let mysql: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence.join("provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mysql["reference"]["server_version_num"], "180006");
+        assert!(mysql["mysql_reference_build"].is_object());
+        let mysql_prepare: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence.join("mysql-local-prepare.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mysql_prepare["prepared"], true);
+        assert_eq!(mysql_prepare["mysql_type"], 253);
+        assert_eq!(mysql_prepare["isolation_column_type"], 3);
         return;
     }
     if task == 5 {

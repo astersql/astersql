@@ -10,11 +10,11 @@
 - 以 `apply_rule` 实现表达式文法的 AST 构造：列名、字面量、变量、算术/逻辑/比较谓词、子查询、函数和聚合、CASE、CAST、日期时间单位、JSON 运算等。
 - 维护归约间的中间语义值。AST 节点写入 `yySymType.expr`；列表、布尔开关、操作符、类型和枚举等写入类型擦除的 `yySymType.item`；标识符结果写入 `yySymType.ident`。
 - 在构造阶段完成 Go 文法要求的局部验证和归一化，例如字符集/排序规则检查、CAST 精度检查、`LIKE ... ESCAPE` 长度检查、`SignedNum` 的 `i64` 边界检查，以及系统变量作用域解析。
-- 保持当前 Rust action 清单完整且与其他 action 模块互斥。`pkg/parser/parser_actions/query_expression_aster_unit_test.rs::query_expression_rule_coverage` 从 `grammar/main.astergram` 计算出 288 个需要 action 的表达式产生式，并逐个要求 `expression::owns` 命中。
+- 保持当前 Rust action 清单完整且与其他 action 模块互斥。`pkg/parser/parser_actions/query_expression_aster_unit_test.rs::query_expression_rule_coverage` 从 `grammar/main.astergram` 计算出 296 个需要 action 的表达式产生式，并逐个要求 `expression::owns` 命中。
 
 ## 主要符号
 
-- `ExpressionRule`：私有、可比较的枚举，共 291 个 Rust 变体。变体按非终结符和候选编号命名；部分变体可服务共享动作或兼容别名，因此它不应被当作“文法产生式数”的替代，权威覆盖数由测试从文法计算为 288。
+- `ExpressionRule`：私有、可比较的枚举，共 302 个 Rust 变体。变体按非终结符和候选编号命名；部分变体可服务共享动作或兼容别名，因此它不应被当作“文法产生式数”的替代，权威覆盖数由测试从文法计算为 296。
 - `identify(rule_id: RuleId) -> Option<ExpressionRule>`：规则所有权表。输入是生成器的稳定规则 ID，例如 `expression_expression_logor_expression_prec_pipe--...`；未知 ID 返回 `None`。
 - `owns(rule_id: RuleId) -> bool`：供 `parser_actions::apply` 和 `has_semantic_action` 使用的轻量所有权检查，仅调用 `identify`。
 - `apply(rule_id, rhs, context) -> Option<Result<bool, isize>>`：本模块的窄入口。非本模块规则返回 `None`；本模块规则调用 `apply_rule` 并保留三层结果语义。
@@ -131,3 +131,9 @@ PgCastType 仅在 PostgreSQL 身份下接受 int4/integer/int 和 int8/bigint，
 
 
 2026-10-24 int8：PG ::int8 和 CAST(... AS bigint/int8) 设置 PostgreSQLInt8 标记；每层嵌套保留各自目标，MySQL 解析不选择该标记。
+
+## PostgreSQL ARRAY 嵌套构造（2026-10-25）
+
+`PgArray` 仍从 `ARRAY[...]` 的元素列表创建共享 `ExprKind::Array`。隐式二维语法用独立 `PgArrayRows` 聚合 `PgArrayRow` 节点；`PgArrayRow` 根据其普通表达式列表创建内层 Array，`PgArrayNestedFirst/Next` 保留行节点和外层逗号。显式 `ARRAY[ARRAY[...], ...]` 沿普通 Expression 递归路径。外层与内层各自保留开闭括号、元素跨度、逗号和 `OriginTextPosition`，不把不等长行补成 NULL。
+
+数组消费者在 `pkg/session/runtime/pg_array.rs` 递归推断共同叶类型，并把参数 OID 约束传播到内层标记。整数与 numeric 使用 PostgreSQL 共同类型提升；互不兼容的元素在 Prepare 以 42804 和原 SQL 字符位置报告。矩形约束在执行构造值时检查，非矩形行返回 2202E。`pkg/server/pg_result.rs` 按真实维度编码文本和 binary array，并保留元素 NULL、OID 与 binary 数值格式。

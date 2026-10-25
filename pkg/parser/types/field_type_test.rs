@@ -324,4 +324,8 @@ fn pg_dialect_09_array_identity_is_not_mysql_json() {
             .unwrap()
             .contains("PostgreSQLArrayElement")
     );
+    assert_eq!(PostgreSQLArrayElement::Numeric.oid(), 1700);
+    assert_eq!(PostgreSQLArrayElement::Numeric.array_oid(), 1231);
+    assert_eq!(PostgreSQLArrayElement::Bool.oid(), 16);
+    assert_eq!(PostgreSQLArrayElement::Bool.array_oid(), 1000);
 }

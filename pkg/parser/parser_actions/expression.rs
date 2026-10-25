@@ -26,6 +26,9 @@ enum ExpressionRule {
     PgArrayEmpty,
     PgArrayFirst,
     PgArrayNext,
+    PgArrayNestedFirst,
+    PgArrayNestedNext,
+    PgArrayRow,
     PgCastType,
     PgPostfixCast,
     ColumnNameAlt01,
@@ -326,6 +329,13 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "pgarrayelements--6be43a6fd9578184" => Some(ExpressionRule::PgArrayEmpty),
         "pgarraylist_expression--6d01bd618a315b86" => Some(ExpressionRule::PgArrayFirst),
         "pgarraylist_pgarraylist_expression--5218f5a6838f5614" => Some(ExpressionRule::PgArrayNext),
+        "pgarrayrows_pgarrayrow--208a388e82b3b857" => {
+            Some(ExpressionRule::PgArrayNestedFirst)
+        }
+        "pgarrayrows_pgarrayrows_pgarrayrow--38df4b937371de02" => {
+            Some(ExpressionRule::PgArrayNestedNext)
+        }
+        "pgarrayrow_pgarraylist--f75d26ccaf8553d2" => Some(ExpressionRule::PgArrayRow),
         "pgcasttype_bigint--ae5884bd608717ab"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
@@ -1024,6 +1034,66 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 commas.push(rhs[2].offset as usize);
             }
             out.item = Some(Box::new((elements, starts, commas)));
+        }
+        ExpressionRule::PgArrayNestedFirst | ExpressionRule::PgArrayNestedNext => {
+            let append = rule == ExpressionRule::PgArrayNestedNext;
+            let (mut elements, mut starts, mut commas) = if append {
+                rhs[1]
+                    .item
+                    .as_deref()
+                    .and_then(|item| {
+                        item.downcast_ref::<(Vec<parser_ast::ExprNode>, Vec<usize>, Vec<usize>)>()
+                    })
+                    .cloned()
+                    .unwrap()
+            } else {
+                (vec![], vec![], vec![])
+            };
+            let (row, comma) = if append { (3, Some(2)) } else { (1, None) };
+            let nested = rhs[row].expr.clone().unwrap();
+            elements.push(nested.clone());
+            starts.push(nested.OriginTextPosition as usize);
+            if append {
+                commas.push(rhs[comma.unwrap()].offset as usize);
+            }
+            out.item = Some(Box::new((elements, starts, commas)));
+        }
+        ExpressionRule::PgArrayRow => {
+            let (elements, starts, commas) = rhs[2]
+                .item
+                .as_deref()
+                .and_then(|item| {
+                    item.downcast_ref::<(Vec<parser_ast::ExprNode>, Vec<usize>, Vec<usize>)>()
+                })
+                .cloned()
+                .unwrap();
+            let start = rhs[1].offset as usize;
+            let close = rhs[3].offset as usize;
+            let spans = starts
+                .iter()
+                .enumerate()
+                .map(|(index, &element_start)| {
+                    let end = commas.get(index).copied().unwrap_or(close);
+                    (
+                        element_start,
+                        element_start + parser_state.src[element_start..end].trim_end().len(),
+                    )
+                })
+                .collect();
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(start as i32);
+            node_text.SetText(None, &parser_state.src[start..close + 1]);
+            out.expr = Some(parser_ast::ExprNode {
+                node_text,
+                Kind: parser_ast::ExprKind::Array {
+                    Elements: elements,
+                    ElementSpans: spans,
+                    Brackets: (start, close),
+                    Commas: commas,
+                },
+                OriginTextPosition: start as i32,
+                Flag: Default::default(),
+            });
         }
         ExpressionRule::PgRow => {
             let (fields, starts, commas) = rhs[3]

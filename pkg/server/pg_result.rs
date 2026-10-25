@@ -459,8 +459,8 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     }
     let text = match oid {
         16 => match text.as_str() {
-            "1" | "true" => "t".to_owned(),
-            "0" | "false" => "f".to_owned(),
+            "1" | "true" | "t" => "t".to_owned(),
+            "0" | "false" | "f" => "f".to_owned(),
             _ => return Err(invalid("invalid engine boolean value")),
         },
         // MySQL accepts zero dates and extended/negative TIME durations;
@@ -530,7 +530,8 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .to_be_bytes()
             .to_vec(),
         19 | 25 | 1042 | 1043 => text.as_bytes().to_vec(),
-        22 | 30 | 1005 | 1007 | 1009 | 1016 | 1028 => binary_array(text, oid)?,
+        1700 => binary_numeric(text)?,
+        22 | 30 | 1000 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
         1082 | 1083 | 1114 => {
             use chrono::Timelike;
             let epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
@@ -577,7 +578,193 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-/// Catalog providers emit bounded, one-dimensional arrays and vectors.
+#[derive(Debug)]
+enum ArrayTextValue {
+    Array(Vec<ArrayTextValue>),
+    Item(Option<String>),
+}
+
+fn parse_array_text(chars: &[char], position: &mut usize) -> io::Result<ArrayTextValue> {
+    if chars.get(*position) != Some(&'{') {
+        return Err(invalid("invalid PostgreSQL array text"));
+    }
+    *position += 1;
+    let mut values = Vec::new();
+    if chars.get(*position) == Some(&'}') {
+        *position += 1;
+        return Ok(ArrayTextValue::Array(values));
+    }
+    loop {
+        let value = if chars.get(*position) == Some(&'{') {
+            parse_array_text(chars, position)?
+        } else {
+            let quoted = chars.get(*position) == Some(&'"');
+            if quoted {
+                *position += 1;
+            }
+            let mut item = String::new();
+            let mut escaped = false;
+            let mut closed = !quoted;
+            while let Some(character) = chars.get(*position).copied() {
+                match character {
+                    '\\' => {
+                        escaped = true;
+                        *position += 1;
+                        item.push(
+                            *chars
+                                .get(*position)
+                                .ok_or_else(|| invalid("invalid array escape"))?,
+                        );
+                        *position += 1;
+                    }
+                    '"' if quoted => {
+                        *position += 1;
+                        closed = true;
+                        break;
+                    }
+                    ',' | '}' if !quoted => break,
+                    '{' | '}' if quoted => {
+                        item.push(character);
+                        *position += 1;
+                    }
+                    _ => {
+                        item.push(character);
+                        *position += 1;
+                    }
+                }
+            }
+            if !closed || (!quoted && item.is_empty()) {
+                return Err(invalid("invalid PostgreSQL array item"));
+            }
+            ArrayTextValue::Item(if !quoted && !escaped && item == "NULL" {
+                None
+            } else {
+                Some(item)
+            })
+        };
+        values.push(value);
+        match chars.get(*position) {
+            Some(',') => {
+                *position += 1;
+                if chars.get(*position) == Some(&'}') {
+                    return Err(invalid("empty PostgreSQL array item"));
+                }
+            }
+            Some('}') => {
+                *position += 1;
+                break;
+            }
+            _ => return Err(invalid("invalid PostgreSQL array delimiter")),
+        }
+    }
+    Ok(ArrayTextValue::Array(values))
+}
+
+fn array_shape(value: &ArrayTextValue) -> io::Result<Vec<usize>> {
+    let ArrayTextValue::Array(values) = value else {
+        return Err(invalid("invalid PostgreSQL array root"));
+    };
+    if values.is_empty() {
+        return Ok(vec![0]);
+    }
+    let nested = matches!(values.first(), Some(ArrayTextValue::Array(_)));
+    if values
+        .iter()
+        .any(|value| matches!(value, ArrayTextValue::Array(_)) != nested)
+    {
+        return Err(invalid("inconsistent PostgreSQL array dimensions"));
+    }
+    let mut shape = vec![values.len()];
+    if nested {
+        let child = array_shape(&values[0])?;
+        for value in &values[1..] {
+            if array_shape(value)? != child {
+                return Err(invalid("inconsistent PostgreSQL array dimensions"));
+            }
+        }
+        shape.extend(child);
+    }
+    Ok(shape)
+}
+
+fn flatten_array(value: &ArrayTextValue, output: &mut Vec<Option<String>>) {
+    if let ArrayTextValue::Array(values) = value {
+        for value in values {
+            match value {
+                ArrayTextValue::Array(_) => flatten_array(value, output),
+                ArrayTextValue::Item(item) => output.push(item.clone()),
+            }
+        }
+    }
+}
+
+/// Encode PostgreSQL's base-10000 binary numeric representation.
+fn binary_numeric(text: &str) -> io::Result<Vec<u8>> {
+    let (negative, value) = match text.strip_prefix('-') {
+        Some(value) => (true, value),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (integer, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if (integer.is_empty() && fraction.is_empty())
+        || !integer
+            .chars()
+            .chain(fraction.chars())
+            .all(|character| character.is_ascii_digit())
+    {
+        return Err(invalid("invalid binary numeric value"));
+    }
+    let scale = i16::try_from(fraction.len()).map_err(|_| invalid("numeric scale out of range"))?;
+    let padded_integer = format!(
+        "{:0>width$}",
+        if integer.is_empty() { "0" } else { integer },
+        width = ((integer.len().max(1) + 3) / 4) * 4
+    );
+    let mut digits = padded_integer
+        .as_bytes()
+        .chunks(4)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap().parse::<u16>().unwrap())
+        .collect::<Vec<_>>();
+    let integer_groups = digits.len();
+    if !fraction.is_empty() {
+        let padded_fraction = format!("{fraction:0<width$}", width = (fraction.len() + 3) / 4 * 4);
+        digits.extend(
+            padded_fraction
+                .as_bytes()
+                .chunks(4)
+                .map(|chunk| std::str::from_utf8(chunk).unwrap().parse::<u16>().unwrap()),
+        );
+    }
+    let mut weight =
+        i16::try_from(integer_groups).map_err(|_| invalid("numeric weight out of range"))? - 1;
+    while digits.first() == Some(&0) {
+        digits.remove(0);
+        weight -= 1;
+    }
+    while digits.last() == Some(&0) {
+        digits.pop();
+    }
+    let count =
+        i16::try_from(digits.len()).map_err(|_| invalid("numeric digit count out of range"))?;
+    let mut output = count.to_be_bytes().to_vec();
+    output.extend_from_slice(&weight.to_be_bytes());
+    output.extend_from_slice(
+        &(if digits.is_empty() {
+            0u16
+        } else if negative {
+            0x4000u16
+        } else {
+            0u16
+        })
+        .to_be_bytes(),
+    );
+    output.extend_from_slice(&scale.to_be_bytes());
+    for digit in digits {
+        output.extend_from_slice(&digit.to_be_bytes());
+    }
+    Ok(output)
+}
+
+/// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
     let vector = matches!(oid, 22 | 30);
     let element_oid: u32 = match oid {
@@ -586,80 +773,52 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1007 => 23,
         1016 => 20,
         1009 => 25,
+        1000 => 16,
+        1231 => 1700,
         _ => unreachable!(),
     };
-    let values = if vector {
-        text.split_ascii_whitespace()
+    let (values, dimensions, lower_bounds) = if vector {
+        let values = text
+            .split_ascii_whitespace()
             .map(|s| Some(s.to_owned()))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let dims =
+            vec![i32::try_from(values.len()).map_err(|_| invalid("array dimension too large"))?];
+        (values, dims, vec![0i32])
     } else {
-        let inner = text
-            .strip_prefix('{')
-            .and_then(|s| s.strip_suffix('}'))
-            .ok_or_else(|| invalid("invalid catalog array"))?;
-        let mut values = Vec::new();
-        let mut chars = inner.chars().peekable();
-        while chars.peek().is_some() {
-            let quoted = chars.peek() == Some(&'"');
-            if quoted {
-                chars.next();
-            }
-            let mut item = String::new();
-            let mut closed = !quoted;
-            let mut escaped = false;
-            let mut delimiter = false;
-            while let Some(c) = chars.next() {
-                match c {
-                    '\\' => {
-                        escaped = true;
-                        item.push(
-                            chars
-                                .next()
-                                .ok_or_else(|| invalid("invalid array escape"))?,
-                        );
-                    }
-                    '"' if quoted => {
-                        closed = true;
-                        break;
-                    }
-                    ',' if !quoted => {
-                        delimiter = true;
-                        break;
-                    }
-                    '{' | '}' if !quoted => {
-                        return Err(invalid("nested catalog array unsupported"));
-                    }
-                    _ => item.push(c),
-                }
-            }
-            if !closed {
-                return Err(invalid("unterminated catalog array item"));
-            }
-            if quoted && chars.peek().is_some() {
-                if chars.next() != Some(',') {
-                    return Err(invalid("invalid catalog array delimiter"));
-                }
-                delimiter = true;
-            }
-            if (!quoted && item.is_empty()) || (delimiter && chars.peek().is_none()) {
-                return Err(invalid("empty unquoted catalog array item"));
-            }
-            values.push(if !quoted && !escaped && item == "NULL" {
-                None
-            } else {
-                Some(item)
-            });
+        let chars = text.chars().collect::<Vec<_>>();
+        let mut position = 0;
+        let parsed = parse_array_text(&chars, &mut position)?;
+        if position != chars.len() {
+            return Err(invalid("trailing PostgreSQL array text"));
         }
-        values
+        let shape = if matches!(&parsed,ArrayTextValue::Array(values) if values.is_empty()) {
+            vec![]
+        } else {
+            array_shape(&parsed)?
+        };
+        let mut values = Vec::new();
+        flatten_array(&parsed, &mut values);
+        let dimensions = shape
+            .iter()
+            .map(|value| i32::try_from(*value).map_err(|_| invalid("array dimension too large")))
+            .collect::<io::Result<Vec<_>>>()?;
+        (values, dimensions, vec![1i32; shape.len()])
     };
-    let mut output = (i32::from(vector || !values.is_empty()))
+    let dimension_count = if vector || !values.is_empty() {
+        dimensions.len()
+    } else {
+        0
+    };
+    let mut output = i32::try_from(dimension_count)
+        .map_err(|_| invalid("array rank too large"))?
         .to_be_bytes()
         .to_vec();
     output.extend_from_slice(&i32::from(values.iter().any(Option::is_none)).to_be_bytes());
     output.extend_from_slice(&element_oid.to_be_bytes());
-    if vector || !values.is_empty() {
-        output.extend_from_slice(&length(values.len())?.to_be_bytes());
-        output.extend_from_slice(&(if vector { 0i32 } else { 1i32 }).to_be_bytes());
+    for (dimension, lower_bound) in dimensions.into_iter().zip(lower_bounds) {
+        output.extend_from_slice(&dimension.to_be_bytes());
+        output.extend_from_slice(&lower_bound.to_be_bytes());
     }
     for value in values {
         let bytes = match value {

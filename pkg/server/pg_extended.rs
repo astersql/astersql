@@ -714,16 +714,27 @@ impl Extended {
                 } else if let Some(catalog) = &catalog {
                     catalog.metadata()
                 } else {
+                    let analysis_sql = analysis_sql.as_deref().unwrap_or(&sql);
                     context
                         .prepare_statement_with_parameter_types(
-                            analysis_sql.as_deref().unwrap_or(&sql),
+                            analysis_sql,
                             &analysis_mapping
                                 .iter()
                                 .map(|index| oids[*index])
                                 .collect::<Vec<_>>(),
                             &CancellationToken::new(),
                         )
-                        .map_err(engine)?
+                        .map_err(|error| {
+                            if let crate::conn::ConnError::PgArray(array) = &error {
+                                self.session.relation_error_position =
+                                    array.position.and_then(|offset| {
+                                        analysis_sql
+                                            .get(..offset)
+                                            .map(|prefix| prefix.chars().count() + 1)
+                                    });
+                            }
+                            engine(error)
+                        })?
                 };
                 if catalog.is_none() && metadata.parameter_count != analysis_mapping.len() {
                     if catalog.is_none() && session_query.is_none() {

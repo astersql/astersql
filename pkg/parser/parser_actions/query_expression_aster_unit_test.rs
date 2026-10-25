@@ -55,6 +55,10 @@ const EXPRESSION_NONTERMINALS: &[&str] = &[
     "NowSymOptionFraction",
     "NowSymOptionFractionParentheses",
     "OptGConcatSeparator",
+    "PgArrayElements",
+    "PgArrayList",
+    "PgArrayRow",
+    "PgArrayRows",
     "PredicateExpr",
     "RegexpOrNotOp",
     "SignedLiteral",
@@ -215,10 +219,10 @@ fn query_expression_rule_coverage() {
 
     assert_eq!(
         expression_expected.len(),
-        288,
+        296,
         "expression RuleId inventory changed"
     );
-    assert_eq!(query_expected.len(), 235, "query RuleId inventory changed");
+    assert_eq!(query_expected.len(), 237, "query RuleId inventory changed");
     assert!(expression_expected.is_disjoint(&query_expected));
 
     for rule_id in RULE_IDS_BY_REDUCTION.iter().copied() {

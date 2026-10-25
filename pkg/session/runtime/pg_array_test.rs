@@ -71,7 +71,74 @@ fn pg_dialect_09_array_analysis_and_values() {
         .pg_array_error()
         .unwrap()
         .state,
-        "0A000"
+        "42804"
+    );
+}
+
+#[test]
+fn pg_dialect_10_nested_array_shape_and_common_type() {
+    for (sql, element, value) in [
+        (
+            "SELECT ARRAY[ARRAY[1,2],ARRAY[3,4]]",
+            Element::Int4,
+            "{{1,2},{3,4}}",
+        ),
+        ("SELECT ARRAY[[1,2],[3,4]]", Element::Int4, "{{1,2},{3,4}}"),
+        (
+            "SELECT ARRAY[[NULL,1],[2,NULL]]",
+            Element::Int4,
+            "{{NULL,1},{2,NULL}}",
+        ),
+        ("SELECT ARRAY[1,2.5]", Element::Numeric, "{1,2.5}"),
+    ] {
+        let nodes = parsed(sql);
+        let (types, _) = pg_array::analyze(sql, &nodes, None).unwrap();
+        let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert_eq!(
+            types.get(&(expr.OriginTextPosition as usize)),
+            Some(&element)
+        );
+        assert_eq!(
+            pg_array::value(expr, &HashMap::new()).unwrap(),
+            Some(value.into())
+        );
+    }
+
+    let ragged_sql = "SELECT ARRAY[[1,2],[3]]";
+    let ragged = parsed(ragged_sql);
+    assert!(pg_array::analyze(ragged_sql, &ragged, None).is_ok());
+    let expr = ragged[0]
+        .as_any()
+        .downcast_ref::<ast::SelectStmt>()
+        .unwrap()
+        .Fields
+        .Fields[0]
+        .Expr
+        .as_ref()
+        .unwrap();
+    let error = pg_array::value(expr, &HashMap::new()).unwrap_err();
+    let error = error.pg_array_error().unwrap();
+    assert_eq!(error.state, "2202E");
+    assert!(error.message.contains("matching dimensions"));
+
+    let mixed_sql = "/*中*/ SELECT ARRAY[1,true]";
+    let error = pg_array::analyze(mixed_sql, &parsed(mixed_sql), None).unwrap_err();
+    let error = error.pg_array_error().unwrap();
+    assert_eq!(error.state, "42804");
+    assert_eq!(error.position, Some(mixed_sql.find("true").unwrap()));
+    assert_eq!(
+        error.message,
+        "ARRAY types integer and boolean cannot be matched"
+    );
+
+    let parameter_sql = "SELECT ARRAY[ARRAY[$2,$1],ARRAY[$1,$2]]";
+    let parameters = parsed(parameter_sql);
+    let (_, oids) = pg_array::analyze(parameter_sql, &parameters, Some(&[23, 23])).unwrap();
+    assert!(!oids.is_empty());
+    assert!(
+        oids.iter().all(|oid| *oid == 23),
+        "inferred parameter OIDs: {oids:?}"
     );
 }
 
