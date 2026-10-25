@@ -112,3 +112,7 @@ INSERT 的主流程位于 `execute_relational_insert_with_load_counts`：
 ### PostgreSQL限定布尔显式转换（任务3）
 
 PG INSERT中的CAST表达式局部接入现有关系求值器及共享布尔转换核；按目标表保存类型上下文，写入前完成归一化，避免DML字符串转换绕过int4→bool规范化。MySQL继续现有DML求值。
+
+## PostgreSQL 无符号反向目标（任务13）
+
+INSERT 在已声明的共享 unsigned 整数目标列处精确校验来源宽度：拒绝负值、上界之外和非整数字符串，携带 PgNumericError::OutOfRange 到 PG 协议。此分支只在 PostgreSQL 方言启用，不从 PG OID 反推 unsigned；MySQL 既有转换与 warning 分支保留。NULL 继续沿列元数据保存目标身份；验证在发布 mutation 前进行。覆盖见 pg_extended_test::pg_scalar_13 和 relational_value_test::pg_scalar_13_unsigned_target。

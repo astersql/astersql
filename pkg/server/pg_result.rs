@@ -1012,7 +1012,9 @@ pub(crate) fn encode_formats(
                     .native_types
                     .get(index)
                     .filter(|tp| {
-                        (1..=1000).contains(&tp.length) && (-1000..=1000).contains(&tp.decimal)
+                        matches!(tp.code, 0 | 246)
+                            && (1..=1000).contains(&tp.length)
+                            && (-1000..=1000).contains(&tp.decimal)
                     })
                     .map(|tp| (((tp.length as i32) << 16) | ((tp.decimal as i32) & 0x7ff)) + 4)
                     .unwrap_or(-1)

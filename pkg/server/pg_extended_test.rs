@@ -4282,3 +4282,201 @@ fn pg_scalar_12() {
         "pg_scalar_12: 15 domains x simple/extended/empty, 3 typed NULL, 4 overflow/recovery/no-write cases, 3 MySQL reads"
     );
 }
+
+#[test]
+fn pg_scalar_13() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let addr = cleanup.0.postgres_listener_addr().unwrap();
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT 1,2147483648,1.5,1e0");
+        assert_eq!(mysql_read(socket), vec![4]);
+        let columns = (0..4).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x011\x0a2147483648\x031.5\x011");
+        let eof = mysql_read(socket);
+        assert_eq!(eof[0], 0xfe);
+        assert_eq!(&eof[1..3], &[0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        columns
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    mysql_query(&mut mysql, "CREATE DATABASE IF NOT EXISTS test");
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE test.pg_scalar_13 (a TINYINT UNSIGNED,b SMALLINT UNSIGNED,c MEDIUMINT UNSIGNED,d INT UNSIGNED,e BIGINT UNSIGNED)",
+    );
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO test.pg_scalar_13 VALUES (0,0,0,0,0),(255,65535,16777215,4294967295,18446744073709551615),(NULL,NULL,NULL,NULL,NULL)",
+    );
+    let unsigned_mysql = |socket: &mut TcpStream| {
+        mysql_packet(
+            socket,
+            0,
+            b"\x03SELECT a,b,c,d,e FROM test.pg_scalar_13 ORDER BY a",
+        );
+        assert_eq!(mysql_read(socket), vec![5]);
+        let columns = (0..5).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let rows = (0..3).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        let eof = mysql_read(socket);
+        assert_eq!(eof[0], 0xfe);
+        assert_eq!(&eof[1..3], &[0, 0]);
+        assert_eq!(rows[0], vec![0xfb; 5]);
+        assert_eq!(rows[1], b"\x010\x010\x010\x010\x010");
+        assert_eq!(
+            rows[2],
+            b"\x03255\x0565535\x0816777215\x0a4294967295\x1418446744073709551615"
+        );
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        columns
+    };
+    let unsigned_metadata = unsigned_mysql(&mut mysql);
+    let m = query(
+        &mut socket,
+        "SELECT a,b,c,d,e FROM public.pg_scalar_13 ORDER BY a",
+    );
+    assert_eq!(
+        m.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"TDDDCZ",
+        "{m:?}"
+    );
+    scalar_types(&m[0], &[21, 23, 23, 20, 1700]);
+    assert_eq!(m[1], (b'D', row(&[None, None, None, None, None])));
+    assert_eq!(m[2], (b'D', row(&[Some("0"); 5])));
+    assert_eq!(
+        m[3],
+        (
+            b'D',
+            row(&[
+                Some("255"),
+                Some("65535"),
+                Some("16777215"),
+                Some("4294967295"),
+                Some("18446744073709551615")
+            ])
+        )
+    );
+    let sql = "SELECT a,b,c,d,e FROM public.pg_scalar_13 WHERE a=255";
+    parse(&mut socket, "u13", sql, &[]);
+    assert_eq!(read(&mut socket).0, b'1');
+    send(&mut socket, b'D', b"Su13\0");
+    assert_eq!(read(&mut socket), (b't', vec![0, 0]));
+    let desc = read(&mut socket);
+    scalar_types(&desc, &[21, 23, 23, 20, 1700]);
+    bind(&mut socket, "", "u13", &[]);
+    assert_eq!(read(&mut socket).0, b'2');
+    send(&mut socket, b'D', b"P\0");
+    assert_eq!(read(&mut socket), desc);
+    execute(&mut socket, "", 0);
+    assert_eq!(read(&mut socket), m[3]);
+    assert_eq!(read(&mut socket).0, b'C');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+    let empty = query(
+        &mut socket,
+        "SELECT a,b,c,d,e FROM public.pg_scalar_13 WHERE FALSE",
+    );
+    assert_eq!(empty.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    scalar_types(&empty[0], &[21, 23, 23, 20, 1700]);
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    assert_eq!(unsigned_mysql(&mut mysql), unsigned_metadata);
+    for (column, upper) in [
+        ("a", "256"),
+        ("b", "65536"),
+        ("c", "16777216"),
+        ("d", "4294967296"),
+        ("e", "18446744073709551616"),
+    ] {
+        for input in ["-1", upper, "1.5"] {
+            let sql = format!("INSERT INTO public.pg_scalar_13 ({column}) VALUES ({input})");
+            let messages = query(&mut socket, &sql);
+            assert_state(&messages[0], "22003");
+            for transaction in [false, true] {
+                if transaction {
+                    query(&mut socket, "BEGIN");
+                }
+                parse(&mut socket, "bad13", &sql, &[]);
+                let parsed = read(&mut socket);
+                assert_eq!(parsed.0, b'1', "{sql}: {parsed:?}");
+                bind(&mut socket, "", "bad13", &[]);
+                assert_eq!(read(&mut socket).0, b'2');
+                execute(&mut socket, "", 0);
+                assert_state(&read(&mut socket), "22003");
+                send(&mut socket, b'S', &[]);
+                assert_eq!(
+                    read(&mut socket),
+                    (b'Z', vec![if transaction { b'E' } else { b'I' }])
+                );
+                if transaction {
+                    query(&mut socket, "ROLLBACK");
+                }
+                assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+                send(&mut socket, b'C', b"Sbad13\0");
+                assert_eq!(read(&mut socket).0, b'3');
+            }
+        }
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT count(*) FROM public.pg_scalar_13")[1],
+        (b'D', row(&[Some("3")]))
+    );
+    assert_eq!(unsigned_mysql(&mut mysql), unsigned_metadata);
+    // A PG numeric/signed OID does not recreate a source unsigned declaration.
+    for (oid, input) in [(23, "-1"), (1700, "-1.5")] {
+        let sql = if oid == 23 {
+            "SELECT $1::int4"
+        } else {
+            "SELECT $1::numeric"
+        };
+        parse(&mut socket, "signed13", sql, &[oid]);
+        assert_eq!(read(&mut socket).0, b'1');
+        send(&mut socket, b'D', b"Ssigned13\0");
+        let mut params = 1i16.to_be_bytes().to_vec();
+        params.extend_from_slice(&oid.to_be_bytes());
+        assert_eq!(read(&mut socket), (b't', params));
+        scalar_types(&read(&mut socket), &[oid]);
+        bind(&mut socket, "", "signed13", &[Some(input)]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[Some(input)])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+        send(&mut socket, b'C', b"Ssigned13\0");
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    query(&mut socket, "DROP TABLE public.pg_scalar_13");
+    println!(
+        "pg_scalar_13: 15 source value/NULL cells, extended and empty metadata, 15 simple + 30 extended reverse rejections/recovery/no-write, 2 signed parameter identities, 3 unsigned MySQL reads"
+    );
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+}

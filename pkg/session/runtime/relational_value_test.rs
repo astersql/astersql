@@ -371,3 +371,35 @@ fn pg_scalar_12_relational_literal_precision() {
     }
     pg.execute("DROP TABLE pg_scalar_12_rows").unwrap();
 }
+
+#[test]
+fn pg_scalar_13_unsigned_target() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let mysql =
+        ConcreteSession::new_with_dialect(domain.clone(), astersql_parser_ast::SqlDialect::MySQL);
+    mysql
+        .execute("CREATE TABLE scalar13_unsigned (v BIGINT UNSIGNED)")
+        .unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    for input in ["0", "18446744073709551615", "NULL"] {
+        pg.execute(&format!("INSERT INTO scalar13_unsigned VALUES ({input})"))
+            .unwrap();
+    }
+    for input in ["-1", "18446744073709551616", "1.5"] {
+        let error = pg
+            .execute(&format!("INSERT INTO scalar13_unsigned VALUES ({input})"))
+            .err()
+            .unwrap();
+        assert_eq!(error.pg_numeric_error().unwrap().sqlstate(), "22003");
+    }
+    assert_eq!(
+        pg.execute("SELECT count(*) FROM scalar13_unsigned")
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["3"]
+    );
+    pg.execute("DROP TABLE scalar13_unsigned").unwrap();
+}

@@ -101,3 +101,7 @@ adapt_query 与 command 对 PG 请求的前置解析显式使用 Parser::with_di
 ## PostgreSQL numeric 声明与舍入
 
 OID1700的RowDescription由NativeType.length/decimal编码((p<<16)|(s&0x7ff))+4；裸numeric仍为-1，NULL和空结果使用同一元数据。
+
+## 无符号桥接（任务13）
+
+U64 来源 code=8 + UnsignedFlag 提升为无约束 numeric；其 MySQL 显示宽度和 decimal 不生成 PG numeric typmod。只有原生 DECIMAL/NEWDECIMAL（code 0/246）声明可编码 numeric 精度与 scale。独立 TCP 回归 pg_scalar_13 覆盖五种 unsigned 来源域的端点、NULL、Describe 和零行描述。

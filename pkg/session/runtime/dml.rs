@@ -2387,6 +2387,33 @@ impl ConcreteSession {
                     && literal(expression).ok().as_deref() == Some("0")
                 {
                     Some(String::new())
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        astersql_parser_mysql::util::IsIntegerType(column.GetType())
+                            && astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
+                    })
+                {
+                    // The explicit shared unsigned target owns the domain; the
+                    // PostgreSQL result OID alone never implies unsigned input.
+                    let value = relational_expression_value(expression, &row)?;
+                    if let Some(text) = &value {
+                        let column = column_info.unwrap();
+                        let maximum = match column.GetType() {
+                            1 => u64::from(u8::MAX),
+                            2 => u64::from(u16::MAX),
+                            9 => 0x00ff_ffff,
+                            3 => u64::from(u32::MAX),
+                            _ => u64::MAX,
+                        };
+                        if !text.parse::<u64>().is_ok_and(|value| value <= maximum) {
+                            let error = astersql_types::pg_numeric::PgNumericError::OutOfRange;
+                            return Err(SessionError::with_source(
+                                error.to_string(),
+                                astersql_errors::SharedError::new(error),
+                            ));
+                        }
+                    }
+                    value
                 } else if let Some(column_info) =
                     column_info.filter(|_| is_typed_literal(expression))
                 {
