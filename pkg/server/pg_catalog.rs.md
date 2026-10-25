@@ -80,3 +80,7 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 ## 整数参数元数据接线
 
 目录 `metadata()` 的 `parameter_cast_oids` 为空；目录参数类型仍由本模块既有目录分析决定，不进入共享 engine 的直接整数约束折叠。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+既有目录/会话类型的 NativeType 初始化明确设置 postgresql_text_oid=None，保持目录专用 wire 类型的原解释；仅为共享元数据新增字段所必需的局部接线。

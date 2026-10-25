@@ -602,3 +602,41 @@ fn pg_scalar_20_relational_float8() {
     );
     pg.execute("DROP TABLE pg_scalar_20_row").unwrap();
 }
+
+#[test]
+fn pg_scalar_21_relational_text_identity() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_21_row (v VARCHAR(30))")
+        .unwrap();
+    pg.execute("INSERT INTO pg_scalar_21_row VALUES ('e\u{301}é😀')")
+        .unwrap();
+    for (name, oid) in [("text", 25), ("varchar", 1043), ("bpchar", 1042)] {
+        let sql = format!("SELECT v::{name} FROM pg_scalar_21_row");
+        let mut results = pg.execute(&sql).unwrap();
+        assert_eq!(
+            results[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLTextOid(),
+            Some(oid),
+            "{sql}"
+        );
+        assert_eq!(results[0].next_row().unwrap().unwrap(), vec!["e\u{301}é😀"]);
+        let mut empty = pg.execute(&format!("{sql} WHERE FALSE")).unwrap();
+        assert_eq!(
+            empty[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLTextOid(),
+            Some(oid)
+        );
+        assert!(empty[0].next_row().unwrap().is_none());
+    }
+    pg.execute("DROP TABLE pg_scalar_21_row").unwrap();
+}

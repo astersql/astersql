@@ -103,3 +103,7 @@ RustCodeGraph 的文件级结果给出 162 个引用文件，但本次对 `NewFi
 修改元素 API 时，应消除或明确 `elems` 与 `elemsIsBinaryLit` 的长度不变量，并决定非法索引是继续 panic 还是改为 `Result`；该选择会影响 Go 兼容性。修改全局严格宽度接线时，应优先采用原子值或不可变配置快照，并保留 TINYINT(1) 与 ZEROFILL 的兼容特例。
 
 性能上，`ArrayType`、`Clone`、JSON 投影和 `FormatAsCastType` 都会复制拥有的数据；对含大量 ENUM/SET 元素的热点路径做优化时，应先测量，不能通过引入共享别名破坏现有值语义。兼容性上，JSON 键名、nil/空数组区别、字段哈希顺序及类型文本都是外部可观察行为。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+新增独立 PostgreSQLTextOid；随克隆/JSON传递，参与类型比较与哈希，SetType 清除；Restore/RestoreAsCastType 保留文本身份和修饰符，不改变 MySQL 字段。

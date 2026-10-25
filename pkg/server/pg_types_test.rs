@@ -180,6 +180,7 @@ fn unsigned_binary_and_unsupported_types() {
             flags: 32,
             length: 20,
             decimal: 0,
+            postgresql_text_oid: None,
             postgresql_array_element: None,
             postgresql_record_fields: None,
         }],
@@ -215,6 +216,7 @@ fn unsigned_binary_and_unsupported_types() {
             flags: 0,
             length: 0,
             decimal: 0,
+            postgresql_text_oid: None,
             postgresql_array_element: None,
             postgresql_record_fields: None,
         };
@@ -292,6 +294,7 @@ fn pg_binary_native_results() {
             flags: 0,
             length: 0,
             decimal: 0,
+            postgresql_text_oid: None,
             postgresql_array_element: None,
             postgresql_record_fields: None,
         }],

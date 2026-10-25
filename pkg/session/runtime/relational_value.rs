@@ -2672,7 +2672,8 @@ pub(super) fn relational_expression_type(
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }
-            if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
+            if Tp.PostgreSQLTextOid().is_some()
+                || Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
         {
             Tp.clone()
         }

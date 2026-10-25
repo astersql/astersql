@@ -86,6 +86,7 @@ pub struct FieldType {
     elems: Option<Vec<String>>,
     elemsIsBinaryLit: Option<Vec<bool>>,
     array: bool,
+    postgresql_text_oid: Option<u32>,
     postgresql_array_element: Option<PostgreSQLArrayElement>,
     postgresql_record_fields: Option<Vec<PostgreSQLRecordField>>,
 }
@@ -115,6 +116,9 @@ impl FieldType {
             h.HashBool(*elem);
         }
         h.HashBool(self.array);
+        if let Some(oid) = self.postgresql_text_oid {
+            h.HashUint64(oid as u64);
+        }
         if let Some(element) = self.postgresql_array_element {
             h.HashUint64(element.array_oid() as u64);
         }
@@ -149,6 +153,7 @@ impl FieldType {
             && self.GetElems() == other.GetElems()
             && self.GetElemsIsBinaryLit() == other.GetElemsIsBinaryLit()
             && self.array == other.array
+            && self.postgresql_text_oid == other.postgresql_text_oid
             && self.postgresql_array_element == other.postgresql_array_element
             && self.postgresql_record_fields == other.postgresql_record_fields
     }
@@ -235,6 +240,7 @@ impl FieldType {
     pub fn SetType(&mut self, tp: u8) {
         self.tp = tp;
         self.array = false;
+        self.postgresql_text_oid = None;
         self.postgresql_array_element = None;
         self.postgresql_record_fields = None;
     }
@@ -328,6 +334,14 @@ impl FieldType {
     pub fn SetElem(&mut self, idx: usize, element: String) {
         self.elems.as_mut().unwrap()[idx] = element;
     }
+    /// PostgreSQL text identity is independent of MySQL storage code/charset.
+    pub fn PostgreSQLTextOid(&self) -> Option<u32> {
+        self.postgresql_text_oid
+    }
+    pub fn SetPostgreSQLTextOid(&mut self, oid: u32) {
+        assert!(matches!(oid, 25 | 1042 | 1043));
+        self.postgresql_text_oid = Some(oid);
+    }
     pub fn PostgreSQLArrayElement(&self) -> Option<PostgreSQLArrayElement> {
         self.postgresql_array_element
     }
@@ -407,7 +421,8 @@ impl FieldType {
             || (self.EvalType() == ETReal && self.decimal == UnspecifiedLength)
             || self.EvalType() == ETJson;
         let ignoreDecimal = matches!(self.EvalType(), ETInt | ETString);
-        self.postgresql_record_fields == other.postgresql_record_fields
+        self.postgresql_text_oid == other.postgresql_text_oid
+            && self.postgresql_record_fields == other.postgresql_record_fields
             && self.postgresql_array_element == other.postgresql_array_element
             && tpEqual
             && (ignoreDecimal || self.decimal == other.decimal)
@@ -421,7 +436,8 @@ impl FieldType {
     /// PartialEqual 在 unsafe 模式下对字符串类型放宽 flen 比较。
     // PartialEqual 的 unsafe 分支只用于字符串类型：忽略 flen，但仍检查 NotNull、字符集、排序规则和元素。
     pub fn PartialEqual(&self, other: &FieldType, unsafe_compare: bool) -> bool {
-        if self.postgresql_array_element != other.postgresql_array_element
+        if self.postgresql_text_oid != other.postgresql_text_oid
+            || self.postgresql_array_element != other.postgresql_array_element
             || self.postgresql_record_fields != other.postgresql_record_fields
         {
             return false;
@@ -585,6 +601,18 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
+        if let Some(oid) = self.postgresql_text_oid {
+            ctx.WriteKeyWord(match oid {
+                1043 => "VARCHAR",
+                1042 if self.flen >= 0 => "CHAR",
+                1042 => "BPCHAR",
+                _ => "TEXT",
+            })?;
+            if oid != 25 && self.flen >= 0 {
+                ctx.WritePlain(&format!("({})", self.flen))?;
+            }
+            return Ok(());
+        }
         ctx.WriteKeyWord(&TypeToStr(self.GetType(), &self.charset))?;
         let (mut precision, mut scale) = (UnspecifiedLength, UnspecifiedLength);
         match self.GetType() {
@@ -645,6 +673,9 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
+        if self.postgresql_text_oid.is_some() {
+            return self.Restore(ctx);
+        }
         match self.tp {
             mysql::TypeVarString | mysql::TypeString => {
                 let skipWriteBinary =
@@ -813,6 +844,8 @@ struct jsonFieldType {
     ElemsIsBinaryLit: Option<Vec<bool>>,
     Array: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    PostgreSQLTextOid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     PostgreSQLArrayElement: Option<PostgreSQLArrayElement>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     PostgreSQLRecordFields: Option<Vec<PostgreSQLRecordField>>,
@@ -830,6 +863,7 @@ impl From<&FieldType> for jsonFieldType {
             Elems: ft.elems.clone(),
             ElemsIsBinaryLit: ft.elemsIsBinaryLit.clone(),
             Array: ft.array,
+            PostgreSQLTextOid: ft.postgresql_text_oid,
             PostgreSQLArrayElement: ft.postgresql_array_element,
             PostgreSQLRecordFields: ft.postgresql_record_fields.clone(),
         }
@@ -848,6 +882,7 @@ impl From<jsonFieldType> for FieldType {
             elems: value.Elems,
             elemsIsBinaryLit: value.ElemsIsBinaryLit,
             array: value.Array,
+            postgresql_text_oid: value.PostgreSQLTextOid,
             postgresql_array_element: value.PostgreSQLArrayElement,
             postgresql_record_fields: value.PostgreSQLRecordFields,
         }

@@ -228,6 +228,7 @@ impl SessionQuery {
                 flags: 0,
                 length: 64,
                 decimal: 0,
+                postgresql_text_oid: None,
                 postgresql_array_element: None,
                 postgresql_record_fields: None,
             });

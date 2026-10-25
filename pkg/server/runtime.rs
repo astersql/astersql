@@ -1121,6 +1121,7 @@ fn run_session_worker(
                                             flags: tp.GetFlag(),
                                             length: tp.GetFlen(),
                                             decimal: tp.GetDecimal(),
+                                            postgresql_text_oid: tp.PostgreSQLTextOid(),
                                             postgresql_array_element: tp.PostgreSQLArrayElement(),
                                             postgresql_record_fields: tp
                                                 .PostgreSQLRecordFields()
@@ -1339,6 +1340,7 @@ fn execute_on_session(
                                 flags: tp.GetFlag(),
                                 length: tp.GetFlen(),
                                 decimal: tp.GetDecimal(),
+                                postgresql_text_oid: tp.PostgreSQLTextOid(),
                                 postgresql_array_element: tp.PostgreSQLArrayElement(),
                                 postgresql_record_fields: tp
                                     .PostgreSQLRecordFields()
@@ -1567,6 +1569,7 @@ pub(crate) fn result_metadata(
                     flags: tp.GetFlag(),
                     length: tp.GetFlen(),
                     decimal: tp.GetDecimal(),
+                    postgresql_text_oid: tp.PostgreSQLTextOid(),
                     postgresql_array_element: tp.PostgreSQLArrayElement(),
                     postgresql_record_fields: tp
                         .PostgreSQLRecordFields()

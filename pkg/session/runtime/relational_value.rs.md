@@ -204,3 +204,7 @@ PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；
 ### 2026-10-26 浮点真实客户端差分（任务20）
 
 PostgreSQLFloat8行表达式Cast使用pg_float8_relational_value，复用pg_cast_float8并保留错误源。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+关系投影的 CAST 类型推导沿用目标 FieldType 的独立文本身份，避免普通值、NULL和零行投影回落到未定身份的字符串。对应 relational_value_test.rs::pg_scalar_21_relational_text_identity。

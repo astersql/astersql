@@ -174,3 +174,7 @@ PostgreSQL下既有DOUBLE Cast标记PostgreSQLFloat8，供OID701绑定保留目�
 ## PostgreSQL 任务18：浮点宽度与文本
 
 补齐PG后缀float(p)、float8、real、double precision的AST类型动作；float省略精度为float8，1–24为float4，25–53为float8，0/54由解析拒绝。CAST沿原有动作分支按方言定宽；PostgreSQLFloat8身份用于共享正式表达式和关系求值。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+PostgreSQL 文本 CAST 保留 text/varchar/bpchar 的独立 OID；无长度 varchar/bpchar 的 flen=-1，char 默认 flen=1。MySQL CHAR 动作不变。

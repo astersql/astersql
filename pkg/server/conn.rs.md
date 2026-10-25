@@ -124,3 +124,7 @@ PgFloat4 连接错误保留共享转换器错误身份，供PG协议映射SQLSTA
 ### 2026-10-26 浮点真实客户端差分（任务20）
 
 ConnError新增PgFloat8结构化变体，保留严格float8输入错误身份。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+NativeType 传递可选 postgresql_text_oid，独立于 MySQL code/flags/length/decimal。

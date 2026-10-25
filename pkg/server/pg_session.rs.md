@@ -81,3 +81,7 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 ## 整数参数元数据接线
 
 本地会话 `metadata()` 的 `parameter_cast_oids` 为空，与零参数数目一致；不会创建或推断 engine 参数。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+既有目录/会话类型的 NativeType 初始化明确设置 postgresql_text_oid=None，保持目录专用 wire 类型的原解释；仅为共享元数据新增字段所必需的局部接线。

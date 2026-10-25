@@ -148,3 +148,7 @@ PG supplied OID700 在prepare保留TypeFloat，并按类型构造FLOAT4参数表
 ## PostgreSQL float8 文本参数（任务17）
 
 PG OID701准备描述保留DOUBLE类型；已验证参数通过既有CAST(... AS DOUBLE)绑定，保留NULL、负零和特殊值，不增加语法或完整转换矩阵。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+协议准备保留显式文本参数的身份；执行沿已有参数字面量绑定器加入类型化 CAST，避免 text/varchar/bpchar 在 NULL或空值中丢失身份。

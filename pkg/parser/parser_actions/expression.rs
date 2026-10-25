@@ -30,6 +30,7 @@ enum ExpressionRule {
     PgArrayNestedNext,
     PgArrayRow,
     PgCastType,
+    PgVarcharType,
     PgNumericOpt,
     PgPostfixCast,
     ColumnNameAlt01,
@@ -326,6 +327,11 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        "pgcasttype_varchar_optfieldlen--116589e92d510659" => Some(ExpressionRule::PgVarcharType),
+        "pgpostfixtext_char_optfieldlen--320e44b3ecc2f331" => Some(ExpressionRule::PgCastType),
+        "simpleexpr_simpleexpr_pgtypecast_pgpostfixtext_p--f8d6065aff3724c2" => {
+            Some(ExpressionRule::PgPostfixCast)
+        }
         "pgcasttype_double_precision--dd3556c0d059ea05"
         | "pgcasttype_float8--b63b30fadba5dbb8"
         | "pgpostfixfloat_float_floatopt--d010421e13e0049d"
@@ -1234,14 +1240,20 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             };
             out.item = Some(Box::new(FloatOptSemantic { flen, decimal }));
         }
-        ExpressionRule::PgCastType => {
-            let spelling = &rhs[1].ident;
+        ExpressionRule::PgCastType | ExpressionRule::PgVarcharType => {
+            let spelling = if rule == ExpressionRule::PgVarcharType {
+                "varchar"
+            } else {
+                rhs[1].ident.as_str()
+            };
             let mut tp = match spelling.to_ascii_lowercase().as_str() {
                 "int2" | "smallint" => parser_mysql::r#type::TypeShort,
                 "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
                 "bool" | "boolean" => parser_mysql::r#type::TypeTiny,
-                "text" => parser_mysql::r#type::TypeVarString,
+                "text" | "bpchar" | "varchar" | "character" | "char" => {
+                    parser_mysql::r#type::TypeVarString
+                }
                 "float4" | "real" => parser_mysql::r#type::TypeFloat,
                 "float" | "float8" | "double" => parser_mysql::r#type::TypeDouble,
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
@@ -1299,6 +1311,30 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 field_type.SetDecimal(option.decimal);
             }
             if tp == parser_mysql::r#type::TypeVarString {
+                let oid = match spelling.to_ascii_lowercase().as_str() {
+                    "varchar" => 1043,
+                    "bpchar" | "char" | "character" => 1042,
+                    _ => 25,
+                };
+                field_type.SetPostgreSQLTextOid(oid);
+                let default_length =
+                    if matches!(spelling.to_ascii_lowercase().as_str(), "char" | "character") {
+                        1
+                    } else {
+                        -1
+                    };
+                let length = if rhs_len == 2 {
+                    rhs[2]
+                        .item
+                        .as_deref()
+                        .and_then(|v| v.downcast_ref::<isize>())
+                        .copied()
+                        .filter(|n| *n >= 0)
+                        .unwrap_or(default_length)
+                } else {
+                    default_length
+                };
+                field_type.SetFlen(length);
                 field_type.SetCharset("utf8mb4".to_owned());
                 field_type.SetCollate("utf8mb4_bin".to_owned());
             } else {
@@ -2885,6 +2921,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 } else {
                     field_type.SetCharset(parser_state.charset.clone());
                     field_type.SetCollate(parser_state.collation.clone());
+                }
+            }
+            if rule == ExpressionRule::CastTypeAlt02
+                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+            {
+                field_type.SetPostgreSQLTextOid(1042);
+                if flen == -1 {
+                    field_type.SetFlen(1);
                 }
             }
             out.item = Some(Box::new(field_type));

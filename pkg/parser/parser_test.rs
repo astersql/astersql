@@ -4988,3 +4988,77 @@ fn pg_scalar_18_float_declaration_identity() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_21_text_cast_identity() {
+    for (name, oid, length) in [
+        ("text", 25, -1),
+        ("varchar", 1043, -1),
+        ("character varying", 1043, -1),
+        ("char varying", 1043, -1),
+        ("bpchar", 1042, -1),
+        ("char", 1042, 1),
+    ] {
+        for sql in [
+            format!("SELECT NULL::{name}"),
+            format!("SELECT CAST(NULL AS {name})"),
+        ] {
+            let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+            let statement = parser.ParseOneStmt(&sql, "", "").unwrap();
+            let select = statement
+                .as_any()
+                .downcast_ref::<crate::ast::SelectStmt>()
+                .unwrap();
+            let crate::ast::ExprKind::Cast { Tp, .. } =
+                &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+            else {
+                panic!("cast")
+            };
+            assert_eq!(Tp.PostgreSQLTextOid(), Some(oid), "{sql}");
+            assert_eq!(Tp.GetFlen(), length, "{sql}");
+            let mut restored = Vec::new();
+            Tp.FormatAsCastType(&mut restored, false).unwrap();
+            let restored = String::from_utf8(restored).unwrap();
+            let roundtrip = parser
+                .ParseOneStmt(&format!("SELECT CAST(NULL AS {restored})"), "", "")
+                .unwrap();
+            let select = roundtrip
+                .as_any()
+                .downcast_ref::<crate::ast::SelectStmt>()
+                .unwrap();
+            let crate::ast::ExprKind::Cast { Tp, .. } =
+                &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+            else {
+                panic!("cast")
+            };
+            assert_eq!(Tp.PostgreSQLTextOid(), Some(oid));
+            assert_eq!(Tp.GetFlen(), length);
+        }
+    }
+    for sql in [
+        "SELECT NULL::varchar",
+        "SELECT CAST(NULL AS varchar)",
+        "SELECT NULL::bpchar",
+    ] {
+        assert!(
+            crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+                .ParseOneStmt(sql, "", "")
+                .is_err(),
+            "{sql}"
+        );
+    }
+    let statement = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+        .ParseOneStmt("SELECT CAST(NULL AS CHAR)", "", "")
+        .unwrap();
+    let select = statement
+        .as_any()
+        .downcast_ref::<crate::ast::SelectStmt>()
+        .unwrap();
+    let crate::ast::ExprKind::Cast { Tp, .. } =
+        &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+    else {
+        panic!("cast")
+    };
+    assert_eq!(Tp.PostgreSQLTextOid(), None);
+    assert_eq!(Tp.GetFlen(), -1);
+}

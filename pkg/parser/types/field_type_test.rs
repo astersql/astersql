@@ -364,3 +364,31 @@ fn pg_dialect_11_record_identity() {
     changed.SetType(mysql::r#type::TypeLong);
     assert!(changed.PostgreSQLRecordFields().is_none());
 }
+
+#[test]
+fn pg_scalar_21_text_identity_roundtrip() {
+    let plain = crate::NewFieldType(mysql::r#type::TypeVarString);
+    for oid in [25, 1042, 1043] {
+        let mut tp = plain.clone();
+        tp.SetPostgreSQLTextOid(oid);
+        let decoded: crate::FieldType =
+            serde_json::from_str(&serde_json::to_string(&tp).unwrap()).unwrap();
+        assert_eq!(decoded, tp);
+        assert!(decoded.Equals(&tp));
+        assert!(!tp.Equal(&plain));
+        assert!(!tp.PartialEqual(&plain, true));
+        for other in [25, 1042, 1043].into_iter().filter(|other| *other != oid) {
+            let mut other_tp = plain.clone();
+            other_tp.SetPostgreSQLTextOid(other);
+            assert!(!tp.Equal(&other_tp));
+            assert!(!tp.PartialEqual(&other_tp, true));
+        }
+        tp.SetType(mysql::r#type::TypeLong);
+        assert_eq!(tp.PostgreSQLTextOid(), None);
+    }
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("PostgreSQLTextOid")
+    );
+}

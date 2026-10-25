@@ -396,6 +396,9 @@ impl CatalogColumnType {
 }
 /// PostgreSQL metadata derived only from the engine type, never cell contents.
 fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32, i16)> {
+    if let Some(oid) = native.and_then(|native| native.postgresql_text_oid) {
+        return Ok((oid, -1));
+    }
     if native.is_some_and(|native| native.postgresql_record_fields.is_some()) {
         return Ok((2249, -1));
     }
@@ -1117,7 +1120,7 @@ pub(crate) fn encode_formats(
             body.extend_from_slice(&attribute.to_be_bytes());
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
-            let typmod = if matches!(command, "INSERT" | "UPDATE" | "DELETE") && *oid == 1043 {
+            let typmod = if matches!(*oid, 1042 | 1043) {
                 result
                     .native_types
                     .get(index)

@@ -118,3 +118,7 @@ session_protocol_error 保留 PgFloat4Error 到协议连接层；FLOAT4参数继
 ### 2026-10-26 浮点真实客户端差分（任务20）
 
 session_protocol_error将SessionError中PgFloat8Error源转换为ConnError::PgFloat8。
+
+## 2026-10-26 文本族身份边界（任务21）
+
+Prepare、普通执行与结果元数据三个既有桥接点传递 PostgreSQLTextOid。

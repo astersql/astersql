@@ -795,3 +795,38 @@ fn pg_scalar_20_formal_float8_cast() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_21_formal_text_identity() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for oid in [25, 1042, 1043] {
+        let mut target = *types::NewFieldType(mysql::TypeVarString);
+        target.SetCharset("utf8mb4".into());
+        target.SetCollate("utf8mb4_bin".into());
+        target.SetPostgreSQLTextOid(oid);
+        for value in [Some(""), Some("e\u{301}é😀"), None] {
+            let datum = value
+                .map(|v| types::NewStringDatum(v.into()))
+                .unwrap_or_default();
+            let mut source_type = *types::NewFieldType(mysql::TypeVarString);
+            source_type.SetCharset("utf8mb4".into());
+            source_type.SetCollate("utf8mb4_bin".into());
+            let source: Box<dyn FormalExpression> =
+                Box::new(crate::Constant::with_type(datum, source_type));
+            let cast = crate::formal_registry::BuildCastFunction(&pg, &source, &target);
+            assert_eq!(cast.GetType(pg.GetEvalCtx()).PostgreSQLTextOid(), Some(oid));
+            let actual = cast
+                .Eval(pg.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap();
+            match value {
+                Some(value) => assert_eq!(actual.ToString().unwrap().as_bytes(), value.as_bytes()),
+                None => assert!(actual.IsNull()),
+            }
+        }
+    }
+}
