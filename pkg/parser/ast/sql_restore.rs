@@ -368,7 +368,12 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 return Ok(format!("CAST({value} AS INT8)"));
             }
             if *FunctionType == CastFunctionType::PostgreSQLNumeric {
-                return Ok(format!("CAST({value} AS NUMERIC)"));
+                let modifier = if Tp.GetFlen() >= 0 {
+                    format!("({},{})", Tp.GetFlen(), Tp.GetDecimal())
+                } else {
+                    String::new()
+                };
+                return Ok(format!("CAST({value} AS NUMERIC{modifier})"));
             }
             if *FunctionType == CastFunctionType::Binary {
                 return Ok(format!("BINARY {value}"));

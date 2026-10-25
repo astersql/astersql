@@ -1007,6 +1007,15 @@ pub(crate) fn encode_formats(
                     .and_then(|tp| i32::try_from(tp.length).ok())
                     .and_then(|length| length.checked_add(4))
                     .unwrap_or(-1)
+            } else if *oid == 1700 {
+                result
+                    .native_types
+                    .get(index)
+                    .filter(|tp| {
+                        (1..=1000).contains(&tp.length) && (-1000..=1000).contains(&tp.decimal)
+                    })
+                    .map(|tp| (((tp.length as i32) << 16) | ((tp.decimal as i32) & 0x7ff)) + 4)
+                    .unwrap_or(-1)
             } else {
                 -1
             };

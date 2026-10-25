@@ -7,6 +7,8 @@ use std::{fmt, str::FromStr};
 pub enum PgNumericError {
     #[error("invalid input syntax for type numeric")]
     InvalidSyntax,
+    #[error("invalid numeric precision or scale")]
+    InvalidModifier,
     #[error("value overflows numeric format")]
     OutOfRange,
     #[error("numeric special values are not supported yet")]
@@ -16,6 +18,7 @@ impl PgNumericError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::InvalidSyntax => "22P02",
+            Self::InvalidModifier => "22023",
             Self::OutOfRange => "22003",
             Self::Unsupported => "0A000",
         }
@@ -29,6 +32,73 @@ pub struct PgNumeric {
     negative: bool,
     coefficient: String,
     scale: usize,
+}
+impl PgNumeric {
+    /// Validate declaration independently of values, including NULL and empty scans.
+    pub fn validate_modifier(precision: isize, scale: isize) -> Result<(), PgNumericError> {
+        if (precision == -1 && scale == -1)
+            || ((1..=1000).contains(&precision) && (-1000..=1000).contains(&scale))
+        {
+            Ok(())
+        } else {
+            Err(PgNumericError::InvalidModifier)
+        }
+    }
+
+    /// Apply the declared scale with ties away from zero, then check precision.
+    pub fn apply_modifier(
+        mut self,
+        precision: isize,
+        scale: isize,
+    ) -> Result<Self, PgNumericError> {
+        Self::validate_modifier(precision, scale)?;
+        if precision == -1 {
+            return Ok(self);
+        }
+        let cut = self.scale as isize - scale;
+        if cut > 0 {
+            let keep = self.coefficient.len() as isize - cut;
+            let round_up = keep >= 0 && self.coefficient.as_bytes()[keep as usize] >= b'5';
+            let mut digits = if keep > 0 {
+                self.coefficient.as_bytes()[..keep as usize].to_vec()
+            } else {
+                vec![b'0']
+            };
+            if round_up {
+                let mut carry = true;
+                for digit in digits.iter_mut().rev() {
+                    if *digit < b'9' {
+                        *digit += 1;
+                        carry = false;
+                        break;
+                    }
+                    *digit = b'0';
+                }
+                if carry {
+                    digits.insert(0, b'1');
+                }
+            }
+            self.coefficient = String::from_utf8(digits).expect("decimal digits");
+        } else {
+            self.coefficient
+                .extend(std::iter::repeat_n('0', (-cut) as usize));
+        }
+        if scale < 0 {
+            self.coefficient
+                .extend(std::iter::repeat_n('0', (-scale) as usize));
+        }
+        self.scale = scale.max(0) as usize;
+        self.coefficient = match self.coefficient.trim_start_matches('0') {
+            "" => "0".into(),
+            digits => digits.into(),
+        };
+        if self.coefficient == "0" {
+            self.negative = false;
+        } else if self.coefficient.len() as isize - self.scale as isize > precision - scale {
+            return Err(PgNumericError::OutOfRange);
+        }
+        Ok(self)
+    }
 }
 impl FromStr for PgNumeric {
     type Err = PgNumericError;

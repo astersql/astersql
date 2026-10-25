@@ -111,3 +111,7 @@ PG int4 标记专门恢复为 CAST(expr AS INT4)，不复用带显示宽度的 M
 ## PostgreSQL 有限 numeric
 
 PostgreSQLNumeric 作为 CAST(... AS NUMERIC) 恢复，保持无约束身份；这是新增 AST 枚举的必要穷尽匹配接线。
+
+## PostgreSQL numeric 声明与舍入
+
+PostgreSQLNumeric的工具AST恢复入口同样保留(p,s)，与共享AST恢复保持一致。

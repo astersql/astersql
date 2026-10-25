@@ -153,3 +153,7 @@ PostgreSQLInt2加入现有整数转换的结果类型、返回投影、输入验
 ## PostgreSQL 有限 numeric 承载
 
 会话查询 CAST 消费者使用 pg_numeric_relational_value，保持 NULL 和精确 scale。
+
+## PostgreSQL numeric 声明与舍入
+
+PG numeric求值传入声明FieldType；SELECT准备阶段验证precision/scale，NULL与空扫描也拒绝非法声明(22023)。

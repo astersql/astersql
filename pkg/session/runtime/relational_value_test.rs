@@ -254,3 +254,25 @@ fn pg_finite_numeric_relational_consumers() {
         }
     }
 }
+
+#[test]
+fn pg_numeric_modifier_relational_consumers() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_numeric_modifier_rows (v TEXT)")
+        .unwrap();
+    pg.execute("INSERT INTO pg_numeric_modifier_rows VALUES ('1250')")
+        .unwrap();
+    for sql in [
+        "SELECT v::numeric(2,-2) FROM pg_numeric_modifier_rows",
+        "SELECT CAST(v AS numeric(2,-2)) FROM pg_numeric_modifier_rows",
+    ] {
+        assert_eq!(
+            pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+            vec!["1300"]
+        );
+    }
+    pg.execute("DROP TABLE pg_numeric_modifier_rows").unwrap();
+}

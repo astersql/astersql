@@ -42,3 +42,38 @@ fn pg_numeric_test_expansion_and_zero_safety() {
         131072
     );
 }
+
+#[test]
+fn pg_numeric_test_modifiers() {
+    for (input, p, s, expected) in [
+        ("1.25", 3, 1, "1.3"),
+        ("-1.25", 3, 1, "-1.3"),
+        ("1250", 2, -2, "1300"),
+        ("-1250", 2, -2, "-1300"),
+        ("0.000995", 2, 4, "0.0010"),
+        ("0.0005", 1, 3, "0.001"),
+        ("-0.04", 2, 1, "0.0"),
+        ("0", 1, -1000, "0"),
+        ("1", 1000, 1000, "OVERFLOW"),
+        ("0.001", 1, 3, "0.001"),
+    ] {
+        let result = input.parse::<PgNumeric>().unwrap().apply_modifier(p, s);
+        if expected == "OVERFLOW" {
+            assert_eq!(result, Err(PgNumericError::OutOfRange));
+        } else {
+            assert_eq!(result.unwrap().to_string(), expected, "{input} ({p},{s})");
+        }
+    }
+    for value in ["99.95", "-99.95"] {
+        assert_eq!(
+            value.parse::<PgNumeric>().unwrap().apply_modifier(3, 1),
+            Err(PgNumericError::OutOfRange)
+        );
+    }
+    for (p, s) in [(0, 0), (1001, 0), (1, -1001), (1, 1001)] {
+        assert_eq!(
+            PgNumeric::validate_modifier(p, s),
+            Err(PgNumericError::InvalidModifier)
+        );
+    }
+}

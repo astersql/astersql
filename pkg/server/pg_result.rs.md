@@ -97,3 +97,7 @@ SQL 适配/门禁使用 `Result<_, (&'static str, String)>`，让调用层直接
 ## 连接方言身份
 
 adapt_query 与 command 对 PG 请求的前置解析显式使用 Parser::with_dialect(PostgreSQL)，避免普通查询到共享内核之前丢失方言身份。结果 OID/编码逻辑未改变。
+
+## PostgreSQL numeric 声明与舍入
+
+OID1700的RowDescription由NativeType.length/decimal编码((p<<16)|(s&0x7ff))+4；裸numeric仍为-1，NULL和空结果使用同一元数据。

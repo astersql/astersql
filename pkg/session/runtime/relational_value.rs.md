@@ -173,3 +173,7 @@ PostgreSQLInt2在关系表达式类型推导中保留Tp，在关系求值中调�
 ## PostgreSQL 有限 numeric 承载
 
 独立关系 CAST 消费者和会话消费者共用 PgNumeric 有限转换，错误保留类型源。
+
+## PostgreSQL numeric 声明与舍入
+
+pg_numeric_relational_value验证声明并调用PgNumeric.apply_modifier，常量、行及参数路径共用先舍入后检查精度的行为；不改MySQL Decimal。

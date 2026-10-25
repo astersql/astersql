@@ -133,3 +133,7 @@ DynamicKind::PgInteger 的正式工厂目标从signed16/32扩至signed64；按�
 ## PostgreSQL 有限 numeric 承载
 
 PG无约束numeric CAST工厂用PgNumeric验证并返回精确载荷；禁用固定MyDecimal常量折叠。MySQL工厂原路径不变。固定容量EvalDecimal接口超容量显式拒绝，禁止取错值。
+
+## PostgreSQL numeric声明
+
+DynamicBuiltin::cast在求值前验证声明（包括NULL），规范PgNumeric解析后应用precision/scale，与session关系路径共用舍入和溢出策略。

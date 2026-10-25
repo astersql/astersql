@@ -1255,6 +1255,7 @@ impl ConcreteSession {
                 if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
                     return pg_numeric_relational_value(
                         self.relational_query_expression_value(Expr, row, group_rows)?,
+                        Tp,
                     );
                 }
                 if matches!(
@@ -2082,9 +2083,23 @@ impl ConcreteSession {
             table: &'a astersql_meta_model::TableInfo,
             unsupported: bool,
             boolean_error: Option<astersql_expression::PgBoolError>,
+            numeric_error: Option<astersql_types::pg_numeric::PgNumericError>,
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::Cast {
+                    Tp,
+                    FunctionType: ast::CastFunctionType::PostgreSQLNumeric,
+                    ..
+                } = &input.Kind
+                {
+                    self.numeric_error = astersql_types::pg_numeric::PgNumeric::validate_modifier(
+                        Tp.GetFlen(),
+                        Tp.GetDecimal(),
+                    )
+                    .err()
+                    .or(self.numeric_error);
+                }
                 if let ast::ExprKind::Cast { Expr, Tp, .. } = &input.Kind {
                     let source = pg_integer_literal_type(Expr)
                         .unwrap_or_else(|| relational_expression_type(Expr, self.table));
@@ -2119,9 +2134,16 @@ impl ConcreteSession {
             table: &table,
             unsupported: false,
             boolean_error: None,
+            numeric_error: None,
         };
         for expr in expressions {
             let _ = expr.Accept(&mut visitor);
+        }
+        if let Some(error) = visitor.numeric_error {
+            return Err(SessionError::with_source(
+                error.to_string(),
+                astersql_errors::SharedError::new(error),
+            ));
         }
         if let Some(error) = visitor.boolean_error {
             return Err(pg_bool_session_error(error));

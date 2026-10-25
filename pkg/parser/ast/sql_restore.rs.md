@@ -119,3 +119,7 @@ PostgreSQLInt2恢复为CAST(... AS INT2)，保留signed16目标身份并支持�
 ## PostgreSQL 有限 numeric 承载
 
 将 PostgreSQLNumeric 恢复为 CAST(... AS NUMERIC)，避免恢复为 MySQL 默认 DECIMAL 约束。
+
+## PostgreSQL numeric 声明与舍入
+
+PostgreSQLNumeric恢复CAST时保留(p,s)，避免SQL重建丢失舍入约束；裸numeric不添加默认precision。

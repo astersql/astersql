@@ -6910,6 +6910,15 @@ pub mod formal_registry {
             ctx: &dyn EvalContext,
             row: chunk::Row,
         ) -> Result<(types::Datum, bool), Error> {
+            if self.kind == DynamicKind::PgNumeric {
+                types_dependency::pg_numeric::PgNumeric::validate_modifier(
+                    self.base.return_type.GetFlen(),
+                    self.base.return_type.GetDecimal(),
+                )
+                .map_err(|error| {
+                    errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                })?;
+            }
             let datum = self.base.args[0].Eval(ctx, row)?;
             let boolean_kind = if self.kind == DynamicKind::PgBoolean {
                 Some(
@@ -6951,6 +6960,12 @@ pub mod formal_registry {
                 let text = datum.ToString()?;
                 let value = text
                     .parse::<types_dependency::pg_numeric::PgNumeric>()
+                    .and_then(|value| {
+                        value.apply_modifier(
+                            self.base.return_type.GetFlen(),
+                            self.base.return_type.GetDecimal(),
+                        )
+                    })
                     .map_err(|error| {
                         errors::Error::from(crate::contextutil::errors::SharedError::new(error))
                     })?;

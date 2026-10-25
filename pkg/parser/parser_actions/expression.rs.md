@@ -153,3 +153,7 @@ PgCastType新增SMALLINT/INT2目标并映射TypeShort；后缀与CAST均构造Po
 ## PostgreSQL 有限 numeric 承载
 
 裸 numeric/decimal 目标保留未约束 flen/scale，并对两种 CAST 语法设置 PostgreSQLNumeric。
+
+## PostgreSQL numeric 声明与舍入
+
+PgNumericOpt仅为PG显式numeric/decimal转换保存precision及有符号scale，numeric(p)的scale为0，负1不能被MySQL默认小数位覆盖。

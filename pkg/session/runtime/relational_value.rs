@@ -1295,7 +1295,7 @@ pub(super) fn relational_expression_value(
                 return result;
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
-                return pg_numeric_relational_value(relational_expression_value(Expr, row)?);
+                return pg_numeric_relational_value(relational_expression_value(Expr, row)?, Tp);
             }
             if matches!(
                 FunctionType,
@@ -3528,10 +3528,19 @@ pub(super) fn pg_boolean_relational_value(
 }
 
 /// PG numeric validation is shared by constant, row and parameter consumers.
-pub(super) fn pg_numeric_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+pub(super) fn pg_numeric_relational_value(
+    value: Option<String>,
+    target: &astersql_parser_types::types::FieldType,
+) -> SessionResult<Option<String>> {
+    let numeric_error = |error: astersql_types::pg_numeric::PgNumericError| {
+        SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+    };
+    astersql_types::pg_numeric::PgNumeric::validate_modifier(target.GetFlen(), target.GetDecimal())
+        .map_err(numeric_error)?;
     value
         .map(|text| {
             text.parse::<astersql_types::pg_numeric::PgNumeric>()
+                .and_then(|value| value.apply_modifier(target.GetFlen(), target.GetDecimal()))
                 .map(|value| value.to_string())
                 .map_err(|error| {
                     SessionError::with_source(

@@ -4308,7 +4308,12 @@ PgCastType : "BIGINT" @action;
 PgCastType : "BOOL" @action;
 PgCastType : "BOOLEAN" @action;
 PgCastType : "TEXT" @action;
-PgCastType : "NUMERIC" @action;
-PgPostfixDecimal : "DECIMAL" @action;
+PgCastType : "NUMERIC" PgNumericOpt @action;
+PgPostfixDecimal : "DECIMAL" PgNumericOpt @action;
 SimpleExpr : SimpleExpr pgTypecast PgPostfixDecimal %prec pgTypecast @action;
 CastType : PgCastType;
+
+PgNumericOpt : @action;
+PgNumericOpt : '(' LengthNum ')' @action;
+PgNumericOpt : '(' LengthNum ',' LengthNum ')' @action;
+PgNumericOpt : '(' LengthNum ',' '-' LengthNum ')' @action;

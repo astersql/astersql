@@ -30,6 +30,7 @@ enum ExpressionRule {
     PgArrayNestedNext,
     PgArrayRow,
     PgCastType,
+    PgNumericOpt,
     PgPostfixCast,
     ColumnNameAlt01,
     ColumnNameAlt02,
@@ -334,14 +335,30 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
             Some(ExpressionRule::PgArrayNestedNext)
         }
         "pgarrayrow_pgarraylist--f75d26ccaf8553d2" => Some(ExpressionRule::PgArrayRow),
-        "pgcasttype_numeric--2a106dbf28cd599f" | "pgpostfixdecimal_decimal--75aef673b89d23d2" => Some(ExpressionRule::PgCastType),
-        "pgcasttype_smallint--6be73d74a71dda92" | "pgcasttype_int2--726db66dacb613ed" | "pgcasttype_text--298413db6f8b6803" | "pgcasttype_bool--d9658361f98a2bfa" | "pgcasttype_boolean--3e6aa45e36d3b626" | "pgcasttype_bigint--ae5884bd608717ab"
+        "pgnumericopt--c9c756ddce2cc540"
+        | "pgnumericopt_lengthnum--52ada4d88418f5b2"
+        | "pgnumericopt_lengthnum_lengthnum--2ae06f8f7adbf4f2"
+        | "pgnumericopt_lengthnum_lengthnum--8cf2c3a060691c57" => {
+            Some(ExpressionRule::PgNumericOpt)
+        }
+        "pgcasttype_numeric_pgnumericopt--51d608ebd172d210"
+        | "pgpostfixdecimal_decimal_pgnumericopt--0888c1c586dd95a3" => {
+            Some(ExpressionRule::PgCastType)
+        }
+        "pgcasttype_smallint--6be73d74a71dda92"
+        | "pgcasttype_int2--726db66dacb613ed"
+        | "pgcasttype_text--298413db6f8b6803"
+        | "pgcasttype_bool--d9658361f98a2bfa"
+        | "pgcasttype_boolean--3e6aa45e36d3b626"
+        | "pgcasttype_bigint--ae5884bd608717ab"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
         | "pgcasttype_integer--a6fba6c5af1a8564"
         | "pgcasttype_int4--72598e6daca526eb"
         | "pgcasttype_int8--724bb66dac992d87" => Some(ExpressionRule::PgCastType),
-        "simpleexpr_simpleexpr_pgtypecast_pgpostfixdecima--b7eb95c63ee14982" => Some(ExpressionRule::PgPostfixCast),
+        "simpleexpr_simpleexpr_pgtypecast_pgpostfixdecima--b7eb95c63ee14982" => {
+            Some(ExpressionRule::PgPostfixCast)
+        }
         "simpleexpr_simpleexpr_pgtypecast_pgcasttype_prec--7c15958f86c11347" => {
             Some(ExpressionRule::PgPostfixCast)
         }
@@ -1178,6 +1195,39 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Flag: Default::default(),
             });
         }
+        ExpressionRule::PgNumericOpt => {
+            if rhs_len > 0 && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf(
+                    "PostgreSQL numeric modifier requires PostgreSQL dialect",
+                    &[],
+                ));
+                return Err(1);
+            }
+            let flen = if rhs_len == 0 {
+                -1
+            } else {
+                rhs[2]
+                    .item
+                    .as_deref()
+                    .and_then(semantic_numeric_isize)
+                    .unwrap_or_default()
+            };
+            let decimal = match rhs_len {
+                0 => -1,
+                3 => 0,
+                5 => rhs[4]
+                    .item
+                    .as_deref()
+                    .and_then(semantic_numeric_isize)
+                    .unwrap_or_default(),
+                _ => -rhs[5]
+                    .item
+                    .as_deref()
+                    .and_then(semantic_numeric_isize)
+                    .unwrap_or_default(),
+            };
+            out.item = Some(Box::new(FloatOptSemantic { flen, decimal }));
+        }
         ExpressionRule::PgCastType => {
             let spelling = &rhs[1].ident;
             let tp = match spelling.to_ascii_lowercase().as_str() {
@@ -1193,7 +1243,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 }
             };
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
-                && tp != parser_mysql::r#type::TypeNewDecimal {
+                && tp != parser_mysql::r#type::TypeNewDecimal
+            {
                 yylex.AppendError(yylex.Errorf("PostgreSQL cast requires PostgreSQL dialect", &[]));
                 return Err(1);
             }
@@ -1205,9 +1256,19 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             field_type.SetFlen(flen);
             field_type.SetDecimal(decimal);
             if tp == parser_mysql::r#type::TypeNewDecimal
-                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
-                field_type.SetFlen(-1);
-                field_type.SetDecimal(-1);
+                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+            {
+                let option = rhs[2]
+                    .item
+                    .as_deref()
+                    .and_then(|v| v.downcast_ref::<FloatOptSemantic>())
+                    .copied()
+                    .unwrap_or(FloatOptSemantic {
+                        flen: -1,
+                        decimal: -1,
+                    });
+                field_type.SetFlen(option.flen);
+                field_type.SetDecimal(option.decimal);
             }
             if tp == parser_mysql::r#type::TypeVarString {
                 field_type.SetCharset("utf8mb4".to_owned());
@@ -1235,7 +1296,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Ok(false);
             };
             let start = rhs[1].offset.max(0) as usize;
-            let end = rhs[3].offset.max(0) as usize + rhs[3].ident.len();
+            let end = rhs[3].end_offset;
             let mut node_text = parser_ast::base::AstNode::default();
             node_text.SetOriginTextPosition(start as i32);
             node_text.SetText(None, &parser_state.src[start..end]);
@@ -1822,18 +1883,26 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             else {
                 return Ok(false);
             };
-            let pg_unconstrained_numeric = parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+            let pg_unconstrained_numeric = parser_state.sql_dialect()
+                == parser_ast::SqlDialect::PostgreSQL
                 && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal
-                && field_type.GetFlen() == -1 && field_type.GetDecimal() == -1;
+                && field_type.GetFlen() == -1
+                && field_type.GetDecimal() == -1;
             let (flen, decimal) =
                 parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(field_type.GetType());
             if field_type.GetFlen() == parser_types::types::UnspecifiedLength {
                 field_type.SetFlen(flen);
             }
-            if field_type.GetDecimal() == parser_types::types::UnspecifiedLength {
+            if field_type.GetDecimal() == parser_types::types::UnspecifiedLength
+                && !(parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                    && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal)
+            {
                 field_type.SetDecimal(decimal);
             }
-            if pg_unconstrained_numeric { field_type.SetFlen(-1); field_type.SetDecimal(-1); }
+            if pg_unconstrained_numeric {
+                field_type.SetFlen(-1);
+                field_type.SetDecimal(-1);
+            }
             let is_array = rule == ExpressionRule::SimpleExprAlt25
                 || rhs[rhs_len - (1)]
                     .item
@@ -1846,7 +1915,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 && is_array
                 && matches!(
                     field_type.GetType(),
-                    parser_mysql::r#type::TypeShort | parser_mysql::r#type::TypeLong | parser_mysql::r#type::TypeLonglong
+                    parser_mysql::r#type::TypeShort
+                        | parser_mysql::r#type::TypeLong
+                        | parser_mysql::r#type::TypeLonglong
                 )
             {
                 yylex.AppendError(
@@ -1878,16 +1949,18 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 parser_ast::ExprKind::Cast {
                     Expr: Box::new(expr),
                     Tp: field_type.clone(),
-                    FunctionType: if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeShort {
-                        parser_ast::CastFunctionType::PostgreSQLInt2
-                    } else if pg_cast
-                        && field_type.GetType() == parser_mysql::r#type::TypeLong
+                    FunctionType: if pg_cast
+                        && field_type.GetType() == parser_mysql::r#type::TypeShort
                     {
+                        parser_ast::CastFunctionType::PostgreSQLInt2
+                    } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeLong {
                         parser_ast::CastFunctionType::PostgreSQLInt4
                     } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeLonglong
                     {
                         parser_ast::CastFunctionType::PostgreSQLInt8
-                    } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal {
+                    } else if pg_cast
+                        && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal
+                    {
                         parser_ast::CastFunctionType::PostgreSQLNumeric
                     } else {
                         parser_ast::CastFunctionType::Cast
@@ -2785,7 +2858,16 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let mut field_type =
                 parser_types::types::NewFieldType(parser_mysql::r#type::TypeNewDecimal);
             field_type.SetFlen(option.flen);
-            field_type.SetDecimal(option.decimal);
+            field_type.SetDecimal(
+                if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                    && option.flen >= 0
+                    && option.decimal == -1
+                {
+                    0
+                } else {
+                    option.decimal
+                },
+            );
             field_type.SetCharset("binary".to_owned());
             field_type.SetCollate("binary".to_owned());
             field_type.AddFlag(parser_mysql::r#type::BinaryFlag);

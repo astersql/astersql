@@ -4828,3 +4828,30 @@ fn pg_numeric_grammar_mysql_isolation() {
             .is_err()
     );
 }
+
+#[test]
+fn pg_scalar_09_numeric_modifiers() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for (target, p, s) in [
+        ("numeric(3,1)", 3, 1),
+        ("numeric(2,-1)", 2, -1),
+        ("numeric(2)", 2, 0),
+        ("decimal(2,-2)", 2, -2),
+    ] {
+        let sql = format!("SELECT '1250'::{target}");
+        let stmt = parser.ParseOneStmt(&sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert!(
+            matches!(&expr.Kind,parser_ast::ExprKind::Cast { Tp,.. } if Tp.GetFlen()==p && Tp.GetDecimal()==s)
+        );
+        let restored = parser_ast::sql_restore::restore_expr(expr).unwrap();
+        assert!(
+            restored.ends_with(&format!("NUMERIC({p},{s}))")),
+            "{restored}"
+        );
+    }
+}

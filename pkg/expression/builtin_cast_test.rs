@@ -507,3 +507,37 @@ fn pg_finite_numeric_cast_factory() {
         }
     }
 }
+
+#[test]
+fn pg_numeric_modifier_cast_factory() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for (input, p, s, expected) in [
+        (Some("1.25"), 3, 1, Some("1.3")),
+        (Some("-1250"), 2, -2, Some("-1300")),
+        (None, 3, -1, None),
+    ] {
+        let mut target = types::NewFieldType(mysql::TypeNewDecimal);
+        target.SetFlen(p);
+        target.SetDecimal(s);
+        let datum = input
+            .map(|v| types::NewStringDatum(v.into()))
+            .unwrap_or_default();
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(mysql::TypeVarString),
+        ));
+        let expression = crate::formal_registry::BuildCastFunction(&pg, &source, &target);
+        let result = expression
+            .Eval(pg.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap();
+        assert_eq!(result.IsNull(), expected.is_none());
+        if let Some(value) = expected {
+            assert_eq!(result.ToString().unwrap(), value);
+        }
+    }
+}
