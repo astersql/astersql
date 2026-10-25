@@ -4780,3 +4780,51 @@ fn pg_scalar_05_smallint_ast_and_roundtrip() {
             .is_err()
     );
 }
+
+#[test]
+fn pg_finite_numeric_cast_identity() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT '12.340'::numeric",
+        "SELECT CAST(NULL AS numeric)",
+        "SELECT '12.340'::decimal",
+    ] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert!(
+            matches!(expr.Kind, parser_ast::ExprKind::Cast { FunctionType: parser_ast::CastFunctionType::PostgreSQLNumeric, ref Tp, .. } if Tp.GetDecimal() == -1)
+        );
+    }
+}
+
+#[test]
+fn pg_numeric_grammar_mysql_isolation() {
+    let mut mysql = parser::New();
+    for sql in [
+        "SELECT CAST('12.340' AS DECIMAL)",
+        "SELECT CAST('12.340' AS NUMERIC)",
+        "SELECT CAST('12.340' AS DECIMAL(6,3))",
+    ] {
+        let stmt = mysql.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert!(matches!(
+            select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+            parser_ast::ExprKind::Cast {
+                FunctionType: parser_ast::CastFunctionType::Cast,
+                ..
+            }
+        ));
+    }
+    assert!(
+        mysql
+            .ParseOneStmt("SELECT '12.340'::numeric", "", "")
+            .is_err()
+    );
+}

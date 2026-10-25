@@ -6891,6 +6891,7 @@ pub mod formal_registry {
     enum DynamicKind {
         Cast,
         PgInteger,
+        PgNumeric,
         PgBoolean,
         GetVar,
         ToBinary(String),
@@ -6945,6 +6946,15 @@ pub mod formal_registry {
                     types::NewIntDatum(text.parse().expect("canonical boolean integer"))
                 };
                 return Ok((out, false));
+            }
+            if self.kind == DynamicKind::PgNumeric {
+                let text = datum.ToString()?;
+                let value = text
+                    .parse::<types_dependency::pg_numeric::PgNumeric>()
+                    .map_err(|error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    })?;
+                return Ok((types::NewStringDatum(value.to_string()), false));
             }
             if self.kind == DynamicKind::PgInteger {
                 use crate::{PgInt4Error, pg_cast_int2, pg_cast_int4, pg_cast_int8};
@@ -7151,7 +7161,10 @@ pub mod formal_registry {
         }
         fn evalString(&self, c: &dyn EvalContext, r: chunk::Row) -> Result<(String, bool), Error> {
             match &self.kind {
-                DynamicKind::Cast | DynamicKind::PgInteger | DynamicKind::PgBoolean => {
+                DynamicKind::Cast
+                | DynamicKind::PgInteger
+                | DynamicKind::PgBoolean
+                | DynamicKind::PgNumeric => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { String::new() } else { d.ToString()? }, n))
                 }
@@ -7216,6 +7229,20 @@ pub mod formal_registry {
             c: &dyn EvalContext,
             r: chunk::Row,
         ) -> Result<(types::MyDecimal, bool), Error> {
+            if self.kind == DynamicKind::PgNumeric {
+                let (datum, null) = self.cast(c, r)?;
+                let mut decimal = types::MyDecimal::default();
+                if !null {
+                    decimal
+                        .FromString(datum.ToString()?.as_bytes())
+                        .map_err(|_| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                types_dependency::pg_numeric::PgNumericError::Unsupported,
+                            ))
+                        })?;
+                }
+                return Ok((decimal, null));
+            }
             match self.kind {
                 DynamicKind::Cast | DynamicKind::PgInteger | DynamicKind::PgBoolean => {
                     let (d, n) = self.cast(c, r)?;
@@ -7393,13 +7420,18 @@ pub mod formal_registry {
                 target.GetType(),
                 mysql::TypeShort | mysql::TypeLong | mysql::TypeLonglong
             );
-        if !pg_integer && !pg_boolean {
+        let pg_numeric = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+            && target.GetType() == mysql::TypeNewDecimal
+            && target.GetDecimal() == -1;
+        if !pg_integer && !pg_boolean && !pg_numeric {
             base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
         }
         let f = Box::new(DynamicBuiltin {
             base,
             kind: if pg_boolean {
                 DynamicKind::PgBoolean
+            } else if pg_numeric {
+                DynamicKind::PgNumeric
             } else if pg_integer {
                 DynamicKind::PgInteger
             } else {
@@ -7407,7 +7439,7 @@ pub mod formal_registry {
             },
         });
         let out = scalar(crate::ast::Cast, tp.clone(), f);
-        if tp.EvalType() == types::ETJson {
+        if tp.EvalType() == types::ETJson || pg_numeric {
             out
         } else {
             crate::FoldConstant(ctx, out)

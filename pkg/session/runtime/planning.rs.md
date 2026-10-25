@@ -161,3 +161,7 @@ protocol_parameter_types对直接TEXT目标的参数约束推导OID25，供$1::t
 ## PostgreSQL signed16（任务5）
 
 protocol_parameter_types保留显式OID21并由PostgreSQLInt2推断未指定参数为21；复用现有参数发生位置及约束合并逻辑。
+
+## PostgreSQL 有限 numeric 承载
+
+从 PostgreSQLNumeric CAST 推导参数 OID1700。

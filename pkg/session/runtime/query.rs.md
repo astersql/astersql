@@ -149,3 +149,7 @@ PG SELECT在行求值前检查布尔显式转换资格（含空扫描）与整�
 ## PostgreSQL signed16（任务5）
 
 PostgreSQLInt2加入现有整数转换的结果类型、返回投影、输入验证及关系求值分发，保持TypeShort和NULL身份；不扩展算术/比较重载。
+
+## PostgreSQL 有限 numeric 承载
+
+会话查询 CAST 消费者使用 pg_numeric_relational_value，保持 NULL 和精确 scale。

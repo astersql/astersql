@@ -169,3 +169,7 @@ CAST的明确bool目标字段直接保留到关系结果类型，即使NULL或�
 ## PostgreSQL signed16（任务5）
 
 PostgreSQLInt2在关系表达式类型推导中保留Tp，在关系求值中调用pg_cast_int2并保留22003错误来源；同步独立relational_value_test signed16边界回归。
+
+## PostgreSQL 有限 numeric 承载
+
+独立关系 CAST 消费者和会话消费者共用 PgNumeric 有限转换，错误保留类型源。

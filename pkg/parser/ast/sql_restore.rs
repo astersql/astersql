@@ -367,6 +367,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             if *FunctionType == CastFunctionType::PostgreSQLInt8 {
                 return Ok(format!("CAST({value} AS INT8)"));
             }
+            if *FunctionType == CastFunctionType::PostgreSQLNumeric {
+                return Ok(format!("CAST({value} AS NUMERIC)"));
+            }
             if *FunctionType == CastFunctionType::Binary {
                 return Ok(format!("BINARY {value}"));
             }
@@ -378,7 +381,8 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 CastFunctionType::Cast
                 | CastFunctionType::PostgreSQLInt2
                 | CastFunctionType::PostgreSQLInt4
-                | CastFunctionType::PostgreSQLInt8 => {
+                | CastFunctionType::PostgreSQLInt8
+                | CastFunctionType::PostgreSQLNumeric => {
                     format!("CAST({value} AS {target})")
                 }
                 CastFunctionType::Convert => format!("CONVERT({value}, {target})"),

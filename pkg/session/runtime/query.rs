@@ -1252,6 +1252,11 @@ impl ConcreteSession {
                         return result;
                     }
                 }
+                if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
+                    return pg_numeric_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                    );
+                }
                 if matches!(
                     FunctionType,
                     ast::CastFunctionType::PostgreSQLInt2

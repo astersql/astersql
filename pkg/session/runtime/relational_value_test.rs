@@ -227,3 +227,30 @@ fn pg_scalar_05_relational_int2_cast() {
         );
     }
 }
+
+#[test]
+fn pg_finite_numeric_relational_consumers() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_num_rows (v TEXT)").unwrap();
+    for value in [
+        "12.340".to_owned(),
+        "9007199254740993".into(),
+        "9".repeat(82),
+    ] {
+        pg.execute("DELETE FROM pg_num_rows").unwrap();
+        pg.execute(&format!("INSERT INTO pg_num_rows VALUES ('{value}')"))
+            .unwrap();
+        for sql in [
+            "SELECT v::numeric FROM pg_num_rows",
+            "SELECT CAST(v AS numeric) FROM pg_num_rows",
+        ] {
+            assert_eq!(
+                pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+                vec![value.clone()]
+            );
+        }
+    }
+}

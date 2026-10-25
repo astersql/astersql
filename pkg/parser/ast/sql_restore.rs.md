@@ -115,3 +115,7 @@ PostgreSQLInt4 CastFunctionType 恢复成 CAST(expr AS INT4)，保留严格 int4
 ## PostgreSQL signed16（任务5）
 
 PostgreSQLInt2恢复为CAST(... AS INT2)，保留signed16目标身份并支持重新解析；不通过MySQL显示宽度或当前值推断类型。
+
+## PostgreSQL 有限 numeric 承载
+
+将 PostgreSQLNumeric 恢复为 CAST(... AS NUMERIC)，避免恢复为 MySQL 默认 DECIMAL 约束。

@@ -111,3 +111,7 @@
 ## PostgreSQL signed16（任务5）
 
 按用户授权为PgCastType增加SMALLINT与INT2两条产生式，使用astersql-parsergen generate生成，动作由expression.rs按稳定RuleId承接；未增加token。
+
+## PostgreSQL 有限 numeric 入口
+
+由 main.astergram 重新生成，增加裸 NUMERIC 目标和仅用于后缀的 DECIMAL 目标；CAST AS DECIMAL 继续复用原 FloatOpt 规则，避免重复归约。

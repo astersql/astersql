@@ -123,3 +123,7 @@ Rust `Eval` 对未知 `EvalType` 返回错误，而当前 Go `switch` 没有显�
 - 扩展排序键归约时修改 `GetSingleColumn` 及两个私有辅助函数，并在 `scalar_function_37_aster_unit_test.rs` 添加方向、常量位置、嵌套与拒绝案例。
 - 构造/折叠行为测试应放在独立测试文件，不要嵌入生产源文件。核心哈希和转换可扩展 `scalar_function_test.rs`；构造上下文、NULL 推导和排序键行为可扩展 `scalar_function_37_aster_unit_test.rs`；PB 无折叠恢复应扩展 `pb_to_expr_runtime_test.rs`。
 - 保持 Go 对照：先核对 `scalar_function.go` 的同名逻辑与测试意图，再做最小 Rust 变更；不得为测试通过而删减 warning、NULL、哈希或元数据分支。
+
+## PostgreSQL 有限 numeric 承载
+
+PG无约束numeric CAST的通用Eval保留经验证的十进制载荷与numeric FieldType，避免走MySQL固定容量EvalDecimal。

@@ -106,3 +106,7 @@ mod vector_test;
 
 #[cfg(test)]
 mod json_constants_test;
+
+pub mod pg_numeric;
+#[cfg(test)]
+mod pg_numeric_test;

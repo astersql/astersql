@@ -351,9 +351,12 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
         ),
         25 | 1043 | 1042 => (253, value.to_vec()),
         1700 => {
-            let mut decimal = astersql_types::decimal::mydecimal::MyDecimal::default();
-            decimal.FromString(value).map_err(|_| invalid())?;
-            (246, value.to_vec())
+            let numeric = text
+                .parse::<astersql_types::pg_numeric::PgNumeric>()
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+            // Text transport avoids the MySQL prepared DECIMAL capacity. The
+            // prepared context retains OID1700 and inserts the numeric cast.
+            (253, numeric.to_string().into_bytes())
         }
         17 => {
             let hex = text

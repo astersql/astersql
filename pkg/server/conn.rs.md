@@ -111,3 +111,7 @@ ConnError::PgInt4 保留严格 int4 转换的有类型错误，Display 只提供
 ### PostgreSQL限定布尔显式转换（任务3）
 
 ConnError::PgBool保存共享PG布尔转换错误身份，供协议SQLSTATE映射。
+
+## PostgreSQL 有限 numeric 承载
+
+PgNumeric 错误分支携带有限 numeric 的语法、值域和能力错误。

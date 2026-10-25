@@ -98,3 +98,7 @@ sqlstate 对 ConnError::PgInt4 直接调用其枚举 SQLSTATE 映射，支持 22
 ### PostgreSQL限定布尔显式转换（任务3）
 
 PG错误桥接把ConnError::PgBool按内核sqlstate传输，支持限定转换的22P02/42804/0A000/XX000。
+
+## PostgreSQL 有限 numeric 承载
+
+PgNumeric 错误按其 SQLSTATE 输出，复用原 Sync/事务恢复状态机。

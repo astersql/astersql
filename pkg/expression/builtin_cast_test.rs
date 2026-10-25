@@ -466,3 +466,44 @@ fn pg_integer_text_grammar() {
         assert_eq!(pg_cast_int2(Some(input)), Err(expected), "{input}");
     }
 }
+
+#[test]
+fn pg_finite_numeric_cast_factory() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    let target = types::NewFieldType(mysql::TypeNewDecimal);
+    for value in [
+        Some("12.340".to_string()),
+        Some("9007199254740993".into()),
+        Some("9".repeat(82)),
+        Some("9".repeat(131072)),
+        Some(format!("{}.{}", "9".repeat(131072), "9".repeat(16383))),
+        Some(format!("0.{}1", "0".repeat(16382))),
+        None,
+    ] {
+        let datum = value
+            .as_ref()
+            .map(|v| types::NewStringDatum(v.clone()))
+            .unwrap_or_default();
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(mysql::TypeVarString),
+        ));
+        let expression = crate::formal_registry::BuildCastFunction(&pg, &source, &target);
+        assert_eq!(
+            expression.GetType(pg.GetEvalCtx()).GetType(),
+            mysql::TypeNewDecimal
+        );
+        let result = expression
+            .Eval(pg.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap();
+        assert_eq!(result.IsNull(), value.is_none());
+        if let Some(expected) = value {
+            assert_eq!(result.ToString().unwrap(), expected);
+        }
+    }
+}

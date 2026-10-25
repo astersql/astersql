@@ -101,3 +101,7 @@ OID16文本参数仅在PG入口清理ASCII的六种isspace字符，忽略ASCII�
 ## 整数文本统一解析（任务6）
 
 OID21/23/20的非NULL文本参数分别复用astersql_expression::pg_cast_int2/4/8，与正式CAST及关系求值一致；保留共享错误sqlstate。支持PG18进制前缀与下划线，不再单独使用Rust FromStr。Bind拒绝及portal发布时序保持。pg_extended_test::pg_scalar_06覆盖文本常量、列、推断/显式参数、typed NULL、空描述、错误阶段、Sync/ROLLBACK恢复与拒绝写入无副作用，以及同Server MySQL实际值/元数据/告警。
+
+## PostgreSQL 有限 numeric 承载
+
+OID1700 文本参数经 PgNumeric 验值规范化；用文本共享参数载荷绕开 MySQL prepared DECIMAL 的容量限制，目标身份由准备元数据保留。

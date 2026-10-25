@@ -149,3 +149,7 @@ PgCastType增加本次bool↔text转换必需的TEXT目标（TypeVarString、utf
 ## PostgreSQL signed16（任务5）
 
 PgCastType新增SMALLINT/INT2目标并映射TypeShort；后缀与CAST均构造PostgreSQLInt2。只在PG方言启用；int2数组仍显式拒绝，未开放数组或完整转换矩阵。
+
+## PostgreSQL 有限 numeric 承载
+
+裸 numeric/decimal 目标保留未约束 flen/scale，并对两种 CAST 语法设置 PostgreSQLNumeric。

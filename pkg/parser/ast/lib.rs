@@ -679,6 +679,7 @@ pub enum CastFunctionType {
     PostgreSQLInt4,
     /// Strict PostgreSQL int8 semantics retained across shared AST consumers.
     PostgreSQLInt8,
+    PostgreSQLNumeric,
     Convert,
     Binary,
 }

@@ -105,3 +105,7 @@ Prepare worker 先调用 `ConcreteSession::protocol_integer_parameter_types` 获
 ### PostgreSQL限定布尔显式转换（任务3）
 
 session_protocol_error优先保留PgBoolError，而不是降级为通用会话文本错误。
+
+## PostgreSQL 有限 numeric 承载
+
+会话 numeric 源错误桥接为 ConnError::PgNumeric，保留22003等分类。

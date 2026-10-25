@@ -1294,6 +1294,9 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
+            if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
+                return pg_numeric_relational_value(relational_expression_value(Expr, row)?);
+            }
             if matches!(
                 FunctionType,
                 ast::CastFunctionType::PostgreSQLInt2
@@ -2666,7 +2669,8 @@ pub(super) fn relational_expression_type(
             FunctionType:
                 ast::CastFunctionType::PostgreSQLInt2
                 | ast::CastFunctionType::PostgreSQLInt4
-                | ast::CastFunctionType::PostgreSQLInt8,
+                | ast::CastFunctionType::PostgreSQLInt8
+                | ast::CastFunctionType::PostgreSQLNumeric,
             ..
         } => Tp.clone(),
         ast::ExprKind::Column(column) => table
@@ -3521,4 +3525,20 @@ pub(super) fn pg_boolean_relational_value(
         Ok(None) => None,
         Err(error) => Some(Err(pg_bool_session_error(error))),
     }
+}
+
+/// PG numeric validation is shared by constant, row and parameter consumers.
+pub(super) fn pg_numeric_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+    value
+        .map(|text| {
+            text.parse::<astersql_types::pg_numeric::PgNumeric>()
+                .map(|value| value.to_string())
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+        })
+        .transpose()
 }

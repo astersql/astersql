@@ -129,3 +129,7 @@ BuildCastFunction仅在PG方言及源/目标布尔身份存在时选择PgBoolean
 ## PostgreSQL整数文本局部接线（任务6）
 
 DynamicKind::PgInteger 的正式工厂目标从signed16/32扩至signed64；按目标宽度调用共享pg_cast_int2/4/8，避免PG int8文本走MySQL Datum转换。仅PostgreSQL方言选择此签名，NULL与其他方言原路径保持；builtin_cast_test::pg_integer_text_grammar覆盖三宽度真实工厂。
+
+## PostgreSQL 有限 numeric 承载
+
+PG无约束numeric CAST工厂用PgNumeric验证并返回精确载荷；禁用固定MyDecimal常量折叠。MySQL工厂原路径不变。固定容量EvalDecimal接口超容量显式拒绝，禁止取错值。

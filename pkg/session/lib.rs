@@ -40,6 +40,13 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_numeric_error(&self) -> Option<astersql_types::pg_numeric::PgNumericError> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<astersql_types::pg_numeric::PgNumericError>()
+            .copied()
+    }
+
     pub fn pg_bool_error(&self) -> Option<astersql_expression::PgBoolError> {
         self.source
             .as_ref()?
