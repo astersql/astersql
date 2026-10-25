@@ -180,6 +180,7 @@ fn unsigned_binary_and_unsupported_types() {
             flags: 32,
             length: 20,
             decimal: 0,
+            postgresql_array_element: None,
         }],
         ..QueryResult::default()
     };
@@ -212,7 +213,8 @@ fn unsigned_binary_and_unsupported_types() {
             code: 10,
             flags: 0,
             length: 0,
-            decimal: 0
+            decimal: 0,
+            postgresql_array_element: None,
         };
         2
     ];
@@ -288,6 +290,7 @@ fn pg_binary_native_results() {
             flags: 0,
             length: 0,
             decimal: 0,
+            postgresql_array_element: None,
         }],
         ..QueryResult::default()
     };

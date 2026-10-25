@@ -4139,7 +4139,7 @@ fn pg_dialect_13_behavior() {
             .ParseOneStmt("SELECT TO \"broken", "", "")
             .is_err()
     );
-    equal!(lookahead.PostgreSQLSyntaxErrorPosition(), None);
+    equal!(lookahead.PostgreSQLSyntaxErrorPosition(), Some(8));
     let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
         .ParseOneStmt(protected, "", "")
         .unwrap();

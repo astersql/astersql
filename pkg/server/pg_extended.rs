@@ -715,8 +715,12 @@ impl Extended {
                     catalog.metadata()
                 } else {
                     context
-                        .prepare_statement(
+                        .prepare_statement_with_parameter_types(
                             analysis_sql.as_deref().unwrap_or(&sql),
+                            &analysis_mapping
+                                .iter()
+                                .map(|index| oids[*index])
+                                .collect::<Vec<_>>(),
                             &CancellationToken::new(),
                         )
                         .map_err(engine)?

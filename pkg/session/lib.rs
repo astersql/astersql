@@ -40,6 +40,13 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_array_error(&self) -> Option<runtime::PgArrayError> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<runtime::PgArrayError>()
+            .cloned()
+    }
+
     pub fn into_shared(self) -> astersql_errors::SharedError {
         self.source
             .unwrap_or_else(|| astersql_errors::New(self.message))

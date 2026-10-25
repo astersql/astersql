@@ -379,8 +379,10 @@ pub(super) struct SessionState {
 }
 
 /// Identity and cache state of one connection-owned protocol statement.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct ProtocolPreparedState {
+    pub(super) has_arrays: bool,
+    pub(super) array_parameter_oids: Vec<u32>,
     pub(super) dialect: ast::SqlDialect,
     pub(super) planned: bool,
 }

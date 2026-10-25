@@ -1696,6 +1696,9 @@ impl ConcreteSession {
     /// statement. This uses the same AST/catalog resolver as prepared metadata.
     pub fn describe_result_fields(&self, sql: &str) -> SessionResult<Vec<ConcreteResultField>> {
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            super::pg_array::analyze(sql, &statements, None)?;
+        }
         if statements.len() != 1 {
             return Err(SessionError::new("result metadata requires one statement"));
         }
@@ -1760,12 +1763,25 @@ impl ConcreteSession {
         &self,
         sql: &str,
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
+        self.prepare_protocol_statement_with_parameter_types(sql, &[])
+    }
+
+    pub fn prepare_protocol_statement_with_parameter_types(
+        &self,
+        sql: &str,
+        supplied: &[u32],
+    ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
+        let (array_types, array_oids) = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            super::pg_array::analyze(sql, &statements, Some(supplied))?
+        } else {
+            (HashMap::new(), Vec::new())
+        };
         let statement = &statements[0];
-        let fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+        let mut fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
             && !insert.Returning.is_empty()
         {
@@ -1790,6 +1806,18 @@ impl ConcreteSession {
         } else {
             Vec::new()
         };
+        if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
+            for (field, projection) in fields.iter_mut().zip(&select.Fields.Fields) {
+                if let Some(expr) = projection.Expr.as_ref() {
+                    if let Some(element) = array_types.get(&(expr.OriginTextPosition as usize)) {
+                        field.column.FieldType = super::pg_array::field_type(*element);
+                        if projection.AsName.O.is_empty() {
+                            field.column_as_name = ast::NewCIStr("array");
+                        }
+                    }
+                }
+            }
+        }
         let parameter_count = parameter_markers(sql).len();
         if let Err(limit) = runtime_prepared_stmt_reserve(&self.domain) {
             return Err(SessionError::new(format!(
@@ -1805,6 +1833,12 @@ impl ConcreteSession {
             super::session::ProtocolPreparedState {
                 dialect: self.sql_dialect(),
                 planned: false,
+                has_arrays: !array_types.is_empty(),
+                array_parameter_oids: if array_types.is_empty() {
+                    Vec::new()
+                } else {
+                    array_oids
+                },
             },
         );
         Ok((statement_id, parameter_count, fields))
@@ -1865,10 +1899,30 @@ impl ConcreteSession {
             .ok_or_else(|| {
                 SessionError::new(format!("unknown prepared statement {statement_id}"))
             })?;
+        let has_arrays = self
+            .state
+            .borrow()
+            .protocol_prepared_planned
+            .get(&statement_id)
+            .is_some_and(|state| state.has_arrays);
+        let array_oids = self
+            .state
+            .borrow()
+            .protocol_prepared_planned
+            .get(&statement_id)
+            .map(|state| state.array_parameter_oids.clone())
+            .unwrap_or_default();
         let literals = arguments
             .iter()
-            .map(|argument| {
+            .enumerate()
+            .map(|(index, argument)| {
                 let literal = argument.sql_literal()?;
+                if let Some(oid @ (23 | 20)) = array_oids.get(index) {
+                    return Ok(format!(
+                        "CAST({literal} AS {})",
+                        if *oid == 23 { "INT4" } else { "INT8" }
+                    ));
+                }
                 // A parameter is an atomic expression. Without parentheses,
                 // -9223372036854775808::int8 casts the positive magnitude first.
                 if dialect == ast::SqlDialect::PostgreSQL
@@ -1893,7 +1947,22 @@ impl ConcreteSession {
             planned.planned = prepared_plan_cache;
         }
         drop(state);
-        execution
+        execution.and_then(|mut records| {
+            if has_arrays {
+                // Constant record sets may omit fields. Resolve from the actual
+                // bound AST, not from parameter values or cached portal OIDs.
+                let fields = self.describe_result_fields(&bound)?;
+                if records.len() != 1 || records[0].columns.len() != fields.len() {
+                    return Err(SessionError::new("ARRAY result field count mismatch"));
+                }
+                records[0].columns = fields
+                    .iter()
+                    .map(|field| field.column_as_name.O.clone())
+                    .collect();
+                records[0].result_fields = fields.into_iter().map(Some).collect();
+            }
+            Ok(records)
+        })
     }
 
     /// Remove one binary-protocol prepared statement.

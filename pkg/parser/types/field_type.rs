@@ -35,6 +35,14 @@ pub const UnspecifiedLength: isize = -1;
 // Rust 的可变静态值需要同步保护；保留读写形状，未接入真实配置系统。
 pub static mut TiDBStrictIntegerDisplayWidth: bool = false;
 
+/// PostgreSQL array element identity, separate from MySQL JSON/multi-valued indexes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PostgreSQLArrayElement { Int4, Int8, Text }
+impl PostgreSQLArrayElement {
+    pub fn oid(self) -> u32 { match self { Self::Int4 => 23, Self::Int8 => 20, Self::Text => 25 } }
+    pub fn array_oid(self) -> u32 { match self { Self::Int4 => 1007, Self::Int8 => 1016, Self::Text => 1009 } }
+}
+
 /// FieldType 是列/表达式的完整类型描述，字段布局对齐 Go 同名结构。
 // FieldType 逐字段对应 Go 结构，Option<Vec<_>> 同时保留切片顺序与 nil/非 nil 状态。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -48,6 +56,7 @@ pub struct FieldType {
     elems: Option<Vec<String>>,
     elemsIsBinaryLit: Option<Vec<bool>>,
     array: bool,
+    postgresql_array_element: Option<PostgreSQLArrayElement>,
 }
 
 impl FieldType {
@@ -75,6 +84,7 @@ impl FieldType {
             h.HashBool(*elem);
         }
         h.HashBool(self.array);
+        if let Some(element) = self.postgresql_array_element { h.HashUint64(element.array_oid() as u64); }
     }
 
     /// Equals 做动态类型比较；非 FieldType 或字段不一致时返回 false。
@@ -92,6 +102,7 @@ impl FieldType {
             && self.GetElems() == other.GetElems()
             && self.GetElemsIsBinaryLit() == other.GetElemsIsBinaryLit()
             && self.array == other.array
+            && self.postgresql_array_element == other.postgresql_array_element
     }
 
     /// new_field_type 内部构造：长度与小数位初始化为 UnspecifiedLength。
@@ -157,7 +168,7 @@ impl FieldType {
 
     /// SetType 写入底层类型并清除 array 标志。
     // SetType 写入底层类型并清除 array，与 Go 避免遗留数组标志的行为一致。
-    pub fn SetType(&mut self, tp: u8) { self.tp = tp; self.array = false; }
+    pub fn SetType(&mut self, tp: u8) { self.tp = tp; self.array = false; self.postgresql_array_element = None; }
     /// SetFlag 覆盖全部标志位。
     pub fn SetFlag(&mut self, flag: usize) { self.flag = flag; }
     /// AddFlag 按位或追加标志。
@@ -221,6 +232,9 @@ impl FieldType {
     pub fn SetElems(&mut self, elems: Vec<String>) { self.elems = Some(elems); }
     /// SetElem 按索引更新单个元素。
     pub fn SetElem(&mut self, idx: usize, element: String) { self.elems.as_mut().unwrap()[idx] = element; }
+    pub fn PostgreSQLArrayElement(&self) -> Option<PostgreSQLArrayElement> { self.postgresql_array_element }
+    pub fn SetPostgreSQLArrayElement(&mut self, element: PostgreSQLArrayElement) { self.postgresql_array_element = Some(element); }
+
     /// SetArray 设置是否为数组类型包装。
     pub fn SetArray(&mut self, array: bool) { self.array = array; }
     /// IsArray 返回是否带数组包装标记。
@@ -273,7 +287,8 @@ impl FieldType {
             || (self.EvalType() == ETReal && self.decimal == UnspecifiedLength)
             || self.EvalType() == ETJson;
         let ignoreDecimal = matches!(self.EvalType(), ETInt | ETString);
-        tpEqual
+        self.postgresql_array_element == other.postgresql_array_element
+            && tpEqual
             && (ignoreDecimal || self.decimal == other.decimal)
             && self.charset == other.charset
             && self.collate == other.collate
@@ -285,6 +300,7 @@ impl FieldType {
     /// PartialEqual 在 unsafe 模式下对字符串类型放宽 flen 比较。
     // PartialEqual 的 unsafe 分支只用于字符串类型：忽略 flen，但仍检查 NotNull、字符集、排序规则和元素。
     pub fn PartialEqual(&self, other: &FieldType, unsafe_compare: bool) -> bool {
+        if self.postgresql_array_element != other.postgresql_array_element { return false; }
         if mysql::HasNotNullFlag(self.flag) != mysql::HasNotNullFlag(other.flag) {
             return false;
         }
@@ -572,6 +588,8 @@ struct jsonFieldType {
     Elems: Option<Vec<String>>,
     ElemsIsBinaryLit: Option<Vec<bool>>,
     Array: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    PostgreSQLArrayElement: Option<PostgreSQLArrayElement>,
 }
 
 impl From<&FieldType> for jsonFieldType {
@@ -586,6 +604,7 @@ impl From<&FieldType> for jsonFieldType {
             Elems: ft.elems.clone(),
             ElemsIsBinaryLit: ft.elemsIsBinaryLit.clone(),
             Array: ft.array,
+            PostgreSQLArrayElement: ft.postgresql_array_element,
         }
     }
 }
@@ -602,6 +621,7 @@ impl From<jsonFieldType> for FieldType {
             elems: value.Elems,
             elemsIsBinaryLit: value.ElemsIsBinaryLit,
             array: value.Array,
+            postgresql_array_element: value.PostgreSQLArrayElement,
         }
     }
 }

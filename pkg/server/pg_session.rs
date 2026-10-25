@@ -187,6 +187,7 @@ impl SessionQuery {
                 flags: 0,
                 length: 64,
                 decimal: 0,
+                postgresql_array_element: None,
             });
         }
         result

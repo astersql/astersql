@@ -2915,9 +2915,9 @@ fn pg_dialect_libpq(task: u8) {
                 .unwrap();
         assert_eq!(summary["cleanup_ok"], true);
         assert_eq!(summary["syntax_eligible"], 6);
-        assert_eq!(summary["gate_cases"], 4);
-        assert_eq!(summary["semantic_array_success"], 0);
-        assert_eq!(summary["unique_effective"], 2);
+        assert_eq!(summary["gate_cases"], 0);
+        assert_eq!(summary["semantic_array_success"], 3);
+        assert_eq!(summary["unique_effective"], 6);
         assert_eq!(
             std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
                 .unwrap()

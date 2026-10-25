@@ -1016,6 +1016,7 @@ impl CatalogQuery {
                 flags,
                 length: 64,
                 decimal: 0,
+                postgresql_array_element: None,
             })
             .collect();
         // Catalog statement identity belongs to the PG statement name, not an

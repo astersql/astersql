@@ -4087,6 +4087,9 @@ impl ConcreteSession {
         }
         drop(state);
         let statements = parse_with_dialect(&normalized_sql, sql_mode, self.sql_dialect())?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            super::pg_array::analyze(&normalized_sql, &statements, None)?;
+        }
         // 多语句按分号拆分后逐条执行，保留各自 hint/binding 生命周期。
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();

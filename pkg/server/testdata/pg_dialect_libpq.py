@@ -1180,10 +1180,10 @@ if task == 9:
     registry = json.loads((evidence/'cases.json').read_text())
     for case in registry:
         name = case['case_id']
-        case['local_expected_state'] = '42601' if name == 'missing_close' else ('' if name == 'protected' else '0A000')
+        case['local_expected_state'] = '42601' if name == 'missing_close' else ('42P18' if name == 'empty' else '')
         case['reference_expected_state'] = '42601' if name == 'missing_close' else ('42P18' if name == 'empty' else '')
         case['expected_state'] = None
-        case['execution'] = 'reference values observed for list/null/parameters; local array execution unavailable; literal executes on both'
+        case['execution'] = 'both endpoints Prepare/Describe/Bind/Execute; typed NULL and repeated text/binary result Bind; Q original diagnostics'
         case['side_effects'] = 'no writes; independent local observer checks isolation table before/after'
     (evidence/'cases.json').write_text(json.dumps(registry, indent=2))
 
@@ -1203,7 +1203,10 @@ if task == 13:
     (evidence/'cases.json').write_text(json.dumps(registry,indent=2))
 
 
-def observe(result):
+raw_value = c.CFUNCTYPE(ptr, ptr, integer, integer)(('PQgetvalue', pq))
+value_length = api('PQgetlength', integer, ptr, integer, integer)
+
+def observe(result, binary=False):
     assert result, 'libpq returned no result'
     try:
         return dict(status=result_status(result),
@@ -1214,10 +1217,10 @@ def observe(result):
                              field_size(result, i), field_mod(result, i)] for i in range(columns(result))],
                     formats=[field_format(result, i) for i in range(columns(result))],
                     param_count=nparams(result), params=[param_type(result, i) for i in range(nparams(result))],
-                    rows=[[None if is_null(result, r, col) else value(result, r, col).decode()
+                    rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,13,14,16,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -2100,11 +2103,9 @@ def array_handoff():
             return all(x['state']=='42601' and x['status']==7 and x['position']==str(len(sql)+1) for x in [a,r])
         if name == 'protected':
             return all(x['state']=='' and x['status']==1 for x in [a,r])
-        expected_ref = '42P18' if name == 'empty' else ''
-        return (a['state']=='0A000' and a['status']==7 and not a['position'] and
-                a['message']=='ARRAY constructors require array type analysis support' and
-                r['state']==expected_ref and r['status']==(7 if expected_ref else 1) and
-                r['position']==('8' if expected_ref else ''))
+        if name == 'empty':
+            return all(x['state']=='42P18' and x['status']==7 and x['position']=='8' for x in [a,r])
+        return all(x['state']=='' and x['status']==1 and not x['position'] for x in [a,r])
     try:
         local = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
         for label in ['reference','aster','aster_b','aster_observer']:
@@ -2135,8 +2136,10 @@ def array_handoff():
             input_data=dict(capability_id='pg.dialect.array.syntax',case_id=name,sql=sql,phase='PQprepare',
                 parameter_oids=oids,arguments=['7','9'] if oids else [],parameter_formats=[0]*len(oids),result_format=0,
                 encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping={},
-                expected_basis='task9 syntax/gate contract and exact PostgreSQL18.6 analysis; values/OIDs unavailable on local gated constructors')
+                expected_basis='task9 full flat-array analysis, prepare/bind/execute and exact PostgreSQL18.6 reference')
             results={}
+            executions={}
+            descriptions={}
             for label in ['reference', 'aster_b' if index%2 else 'aster']:
                 conn=connections[label];check(transaction(conn)==0,'initial transaction not idle')
                 statement=f'array_{index}'.encode()
@@ -2145,19 +2148,39 @@ def array_handoff():
                 record(name,label,input_data,result);results['reference' if label=='reference' else 'aster']=result
                 if result['status']==1:
                     prepared.append((conn,statement))
-                    desc=observe(describe(conn,statement));record(name+'_describe',label,dict(input_data,phase='Describe'),desc)
-                    if label=='reference' and name in ('list','null','parameters'):
+                    desc=observe(describe(conn,statement));record(name+'_describe',label,dict(input_data,phase='Describe'),desc);descriptions[label]=desc
+                    if name in ('list','null','parameters'):
                         check(desc['fields'][0][1:]==[1007,-1,-1], 'reference integer[] metadata')
                         if oids:check(desc['param_count']==2 and desc['params']==[23,23],'reference parameter identity')
                         args=(text*2)(b'7',b'9') if oids else None
                         values=observe(exec_prepared(conn,statement,len(oids),args,None,None,0));record(name+'_execute',label,dict(input_data,phase='Execute'),values)
                         expected={'list':'{1,2}','null':'{NULL,1}','parameters':'{9,7,9}'}[name]
                         check(values['rows']==[[expected]] and values['command_tag']=='SELECT 1','reference array values')
+                        check(values['fields'][0][1:]==[1007,-1,-1] and values['formats']==[0], 'execute array type identity')
+                        executions[label]=values
+                        for repeat, arguments in enumerate(([None,b'9'],[None,None],[b'-2147483648',b'2147483647']) if oids else [[]]):
+                            args=(text*len(arguments))(*arguments) if arguments else None
+                            for result_format in [0,1]:
+                                rebound=observe(exec_prepared(conn,statement,len(arguments),args,None,None,result_format),binary=result_format==1)
+                                record(name+f'_rebind_{repeat}_{result_format}',label,dict(input_data,phase='Bind/Execute',arguments=[None if v is None else v.decode() for v in arguments],result_format=result_format),rebound)
+                                check(rebound['state']=='' and rebound['status']==2 and rebound['fields'][0][1:]==[1007,-1,-1] and rebound['formats']==[result_format], 'repeated Bind fixed array identity')
+                                executions[label+f'_{repeat}_{result_format}']=rebound
+                                if result_format==0 and oids:
+                                    check(rebound['rows']==[[['{9,NULL,9}','{NULL,NULL,NULL}','{2147483647,-2147483648,2147483647}'][repeat]]], 'repeated Bind values/NULL')
+
                     if name=='protected':
                         values=observe(exec_prepared(conn,statement,0,None,None,None,0));record(name+'_execute',label,dict(input_data,phase='Execute'),values)
                         check(values['rows']==[['ARRAY[1,2]']],'protected value')
                 recover(conn,label,name)
             check(compare(results['aster'],results['reference'],name,sql),'prepare contract mismatch: '+name)
+            local_label='aster_b' if index%2 else 'aster'
+            if name in ('list','null','parameters'):
+                check(descriptions[local_label]['fields']==descriptions['reference']['fields'] and descriptions[local_label]['params']==descriptions['reference']['params'] and descriptions[local_label]['formats']==descriptions['reference']['formats'], 'Describe parity')
+                for key, actual in executions.items():
+                    if key.startswith(local_label):
+                        reference=executions['reference'+key[len(local_label):]]
+                        check(all(actual[field]==reference[field] for field in ['rows','fields','formats','command_tag','table_origins']), 'Execute/rebind text/binary parity')
+
             if name in ('list','empty','missing_close'):
                 damaged=copy.deepcopy(results['aster']);damaged['state']='42601' if name!='missing_close' else '0A000'
                 check(not compare(damaged,results['reference'],name,sql),'comparator negative check');self_checks+=1
@@ -2165,7 +2188,6 @@ def array_handoff():
                 result=query(connections[label],sql);record(name+'_simple',label,dict(input_data,phase='Q',arguments=[],parameter_oids=[]),result)
                 if name=='protected':check(result['rows']==[['ARRAY[1,2]']],'simple literal changed')
                 elif name=='missing_close':check(result['state']=='42601' and result['position']==str(len(sql)+1),'simple original position')
-                elif label=='aster':check(result['state']=='0A000','simple array gate')
                 elif name=='empty':check(result['state']=='42P18' and result['position']=='8','empty type analysis')
                 elif name=='parameters':check(result['state']=='42P02','simple parameter requires binding')
                 else:check(result['rows']==[[{'list':'{1,2}','null':'{NULL,1}'}[name]]],'simple reference array')
@@ -2176,11 +2198,43 @@ def array_handoff():
             print('PG_DIALECT_CHECKPOINT '+name,flush=True)
             check(sys.stdin.readline().strip()=='continue','MySQL checkpoint aborted')
             eligible+=1
+        variants = [
+            ('list_int8','SELECT ARRAY[1,2147483648]',[],[],1016,'{1,2147483648}'),
+            ('null_all','SELECT ARRAY[NULL,NULL]',[],[],1009,'{NULL,NULL}'),
+            ('text_escaping',"SELECT ARRAY['中,文','NULL','']",[],[],1009,'{"中,文","NULL",""}'),
+            ('parameters_inferred','SELECT ARRAY[$2,$1,$2]',[],[b'a,b',None],1009,'{NULL,"a,b",NULL}'),
+            ('parameters_int8','SELECT ARRAY[$2,$1,$2]',[20,20],[b'7',b'9'],1016,'{9,7,9}'),
+        ]
+        (evidence/'array-variants.json').write_text(json.dumps([
+            dict(case_id=name,sql=sql,parameter_oids=oids,arguments=[None if v is None else v.decode() for v in arguments],expected_array_oid=oid,expected_value=expected)
+            for name,sql,oids,arguments,oid,expected in variants],ensure_ascii=False,indent=2))
+        for name,sql,oids,arguments,oid,expected in variants:
+            sides={}
+            for label in ['reference','aster']:
+                conn=connections[label];statement=('variant_'+name).encode()
+                result=observe(prepare(conn,statement,sql.encode(),len(oids),(c.c_uint*len(oids))(*oids) if oids else None))
+                record(name+'_prepare',label,dict(phase='PQprepare',sql=sql,parameter_oids=oids),result)
+                check(result['state']=='' and result['status']==1,'array variant Prepare')
+                prepared.append((conn,statement))
+                desc=observe(describe(conn,statement));record(name+'_describe',label,dict(phase='Describe',sql=sql),desc)
+                check(desc['fields']==[['array',oid,-1,-1]],'array variant identity')
+                if arguments:check(desc['params']==([25,25] if name=='parameters_inferred' else [20,20]),'array variant parameter inference')
+                for fmt in [0,1]:
+                    values=observe(exec_prepared(conn,statement,len(arguments),(text*len(arguments))(*arguments) if arguments else None,None,None,fmt),binary=fmt==1)
+                    record(name+f'_execute_{fmt}',label,dict(phase='Bind/Execute',sql=sql,parameter_oids=oids,arguments=[None if v is None else v.decode() for v in arguments],result_format=fmt),values)
+                    check(values['state']=='' and values['status']==2 and values['fields']==[['array',oid,-1,-1]] and values['formats']==[fmt],'array variant Execute identity')
+                    if fmt==0:check(values['rows']==[[expected]],'array variant exact values')
+                    sides[label+str(fmt)]=values
+            for fmt in [0,1]:check(all(sides['aster'+str(fmt)][field]==sides['reference'+str(fmt)][field] for field in ['fields','formats','rows','command_tag','table_origins']),'array variant text/binary parity')
         for label in ['aster','reference']:
-            conn=connections[label];check(query(conn,'BEGIN')['status']==1,'begin failed')
-            result=observe(prepare(conn,b'transaction_bad',b'SELECT ARRAY[1,2',0,None))
-            record('transaction_error',label,dict(phase='PQprepare',sql='SELECT ARRAY[1,2'),dict(result,transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conn))))
-            check(result['state']=='42601' and transaction(conn)==3,'transaction error state');recover(conn,label,'transaction')
+            conn=connections[label]
+            for name,sql,state in [('syntax','SELECT ARRAY[1,2','42601'),('empty_unicode','/*中*/ SELECT ARRAY[]','42P18')]:
+                check(query(conn,'BEGIN')['status']==1,'begin failed')
+                result=observe(prepare(conn,('transaction_'+name).encode(),sql.encode(),0,None))
+                record('transaction_'+name,label,dict(phase='PQprepare',sql=sql),dict(result,transaction_after={0:'I',2:'T',3:'E'}.get(transaction(conn))))
+                check(result['state']==state and transaction(conn)==3,'transaction error state')
+                check(result['position']==str(len(sql)+1 if state=='42601' else sql.index('ARRAY')+1),'transaction original character position')
+                recover(conn,label,'transaction_'+name)
         parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
         env=dict(os.environ,MYSQL_PWD=parsed.password or '')
         args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
@@ -2208,8 +2262,8 @@ def array_handoff():
             if conn and transaction(conn) in (2,3):cleanup_ok=query(conn,'ROLLBACK')['status']==1 and cleanup_ok
             if conn:finish(conn)
         summary=dict(cases=len(cases),assertions=checks,self_checks=self_checks,syntax_eligible=eligible if done and cleanup_ok else 0,
-            gate_cases=4 if done and cleanup_ok else 0,unique_effective=2 if done and cleanup_ok else 0,
-            semantic_array_success=0,cleanup_ok=cleanup_ok,scope='array syntax/gate; local array typing/binding/execute unavailable')
+            gate_cases=0,unique_effective=eligible if done and cleanup_ok else 0,
+            semantic_array_success=3 if done and cleanup_ok else 0,auxiliary_variants=5 if done and cleanup_ok else 0,cleanup_ok=cleanup_ok,scope='flat arrays through canonical prepare/bind/execute')
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert done and cleanup_ok,'incomplete run/cleanup'
     print(json.dumps(summary),flush=True)

@@ -468,6 +468,7 @@ impl PgService {
                                         .map(|command| (std::borrow::Cow::Owned(sql), command))
                                 })
                         };
+                        let original_sql = sql;
                         match parsed {
                             Ok((_, None)) => write_message(socket, b'I', &[])?,
                             Ok((sql, Some(command))) => {
@@ -535,12 +536,22 @@ impl PgService {
                                     }
                                     Err(error) => {
                                         extended.session.record_error(context.as_ref());
-                                        write_error(
-                                            socket,
-                                            "ERROR",
-                                            sqlstate(&error),
-                                            &error.to_string(),
-                                        )?
+                                        if matches!(&error, crate::conn::ConnError::PgArray(_)) {
+                                            write_sql_error(
+                                                socket,
+                                                sqlstate(&error),
+                                                &error.to_string(),
+                                                original_sql,
+                                                None,
+                                            )?;
+                                        } else {
+                                            write_error(
+                                                socket,
+                                                "ERROR",
+                                                sqlstate(&error),
+                                                &error.to_string(),
+                                            )?;
+                                        }
                                     }
                                 }
                                 context.finish_protocol_response(Duration::ZERO);
@@ -698,6 +709,48 @@ pub(crate) fn write_sql_error(
 ) -> io::Result<()> {
     let position = if relation_position.is_some() {
         relation_position
+    } else if matches!(state, "42P18" | "42P02") {
+        struct Location {
+            offset: Option<usize>,
+            parameter: bool,
+        }
+        impl astersql_parser_ast::Visitor for Location {
+            fn enter(&mut self, node: &dyn astersql_parser_ast::Node) -> bool {
+                if let Some(expr) = node
+                    .as_any()
+                    .downcast_ref::<astersql_parser_ast::ExprNode>()
+                {
+                    let matches = if self.parameter {
+                        matches!(expr.Kind, astersql_parser_ast::ExprKind::ParamMarker { .. })
+                    } else {
+                        matches!(&expr.Kind, astersql_parser_ast::ExprKind::Array { Elements, .. } if Elements.is_empty())
+                    };
+                    if matches && self.offset.is_none() {
+                        self.offset = Some(expr.OriginTextPosition as usize);
+                    }
+                }
+                false
+            }
+            fn leave(&mut self, _: &dyn astersql_parser_ast::Node) -> bool {
+                true
+            }
+        }
+        let mut location = Location {
+            offset: None,
+            parameter: state == "42P02",
+        };
+        if let Ok((statements, _)) =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(original_sql, &[])
+        {
+            for statement in statements {
+                statement.accept(&mut location);
+            }
+        }
+        location
+            .offset
+            .and_then(|offset| original_sql.get(..offset))
+            .map(|prefix| prefix.chars().count() + 1)
     } else if state == "42601" {
         let mut parser =
             astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL);
@@ -761,6 +814,7 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
     use crate::conn::ConnError;
     match error {
         ConnError::PgInt4(error) => error.sqlstate(),
+        ConnError::PgArray(error) => error.state,
         ConnError::AccessDenied { .. } => "28000",
         ConnError::UnsupportedCommand(_) => "0A000",
         ConnError::ServerShutdown => "57P01",

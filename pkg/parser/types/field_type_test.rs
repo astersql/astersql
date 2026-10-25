@@ -301,3 +301,27 @@ fn test_json_nil_slice_parity() {
     assert!(decoded.GetElems().is_empty());
     assert!(decoded.GetElemsIsBinaryLit().is_empty());
 }
+
+#[test]
+fn pg_dialect_09_array_identity_is_not_mysql_json() {
+    use crate::{NewFieldType, PostgreSQLArrayElement};
+    let mut int4 = NewFieldType(crate::mysql::TypeVarString);
+    let plain = int4.clone();
+    int4.SetPostgreSQLArrayElement(PostgreSQLArrayElement::Int4);
+    let mut text = int4.clone();
+    text.SetPostgreSQLArrayElement(PostgreSQLArrayElement::Text);
+    assert!(!int4.IsArray());
+    assert_ne!(int4.GetType(), crate::mysql::TypeJSON);
+    assert_eq!(int4.PostgreSQLArrayElement().unwrap().array_oid(), 1007);
+    assert!(!int4.Equal(&text));
+    assert!(!int4.PartialEqual(&text, true));
+    assert!(!int4.Equals(&plain));
+    let encoded = serde_json::to_string(&int4).unwrap();
+    let decoded: crate::FieldType = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(int4, decoded);
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("PostgreSQLArrayElement")
+    );
+}

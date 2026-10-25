@@ -811,6 +811,7 @@ pub(super) fn relational_expression_value(
 ) -> SessionResult<Option<String>> {
     check_pg_escape_evaluation(expression)?;
     match &expression.Kind {
+        ast::ExprKind::Array { .. } => super::pg_array::value(expression, row),
         ast::ExprKind::Value(value) => Ok(match &value.Datum {
             ast::ValueDatum::Null => None,
             ast::ValueDatum::Bool(value) => Some(if *value { "1" } else { "0" }.to_owned()),
@@ -2627,6 +2628,9 @@ pub(super) fn relational_expression_type(
         field_type
     };
     match &expression.Kind {
+        ast::ExprKind::Array { .. } => super::pg_array::array_type(expression, &HashMap::new())
+            .map(super::pg_array::field_type)
+            .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast {
             Tp,
@@ -3297,6 +3301,7 @@ pub(super) fn project_relational_rows(
                     field.AsName.O.clone()
                 } else {
                     match &expr.Kind {
+                        ast::ExprKind::Array { .. } => "array".to_owned(),
                         ast::ExprKind::Value(value) => value.text(),
                         ast::ExprKind::Function { FnName, .. } => {
                             format!("{}(...)", FnName.O)

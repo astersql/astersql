@@ -219,26 +219,6 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
             "ROW constructors require record type analysis support".into(),
         ));
     }
-    struct ArrayGate(bool);
-    impl ast::Visitor for ArrayGate {
-        fn enter(&mut self, node: &dyn ast::Node) -> bool {
-            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
-                self.0 |= matches!(expr.Kind, ast::ExprKind::Array { .. });
-            }
-            false
-        }
-        fn leave(&mut self, _: &dyn ast::Node) -> bool {
-            true
-        }
-    }
-    let mut arrays = ArrayGate(false);
-    statements[0].accept(&mut arrays);
-    if arrays.0 {
-        return Err((
-            "0A000",
-            "ARRAY constructors require array type analysis support".into(),
-        ));
-    }
     let node = statements[0].as_any();
     let mut postgresql_conflict = None;
     let tag = if node.is::<ast::SelectStmt>() || node.is::<ast::SetOprStmt>() {
@@ -426,6 +406,9 @@ impl CatalogColumnType {
 }
 /// PostgreSQL metadata derived only from the engine type, never cell contents.
 fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32, i16)> {
+    if let Some(element) = native.and_then(|native| native.postgresql_array_element) {
+        return Ok((element.array_oid(), -1));
+    }
     let code = native.map_or(column.column_type, |t| t.code);
     let flags = native.map_or(column.flags as usize, |t| t.flags);
     if flags & astersql_parser_mysql::r#type::IsBooleanFlag != 0 {

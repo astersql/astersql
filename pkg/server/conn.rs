@@ -120,6 +120,7 @@ pub enum ConnError {
     ClientQuit,
     Session(String),
     PgInt4(astersql_expression::PgInt4Error),
+    PgArray(astersql_session::runtime::PgArrayError),
     Poisoned(&'static str),
 }
 
@@ -130,6 +131,7 @@ impl fmt::Display for ConnError {
                 f.write_str(message)
             }
             Self::PgInt4(error) => error.fmt(f),
+            Self::PgArray(error) => error.fmt(f),
             Self::NetPacketTooLarge => write!(
                 f,
                 "{}",
@@ -579,6 +581,7 @@ pub struct NativeType {
     pub flags: usize,
     pub length: isize,
     pub decimal: isize,
+    pub postgresql_array_element: Option<astersql_session::runtime::PostgreSQLArrayElement>,
 }
 
 /// Owned-value bridge to the session worker's result set. Iterators and chunks
@@ -935,6 +938,15 @@ pub trait TiDBContext: Send + Sync {
         self.execute_prepared_statement(id, args, cancel)
     }
     fn field_list(&self, table: &str, wildcard: &str) -> ConnResult<Vec<ColumnInfo>>;
+    fn prepare_statement_with_parameter_types(
+        &self,
+        sql: &str,
+        _oids: &[u32],
+        cancel: &CancellationToken,
+    ) -> ConnResult<PreparedMetadata> {
+        self.prepare_statement(sql, cancel)
+    }
+
     fn prepare_statement(
         &self,
         sql: &str,

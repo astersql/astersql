@@ -839,6 +839,7 @@ pub(crate) enum SessionRequest {
     },
     Prepare {
         sql: String,
+        parameter_oids: Vec<u32>,
         response: mpsc::SyncSender<ConnResult<PreparedMetadata>>,
     },
     ExecutePrepared {
@@ -1087,12 +1088,19 @@ fn run_session_worker(
             } => {
                 let _ = response.send(field_list_on_session(&session, &table, &wildcard));
             }
-            SessionRequest::Prepare { sql, response } => {
+            SessionRequest::Prepare {
+                sql,
+                parameter_oids,
+                response,
+            } => {
                 let result = session
-                    .protocol_integer_parameter_types(&sql)
+                    .protocol_parameter_types(&sql, &parameter_oids)
                     .and_then(|parameter_cast_oids| {
                         session
-                            .prepare_protocol_statement(&sql)
+                            .prepare_protocol_statement_with_parameter_types(
+                                &sql,
+                                &parameter_cast_oids,
+                            )
                             .map(|metadata| (metadata, parameter_cast_oids))
                     })
                     .and_then(
@@ -1112,6 +1120,7 @@ fn run_session_worker(
                                             flags: tp.GetFlag(),
                                             length: tp.GetFlen(),
                                             decimal: tp.GetDecimal(),
+                                            postgresql_array_element: tp.PostgreSQLArrayElement(),
                                         }
                                     })
                                     .collect(),
@@ -1125,7 +1134,7 @@ fn run_session_worker(
                             })
                         },
                     )
-                    .map_err(|error| ConnError::Session(error.to_string()));
+                    .map_err(session_protocol_error);
                 let _ = response.send(result);
             }
             SessionRequest::ExecutePrepared {
@@ -1236,6 +1245,9 @@ pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::Sq
     Mutex::new(Vec::new());
 
 fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
+    if let Some(array) = error.pg_array_error() {
+        return ConnError::PgArray(array);
+    }
     match error.pg_int4_error() {
         Some(error) => ConnError::PgInt4(error),
         None => ConnError::Session(error.to_string()),
@@ -1301,6 +1313,7 @@ fn execute_on_session(
                                 flags: tp.GetFlag(),
                                 length: tp.GetFlen(),
                                 decimal: tp.GetDecimal(),
+                                postgresql_array_element: tp.PostgreSQLArrayElement(),
                             }
                         })
                         .collect();
@@ -1525,6 +1538,7 @@ pub(crate) fn result_metadata(
                     flags: tp.GetFlag(),
                     length: tp.GetFlen(),
                     decimal: tp.GetDecimal(),
+                    postgresql_array_element: tp.PostgreSQLArrayElement(),
                 }
             })
         })
@@ -1935,10 +1949,19 @@ impl TiDBContext for ConcreteTiDBContext {
         sql: &str,
         cancel: &CancellationToken,
     ) -> ConnResult<PreparedMetadata> {
+        self.prepare_statement_with_parameter_types(sql, &[], cancel)
+    }
+    fn prepare_statement_with_parameter_types(
+        &self,
+        sql: &str,
+        parameter_oids: &[u32],
+        cancel: &CancellationToken,
+    ) -> ConnResult<PreparedMetadata> {
         self.ensure_not_cancelled(cancel)?;
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::Prepare {
             sql: sql.to_owned(),
+            parameter_oids: parameter_oids.to_vec(),
             response: response_tx,
         })?;
         response_rx.recv().map_err(packet_error)?

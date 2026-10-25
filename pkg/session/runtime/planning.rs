@@ -2810,6 +2810,9 @@ impl ConcreteSession {
     /// Infer direct integer casts and DML RETURNING target-column constraints.
     /// Offsets refer to the unchanged engine SQL, including repeated markers.
     pub fn protocol_integer_parameter_types(&self, sql: &str) -> SessionResult<Vec<u32>> {
+        self.protocol_parameter_types(sql, &[])
+    }
+    pub fn protocol_parameter_types(&self, sql: &str, supplied: &[u32]) -> SessionResult<Vec<u32>> {
         let markers = parameter_markers(sql);
         let mut oids = vec![0; markers.len()];
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
@@ -2844,6 +2847,12 @@ impl ConcreteSession {
             }
         }
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let (_, array_oids) = super::pg_array::analyze(sql, &statements, Some(supplied))?;
+        for (oid, inferred) in oids.iter_mut().zip(array_oids) {
+            if inferred != 0 {
+                *oid = inferred;
+            }
+        }
         let mut constraints = Constraints(Vec::new());
         for statement in &statements {
             // SELECT retains its explicit-cast policy. INSERT RETURNING also
