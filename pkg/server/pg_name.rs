@@ -354,8 +354,9 @@ impl Resolver<'_> {
         let mut ctes = inherited.clone();
         if self.word(i, "with") {
             i += 1;
-            if self.word(i, "recursive") {
-                return Err(error("0A000", "recursive PG CTEs are unsupported"));
+            let recursive = self.word(i, "recursive");
+            if recursive {
+                i += 1;
             }
             // Duplicate declarations belong to this WITH list, independently
             // of inherited names that may legally be shadowed. Check the list
@@ -391,6 +392,54 @@ impl Resolver<'_> {
                     break;
                 }
                 i += 1;
+            }
+            if recursive {
+                // Reject a direct seed-term self reference before the capability
+                // gate. Only a top-level UNION seed is classified here: nested
+                // query scopes need their own binder and remain behind the gate.
+                for (name, start, close) in &definitions {
+                    if !self.word(*start, "select") {
+                        continue;
+                    }
+                    let mut cursor = *start;
+                    let mut union = None;
+                    while cursor < *close {
+                        if self.symbol(cursor, b'(') {
+                            cursor = self.close(cursor, *close)? + 1;
+                            continue;
+                        }
+                        if self.word(cursor, "union") {
+                            union = Some(cursor);
+                            break;
+                        }
+                        cursor += 1;
+                    }
+                    if let Some(union) = union {
+                        cursor = *start;
+                        while cursor < union {
+                            if self.symbol(cursor, b'(') {
+                                cursor = self.close(cursor, union)? + 1;
+                                continue;
+                            }
+                            if (self.word(cursor, "from") || self.word(cursor, "join"))
+                                && self.tokens.get(cursor + 1).and_then(|t| t.name.as_ref())
+                                    == Some(name)
+                                && !self.symbol(cursor + 2, b'.')
+                                && !self.symbol(cursor + 2, b'(')
+                            {
+                                self.error_position = Some(
+                                    self.sql[..self.tokens[cursor + 1].start].chars().count() + 1,
+                                );
+                                return Err(error(
+                                    "42P19",
+                                    "recursive reference must not appear within its non-recursive term",
+                                ));
+                            }
+                            cursor += 1;
+                        }
+                    }
+                }
+                return Err(error("0A000", "recursive PG CTEs are unsupported"));
             }
             for (name, start, close) in definitions {
                 self.scope(start, close, &ctes)?;

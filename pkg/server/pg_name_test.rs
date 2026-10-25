@@ -819,3 +819,57 @@ fn pg_dialect_20_behavior() {
         "pg_dialect_20_behavior: cases=5; duplicate diagnostics, shared AST identities, query bodies and source spans verified"
     );
 }
+
+#[test]
+fn pg_dialect_21_behavior() {
+    for sql in [
+        "WITH RECURSIVE t AS (SELECT 1) SELECT * FROM t",
+        "WITH RECURSIVE a AS (SELECT v FROM b), b AS (SELECT 2 AS v) SELECT v FROM a",
+        "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<2) SELECT n FROM r ORDER BY n",
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000");
+        let (nodes, _) =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(sql, &[])
+                .unwrap();
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::SelectStmt>()
+            .unwrap();
+        assert!(select.With.as_ref().unwrap().borrow().IsRecursive);
+    }
+    assert_eq!(
+        rewrite(
+            "WITH RECURSIVE r(n) AS (SELECT n FROM r UNION ALL SELECT 1) SELECT * FROM r",
+            "db",
+            true
+        )
+        .unwrap_err()
+        .0,
+        "42P19"
+    );
+    assert_eq!(
+        rewrite(
+            "WITH RECURSIVE t AS (SELECT 1), t AS (SELECT 2) SELECT * FROM t",
+            "db",
+            true
+        )
+        .unwrap_err()
+        .0,
+        "42712"
+    );
+    let sql =
+        "WITH r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<2) SELECT n FROM r ORDER BY n";
+    assert!(rewrite(sql, "db", true).unwrap().contains("FROM `db`.r"));
+    for sql in [
+        "WITH RECURSIVE r(n) AS (SELECT n FROM public.r UNION ALL SELECT 1) SELECT * FROM r",
+        "WITH RECURSIVE r(n) AS (WITH r AS (SELECT 1 AS n) SELECT n FROM r UNION ALL SELECT 1) SELECT * FROM r",
+        "WITH RECURSIVE r(n) AS (SELECT n FROM r() UNION ALL SELECT 1) SELECT * FROM r",
+        "WITH RECURSIVE r(n) AS (SELECT n FROM \"R\" UNION ALL SELECT 1) SELECT * FROM r",
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000");
+    }
+    println!(
+        "pg_dialect_21_behavior: cases=6 guard_shapes=4; recursive AST, explicit gate, seed diagnostic, duplicate diagnostic and nonrecursive identity"
+    );
+}
