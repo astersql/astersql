@@ -651,3 +651,8 @@ fn pg_scalar_16_binary32_kernel_and_formal_cast() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_18_invalid_precision_state() {
+    assert_eq!(crate::PgFloat4Error::InvalidPrecision.sqlstate(), "22023");
+}

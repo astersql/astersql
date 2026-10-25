@@ -1970,6 +1970,8 @@ pub fn pg_boolean_cast(
 /// Errors for PostgreSQL binary32 text input (also used by typed parameters).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PgFloat4Error {
+    #[error("precision for type float must be between 1 and 53 bits")]
+    InvalidPrecision,
     #[error("invalid input syntax for type real")]
     InvalidSyntax,
     #[error("value out of range for type real")]
@@ -1978,6 +1980,7 @@ pub enum PgFloat4Error {
 impl PgFloat4Error {
     pub fn sqlstate(self) -> &'static str {
         match self {
+            Self::InvalidPrecision => "22023",
             Self::InvalidSyntax => "22P02",
             Self::OutOfRange => "22003",
         }

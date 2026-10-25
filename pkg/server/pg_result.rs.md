@@ -105,3 +105,7 @@ OID1700的RowDescription由NativeType.length/decimal编码((p<<16)|(s&0x7ff))+4�
 ## 无符号桥接（任务13）
 
 U64 来源 code=8 + UnsignedFlag 提升为无约束 numeric；其 MySQL 显示宽度和 decimal 不生成 PG numeric typmod。只有原生 DECIMAL/NEWDECIMAL（code 0/246）声明可编码 numeric 精度与 scale。独立 TCP 回归 pg_scalar_13 覆盖五种 unsigned 来源域的端点、NULL、Describe 和零行描述。
+
+## PostgreSQL 任务18：浮点宽度与文本
+
+按既有OID700/701格式化Float及Text两种值载体；在binary32/binary64宽度上生成最短可往返小数，并按PG指数阈值和带符号至少两位的指数拼写输出。用小整数系数的2/5因子比较排除二进制舍入中点；保留NaN、无穷、负零及NULL。共享MySQL结果编码不调用该函数。命令分类入口保留精度错误22023，避免在共享会话之前将其覆盖为42601。

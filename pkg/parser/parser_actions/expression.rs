@@ -326,6 +326,11 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        "pgcasttype_double_precision--dd3556c0d059ea05"
+        | "pgcasttype_float8--b63b30fadba5dbb8"
+        | "pgpostfixfloat_float_floatopt--d010421e13e0049d"
+        | "pgpostfixfloat_real--f859cd3026087c94" => Some(ExpressionRule::PgCastType),
+        "simpleexpr_simpleexpr_pgtypecast_pgpostfixfloat--0032181b7f0eb915" => Some(ExpressionRule::PgPostfixCast),
         "simpleexpr_array_pgarrayelements--8ffaa3404f598f91" => Some(ExpressionRule::PgArray),
         "pgarrayelements--6be43a6fd9578184" => Some(ExpressionRule::PgArrayEmpty),
         "pgarraylist_expression--6d01bd618a315b86" => Some(ExpressionRule::PgArrayFirst),
@@ -1231,13 +1236,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         }
         ExpressionRule::PgCastType => {
             let spelling = &rhs[1].ident;
-            let tp = match spelling.to_ascii_lowercase().as_str() {
+            let mut tp = match spelling.to_ascii_lowercase().as_str() {
                 "int2" | "smallint" => parser_mysql::r#type::TypeShort,
                 "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
                 "bool" | "boolean" => parser_mysql::r#type::TypeTiny,
                 "text" => parser_mysql::r#type::TypeVarString,
-                "float4" => parser_mysql::r#type::TypeFloat,
+                "float4" | "real" => parser_mysql::r#type::TypeFloat,
+                "float" | "float8" | "double" => parser_mysql::r#type::TypeDouble,
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
@@ -1249,6 +1255,26 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             {
                 yylex.AppendError(yylex.Errorf("PostgreSQL cast requires PostgreSQL dialect", &[]));
                 return Err(1);
+            }
+            if spelling.eq_ignore_ascii_case("float") {
+                if rhs[2].item.as_deref()
+                    .and_then(|item| item.downcast_ref::<FloatOptSemantic>())
+                    .is_some_and(|option| option.decimal != -1)
+                {
+                    yylex.AppendError(yylex.Errorf("PostgreSQL float accepts only binary precision", &[]));
+                    return Err(1);
+                }
+                let precision = rhs[2].item.as_deref()
+                    .and_then(|item| item.downcast_ref::<FloatOptSemantic>())
+                    .map(|item| item.flen)
+                    .unwrap_or(-1);
+                if precision == 0 || precision > 53 {
+                    yylex.AppendError(errors::New("PostgreSQL float precision must be between 1 and 53"));
+                    return Err(1);
+                }
+                if (1..=24).contains(&precision) {
+                    tp = parser_mysql::r#type::TypeFloat;
+                }
             }
             let mut field_type = parser_types::types::NewFieldType(tp);
             if tp == parser_mysql::r#type::TypeTiny {
@@ -1315,6 +1341,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         parser_ast::CastFunctionType::PostgreSQLInt8
                     } else if tp.GetType() == parser_mysql::r#type::TypeFloat {
                         parser_ast::CastFunctionType::PostgreSQLFloat4
+                    } else if tp.GetType() == parser_mysql::r#type::TypeDouble {
+                        parser_ast::CastFunctionType::PostgreSQLFloat8
                     } else if tp.GetType() == parser_mysql::r#type::TypeNewDecimal {
                         parser_ast::CastFunctionType::PostgreSQLNumeric
                     } else {
@@ -2949,13 +2977,31 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             } else {
                 parser_mysql::r#type::TypeDouble
             };
+            let pg = parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL;
+            if pg && rule == ExpressionRule::CastTypeAlt13 {
+                tp = parser_mysql::r#type::TypeFloat;
+            }
             if rule == ExpressionRule::CastTypeAlt12 {
+                if pg && rhs[rhs_len].item.as_deref()
+                    .and_then(|item| item.downcast_ref::<FloatOptSemantic>())
+                    .is_some_and(|option| option.decimal != -1)
+                {
+                    yylex.AppendError(yylex.Errorf("PostgreSQL float accepts only binary precision", &[]));
+                    return Err(1);
+                }
                 let precision = rhs[rhs_len - (0)]
                     .item
                     .as_deref()
                     .and_then(|item| item.downcast_ref::<FloatOptSemantic>())
                     .map(|item| item.flen)
                     .unwrap_or(-1);
+                if pg && (precision == 0 || precision > 53) {
+                    yylex.AppendError(errors::New("PostgreSQL float precision must be between 1 and 53"));
+                    return Err(1);
+                }
+                if pg && precision == -1 {
+                    tp = parser_mysql::r#type::TypeDouble;
+                }
                 if precision >= 54 {
                     yylex.AppendError(yylex.Errorf("Too-big precision for CAST", &[]));
                 } else if precision >= 25 {

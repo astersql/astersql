@@ -497,3 +497,51 @@ fn pg_scalar_17_float8_prepared_identity() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_18_precision_diagnostic() {
+    use super::super::parse_in_dialect;
+    use astersql_parser_ast::SqlDialect;
+    for sql in ["SELECT NULL::float(0)", "SELECT CAST(NULL AS FLOAT(54))"] {
+        let error = parse_in_dialect(sql, SqlDialect::PostgreSQL).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "precision for type float must be between 1 and 53 bits"
+        );
+    }
+    assert!(parse_in_dialect("SELECT CAST(NULL AS FLOAT(0))", SqlDialect::MySQL).is_ok());
+    let error = parse_in_dialect(
+        "SELECT ) /* PostgreSQL float precision must be between 1 and 53 */",
+        SqlDialect::PostgreSQL,
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().starts_with("[parser:1064]"));
+}
+
+#[test]
+fn pg_scalar_18_float_parameter_identity() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for (ty, oid) in [
+        ("float(1)", 700),
+        ("float(24)", 700),
+        ("float(25)", 701),
+        ("float(53)", 701),
+        ("float", 701),
+        ("real", 700),
+        ("double precision", 701),
+        ("float4", 700),
+        ("float8", 701),
+    ] {
+        for sql in [format!("SELECT ?::{ty}"), format!("SELECT CAST(? AS {ty})")] {
+            assert_eq!(
+                pg.protocol_parameter_types(&sql, &[]).unwrap(),
+                [oid],
+                "{sql}"
+            );
+        }
+    }
+}

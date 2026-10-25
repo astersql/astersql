@@ -170,3 +170,7 @@ FLOAT4 转换目标构造 TypeFloat/PostgreSQLFloat4；现有双方言门禁保�
 ## float8 参数局部接线（任务17）
 
 PostgreSQL下既有DOUBLE Cast标记PostgreSQLFloat8，供OID701绑定保留目标类型；MySQL仍为Cast，不添加语法规则。
+
+## PostgreSQL 任务18：浮点宽度与文本
+
+补齐PG后缀float(p)、float8、real、double precision的AST类型动作；float省略精度为float8，1–24为float4，25–53为float8，0/54由解析拒绝。CAST沿原有动作分支按方言定宽；PostgreSQLFloat8身份用于共享正式表达式和关系求值。

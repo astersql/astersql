@@ -4319,3 +4319,9 @@ PgNumericOpt : @action;
 PgNumericOpt : '(' LengthNum ')' @action;
 PgNumericOpt : '(' LengthNum ',' LengthNum ')' @action;
 PgNumericOpt : '(' LengthNum ',' '-' LengthNum ')' @action;
+
+PgPostfixFloat : "FLOAT" FloatOpt @action;
+PgCastType : "FLOAT8" @action;
+PgPostfixFloat : "REAL" @action;
+PgCastType : "DOUBLE" "PRECISION" @action;
+SimpleExpr : SimpleExpr pgTypecast PgPostfixFloat %prec pgTypecast @action;

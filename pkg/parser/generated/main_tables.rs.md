@@ -126,3 +126,7 @@
 ## PostgreSQL float4 文本输入（任务16）
 
 由 astersql-parsergen generate 从主文法重新生成，新增 PgCastType FLOAT4 规则及对应稳定 RuleId；关联语义动作构造 TypeFloat/PostgreSQLFloat4，供正式参数表达式使用。
+
+## PostgreSQL 浮点宽度与文本（任务18）
+
+由 `cargo run --locked --release -p astersql-parsergen -- generate` 从 main.astergram 重新生成。新增 float8、double precision 目标及仅用于后缀的 PgPostfixFloat（FLOAT FloatOpt / REAL），CAST仍使用原有FLOAT/REAL动作，避免重复归约；没有新增token。目标宽度、精度拒绝和推导参数描述由独立pg_scalar_18正式入口回归覆盖。

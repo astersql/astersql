@@ -114,3 +114,7 @@ pg_cast_int2/4/8 共用按目标16/32/64位宽检查的 pg_parse_integer。接�
 ## PostgreSQL float4 文本输入（任务16）
 
 pg_cast_float4 直接按 f32 解析，接受 ASCII 首尾空白和特殊值；有限溢出及非零下溢为 PgFloat4Error::OutOfRange（22003），词法错误为22P02。
+
+## PostgreSQL 任务18：浮点宽度与文本
+
+PgFloat4Error新增InvalidPrecision诊断（SQLSTATE22023），供PG解析精度拒绝沿现有共享错误通道传递；float4/float8值转换算法保持不变。

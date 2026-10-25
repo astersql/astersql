@@ -1324,6 +1324,15 @@ fn parse_with_dialect(
         .ParseSQL(sql, &[])
         .map(|(statements, _warnings)| statements)
         .map_err(|error| {
+            if dialect == ast::SqlDialect::PostgreSQL
+                && error.to_string() == "PostgreSQL float precision must be between 1 and 53"
+            {
+                let error = astersql_expression::PgFloat4Error::InvalidPrecision;
+                return SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                );
+            }
             SessionError::new(format!(
                 "[parser:1064]You have an error in your SQL syntax; {error}"
             ))

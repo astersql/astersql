@@ -174,3 +174,7 @@ PG OID700和PostgreSQLFloat4约束进入已有参数类型推断，不影响MySQ
 ## PostgreSQL float8 文本参数（任务17）
 
 PG显式OID701与700一同进入现有参数类型约束，避免准备阶段退为text。
+
+## PostgreSQL 任务18浮点声明参数
+
+按PostgreSQLFloat8 AST身份推导OID701，与既有PostgreSQLFloat4/OID700对称，使float(25/53)、float、double precision及float8的无显式OID参数描述稳定；不按参数值或格式推断。

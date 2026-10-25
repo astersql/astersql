@@ -6,6 +6,15 @@ use astersql_parser_ast as ast;
 use std::io;
 use std::net::TcpStream;
 
+fn parser_error(message: String) -> (&'static str, String) {
+    let state = if message == "PostgreSQL float precision must be between 1 and 53" {
+        "22023"
+    } else {
+        "42601"
+    };
+    (state, message)
+}
+
 /// Recognize the PostgreSQL startup-time probe before the canonical SQL parser.
 /// Its epoch value is fixed at PG service startup, shared by every connection.
 pub(crate) fn adapt_session_query(
@@ -94,7 +103,7 @@ pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'sta
     }
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
-        .map_err(|error| ("42601", error.to_string()))?;
+        .map_err(|error| parser_error(error.to_string()))?;
     struct CatalogProjection<'a> {
         sql: &'a str,
         replacements: std::collections::BTreeMap<usize, &'static str>,
@@ -182,7 +191,7 @@ pub(crate) fn prepare_command(sql: &str) -> Result<PrepareCommand, (&'static str
 fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'static str, String)> {
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
-        .map_err(|e| ("42601", e.to_string()))?;
+        .map_err(|error| parser_error(error.to_string()))?;
     if statements.is_empty() {
         return Ok(PrepareCommand {
             command: None,
@@ -423,15 +432,124 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         _ => return Err(invalid("unsupported engine result type")),
     })
 }
+// PostgreSQL excludes decimal spellings exactly on a binary rounding midpoint.
+// Compare powers of two/five after factoring small integer coefficients; no
+// arbitrary precision allocation is needed, even at the subnormal endpoints.
+fn float_midpoint(scientific: &str, n: f64, single: bool) -> bool {
+    if n == 0.0 {
+        return false;
+    }
+    let (mantissa, exponent) = scientific.trim_start_matches('-').split_once('e').unwrap();
+    let digits = mantissa.replace('.', "");
+    let decimal = exponent.parse::<i32>().unwrap() - (digits.len() as i32 - 1);
+    let coefficient = digits.parse::<u64>().unwrap();
+    let (bits, width, bias, mask) = if single {
+        ((n as f32).to_bits() as u64, 23, 127, 0xff)
+    } else {
+        (n.to_bits(), 52, 1023, 0x7ff)
+    };
+    let fraction = bits & ((1u64 << width) - 1);
+    let exponent = (bits >> width) & mask;
+    let significand = fraction + if exponent == 0 { 0 } else { 1u64 << width };
+    let binary = exponent.max(1) as i32 - bias - width - 2;
+    fn factors(mut coefficient: u64, mut two: i32, mut five: i32) -> (u64, i32, i32) {
+        while coefficient % 2 == 0 {
+            coefficient /= 2;
+            two += 1;
+        }
+        while coefficient % 5 == 0 {
+            coefficient /= 5;
+            five += 1;
+        }
+        (coefficient, two, five)
+    }
+    let decimal = factors(coefficient, decimal, decimal);
+    let lower = 4 * significand - 1 - u64::from(fraction != 0 || exponent <= 1);
+    decimal == factors(lower, binary, 0) || decimal == factors(4 * significand + 2, binary, 0)
+}
+
+fn float_text(n: f64, single: bool) -> String {
+    let n = if single { f64::from(n as f32) } else { n };
+    let mut scientific = if single {
+        format!("{:e}", n as f32)
+    } else {
+        format!("{n:e}")
+    };
+    if float_midpoint(&scientific, n, single) {
+        let digits = scientific
+            .split('e')
+            .next()
+            .unwrap()
+            .bytes()
+            .filter(u8::is_ascii_digit)
+            .count();
+        for precision in digits..=16 {
+            scientific = format!("{n:.precision$e}");
+            if !float_midpoint(&scientific, n, single) {
+                break;
+            }
+        }
+    }
+    let (mantissa, exponent) = scientific.split_once('e').unwrap();
+    let exponent: i32 = exponent.parse().unwrap();
+    if exponent < -4 || exponent >= if single { 6 } else { 15 } {
+        return format!("{mantissa}e{exponent:+03}");
+    }
+    let negative = mantissa.starts_with('-');
+    let digits = mantissa.trim_start_matches('-').replace('.', "");
+    let point = exponent + 1;
+    let plain = if point <= 0 {
+        format!("0.{}{digits}", "0".repeat((-point) as usize))
+    } else if point as usize >= digits.len() {
+        format!("{digits}{}", "0".repeat(point as usize - digits.len()))
+    } else {
+        format!(
+            "{}.{}",
+            &digits[..point as usize],
+            &digits[point as usize..]
+        )
+    };
+    if negative { format!("-{plain}") } else { plain }
+}
+
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     let text = match value {
         Value::Null => return Ok(None),
+        Value::Text(s) if oid == 700 || oid == 701 => {
+            let value = if oid == 700 {
+                let wide = s
+                    .parse::<f64>()
+                    .map_err(|_| invalid("invalid engine float4 value"))?;
+                let narrow = s
+                    .parse::<f32>()
+                    .map_err(|_| invalid("invalid engine float4 value"))?;
+                if wide.is_finite() && (!narrow.is_finite() || (wide != 0.0 && narrow == 0.0)) {
+                    return Err(invalid("engine float4 value out of range"));
+                }
+                f64::from(narrow)
+            } else {
+                s.parse::<f64>()
+                    .map_err(|_| invalid("invalid engine float8 value"))?
+            };
+            return value_text(&Value::Float(value), oid);
+        }
         Value::Text(s) => s.clone(),
         Value::Signed(n) => n.to_string(),
         Value::Unsigned(n) => n.to_string(),
         Value::Float(n) if n.is_nan() => "NaN".into(),
         Value::Float(n) if *n == f64::INFINITY => "Infinity".into(),
         Value::Float(n) if *n == f64::NEG_INFINITY => "-Infinity".into(),
+        Value::Float(n) if oid == 700 || oid == 701 => {
+            // Format at the declared width; widening binary32 before formatting
+            // exposes digits that are not part of the real value's text identity.
+            if oid == 700 {
+                let narrow = *n as f32;
+                if n.is_finite() && (!narrow.is_finite() || (*n != 0.0 && narrow == 0.0)) {
+                    return Err(invalid("engine float4 value out of range"));
+                }
+            }
+            float_text(*n, oid == 700)
+        }
         Value::Float(n) => n.to_string(),
         Value::Bytes(bytes) if oid == 17 => {
             return Ok(Some(bytea(bytes)));

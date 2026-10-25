@@ -4940,3 +4940,51 @@ fn pg_scalar_17_double_parameter_cast_identity() {
         assert_eq!(*FunctionType, expected);
     }
 }
+
+#[test]
+fn pg_scalar_18_float_declaration_identity() {
+    for sql in ["SELECT NULL::float(1,2)", "SELECT CAST(NULL AS FLOAT(1,2))"] {
+        let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err());
+    }
+
+    for (ty, expected) in [
+        ("float(1)", 4),
+        ("float(24)", 4),
+        ("float(25)", 5),
+        ("float(53)", 5),
+        ("float", 5),
+        ("real", 4),
+        ("double precision", 5),
+        ("float4", 4),
+        ("float8", 5),
+    ] {
+        for sql in [
+            format!("SELECT NULL::{ty}"),
+            format!("SELECT CAST(NULL AS {ty})"),
+        ] {
+            let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+            let stmt = parser.ParseOneStmt(&sql, "", "").unwrap();
+            let select = stmt
+                .as_any()
+                .downcast_ref::<crate::ast::SelectStmt>()
+                .unwrap();
+            let crate::ast::ExprKind::Cast {
+                Tp, FunctionType, ..
+            } = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+            else {
+                panic!("cast")
+            };
+            assert_eq!(Tp.GetType(), expected, "{sql}");
+            assert_eq!(
+                *FunctionType,
+                if expected == 4 {
+                    crate::ast::CastFunctionType::PostgreSQLFloat4
+                } else {
+                    crate::ast::CastFunctionType::PostgreSQLFloat8
+                },
+                "{sql}"
+            );
+        }
+    }
+}

@@ -2814,6 +2814,7 @@ impl ConcreteSession {
                         ast::CastFunctionType::PostgreSQLInt8 => 20,
                         ast::CastFunctionType::PostgreSQLNumeric => 1700,
                         ast::CastFunctionType::PostgreSQLFloat4 => 700,
+                        ast::CastFunctionType::PostgreSQLFloat8 => 701,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeVarString => 25,
                         _ => 0,
                     };

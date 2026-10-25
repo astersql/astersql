@@ -120,3 +120,7 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ## PostgreSQL 转换的拆句门禁（2026-10-24）
 
 真实 listener 在派发 SQL 前的拆句校验使用 SplitSQLStatementsWithDialect；ConcreteTiDBContext 保存建立连接时的不可变身份，普通和流式请求均传入同一身份。原 SplitSQLStatements API 保持 MySQL 默认。此处仍先校验完整 SQL 再按原引号/注释边界拆分，不重写转换或参数。
+
+## PostgreSQL 任务18：浮点宽度与文本
+
+将解析器产生的精确float精度错误映射到PgFloat4Error::InvalidPrecision，沿现有SharedError通道向PG传递22023。仅PG方言且完整错误文本相等时映射，SQL源码中的同名片段不触发映射。
