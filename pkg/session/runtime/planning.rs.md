@@ -178,3 +178,7 @@ PG显式OID701与700一同进入现有参数类型约束，避免准备阶段退
 ## PostgreSQL 任务18浮点声明参数
 
 按PostgreSQLFloat8 AST身份推导OID701，与既有PostgreSQLFloat4/OID700对称，使float(25/53)、float、double precision及float8的无显式OID参数描述稳定；不按参数值或格式推断。
+
+### 2026-10-26 浮点参数显式转换
+
+显式协议源OID优先于目标CAST推导，避免float8参数转整数前被重新定型而套用numeric舍入；未知参数继续由CAST约束。

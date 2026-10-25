@@ -2016,3 +2016,22 @@ pub fn pg_cast_float4(value: Option<&str>) -> Result<Option<f32>, PgFloat4Error>
     }
     Ok(Some(number))
 }
+
+/// PostgreSQL float casts round to nearest even before checking the signed domain.
+pub fn pg_float_to_integer(value: f64, bits: u32) -> Result<i64, PgInt4Error> {
+    let rounded = value.round_ties_even();
+    let limit = 2_f64.powi(bits as i32 - 1);
+    if !rounded.is_finite() || rounded < -limit || rounded >= limit {
+        return Err(PgInt4Error::OutOfRange);
+    }
+    Ok(rounded as i64)
+}
+
+/// Narrow a binary64 value directly, avoiding decimal intermediate rounding.
+pub fn pg_narrow_float4(value: f64) -> Result<f32, PgFloat4Error> {
+    let narrowed = value as f32;
+    if value.is_finite() && (!narrowed.is_finite() || (value != 0.0 && narrowed == 0.0)) {
+        return Err(PgFloat4Error::OutOfRange);
+    }
+    Ok(narrowed)
+}

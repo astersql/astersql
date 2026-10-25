@@ -6974,14 +6974,36 @@ pub mod formal_registry {
             }
             if self.kind == DynamicKind::PgFloat4 {
                 let text = datum.ToString()?;
-                let number = crate::pg_cast_float4(Some(&text))
-                    .map_err(|error| {
-                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
-                    })?
-                    .expect("non-null input");
+                let number = if matches!(
+                    self.base.args[0].GetType(ctx).GetType(),
+                    mysql::TypeFloat | mysql::TypeDouble
+                ) {
+                    crate::pg_narrow_float4(datum.GetFloat64()).map(Some)
+                } else {
+                    crate::pg_cast_float4(Some(&text))
+                }
+                .map_err(|error| {
+                    errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                })?
+                .expect("non-null input");
                 return Ok((types::NewFloat32Datum(number), false));
             }
             if self.kind == DynamicKind::PgInteger {
+                if matches!(
+                    self.base.args[0].GetType(ctx).GetType(),
+                    mysql::TypeFloat | mysql::TypeDouble
+                ) {
+                    let bits = match self.base.return_type.GetType() {
+                        mysql::TypeShort => 16,
+                        mysql::TypeLong => 32,
+                        _ => 64,
+                    };
+                    let value =
+                        crate::pg_float_to_integer(datum.GetFloat64(), bits).map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        })?;
+                    return Ok((types::NewIntDatum(value), false));
+                }
                 use crate::{PgInt4Error, pg_cast_int2, pg_cast_int4, pg_cast_int8};
                 let input = match datum.Kind() {
                     types::KindInt64 => datum.GetInt64().to_string(),

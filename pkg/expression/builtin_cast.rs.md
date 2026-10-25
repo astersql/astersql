@@ -118,3 +118,9 @@ pg_cast_float4 直接按 f32 解析，接受 ASCII 首尾空白和特殊值；�
 ## PostgreSQL 任务18：浮点宽度与文本
 
 PgFloat4Error新增InvalidPrecision诊断（SQLSTATE22023），供PG解析精度拒绝沿现有共享错误通道传递；float4/float8值转换算法保持不变。
+
+### 2026-10-26 浮点显式整数转换
+
+PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；正式表达式和关系消费者共同覆盖，MySQL路径保持原逻辑。
+
+浮点源收窄使用pg_narrow_float4直接二进制转换，避免精确中点经最短十进制中转改变舍入方向；有限溢出/非零下溢拒绝22003，NaN/无穷允许。

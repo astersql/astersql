@@ -5041,3 +5041,189 @@ fn pg_scalar_18() {
         "pg_scalar_18: 22 parameter values + typed NULL, 9 declarations with inferred parameters/CAST/values/NULL/zero rows, 4 invalid precision Parse errors/Sync/ROLLBACK/no-write, 3 MySQL reads"
     );
 }
+
+#[test]
+fn pg_scalar_19() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE pg_scalar_19_mysql (f FLOAT, d DOUBLE)",
+    );
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO pg_scalar_19_mysql VALUES (1.5,1.5)",
+    );
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT f,d FROM pg_scalar_19_mysql");
+        assert_eq!(mysql_read(socket), vec![2]);
+        let metadata = (0..2).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        for (column, expected) in metadata.iter().zip([4, 5]) {
+            let mut offset = 0;
+            for _ in 0..6 {
+                offset += 1 + usize::from(column[offset]);
+            }
+            assert_eq!(column[offset], 12);
+            assert_eq!(column[offset + 7], expected);
+        }
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x031.5\x031.5");
+        let eof = mysql_read(socket);
+        assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        metadata
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (expression, oid, expected) in [
+        ("'0.1'::float4::float8", 701, "0.10000000149011612"),
+        ("'2.5'::float8::int4", 23, "2"),
+        ("'-2.5'::float8::int4", 23, "-2"),
+        ("'3.5'::float4::int8", 20, "4"),
+        ("'32767'::float8::int2", 21, "32767"),
+        ("'-32768.5'::float8::int2", 21, "-32768"),
+        ("'2147483647'::float8::int4", 23, "2147483647"),
+        ("'-2147483648'::float8::int4", 23, "-2147483648"),
+        (
+            "'9223372036854774784'::float8::int8",
+            20,
+            "9223372036854774784",
+        ),
+        (
+            "'-9223372036854775808'::float8::int8",
+            20,
+            "-9223372036854775808",
+        ),
+        ("'-0'::float8::float4", 700, "-0"),
+        ("'1e-45'::float8::float4", 700, "1e-45"),
+        ("'1.0000000596046448'::float8::float4", 700, "1"),
+        ("'Infinity'::float8::float4", 700, "Infinity"),
+        ("'-Infinity'::float4::float8", 701, "-Infinity"),
+        ("'NaN'::float8::float4", 700, "NaN"),
+    ] {
+        let messages = query(&mut socket, &format!("SELECT {expression}"));
+        scalar_types(&messages[0], &[oid]);
+        assert_eq!(messages[1], (b'D', row(&[Some(expected)])), "{expression}");
+    }
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    for (target, oid) in [
+        ("float4", 700),
+        ("float8", 701),
+        ("int2", 21),
+        ("int4", 23),
+        ("int8", 20),
+    ] {
+        let messages = query(&mut socket, &format!("SELECT NULL::float8::{target}"));
+        scalar_types(&messages[0], &[oid]);
+        assert_eq!(messages[1], (b'D', row(&[None])));
+        let messages = query(
+            &mut socket,
+            &format!("SELECT NULL::float8::{target} WHERE FALSE"),
+        );
+        scalar_types(&messages[0], &[oid]);
+        assert_eq!(messages[1].0, b'C');
+        parse(&mut socket, "f19", &format!("SELECT $1::{target}"), &[701]);
+        assert_eq!(read(&mut socket).0, b'1');
+        send(&mut socket, b'D', b"Sf19\0");
+        assert_eq!(
+            read(&mut socket),
+            (b't', [vec![0, 1], 701u32.to_be_bytes().to_vec()].concat())
+        );
+        scalar_types(&read(&mut socket), &[oid]);
+        bind(&mut socket, "", "f19", &[Some("2.5")]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(
+            read(&mut socket),
+            (b'D', row(&[Some(if oid < 100 { "2" } else { "2.5" })]))
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+        send(&mut socket, b'C', b"Sf19\0");
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    query(&mut socket, "CREATE TABLE public.pg_scalar_19 (v INT)");
+    let mut error_case = 0;
+    for transaction in [false, true] {
+        for expression in [
+            "'1e39'::float8::float4",
+            "'1e-100'::float8::float4",
+            "'NaN'::float8::int4",
+            "'Infinity'::float8::int8",
+            "'-Infinity'::float4::int2",
+            "'32767.5'::float8::int2",
+            "'2147483647.5'::float8::int4",
+            "'9223372036854775808'::float8::int8",
+        ] {
+            if transaction {
+                query(&mut socket, "BEGIN");
+            }
+            error_case += 1;
+            let statement = format!("bad19_{error_case}");
+            parse(
+                &mut socket,
+                &statement,
+                &format!("INSERT INTO public.pg_scalar_19 VALUES ({expression})"),
+                &[],
+            );
+            let parsed = read(&mut socket);
+            if parsed.0 == b'1' {
+                bind(&mut socket, "", &statement, &[]);
+                let bound = read(&mut socket);
+                if bound.0 == b'2' {
+                    execute(&mut socket, "", 0);
+                    assert_state(&read(&mut socket), "22003");
+                } else {
+                    assert_state(&bound, "22003");
+                }
+            } else {
+                assert_state(&parsed, "22003");
+            }
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                read(&mut socket),
+                (b'Z', vec![if transaction { b'E' } else { b'I' }])
+            );
+            if transaction {
+                query(&mut socket, "ROLLBACK");
+            }
+            assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+        }
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT count(*) FROM public.pg_scalar_19")[1],
+        (b'D', row(&[Some("0")]))
+    );
+    query(&mut socket, "DROP TABLE public.pg_scalar_19");
+    println!(
+        "pg_scalar_19: 16 values, 5 typed NULL/empty/extended parameter targets, 16 errors/Sync/ROLLBACK/no-write, MySQL isolation"
+    );
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    mysql_query(&mut mysql, "DROP TABLE pg_scalar_19_mysql");
+}

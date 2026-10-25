@@ -2903,7 +2903,11 @@ impl ConcreteSession {
         }
         for (offset, oid) in constraints.0 {
             if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
-                oids[index] = oid;
+                // A cast constrains an unknown parameter; an explicit protocol
+                // identity remains the source type of that cast.
+                if oids[index] == 0 {
+                    oids[index] = oid;
+                }
             }
         }
         Ok(oids)

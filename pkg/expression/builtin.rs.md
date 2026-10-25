@@ -150,3 +150,9 @@ PG numeric→signed CAST 使用 PgNumeric::to_signed，保持精确舍入和 220
 ## PostgreSQL float4 文本输入（任务16）
 
 PostgreSQL 的 TypeFloat CAST 经 PgFloat4 分派调用共享 binary32 文本解析器；MySQL 分派和 pushdown 规则不变。
+
+### 2026-10-26 浮点显式整数转换
+
+PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；正式表达式和关系消费者共同覆盖，MySQL路径保持原逻辑。
+
+浮点源收窄使用pg_narrow_float4直接二进制转换，避免精确中点经最短十进制中转改变舍入方向；有限溢出/非零下溢拒绝22003，NaN/无穷允许。

@@ -1259,6 +1259,7 @@ impl ConcreteSession {
                 }
                 if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
                     return pg_float4_relational_value(
+                        Expr,
                         self.relational_query_expression_value(Expr, row, group_rows)?,
                     );
                 }
@@ -2137,6 +2138,7 @@ impl ConcreteSession {
                         && !matches!(
                             source.EvalType(),
                             astersql_parser_types::eval_type::ETInt
+                                | astersql_parser_types::eval_type::ETReal
                                 | astersql_parser_types::eval_type::ETString
                         );
                 }

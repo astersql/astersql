@@ -74,11 +74,24 @@ fn pg_core_int4_explicit_cast_numeric_columns_unsupported() {
     let _cleanup = Cleanup(&pg);
     pg.execute("INSERT INTO pg_core_int4_numeric VALUES (1, 1.00, 1.0)")
         .unwrap();
+    assert_eq!(
+        pg.execute("SELECT f::int4 FROM pg_core_int4_numeric")
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["1"]
+    );
+    assert!(
+        pg.execute("SELECT f::int4 FROM pg_core_int4_numeric WHERE id = 0")
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+            .is_none()
+    );
     for sql in [
         "SELECT n::int4 FROM pg_core_int4_numeric",
-        "SELECT f::int4 FROM pg_core_int4_numeric",
         "SELECT n::int4 FROM pg_core_int4_numeric WHERE id = 0",
-        "SELECT f::int4 FROM pg_core_int4_numeric WHERE id = 0",
     ] {
         let error = match pg.execute(sql) {
             Ok(_) => panic!("numeric input must be unsupported: {sql}"),
@@ -544,4 +557,23 @@ fn pg_scalar_18_float_parameter_identity() {
             );
         }
     }
+}
+
+#[test]
+fn pg_scalar_19_relational_float_integer() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_19_row (f DOUBLE)")
+        .unwrap();
+    pg.execute("INSERT INTO pg_scalar_19_row VALUES (2.5)")
+        .unwrap();
+    assert_eq!(
+        pg.execute("SELECT f::int4 FROM pg_scalar_19_row").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["2"]
+    );
+    pg.execute("DROP TABLE pg_scalar_19_row").unwrap();
 }

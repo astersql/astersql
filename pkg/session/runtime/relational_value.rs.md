@@ -194,3 +194,9 @@ PostgreSQLFloat4 的目标类型在元数据推导中保留；行求值与参数
 ## PostgreSQL float8 文本参数（任务17）
 
 PostgreSQLFloat8 Cast节点在关系类型推导中保留目标FieldType，服务float8参数执行结果稳定描述；MySQL Cast类型推导不变。
+
+### 2026-10-26 浮点显式整数转换
+
+PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；正式表达式和关系消费者共同覆盖，MySQL路径保持原逻辑。
+
+浮点源收窄使用pg_narrow_float4直接二进制转换，避免精确中点经最短十进制中转改变舍入方向；有限溢出/非零下溢拒绝22003，NaN/无穷允许。

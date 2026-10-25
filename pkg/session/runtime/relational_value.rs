@@ -1301,7 +1301,7 @@ pub(super) fn relational_expression_value(
                 return result;
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
-                return pg_float4_relational_value(relational_expression_value(Expr, row)?);
+                return pg_float4_relational_value(Expr, relational_expression_value(Expr, row)?);
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
                 return pg_numeric_relational_value(relational_expression_value(Expr, row)?, Tp);
@@ -3491,6 +3491,39 @@ pub(super) fn pg_integer_relational_value(
             })
             .transpose();
     }
+    let source = PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+    });
+    if matches!(
+        source.GetType(),
+        astersql_parser_mysql::r#type::TypeFloat | astersql_parser_mysql::r#type::TypeDouble
+    ) {
+        let bits = match target {
+            ast::CastFunctionType::PostgreSQLInt2 => 16,
+            ast::CastFunctionType::PostgreSQLInt4 => 32,
+            _ => 64,
+        };
+        return value
+            .map(|text| {
+                let value = text
+                    .parse::<f64>()
+                    .map_err(|_| PgInt4Error::InvalidSyntax)
+                    .and_then(|value| astersql_expression::pg_float_to_integer(value, bits));
+                value.map(|n| n.to_string()).map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+            })
+            .transpose();
+    }
     let result = if supported(expression) {
         if target == ast::CastFunctionType::PostgreSQLInt8 {
             pg_cast_int8(value.as_deref())
@@ -3620,8 +3653,35 @@ pub(super) fn pg_numeric_literal_value(
 }
 
 /// Typed parameter and row consumers share the direct binary32 text parser.
-pub(super) fn pg_float4_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
-    astersql_expression::pg_cast_float4(value.as_deref())
+pub(super) fn pg_float4_relational_value(
+    expression: &ast::ExprNode,
+    value: Option<String>,
+) -> SessionResult<Option<String>> {
+    let source = PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+    });
+    let result = if matches!(
+        source.GetType(),
+        astersql_parser_mysql::r#type::TypeFloat | astersql_parser_mysql::r#type::TypeDouble
+    ) {
+        value
+            .as_deref()
+            .map(|text| {
+                text.parse::<f64>()
+                    .map_err(|_| astersql_expression::PgFloat4Error::InvalidSyntax)
+                    .and_then(astersql_expression::pg_narrow_float4)
+            })
+            .transpose()
+    } else {
+        astersql_expression::pg_cast_float4(value.as_deref())
+    };
+    result
         .map(|value| value.map(|number| f64::from(number).to_string()))
         .map_err(|error| {
             SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))

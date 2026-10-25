@@ -170,3 +170,7 @@ PG numeric求值传入声明FieldType；SELECT准备阶段验证precision/scale�
 ## PostgreSQL float4 文本输入（任务16）
 
 正式关系求值中的PostgreSQLFloat4调用共享binary32转换，保持错误来源及NULL。
+
+### 2026-10-26 浮点显式整数转换
+
+PG float4/float8 转整数复用最近偶数舍入后检查目标有符号域；正式表达式和关系消费者共同覆盖，MySQL路径保持原逻辑。
