@@ -1758,7 +1758,7 @@ pub fn decimalPrecisionToLength(field_type: &FieldType) -> i32 {
     if result == 0 { 1 } else { result }
 }
 
-/// Strict decimal text/integer conversion shared by PostgreSQL int4 consumers.
+/// Strict text/integer conversion shared by PostgreSQL integer consumers.
 /// SQL whitespace is ASCII; Unicode whitespace is not accepted by int4 input.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum PgInt4Error {
@@ -1779,46 +1779,90 @@ impl PgInt4Error {
     }
 }
 
-/// Strict signed16 narrowing; never clip, wrap or pass through floating point.
+/// Strict signed16 input; never clip, wrap or pass through floating point.
 pub fn pg_cast_int2(value: Option<&str>) -> Result<Option<i16>, PgInt4Error> {
-    pg_cast_int8(value)?
-        .map(|number| i16::try_from(number).map_err(|_| PgInt4Error::OutOfRange))
-        .transpose()
+    pg_parse_integer(value, 16).map(|v| v.map(|n| n as i16))
 }
 
 pub fn pg_cast_int4(value: Option<&str>) -> Result<Option<i32>, PgInt4Error> {
-    pg_cast_int8(value)?
-        .map(|number| i32::try_from(number).map_err(|_| PgInt4Error::OutOfRange))
-        .transpose()
+    pg_parse_integer(value, 32).map(|v| v.map(|n| n as i32))
 }
 
-/// Strict signed int8 input without floating-point conversion or unsigned wrap.
-/// Negative accumulation includes i64::MIN without overflowing its magnitude.
+/// PostgreSQL 18 signed int8 input without floating-point conversion.
 pub fn pg_cast_int8(value: Option<&str>) -> Result<Option<i64>, PgInt4Error> {
+    pg_parse_integer(value, 64)
+}
+
+fn pg_parse_integer(value: Option<&str>, bits: u32) -> Result<Option<i64>, PgInt4Error> {
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
-    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    let bytes = value
+        .trim_start_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+        .as_bytes();
+    let negative = bytes.first() == Some(&b'-');
+    let mut position = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let radix = if bytes.get(position) == Some(&b'0') {
+        match bytes.get(position + 1) {
+            Some(b'x' | b'X') => 16,
+            Some(b'o' | b'O') => 8,
+            Some(b'b' | b'B') => 2,
+            _ => 10,
+        }
+    } else {
+        10
+    };
+    if radix != 10 {
+        position += 2;
+    }
+    let first = position;
+    let limit = 1u64 << (bits - 1);
+    let digit = |byte: u8| -> Option<u64> {
+        let value = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        (u64::from(value) < radix).then_some(u64::from(value))
+    };
+    let mut magnitude = 0u64;
+    while let Some(&byte) = bytes.get(position) {
+        if let Some(value) = digit(byte) {
+            // Match numutils.c: detect accumulation overflow before inspecting
+            // later syntax, but check the signed endpoint after trailing input.
+            if magnitude > limit / radix {
+                return Err(PgInt4Error::OutOfRange);
+            }
+            magnitude = magnitude * radix + value;
+            position += 1;
+        } else if byte == b'_' {
+            // Nondecimal input permits one underscore immediately after its prefix.
+            if (radix == 10 && position == first)
+                || !bytes.get(position + 1).is_some_and(|b| digit(*b).is_some())
+            {
+                return Err(PgInt4Error::InvalidSyntax);
+            }
+            position += 1;
+        } else {
+            break;
+        }
+    }
+    if position == first
+        || bytes[position..]
+            .iter()
+            .any(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c'))
+    {
         return Err(PgInt4Error::InvalidSyntax);
     }
-    // Validate syntax before the checked accumulation so trailing junk does not
-    // become an overflow error merely because its numeric prefix is large.
-    let negative = value.starts_with('-');
-    let mut number = 0i64;
-    for digit in digits.bytes() {
-        number = number
-            .checked_mul(10)
-            .and_then(|n| {
-                if negative {
-                    n.checked_sub((digit - b'0') as i64)
-                } else {
-                    n.checked_add((digit - b'0') as i64)
-                }
-            })
-            .ok_or(PgInt4Error::OutOfRange)?;
+    if magnitude > limit || (!negative && magnitude == limit) {
+        return Err(PgInt4Error::OutOfRange);
     }
+    let number = if negative {
+        (-(magnitude as i128)) as i64
+    } else {
+        magnitude as i64
+    };
     Ok(Some(number))
 }
 

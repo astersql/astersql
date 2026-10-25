@@ -125,3 +125,7 @@ BuildCastFunction仅在PG方言及源/目标布尔身份存在时选择PgBoolean
 ## PostgreSQL signed16（任务5）
 
 正式BuildCastFunction在PG方言、TypeShort目标下复用严格整数DynamicBuiltin路径，调用pg_cast_int2并保持TypeShort返回身份；MySQL继续原有CAST/告警路径。
+
+## PostgreSQL整数文本局部接线（任务6）
+
+DynamicKind::PgInteger 的正式工厂目标从signed16/32扩至signed64；按目标宽度调用共享pg_cast_int2/4/8，避免PG int8文本走MySQL Datum转换。仅PostgreSQL方言选择此签名，NULL与其他方言原路径保持；builtin_cast_test::pg_integer_text_grammar覆盖三宽度真实工厂。

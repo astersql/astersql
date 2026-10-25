@@ -6947,7 +6947,7 @@ pub mod formal_registry {
                 return Ok((out, false));
             }
             if self.kind == DynamicKind::PgInteger {
-                use crate::{PgInt4Error, pg_cast_int2, pg_cast_int4};
+                use crate::{PgInt4Error, pg_cast_int2, pg_cast_int4, pg_cast_int8};
                 let input = match datum.Kind() {
                     types::KindInt64 => datum.GetInt64().to_string(),
                     types::KindUint64 => datum.GetUint64().to_string(),
@@ -6959,15 +6959,17 @@ pub mod formal_registry {
                     }
                 };
                 let number = if self.base.return_type.GetType() == mysql::TypeShort {
-                    pg_cast_int2(Some(&input)).map(|v| v.map(i32::from))
+                    pg_cast_int2(Some(&input)).map(|v| v.map(i64::from))
+                } else if self.base.return_type.GetType() == mysql::TypeLong {
+                    pg_cast_int4(Some(&input)).map(|v| v.map(i64::from))
                 } else {
-                    pg_cast_int4(Some(&input))
+                    pg_cast_int8(Some(&input))
                 }
                 .map_err(|error| {
                     errors::Error::from(crate::contextutil::errors::SharedError::new(error))
                 })?
                 .expect("non-null input");
-                return Ok((types::NewIntDatum(i64::from(number)), false));
+                return Ok((types::NewIntDatum(number), false));
             }
             let datum = datum.ConvertTo(ctx.TypeCtx(), &self.base.return_type)?;
             let null = datum.IsNull();
@@ -7387,7 +7389,10 @@ pub mod formal_registry {
             && (mysql::HasIsBooleanFlag(source_type.GetFlag())
                 || mysql::HasIsBooleanFlag(target.GetFlag()));
         let pg_integer = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
-            && matches!(target.GetType(), mysql::TypeShort | mysql::TypeLong);
+            && matches!(
+                target.GetType(),
+                mysql::TypeShort | mysql::TypeLong | mysql::TypeLonglong
+            );
         if !pg_integer && !pg_boolean {
             base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
         }

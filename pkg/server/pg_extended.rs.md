@@ -88,7 +88,7 @@ RustCodeGraph 的 `query`/`node` 确认 `Extended`（`:426`）、`markers`（`:6
 
 普通 Parse 先取得 `PreparedMetadata.parameter_cast_oids`，其索引是 engine `?` 的出现顺序。PG 层用现有 mapping 将约束折叠为 `$n` 编号顺序；省略/0 OID 使用首先出现的直接整数 cast，显式非零 OID 是源类型，不被目标 cast 覆盖。重复或乱序引用仍按 mapping 扩展 Bind 参数。未知参数在注册 PG statement 前关闭刚创建的 engine statement，返回 `42P18`。
 
-int4/int8 文本参数先清理 ASCII 首尾空白，使用有界整数解析区分语法 `22P02` 和溢出 `22003`。Bind 在全部参数和格式校验后才插入 portal。对于参数均受直接整数转换约束的语句，Bind 后共享内核会重解析字面值；结果列名沿用 Parse 描述，结果类型仍来自实际执行并接受原有一致性校验。`pg_core_integer_parameter_types` 通过真实 TCP 与 libpq 验证参数描述字节、编号绑定、NULL、显式源类型和 Sync 恢复。
+int2/int4/int8文本参数复用共享PG18整数扫描，接受ASCII首尾空白、进制前缀与下划线，并区分语法 `22P02` 和溢出 `22003`。Bind 在全部参数和格式校验后才插入 portal。对于参数均受直接整数转换约束的语句，Bind 后共享内核会重解析字面值；结果列名沿用 Parse 描述，结果类型仍来自实际执行并接受原有一致性校验。`pg_core_integer_parameter_types` 通过真实 TCP 与 libpq 验证参数描述字节、编号绑定、NULL、显式源类型和 Sync 恢复。
 
 ## 2026-10-25 PG scalar 01
 
@@ -97,3 +97,7 @@ OID16的NULL参数保持共享TypeTiny并设置is_null，PG语句独立保留OID
 ## 2026-10-25 PG scalar 02
 
 OID16文本参数仅在PG入口清理ASCII的六种isspace字符，忽略ASCII大小写，接受true/false、yes/no、on/off、1/0及唯一前缀；歧义o和空输入仍报22P02。UTF8及NUL先由既有校验报22021。目录参数复用此入口；binary与MySQL转换保持原行为。独立pg_scalar_02通过真实TCP验证词集、NULL/描述、错误恢复及MySQL隔离。
+
+## 整数文本统一解析（任务6）
+
+OID21/23/20的非NULL文本参数分别复用astersql_expression::pg_cast_int2/4/8，与正式CAST及关系求值一致；保留共享错误sqlstate。支持PG18进制前缀与下划线，不再单独使用Rust FromStr。Bind拒绝及portal发布时序保持。pg_extended_test::pg_scalar_06覆盖文本常量、列、推断/显式参数、typed NULL、空描述、错误阶段、Sync/ROLLBACK恢复与拒绝写入无副作用，以及同Server MySQL实际值/元数据/告警。

@@ -401,3 +401,68 @@ fn pg_scalar_05_int2_kernel_and_formal_cast() {
         );
     }
 }
+
+#[test]
+fn pg_integer_text_grammar() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    assert_eq!(pg_cast_int2(Some("-0x8000")), Ok(Some(i16::MIN)));
+    assert_eq!(pg_cast_int2(Some("0x7fff")), Ok(Some(i16::MAX)));
+    for target in [mysql::TypeShort, mysql::TypeLong, mysql::TypeLonglong] {
+        for (input, expected) in [
+            ("0x2a", Some(42)),
+            ("0o_52", Some(42)),
+            ("-0B10_1010", Some(-42)),
+            ("+0X_2_a", Some(42)),
+            ("0_042", Some(42)),
+            (" \x0b\x0c+42\r\n", Some(42)),
+            ("1__0", None),
+            ("_1", None),
+            ("0x_", None),
+            ("0x__1", None),
+            ("0b2", None),
+            ("0o8", None),
+            ("1x", None),
+            ("1\u{a0}", None),
+        ] {
+            let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+                types::NewStringDatum(input.into()),
+                *types::NewFieldType(mysql::TypeVarString),
+            ));
+            let expression = crate::formal_registry::BuildCastFunction(
+                &pg,
+                &source,
+                &types::NewFieldType(target),
+            );
+            let actual = expression.EvalInt(pg.GetEvalCtx(), crate::chunk::Row::default());
+            if let Some(expected) = expected {
+                assert_eq!(actual.unwrap(), (expected, false), "{target} {input}");
+            } else {
+                assert!(actual.is_err(), "{target} {input}: {actual:?}");
+            }
+        }
+    }
+    assert_eq!(pg_cast_int4(Some("-0x8000_0000")), Ok(Some(i32::MIN)));
+    assert_eq!(
+        pg_cast_int8(Some("-0x8000_0000_0000_0000")),
+        Ok(Some(i64::MIN))
+    );
+    assert_eq!(
+        pg_cast_int8(Some("0x7fff_ffff_ffff_ffff")),
+        Ok(Some(i64::MAX))
+    );
+    // PG checks accumulation before later junk, then checks signed endpoints
+    // after syntax. The threshold must use the target width, not always int8.
+    for (input, expected) in [
+        ("32768x", PgInt4Error::InvalidSyntax),
+        ("327680x", PgInt4Error::OutOfRange),
+        ("0x8000x", PgInt4Error::InvalidSyntax),
+        ("0x80000x", PgInt4Error::OutOfRange),
+    ] {
+        assert_eq!(pg_cast_int2(Some(input)), Err(expected), "{input}");
+    }
+}

@@ -284,17 +284,6 @@ fn analysis_parameter_mapping(
     Ok(analysis_mapping)
 }
 
-fn integer_parameter<T: std::str::FromStr<Err = std::num::ParseIntError>>(text: &str) -> Result<T> {
-    let text = text.trim_matches(|c: char| c.is_ascii_whitespace());
-    text.parse()
-        .map_err(|error: std::num::ParseIntError| match error.kind() {
-            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
-                crate::pg_extended::error("22003", "integer out of range")
-            }
-            _ => crate::pg_extended::error("22P02", "invalid input syntax for integer"),
-        })
-}
-
 pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let Some(value) = value else {
         return Ok(BinaryParam {
@@ -322,9 +311,30 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 _ => return Err(invalid()),
             }],
         ),
-        21 => (2, integer_parameter::<i16>(text)?.to_le_bytes().to_vec()),
-        23 => (3, integer_parameter::<i32>(text)?.to_le_bytes().to_vec()),
-        20 => (8, integer_parameter::<i64>(text)?.to_le_bytes().to_vec()),
+        21 => (
+            2,
+            astersql_expression::pg_cast_int2(Some(text))
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .expect("non-null parameter")
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        23 => (
+            3,
+            astersql_expression::pg_cast_int4(Some(text))
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .expect("non-null parameter")
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        20 => (
+            8,
+            astersql_expression::pg_cast_int8(Some(text))
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .expect("non-null parameter")
+                .to_le_bytes()
+                .to_vec(),
+        ),
         700 => (
             4,
             text.parse::<f32>()

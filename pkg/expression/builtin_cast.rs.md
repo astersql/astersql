@@ -93,10 +93,10 @@ Rust 把 Go 按源/目标 `EvalType` 展开的众多 `builtinCastXAsYSig` 合并
 
 ## PostgreSQL int4 显式转换（2026-10-24）
 
-pg_cast_int4 是严格十进制 int4 共享内核：SQL NULL 透传，ASCII SQL 空白和单个正负号允许，检查全部数字语法并以 checked i64 累积后执行 i32 范围检查。PgInt4Error::{OutOfRange,InvalidSyntax,Unsupported} 分别携带 22003/22P02/0A000 身份，由 crate 根重导出供会话和正式表达式签名复用；既有 MySQL kernel API 不变。
+pg_cast_int4 是严格 int4 共享内核：SQL NULL 透传，ASCII SQL 空白和单个正负号允许；任务6已将十进制扫描扩为PG18多进制/下划线扫描，直接按32位目标域执行范围检查。PgInt4Error::{OutOfRange,InvalidSyntax,Unsupported} 分别携带 22003/22P02/0A000 身份，由 crate 根重导出供会话和正式表达式签名复用；既有 MySQL kernel API 不变。
 
 
-2026-10-24 int8：PG int8 共用严格十进制扫描，以 i64 checked 累积（负数直接减）涵盖最小值，不经 f64；int4 在同一内核结果上执行 i32 范围检查。NULL 和 typed SQLSTATE 错误沿用现有通路。
+2026-10-24 int8（任务6更新）：PG int8共用PG18整数扫描，以有界无符号累积涵盖最小值，不经f64；int4使用同一扫描及32位阈值。NULL 和 typed SQLSTATE 错误沿用现有通路。
 
 ### PostgreSQL限定布尔显式转换（任务3）
 
@@ -104,4 +104,8 @@ PG限定显式布尔转换由pg_boolean_cast_kind按源/目标类型选择，pg_
 
 ## PostgreSQL signed16（任务5）
 
-新增pg_cast_int2，复用pg_cast_int8的严格文本解析后以i16::try_from检查signed16边界，NULL仍为None，越界通过既有PgInt4Error保留22003。
+新增pg_cast_int2（任务6更新为按16位阈值直接扫描），NULL仍为None，越界通过既有PgInt4Error保留22003。
+
+## PostgreSQL整数文本语法（任务6）
+
+pg_cast_int2/4/8 共用按目标16/32/64位宽检查的 pg_parse_integer。接受ASCII首尾空白、符号、0x/0o/0b大小写前缀及单个下划线；非十进制前缀后允许一个下划线。按PG18 numutils.c顺序先检查累积阈值、后检查尾部语法、最后检查signed端点，区分22003与22P02。不经过浮点、不剪裁，NULL保留。builtin_cast_test::pg_integer_text_grammar覆盖真实正式表达式工厂与边界。
