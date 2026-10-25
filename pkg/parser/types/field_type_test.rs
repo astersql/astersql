@@ -329,3 +329,38 @@ fn pg_dialect_09_array_identity_is_not_mysql_json() {
     assert_eq!(PostgreSQLArrayElement::Bool.oid(), 16);
     assert_eq!(PostgreSQLArrayElement::Bool.array_oid(), 1000);
 }
+
+#[test]
+fn pg_dialect_11_record_identity() {
+    use crate::{NewFieldType, PostgreSQLRecordField as Field};
+    let scalar = Field {
+        oid: 23,
+        fields: None,
+    };
+    let mut record = NewFieldType(mysql::r#type::TypeVarString);
+    record.SetPostgreSQLRecordFields(vec![
+        scalar.clone(),
+        Field {
+            oid: 2249,
+            fields: Some(vec![Field {
+                oid: 705,
+                fields: None,
+            }]),
+        },
+    ]);
+    let restored: crate::FieldType =
+        serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+    assert_eq!(restored, record);
+    assert!(record.Equal(&restored));
+    assert!(!record.Equal(&NewFieldType(mysql::r#type::TypeVarString)));
+    assert!(!record.PartialEqual(&NewFieldType(mysql::r#type::TypeVarString), true));
+    let mut reversed = record.clone();
+    let mut fields = record.PostgreSQLRecordFields().unwrap().to_vec();
+    fields.reverse();
+    reversed.SetPostgreSQLRecordFields(fields);
+    assert!(!record.Equal(&reversed));
+    assert_eq!(record.String(), "record");
+    let mut changed = record.clone();
+    changed.SetType(mysql::r#type::TypeLong);
+    assert!(changed.PostgreSQLRecordFields().is_none());
+}

@@ -37,10 +37,40 @@ pub static mut TiDBStrictIntegerDisplayWidth: bool = false;
 
 /// PostgreSQL array element identity, separate from MySQL JSON/multi-valued indexes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum PostgreSQLArrayElement { Int4, Int8, Numeric, Bool, Text }
+pub enum PostgreSQLArrayElement {
+    Int4,
+    Int8,
+    Numeric,
+    Bool,
+    Text,
+}
 impl PostgreSQLArrayElement {
-    pub fn oid(self) -> u32 { match self { Self::Int4 => 23, Self::Int8 => 20, Self::Numeric => 1700, Self::Bool => 16, Self::Text => 25 } }
-    pub fn array_oid(self) -> u32 { match self { Self::Int4 => 1007, Self::Int8 => 1016, Self::Numeric => 1231, Self::Bool => 1000, Self::Text => 1009 } }
+    pub fn oid(self) -> u32 {
+        match self {
+            Self::Int4 => 23,
+            Self::Int8 => 20,
+            Self::Numeric => 1700,
+            Self::Bool => 16,
+            Self::Text => 25,
+        }
+    }
+    pub fn array_oid(self) -> u32 {
+        match self {
+            Self::Int4 => 1007,
+            Self::Int8 => 1016,
+            Self::Numeric => 1231,
+            Self::Bool => 1000,
+            Self::Text => 1009,
+        }
+    }
+}
+
+/// A field of an anonymous PostgreSQL record. Scalar OIDs and nested layouts
+/// remain independent of the shared MySQL transport code and display strings.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PostgreSQLRecordField {
+    pub oid: u32,
+    pub fields: Option<Vec<PostgreSQLRecordField>>,
 }
 
 /// FieldType 是列/表达式的完整类型描述，字段布局对齐 Go 同名结构。
@@ -57,6 +87,7 @@ pub struct FieldType {
     elemsIsBinaryLit: Option<Vec<bool>>,
     array: bool,
     postgresql_array_element: Option<PostgreSQLArrayElement>,
+    postgresql_record_fields: Option<Vec<PostgreSQLRecordField>>,
 }
 
 impl FieldType {
@@ -84,7 +115,23 @@ impl FieldType {
             h.HashBool(*elem);
         }
         h.HashBool(self.array);
-        if let Some(element) = self.postgresql_array_element { h.HashUint64(element.array_oid() as u64); }
+        if let Some(element) = self.postgresql_array_element {
+            h.HashUint64(element.array_oid() as u64);
+        }
+        fn record_hash(fields: &[PostgreSQLRecordField], h: &mut dyn util::IHasher) {
+            h.HashInt(fields.len() as isize);
+            for field in fields {
+                h.HashUint64(field.oid as u64);
+                h.HashBool(field.fields.is_some());
+                if let Some(fields) = &field.fields {
+                    record_hash(fields, h);
+                }
+            }
+        }
+        if let Some(fields) = &self.postgresql_record_fields {
+            h.HashUint64(2249);
+            record_hash(fields, h);
+        }
     }
 
     /// Equals 做动态类型比较；非 FieldType 或字段不一致时返回 false。
@@ -103,6 +150,7 @@ impl FieldType {
             && self.GetElemsIsBinaryLit() == other.GetElemsIsBinaryLit()
             && self.array == other.array
             && self.postgresql_array_element == other.postgresql_array_element
+            && self.postgresql_record_fields == other.postgresql_record_fields
     }
 
     /// new_field_type 内部构造：长度与小数位初始化为 UnspecifiedLength。
@@ -150,37 +198,70 @@ impl FieldType {
     }
 
     /// GetFlag 返回类型标志位集合。
-    pub fn GetFlag(&self) -> usize { self.flag }
+    pub fn GetFlag(&self) -> usize {
+        self.flag
+    }
     /// GetFlen 返回显示/存储长度。
-    pub fn GetFlen(&self) -> isize { self.flen }
+    pub fn GetFlen(&self) -> isize {
+        self.flen
+    }
     /// GetDecimal 返回小数位数（标度）。
-    pub fn GetDecimal(&self) -> isize { self.decimal }
+    pub fn GetDecimal(&self) -> isize {
+        self.decimal
+    }
     /// GetCharset 返回字符集名。
-    pub fn GetCharset(&self) -> &str { &self.charset }
+    pub fn GetCharset(&self) -> &str {
+        &self.charset
+    }
     /// GetCollate 返回排序规则名。
-    pub fn GetCollate(&self) -> &str { &self.collate }
+    pub fn GetCollate(&self) -> &str {
+        &self.collate
+    }
     /// GetElems 返回 ENUM/SET 元素列表。
-    pub fn GetElems(&self) -> &[String] { self.elems.as_deref().unwrap_or_default() }
+    pub fn GetElems(&self) -> &[String] {
+        self.elems.as_deref().unwrap_or_default()
+    }
     /// GetElemsOption 返回元素列表及其 nil/非 nil 状态。
-    pub fn GetElemsOption(&self) -> Option<&[String]> { self.elems.as_deref() }
+    pub fn GetElemsOption(&self) -> Option<&[String]> {
+        self.elems.as_deref()
+    }
     /// GetElemsIsBinaryLit 返回各元素是否为二进制字面量的标记切片。
-    pub fn GetElemsIsBinaryLit(&self) -> &[bool] { self.elemsIsBinaryLit.as_deref().unwrap_or_default() }
+    pub fn GetElemsIsBinaryLit(&self) -> &[bool] {
+        self.elemsIsBinaryLit.as_deref().unwrap_or_default()
+    }
 
     /// SetType 写入底层类型并清除 array 标志。
     // SetType 写入底层类型并清除 array，与 Go 避免遗留数组标志的行为一致。
-    pub fn SetType(&mut self, tp: u8) { self.tp = tp; self.array = false; self.postgresql_array_element = None; }
+    pub fn SetType(&mut self, tp: u8) {
+        self.tp = tp;
+        self.array = false;
+        self.postgresql_array_element = None;
+        self.postgresql_record_fields = None;
+    }
     /// SetFlag 覆盖全部标志位。
-    pub fn SetFlag(&mut self, flag: usize) { self.flag = flag; }
+    pub fn SetFlag(&mut self, flag: usize) {
+        self.flag = flag;
+    }
     /// AddFlag 按位或追加标志。
-    pub fn AddFlag(&mut self, flag: usize) { self.flag |= flag; }
+    pub fn AddFlag(&mut self, flag: usize) {
+        self.flag |= flag;
+    }
     /// AndFlag 按位与收敛标志。
-    pub fn AndFlag(&mut self, flag: usize) { self.flag &= flag; }
+    pub fn AndFlag(&mut self, flag: usize) {
+        self.flag &= flag;
+    }
     /// ToggleFlag 按位异或翻转标志。
-    pub fn ToggleFlag(&mut self, flag: usize) { self.flag ^= flag; }
+    pub fn ToggleFlag(&mut self, flag: usize) {
+        self.flag ^= flag;
+    }
     /// DelFlag 清除指定标志位。
-    pub fn DelFlag(&mut self, flag: usize) { self.flag &= !flag; }
+    pub fn DelFlag(&mut self, flag: usize) {
+        self.flag &= !flag;
+    }
     /// SetFlen 设置长度，不做上限截断。
-    pub fn SetFlen(&mut self, flen: isize) { self.flen = flen; }
+    pub fn SetFlen(&mut self, flen: isize) {
+        self.flen = flen;
+    }
 
     /// SetFlenUnderLimit 写入 flen；DECIMAL 时截断到最大精度。
     // SetFlenUnderLimit 仅对 DECIMAL 截断到 MySQL 最大精度，其他类型原样写入。
@@ -193,7 +274,9 @@ impl FieldType {
     }
 
     /// SetDecimal 设置小数位，不做上限截断。
-    pub fn SetDecimal(&mut self, decimal: isize) { self.decimal = decimal; }
+    pub fn SetDecimal(&mut self, decimal: isize) {
+        self.decimal = decimal;
+    }
 
     /// SetDecimalUnderLimit 写入 decimal；DECIMAL 时截断到最大标度。
     // SetDecimalUnderLimit 仅对 DECIMAL 截断到最大标度。
@@ -207,7 +290,12 @@ impl FieldType {
 
     /// UpdateFlenAndDecimalUnderLimit 按旧类型与增量更新 DECIMAL 的 flen/decimal。
     // UpdateFlenAndDecimalUnderLimit 对 DECIMAL 应用增量；旧值未指定时采用 MySQL 上限。
-    pub fn UpdateFlenAndDecimalUnderLimit(&mut self, old: &FieldType, deltaDecimal: isize, mut deltaFlen: isize) {
+    pub fn UpdateFlenAndDecimalUnderLimit(
+        &mut self,
+        old: &FieldType,
+        deltaDecimal: isize,
+        mut deltaFlen: isize,
+    ) {
         if self.GetType() != mysql::TypeNewDecimal {
             return;
         }
@@ -225,20 +313,43 @@ impl FieldType {
     }
 
     /// SetCharset 设置字符集。
-    pub fn SetCharset(&mut self, charset: String) { self.charset = charset; }
+    pub fn SetCharset(&mut self, charset: String) {
+        self.charset = charset;
+    }
     /// SetCollate 设置排序规则。
-    pub fn SetCollate(&mut self, collate: String) { self.collate = collate; }
+    pub fn SetCollate(&mut self, collate: String) {
+        self.collate = collate;
+    }
     /// SetElems 替换 ENUM/SET 元素列表。
-    pub fn SetElems(&mut self, elems: Vec<String>) { self.elems = Some(elems); }
+    pub fn SetElems(&mut self, elems: Vec<String>) {
+        self.elems = Some(elems);
+    }
     /// SetElem 按索引更新单个元素。
-    pub fn SetElem(&mut self, idx: usize, element: String) { self.elems.as_mut().unwrap()[idx] = element; }
-    pub fn PostgreSQLArrayElement(&self) -> Option<PostgreSQLArrayElement> { self.postgresql_array_element }
-    pub fn SetPostgreSQLArrayElement(&mut self, element: PostgreSQLArrayElement) { self.postgresql_array_element = Some(element); }
+    pub fn SetElem(&mut self, idx: usize, element: String) {
+        self.elems.as_mut().unwrap()[idx] = element;
+    }
+    pub fn PostgreSQLArrayElement(&self) -> Option<PostgreSQLArrayElement> {
+        self.postgresql_array_element
+    }
+    pub fn SetPostgreSQLArrayElement(&mut self, element: PostgreSQLArrayElement) {
+        self.postgresql_array_element = Some(element);
+    }
+
+    pub fn PostgreSQLRecordFields(&self) -> Option<&[PostgreSQLRecordField]> {
+        self.postgresql_record_fields.as_deref()
+    }
+    pub fn SetPostgreSQLRecordFields(&mut self, fields: Vec<PostgreSQLRecordField>) {
+        self.postgresql_record_fields = Some(fields);
+    }
 
     /// SetArray 设置是否为数组类型包装。
-    pub fn SetArray(&mut self, array: bool) { self.array = array; }
+    pub fn SetArray(&mut self, array: bool) {
+        self.array = array;
+    }
     /// IsArray 返回是否带数组包装标记。
-    pub fn IsArray(&self) -> bool { self.array }
+    pub fn IsArray(&self) -> bool {
+        self.array
+    }
 
     /// ArrayType 返回去掉数组包装后的类型副本。
     // ArrayType 返回去掉数组包装后的类型副本；Rust 借用模型不复刻 Go 的同指针返回，仅保留值语义。
@@ -261,21 +372,30 @@ impl FieldType {
     }
 
     /// GetElem 按索引返回元素字符串。
-    pub fn GetElem(&self, idx: usize) -> &str { &self.GetElems()[idx] }
+    pub fn GetElem(&self, idx: usize) -> &str {
+        &self.GetElems()[idx]
+    }
 
     /// GetElemIsBinaryLit 查询元素是否为二进制字面量；未分配标记时返回 false。
     // GetElemIsBinaryLit 在惰性标记数组尚未创建时统一返回 false。
     pub fn GetElemIsBinaryLit(&self, idx: usize) -> bool {
-        self.GetElemsIsBinaryLit().get(idx).copied().unwrap_or(false)
+        self.GetElemsIsBinaryLit()
+            .get(idx)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// CleanElemIsBinaryLit 清空二进制字面量标记数组。
     // CleanElemIsBinaryLit 对应 Go 将切片设为 nil；Option::None 保留该状态。
-    pub fn CleanElemIsBinaryLit(&mut self) { self.elemsIsBinaryLit = None; }
+    pub fn CleanElemIsBinaryLit(&mut self) {
+        self.elemsIsBinaryLit = None;
+    }
 
     /// Clone 返回字段类型的副本。
     // Clone 对应 Go 的复制方法；Rust 所有权模型要求安全复制 String/Vec 数据。
-    pub fn Clone(&self) -> FieldType { self.clone() }
+    pub fn Clone(&self) -> FieldType {
+        self.clone()
+    }
 
     /// Equal 做表达式类型等价比较，按 Go 规则忽略部分 flen/decimal。
     // Equal 是表达式类型比较，只比较 unsigned 标志，并按 Go 规则忽略部分 flen/decimal。
@@ -287,7 +407,8 @@ impl FieldType {
             || (self.EvalType() == ETReal && self.decimal == UnspecifiedLength)
             || self.EvalType() == ETJson;
         let ignoreDecimal = matches!(self.EvalType(), ETInt | ETString);
-        self.postgresql_array_element == other.postgresql_array_element
+        self.postgresql_record_fields == other.postgresql_record_fields
+            && self.postgresql_array_element == other.postgresql_array_element
             && tpEqual
             && (ignoreDecimal || self.decimal == other.decimal)
             && self.charset == other.charset
@@ -300,7 +421,11 @@ impl FieldType {
     /// PartialEqual 在 unsafe 模式下对字符串类型放宽 flen 比较。
     // PartialEqual 的 unsafe 分支只用于字符串类型：忽略 flen，但仍检查 NotNull、字符集、排序规则和元素。
     pub fn PartialEqual(&self, other: &FieldType, unsafe_compare: bool) -> bool {
-        if self.postgresql_array_element != other.postgresql_array_element { return false; }
+        if self.postgresql_array_element != other.postgresql_array_element
+            || self.postgresql_record_fields != other.postgresql_record_fields
+        {
+            return false;
+        }
         if mysql::HasNotNullFlag(self.flag) != mysql::HasNotNullFlag(other.flag) {
             return false;
         }
@@ -317,8 +442,13 @@ impl FieldType {
     // EvalType 把 MySQL 存储类型归入表达式求值类型，ENUM/SET 可由标志强制按整数求值。
     pub fn EvalType(&self) -> EvalType {
         match self.GetType() {
-            mysql::TypeTiny | mysql::TypeShort | mysql::TypeInt24 | mysql::TypeLong
-            | mysql::TypeLonglong | mysql::TypeBit | mysql::TypeYear => ETInt,
+            mysql::TypeTiny
+            | mysql::TypeShort
+            | mysql::TypeInt24
+            | mysql::TypeLong
+            | mysql::TypeLonglong
+            | mysql::TypeBit
+            | mysql::TypeYear => ETInt,
             mysql::TypeFloat | mysql::TypeDouble => ETReal,
             mysql::TypeNewDecimal => ETDecimal,
             mysql::TypeDate | mysql::TypeDatetime => ETDatetime,
@@ -334,7 +464,10 @@ impl FieldType {
     /// Hybrid 标识 ENUM/BIT/SET 等可在多种值形态间切换的类型。
     // Hybrid 标识在不同上下文可呈现不同值形态的 ENUM、BIT 和 SET。
     pub fn Hybrid(&self) -> bool {
-        matches!(self.GetType(), mysql::TypeEnum | mysql::TypeBit | mysql::TypeSet)
+        matches!(
+            self.GetType(),
+            mysql::TypeEnum | mysql::TypeBit | mysql::TypeSet
+        )
     }
 
     /// Init 重置类型码与长度/小数位，其它元数据保留。
@@ -353,16 +486,30 @@ impl FieldType {
         let isDecimalNotDefault = self.decimal != defaultDecimal
             && self.decimal != 0
             && self.decimal != UnspecifiedLength;
-        let displayFlen = if self.flen == UnspecifiedLength { defaultFlen } else { self.flen };
-        let displayDecimal = if self.decimal == UnspecifiedLength { defaultDecimal } else { self.decimal };
+        let displayFlen = if self.flen == UnspecifiedLength {
+            defaultFlen
+        } else {
+            self.flen
+        };
+        let displayDecimal = if self.decimal == UnspecifiedLength {
+            defaultDecimal
+        } else {
+            self.decimal
+        };
 
         let suffix = match self.GetType() {
             mysql::TypeEnum | mysql::TypeSet => {
                 // 每个元素先执行 SQL 输出转义，再按 Go 的 "','" 连接。
-                let elems: Vec<String> = self.GetElems().iter().map(|e| format::OutputFormat(e)).collect();
+                let elems: Vec<String> = self
+                    .GetElems()
+                    .iter()
+                    .map(|e| format::OutputFormat(e))
+                    .collect();
                 format!("('{}')", elems.join("','"))
             }
-            mysql::TypeTimestamp | mysql::TypeDatetime | mysql::TypeDuration if isDecimalNotDefault => {
+            mysql::TypeTimestamp | mysql::TypeDatetime | mysql::TypeDuration
+                if isDecimalNotDefault =>
+            {
                 format!("({displayDecimal})")
             }
             mysql::TypeDouble | mysql::TypeFloat if isDecimalNotDefault => {
@@ -372,13 +519,22 @@ impl FieldType {
             mysql::TypeBit | mysql::TypeVarchar | mysql::TypeString | mysql::TypeVarString => {
                 format!("({displayFlen})")
             }
-            mysql::TypeTiny if !strict_integer_width() || mysql::HasZerofillFlag(self.flag) || displayFlen == 1 => {
+            mysql::TypeTiny
+                if !strict_integer_width()
+                    || mysql::HasZerofillFlag(self.flag)
+                    || displayFlen == 1 =>
+            {
                 format!("({displayFlen})")
             }
             mysql::TypeShort | mysql::TypeInt24 | mysql::TypeLong | mysql::TypeLonglong
-                if !strict_integer_width() || mysql::HasZerofillFlag(self.flag) => format!("({displayFlen})"),
+                if !strict_integer_width() || mysql::HasZerofillFlag(self.flag) =>
+            {
+                format!("({displayFlen})")
+            }
             mysql::TypeYear => format!("({})", self.flen),
-            mysql::TypeTiDBVectorFloat32 if self.flen != UnspecifiedLength => format!("({})", self.flen),
+            mysql::TypeTiDBVectorFloat32 if self.flen != UnspecifiedLength => {
+                format!("({})", self.flen)
+            }
             mysql::TypeNull => "(0)".to_owned(),
             _ => String::new(),
         };
@@ -390,7 +546,8 @@ impl FieldType {
     pub fn InfoSchemaStr(&self) -> String {
         let suffix = if mysql::HasUnsignedFlag(self.flag)
             && self.GetType() != mysql::TypeBit
-            && self.GetType() != mysql::TypeYear {
+            && self.GetType() != mysql::TypeYear
+        {
             " unsigned"
         } else {
             ""
@@ -401,9 +558,16 @@ impl FieldType {
     /// String 组合紧凑类型、UNSIGNED/ZEROFILL/BINARY 与字符集信息。
     // String 组合紧凑类型、数值标志以及字符集/排序规则，保持 Go 输出顺序。
     pub fn String(&self) -> String {
+        if self.postgresql_record_fields.is_some() {
+            return "record".to_owned();
+        }
         let mut parts = vec![self.CompactStr()];
-        if mysql::HasUnsignedFlag(self.flag) { parts.push("UNSIGNED".to_owned()); }
-        if mysql::HasZerofillFlag(self.flag) { parts.push("ZEROFILL".to_owned()); }
+        if mysql::HasUnsignedFlag(self.flag) {
+            parts.push("UNSIGNED".to_owned());
+        }
+        if mysql::HasZerofillFlag(self.flag) {
+            parts.push("ZEROFILL".to_owned());
+        }
         if mysql::HasBinaryFlag(self.flag) && self.GetType() != mysql::TypeString {
             parts.push("BINARY".to_owned());
         }
@@ -427,13 +591,20 @@ impl FieldType {
             mysql::TypeEnum | mysql::TypeSet => {
                 ctx.WritePlain("(")?;
                 for (index, elem) in self.GetElems().iter().enumerate() {
-                    if index != 0 { ctx.WritePlain(",")?; }
+                    if index != 0 {
+                        ctx.WritePlain(",")?;
+                    }
                     ctx.WriteString(elem)?;
                 }
                 ctx.WritePlain(")")?;
             }
-            mysql::TypeTimestamp | mysql::TypeDatetime | mysql::TypeDuration => precision = self.decimal,
-            mysql::TypeUnspecified | mysql::TypeFloat | mysql::TypeDouble | mysql::TypeNewDecimal => {
+            mysql::TypeTimestamp | mysql::TypeDatetime | mysql::TypeDuration => {
+                precision = self.decimal
+            }
+            mysql::TypeUnspecified
+            | mysql::TypeFloat
+            | mysql::TypeDouble
+            | mysql::TypeNewDecimal => {
                 precision = self.flen;
                 scale = self.decimal;
             }
@@ -441,11 +612,17 @@ impl FieldType {
         }
         if precision != UnspecifiedLength {
             ctx.WritePlain(&format!("({precision}"))?;
-            if scale != UnspecifiedLength { ctx.WritePlain(&format!(",{scale}"))?; }
+            if scale != UnspecifiedLength {
+                ctx.WritePlain(&format!(",{scale}"))?;
+            }
             ctx.WritePlain(")")?;
         }
-        if mysql::HasUnsignedFlag(self.flag) { ctx.WriteKeyWord(" UNSIGNED")?; }
-        if mysql::HasZerofillFlag(self.flag) { ctx.WriteKeyWord(" ZEROFILL")?; }
+        if mysql::HasUnsignedFlag(self.flag) {
+            ctx.WriteKeyWord(" UNSIGNED")?;
+        }
+        if mysql::HasZerofillFlag(self.flag) {
+            ctx.WriteKeyWord(" ZEROFILL")?;
+        }
         if mysql::HasBinaryFlag(self.flag) && self.charset != charset::CharsetBin {
             ctx.WriteKeyWord(" BINARY")?;
         }
@@ -463,29 +640,52 @@ impl FieldType {
 
     /// RestoreAsCastType 写出 CAST 目标类型文本。
     // RestoreAsCastType 写出 CAST 目标类型；explicitCharset 控制 BINARY/CHARSET 附加信息。
-    pub fn RestoreAsCastType(&self, ctx: &mut format::RestoreCtx, explicitCharset: bool) -> std::io::Result<()> {
+    pub fn RestoreAsCastType(
+        &self,
+        ctx: &mut format::RestoreCtx,
+        explicitCharset: bool,
+    ) -> std::io::Result<()> {
         match self.tp {
             mysql::TypeVarString | mysql::TypeString => {
-                let skipWriteBinary = self.charset == charset::CharsetBin && self.collate == charset::CollationBin;
+                let skipWriteBinary =
+                    self.charset == charset::CharsetBin && self.collate == charset::CollationBin;
                 ctx.WriteKeyWord(if skipWriteBinary { "BINARY" } else { "CHAR" })?;
-                if self.flen != UnspecifiedLength { ctx.WritePlain(&format!("({})", self.flen))?; }
+                if self.flen != UnspecifiedLength {
+                    ctx.WritePlain(&format!("({})", self.flen))?;
+                }
                 if explicitCharset {
-                    if !skipWriteBinary && self.flag & mysql::BinaryFlag != 0 { ctx.WriteKeyWord(" BINARY")?; }
-                    if self.charset != charset::CharsetBin && self.charset != mysql::DefaultCharset {
+                    if !skipWriteBinary && self.flag & mysql::BinaryFlag != 0 {
+                        ctx.WriteKeyWord(" BINARY")?;
+                    }
+                    if self.charset != charset::CharsetBin && self.charset != mysql::DefaultCharset
+                    {
                         ctx.WriteKeyWord(" CHARSET ")?;
                         ctx.WriteKeyWord(&self.charset)?;
                     }
                 }
             }
             mysql::TypeDate => ctx.WriteKeyWord("DATE")?,
-            mysql::TypeDatetime => { ctx.WriteKeyWord("DATETIME")?; write_scale(ctx, self.decimal)?; }
+            mysql::TypeDatetime => {
+                ctx.WriteKeyWord("DATETIME")?;
+                write_scale(ctx, self.decimal)?;
+            }
             mysql::TypeNewDecimal => {
                 ctx.WriteKeyWord("DECIMAL")?;
-                if self.flen > 0 && self.decimal > 0 { ctx.WritePlain(&format!("({}, {})", self.flen, self.decimal))?; }
-                else if self.flen > 0 { ctx.WritePlain(&format!("({})", self.flen))?; }
+                if self.flen > 0 && self.decimal > 0 {
+                    ctx.WritePlain(&format!("({}, {})", self.flen, self.decimal))?;
+                } else if self.flen > 0 {
+                    ctx.WritePlain(&format!("({})", self.flen))?;
+                }
             }
-            mysql::TypeDuration => { ctx.WriteKeyWord("TIME")?; write_scale(ctx, self.decimal)?; }
-            mysql::TypeLonglong => ctx.WriteKeyWord(if self.flag & mysql::UnsignedFlag != 0 { "UNSIGNED" } else { "SIGNED" })?,
+            mysql::TypeDuration => {
+                ctx.WriteKeyWord("TIME")?;
+                write_scale(ctx, self.decimal)?;
+            }
+            mysql::TypeLonglong => ctx.WriteKeyWord(if self.flag & mysql::UnsignedFlag != 0 {
+                "UNSIGNED"
+            } else {
+                "SIGNED"
+            })?,
             mysql::TypeJSON => ctx.WriteKeyWord("JSON")?,
             mysql::TypeDouble => ctx.WriteKeyWord("DOUBLE")?,
             mysql::TypeFloat => ctx.WriteKeyWord("FLOAT")?,
@@ -502,7 +702,11 @@ impl FieldType {
 
     /// FormatAsCastType 将 CAST 类型格式化后写入任意 Writer。
     // FormatAsCastType 先复用 RestoreAsCastType 写入内存缓冲，再一次写入 io.Writer。
-    pub fn FormatAsCastType(&self, writer: &mut dyn Write, explicitCharset: bool) -> std::io::Result<()> {
+    pub fn FormatAsCastType(
+        &self,
+        writer: &mut dyn Write,
+        explicitCharset: bool,
+    ) -> std::io::Result<()> {
         let mut buffer = Vec::new();
         let mut ctx = format::NewRestoreCtx(format::DefaultRestoreFlags, &mut buffer);
         self.RestoreAsCastType(&mut ctx, explicitCharset)?;
@@ -513,10 +717,21 @@ impl FieldType {
     // StorageLength 估算编码后固定长度；可变长类型返回 VarStorageLen。
     pub fn StorageLength(&self) -> isize {
         match self.GetType() {
-            mysql::TypeTiny | mysql::TypeShort | mysql::TypeInt24 | mysql::TypeLong
-            | mysql::TypeLonglong | mysql::TypeDouble | mysql::TypeFloat | mysql::TypeYear
-            | mysql::TypeDuration | mysql::TypeDate | mysql::TypeDatetime | mysql::TypeTimestamp
-            | mysql::TypeEnum | mysql::TypeSet | mysql::TypeBit => 8,
+            mysql::TypeTiny
+            | mysql::TypeShort
+            | mysql::TypeInt24
+            | mysql::TypeLong
+            | mysql::TypeLonglong
+            | mysql::TypeDouble
+            | mysql::TypeFloat
+            | mysql::TypeYear
+            | mysql::TypeDuration
+            | mysql::TypeDate
+            | mysql::TypeDatetime
+            | mysql::TypeTimestamp
+            | mysql::TypeEnum
+            | mysql::TypeSet
+            | mysql::TypeBit => 8,
             mysql::TypeNewDecimal => {
                 let (precision, frac) = (self.flen - self.decimal, self.decimal);
                 precision / digitsPerWord * wordSize
@@ -550,21 +765,30 @@ impl FieldType {
             + self.collate.len() as i64
             + (self.elems.as_ref().map_or(0, Vec::capacity) * size_of::<String>()) as i64
             + (self.elemsIsBinaryLit.as_ref().map_or(0, Vec::capacity) * size_of::<bool>()) as i64;
-        for elem in self.GetElems() { sum += elem.len() as i64; }
+        for elem in self.GetElems() {
+            sum += elem.len() as i64;
+        }
         sum
     }
 }
 
 /// NewFieldType 按类型码构造 FieldType，长度与小数位为未指定。
 // NewFieldType 保留 Go 包级构造函数名称，便于未来跨文件调用接线。
-pub fn NewFieldType(tp: u8) -> FieldType { FieldType::new_field_type(tp) }
+pub fn NewFieldType(tp: u8) -> FieldType {
+    FieldType::new_field_type(tp)
+}
 
 /// HasCharset 判断该类型在 DDL 输出中是否应附带 CHARACTER SET。
 // HasCharset 决定 SHOW CREATE TABLE 等输出是否附带 CHARACTER SET 子句。
 pub fn HasCharset(ft: &FieldType) -> bool {
     match ft.GetType() {
-        mysql::TypeVarchar | mysql::TypeString | mysql::TypeVarString | mysql::TypeBlob
-        | mysql::TypeTinyBlob | mysql::TypeMediumBlob | mysql::TypeLongBlob => !mysql::HasBinaryFlag(ft.flag),
+        mysql::TypeVarchar
+        | mysql::TypeString
+        | mysql::TypeVarString
+        | mysql::TypeBlob
+        | mysql::TypeTinyBlob
+        | mysql::TypeMediumBlob
+        | mysql::TypeLongBlob => !mysql::HasBinaryFlag(ft.flag),
         mysql::TypeEnum | mysql::TypeSet => true,
         _ => false,
     }
@@ -590,6 +814,8 @@ struct jsonFieldType {
     Array: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     PostgreSQLArrayElement: Option<PostgreSQLArrayElement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    PostgreSQLRecordFields: Option<Vec<PostgreSQLRecordField>>,
 }
 
 impl From<&FieldType> for jsonFieldType {
@@ -605,6 +831,7 @@ impl From<&FieldType> for jsonFieldType {
             ElemsIsBinaryLit: ft.elemsIsBinaryLit.clone(),
             Array: ft.array,
             PostgreSQLArrayElement: ft.postgresql_array_element,
+            PostgreSQLRecordFields: ft.postgresql_record_fields.clone(),
         }
     }
 }
@@ -622,6 +849,7 @@ impl From<jsonFieldType> for FieldType {
             elemsIsBinaryLit: value.ElemsIsBinaryLit,
             array: value.Array,
             postgresql_array_element: value.PostgreSQLArrayElement,
+            postgresql_record_fields: value.PostgreSQLRecordFields,
         }
     }
 }
@@ -652,17 +880,23 @@ pub const emptyFieldTypeSize: i64 = size_of::<FieldType>() as i64;
 
 /// strict_integer_width 读取整型显示宽度严格模式开关。
 // strict_integer_width 集中封装可变静态读取；真实接线应改为线程安全配置来源。
-fn strict_integer_width() -> bool { unsafe { TiDBStrictIntegerDisplayWidth } }
+fn strict_integer_width() -> bool {
+    unsafe { TiDBStrictIntegerDisplayWidth }
+}
 
 /// write_scale 在正标度时写出 `(n)` 后缀。
 // write_scale 复用 DATETIME/TIME 的正标度输出分支。
 fn write_scale(ctx: &mut format::RestoreCtx, decimal: isize) -> std::io::Result<()> {
-    if decimal > 0 { ctx.WritePlain(&format!("({decimal})"))?; }
+    if decimal > 0 {
+        ctx.WritePlain(&format!("({decimal})"))?;
+    }
     Ok(())
 }
 
 /// Display 委托给 String，对齐 Go fmt.Stringer。
 // Display 对应 Go fmt.Stringer，直接复用 String 方法生成内容。
 impl fmt::Display for FieldType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.String()) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.String())
+    }
 }

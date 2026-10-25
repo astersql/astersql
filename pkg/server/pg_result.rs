@@ -197,28 +197,6 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
             "multiple statements in one Query are not supported".into(),
         ));
     }
-    // Preserve ROW in the shared AST, but do not expose MySQL scalar-row
-    // metadata as a PostgreSQL anonymous record or execute its subexpressions.
-    struct RecordGate(bool);
-    impl ast::Visitor for RecordGate {
-        fn enter(&mut self, node: &dyn ast::Node) -> bool {
-            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
-                self.0 |= matches!(expr.Kind, ast::ExprKind::ExplicitRow { .. });
-            }
-            false
-        }
-        fn leave(&mut self, _: &dyn ast::Node) -> bool {
-            true
-        }
-    }
-    let mut records = RecordGate(false);
-    statements[0].accept(&mut records);
-    if records.0 {
-        return Err((
-            "0A000",
-            "ROW constructors require record type analysis support".into(),
-        ));
-    }
     let node = statements[0].as_any();
     let mut postgresql_conflict = None;
     let tag = if node.is::<ast::SelectStmt>() || node.is::<ast::SetOprStmt>() {
@@ -406,6 +384,9 @@ impl CatalogColumnType {
 }
 /// PostgreSQL metadata derived only from the engine type, never cell contents.
 fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32, i16)> {
+    if native.is_some_and(|native| native.postgresql_record_fields.is_some()) {
+        return Ok((2249, -1));
+    }
     if let Some(element) = native.and_then(|native| native.postgresql_array_element) {
         return Ok((element.array_oid(), -1));
     }
@@ -493,6 +474,97 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     }
     Ok(Some(text.into_bytes()))
 }
+/// Parse the canonical record text carrier using its independent typed layout.
+/// Quoted empty fields are values; unquoted empty fields are SQL NULL.
+fn record_binary(
+    text: &str,
+    fields: &[astersql_session::runtime::PostgreSQLRecordField],
+) -> io::Result<Vec<u8>> {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.first() != Some(&'(') || chars.last() != Some(&')') {
+        return Err(invalid("invalid record value"));
+    }
+    let mut at = 1;
+    let mut values = Vec::new();
+    loop {
+        let quoted = chars.get(at) == Some(&'"');
+        let mut value = String::new();
+        if quoted {
+            at += 1;
+            loop {
+                match chars.get(at).copied() {
+                    Some('"') if chars.get(at + 1) == Some(&'"') => {
+                        value.push('"');
+                        at += 2;
+                    }
+                    Some('"') => {
+                        at += 1;
+                        break;
+                    }
+                    Some('\\') => {
+                        at += 1;
+                        value.push(
+                            *chars
+                                .get(at)
+                                .ok_or_else(|| invalid("invalid record escape"))?,
+                        );
+                        at += 1;
+                    }
+                    Some(ch) => {
+                        value.push(ch);
+                        at += 1;
+                    }
+                    None => return Err(invalid("unclosed record field")),
+                }
+            }
+        } else {
+            while let Some(ch) = chars.get(at).copied() {
+                if ch == ',' || ch == ')' {
+                    break;
+                }
+                value.push(ch);
+                at += 1;
+            }
+        }
+        values.push(if !quoted && value.is_empty() {
+            None
+        } else {
+            Some(value)
+        });
+        match chars.get(at) {
+            Some(',') => at += 1,
+            Some(')') if at + 1 == chars.len() => break,
+            _ => return Err(invalid("invalid record field delimiter")),
+        }
+    }
+    if values.len() != fields.len() {
+        return Err(invalid("record field count mismatch"));
+    }
+    let mut result = length(fields.len())?.to_be_bytes().to_vec();
+    for (field, value) in fields.iter().zip(values) {
+        result.extend_from_slice(&field.oid.to_be_bytes());
+        if let Some(value) = value {
+            let bytes = if field.oid == 2249 {
+                record_binary(
+                    &value,
+                    field
+                        .fields
+                        .as_deref()
+                        .ok_or_else(|| invalid("missing nested record layout"))?,
+                )?
+            } else {
+                value_binary(&Value::Text(value), field.oid)?
+                    .ok_or_else(|| invalid("nonnull record field lost"))?
+            };
+            result.extend_from_slice(&length(bytes.len())?.to_be_bytes());
+            result.extend_from_slice(&bytes);
+        } else {
+            result.extend_from_slice(&(-1i32).to_be_bytes());
+        }
+    }
+    Ok(result)
+}
+
 fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     if matches!(value, Value::Null) {
         return Ok(None);
@@ -529,7 +601,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .map_err(|_| invalid("invalid float8"))?
             .to_be_bytes()
             .to_vec(),
-        19 | 25 | 1042 | 1043 => text.as_bytes().to_vec(),
+        19 | 25 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
         1082 | 1083 | 1114 => {
@@ -928,7 +1000,22 @@ pub(crate) fn encode_formats(
             for (index, (value, (oid, _))) in row.iter().zip(&types).enumerate() {
                 let binary = formats.get(index) == Some(&1);
                 let text = if binary {
-                    value_binary(value, *oid)?
+                    if *oid == 2249 {
+                        match value_text(value, *oid)? {
+                            None => None,
+                            Some(text) => Some(record_binary(
+                                std::str::from_utf8(&text)
+                                    .map_err(|_| invalid("invalid record UTF8"))?,
+                                result
+                                    .native_types
+                                    .get(index)
+                                    .and_then(|tp| tp.postgresql_record_fields.as_deref())
+                                    .ok_or_else(|| invalid("missing record field layout"))?,
+                            )?),
+                        }
+                    } else {
+                        value_binary(value, *oid)?
+                    }
                 } else {
                     value_text(value, *oid)?
                 };

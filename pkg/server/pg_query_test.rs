@@ -402,6 +402,7 @@ fn simple_query_encoding_rejects_unrepresentable_results() {
             length: 0,
             decimal: 0,
             postgresql_array_element: None,
+            postgresql_record_fields: None,
         }],
         rows: vec![vec![Value::Text("a\0b".into())]],
         ..QueryResult::default()

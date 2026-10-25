@@ -3033,21 +3033,20 @@ fn pg_dialect_libpq(task: u8) {
         return;
     }
     if task == 11 {
-        assert_eq!(checkpoints, 6);
+        assert_eq!(checkpoints, 10);
         let summary: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
                 .unwrap();
         assert_eq!(summary["cleanup_ok"], true);
-        assert_eq!(summary["syntax_eligible"], 6);
-        assert_eq!(summary["gate_cases"], 4);
-        assert_eq!(summary["semantic_row_success"], 0);
-        assert!((1..=2).contains(&summary["unique_effective"].as_u64().unwrap()));
+        assert_eq!(summary["unique_effective"], 10);
+        assert_eq!(summary["semantic_row_success"], 7);
+        assert_eq!(summary["gate_cases"], 0);
         assert_eq!(
             std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
                 .unwrap()
                 .lines()
                 .count(),
-            8
+            12
         );
         return;
     }

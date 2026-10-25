@@ -1017,6 +1017,7 @@ fn pg_introspection_parameters_array_metadata() {
             length: 64,
             decimal: 0,
             postgresql_array_element: None,
+            postgresql_record_fields: None,
         })
         .collect(),
         rows: vec![vec![

@@ -582,6 +582,7 @@ pub struct NativeType {
     pub length: isize,
     pub decimal: isize,
     pub postgresql_array_element: Option<astersql_session::runtime::PostgreSQLArrayElement>,
+    pub postgresql_record_fields: Option<Vec<astersql_session::runtime::PostgreSQLRecordField>>,
 }
 
 /// Owned-value bridge to the session worker's result set. Iterators and chunks

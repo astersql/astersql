@@ -1698,6 +1698,7 @@ impl ConcreteSession {
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             super::pg_array::analyze(sql, &statements, None)?;
+            super::pg_record::analyze(&statements, None)?;
         }
         if statements.len() != 1 {
             return Err(SessionError::new("result metadata requires one statement"));
@@ -1780,6 +1781,18 @@ impl ConcreteSession {
         } else {
             (HashMap::new(), Vec::new())
         };
+        let (record_types, record_oids) = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            super::pg_record::analyze(&statements, Some(supplied))?
+        } else {
+            (HashMap::new(), Vec::new())
+        };
+        let has_pg_values = !array_types.is_empty() || !record_types.is_empty();
+        let constructor_oids = array_oids
+            .iter()
+            .copied()
+            .zip(record_oids.iter().copied().chain(std::iter::repeat(0)))
+            .map(|(array, record)| if record != 0 { record } else { array })
+            .collect::<Vec<_>>();
         let statement = &statements[0];
         let mut fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
@@ -1809,6 +1822,12 @@ impl ConcreteSession {
         if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
             for (field, projection) in fields.iter_mut().zip(&select.Fields.Fields) {
                 if let Some(expr) = projection.Expr.as_ref() {
+                    if let Some(fields) = record_types.get(&(expr.OriginTextPosition as usize)) {
+                        field.column.FieldType = super::pg_record::field_type(fields.clone());
+                        if projection.AsName.O.is_empty() {
+                            field.column_as_name = ast::NewCIStr("row");
+                        }
+                    }
                     if let Some(element) = array_types.get(&(expr.OriginTextPosition as usize)) {
                         field.column.FieldType = super::pg_array::field_type(*element);
                         if projection.AsName.O.is_empty() {
@@ -1833,11 +1852,11 @@ impl ConcreteSession {
             super::session::ProtocolPreparedState {
                 dialect: self.sql_dialect(),
                 planned: false,
-                has_arrays: !array_types.is_empty(),
-                array_parameter_oids: if array_types.is_empty() {
+                has_pg_constructors: has_pg_values,
+                constructor_parameter_oids: if !has_pg_values {
                     Vec::new()
                 } else {
-                    array_oids
+                    constructor_oids
                 },
             },
         );
@@ -1899,25 +1918,25 @@ impl ConcreteSession {
             .ok_or_else(|| {
                 SessionError::new(format!("unknown prepared statement {statement_id}"))
             })?;
-        let has_arrays = self
+        let has_pg_constructors = self
             .state
             .borrow()
             .protocol_prepared_planned
             .get(&statement_id)
-            .is_some_and(|state| state.has_arrays);
-        let array_oids = self
+            .is_some_and(|state| state.has_pg_constructors);
+        let constructor_oids = self
             .state
             .borrow()
             .protocol_prepared_planned
             .get(&statement_id)
-            .map(|state| state.array_parameter_oids.clone())
+            .map(|state| state.constructor_parameter_oids.clone())
             .unwrap_or_default();
         let literals = arguments
             .iter()
             .enumerate()
             .map(|(index, argument)| {
                 let literal = argument.sql_literal()?;
-                if let Some(oid @ (23 | 20)) = array_oids.get(index) {
+                if let Some(oid @ (23 | 20)) = constructor_oids.get(index) {
                     return Ok(format!(
                         "CAST({literal} AS {})",
                         if *oid == 23 { "INT4" } else { "INT8" }
@@ -1948,7 +1967,7 @@ impl ConcreteSession {
         }
         drop(state);
         execution.and_then(|mut records| {
-            if has_arrays {
+            if has_pg_constructors {
                 // Constant record sets may omit fields. Resolve from the actual
                 // bound AST, not from parameter values or cached portal OIDs.
                 let fields = self.describe_result_fields(&bound)?;

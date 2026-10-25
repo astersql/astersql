@@ -82,7 +82,10 @@ pub(crate) use relational_scan::scan_mlog_record_commit_ts;
 mod pg_array;
 #[cfg(test)]
 mod pg_array_test;
-pub use astersql_parser_types::PostgreSQLArrayElement;
+mod pg_record;
+#[cfg(test)]
+mod pg_record_test;
+pub use astersql_parser_types::{PostgreSQLArrayElement, PostgreSQLRecordField};
 pub use pg_array::PgArrayError;
 mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};

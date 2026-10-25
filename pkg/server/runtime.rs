@@ -1121,6 +1121,9 @@ fn run_session_worker(
                                             length: tp.GetFlen(),
                                             decimal: tp.GetDecimal(),
                                             postgresql_array_element: tp.PostgreSQLArrayElement(),
+                                            postgresql_record_fields: tp
+                                                .PostgreSQLRecordFields()
+                                                .map(|fields| fields.to_vec()),
                                         }
                                     })
                                     .collect(),
@@ -1302,6 +1305,16 @@ fn execute_on_session(
                 if !result.columns.is_empty()
                     && let Ok(fields) = session.describe_result_fields(&statement)
                 {
+                    // PG result labels come from the same original-AST resolver
+                    // as Describe, including constant constructors and literals.
+                    // Keep the existing MySQL result-column contract unchanged.
+                    if session.sql_dialect() == astersql_parser_ast::SqlDialect::PostgreSQL
+                        && result.columns.len() == fields.len()
+                    {
+                        for (column, field) in result.columns.iter_mut().zip(&fields) {
+                            column.name = field.column_as_name.O.clone();
+                        }
+                    }
                     result.column_origins =
                         fields.iter().map(|field| field.column_origin).collect();
                     result.native_types = fields
@@ -1314,6 +1327,9 @@ fn execute_on_session(
                                 length: tp.GetFlen(),
                                 decimal: tp.GetDecimal(),
                                 postgresql_array_element: tp.PostgreSQLArrayElement(),
+                                postgresql_record_fields: tp
+                                    .PostgreSQLRecordFields()
+                                    .map(|fields| fields.to_vec()),
                             }
                         })
                         .collect();
@@ -1539,6 +1555,9 @@ pub(crate) fn result_metadata(
                     length: tp.GetFlen(),
                     decimal: tp.GetDecimal(),
                     postgresql_array_element: tp.PostgreSQLArrayElement(),
+                    postgresql_record_fields: tp
+                        .PostgreSQLRecordFields()
+                        .map(|fields| fields.to_vec()),
                 }
             })
         })

@@ -2562,6 +2562,12 @@ impl ConcreteSession {
                 let output = (!field.AsName.O.is_empty())
                     .then(|| field.AsName.O.clone())
                     .or_else(|| match &expression.Kind {
+                        ast::ExprKind::ExplicitRow { .. } => Some("row".to_owned()),
+                        ast::ExprKind::Value(_)
+                            if self.sql_dialect() == ast::SqlDialect::PostgreSQL =>
+                        {
+                            Some("?column?".to_owned())
+                        }
                         ast::ExprKind::Array { .. } => Some("array".to_owned()),
                         ast::ExprKind::Column(column) => Some(column.Name.O.clone()),
                         ast::ExprKind::Parentheses(inner) => match &inner.Kind {
