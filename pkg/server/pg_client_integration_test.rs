@@ -1184,6 +1184,11 @@ fn pg_dialect_16_libpq() {
 }
 
 #[test]
+fn pg_dialect_17_libpq() {
+    pg_dialect_libpq(17);
+}
+
+#[test]
 fn pg_dialect_18_libpq() {
     pg_dialect_libpq(18);
 }
@@ -2635,6 +2640,42 @@ fn pg_dialect_libpq(task: u8) {
                 .unwrap();
             writeln!(file, "{}", serde_json::json!({"phase":phase,"successful_cte_values":[1,9,1,9,9],"forward_missing_code":1105,"packet":response})).unwrap();
         }
+        if task == 17 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            use std::io::Write;
+            mysql_query(socket, &format!("USE {database}"));
+            let before = mysql_query(socket, "SELECT id,v FROM excluded");
+            mysql_query(
+                socket,
+                "INSERT INTO excluded(id,v) VALUES(1,'before') ON DUPLICATE KEY UPDATE v=VALUES(v)",
+            );
+            assert_eq!(mysql_query(socket, "SELECT id,v FROM excluded"), before);
+            let legal =
+                "INSERT INTO excluded(id,v) VALUES(1,'before') ON DUPLICATE KEY UPDATE v=VALUES(v)";
+            let mut prepare = vec![0x16];
+            prepare.extend_from_slice(legal.as_bytes());
+            mysql_packet(socket, 0, &prepare);
+            let prepared = mysql_read(socket);
+            assert_eq!(prepared[0], 0);
+            assert_eq!(u16::from_le_bytes(prepared[7..9].try_into().unwrap()), 0);
+            let mut close = vec![0x19];
+            close.extend_from_slice(&prepared[1..5]);
+            mysql_packet(socket, 0, &close);
+            let sql = "INSERT INTO excluded(id,v) VALUES(1,'after') ON CONFLICT(id) DO UPDATE SET v=excluded.v";
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(response[0], 0xff);
+            assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1064);
+            assert_eq!(&response[4..9], b"42000");
+            assert_eq!(mysql_query(socket, "SELECT id,v FROM excluded"), before);
+            let mut out = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-excluded.jsonl"))
+                .unwrap();
+            writeln!(out,"{}",serde_json::json!({"phase":phase,"sql":sql,"error_code":1064,"sqlstate":"42000","rows":before,"prepared":true,"statement_closed":true})).unwrap();
+        }
         if task == 16 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let table = format!("{database}.t16_{}_{}", std::process::id(), address.port());
             assert_eq!(
@@ -3073,6 +3114,22 @@ fn pg_dialect_libpq(task: u8) {
         assert_eq!(summary["cleanup_ok"], true);
         assert_eq!(summary["unique_effective"], 6);
         assert_eq!(summary["failures"], serde_json::json!([]));
+        return;
+    }
+    if task == 17 {
+        assert_eq!(checkpoints, 9);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 9);
+        assert_eq!(summary["prepare_describe_cases"], 3);
+        assert_eq!(summary["diagnostic_cases"], 6);
+        assert_eq!(summary["full_dml_execution_cases"], 0);
+        assert_eq!(
+            pg_dialect_jsonl(&evidence.join("mysql-excluded.jsonl")).len(),
+            9
+        );
         return;
     }
     if task == 16 {

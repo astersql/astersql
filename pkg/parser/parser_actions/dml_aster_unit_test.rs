@@ -30,6 +30,11 @@ const DML_NONTERMINALS: &[&str] = &[
     "ImportFromSelectStmt",
     "ImportIntoStmt",
     "InsertIntoStmt",
+    "InsertTarget",
+    "InsertOnClause",
+    "ConflictTargetPredicateOpt",
+    "ConflictUpdateOpt",
+    "ConflictUpdatePredicateOpt",
     "InsertRowAliasOpt",
     "InsertValues",
     "Lines",
@@ -75,7 +80,7 @@ fn dml_rule_coverage() {
         .map(|production| production.rule_id.as_str())
         .collect::<HashSet<_>>();
 
-    assert_eq!(expected.len(), 95, "DML RuleId inventory changed");
+    assert_eq!(expected.len(), 110, "DML RuleId inventory changed");
 
     let mut actual = HashSet::new();
     for rule_id in RULE_IDS_BY_REDUCTION.iter().copied() {

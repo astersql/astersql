@@ -678,12 +678,13 @@ fn alias_scope(
     database: &str,
     position: &mut Option<usize>,
 ) -> ParseResult<HashSet<(usize, usize)>> {
-    use astersql_parser_ast as ast;
+    use astersql_parser_ast::{self as ast, Node};
     let Ok((statements, _)) =
         astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
     else {
         return Ok(HashSet::new());
     };
+    #[derive(Clone)]
     struct Binding {
         name: String,
         columns: Option<HashSet<String>>,
@@ -776,6 +777,60 @@ fn alias_scope(
     }
     impl ast::Visitor for Scope<'_> {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(insert) = node.as_any().downcast_ref::<ast::InsertStmt>() {
+                // INSERT values cannot see either row. RETURNING sees only the
+                // target. The proposed row exists exclusively in DO UPDATE's
+                // RHS and predicate; it is never a physical relation/schema.
+                self.scopes.push(Vec::new());
+                for row in &insert.Lists {
+                    for expr in row {
+                        expr.accept(self);
+                    }
+                }
+                if let Some(query) = &insert.Select {
+                    query.accept(self);
+                }
+                self.scopes.pop();
+                let mut target = Vec::new();
+                if let Some(table) = &insert.Table {
+                    for source in [
+                        table.TableRefs.Left.as_deref(),
+                        table.TableRefs.Right.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        self.sources(source, &mut target);
+                    }
+                }
+                self.scopes.push(target.clone());
+                for field in &insert.Returning {
+                    if let Some(expr) = &field.Expr {
+                        expr.accept(self);
+                    }
+                }
+                if let Some(conflict) = &insert.PostgreSQLConflict {
+                    if let Some(predicate) = &conflict.Predicate {
+                        predicate.accept(self);
+                    }
+                    if conflict.Action == ast::PostgreSQLConflictAction::DoUpdate {
+                        if let Some(binding) = target.first() {
+                            self.scopes.last_mut().unwrap().push(Binding {
+                                name: "excluded".into(),
+                                columns: binding.columns.clone(),
+                            });
+                        }
+                        for assignment in &conflict.UpdateAssignments {
+                            assignment.Expr.accept(self);
+                        }
+                        if let Some(predicate) = &conflict.UpdatePredicate {
+                            predicate.accept(self);
+                        }
+                    }
+                }
+                self.scopes.pop();
+                return true;
+            }
             if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
                 let mut bindings = Vec::new();
                 if let Some(from) = &select.From {
@@ -801,11 +856,17 @@ fn alias_scope(
                 && bindings.iter().all(|b| b.columns.is_some())
             {
                 let part = &column.PostgreSQLParts[0];
-                if bindings.iter().any(|b| {
-                    b.columns
-                        .as_ref()
-                        .is_some_and(|cols| cols.contains(&part.Lookup))
-                }) {
+                let matches = bindings
+                    .iter()
+                    .filter(|b| {
+                        b.columns
+                            .as_ref()
+                            .is_some_and(|cols| cols.contains(&part.Lookup))
+                    })
+                    .count();
+                if matches > 1 {
+                    self.failure = Some(("42702", "column reference is ambiguous", part.Span.0));
+                } else if matches == 1 {
                     self.allowed.insert(part.Span);
                 } else {
                     self.failure = Some((
@@ -822,11 +883,27 @@ fn alias_scope(
                 && !self.scopes.is_empty()
             {
                 let qualifier = &column.PostgreSQLParts[0];
-                let target = self.scopes.iter().rev().find_map(|scope| {
+                let visible = self
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find(|scope| scope.iter().any(|binding| binding.name == qualifier.Lookup));
+                let target = visible.and_then(|scope| {
                     scope
                         .iter()
                         .find(|binding| binding.name == qualifier.Lookup)
                 });
+                if visible.is_some_and(|scope| {
+                    scope
+                        .iter()
+                        .filter(|binding| binding.name == qualifier.Lookup)
+                        .count()
+                        > 1
+                }) {
+                    self.failure =
+                        Some(("42P09", "table reference is ambiguous", qualifier.Span.0));
+                    return false;
+                }
                 if let Some(binding) = target {
                     if binding
                         .columns

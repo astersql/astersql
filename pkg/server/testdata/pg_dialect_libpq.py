@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -1275,7 +1275,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,24) else None))
     finally:
         clear(result)
 
@@ -3499,6 +3499,169 @@ def aliases_handoff():
     check(done and clean,'completion/cleanup')
     print(json.dumps(summary),flush=True)
 
+def excluded_handoff():
+    conns,prepared,created={ },[],[]
+    checks=self_checks=eligible=described=0
+    done=False;clean=True
+    table='t17_'+evidence.name.replace('-','_')
+    specs=[
+        ('proposed', 'INSERT INTO public.@t@ AS a(id,v) VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET v=excluded.v WHERE a.v IS NULL RETURNING a.id', [23,25], '', ''),
+        ('existing', 'INSERT INTO public.@t@ AS a(id,v) VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET v=a.v RETURNING a.id', [23,25], '', ''),
+        ('physical_excluded', 'INSERT INTO public.excluded AS a(id,v) VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET v=excluded.v RETURNING a.id', [23,25], '', ''),
+        ('ambiguous', 'INSERT INTO public.@t@ AS excluded(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=excluded.v', [], '42P09', 'excluded.v'),
+        ('outside', '/*中*/ SELECT excluded.v', [], '42P01', 'excluded.v'),
+        ('missing', 'INSERT INTO public.@t@(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=excluded.missing', [], '42703', 'excluded.missing'),
+        ('returning_scope', 'INSERT INTO public.@t@(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=excluded.v RETURNING excluded.v', [], '42P01', 'RETURNING excluded.v'),
+        ('hidden_target', 'INSERT INTO public.@t@ AS a(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=@t@.v', [], '42P01', '@t@.v'),
+        ('unqualified', 'INSERT INTO public.@t@(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=v', [], '42702', 'SET v=v'),
+    ]
+    def check(ok,message):
+        nonlocal checks
+        assert ok,message
+        checks+=1
+    def diagnostic(result,state,position):
+        return result["status"]==7 and result["state"]==state and result["position"]==position
+    def record(name,label,data,result):
+        archive(name,'aster' if label.startswith('aster') else 'reference' if label.startswith('reference') else label,{k:v for k,v in data.items() if k in {'phase','sql','statement','parameter_oids','arguments','parameter_formats','result_format','command'}},dict(result,context=data,connection=label,transaction_after=({0:'I',2:'T',3:'E'}.get(transaction(conns[label])) if label in conns else None)))
+    def recover(label,name):
+        conn=conns[label]
+        if transaction(conn) in (2,3):check(query(conn,'ROLLBACK')['status']==1,'rollback')
+        result=query(conn,'SELECT 1::int4');record(name+'_recovery',label,dict(phase='Q',sql='SELECT 1::int4'),result)
+        check(result['rows']==[['1']] and transaction(conn)==0,'same connection recovery '+label)
+    try:
+        local=f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference','reference_observer','aster','aster_b','aster_observer']:
+            conn=connect((os.environ['PG18_REFERENCE_DSN'] if label.startswith('reference') else local).encode());conns[label]=conn
+            check(bool(conn) and status(conn)==0,'connect '+label)
+            if label.startswith('reference'):check(query(conn,"SET TIME ZONE 'UTC'")['status']==1,'timezone')
+            check(query(conn,'SET search_path TO public')['status']==1,'search path')
+            check(parameter_status(conn,b'client_encoding')==b'UTF8' and parameter_status(conn,b'TimeZone')==b'UTC','encoding/timezone')
+        identity=query(conns['reference'],"SELECT version(),current_setting('server_version_num')")['rows'][0]
+        check(identity[1]=='180006','exact reference')
+        build=json.loads((evidence/'rust-build.json').read_text());build['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance=dict(run=evidence.name,target_version='18.6',source=source_snapshot(root),build=build,
+            reference=dict(version=identity[0],server_version_num=identity[1]),reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),endpoints={s:endpoint(conns[s]) for s in conns},storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)),'provenance')
+        rb=provenance['reference_build'];check(hashlib.sha256(Path(rb['artifact_path']).read_bytes()).hexdigest()==rb['artifact_sha256'],'reference binary digest')
+        bad=copy.deepcopy(provenance);bad['reference_build']['server_version_num']=180004
+        check(not validate_provenance(bad,provenance),'provenance negative');self_checks+=1
+        for label in ['reference','aster']:
+            for target in [table,'excluded']:
+                sql='CREATE TABLE public.'+target+'(id integer PRIMARY KEY,v text)';result=query(conns[label],sql)
+                record('setup',label,dict(phase='Q',sql=sql),result);check(result['status']==1,'create fixture '+str(result));created.append((label,target))
+                check(query(conns[label],'INSERT INTO public.'+target+" VALUES (1,'before')")['status']==1,'insert fixture')
+        oids={}
+        for label in ['aster','reference']:
+            oids[label]={}
+            for target in [table,'excluded']:
+                sql="SELECT oid FROM pg_catalog.pg_class WHERE relname='"+target+"'"
+                result=query(conns[label],sql);record('relation_oid',label,dict(phase='Q',sql=sql),result)
+                check(result['status']==2 and len(result['rows'])==1,'physical OID');oids[label][target]=int(result['rows'][0][0])
+        registry=[]
+        for index,(name,template,param_oids,state,marker) in enumerate(specs):
+            sql=template.replace('@t@',table);marker=marker.replace('@t@',table)
+            offset=sql.rfind(marker) if marker else -1
+            if name=='returning_scope':offset+=len('RETURNING ')
+            if name=='unqualified':offset+=len('SET v=')
+            position=str(offset+1) if state else ''
+            data=dict(capability_id='pg.dialect.excluded.scope',case_id=name,phase='PQprepare',sql=sql,parameter_oids=param_oids,arguments=['2',None] if param_oids else [],parameter_formats=[0]*len(param_oids),result_format=0,
+                encoding='UTF8',timezone='UTC',search_path='public',initial_state='I',object_mapping={'aster':'current_database.public.'+table,'reference':'isolated_reference.public.'+table,'physical_excluded':'public.excluded'},
+                expected_basis='task17 PostgreSQL18.6 analysis, local DO UPDATE range binding',expected_state=state,expected_position=position,
+                roles={s:connection_user(conns[s]).decode() for s in ['aster','reference']},values_applicability='Prepare/Describe does not execute DML or consume parameter values; conflict execution is workflow10')
+            registry.append(data);(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+            descs={}
+            order=['aster','reference','aster_b'] if index%2==0 else ['reference','aster_b','aster']
+            for label in order:
+                side='reference' if label=='reference' else 'aster';conn=conns[label]
+                check(transaction(conn)==0,'initial idle')
+                statement=('excluded_'+str(index)).encode()
+                result=observe(prepare(conn,statement,sql.encode(),len(param_oids),(c.c_uint*len(param_oids))(*param_oids) if param_oids else None));record(name,label,data,result)
+                check(result['state']==state and result['status']==(7 if state else 1),'prepare '+name+' '+label+': '+str(result))
+                if result['status']==1:prepared.append((conn,statement))
+                if state:
+                    check(result['position']==position,'original prepare position '+name+' '+label+': '+str(result))
+                    bad=copy.deepcopy(result);bad['state']='XX000';check(not diagnostic(bad,state,position),'state comparator negative');self_checks+=1
+                    bad=copy.deepcopy(result);bad['position']=str(int(position)+1);check(not diagnostic(bad,state,position),'position comparator negative');self_checks+=1
+                else:
+                    desc=observe(describe(conn,statement));descs[side]=desc
+                    record(name+'_describe',label,dict(data,phase='Describe'),desc)
+                    check(desc['fields']==[['id',23,4,-1]] and desc['params']==[23,25] and desc['formats']==[0],'Describe fields/params/format '+str(desc))
+                    target='excluded' if name=='physical_excluded' else table
+                    check(desc['table_origins']==[[oids[side][target],1]],'actual mapped physical origins')
+                recover(label,name)
+                if state:
+                    result=query(conn,sql);record(name+'_simple',label,dict(data,phase='Q'),result)
+                    check(result['state']==state and result['position']==position,'Q diagnostic '+name+' '+label+': '+str(result));recover(label,name+'_simple')
+            if descs:
+                check(compare_metadata(descs['aster'],descs['reference'],'describe'),'Describe differential '+name)
+                bad=copy.deepcopy(descs['aster']);bad['fields'][0][1]=99999
+                check(not compare_metadata(bad,descs['reference'],'describe'),'metadata negative');self_checks+=1;described+=1
+            print('PG_DIALECT_CHECKPOINT '+name,flush=True);check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
+            for label in ['aster_b','aster']:recover(label,name+'_isolation')
+            for label in ['aster_observer','reference_observer']:
+                for target in [table,'excluded']:
+                    probe='SELECT id,v FROM public.'+target;result=query(conns[label],probe)
+                    record(name+'_observer',label,dict(phase='Q',sql=probe),result);check(result['rows']==[['1','before']],'independent observer unchanged')
+            eligible+=1
+        for label in ['aster','reference']:
+            sql='INSERT INTO public.'+table+' AS "A"(id,v) VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET v=excluded."v" WHERE "A".id=$1 RETURNING "A".id'
+            data=dict(phase='PQprepare',sql=sql,parameter_oids=[23,25],arguments=['2',None],parameter_formats=[0,0],result_format=0)
+            result=observe(prepare(conns[label],b'excluded_quoted',sql.encode(),2,(c.c_uint*2)(23,25)))
+            record('quoted_scope',label,data,result);check(result['status']==1,'quoted action/target scope');prepared.append((conns[label],b'excluded_quoted'))
+            result=observe(describe(conns[label],b'excluded_quoted'));record('quoted_describe',label,dict(data,phase='Describe'),result)
+            check(result['fields']==[['id',23,4,-1]] and result['params']==[23,25] and result['table_origins']==[[oids[label][table],1]],'quoted native Describe identity')
+            check(query(conns[label],'BEGIN')['status']==1,'begin transaction')
+            sql='SELECT excluded.v';result=observe(prepare(conns[label],b'excluded_tx_error',sql.encode(),0,None))
+            record('transaction_error',label,dict(phase='PQprepare',sql=sql),result)
+            check(result['state']=='42P01' and transaction(conns[label])==3,'transaction becomes failed');recover(label,'transaction')
+            sql='SELECT excluded.v FROM public.'+table+' AS excluded'
+            result=query(conns[label],sql);record('physical_alias_outside_action',label,dict(phase='Q',sql=sql),result)
+            check(result['rows']==[['before']] and result['fields']==[['v',25,-1,-1]] and result['table_origins']==[[oids[label][table],2]],'ordinary physical excluded alias')
+            sql="SELECT $1::int4 AS id,$2 AS v,'excluded.v' AS protected /* excluded.missing */"
+            result=observe(prepare(conns[label],b'excluded_values',sql.encode(),2,(c.c_uint*2)(23,25)));record('value_probe_prepare',label,dict(phase='PQprepare',sql=sql,parameter_oids=[23,25]),result)
+            check(result['status']==1,'protected value prepare');prepared.append((conns[label],b'excluded_values'))
+            for argument,want in [(b'value','value'),(None,None)]:
+                result=observe(exec_prepared(conns[label],b'excluded_values',2,(text*2)(b'7',argument),None,None,0))
+                record('value_probe',label,dict(phase='Bind/Execute',sql=sql,parameter_oids=[23,25],arguments=['7',want],parameter_formats=[0,0]),result)
+                check(result['rows']==[['7',want,'excluded.v']] and result['fields']==[['id',23,4,-1],['v',25,-1,-1],['protected',25,-1,-1]],'value/NULL/protection shared consumer '+str(result))
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql):
+            p=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            return dict(sql=sql,code=p.returncode,output=p.stdout.splitlines(),error=p.stderr)
+        mysql_db='ref17_'+evidence.name.replace('-','_')
+        try:
+            result=mysql_ref('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; SELECT @@sql_mode,@@character_set_connection,@@collation_connection; CREATE DATABASE '+mysql_db+'; CREATE TABLE '+mysql_db+'.t(id INT PRIMARY KEY,v TEXT); INSERT INTO '+mysql_db+".t VALUES(1,'before')")
+            record('mysql_identity','mysql',{},result);check(result['code']==0 and result['output'][0].startswith('8.4.7'),'MySQL fixture/identity')
+            for name,template,param_oids,state,marker in specs:
+                # MySQL's own syntax is independent, never a rewritten PG positive.
+                sql='INSERT INTO '+mysql_db+".t VALUES(1,'before') ON DUPLICATE KEY UPDATE v=VALUES(v); SELECT id,v FROM "+mysql_db+'.t'
+                result=mysql_ref(sql);record(name,'mysql',dict(phase='Q',sql=sql),result);check(result['code']==0 and result['output']==['1\tbefore'],'MySQL own upsert')
+                sql='INSERT INTO '+mysql_db+".t VALUES(1,'after') ON CONFLICT(id) DO UPDATE SET v=excluded.v"
+                result=mysql_ref(sql);record(name+'_negative','mysql',dict(phase='Q',sql=sql),result);check(result['code']!=0 and '1064 (42000)' in result['error'],'MySQL own rejection')
+            sql="PREPARE s FROM 'INSERT INTO "+mysql_db+".t VALUES(?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)'; SET @id=1; SET @v=NULL; EXECUTE s USING @id,@v; SELECT id,v IS NULL FROM "+mysql_db+'.t; DEALLOCATE PREPARE s'
+            result=mysql_ref(sql);record('native_prepare','mysql',dict(phase='PREPARE/EXECUTE',sql=sql),result);check(result['code']==0 and result['output']==['1\t1'],'MySQL prepared NULL')
+        finally:
+            result=mysql_ref('DROP DATABASE IF EXISTS '+mysql_db);record('cleanup','mysql',{},result);clean=result['code']==0 and clean
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        check(validate_provenance(provenance,final),'source unchanged');done=True
+    finally:
+        for conn,statement in prepared:clean=observe(close_prepared(conn,statement))['status']==1 and clean
+        for conn in conns.values():
+            if conn and transaction(conn) in (2,3):clean=query(conn,'ROLLBACK')['status']==1 and clean
+        for label,target in reversed(created):
+            sql='DROP TABLE IF EXISTS public.'+target;result=query(conns[label],sql);record('cleanup',label,dict(phase='Q',sql=sql),result);clean=result['status']==1 and clean
+        for conn in conns.values():
+            if conn:finish(conn)
+        summary=dict(cases=len(specs),assertions=checks,self_checks=self_checks,unique_effective=eligible if done and clean else 0,prepare_describe_cases=described if done and clean else 0,diagnostic_cases=eligible-described if done and clean else 0,full_dml_execution_cases=0,cleanup_ok=clean,completed=done)
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    check(done and clean,'completion/cleanup')
+    print(json.dumps(summary),flush=True)
+
 def cte_handoff():
     conns,prepared,created={ },[],[]
     checks=self_checks=eligible=0
@@ -3906,6 +4069,10 @@ def lifecycle_handoff():
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     check(done and clean,'completion/cleanup')
     print(json.dumps(summary),flush=True)
+
+if task == 17:
+    excluded_handoff()
+    sys.exit(0)
 
 if task == 24:
     lifecycle_handoff()

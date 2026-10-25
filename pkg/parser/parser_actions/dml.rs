@@ -71,6 +71,8 @@ enum DmlRule {
     ConflictUpdatePredicateOptAlt01,
     ConflictUpdatePredicateOptAlt02,
     InsertIntoStmtAlt01,
+    InsertTargetAlt01,
+    InsertTargetAlt02,
     InsertOnClauseAlt01,
     InsertOnClauseAlt02,
     InsertOnClauseAlt03,
@@ -218,9 +220,11 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "importintostmt_import_into_tablename_columnnameo--0d7a8d564098e762" => {
             DmlRule::ImportIntoStmtAlt02
         }
-        "insertintostmt_insert_tableoptimizerhintsopt_pri--52aa8fe840ae2f74" => {
+        "insertintostmt_insert_tableoptimizerhintsopt_pri--fdae861e22bad8bd" => {
             DmlRule::InsertIntoStmtAlt01
         }
+        "inserttarget_tablename--af151defb3e411eb" => DmlRule::InsertTargetAlt01,
+        "inserttarget_tablename_as_identifier--adc76e32dd519a80" => DmlRule::InsertTargetAlt02,
         "insertonclause_prec_empty--205eeb9aca732bea" => DmlRule::InsertOnClauseAlt01,
         "insertonclause_on_duplicate_key_update_assignmen--596d558711761c90" => {
             DmlRule::InsertOnClauseAlt02
@@ -304,9 +308,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "nontransactionaldmlstmt_batch_optionalshardcolum--20064cecd92e889e" => {
             DmlRule::NonTransactionalDmlStmtAlt01
         }
-        "conflicttargetpredicateopt--e6d6a85b39cf6444" => {
-            DmlRule::ConflictTargetPredicateOptAlt01
-        }
+        "conflicttargetpredicateopt--e6d6a85b39cf6444" => DmlRule::ConflictTargetPredicateOptAlt01,
         "conflicttargetpredicateopt_where_expression--933b8c07629f80d0" => {
             DmlRule::ConflictTargetPredicateOptAlt02
         }
@@ -314,9 +316,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "conflictupdateopt_set_assignmentlist_conflictupd--f7d0684637a6035c" => {
             DmlRule::ConflictUpdateOptAlt02
         }
-        "conflictupdatepredicateopt--98184a00535462f0" => {
-            DmlRule::ConflictUpdatePredicateOptAlt01
-        }
+        "conflictupdatepredicateopt--98184a00535462f0" => DmlRule::ConflictUpdatePredicateOptAlt01,
         "conflictupdatepredicateopt_where_expression--31266766ac1a10c4" => {
             DmlRule::ConflictUpdatePredicateOptAlt02
         }
@@ -370,6 +370,8 @@ fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool,
     } else if matches!(
         rule,
         DmlRule::InsertIntoStmtAlt01
+            | DmlRule::InsertTargetAlt01
+            | DmlRule::InsertTargetAlt02
             | DmlRule::InsertRowAliasOptAlt01
             | DmlRule::InsertRowAliasOptAlt02
             | DmlRule::InsertRowAliasOptAlt03
@@ -1107,6 +1109,29 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         lexer: yylex,
     } = context;
     match rule {
+        DmlRule::InsertTargetAlt01 | DmlRule::InsertTargetAlt02 => {
+            let aliased = rule == DmlRule::InsertTargetAlt02;
+            if aliased && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                return Err(rhs[2].offset as isize);
+            }
+            let table = rhs[1]
+                .item
+                .as_deref()
+                .and_then(|x| x.downcast_ref::<parser_ast::TableName>())
+                .cloned();
+            let Some(table) = table else {
+                return Ok(false);
+            };
+            out.item = Some(Box::new(parser_ast::TableSource {
+                Source: table,
+                AsName: if aliased {
+                    super::identifier(parser_state, &rhs[3]).0
+                } else {
+                    Default::default()
+                },
+                ..Default::default()
+            }));
+        }
         DmlRule::InsertIntoStmtAlt01 => {
             let Some(mut statement) = rhs[rhs_len - 2]
                 .item
@@ -1116,22 +1141,17 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             else {
                 return Ok(false);
             };
-            let Some(table) = rhs[rhs_len - 4]
+            let Some(target) = rhs[rhs_len - 4]
                 .item
                 .as_deref()
-                .and_then(|item| item.downcast_ref::<parser_ast::TableName>())
+                .and_then(|item| item.downcast_ref::<parser_ast::TableSource>())
                 .cloned()
             else {
                 return Ok(false);
             };
             statement.Table = Some(parser_ast::TableRefsClause {
                 TableRefs: parser_ast::Join {
-                    Left: Some(Box::new(parser_ast::ResultSetNode::TableSource(
-                        parser_ast::TableSource {
-                            Source: table,
-                            ..Default::default()
-                        },
-                    ))),
+                    Left: Some(Box::new(parser_ast::ResultSetNode::TableSource(target))),
                     ..Default::default()
                 },
             });

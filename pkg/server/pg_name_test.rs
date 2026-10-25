@@ -588,3 +588,93 @@ fn pg_dialect_15_behavior() {
     }
     println!("pg_dialect_15_behavior: exact identities, six reads, MySQL isolation, exact drop");
 }
+
+#[test]
+fn pg_dialect_17_behavior() {
+    use astersql_parser_ast as ast;
+    let mut checks = 0;
+    for (sql, expected) in [
+        (
+            "INSERT INTO public.t AS a(id,v) VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET v=excluded.v WHERE a.v IS NULL RETURNING a.id",
+            None,
+        ),
+        (
+            "INSERT INTO public.excluded AS a(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=excluded.v RETURNING a.id",
+            None,
+        ),
+        (
+            "INSERT INTO public.t AS excluded(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=excluded.v",
+            Some("42P09"),
+        ),
+        ("SELECT excluded.v", Some("42P01")),
+        (
+            "INSERT INTO public.t(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=excluded.v RETURNING excluded.v",
+            Some("42P01"),
+        ),
+        (
+            "INSERT INTO public.t AS a(id,v) VALUES (1,NULL) ON CONFLICT(id) DO UPDATE SET v=t.v",
+            Some("42P01"),
+        ),
+    ] {
+        let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        if let Some(insert) = nodes[0].as_any().downcast_ref::<ast::InsertStmt>() {
+            let clause = insert.PostgreSQLConflict.as_ref().unwrap();
+            assert_eq!(
+                &sql[clause.SourceSpan.0..clause.SourceSpan.1],
+                clause.OriginalText
+            );
+            assert_eq!(clause.Action, ast::PostgreSQLConflictAction::DoUpdate);
+            let ast::ExprKind::Column(column) = &clause.UpdateAssignments[0].Expr.Kind else {
+                panic!("qualified RHS")
+            };
+            assert_eq!(column.PostgreSQLParts.len(), 2);
+            for part in &column.PostgreSQLParts {
+                assert_eq!(&sql[part.Span.0..part.Span.1], part.Original);
+                checks += 1;
+            }
+            checks += 3;
+        }
+        match expected {
+            Some(code) => assert_eq!(rewrite(sql, "db", true).unwrap_err().0, code, "{sql}"),
+            None => {
+                rewrite(sql, "db", true).unwrap();
+            }
+        }
+        checks += 1;
+    }
+    let quoted = r#"INSERT INTO public.t AS "A"(id,v) VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET v=excluded."v" WHERE "A".id=$1 RETURNING "A".id"#;
+    let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(quoted, &[])
+        .unwrap();
+    let insert = nodes[0].as_any().downcast_ref::<ast::InsertStmt>().unwrap();
+    let clause = insert.PostgreSQLConflict.as_ref().unwrap();
+    let ast::ExprKind::Column(column) = &clause.UpdateAssignments[0].Expr.Kind else {
+        panic!("quoted RHS")
+    };
+    assert!(column.PostgreSQLParts[1].Quoted);
+    assert_eq!(column.PostgreSQLParts[1].Original, "\"v\"");
+    assert_eq!(column.PostgreSQLParts[1].Lookup, "v");
+    assert!(rewrite(quoted, "db", true).is_ok());
+    checks += 4;
+    let sql = "/*中*/ INSERT INTO public.t AS a(id,v) VALUES ($2,'excluded.v') ON CONFLICT(id) DO UPDATE SET v=excluded.v WHERE a.id=$1 /* excluded.missing */";
+    let rewritten = rewrite(sql, "db", true).unwrap();
+    assert!(
+        rewritten.contains("$2,'excluded.v'")
+            && rewritten.contains("a.id=$1")
+            && rewritten.ends_with("/* excluded.missing */")
+    );
+    assert!(
+        astersql_parser::New()
+            .ParseSQL(
+                "INSERT INTO t(id) VALUES (1) ON CONFLICT(id) DO UPDATE SET id=excluded.id",
+                &[]
+            )
+            .is_err()
+    );
+    checks += 2;
+    println!(
+        "pg_dialect_17_behavior: {checks} assertions; 6 primary binding shapes plus source/parameter/dialect guards"
+    );
+}
