@@ -1966,3 +1966,50 @@ pub fn pg_boolean_cast(
         i32::from(truth).to_string()
     }))
 }
+
+/// Errors for PostgreSQL binary32 text input (also used by typed parameters).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PgFloat4Error {
+    #[error("invalid input syntax for type real")]
+    InvalidSyntax,
+    #[error("value out of range for type real")]
+    OutOfRange,
+}
+impl PgFloat4Error {
+    pub fn sqlstate(self) -> &'static str {
+        match self {
+            Self::InvalidSyntax => "22P02",
+            Self::OutOfRange => "22003",
+        }
+    }
+}
+
+/// Parse at binary32 width: an intermediate f64 can introduce double rounding.
+pub fn pg_cast_float4(value: Option<&str>) -> Result<Option<f32>, PgFloat4Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let text = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
+    let lower = text.to_ascii_lowercase();
+    let unsigned = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
+    if matches!(unsigned, "nan" | "inf" | "infinity") {
+        return text
+            .parse::<f32>()
+            .map(Some)
+            .map_err(|_| PgFloat4Error::InvalidSyntax);
+    }
+    // Rust's decimal parser rejects missing digits/exponents and trailing junk.
+    let number = text
+        .parse::<f32>()
+        .map_err(|_| PgFloat4Error::InvalidSyntax)?;
+    let nonzero = text
+        .split(['e', 'E'])
+        .next()
+        .unwrap_or("")
+        .bytes()
+        .any(|c| matches!(c, b'1'..=b'9'));
+    if !number.is_finite() || (number == 0.0 && nonzero) {
+        return Err(PgFloat4Error::OutOfRange);
+    }
+    Ok(Some(number))
+}

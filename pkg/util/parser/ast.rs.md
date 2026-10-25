@@ -115,3 +115,8 @@ PostgreSQLNumeric 作为 CAST(... AS NUMERIC) 恢复，保持无约束身份；�
 ## PostgreSQL numeric 声明与舍入
 
 PostgreSQLNumeric的工具AST恢复入口同样保留(p,s)，与共享AST恢复保持一致。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PostgreSQLFloat4恢复为FLOAT4目标，避免类型动作在SQL恢复过程中丢失。

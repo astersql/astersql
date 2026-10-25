@@ -121,3 +121,8 @@
 为numeric声明增加PgNumericOpt：裸类型、precision、precision加正/负scale；生成表由astersql-parsergen generate生成，未新增token。
 
 批次15：生成表增加FixedPointType负scale声明规则，供PG正式CREATE TABLE使用，MySQL在动作阶段拒绝。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+由 astersql-parsergen generate 从主文法重新生成，新增 PgCastType FLOAT4 规则及对应稳定 RuleId；关联语义动作构造 TypeFloat/PostgreSQLFloat4，供正式参数表达式使用。

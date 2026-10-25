@@ -4884,3 +4884,27 @@ fn pg_scalar_15_negative_scale_declaration() {
     let mut mysql = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
     assert!(mysql.ParseOneStmt(sql, "", "").is_err());
 }
+
+#[test]
+fn pg_scalar_16_float4_cast_type() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in ["SELECT CAST('1.5' AS FLOAT4)", "SELECT '1.5'::float4"] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<crate::ast::SelectStmt>()
+            .unwrap();
+        let expression = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let crate::ast::ExprKind::Cast {
+            Tp, FunctionType, ..
+        } = &expression.Kind
+        else {
+            panic!("cast")
+        };
+        assert_eq!(Tp.GetType(), parser_mysql::r#type::TypeFloat);
+        assert_eq!(
+            *FunctionType,
+            crate::ast::CastFunctionType::PostgreSQLFloat4
+        );
+    }
+}

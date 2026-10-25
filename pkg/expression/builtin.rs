@@ -6892,6 +6892,7 @@ pub mod formal_registry {
         Cast,
         PgInteger,
         PgNumeric,
+        PgFloat4,
         PgBoolean,
         GetVar,
         ToBinary(String),
@@ -6970,6 +6971,15 @@ pub mod formal_registry {
                         errors::Error::from(crate::contextutil::errors::SharedError::new(error))
                     })?;
                 return Ok((types::NewStringDatum(value.to_string()), false));
+            }
+            if self.kind == DynamicKind::PgFloat4 {
+                let text = datum.ToString()?;
+                let number = crate::pg_cast_float4(Some(&text))
+                    .map_err(|error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    })?
+                    .expect("non-null input");
+                return Ok((types::NewFloat32Datum(number), false));
             }
             if self.kind == DynamicKind::PgInteger {
                 use crate::{PgInt4Error, pg_cast_int2, pg_cast_int4, pg_cast_int8};
@@ -7181,7 +7191,10 @@ pub mod formal_registry {
         }
         fn evalReal(&self, c: &dyn EvalContext, r: chunk::Row) -> Result<(f64, bool), Error> {
             match self.kind {
-                DynamicKind::Cast | DynamicKind::PgInteger | DynamicKind::PgBoolean => {
+                DynamicKind::Cast
+                | DynamicKind::PgInteger
+                | DynamicKind::PgBoolean
+                | DynamicKind::PgFloat4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { 0.0 } else { d.GetFloat64() }, n))
                 }
@@ -7197,7 +7210,8 @@ pub mod formal_registry {
                 DynamicKind::Cast
                 | DynamicKind::PgInteger
                 | DynamicKind::PgBoolean
-                | DynamicKind::PgNumeric => {
+                | DynamicKind::PgNumeric
+                | DynamicKind::PgFloat4 => {
                     let (d, n) = self.cast(c, r)?;
                     Ok((if n { String::new() } else { d.ToString()? }, n))
                 }
@@ -7455,7 +7469,9 @@ pub mod formal_registry {
             );
         let pg_numeric = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
             && target.GetType() == mysql::TypeNewDecimal;
-        if !pg_integer && !pg_boolean && !pg_numeric {
+        let pg_float4 = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+            && target.GetType() == mysql::TypeFloat;
+        if !pg_integer && !pg_boolean && !pg_numeric && !pg_float4 {
             base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
         }
         let f = Box::new(DynamicBuiltin {
@@ -7464,6 +7480,8 @@ pub mod formal_registry {
                 DynamicKind::PgBoolean
             } else if pg_numeric {
                 DynamicKind::PgNumeric
+            } else if pg_float4 {
+                DynamicKind::PgFloat4
             } else if pg_integer {
                 DynamicKind::PgInteger
             } else {

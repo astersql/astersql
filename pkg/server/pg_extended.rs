@@ -337,8 +337,9 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
         ),
         700 => (
             4,
-            text.parse::<f32>()
-                .map_err(|_| invalid())?
+            astersql_expression::pg_cast_float4(Some(text))
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .expect("non-null parameter")
                 .to_le_bytes()
                 .to_vec(),
         ),

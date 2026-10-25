@@ -139,3 +139,8 @@ PG INSERT VALUES在生成写入副作用之前按目标布尔列和表达式类�
 ## PostgreSQL signed16（任务5）
 
 OID21与既有bool参数一样在Prepare保留原生TypeShort，直接参数NULL和空结果无需依赖执行值定型。Bind后的现有token参数渲染用CAST(... AS INT2)保持目标身份，与正式SQL解析/求值共用严格内核。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PG supplied OID700 在prepare保留TypeFloat，并按类型构造FLOAT4参数表达式；已验证浮点值作为安全数值字符串传递，以保留负零、NaN及Infinity，NULL也保留目标身份。

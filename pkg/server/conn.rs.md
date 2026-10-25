@@ -115,3 +115,8 @@ ConnError::PgBool保存共享PG布尔转换错误身份，供协议SQLSTATE映�
 ## PostgreSQL 有限 numeric 承载
 
 PgNumeric 错误分支携带有限 numeric 的语法、值域和能力错误。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PgFloat4 连接错误保留共享转换器错误身份，供PG协议映射SQLSTATE。

@@ -122,6 +122,7 @@ pub enum ConnError {
     PgInt4(astersql_expression::PgInt4Error),
     PgBool(astersql_expression::PgBoolError),
     PgNumeric(astersql_types::pg_numeric::PgNumericError),
+    PgFloat4(astersql_expression::PgFloat4Error),
     PgArray(astersql_session::runtime::PgArrayError),
     Poisoned(&'static str),
 }
@@ -135,6 +136,7 @@ impl fmt::Display for ConnError {
             Self::PgInt4(error) => error.fmt(f),
             Self::PgBool(error) => error.fmt(f),
             Self::PgNumeric(error) => error.fmt(f),
+            Self::PgFloat4(error) => error.fmt(f),
             Self::PgArray(error) => error.fmt(f),
             Self::NetPacketTooLarge => write!(
                 f,

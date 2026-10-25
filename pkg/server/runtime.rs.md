@@ -109,3 +109,8 @@ session_protocol_error优先保留PgBoolError，而不是降级为通用会话�
 ## PostgreSQL 有限 numeric 承载
 
 会话 numeric 源错误桥接为 ConnError::PgNumeric，保留22003等分类。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+session_protocol_error 保留 PgFloat4Error 到协议连接层；FLOAT4参数继续复用现有f32小端解码。

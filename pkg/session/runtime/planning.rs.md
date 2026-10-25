@@ -165,3 +165,8 @@ protocol_parameter_types保留显式OID21并由PostgreSQLInt2推断未指定参�
 ## PostgreSQL 有限 numeric 承载
 
 从 PostgreSQLNumeric CAST 推导参数 OID1700。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PG OID700和PostgreSQLFloat4约束进入已有参数类型推断，不影响MySQL参数推断。

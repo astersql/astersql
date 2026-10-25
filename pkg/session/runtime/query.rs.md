@@ -165,3 +165,8 @@ PG numeric求值传入声明FieldType；SELECT准备阶段验证precision/scale�
 ## 默认数值常量（任务12）
 
 任务12：pg_integer_literal_type 对超 i64 的无符号整数字面量返回无约束 numeric；关系查询在替换一元操作数前通过 pg_numeric_literal_value 精确求值 PG 小数/指数常量，维持 Prepare、零行和执行身份一致。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+正式关系求值中的PostgreSQLFloat4调用共享binary32转换，保持错误来源及NULL。

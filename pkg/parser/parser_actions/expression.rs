@@ -345,7 +345,8 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         | "pgpostfixdecimal_decimal_pgnumericopt--0888c1c586dd95a3" => {
             Some(ExpressionRule::PgCastType)
         }
-        "pgcasttype_smallint--6be73d74a71dda92"
+        "pgcasttype_float4--b61228fadb82c90c"
+        | "pgcasttype_smallint--6be73d74a71dda92"
         | "pgcasttype_int2--726db66dacb613ed"
         | "pgcasttype_text--298413db6f8b6803"
         | "pgcasttype_bool--d9658361f98a2bfa"
@@ -1236,6 +1237,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
                 "bool" | "boolean" => parser_mysql::r#type::TypeTiny,
                 "text" => parser_mysql::r#type::TypeVarString,
+                "float4" => parser_mysql::r#type::TypeFloat,
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
@@ -1311,6 +1313,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         parser_ast::CastFunctionType::PostgreSQLInt4
                     } else if tp.GetType() == parser_mysql::r#type::TypeLonglong {
                         parser_ast::CastFunctionType::PostgreSQLInt8
+                    } else if tp.GetType() == parser_mysql::r#type::TypeFloat {
+                        parser_ast::CastFunctionType::PostgreSQLFloat4
                     } else if tp.GetType() == parser_mysql::r#type::TypeNewDecimal {
                         parser_ast::CastFunctionType::PostgreSQLNumeric
                     } else {
@@ -1999,6 +2003,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeLonglong
                     {
                         parser_ast::CastFunctionType::PostgreSQLInt8
+                    } else if pg_cast && field_type.GetType() == parser_mysql::r#type::TypeFloat {
+                        parser_ast::CastFunctionType::PostgreSQLFloat4
                     } else if pg_cast
                         && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal
                     {

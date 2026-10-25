@@ -643,6 +643,9 @@ impl<'a> Restorer<'a> {
                 ast::CastFunctionType::PostgreSQLInt8 => {
                     Ok(format!("CAST({} AS INT8)", self.expr(Expr)?))
                 }
+                ast::CastFunctionType::PostgreSQLFloat4 => {
+                    Ok(format!("CAST({} AS FLOAT4)", self.expr(Expr)?))
+                }
                 ast::CastFunctionType::PostgreSQLNumeric => {
                     let modifier = if Tp.GetFlen() >= 0 {
                         format!("({},{})", Tp.GetFlen(), Tp.GetDecimal())

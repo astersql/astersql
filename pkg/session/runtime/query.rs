@@ -1257,6 +1257,11 @@ impl ConcreteSession {
                         return result;
                     }
                 }
+                if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
+                    return pg_float4_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                    );
+                }
                 if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
                     return pg_numeric_relational_value(
                         self.relational_query_expression_value(Expr, row, group_rows)?,

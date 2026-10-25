@@ -105,3 +105,8 @@ OID21/23/20的非NULL文本参数分别复用astersql_expression::pg_cast_int2/4
 ## PostgreSQL 有限 numeric 承载
 
 OID1700 文本参数经 PgNumeric 验值规范化；用文本共享参数载荷绕开 MySQL prepared DECIMAL 的容量限制，目标身份由准备元数据保留。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+OID700文本参数复用 pg_cast_float4；在Bind阶段检查词法、ASCII空白及binary32溢出/下溢，UTF-8/NUL仍由既有22021检查负责。

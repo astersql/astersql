@@ -403,3 +403,48 @@ fn pg_scalar_13_unsigned_target() {
     );
     pg.execute("DROP TABLE scalar13_unsigned").unwrap();
 }
+
+#[test]
+fn pg_scalar_16_float4_relational_consumers() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_float4_16 (v TEXT)").unwrap();
+    for (input, expected) in [
+        ("7.038531e-26", f32::from_bits(0x15ae43fd)),
+        ("-0", -0.0),
+        ("1.401298464324817e-45", f32::from_bits(1)),
+        ("Infinity", f32::INFINITY),
+        ("NaN", f32::NAN),
+    ] {
+        pg.execute(&format!("INSERT INTO pg_float4_16 VALUES ('{input}')"))
+            .unwrap();
+        for sql in [
+            "SELECT v::float4 FROM pg_float4_16",
+            "SELECT CAST(v AS FLOAT4) FROM pg_float4_16",
+        ] {
+            let actual = pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap()[0]
+                .parse::<f32>()
+                .unwrap();
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{input}");
+            }
+        }
+        pg.execute("DELETE FROM pg_float4_16").unwrap();
+    }
+    pg.execute("INSERT INTO pg_float4_16 VALUES ('1e39')")
+        .unwrap();
+    assert_eq!(
+        pg.execute("SELECT v::float4 FROM pg_float4_16")
+            .err()
+            .unwrap()
+            .pg_float4_error()
+            .unwrap()
+            .sqlstate(),
+        "22003"
+    );
+    pg.execute("DROP TABLE pg_float4_16").unwrap();
+}

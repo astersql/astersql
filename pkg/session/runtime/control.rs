@@ -1789,7 +1789,7 @@ impl ConcreteSession {
         };
         let has_pg_values = !array_types.is_empty() || !record_types.is_empty();
         let has_scalar_parameters = self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && supplied.iter().any(|oid| matches!(oid, 16 | 21));
+            && supplied.iter().any(|oid| matches!(oid, 16 | 21 | 700));
         let constructor_oids = array_oids
             .iter()
             .copied()
@@ -1838,8 +1838,10 @@ impl ConcreteSession {
                             .iter()
                             .position(|marker| marker.offset == Offset)
                             .and_then(|index| supplied.get(index));
-                        if let Some(oid @ (16 | 21)) = oid {
-                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 16 {
+                        if let Some(oid @ (16 | 21 | 700)) = oid {
+                            let mut tp = astersql_parser_types::NewFieldType(if *oid == 700 {
+                                astersql_parser_mysql::r#type::TypeFloat
+                            } else if *oid == 16 {
                                 astersql_parser_mysql::r#type::TypeTiny
                             } else {
                                 astersql_parser_mysql::r#type::TypeShort
@@ -1885,7 +1887,7 @@ impl ConcreteSession {
                     let mut oids = constructor_oids;
                     oids.resize(supplied.len(), 0);
                     for (oid, supplied) in oids.iter_mut().zip(supplied) {
-                        if matches!(*supplied, 16 | 21) {
+                        if matches!(*supplied, 16 | 21 | 700) {
                             *oid = *supplied;
                         }
                     }
@@ -1972,6 +1974,20 @@ impl ConcreteSession {
             .iter()
             .enumerate()
             .map(|(index, argument)| {
+                // These values have already been decoded at binary32 width.
+                // A quoted typed expression preserves -0 and non-finite values
+                // across the existing SQL binder, without numeric inference.
+                if constructor_oids.get(index) == Some(&700) {
+                    return match argument {
+                        ConcretePreparedArgument::Null => Ok("CAST(NULL AS FLOAT4)".to_owned()),
+                        ConcretePreparedArgument::Float(number) => {
+                            Ok(format!("CAST('{}' AS FLOAT4)", number))
+                        }
+                        _ => Err(SessionError::new(
+                            "float4 parameter requires a floating-point value",
+                        )),
+                    };
+                }
                 let literal = argument.sql_literal()?;
                 if constructor_oids.get(index) == Some(&16) {
                     return Ok(format!("CAST({literal} AS BOOLEAN)"));

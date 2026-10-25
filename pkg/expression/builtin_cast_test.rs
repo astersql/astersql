@@ -580,3 +580,74 @@ fn pg_scalar_11_formal_numeric_integer() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_16_binary32_kernel_and_formal_cast() {
+    use crate::{
+        BuildContext, Expression as FormalExpression, PgFloat4Error, mysql, pg_cast_float4, types,
+    };
+    for input in ["1e39", "-1e39", "1e-100", "-1e-100"] {
+        assert_eq!(pg_cast_float4(Some(input)), Err(PgFloat4Error::OutOfRange));
+    }
+    for input in ["", " ", "1x", "1e", "0x1p0", "1_0", "1\u{a0}"] {
+        assert_eq!(
+            pg_cast_float4(Some(input)),
+            Err(PgFloat4Error::InvalidSyntax)
+        );
+    }
+    assert_eq!(pg_cast_float4(None), Ok(None));
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for (input, expected) in [
+        ("7.038531e-26", f32::from_bits(0x15ae43fd)),
+        ("-0", -0.0),
+        ("1.401298464324817e-45", f32::from_bits(1)),
+        ("Infinity", f32::INFINITY),
+        ("NaN", f32::NAN),
+    ] {
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            types::NewStringDatum(input.into()),
+            *types::NewFieldType(mysql::TypeVarString),
+        ));
+        let cast = crate::formal_registry::BuildCastFunction(
+            &pg,
+            &source,
+            &types::NewFieldType(mysql::TypeFloat),
+        );
+        let (actual, null) = cast
+            .EvalReal(pg.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap();
+        assert!(!null);
+        if expected.is_nan() {
+            assert!(actual.is_nan());
+        } else {
+            assert_eq!((actual as f32).to_bits(), expected.to_bits(), "{input}");
+        }
+    }
+    for datum in [
+        types::NewStringDatum("1e39".into()),
+        types::NewStringDatum("1x".into()),
+        types::Datum::default(),
+    ] {
+        let null = datum.IsNull();
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(mysql::TypeVarString),
+        ));
+        let cast = crate::formal_registry::BuildCastFunction(
+            &pg,
+            &source,
+            &types::NewFieldType(mysql::TypeFloat),
+        );
+        assert_eq!(cast.GetType(pg.GetEvalCtx()).GetType(), mysql::TypeFloat);
+        let result = cast.EvalReal(pg.GetEvalCtx(), crate::chunk::Row::default());
+        if null {
+            assert!(result.unwrap().1);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}

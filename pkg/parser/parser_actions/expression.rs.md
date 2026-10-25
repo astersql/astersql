@@ -161,3 +161,8 @@ PgNumericOpt仅为PG显式numeric/decimal转换保存precision及有符号scale�
 ## 默认数值常量（任务12）
 
 任务12：PG Literal 数值动作保留 Decimal 原始文本，flen/decimal 为 -1；普通整数沿既有 Int64/Uint64 载体供共享按符号定型。此接线用于默认 int4/int8/numeric，不增加运算重载。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+FLOAT4 转换目标构造 TypeFloat/PostgreSQLFloat4；现有双方言门禁保持，未补完整浮点类型或转换矩阵。

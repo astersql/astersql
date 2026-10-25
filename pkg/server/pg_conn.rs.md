@@ -102,3 +102,8 @@ PG错误桥接把ConnError::PgBool按内核sqlstate传输，支持限定转换�
 ## PostgreSQL 有限 numeric 承载
 
 PgNumeric 错误按其 SQLSTATE 输出，复用原 Sync/事务恢复状态机。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PgFloat4 错误按共享错误身份返回22P02或22003，避免落入通用XX000。

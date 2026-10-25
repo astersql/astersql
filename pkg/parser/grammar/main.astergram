@@ -4309,6 +4309,7 @@ PgCastType : "BIGINT" @action;
 PgCastType : "BOOL" @action;
 PgCastType : "BOOLEAN" @action;
 PgCastType : "TEXT" @action;
+PgCastType : "FLOAT4" @action;
 PgCastType : "NUMERIC" PgNumericOpt @action;
 PgPostfixDecimal : "DECIMAL" PgNumericOpt @action;
 SimpleExpr : SimpleExpr pgTypecast PgPostfixDecimal %prec pgTypecast @action;

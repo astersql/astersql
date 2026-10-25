@@ -145,3 +145,8 @@ PG numeric CAST 的规范路径适用于无约束和有 typmod 的目标：复�
 ## 精确数值到整数转换（任务11）
 
 PG numeric→signed CAST 使用 PgNumeric::to_signed，保持精确舍入和 22003；文本输入沿用严格整数解析。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PostgreSQL 的 TypeFloat CAST 经 PgFloat4 分派调用共享 binary32 文本解析器；MySQL 分派和 pushdown 规则不变。

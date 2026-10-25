@@ -109,3 +109,8 @@ PG限定显式布尔转换由pg_boolean_cast_kind按源/目标类型选择，pg_
 ## PostgreSQL整数文本语法（任务6）
 
 pg_cast_int2/4/8 共用按目标16/32/64位宽检查的 pg_parse_integer。接受ASCII首尾空白、符号、0x/0o/0b大小写前缀及单个下划线；非十进制前缀后允许一个下划线。按PG18 numutils.c顺序先检查累积阈值、后检查尾部语法、最后检查signed端点，区分22003与22P02。不经过浮点、不剪裁，NULL保留。builtin_cast_test::pg_integer_text_grammar覆盖真实正式表达式工厂与边界。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+pg_cast_float4 直接按 f32 解析，接受 ASCII 首尾空白和特殊值；有限溢出及非零下溢为 PgFloat4Error::OutOfRange（22003），词法错误为22P02。

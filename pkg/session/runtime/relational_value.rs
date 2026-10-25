@@ -1300,6 +1300,9 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
+            if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
+                return pg_float4_relational_value(relational_expression_value(Expr, row)?);
+            }
             if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
                 return pg_numeric_relational_value(relational_expression_value(Expr, row)?, Tp);
             }
@@ -2676,7 +2679,8 @@ pub(super) fn relational_expression_type(
                 ast::CastFunctionType::PostgreSQLInt2
                 | ast::CastFunctionType::PostgreSQLInt4
                 | ast::CastFunctionType::PostgreSQLInt8
-                | ast::CastFunctionType::PostgreSQLNumeric,
+                | ast::CastFunctionType::PostgreSQLNumeric
+                | ast::CastFunctionType::PostgreSQLFloat4,
             ..
         } => Tp.clone(),
         ast::ExprKind::Column(column) => table
@@ -3612,4 +3616,13 @@ pub(super) fn pg_numeric_literal_value(
                 )
             }),
     )
+}
+
+/// Typed parameter and row consumers share the direct binary32 text parser.
+pub(super) fn pg_float4_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+    astersql_expression::pg_cast_float4(value.as_deref())
+        .map(|value| value.map(|number| f64::from(number).to_string()))
+        .map_err(|error| {
+            SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+        })
 }

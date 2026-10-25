@@ -680,6 +680,8 @@ pub enum CastFunctionType {
     /// Strict PostgreSQL int8 semantics retained across shared AST consumers.
     PostgreSQLInt8,
     PostgreSQLNumeric,
+    /// PostgreSQL binary32 text conversion used by typed float4 parameters.
+    PostgreSQLFloat4,
     Convert,
     Binary,
 }

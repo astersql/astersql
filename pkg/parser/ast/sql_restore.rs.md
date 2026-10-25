@@ -123,3 +123,8 @@ PostgreSQLInt2恢复为CAST(... AS INT2)，保留signed16目标身份并支持�
 ## PostgreSQL numeric 声明与舍入
 
 PostgreSQLNumeric恢复CAST时保留(p,s)，避免SQL重建丢失舍入约束；裸numeric不添加默认precision。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PostgreSQLFloat4 类型动作恢复为 CAST(... AS FLOAT4)，保留参数/关系表达式的 binary32 目标。

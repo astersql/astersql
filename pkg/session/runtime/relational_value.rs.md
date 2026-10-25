@@ -185,3 +185,8 @@ pg_numeric_relational_value验证声明并调用PgNumeric.apply_modifier，常�
 ## 默认数值常量（任务12）
 
 任务12：pg_numeric_literal_value 依据 PG Decimal AST 的无约束类型处理原始十进制、指数和一元符号，复用 PgNumeric 域校验与规范输出；表表达式和通用关系求值共享该入口，MySQL 常量保留原声明长度。
+
+
+## PostgreSQL float4 文本输入（任务16）
+
+PostgreSQLFloat4 的目标类型在元数据推导中保留；行求值与参数使用相同直接f32文本解析器。返回扩宽后的值文本以承接既有结果容器，最短float4输出归后续任务。
