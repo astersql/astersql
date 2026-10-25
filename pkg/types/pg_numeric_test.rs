@@ -77,3 +77,38 @@ fn pg_numeric_test_modifiers() {
         );
     }
 }
+
+#[test]
+fn pg_numeric_test_special_values() {
+    for (input, expected) in [
+        ("NaN", "NaN"),
+        (" nan ", "NaN"),
+        ("Infinity", "Infinity"),
+        ("+INF", "Infinity"),
+        ("-infinity", "-Infinity"),
+        (" -inf ", "-Infinity"),
+    ] {
+        let value = input.parse::<PgNumeric>().unwrap();
+        assert_eq!(value.to_string(), expected);
+        assert_eq!(expected.parse::<PgNumeric>().unwrap(), value);
+        assert_ne!(value, "0".parse::<PgNumeric>().unwrap());
+        for (p, s) in [(1, 0), (3, 1), (1, -1000), (1, 1000)] {
+            let result = value.clone().apply_modifier(p, s);
+            if expected == "NaN" {
+                assert_eq!(result.unwrap().to_string(), "NaN");
+            } else {
+                assert_eq!(result, Err(PgNumericError::OutOfRange));
+            }
+        }
+    }
+    assert_ne!(
+        "Infinity".parse::<PgNumeric>(),
+        "-Infinity".parse::<PgNumeric>()
+    );
+    for input in ["+NaN", "-NaN", "NaNx", "Infinityx", "Inf inity"] {
+        assert_eq!(
+            input.parse::<PgNumeric>(),
+            Err(PgNumericError::InvalidSyntax)
+        );
+    }
+}

@@ -276,3 +276,39 @@ fn pg_numeric_modifier_relational_consumers() {
     }
     pg.execute("DROP TABLE pg_numeric_modifier_rows").unwrap();
 }
+
+#[test]
+fn pg_numeric_special_relational_consumers() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_numeric_special_rows (v TEXT)")
+        .unwrap();
+    for (input, expected) in [("nan", "NaN"), ("+inf", "Infinity"), ("-inf", "-Infinity")] {
+        pg.execute(&format!(
+            "INSERT INTO pg_numeric_special_rows VALUES ('{input}')"
+        ))
+        .unwrap();
+        for sql in [
+            "SELECT v::numeric FROM pg_numeric_special_rows",
+            "SELECT CAST(v AS numeric) FROM pg_numeric_special_rows",
+        ] {
+            assert_eq!(
+                pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+                vec![expected]
+            );
+        }
+        let constrained = pg.execute("SELECT v::numeric(3,1) FROM pg_numeric_special_rows");
+        if expected == "NaN" {
+            assert_eq!(
+                constrained.unwrap()[0].next_row().unwrap().unwrap(),
+                vec!["NaN"]
+            );
+        } else {
+            assert!(constrained.is_err());
+        }
+        pg.execute("DELETE FROM pg_numeric_special_rows").unwrap();
+    }
+    pg.execute("DROP TABLE pg_numeric_special_rows").unwrap();
+}

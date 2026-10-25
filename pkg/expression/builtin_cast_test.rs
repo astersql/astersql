@@ -519,6 +519,9 @@ fn pg_numeric_modifier_cast_factory() {
     for (input, p, s, expected) in [
         (Some("1.25"), 3, 1, Some("1.3")),
         (Some("-1250"), 2, -2, Some("-1300")),
+        (Some("NaN"), 3, 1, Some("NaN")),
+        (Some("Infinity"), -1, -1, Some("Infinity")),
+        (Some("-inf"), -1, -1, Some("-Infinity")),
         (None, 3, -1, None),
     ] {
         let mut target = types::NewFieldType(mysql::TypeNewDecimal);

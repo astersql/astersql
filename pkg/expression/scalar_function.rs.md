@@ -127,3 +127,7 @@ Rust `Eval` 对未知 `EvalType` 返回错误，而当前 Go `switch` 没有显�
 ## PostgreSQL 有限 numeric 承载
 
 PG无约束numeric CAST的通用Eval保留经验证的十进制载荷与numeric FieldType，避免走MySQL固定容量EvalDecimal。
+
+### PG numeric 特殊值（任务10）
+
+PG numeric CAST 的规范路径适用于无约束和有 typmod 的目标：复用 PgNumeric 解析、特殊值标签和 apply_modifier；NaN 可进入受限类型，无穷返回22003。正式 Eval 保留规范文本载荷，不经 MyDecimal 的有限值 API，MySQL 分支保持原状。

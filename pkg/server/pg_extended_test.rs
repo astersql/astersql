@@ -3673,3 +3673,232 @@ fn pg_scalar_09() {
         "pg_scalar_09: {count} value/metadata/NULL/empty cases, {errors} error/recovery/no-write cases"
     );
 }
+
+#[test]
+fn pg_scalar_10() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let mysql_check = |socket: &mut TcpStream| {
+        mysql_packet(socket, 0, b"\x03SELECT CAST('12.340' AS DECIMAL(6,3)),NULL");
+        assert_eq!(mysql_read(socket), vec![2]);
+        let columns = vec![mysql_read(socket), mysql_read(socket)];
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        assert_eq!(mysql_read(socket), b"\x0612.340\xfb");
+        let eof = mysql_read(socket);
+        assert_eq!(eof[0], 0xfe);
+        assert_eq!(&eof[1..3], &[0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        columns
+    };
+    let mysql_metadata = mysql_check(&mut mysql);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn description(message: &(u8, Vec<u8>), p: i32, scale: i32) {
+        let mut unconstrained = message.clone();
+        let offset = 2 + message.1[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        let typmod = if p == -1 {
+            -1
+        } else {
+            ((p << 16) | (scale & 0x7ff)) + 4
+        };
+        assert_eq!(&message.1[offset + 12..offset + 16], &typmod.to_be_bytes());
+        unconstrained.1[offset + 12..offset + 16].copy_from_slice(&(-1i32).to_be_bytes());
+        scalar_types(&unconstrained, &[1700]);
+    }
+    let cases = vec![
+        (Some("NaN".to_owned()), -1, -1, Some("NaN".to_owned())),
+        (Some(" nan ".into()), 3, 1, Some("NaN".into())),
+        (Some("NaN".into()), 1, -1000, Some("NaN".into())),
+        (Some("NaN".into()), 1, 1000, Some("NaN".into())),
+        (Some("Infinity".into()), -1, -1, Some("Infinity".into())),
+        (Some("+iNf".into()), -1, -1, Some("Infinity".into())),
+        (Some("-Infinity".into()), -1, -1, Some("-Infinity".into())),
+        (Some(" -inf ".into()), -1, -1, Some("-Infinity".into())),
+        (None, -1, -1, None),
+        (None, 3, 1, None),
+    ];
+    let mut count = 0;
+    for (value, p, scale, expected) in &cases {
+        let target = if *p == -1 {
+            "numeric".into()
+        } else {
+            format!("numeric({p},{scale})")
+        };
+        let literal = value
+            .as_ref()
+            .map(|v| format!("'{v}'"))
+            .unwrap_or("NULL".into());
+        for sql in [
+            format!("SELECT {literal}::{target}"),
+            format!("SELECT CAST({literal} AS {target})"),
+        ] {
+            let messages = query(&mut socket, &sql);
+            assert_eq!(
+                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"TDCZ",
+                "{sql}: {messages:?}"
+            );
+            description(&messages[0], *p, *scale);
+            assert_eq!(messages[1], (b'D', row(&[expected.as_deref()])), "{sql}");
+            count += 1;
+        }
+        for explicit in [false, true] {
+            parse(
+                &mut socket,
+                "n10",
+                &format!("SELECT $1::{target}"),
+                if explicit { &[1700] } else { &[] },
+            );
+            assert_eq!(read(&mut socket).0, b'1');
+            send(&mut socket, b'D', b"Sn10\0");
+            assert_eq!(
+                read(&mut socket),
+                (
+                    b't',
+                    [1i16.to_be_bytes().as_slice(), &1700u32.to_be_bytes()].concat()
+                )
+            );
+            let desc = read(&mut socket);
+            description(&desc, *p, *scale);
+            bind(&mut socket, "", "n10", &[value.as_deref()]);
+            assert_eq!(read(&mut socket).0, b'2');
+            send(&mut socket, b'D', b"P\0");
+            assert_eq!(read(&mut socket), desc);
+            execute(&mut socket, "", 0);
+            assert_eq!(read(&mut socket), (b'D', row(&[expected.as_deref()])));
+            assert_eq!(read(&mut socket).0, b'C');
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', vec![b'I']));
+            send(&mut socket, b'C', b"Sn10\0");
+            assert_eq!(read(&mut socket).0, b'3');
+            count += 1;
+        }
+        let roundtrip = query(
+            &mut socket,
+            &format!("SELECT ({literal}::{target})::text::numeric"),
+        );
+        scalar_types(&roundtrip[0], &[1700]);
+        assert_eq!(roundtrip[1], (b'D', row(&[expected.as_deref()])));
+        count += 1;
+        let empty = query(
+            &mut socket,
+            &format!("SELECT {literal}::{target} WHERE FALSE"),
+        );
+        assert_eq!(
+            empty.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TCZ",
+            "{empty:?}"
+        );
+        description(&empty[0], *p, *scale);
+        count += 1;
+    }
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    mysql_query(&mut mysql, "CREATE DATABASE IF NOT EXISTS test");
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE test.pg_scalar_10 (id INT PRIMARY KEY,v LONGTEXT)",
+    );
+    let mut errors = 0;
+    for (expression, state) in [
+        ("'Infinity'::numeric(3,1)", "22003"),
+        ("'-Infinity'::numeric(3,1)", "22003"),
+        ("'+NaN'::numeric", "22P02"),
+        ("'-NaN'::numeric", "22P02"),
+    ] {
+        for sql in [
+            format!("SELECT {expression}"),
+            format!("SELECT {expression} WHERE FALSE"),
+            format!("INSERT INTO public.pg_scalar_10 VALUES (1,({expression})::text)"),
+        ] {
+            // Empty scans do not evaluate value conversion errors.
+            if sql.ends_with("FALSE") {
+                continue;
+            }
+            let m = query(&mut socket, &sql);
+            assert_eq!(m[0].0, b'E', "{sql}: {m:?}");
+            assert!(
+                m[0].1
+                    .windows(7)
+                    .any(|v| v == format!("C{state}\0").as_bytes()),
+                "{sql}: {m:?}"
+            );
+            assert_eq!(query(&mut socket, "SELECT 1")[0].0, b'T');
+            errors += 1;
+        }
+    }
+    for value in ["Infinity", "-Infinity"] {
+        for transaction in [false, true] {
+            if transaction {
+                assert_eq!(query(&mut socket, "BEGIN")[0].0, b'C');
+            }
+            parse(
+                &mut socket,
+                "overflow10",
+                "SELECT $1::numeric(3,1)",
+                &[1700],
+            );
+            assert_eq!(read(&mut socket).0, b'1');
+            bind(&mut socket, "", "overflow10", &[Some(value)]);
+            let bound = read(&mut socket);
+            let error = if bound.0 == b'2' {
+                execute(&mut socket, "", 0);
+                read(&mut socket)
+            } else {
+                bound
+            };
+            assert_state(&error, "22003");
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                read(&mut socket),
+                (b'Z', vec![if transaction { b'E' } else { b'I' }])
+            );
+            if transaction {
+                query(&mut socket, "ROLLBACK");
+            }
+            assert_eq!(query(&mut socket, "SELECT 1")[0].0, b'T');
+            send(&mut socket, b'C', b"Soverflow10\0");
+            assert_eq!(read(&mut socket).0, b'3');
+            errors += 1;
+        }
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT count(*) FROM public.pg_scalar_10")[1],
+        (b'D', row(&[Some("0")]))
+    );
+    assert_eq!(query(&mut socket, "BEGIN")[0].0, b'C');
+    assert_eq!(
+        query(&mut socket, "SELECT 'Infinity'::numeric(3,1)")[0].0,
+        b'E'
+    );
+    assert_eq!(query(&mut socket, "ROLLBACK")[0].0, b'C');
+    assert_eq!(query(&mut socket, "SELECT 1")[0].0, b'T');
+    query(&mut socket, "DROP TABLE public.pg_scalar_10");
+    assert_eq!(mysql_check(&mut mysql), mysql_metadata);
+    println!(
+        "pg_scalar_10: {count} value/metadata/NULL/empty cases, {errors} error/recovery/no-write cases"
+    );
+}

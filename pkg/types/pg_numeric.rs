@@ -1,6 +1,6 @@
 // Copyright 2026 AsterSQL.
 
-//! Finite PostgreSQL numeric values, independent of MySQL's decimal capacity.
+//! PostgreSQL numeric values, independent of MySQL's decimal capacity.
 use std::{fmt, str::FromStr};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -25,10 +25,19 @@ impl PgNumericError {
     }
 }
 
-/// Normalized decimal coefficient and display scale. No floating point or
-/// MySQL decimal conversion participates in construction or formatting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NumericKind {
+    Finite,
+    NaN,
+    Infinity,
+    NegativeInfinity,
+}
+
+/// Tagged numeric identity with normalized finite coefficient and display scale.
+/// No floating point or MySQL decimal conversion participates in construction or formatting.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PgNumeric {
+    kind: NumericKind,
     negative: bool,
     coefficient: String,
     scale: usize,
@@ -54,6 +63,13 @@ impl PgNumeric {
         Self::validate_modifier(precision, scale)?;
         if precision == -1 {
             return Ok(self);
+        }
+        match self.kind {
+            NumericKind::NaN => return Ok(self),
+            NumericKind::Infinity | NumericKind::NegativeInfinity => {
+                return Err(PgNumericError::OutOfRange);
+            }
+            NumericKind::Finite => {}
         }
         let cut = self.scale as isize - scale;
         if cut > 0 {
@@ -105,19 +121,27 @@ impl FromStr for PgNumeric {
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         use PgNumericError::*;
         let text = input.trim_matches(|c: char| c.is_ascii_whitespace());
-        if [
-            "nan",
-            "infinity",
-            "+infinity",
-            "-infinity",
-            "inf",
-            "+inf",
-            "-inf",
-        ]
-        .iter()
-        .any(|v| text.eq_ignore_ascii_case(v))
+        let unsigned_special = text.strip_prefix(['+', '-']).unwrap_or(text);
+        let kind = if text.eq_ignore_ascii_case("nan") {
+            NumericKind::NaN
+        } else if unsigned_special.eq_ignore_ascii_case("inf")
+            || unsigned_special.eq_ignore_ascii_case("infinity")
         {
-            return Err(Unsupported);
+            if text.starts_with('-') {
+                NumericKind::NegativeInfinity
+            } else {
+                NumericKind::Infinity
+            }
+        } else {
+            NumericKind::Finite
+        };
+        if kind != NumericKind::Finite {
+            return Ok(Self {
+                kind,
+                negative: false,
+                coefficient: "0".into(),
+                scale: 0,
+            });
         }
         let negative = text.starts_with('-');
         let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
@@ -172,6 +196,7 @@ impl FromStr for PgNumeric {
             ));
         }
         Ok(Self {
+            kind: NumericKind::Finite,
             negative: negative && !zero,
             coefficient,
             scale: scale.max(0) as usize,
@@ -180,6 +205,12 @@ impl FromStr for PgNumeric {
 }
 impl fmt::Display for PgNumeric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            NumericKind::NaN => return f.write_str("NaN"),
+            NumericKind::Infinity => return f.write_str("Infinity"),
+            NumericKind::NegativeInfinity => return f.write_str("-Infinity"),
+            NumericKind::Finite => {}
+        }
         if self.negative {
             f.write_str("-")?;
         }

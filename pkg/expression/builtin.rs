@@ -7436,8 +7436,7 @@ pub mod formal_registry {
                 mysql::TypeShort | mysql::TypeLong | mysql::TypeLonglong
             );
         let pg_numeric = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
-            && target.GetType() == mysql::TypeNewDecimal
-            && target.GetDecimal() == -1;
+            && target.GetType() == mysql::TypeNewDecimal;
         if !pg_integer && !pg_boolean && !pg_numeric {
             base.pb_code = cast_pb_code(source_type, &tp, crate::IsBinaryLiteral(expr.as_ref()));
         }
