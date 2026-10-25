@@ -3589,6 +3589,162 @@ fn pg_dialect_07_behavior() {
 }
 
 #[test]
+fn pg_dialect_08_behavior() {
+    use parser_ast::{Node, PostgreSQLConflictAction, PostgreSQLConflictTarget, SqlDialect};
+
+    let sql = "/*中*/ INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT (id) WHERE id > 0 DO UPDATE SET v=excluded.v, id=$1 WHERE t.v IS NOT NULL RETURNING id";
+    let statement = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    let insert = statement
+        .into_any()
+        .downcast::<parser_ast::InsertStmt>()
+        .ok()
+        .expect("INSERT AST");
+    let conflict = insert.PostgreSQLConflict.as_ref().expect("conflict clause");
+    assert_eq!(conflict.Target, PostgreSQLConflictTarget::Inference);
+    assert_eq!(conflict.Action, PostgreSQLConflictAction::DoUpdate);
+    let target_predicate = conflict.Predicate.as_ref().expect("inference predicate");
+    assert!(matches!(
+        &target_predicate.Kind,
+        parser_ast::ExprKind::Binary { Op, .. } if Op == ">"
+    ));
+    let target_start = sql.find("WHERE id").expect("target WHERE start");
+    let target_end = sql.find(" DO UPDATE").expect("target WHERE end");
+    assert_eq!(
+        conflict.TargetPredicateSpan,
+        Some((target_start, target_end))
+    );
+    assert_eq!(conflict.UpdateAssignments.len(), 2);
+    assert_eq!(conflict.UpdateAssignments[0].Column.Name.O, "v");
+    assert!(matches!(
+        &conflict.UpdateAssignments[0].Expr.Kind,
+        parser_ast::ExprKind::Column(column)
+            if column.Table.O.eq_ignore_ascii_case("excluded") && column.Name.O == "v"
+    ));
+    assert_eq!(conflict.UpdateAssignments[1].Column.Name.O, "id");
+    assert_eq!(
+        conflict.UpdateAssignments[1]
+            .Expr
+            .PostgreSQLParameterIndex(),
+        Some(1)
+    );
+    let update_predicate = conflict
+        .UpdatePredicate
+        .as_ref()
+        .expect("DO UPDATE predicate");
+    assert!(matches!(
+        &update_predicate.Kind,
+        parser_ast::ExprKind::IsNull { Expr, Not: true }
+            if matches!(&Expr.Kind, parser_ast::ExprKind::Column(column)
+                if column.Table.O == "t" && column.Name.O == "v")
+    ));
+    let update_start = sql.find("WHERE t.v").expect("update WHERE start");
+    let update_end = sql.find(" RETURNING").expect("update WHERE end");
+    assert_eq!(
+        conflict.UpdatePredicateSpan,
+        Some((update_start, update_end))
+    );
+    let start = sql.find("ON CONFLICT").expect("conflict start");
+    let end = sql.find(" RETURNING").expect("conflict end");
+    assert_eq!(conflict.SourceSpan, (start, end));
+    assert_eq!(conflict.OriginalText, &sql[start..end]);
+    assert_eq!(insert.Lists[0][0].PostgreSQLParameterIndex(), Some(1));
+    assert_eq!(insert.Lists[0][1].PostgreSQLParameterIndex(), Some(2));
+    assert_eq!(insert.Returning.len(), 1);
+
+    struct ConflictWalk {
+        inference_predicates: usize,
+        update_predicates: usize,
+        assignment_columns: Vec<String>,
+    }
+    impl parser_ast::Visitor for ConflictWalk {
+        fn enter(&mut self, node: &dyn parser_ast::Node) -> bool {
+            if let Some(expression) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                self.inference_predicates += usize::from(matches!(
+                    &expression.Kind,
+                    parser_ast::ExprKind::Binary { Op, .. } if Op == ">"
+                ));
+                self.update_predicates += usize::from(matches!(
+                    &expression.Kind,
+                    parser_ast::ExprKind::IsNull { Not: true, .. }
+                ));
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn parser_ast::Node) -> bool {
+            true
+        }
+        fn enter_column_name(&mut self, column: &parser_ast::ColumnName) -> bool {
+            if column.Name.O == "v" || column.Name.O == "id" {
+                self.assignment_columns.push(column.Name.O.clone());
+            }
+            false
+        }
+    }
+    let mut walk = ConflictWalk {
+        inference_predicates: 0,
+        update_predicates: 0,
+        assignment_columns: Vec::new(),
+    };
+    insert.accept(&mut walk);
+    assert_eq!(walk.inference_predicates, 1);
+    assert_eq!(walk.update_predicates, 1);
+    assert!(
+        walk.assignment_columns
+            .windows(2)
+            .any(|pair| pair == ["v", "id"])
+    );
+
+    let constraint_sql = "INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT ON CONSTRAINT \"t_pkey\" DO UPDATE SET v=excluded.v WHERE t.v IS NULL RETURNING id";
+    let constraint_stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(constraint_sql, "", "")
+        .unwrap()
+        .into_any()
+        .downcast::<parser_ast::InsertStmt>()
+        .ok()
+        .expect("constraint target INSERT AST");
+    let constraint = constraint_stmt.PostgreSQLConflict.as_ref().unwrap();
+    assert_eq!(constraint.Target, PostgreSQLConflictTarget::Constraint);
+    let name = constraint.Constraint.as_ref().unwrap();
+    assert_eq!(name.Original, "\"t_pkey\"");
+    assert_eq!(name.Decoded, "t_pkey");
+    assert!(name.Quoted);
+    assert_eq!(constraint.Action, PostgreSQLConflictAction::DoUpdate);
+    assert!(constraint.Predicate.is_none());
+    assert!(constraint.TargetPredicateSpan.is_none());
+    assert_eq!(constraint.UpdateAssignments.len(), 1);
+    assert!(constraint.UpdatePredicate.is_some());
+    assert!(constraint.UpdatePredicateSpan.is_some());
+
+    for (sql, token) in [
+        (
+            "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT DO UPDATE SET v=excluded.v RETURNING id",
+            "UPDATE",
+        ),
+        (
+            "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT (id) DO UPDATE WHERE v IS NULL RETURNING id",
+            "WHERE",
+        ),
+        (
+            "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT (id) DO UPDATE SET WHERE v IS NULL RETURNING id",
+            "WHERE",
+        ),
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err(), "{sql}");
+        assert_eq!(
+            parser.PostgreSQLSyntaxErrorPosition(),
+            Some(sql.find(token).unwrap() + 1),
+            "PG syntax position for {sql}"
+        );
+    }
+    let quoted_update = "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT (id) DO \"UPDATE\" SET v=excluded.v";
+    let mut parser = parser::Parser::with_dialect(SqlDialect::PostgreSQL);
+    assert!(parser.ParseOneStmt(quoted_update, "", "").is_err());
+}
+
+#[test]
 fn pg_dialect_09_behavior() {
     use parser_ast::{ExprKind, SqlDialect};
     fn expression(sql: &str) -> parser_ast::ExprNode {

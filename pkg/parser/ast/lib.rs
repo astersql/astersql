@@ -1559,21 +1559,31 @@ pub enum PostgreSQLConflictTarget {
     Constraint,
 }
 
-/// PostgreSQL conflict action currently accepted at the parser boundary.
+/// PostgreSQL conflict action retained by the parser boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PostgreSQLConflictAction {
     #[default]
     DoNothing,
+    DoUpdate,
 }
 
-/// PostgreSQL conflict-ignore clause with its exact source span.
+/// PostgreSQL conflict clause with separate inference and update predicates.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PostgreSQLConflictClause {
     pub Target: PostgreSQLConflictTarget,
     pub Columns: Vec<ColumnName>,
     pub Constraint: Option<PostgreSQLIdentifier>,
+    /// `WHERE` predicate attached to an index inference target.
     pub Predicate: Option<ExprNode>,
+    /// Half-open UTF-8 byte range for the target `WHERE` clause, when present.
+    pub TargetPredicateSpan: Option<(usize, usize)>,
     pub Action: PostgreSQLConflictAction,
+    /// Ordered assignments from `DO UPDATE SET`.
+    pub UpdateAssignments: Vec<Assignment>,
+    /// `WHERE` condition attached to the `DO UPDATE` action.
+    pub UpdatePredicate: Option<ExprNode>,
+    /// Half-open UTF-8 byte range for the update `WHERE` clause, when present.
+    pub UpdatePredicateSpan: Option<(usize, usize)>,
     /// Half-open UTF-8 byte range in the original input.
     pub SourceSpan: (usize, usize),
     pub OriginalText: String,

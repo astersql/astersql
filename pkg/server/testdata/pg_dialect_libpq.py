@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 16, 18, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -148,6 +148,15 @@ if task == 6:
         ('missing_projection', 'DELETE FROM public.t WHERE id=1 RETURNING', []),
         ('misplaced_where', 'DELETE FROM public.t RETURNING id WHERE id=1', []),
         ('protected', "DELETE FROM public.t WHERE id=1 /* RETURNING $2 */", []),
+    ]
+if task == 8:
+    cases = [
+        ('inference_update_both_predicates', 'INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT (id) WHERE id > 0 DO UPDATE SET v=excluded.v, id=$1 WHERE t.v IS NOT NULL RETURNING id', [23,25]),
+        ('constraint_update_predicate', 'INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT ON CONSTRAINT "t_pkey" DO UPDATE SET v=excluded.v WHERE t.v IS NOT NULL RETURNING id', [23,25]),
+        ('inference_update_without_action_predicate', 'INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT (id) WHERE id > 0 DO UPDATE SET v=excluded.v RETURNING id', [23,25]),
+        ('update_without_target', "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT DO UPDATE SET v=excluded.v RETURNING id", []),
+        ('update_missing_set', "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT (id) DO UPDATE WHERE v IS NULL RETURNING id", []),
+        ('update_empty_assignments', "INSERT INTO public.t(id,v) VALUES (31,'after') ON CONFLICT (id) DO UPDATE SET WHERE v IS NULL RETURNING id", []),
     ]
 if task == 9:
     cases = [
@@ -757,6 +766,394 @@ def conflict_ignore_handoff():
     assert summary['syntax_eligible'] == len(cases), 'all registered conflict cases must be applicable'
     print(json.dumps(summary), flush=True)
 
+
+def conflict_update_handoff():
+    """Compare both ON CONFLICT predicates through read-only Describe."""
+    scope = f'dialect_08_{os.getpid()}_{int(sys.argv[2])}'
+    local_dsn = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
+    reference_dsn = os.environ['PG18_REFERENCE_DSN']
+    mysql_dsn = urlsplit(os.environ['MYSQL_REFERENCE_DSN'])
+    mysql_env = dict(os.environ, MYSQL_PWD=mysql_dsn.password or '')
+    mysql_args = ['mysql', '--protocol=TCP', '--connect-timeout=5', '-h', mysql_dsn.hostname,
+                  '-P', str(mysql_dsn.port or 3306), '-u', mysql_dsn.username or 'root',
+                  '--batch', '--raw', '--skip-column-names']
+    cases = [
+        ('inference_update_both_predicates', 'valid',
+         'INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT (id) WHERE id > 0 DO UPDATE SET v=excluded.v, id=$1 WHERE t.v IS NOT NULL RETURNING id', [23, 25]),
+        ('constraint_update_predicate', 'valid',
+         'INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT ON CONSTRAINT "t_pkey" DO UPDATE SET v=excluded.v WHERE t.v IS NOT NULL RETURNING id', [23, 25]),
+        ('inference_update_without_action_predicate', 'valid',
+         'INSERT INTO public.t(id,v) VALUES ($1,$2) ON CONFLICT (id) WHERE id > 0 DO UPDATE SET v=excluded.v RETURNING id', [23, 25]),
+        ('update_without_target', 'invalid',
+         'INSERT INTO public.t(id,v) VALUES (31,\'after\') ON CONFLICT DO UPDATE SET v=excluded.v RETURNING id', []),
+        ('update_missing_set', 'invalid',
+         'INSERT INTO public.t(id,v) VALUES (31,\'after\') ON CONFLICT (id) DO UPDATE WHERE v IS NULL RETURNING id', []),
+        ('update_empty_assignments', 'invalid',
+         'INSERT INTO public.t(id,v) VALUES (31,\'after\') ON CONFLICT (id) DO UPDATE SET WHERE v IS NULL RETURNING id', []),
+    ]
+    evidence.mkdir(parents=True, exist_ok=True)
+    (evidence / 'cases.json').write_text(json.dumps([
+        dict(case_id=case_id, capability_id='pg.dialect.insert.conflict_update.syntax',
+             kind=kind, sql=sql, phase='PQprepare', parameter_oids=oids,
+             arguments=['31', 'after'] if oids else [], parameter_formats=[0, 0] if oids else [],
+             result_format=0, expected_state='42601' if kind == 'invalid' else '',
+             expected_metadata='PG18 Prepare/Describe' if kind == 'valid' else 'not applicable: syntax error',
+             execution='Aster simple Query and PQexecPrepared must be gated before writes' if kind == 'valid' else 'not applicable: syntax error')
+        for case_id, kind, sql, oids in cases], indent=2))
+
+    connections = {}
+    prepared = []
+    failures = []
+    case_audit = {}
+    assertions = 0
+    provenance_ok = False
+    cleanup_ok = True
+    reference_schema_created = False
+    local_rows_preserved = True
+    reference_rows_preserved = True
+    completed = False
+    effective_case_ids = set()
+
+    def check(condition, message):
+        nonlocal assertions
+        assertions += 1
+        if not condition:
+            failures.append(message)
+
+    def archive(case_id, side, phase, sql, observation):
+        append_observation(evidence, dict(run=evidence.name, case_id=case_id, side=side,
+                                          attempt=1, input=dict(phase=phase, sql=sql),
+                                          observation=observation))
+
+    def recover(conn, side, case_id):
+        transaction_before = transaction(conn)
+        rollback_ok = True
+        if transaction_before in (2, 3):
+            rollback_ok = query(conn, 'ROLLBACK')['status'] == 1
+        probe = query(conn, 'SELECT 1::int4')
+        transaction_after = transaction(conn)
+        archive(case_id + '_recovery', 'reference' if side.startswith('reference') else 'aster',
+                'PQexec', 'SELECT 1::int4',
+                dict(probe, endpoint=side, transaction_after={0: 'I', 2: 'T', 3: 'E'}.get(transaction_after)))
+        recovered = (rollback_ok and probe['status'] == 2 and probe['rows'] == [['1']]
+                     and transaction_after == 0)
+        check(recovered, side + ' same-connection recovery')
+        return recovered
+
+    def mysql_reference(sql, case_id):
+        mysql_sql = sql.replace('public.t', 't').replace('$1', '31').replace('$2', "'after'")
+        commands = [
+            "SET SESSION sql_mode=''",
+            'SET NAMES utf8mb4 COLLATE utf8mb4_general_ci',
+            'USE mysql',
+            'CREATE TEMPORARY TABLE t (id INT PRIMARY KEY, v VARCHAR(64))',
+            "INSERT INTO t VALUES (31,'before')",
+            "PREPARE task8_legacy FROM 'INSERT INTO t(id,v) VALUES (31,''before'') ON DUPLICATE KEY UPDATE v=VALUES(v)'",
+            'DEALLOCATE PREPARE task8_legacy',
+            'SELECT id,v FROM t ORDER BY id',
+            mysql_sql,
+            'SELECT id,v FROM t ORDER BY id',
+            'SELECT 1',
+        ]
+        process = subprocess.run(mysql_args + ['--force'], input=';\n'.join(commands) + ';\n',
+                                 env=mysql_env, capture_output=True, text=True, timeout=20)
+        output = process.stdout.splitlines()
+        error = process.stderr
+        matches = re.findall(r'ERROR\s+(\d+)\s+\(([^)]+)\)', error)
+        before = output[0] if len(output) >= 3 else None
+        after = output[1] if len(output) >= 3 else None
+        recovery = output[2] if len(output) >= 3 else None
+        ok = (matches == [('1064', '42000')]
+              and before == '31\tbefore' and after == before and recovery == '1'
+              and error.count('ERROR 1064 (42000)') == 1)
+        archive(case_id, 'mysql', 'mysql-query', mysql_sql,
+                dict(returncode=process.returncode, error_code=int(matches[0][0]) if matches else None,
+                     sqlstate=matches[0][1] if matches else None, error=error,
+                     row_before=before, row_after=after, recovery=recovery,
+                     legal_on_duplicate_prepared=error.count('ERROR 1064 (42000)') == 1))
+        check(ok, case_id + ' MySQL 8.4.7 syntax rejection, baseline prepare, state and recovery')
+        return ok
+
+    try:
+        for label, dsn in [('reference', reference_dsn), ('reference_observer', reference_dsn),
+                           ('aster', local_dsn), ('aster_b', local_dsn), ('aster_observer', local_dsn)]:
+            conn = connect(dsn.encode())
+            connections[label] = conn
+            check(bool(conn) and status(conn) == 0, label + ' connection')
+            if label.startswith('reference'):
+                check(query(conn, "SET TIME ZONE 'UTC'")['status'] == 1, label + ' UTC')
+            check(parameter_status(conn, b'client_encoding') == b'UTF8', label + ' UTF8')
+            check(parameter_status(conn, b'TimeZone') == b'UTC', label + ' UTC status')
+            check(query(conn, 'SET search_path TO public')['status'] == 1, label + ' search_path')
+
+        ref = connections['reference']
+        identity = query(ref, "SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(identity[1] == '180006', 'exact PostgreSQL 18.6 reference')
+        reference_build = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        mysql_identity = subprocess.run(mysql_args + ['-e',
+            "SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "
+            'SELECT VERSION(),@@version_compile_os,@@version_compile_machine; '
+            'SELECT @@sql_mode,@@character_set_connection,@@collation_connection'],
+            env=mysql_env, capture_output=True, text=True, timeout=20)
+        mysql_lines = mysql_identity.stdout.splitlines()
+        check(mysql_identity.returncode == 0 and len(mysql_lines) == 2,
+              'MySQL reference identity collection')
+        check(bool(mysql_lines) and mysql_lines[0].startswith('8.4.7'), 'exact MySQL 8.4.7 reference')
+        check(len(mysql_lines) == 2 and mysql_lines[1].split('\t') ==
+              ['', 'utf8mb4', 'utf8mb4_general_ci'], 'MySQL sql_mode/charset/collation')
+        mysql_build = json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text())
+        check(mysql_build.get('version') == '8.4.7' and mysql_build.get('image_digest'),
+              'MySQL 8.4.7 image provenance')
+        (evidence / 'mysql-reference.json').write_text(json.dumps(
+            dict(identity=mysql_lines, build=mysql_build, sql_mode='',
+                 character_set_connection='utf8mb4', collation_connection='utf8mb4_general_ci'), indent=2))
+
+        build = json.loads((evidence / 'rust-build.json').read_text())
+        build['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance = dict(run=evidence.name, target_version='18.6', source=source_snapshot(root),
+                          build=build,
+                          client=dict(python=sys.version, library=str(library),
+                                      sha256=hashlib.sha256(library.read_bytes()).hexdigest(),
+                                      PQlibVersion=version()),
+                          os=platform.platform(), storage='CreateAnalyzeSession test storage',
+                          authentication='InsecureRootOnly',
+                          reference=dict(version=identity[0], server_version_num=identity[1]),
+                          reference_build=reference_build, mysql_reference=mysql_build,
+                          endpoints={name: endpoint(connections[name])
+                                     for name in ['aster', 'aster_b', 'reference']})
+        (evidence / 'provenance.json').write_text(json.dumps(provenance, indent=2))
+        provenance_ok = validate_provenance(provenance, copy.deepcopy(provenance))
+        check(provenance_ok, 'provenance self-check')
+        damaged = copy.deepcopy(provenance)
+        damaged['reference_build']['server_version_num'] = 180004
+        check(not validate_provenance(damaged, provenance), 'provenance negative self-check')
+
+        check(query(ref, f'CREATE SCHEMA {scope}')['status'] == 1, 'reference schema setup')
+        reference_schema_created = True
+        check(query(ref, f'CREATE TABLE {scope}.t (id integer CONSTRAINT t_pkey PRIMARY KEY, v text)')['status'] == 1,
+              'reference table setup')
+        check(query(ref, f'CREATE UNIQUE INDEX {scope}_positive_id ON {scope}.t(id) WHERE id > 0')['status'] == 1,
+              'reference partial unique index setup')
+        check(query(ref, f"INSERT INTO {scope}.t VALUES (31, 'before')")['status'] == 1,
+              'reference initial row')
+        initial_local = query(connections['aster_observer'], 'SELECT id, v FROM public.t ORDER BY id')
+        initial_reference = query(connections['reference_observer'],
+                                  f'SELECT id, v FROM {scope}.t ORDER BY id')
+        check(initial_local['status'] == 2 and initial_local['rows'] == [['31', 'before']],
+              'Aster initial row')
+        check(initial_reference['status'] == 2 and initial_reference['rows'] == [['31', 'before']],
+              'PostgreSQL initial row')
+        local_oid_result = query(connections['aster_observer'],
+            "SELECT oid FROM pg_catalog.pg_class WHERE relname='t' AND relnamespace="
+            "(SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='public')")
+        reference_oid_result = query(connections['reference_observer'],
+            f"SELECT oid FROM pg_catalog.pg_class WHERE relname='t' AND relnamespace="
+            f"(SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='{scope}')")
+        check(local_oid_result['status'] == 2 and len(local_oid_result['rows']) == 1,
+              'Aster relation identity')
+        check(reference_oid_result['status'] == 2 and len(reference_oid_result['rows']) == 1,
+              'reference relation identity')
+        local_oid = int(local_oid_result['rows'][0][0]) if local_oid_result['rows'] else 0
+        reference_oid = int(reference_oid_result['rows'][0][0]) if reference_oid_result['rows'] else 0
+
+        valid_reference_ids = set()
+        valid_local_ids = set()
+        syntax_negative_ids = set()
+        mysql_reference_ids = set()
+        for index, (case_id, kind, sql, oids) in enumerate(cases):
+            case_failure_count = len(failures)
+            reference_sql = sql.replace('public.t', f'{scope}.t')
+            print('PG_DIALECT_CHECKPOINT ' + case_id, flush=True)
+            check(sys.stdin.readline().strip() == 'continue', case_id + ' MySQL local checkpoint')
+            local_state_sql = 'SELECT id, v FROM public.t ORDER BY id'
+            reference_state_sql = f'SELECT id, v FROM {scope}.t ORDER BY id'
+            local_before = query(connections['aster_observer'], local_state_sql)
+            reference_before = query(connections['reference_observer'], reference_state_sql)
+            check(local_before['status'] == 2 and local_before['rows'] == initial_local['rows'],
+                  case_id + ' Aster state before Prepare')
+            check(reference_before['status'] == 2 and reference_before['rows'] == initial_reference['rows'],
+                  case_id + ' reference state before Prepare')
+
+            reference_name = f'case_{index}_reference'
+            reference_result = observe(prepare(ref, reference_name.encode(), reference_sql.encode(), len(oids),
+                                               (c.c_uint * len(oids))(*oids) if oids else None))
+            reference_result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(ref))
+            archive(case_id, 'reference', 'PQprepare', reference_sql, reference_result)
+            reference_description = {}
+            local_results = {}
+            local_descriptions = {}
+            local_statement_names = {}
+            order = ['aster', 'aster_b'] if index % 2 == 0 else ['aster_b', 'aster']
+            for side in order:
+                conn = connections[side]
+                statement_name = f'{case_id}_{side}'
+                local_statement_names[side] = statement_name
+                result = observe(prepare(conn, statement_name.encode(), sql.encode(), len(oids),
+                                         (c.c_uint * len(oids))(*oids) if oids else None))
+                result['transaction_after'] = {0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))
+                local_results[side] = result
+                archive(case_id, 'aster', 'PQprepare', sql, dict(result, endpoint=side))
+                expected_state = '' if kind == 'valid' else '42601'
+                expected_status = 1 if kind == 'valid' else 7
+                check(result['status'] == expected_status and result['state'] == expected_state
+                      and result['transaction_after'] == 'I', side + ' Prepare outcome')
+                if kind == 'valid' and result['status'] == 1:
+                    prepared.append((conn, statement_name))
+                    description = observe(describe(conn, statement_name.encode()))
+                    archive(case_id + '_describe', 'aster', 'PQdescribePrepared', statement_name, description)
+                    check(description['status'] == 1 and description['state'] == '', side + ' Describe')
+                    local_descriptions[side] = description
+                else:
+                    recover(conn, side, case_id)
+
+            expected_state = '' if kind == 'valid' else '42601'
+            expected_status = 1 if kind == 'valid' else 7
+            check(reference_result['status'] == expected_status and reference_result['state'] == expected_state
+                  and reference_result['transaction_after'] == 'I', 'PostgreSQL reference Prepare outcome')
+            if kind == 'invalid':
+                syntax_negative_ids.add(case_id)
+                recover(ref, 'reference', case_id)
+                local_after = query(connections['aster_observer'],
+                                    'SELECT id, v FROM public.t ORDER BY id')
+                reference_after = query(connections['reference_observer'],
+                                        f'SELECT id, v FROM {scope}.t ORDER BY id')
+                local_unchanged = local_after['status'] == 2 and local_after['rows'] == initial_local['rows']
+                reference_unchanged = reference_after['status'] == 2 and reference_after['rows'] == initial_reference['rows']
+                local_rows_preserved &= local_unchanged
+                reference_rows_preserved &= reference_unchanged
+                check(local_unchanged and reference_unchanged,
+                      case_id + ' parse rejection left both tables unchanged')
+            else:
+                if reference_result['status'] == 1:
+                    prepared.append((ref, reference_name))
+                    reference_description = observe(describe(ref, reference_name.encode()))
+                    archive(case_id + '_describe', 'reference', 'PQdescribePrepared', reference_name,
+                            reference_description)
+                    check(reference_description['status'] == 1 and reference_description['state'] == '',
+                          'PG18 Describe')
+                    check(reference_description['param_count'] == len(oids)
+                          and reference_description['params'] == oids, 'PG18 parameter OIDs')
+                    check(bool(reference_description['fields'])
+                          and reference_description['fields'][0][0:2] == ['id', 23],
+                          'PG18 RETURNING id metadata')
+                    valid_reference_ids.add(case_id)
+                metadata_ok = (reference_result['status'] == 1 and reference_description['status'] == 1
+                               and all(side in local_descriptions
+                                       and compare_metadata(local_descriptions[side], reference_description, 'describe')
+                                       and local_descriptions[side]['fields'][0][0:2] == ['id', 23]
+                                       and local_descriptions[side]['params'] == oids
+                                       and local_descriptions[side]['table_origins'] == [[local_oid, 1]]
+                                       for side in order))
+                check(metadata_ok, case_id + ' local/PG Prepare and Describe metadata')
+                if metadata_ok:
+                    valid_local_ids.add(case_id)
+                reference_origin_ok = (reference_description.get('table_origins') == [[reference_oid, 1]])
+                check(reference_origin_ok, case_id + ' PG18 RETURNING source origin')
+                for side in order:
+                    conn = connections[side]
+                    simple_sql = sql.replace('$1', '31').replace('$2', "'after'")
+                    simple = query(conn, simple_sql)
+                    simple_ok = simple['status'] == 7 and simple['state'] == '0A000'
+                    archive(case_id + '_simple_query_gate', 'aster', 'PQexec', simple_sql,
+                            dict(simple, endpoint=side, transaction_after={0: 'I', 2: 'T', 3: 'E'}.get(transaction(conn))))
+                    check(simple_ok, side + ' Simple Query pre-write gate')
+                    recover(conn, side, case_id + '_simple_query_gate')
+                    values = (c.c_char_p * len(oids))(b'31', b'after')
+                    lengths = (c.c_int * len(oids))(0, 0)
+                    formats = (c.c_int * len(oids))(0, 0)
+                    executed = observe(exec_prepared(conn, local_statement_names[side].encode(),
+                                                     len(oids), values, lengths, formats, 0))
+                    execute_ok = executed['status'] == 7 and executed['state'] == '0A000'
+                    archive(case_id + '_execute_gate', 'aster', 'PQexecPrepared',
+                            local_statement_names[side], dict(executed, endpoint=side))
+                    check(execute_ok, side + ' extended Execute pre-write gate')
+                    recover(conn, side, case_id + '_execute_gate')
+                local_after = query(connections['aster_observer'], local_state_sql)
+                reference_after = query(connections['reference_observer'], reference_state_sql)
+                local_unchanged = local_after['status'] == 2 and local_after['rows'] == initial_local['rows']
+                reference_unchanged = reference_after['status'] == 2 and reference_after['rows'] == initial_reference['rows']
+                local_rows_preserved &= local_unchanged
+                reference_rows_preserved &= reference_unchanged
+                check(local_unchanged and reference_unchanged, case_id + ' state unchanged after Describe/gates')
+
+            mysql_ok = mysql_reference(sql, case_id)
+            if mysql_ok:
+                mysql_reference_ids.add(case_id)
+            case_audit[case_id] = dict(kind=kind, assertion_count=assertions - case_failure_count,
+                                       passed=len(failures) == case_failure_count,
+                                       prepare_describe=(kind == 'valid'),
+                                       full_dml_semantic_success=False)
+            if len(failures) == case_failure_count and mysql_ok:
+                effective_case_ids.add(case_id)
+
+        final_identity = query(ref, "SELECT version(), current_setting('server_version_num')")['rows'][0]
+        check(final_identity == identity, 'PostgreSQL reference identity unchanged')
+        final_provenance = copy.deepcopy(provenance)
+        final_provenance['source'] = source_snapshot(root)
+        final_provenance['build']['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        final_provenance['client']['sha256'] = hashlib.sha256(library.read_bytes()).hexdigest()
+        final_provenance['reference_build'] = json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text())
+        check(validate_provenance(provenance, final_provenance), 'source/build/client/reference unchanged')
+        completed = True
+    finally:
+        for conn, statement_name in prepared:
+            try:
+                if transaction(conn) in (2, 3):
+                    cleanup_ok = query(conn, 'ROLLBACK')['status'] == 1 and cleanup_ok
+                cleanup_ok = observe(close_prepared(conn, statement_name.encode()))['status'] == 1 and cleanup_ok
+            except Exception:
+                cleanup_ok = False
+        for conn in connections.values():
+            try:
+                if transaction(conn) in (2, 3):
+                    cleanup_ok = query(conn, 'ROLLBACK')['status'] == 1 and cleanup_ok
+                finish(conn)
+            except Exception:
+                cleanup_ok = False
+        if reference_schema_created:
+            cleanup_conn = connect(reference_dsn.encode())
+            try:
+                cleanup_ok = status(cleanup_conn) == 0 and query(
+                    cleanup_conn, f'DROP SCHEMA {scope} CASCADE')['status'] == 1 and cleanup_ok
+            finally:
+                finish(cleanup_conn)
+        reference_probe = connect(reference_dsn.encode())
+        try:
+            cleanup_ok = status(reference_probe) == 0 and query(
+                reference_probe, 'SELECT 1::int4')['rows'] == [['1']] and cleanup_ok
+        finally:
+            finish(reference_probe)
+        local_file = evidence / 'mysql-local.jsonl'
+        local_records = ([json.loads(line) for line in local_file.read_text().splitlines()]
+                         if local_file.exists() else [])
+        local_case_ids = {case_id for case_id, _, _, _ in cases}
+        local_checkpoint_ids = {record.get('case_id') for record in local_records
+                                if record.get('case_id') in local_case_ids
+                                and 'postgresql_sql' in record}
+        local_checkpoint_count = len(local_checkpoint_ids)
+        ref_cleanup = dict(cleanup_ok=cleanup_ok, reference_schema_dropped=reference_schema_created,
+                           local_rows_preserved=local_rows_preserved,
+                           reference_rows_preserved=reference_rows_preserved)
+        (evidence / 'reference-cleanup.json').write_text(json.dumps(ref_cleanup, indent=2))
+        summary = dict(cases=len(cases), assertions=assertions, failures=failures,
+                       provenance_ok=provenance_ok, unique_effective=(len(effective_case_ids)
+                       if completed and cleanup_ok and provenance_ok and not failures else 0),
+                       effective_case_ids=sorted(effective_case_ids), case_audit=case_audit,
+                       valid_prepare_describe_cases=len(valid_reference_ids & valid_local_ids),
+                       syntax_negative_parse_cases=len(syntax_negative_ids),
+                       reference_prepare_cases=len(valid_reference_ids),
+                       local_prepare_describe_cases=len(valid_local_ids),
+                       mysql_reference_rejection_cases=len(mysql_reference_ids),
+                       mysql_local_checkpoint_cases=local_checkpoint_count,
+                       full_dml_semantic_successes=0, cleanup_ok=cleanup_ok,
+                       scope='syntax and Prepare/Describe metadata only; DML was not executed successfully')
+        (evidence / 'summary.json').write_text(json.dumps(summary, indent=2))
+    if failures:
+        raise AssertionError('conflict-update handoff failures: ' + '; '.join(failures))
+    assert summary['unique_effective'] == len(cases), 'all registered cases must be evidence-complete'
+    assert summary['mysql_local_checkpoint_cases'] == len(cases)
+    print(json.dumps(summary), flush=True)
+
 if task == 24:
     cases = [(name,sql,oids) for name,sql,oids in [
         ('coexist','SELECT $1::int4 AS v',[23]),
@@ -766,7 +1163,7 @@ if task == 24:
         ('reconnect','SELECT $1::int4 AS v',[23]),
         ('transaction_error','/*中*/ SELECT )',[]),
     ]]
-assert len({case[0] for case in cases}) == (10 if task == 6 else 6 if task in (5,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
+assert len({case[0] for case in cases}) == (10 if task == 6 else 6 if task in (5,8,18,24) else 5 if task == 16 else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11) else (8 if task == 4 else 10))))
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.row.syntax' if task == 11 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence'))), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=((['7','9'] if task in (9,11) else [None]*len(oids)) if oids else []),
@@ -820,7 +1217,7 @@ def observe(result):
                     rows=[[None if is_null(result, r, col) else value(result, r, col).decode()
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,13,14,16,18,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -2947,6 +3344,10 @@ if task == 6:
 
 if task == 7:
     conflict_ignore_handoff()
+    sys.exit(0)
+
+if task == 8:
+    conflict_update_handoff()
     sys.exit(0)
 
 if task == 4:

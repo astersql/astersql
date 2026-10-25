@@ -66,12 +66,19 @@ enum DmlRule {
     ImportIntoStmtAlt02,
     ConflictTargetPredicateOptAlt01,
     ConflictTargetPredicateOptAlt02,
+    ConflictUpdateOptAlt01,
+    ConflictUpdateOptAlt02,
+    ConflictUpdatePredicateOptAlt01,
+    ConflictUpdatePredicateOptAlt02,
     InsertIntoStmtAlt01,
     InsertOnClauseAlt01,
     InsertOnClauseAlt02,
     InsertOnClauseAlt03,
     InsertOnClauseAlt04,
     InsertOnClauseAlt05,
+    InsertOnClauseAlt06,
+    InsertOnClauseAlt07,
+    InsertOnClauseAlt08,
     InsertRowAliasOptAlt01,
     InsertRowAliasOptAlt02,
     InsertRowAliasOptAlt03,
@@ -227,6 +234,15 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "insertonclause_on_identifier_on_constraint_ident--e3e958280f69341a" => {
             DmlRule::InsertOnClauseAlt05
         }
+        "insertonclause_on_identifier_do_update_conflictu--767abe990ec7f123" => {
+            DmlRule::InsertOnClauseAlt06
+        }
+        "insertonclause_on_identifier_columnnamelist_conf--8fe8a61cf3400dbe" => {
+            DmlRule::InsertOnClauseAlt07
+        }
+        "insertonclause_on_identifier_on_constraint_ident--048945f483e05836" => {
+            DmlRule::InsertOnClauseAlt08
+        }
         "insertrowaliasopt_prec_empty--ac3acd5bb9ed41e3" => DmlRule::InsertRowAliasOptAlt01,
         "insertrowaliasopt_as_identifier--8d529d6bb0d121cf" => DmlRule::InsertRowAliasOptAlt02,
         "insertrowaliasopt_as_identifier_identlist--6da6e30ff07a2b44" => {
@@ -293,6 +309,16 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         }
         "conflicttargetpredicateopt_where_expression--933b8c07629f80d0" => {
             DmlRule::ConflictTargetPredicateOptAlt02
+        }
+        "conflictupdateopt--8b74dcaf583725e7" => DmlRule::ConflictUpdateOptAlt01,
+        "conflictupdateopt_set_assignmentlist_conflictupd--f7d0684637a6035c" => {
+            DmlRule::ConflictUpdateOptAlt02
+        }
+        "conflictupdatepredicateopt--98184a00535462f0" => {
+            DmlRule::ConflictUpdatePredicateOptAlt01
+        }
+        "conflictupdatepredicateopt_where_expression--31266766ac1a10c4" => {
+            DmlRule::ConflictUpdatePredicateOptAlt02
         }
         "optionalshardcolumn--92eca09a88777dcd" => DmlRule::OptionalShardColumnAlt01,
         "optionalshardcolumn_on_columnname--29b125a9b217c2e4" => DmlRule::OptionalShardColumnAlt02,
@@ -365,8 +391,15 @@ fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool,
             | DmlRule::InsertOnClauseAlt03
             | DmlRule::InsertOnClauseAlt04
             | DmlRule::InsertOnClauseAlt05
+            | DmlRule::InsertOnClauseAlt06
+            | DmlRule::InsertOnClauseAlt07
+            | DmlRule::InsertOnClauseAlt08
             | DmlRule::ConflictTargetPredicateOptAlt01
             | DmlRule::ConflictTargetPredicateOptAlt02
+            | DmlRule::ConflictUpdateOptAlt01
+            | DmlRule::ConflictUpdateOptAlt02
+            | DmlRule::ConflictUpdatePredicateOptAlt01
+            | DmlRule::ConflictUpdatePredicateOptAlt02
             | DmlRule::ReplaceIntoStmtAlt01
             | DmlRule::ReturningClauseAlt01
             | DmlRule::ReturningClauseAlt02
@@ -1011,23 +1044,50 @@ fn conflict_keyword_is_unquoted(
     })
 }
 
+#[derive(Clone)]
+struct ConflictPredicate {
+    expression: parser_ast::ExprNode,
+    span: (usize, usize),
+}
+
+#[derive(Clone, Default)]
+struct ConflictUpdateClause {
+    assignments: Vec<parser_ast::Assignment>,
+    predicate: Option<ConflictPredicate>,
+}
+
 fn make_postgresql_conflict_clause(
     parser_state: &Parser,
     rhs: &Rhs<'_>,
     target: parser_ast::PostgreSQLConflictTarget,
     columns: Vec<parser_ast::ColumnName>,
     constraint: Option<parser_ast::PostgreSQLIdentifier>,
-    predicate: Option<parser_ast::ExprNode>,
+    predicate: Option<ConflictPredicate>,
+    action: parser_ast::PostgreSQLConflictAction,
+    update: Option<ConflictUpdateClause>,
 ) -> Result<parser_ast::PostgreSQLConflictClause, isize> {
     let start = usize::try_from(rhs[1].offset).map_err(|_| 1isize)?;
     let end = rhs[rhs.len()].end_offset;
     let original = parser_state.src.get(start..end).ok_or(1isize)?.to_owned();
+    let target_predicate_span = predicate.as_ref().map(|predicate| predicate.span);
+    let predicate = predicate.map(|predicate| predicate.expression);
+    let (update_assignments, update_predicate, update_predicate_span) = update
+        .map(|update| {
+            let span = update.predicate.as_ref().map(|predicate| predicate.span);
+            let predicate = update.predicate.map(|predicate| predicate.expression);
+            (update.assignments, predicate, span)
+        })
+        .unwrap_or_default();
     Ok(parser_ast::PostgreSQLConflictClause {
         Target: target,
         Columns: columns,
         Constraint: constraint,
         Predicate: predicate,
-        Action: parser_ast::PostgreSQLConflictAction::DoNothing,
+        TargetPredicateSpan: target_predicate_span,
+        Action: action,
+        UpdateAssignments: update_assignments,
+        UpdatePredicate: update_predicate,
+        UpdatePredicateSpan: update_predicate_span,
         SourceSpan: (start, end),
         OriginalText: original,
     })
@@ -1303,23 +1363,84 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 assignments,
             ))));
         }
-        DmlRule::ConflictTargetPredicateOptAlt01 => out.expr = None,
-        DmlRule::ConflictTargetPredicateOptAlt02 => out.expr = rhs[rhs_len].expr.clone(),
+        DmlRule::ConflictTargetPredicateOptAlt01 => {
+            out.expr = None;
+            out.item = Some(Box::new(None::<ConflictPredicate>));
+        }
+        DmlRule::ConflictTargetPredicateOptAlt02
+        | DmlRule::ConflictUpdatePredicateOptAlt02 => {
+            let expression = rhs[rhs_len].expr.clone().ok_or(1isize)?;
+            let start = usize::try_from(rhs[1].offset).map_err(|_| 1isize)?;
+            let predicate = ConflictPredicate {
+                expression: expression.clone(),
+                span: (start, rhs[rhs_len].end_offset),
+            };
+            out.expr = Some(expression);
+            out.item = Some(Box::new(Some(predicate)));
+        }
+        DmlRule::ConflictUpdatePredicateOptAlt01 => {
+            out.expr = None;
+            out.item = Some(Box::new(None::<ConflictPredicate>));
+        }
+        DmlRule::ConflictUpdateOptAlt01 => {
+            out.item = Some(Box::new(None::<ConflictUpdateClause>));
+        }
+        DmlRule::ConflictUpdateOptAlt02 => {
+            let assignments = rhs[2]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::Assignment>>())
+                .cloned()
+                .unwrap_or_default();
+            let predicate = rhs[3]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Option<ConflictPredicate>>())
+                .cloned()
+                .flatten();
+            out.item = Some(Box::new(Some(ConflictUpdateClause {
+                assignments,
+                predicate,
+            })));
+        }
         DmlRule::InsertOnClauseAlt03
         | DmlRule::InsertOnClauseAlt04
-        | DmlRule::InsertOnClauseAlt05 => {
+        | DmlRule::InsertOnClauseAlt05
+        | DmlRule::InsertOnClauseAlt06
+        | DmlRule::InsertOnClauseAlt07
+        | DmlRule::InsertOnClauseAlt08 => {
             let conflict_word = &rhs[2];
-            let action_word = &rhs[rhs_len];
+            let (action_word_index, update_clause_index) = match rule {
+                DmlRule::InsertOnClauseAlt03 => (4, None),
+                DmlRule::InsertOnClauseAlt04 => (8, None),
+                DmlRule::InsertOnClauseAlt05 => (7, None),
+                DmlRule::InsertOnClauseAlt06 => (4, Some(5)),
+                DmlRule::InsertOnClauseAlt07 => (8, Some(9)),
+                DmlRule::InsertOnClauseAlt08 => (7, Some(8)),
+                _ => unreachable!(),
+            };
+            let action_word = &rhs[action_word_index];
             let conflict_is_unquoted =
                 conflict_keyword_is_unquoted(parser_state, conflict_word, "CONFLICT");
-            let action_is_unquoted =
-                conflict_keyword_is_unquoted(parser_state, action_word, "NOTHING");
+            let update_action = matches!(
+                rule,
+                DmlRule::InsertOnClauseAlt06
+                    | DmlRule::InsertOnClauseAlt07
+                    | DmlRule::InsertOnClauseAlt08
+            );
+            let action = if update_action {
+                Some(parser_ast::PostgreSQLConflictAction::DoUpdate)
+            } else if conflict_keyword_is_unquoted(parser_state, action_word, "NOTHING") {
+                Some(parser_ast::PostgreSQLConflictAction::DoNothing)
+            } else {
+                None
+            };
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
                 || !conflict_is_unquoted
-                || !action_is_unquoted
+                || action.is_none()
             {
                 yylex.AppendError(yylex.Errorf(
-                    "expected unquoted PostgreSQL ON CONFLICT DO NOTHING keywords",
+                    "expected unquoted PostgreSQL ON CONFLICT DO NOTHING or DO UPDATE keywords",
                     &[],
                 ));
                 if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
@@ -1334,14 +1455,20 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 }
                 return Err(1);
             }
+            let action = action.expect("validated PostgreSQL conflict action");
+            let update = update_clause_index
+                .and_then(|index| rhs[index].item.as_deref())
+                .and_then(|item| item.downcast_ref::<Option<ConflictUpdateClause>>())
+                .cloned()
+                .flatten();
             let (target, columns, constraint, predicate) = match rule {
-                DmlRule::InsertOnClauseAlt03 => (
+                DmlRule::InsertOnClauseAlt03 | DmlRule::InsertOnClauseAlt06 => (
                     parser_ast::PostgreSQLConflictTarget::Any,
                     Vec::new(),
                     None,
                     None,
                 ),
-                DmlRule::InsertOnClauseAlt04 => {
+                DmlRule::InsertOnClauseAlt04 | DmlRule::InsertOnClauseAlt07 => {
                     let columns = rhs[4]
                         .item
                         .as_deref()
@@ -1352,10 +1479,15 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         parser_ast::PostgreSQLConflictTarget::Inference,
                         columns,
                         None,
-                        rhs[6].expr.clone(),
+                        rhs[6]
+                            .item
+                            .as_deref()
+                            .and_then(|item| item.downcast_ref::<Option<ConflictPredicate>>())
+                            .cloned()
+                            .flatten(),
                     )
                 }
-                DmlRule::InsertOnClauseAlt05 => {
+                DmlRule::InsertOnClauseAlt05 | DmlRule::InsertOnClauseAlt08 => {
                     let constraint = super::identifier(parser_state, &rhs[5]).1;
                     let Some(constraint) = constraint else {
                         return Err(1);
@@ -1369,6 +1501,25 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 }
                 _ => unreachable!(),
             };
+            let valid_action = match action {
+                parser_ast::PostgreSQLConflictAction::DoNothing => update.is_none(),
+                parser_ast::PostgreSQLConflictAction::DoUpdate => {
+                    target != parser_ast::PostgreSQLConflictTarget::Any
+                        && update
+                            .as_ref()
+                            .is_some_and(|update| !update.assignments.is_empty())
+                }
+            };
+            if !valid_action {
+                yylex.AppendError(yylex.Errorf(
+                    "PostgreSQL ON CONFLICT DO UPDATE requires a conflict target and SET assignments",
+                    &[],
+                ));
+                if let Ok(offset) = usize::try_from(action_word.offset) {
+                    yylex.set_postgresql_syntax_error_offset(offset);
+                }
+                return Err(1);
+            }
             let clause = make_postgresql_conflict_clause(
                 parser_state,
                 &rhs,
@@ -1376,6 +1527,8 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 columns,
                 constraint,
                 predicate,
+                action,
+                update,
             )?;
             out.item = Some(Box::new(Some(
                 InsertOnClauseAction::PostgreSQLConflict(clause),

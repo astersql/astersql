@@ -144,6 +144,81 @@ pub(crate) fn markers(sql: &str) -> Result<(String, Vec<usize>)> {
     Ok((String::from_utf8(output).unwrap(), map))
 }
 
+fn question_mark_positions(sql: &str) -> Result<Vec<usize>> {
+    let bytes = sql.as_bytes();
+    let mut positions = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            i += 1;
+            let mut closed = false;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    if bytes.get(i) == Some(&quote) {
+                        i += 1;
+                    } else {
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if !closed {
+                return Err(error("42601", "unterminated quoted SQL"));
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            if i == bytes.len() {
+                return Err(error("42601", "unterminated SQL comment"));
+            }
+            i += 2;
+        } else if bytes[i..].starts_with(b"--") || bytes[i] == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i] == b'?' {
+            positions.push(i);
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(positions)
+}
+
+fn analysis_parameter_mapping(
+    sql: &str,
+    mapping: &[usize],
+    omitted_span: Option<(usize, usize)>,
+) -> Result<Vec<usize>> {
+    let Some((start, end)) = omitted_span else {
+        return Ok(mapping.to_vec());
+    };
+    let positions = question_mark_positions(sql)?;
+    if start >= end || positions.len() != mapping.len() {
+        return Err(error(
+            "0A000",
+            "invalid PostgreSQL conflict parameter mapping",
+        ));
+    }
+    let prefix_count = positions.partition_point(|position| *position < start);
+    let after_clause = positions.partition_point(|position| *position < end);
+    let mut analysis_mapping = Vec::with_capacity(mapping.len() - (after_clause - prefix_count));
+    analysis_mapping.extend_from_slice(&mapping[..prefix_count]);
+    analysis_mapping.extend_from_slice(&mapping[after_clause..]);
+    Ok(analysis_mapping)
+}
+
 fn integer_parameter<T: std::str::FromStr<Err = std::num::ParseIntError>>(text: &str) -> Result<T> {
     let text = text.trim_matches(|c: char| c.is_ascii_whitespace());
     text.parse()
@@ -622,6 +697,13 @@ impl Extended {
                             plan.analysis_sql,
                         )
                     };
+                let analysis_mapping = analysis_parameter_mapping(
+                    &sql,
+                    &mapping,
+                    postgresql_conflict
+                        .as_ref()
+                        .map(|conflict| conflict.SourceSpan),
+                )?;
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
                 }
@@ -639,7 +721,7 @@ impl Extended {
                         )
                         .map_err(engine)?
                 };
-                if catalog.is_none() && metadata.parameter_count != mapping.len() {
+                if catalog.is_none() && metadata.parameter_count != analysis_mapping.len() {
                     if catalog.is_none() && session_query.is_none() {
                         let _ = context.close_prepared_statement(metadata.statement_id);
                     }
@@ -648,7 +730,7 @@ impl Extended {
                 // Inference comes from parsed engine expressions, in occurrence
                 // order. Fold those constraints into PostgreSQL parameter order;
                 // the first direct cast fixes an unspecified source type.
-                for (index, oid) in mapping.iter().zip(&metadata.parameter_cast_oids) {
+                for (index, oid) in analysis_mapping.iter().zip(&metadata.parameter_cast_oids) {
                     if oids[*index] == 0 {
                         oids[*index] = *oid;
                     }

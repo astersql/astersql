@@ -251,7 +251,7 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         if postgresql_conflict.is_some() && !prepare {
             return Err((
                 "0A000",
-                "PostgreSQL ON CONFLICT DO NOTHING is unsupported by the shared executor".into(),
+                "PostgreSQL ON CONFLICT is unsupported by the shared executor".into(),
             ));
         }
         if !insert.Returning.is_empty() && !prepare {

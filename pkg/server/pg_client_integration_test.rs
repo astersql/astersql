@@ -1139,6 +1139,11 @@ fn pg_dialect_07_libpq() {
 }
 
 #[test]
+fn pg_dialect_08_libpq() {
+    pg_dialect_libpq(8);
+}
+
+#[test]
 fn pg_dialect_09_libpq() {
     pg_dialect_libpq(9);
 }
@@ -1984,7 +1989,7 @@ fn pg_dialect_libpq(task: u8) {
     assert!(std::env::var_os("PG18_REFERENCE_DSN").is_some());
     assert!(std::env::var_os("PG_CORE_REFERENCE_BUILD_FILE").is_some());
     assert!(std::env::var_os("MYSQL_REFERENCE_DSN").is_some());
-    if matches!(task, 6 | 7) {
+    if matches!(task, 6 | 7 | 8) {
         assert!(std::env::var_os("MYSQL_REFERENCE_BUILD_FILE").is_some());
     }
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
@@ -2057,6 +2062,16 @@ fn pg_dialect_libpq(task: u8) {
             .unwrap();
         native
             .execute(&format!("INSERT INTO {database}.t VALUES (31)"))
+            .unwrap();
+    }
+    if task == 8 {
+        native
+            .execute(&format!(
+                "CREATE TABLE {database}.t (id INT NOT NULL PRIMARY KEY, v VARCHAR(64))"
+            ))
+            .unwrap();
+        native
+            .execute(&format!("INSERT INTO {database}.t VALUES (31, 'before')"))
             .unwrap();
     }
     if task == 14 {
@@ -2181,6 +2196,90 @@ fn pg_dialect_libpq(task: u8) {
                     "recovery": recovery,
                     "mysql_on_duplicate_prepared": true,
                     "mysql_on_duplicate_prepare_packet": prepared,
+                    "mysql_on_duplicate_prepare_statement_id": prepared[1..5].to_vec(),
+                    "mysql_on_duplicate_prepare_columns": u16::from_le_bytes(prepared[5..7].try_into().unwrap()),
+                    "mysql_on_duplicate_prepare_parameters": u16::from_le_bytes(prepared[7..9].try_into().unwrap()),
+                    "mysql_on_duplicate_statement_closed": true,
+                    "packet": response
+                })
+            )
+            .unwrap();
+        }
+        if task == 8 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            use std::io::Write;
+
+            let case_id = phase
+                .strip_prefix("PG_DIALECT_CHECKPOINT ")
+                .expect("checkpoint prefix");
+            let cases: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(evidence.join("cases.json")).unwrap(),
+            )
+            .unwrap();
+            let sql = cases
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|case| case["case_id"] == case_id)
+                .unwrap_or_else(|| panic!("unregistered MySQL checkpoint: {case_id}"))["sql"]
+                .as_str()
+                .expect("original SQL in task case registry")
+                .to_owned();
+            mysql_query(socket, &format!("USE {database}"));
+            let before = mysql_query(socket, "SELECT id, v FROM t ORDER BY id");
+            assert_eq!(
+                before,
+                vec![vec![Some(b"31".to_vec()), Some(b"before".to_vec())]]
+            );
+
+            let legal =
+                "INSERT INTO t(id,v) VALUES (31,'before') ON DUPLICATE KEY UPDATE v=VALUES(v)";
+            let mut prepare = vec![0x16];
+            prepare.extend_from_slice(legal.as_bytes());
+            mysql_packet(socket, 0, &prepare);
+            let prepared = mysql_read(socket);
+            assert_eq!(prepared[0], 0, "MySQL ON DUPLICATE prepare baseline");
+            assert!(prepared.len() >= 9);
+            assert_eq!(u16::from_le_bytes(prepared[5..7].try_into().unwrap()), 0);
+            assert_eq!(u16::from_le_bytes(prepared[7..9].try_into().unwrap()), 0);
+            let mut close = vec![0x19];
+            close.extend_from_slice(&prepared[1..5]);
+            mysql_packet(socket, 0, &close);
+
+            let mysql_sql = sql
+                .replace("public.t", "t")
+                .replace("$1", "31")
+                .replace("$2", "'after'");
+            let mut request = vec![3];
+            request.extend_from_slice(mysql_sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(response[0], 0xff, "MySQL accepted PostgreSQL ON CONFLICT");
+            let error_code = u16::from_le_bytes(response[1..3].try_into().unwrap());
+            let sqlstate = String::from_utf8_lossy(&response[4..9]).to_string();
+            assert_eq!(error_code, 1064);
+            assert_eq!(sqlstate, "42000");
+            let after = mysql_query(socket, "SELECT id, v FROM t ORDER BY id");
+            assert_eq!(after, before, "rejected MySQL input changed the row");
+            let recovery = mysql_query(socket, "SELECT 1");
+            assert_eq!(recovery, vec![vec![Some(b"1".to_vec())]]);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-local.jsonl"))
+                .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "case_id": case_id,
+                    "postgresql_sql": sql,
+                    "mysql_sql": mysql_sql,
+                    "error_code": error_code,
+                    "sqlstate": sqlstate,
+                    "before": before,
+                    "after": after,
+                    "recovery": recovery,
+                    "mysql_on_duplicate_prepared": true,
                     "mysql_on_duplicate_prepare_statement_id": prepared[1..5].to_vec(),
                     "mysql_on_duplicate_prepare_columns": u16::from_le_bytes(prepared[5..7].try_into().unwrap()),
                     "mysql_on_duplicate_prepare_parameters": u16::from_le_bytes(prepared[7..9].try_into().unwrap()),
@@ -2873,6 +2972,33 @@ fn pg_dialect_libpq(task: u8) {
         assert_eq!(summary["valid_prepare_describe_cases"], 3);
         assert_eq!(summary["syntax_negative_parse_cases"], 5);
         assert_eq!(summary["full_dml_semantic_successes"], 0);
+        return;
+    }
+    if task == 8 {
+        let cases: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("cases.json")).unwrap())
+                .unwrap();
+        let case_count = cases.as_array().unwrap().len();
+        assert_eq!(checkpoints, case_count);
+        let mysql_local_cases = std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .is_ok_and(|record| record["postgresql_sql"].is_string())
+            })
+            .count();
+        assert_eq!(mysql_local_cases, case_count);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cases"], case_count);
+        assert_eq!(summary["unique_effective"], case_count);
+        assert_eq!(summary["valid_prepare_describe_cases"], 3);
+        assert_eq!(summary["syntax_negative_parse_cases"], case_count - 3);
+        assert_eq!(summary["full_dml_semantic_successes"], 0);
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["failures"], serde_json::json!([]));
         return;
     }
     assert_eq!(checkpoints, if task == 4 { 8 } else { 10 });
