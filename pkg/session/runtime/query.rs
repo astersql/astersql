@@ -727,6 +727,86 @@ pub(super) fn format_unix_timestamp(value: f64, fractional_seconds_precision: us
     }
 }
 
+// RETURNING uses PostgreSQL integer widths, while the shared MySQL projection
+// analyzer intentionally promotes integer arithmetic to BIGINT. Admit the
+// required integer/column/literal forms here and reject unknown type families.
+fn pg_returning_expression_type(
+    expression: &ast::ExprNode,
+    sources: &[ConcreteResultField],
+) -> SessionResult<astersql_parser_types::types::FieldType> {
+    use astersql_parser_mysql::r#type::{TypeLong, TypeLonglong};
+    let unsupported = || SessionError::new("PostgreSQL RETURNING expression type is unsupported");
+    Ok(match &expression.Kind {
+        ast::ExprKind::Column(column) => sources
+            .iter()
+            .find(|source| {
+                source.column.Name.L == column.Name.L
+                    && (column.Table.L.is_empty() || source.table_as_name.L == column.Table.L)
+                    && (column.Schema.L.is_empty() || source.db_name.L == column.Schema.L)
+            })
+            .ok_or_else(|| {
+                SessionError::new(format!(
+                    "Unknown column '{}' in 'field list'",
+                    column.Name.O
+                ))
+            })?
+            .column
+            .FieldType
+            .clone(),
+        ast::ExprKind::Value(value) => match &value.Datum {
+            ast::ValueDatum::Int64(value) => {
+                astersql_parser_types::NewFieldType(if i32::try_from(*value).is_ok() {
+                    TypeLong
+                } else {
+                    TypeLonglong
+                })
+            }
+            ast::ValueDatum::Uint64(value) if i64::try_from(*value).is_ok() => {
+                astersql_parser_types::NewFieldType(if i32::try_from(*value).is_ok() {
+                    TypeLong
+                } else {
+                    TypeLonglong
+                })
+            }
+            ast::ValueDatum::Null | ast::ValueDatum::String(_) => value.Type.clone(),
+            _ => return Err(unsupported()),
+        },
+        ast::ExprKind::Parentheses(inner) => pg_returning_expression_type(inner, sources)?,
+        ast::ExprKind::Unary { Op, V } if Op == "+" || Op == "-" => {
+            pg_returning_expression_type(V, sources)?
+        }
+        ast::ExprKind::Cast {
+            Expr,
+            Tp,
+            FunctionType:
+                ast::CastFunctionType::PostgreSQLInt4 | ast::CastFunctionType::PostgreSQLInt8,
+            ..
+        } => {
+            if !matches!(Expr.Kind, ast::ExprKind::ParamMarker { .. }) {
+                pg_returning_expression_type(Expr, sources)?;
+            }
+            Tp.clone()
+        }
+        ast::ExprKind::Binary { Op, L, R }
+            if matches!(Op.as_str(), "+" | "-" | "*" | "/" | "%") =>
+        {
+            let left = pg_returning_expression_type(L, sources)?.GetType();
+            let right = pg_returning_expression_type(R, sources)?.GetType();
+            if !matches!(left, 2 | 3 | 8) || !matches!(right, 2 | 3 | 8) {
+                return Err(unsupported());
+            }
+            astersql_parser_types::NewFieldType(if left == TypeLonglong || right == TypeLonglong {
+                TypeLonglong
+            } else if left == TypeLong || right == TypeLong {
+                TypeLong
+            } else {
+                left
+            })
+        }
+        _ => return Err(unsupported()),
+    })
+}
+
 impl ConcreteSession {
     /// 将 SELECT 条件值转换成 Go executor 的 WHERE 真值语义。
     pub(super) fn insert_select_predicate(
@@ -2180,6 +2260,103 @@ impl ConcreteSession {
             .map(|field| field.column.clone())
             .collect();
         relational_expression_type(expression, &table)
+    }
+
+    /// Bind INSERT output against its target relation without executing the DML.
+    /// The SELECT view is an AST projection adapter for the existing binder;
+    /// it is never registered or executed as another SQL statement.
+    pub(super) fn insert_returning_fields(
+        &self,
+        insert: &ast::InsertStmt,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
+        let select = ast::SelectStmt {
+            From: insert.Table.clone(),
+            Fields: ast::FieldList {
+                Fields: insert.Returning.clone(),
+            },
+            ..Default::default()
+        };
+        let sources = self.relational_select_source_fields(&select)?;
+        if sources.is_empty() {
+            return Err(SessionError::new(
+                "PostgreSQL RETURNING target metadata is unavailable",
+            ));
+        }
+        let mut fields = self.relational_query_node_result_fields(&select, &[])?;
+        let mut index = 0;
+        for projection in &insert.Returning {
+            if let Some(wildcard) = &projection.WildCard {
+                let count = sources
+                    .iter()
+                    .filter(|source| {
+                        wildcard.Table.L.is_empty() || wildcard.Table.L == source.table_as_name.L
+                    })
+                    .count();
+                if count == 0 {
+                    return Err(SessionError::new(format!(
+                        "Unknown column '{}.*' in 'field list'",
+                        wildcard.Table.O
+                    )));
+                }
+                index += count;
+            } else if let Some(expr) = &projection.Expr {
+                let field_type = pg_returning_expression_type(expr, &sources)?;
+                fields[index].column.FieldType = field_type;
+                index += 1;
+            }
+        }
+        Ok(fields)
+    }
+
+    pub(super) fn insert_parameter_constraints(
+        &self,
+        insert: &ast::InsertStmt,
+    ) -> SessionResult<Vec<(usize, u32)>> {
+        let select = ast::SelectStmt {
+            From: insert.Table.clone(),
+            ..Default::default()
+        };
+        let sources = self.relational_select_source_fields(&select)?;
+        let columns = if insert.Columns.is_empty() {
+            sources.iter().collect::<Vec<_>>()
+        } else {
+            insert
+                .Columns
+                .iter()
+                .map(|column| {
+                    sources
+                        .iter()
+                        .find(|source| source.column.Name.L == column.Name.L)
+                        .ok_or_else(|| {
+                            SessionError::new(format!(
+                                "Unknown column '{}' in 'field list'",
+                                column.Name.O
+                            ))
+                        })
+                })
+                .collect::<SessionResult<Vec<_>>>()?
+        };
+        let mut constraints = Vec::new();
+        for row in &insert.Lists {
+            for (expression, column) in row.iter().zip(&columns) {
+                let mut source = expression;
+                while let ast::ExprKind::Parentheses(inner) = &source.Kind {
+                    source = inner;
+                }
+                if let ast::ExprKind::ParamMarker { Offset } = source.Kind {
+                    let oid = match column.column.FieldType.GetType() {
+                        2 => 21,
+                        3 => 23,
+                        8 => 20,
+                        15 => 1043,
+                        253 | 254 => 25,
+                        _ => 0,
+                    };
+                    constraints.push((Offset, oid));
+                }
+            }
+        }
+        Ok(constraints)
     }
 
     pub(super) fn relational_query_node_result_fields(

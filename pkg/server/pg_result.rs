@@ -159,11 +159,25 @@ pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'sta
 /// Parse before execution: a batched engine error cannot preserve prior results.
 /// No SQL rewriting or multi-statement partial-success claims are permitted.
 pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, String)> {
+    command_for_phase(sql, false).map(|(tag, _)| tag)
+}
+
+/// Preparing RETURNING binds metadata without permitting DML execution.
+pub(crate) fn prepare_command(
+    sql: &str,
+) -> Result<(Option<&'static str>, bool), (&'static str, String)> {
+    command_for_phase(sql, true)
+}
+
+fn command_for_phase(
+    sql: &str,
+    prepare: bool,
+) -> Result<(Option<&'static str>, bool), (&'static str, String)> {
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|e| ("42601", e.to_string()))?;
     if statements.is_empty() {
-        return Ok(None);
+        return Ok((None, false));
     }
     if statements.len() != 1 {
         return Err((
@@ -220,7 +234,7 @@ pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, 
         if insert.IsReplace {
             return Err(("0A000", "REPLACE is not a PostgreSQL command".into()));
         }
-        if !insert.Returning.is_empty() {
+        if !insert.Returning.is_empty() && !prepare {
             return Err((
                 "0A000",
                 "DML RETURNING is unsupported by the PostgreSQL listener".into(),
@@ -273,7 +287,11 @@ pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, 
             "unsupported PostgreSQL simple-query command".into(),
         ));
     };
-    Ok(Some(tag))
+    Ok((
+        Some(tag),
+        node.downcast_ref::<ast::InsertStmt>()
+            .is_some_and(|insert| !insert.Returning.is_empty()),
+    ))
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -644,7 +662,15 @@ pub(crate) fn encode_formats(
             .columns
             .iter()
             .enumerate()
-            .map(|(i, c)| pg_type(c, result.native_types.get(i)))
+            .map(|(i, c)| {
+                let native = result.native_types.get(i);
+                if command == "INSERT" && c.charset != 63 && native.is_some_and(|tp| tp.code == 15)
+                {
+                    Ok((1043, -1))
+                } else {
+                    pg_type(c, native)
+                }
+            })
             .collect::<io::Result<Vec<_>>>()?;
         for (index, (column, (oid, size))) in result.columns.iter().zip(&types).enumerate() {
             if column.name.contains('\0') {
@@ -665,7 +691,18 @@ pub(crate) fn encode_formats(
             body.extend_from_slice(&attribute.to_be_bytes());
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
-            body.extend_from_slice(&(-1i32).to_be_bytes());
+            let typmod = if command == "INSERT" && *oid == 1043 {
+                result
+                    .native_types
+                    .get(index)
+                    .filter(|tp| tp.length >= 0)
+                    .and_then(|tp| i32::try_from(tp.length).ok())
+                    .and_then(|length| length.checked_add(4))
+                    .unwrap_or(-1)
+            } else {
+                -1
+            };
+            body.extend_from_slice(&typmod.to_be_bytes());
             body.extend_from_slice(
                 &(formats.get(index).copied().unwrap_or(0) as i16).to_be_bytes(),
             );

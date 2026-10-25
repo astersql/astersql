@@ -257,7 +257,7 @@ def observe(result):
                     rows=[[None if is_null(result, r, col) else value(result, r, col).decode()
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (13,14,16,18,24) else None))
+                    table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,13,14,16,18,24) else None))
     finally:
         clear(result)
 
@@ -356,11 +356,6 @@ def returning_handoff():
         check(result['status'] == 2 and result['state'] == '', 'observer failed')
         return result['rows']
     def compare(a, r, kind, sql, ref_sql):
-        if kind == 'gate':
-            return (a['status'] == 7 and a['state'] == '0A000' and
-                    a['message'] == 'DML RETURNING is unsupported by the PostgreSQL listener' and
-                    a['position'] == '' and a['transaction_after'] == 'I' and
-                    r['status'] == 1 and r['state'] == '' and r['position'] == '' and r['transaction_after'] == 'I')
         if kind == 'invalid':
             return (all(x['status'] == 7 and x['state'] == '42601' and x['transaction_after'] == 'I' for x in [a, r]) and
                     a['position'] == str(len(sql)+1) and r['position'] == str(len(ref_sql)+1))
@@ -398,7 +393,7 @@ def returning_handoff():
             check(query(connections[side], f'CREATE TABLE {table} (id INT, v VARCHAR(20))')['status'] == 1, 'table creation failed')
         registry = []
         for index, (name, sql, oids) in enumerate(cases):
-            kind = 'invalid' if name.startswith('missing_') else ('control' if name in ('plain', 'protected') else 'gate')
+            kind = 'invalid' if name.startswith('missing_') else ('control' if name in ('plain', 'protected') else 'returning')
             # Explicit test-object mapping, never a product SQL adaptation.
             ref_sql = sql.replace('public.t', f'{scope}.t')
             data = dict(case_id=name, capability_id='pg.dialect.insert.returning.syntax',
@@ -407,13 +402,14 @@ def returning_handoff():
                         role={s: connection_user(connections[s]).decode() for s in ['aster', 'reference']}, search_path='public', initial_state='I',
                         object_mapping={'aster': f'{sys.argv[3]}.t', 'reference': f'{scope}.t'},
                         expected_basis='task4 syntax/gate contract and exact PostgreSQL18.6 PQprepare',
-                        expected={'aster': '0A000' if kind == 'gate' else ('42601' if kind == 'invalid' else 'success'),
+                        expected={'aster': '42601' if kind == 'invalid' else 'success',
                                   'reference': '42601' if kind == 'invalid' else 'success'},
-                        unverified='RETURNING binding/types and execution remain outside this gate; no local successful RETURNING metadata')
+                        unverified='RETURNING row execution remains gated; successful Prepare/Describe is not execution support')
             registry.append(data)
             (evidence / 'cases.json').write_text(json.dumps(registry, indent=2))
             before = {side: snapshot(side) for side in ['aster', 'reference']}
             results = {}
+            descriptors = {}
             for side in ['reference', 'aster']:
                 conn = connections['aster_b' if side == 'aster' and index % 2 else side]
                 actual_sql = ref_sql if side == 'reference' else sql
@@ -433,8 +429,22 @@ def returning_handoff():
                         [['id',23,4,-1], ['next_id',23,4,-1], ['id',23,4,-1], ['v',1043,-1,24]] if name == 'projection' else
                         [['Next_ID',23,4,-1], ['id',23,4,-1], ['v',1043,-1,24]] if name == 'quoted' else
                         [['id',23,4,-1], ['v',1043,-1,24]] if name == 'null_star' else [['label',23,4,-1]])
-                    check(desc['fields'] == expected_fields, 'reference/control descriptor mismatch')
+                    check(desc['fields'] == expected_fields, f'{side}: descriptor mismatch: {desc}')
+                    descriptors[side] = desc
+                    origins = desc['table_origins']
+                    expected_attributes = ([1,0,1,2] if name == 'projection' else [1,1,2] if name == 'quoted' else [1,2] if name == 'null_star' else [1] if name == 'bare_alias' else [])
+                    check([origin[1] for origin in origins] == expected_attributes, 'physical attribute identity lost')
+                    check(all((oid != 0) == (attribute != 0) for oid, attribute in origins), 'physical table identity lost')
                     check(desc['formats'] == [0] * len(expected_fields), 'nontext descriptor')
+                    if kind == 'returning' and side == 'aster':
+                        result = observe(exec_prepared(conn, statement, len(oids),
+                            (text * len(oids))(*([b'7'] * len(oids))) if oids else None,
+                            None, (integer * len(oids))(*([0] * len(oids))) if oids else None, 0))
+                        archive(name + '_execute_gate', side,
+                            dict(phase='PQexecPrepared', statement=statement.decode(), arguments=['7'] * len(oids), parameter_formats=[0] * len(oids), result_format=0), result)
+                        check(result['state'] == '0A000' and result['message'] == 'DML RETURNING is unsupported by the PostgreSQL listener', 'Execute crossed the write boundary')
+                        recovery(conn, side, name + '_execute')
+                        check(snapshot(side) == before[side], 'Execute gate wrote rows')
                     check(observe(close_prepared(conn, statement))['status'] == 1, 'statement close failed')
                     prepared.remove((conn, statement))
                 recovery(conn, side, name)
@@ -444,8 +454,25 @@ def returning_handoff():
                 changed = copy.deepcopy(results['aster']); changed[mutation] = 'XX000' if mutation == 'state' else 0
                 assert not compare(changed, results['reference'], kind, sql, ref_sql)
                 self_checks += 1
-            if kind == 'gate':
+            if kind == 'returning':
+                check(compare_metadata(descriptors['aster'], descriptors['reference'], 'describe'), 'Describe mismatch')
+                changed = copy.deepcopy(descriptors['aster']); changed['fields'][0][1] = 99999
+                assert not compare_metadata(changed, descriptors['reference'], 'describe')
+                self_checks += 1
+                eligible += 1
                 gate_cases += 1
+                if oids:
+                    for side in ['aster', 'reference']:
+                        conn = connections[side]
+                        actual_sql = ref_sql if side == 'reference' else sql
+                        inferred = observe(prepare(conn, b'inferred_returning', actual_sql.encode(), 0, None))
+                        archive(name + '_infer_prepare', side, dict(phase='PQprepare', sql=actual_sql, statement='inferred_returning', parameter_oids=[], arguments=None, parameter_formats=None, result_format=0), inferred)
+                        check(inferred['status'] == 1 and inferred['state'] == '', 'target-column parameter inference failed')
+                        inferred_desc = observe(describe(conn, b'inferred_returning'))
+                        archive(name + '_infer_describe', side, dict(phase='PQdescribePrepared', statement='inferred_returning'), inferred_desc)
+                        check(inferred_desc['params'] == [23] and inferred_desc['fields'] == descriptors[side]['fields'], 'inferred parameter/result type mismatch')
+                        check(observe(close_prepared(conn, b'inferred_returning'))['status'] == 1, 'inferred statement close failed')
+                        check(snapshot(side) == before[side], 'inference wrote rows')
                 if not oids:
                     result = query(connections['aster'], sql)
                     archive(name + '_simple_gate', 'aster', dict(phase='PQexec', sql=sql), result)
@@ -532,7 +559,8 @@ def returning_handoff():
                        gate_cases=gate_cases if done and cleanup_ok else 0,
                        unique_effective=eligible if done and cleanup_ok else 0,
                        semantic_returning_success=0, cleanup_ok=cleanup_ok,
-                       scope='parser/gate evidence only; 0A000 cases do not count as successful RETURNING')
+                       returning_metadata_success=gate_cases if done and cleanup_ok else 0,
+                       scope='readonly RETURNING Prepare/Describe; execution remains gated and has zero semantic success')
         (evidence/'summary.json').write_text(json.dumps(summary, indent=2))
     assert done and cleanup_ok, 'incomplete run/cleanup'
     print(json.dumps(summary), flush=True)

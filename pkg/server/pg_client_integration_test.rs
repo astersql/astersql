@@ -1801,7 +1801,7 @@ fn pg_dialect_libpq(task: u8) {
         } else if task == 3 {
             13
         } else {
-            17
+            21
         }
     );
     assert_eq!(
@@ -1814,7 +1814,8 @@ fn pg_dialect_libpq(task: u8) {
     if task == 4 {
         // Gate evidence is distinct from RETURNING result semantics.
         assert_eq!(summary["gate_cases"], 4);
-        assert_eq!(summary["unique_effective"], 4);
+        assert_eq!(summary["unique_effective"], 8);
+        assert_eq!(summary["returning_metadata_success"], 4);
         assert_eq!(summary["semantic_returning_success"], 0);
     } else {
         summary["unique_effective"] = 10.into();

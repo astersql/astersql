@@ -317,3 +317,60 @@ fn pg_core_integer_result_metadata_negative_parameters() {
     }
     session.close_protocol_statement(statement).unwrap();
 }
+
+#[test]
+fn pg_dialect_04_returning_metadata() {
+    use astersql_parser_ast::SqlDialect;
+    use astersql_parser_mysql::r#type::{TypeLong, TypeVarchar};
+    let (domain, session) = CreateAnalyzeSession().unwrap();
+    session
+        .execute("CREATE DATABASE returning_metadata")
+        .unwrap();
+    session.execute("USE returning_metadata").unwrap();
+    session
+        .execute("CREATE TABLE t(id INT, v VARCHAR(20))")
+        .unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    session.execute("USE returning_metadata").unwrap();
+    let sql = "INSERT INTO t(id) VALUES (?) RETURNING id, id+1 AS next_id, t.*";
+    let (id, params, fields) = session.prepare_protocol_statement(sql).unwrap();
+    assert_eq!(params, 1);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| f.column_as_name.O.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "next_id", "id", "v"]
+    );
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| f.column.FieldType.GetType())
+            .collect::<Vec<_>>(),
+        [TypeLong, TypeLong, TypeLong, TypeVarchar]
+    );
+    assert_eq!(session.protocol_integer_parameter_types(sql).unwrap(), [23]);
+    assert_eq!(session.describe_result_fields(sql).unwrap().len(), 4);
+    let error = session
+        .execute_protocol_statement(id, &[crate::runtime::ConcretePreparedArgument::Signed(7)])
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.to_string(),
+        "DML RETURNING is unsupported by the PostgreSQL listener"
+    );
+    session.close_protocol_statement(id).unwrap();
+    assert!(
+        session.execute("SELECT id FROM t").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .is_none()
+    );
+    for sql in [
+        "INSERT INTO t(id) VALUES (1) RETURNING missing+1",
+        "INSERT INTO t(id) VALUES (1) RETURNING other.*",
+    ] {
+        assert!(session.prepare_protocol_statement(sql).is_err(), "{sql}");
+    }
+    session.execute("DROP DATABASE returning_metadata").unwrap();
+}

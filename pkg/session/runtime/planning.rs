@@ -2807,7 +2807,7 @@ impl astersql_executor::select::StatementContextRuntime for ConcreteSession {
 }
 
 impl ConcreteSession {
-    /// Infer only direct explicit integer constraints from the canonical AST.
+    /// Infer direct integer casts and INSERT RETURNING target-column constraints.
     /// Offsets refer to the unchanged engine SQL, including repeated markers.
     pub fn protocol_integer_parameter_types(&self, sql: &str) -> SessionResult<Vec<u32>> {
         let markers = parameter_markers(sql);
@@ -2846,8 +2846,8 @@ impl ConcreteSession {
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
         let mut constraints = Constraints(Vec::new());
         for statement in &statements {
-            // This milestone admits direct SELECT constraints, not general
-            // inference through DML, subqueries, functions or table schemas.
+            // SELECT retains its explicit-cast policy. INSERT RETURNING also
+            // admits direct VALUES markers constrained by the target schema.
             if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
                 for field in &select.Fields.Fields {
                     if let Some(expression) = &field.Expr {
@@ -2859,6 +2859,20 @@ impl ConcreteSession {
                 }
                 for item in select.GroupBy.iter().chain(&select.OrderBy) {
                     let _ = item.Expr.Accept(&mut constraints);
+                }
+            } else if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
+                && !insert.Returning.is_empty()
+            {
+                constraints
+                    .0
+                    .extend(self.insert_parameter_constraints(insert)?);
+                for expression in insert.Lists.iter().flatten().chain(
+                    insert
+                        .Returning
+                        .iter()
+                        .filter_map(|field| field.Expr.as_ref()),
+                ) {
+                    let _ = expression.Accept(&mut constraints);
                 }
             }
         }

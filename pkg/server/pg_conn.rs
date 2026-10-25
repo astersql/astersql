@@ -750,7 +750,10 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
         ConnError::ServerShutdown => "57P01",
         ConnError::MalformedPacket(_) | ConnError::UnsupportedProtocol => "08P01",
         ConnError::Session(message) => {
-            if message == "PostgreSQL ESCAPE expression evaluation is unsupported" {
+            if message == "PostgreSQL ESCAPE expression evaluation is unsupported"
+                || message == "DML RETURNING is unsupported by the PostgreSQL listener"
+                || message.starts_with("PostgreSQL RETURNING ")
+            {
                 "0A000"
             } else if message == "PG catalog row limit exceeded (16384 rows)"
                 || message == "PG catalog join work limit exceeded (100000 comparisons)"

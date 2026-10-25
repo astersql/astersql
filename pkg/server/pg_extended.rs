@@ -406,6 +406,7 @@ struct Statement {
     oids: Vec<u32>,
     mapping: Vec<usize>,
     command: Option<&'static str>,
+    returning: bool,
 }
 struct Portal {
     integer_parameters: bool,
@@ -420,6 +421,7 @@ struct Portal {
     description: Option<Vec<u8>>,
     formats: Vec<usize>,
     command: Option<&'static str>,
+    returning: bool,
     messages: Option<Vec<(u8, Vec<u8>)>>,
     offset: usize,
 }
@@ -604,12 +606,12 @@ impl Extended {
                         return Err(error("0A000", "unsupported text parameter OID"));
                     }
                 }
-                let command = if let Some(query) = &session_query {
-                    Some(query.command())
+                let (command, returning) = if let Some(query) = &session_query {
+                    (Some(query.command()), false)
                 } else if catalog.is_some() {
-                    Some("SELECT")
+                    (Some("SELECT"), false)
                 } else {
-                    crate::pg_result::command(&sql)?
+                    crate::pg_result::prepare_command(&sql)?
                 };
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
@@ -665,6 +667,7 @@ impl Extended {
                         oids,
                         mapping,
                         command,
+                        returning,
                     },
                 );
                 Ok(vec![(b'1', vec![])])
@@ -745,7 +748,11 @@ impl Extended {
                     _ => result_formats,
                 };
                 reader.end()?;
-                let description = description_formats(&statement.metadata, &result_formats)?;
+                let description = description_formats(
+                    &statement.metadata,
+                    &result_formats,
+                    statement.command.unwrap_or("SELECT"),
+                )?;
                 let mut catalog = statement.catalog.clone();
                 if let Some(query) = &mut catalog {
                     query.bind_values(catalog_values)?;
@@ -770,6 +777,7 @@ impl Extended {
                         description,
                         formats: result_formats,
                         command: statement.command,
+                        returning: statement.returning,
                         messages: None,
                         offset: 0,
                     },
@@ -792,8 +800,11 @@ impl Extended {
                         }
                         let mut messages = vec![(b't', parameters)];
                         messages.push(
-                            description(&statement.metadata)?
-                                .map_or((b'n', vec![]), |body| (b'T', body)),
+                            description(
+                                &statement.metadata,
+                                statement.command.unwrap_or("SELECT"),
+                            )?
+                            .map_or((b'n', vec![]), |body| (b'T', body)),
                         );
                         Ok(messages)
                     }
@@ -823,6 +834,12 @@ impl Extended {
                     .portals
                     .get_mut(&name)
                     .ok_or_else(|| error("34000", "unknown portal"))?;
+                if portal.returning {
+                    return Err(error(
+                        "0A000",
+                        "DML RETURNING is unsupported by the PostgreSQL listener",
+                    ));
+                }
                 if portal.messages.is_none() {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
@@ -936,10 +953,14 @@ impl Extended {
         }
     }
 }
-fn description(metadata: &PreparedMetadata) -> Result<Option<Vec<u8>>> {
-    description_formats(metadata, &[])
+fn description(metadata: &PreparedMetadata, command: &str) -> Result<Option<Vec<u8>>> {
+    description_formats(metadata, &[], command)
 }
-fn description_formats(metadata: &PreparedMetadata, formats: &[usize]) -> Result<Option<Vec<u8>>> {
+fn description_formats(
+    metadata: &PreparedMetadata,
+    formats: &[usize],
+    command: &str,
+) -> Result<Option<Vec<u8>>> {
     if metadata.columns.is_empty() {
         return Ok(None);
     }
@@ -949,7 +970,7 @@ fn description_formats(metadata: &PreparedMetadata, formats: &[usize]) -> Result
         column_origins: metadata.column_origins.clone(),
         ..QueryResult::default()
     };
-    let messages = crate::pg_result::encode_formats(&result, "SELECT", formats)
+    let messages = crate::pg_result::encode_formats(&result, command, formats)
         .map_err(|e| error("0A000", &e.to_string()))?;
     Ok(Some(messages[0].1.clone()))
 }

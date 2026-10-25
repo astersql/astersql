@@ -2987,6 +2987,11 @@ impl ConcreteSession {
             }
         }
         if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() {
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !insert.Returning.is_empty() {
+                return Err(SessionError::new(
+                    "DML RETURNING is unsupported by the PostgreSQL listener",
+                ));
+            }
             if self.state.borrow().transaction_stale_read_ts.is_some() {
                 return Err(SessionError::new(
                     "cannot execute write statement in a read-only staleness transaction",

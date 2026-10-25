@@ -1700,6 +1700,12 @@ impl ConcreteSession {
             return Err(SessionError::new("result metadata requires one statement"));
         }
         let statement = &statements[0];
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
+            && !insert.Returning.is_empty()
+        {
+            return self.insert_returning_fields(insert);
+        }
         if statement.as_any().is::<ast::SelectStmt>() || statement.as_any().is::<ast::SetOprStmt>()
         {
             let mut fields = self.relational_query_node_result_fields(statement.as_ref(), &[])?;
@@ -1745,7 +1751,12 @@ impl ConcreteSession {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
         let statement = &statements[0];
-        let fields = if statement.as_any().is::<ast::SelectStmt>()
+        let fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
+            && !insert.Returning.is_empty()
+        {
+            self.insert_returning_fields(insert)?
+        } else if statement.as_any().is::<ast::SelectStmt>()
             || statement.as_any().is::<ast::SetOprStmt>()
             || statement.as_any().is::<ast::SetOprSelectList>()
         {
