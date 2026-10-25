@@ -1787,6 +1787,8 @@ impl ConcreteSession {
             (HashMap::new(), Vec::new())
         };
         let has_pg_values = !array_types.is_empty() || !record_types.is_empty();
+        let has_bool_parameters =
+            self.sql_dialect() == ast::SqlDialect::PostgreSQL && supplied.contains(&16);
         let constructor_oids = array_oids
             .iter()
             .copied()
@@ -1822,6 +1824,27 @@ impl ConcreteSession {
         if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
             for (field, projection) in fields.iter_mut().zip(&select.Fields.Fields) {
                 if let Some(expr) = projection.Expr.as_ref() {
+                    let mut source = expr;
+                    while let ast::ExprKind::Parentheses(inner) = &source.Kind {
+                        source = inner;
+                    }
+                    if has_bool_parameters
+                        && let ast::ExprKind::ParamMarker { Offset } = source.Kind
+                    {
+                        let markers = parameter_markers(sql);
+                        if markers
+                            .iter()
+                            .position(|marker| marker.offset == Offset)
+                            .and_then(|index| supplied.get(index))
+                            == Some(&16)
+                        {
+                            let mut tp = astersql_parser_types::NewFieldType(
+                                astersql_parser_mysql::r#type::TypeTiny,
+                            );
+                            tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                            field.column.FieldType = tp;
+                        }
+                    }
                     if let Some(fields) = record_types.get(&(expr.OriginTextPosition as usize)) {
                         field.column.FieldType = super::pg_record::field_type(fields.clone());
                         if projection.AsName.O.is_empty() {
@@ -1853,7 +1876,16 @@ impl ConcreteSession {
                 dialect: self.sql_dialect(),
                 planned: false,
                 has_pg_constructors: has_pg_values,
-                constructor_parameter_oids: if !has_pg_values {
+                constructor_parameter_oids: if has_bool_parameters {
+                    let mut oids = constructor_oids;
+                    oids.resize(supplied.len(), 0);
+                    for (oid, supplied) in oids.iter_mut().zip(supplied) {
+                        if *supplied == 16 {
+                            *oid = 16;
+                        }
+                    }
+                    oids
+                } else if !has_pg_values {
                     Vec::new()
                 } else {
                     constructor_oids
@@ -1936,6 +1968,9 @@ impl ConcreteSession {
             .enumerate()
             .map(|(index, argument)| {
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&16) {
+                    return Ok(format!("CAST({literal} AS BOOLEAN)"));
+                }
                 if let Some(oid @ (23 | 20)) = constructor_oids.get(index) {
                     return Ok(format!(
                         "CAST({literal} AS {})",

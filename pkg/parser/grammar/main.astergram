@@ -4303,4 +4303,6 @@ PgCastType : "INT4" @action;
 PgCastType : "INT8" @action;
 PgCastType : "INTEGER" @action;
 PgCastType : "BIGINT" @action;
+PgCastType : "BOOL" @action;
+PgCastType : "BOOLEAN" @action;
 CastType : PgCastType;

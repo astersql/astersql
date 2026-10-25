@@ -99,3 +99,7 @@
 - 文法冲突、二进制体积和热路径二分查找次数是否可接受；大范围新增产生式会同时增加规约元数据与状态表。
 
 测试应放在独立文件而非本生成文件内。至少同步 `parsergen_baseline_aster_unit_test.rs` 的轨迹用例、`parser_manifest_aster_unit_test.rs` 的清单契约，以及最接近语法族的 `parser_3_aster_unit_test.rs` 或 `parser_actions/*_aster_unit_test.rs`；若改变 Go 兼容行为，还应对照 `parser.y`/`parser.go` 现有测试意图。生成文件漂移和静态 include 由 `parser_generated_sources_aster_unit_test.rs`、`parser_no_legacy_dependency_aster_unit_test.rs` 负责。
+
+## 2026-10-25 PG scalar 01
+
+按main.astergram新增BOOL/BOOLEAN目标规则后由astersql-parsergen generate重新生成表，配套手写AST动作。

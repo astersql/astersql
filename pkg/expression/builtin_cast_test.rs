@@ -188,3 +188,35 @@ fn pg_core_int8_cast_kernel() {
     );
     assert_eq!(context.warnings, vec![CastWarning::CastAsSignedOverflow]);
 }
+
+#[test]
+fn pg_scalar_01_formal_boolean_target() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let context = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    let mut target = *types::NewFieldType(mysql::TypeTiny);
+    target.AddFlag(mysql::IsBooleanFlag);
+    for (datum, source_type, expected) in [
+        (types::NewIntDatum(1), mysql::TypeLonglong, (1, false)),
+        (types::NewIntDatum(0), mysql::TypeLonglong, (0, false)),
+        (types::Datum::default(), mysql::TypeNull, (0, true)),
+    ] {
+        let source: Box<dyn FormalExpression> = Box::new(crate::Constant::with_type(
+            datum,
+            *types::NewFieldType(source_type),
+        ));
+        let cast = crate::formal_registry::BuildCastFunction(&context, &source, &target);
+        assert_ne!(
+            cast.GetType(context.GetEvalCtx()).GetFlag() & mysql::IsBooleanFlag,
+            0
+        );
+        assert_eq!(
+            cast.EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap(),
+            expected
+        );
+    }
+}

@@ -355,6 +355,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             ExplicitCharSet,
         } => {
             let value = restore_expr(Expr)?;
+            if Tp.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0 {
+                return Ok(format!("CAST({value} AS BOOLEAN)"));
+            }
             if *FunctionType == CastFunctionType::PostgreSQLInt4 {
                 return Ok(format!("CAST({value} AS INT4)"));
             }

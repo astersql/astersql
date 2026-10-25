@@ -334,7 +334,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
             Some(ExpressionRule::PgArrayNestedNext)
         }
         "pgarrayrow_pgarraylist--f75d26ccaf8553d2" => Some(ExpressionRule::PgArrayRow),
-        "pgcasttype_bigint--ae5884bd608717ab"
+        "pgcasttype_bool--d9658361f98a2bfa" | "pgcasttype_boolean--3e6aa45e36d3b626" | "pgcasttype_bigint--ae5884bd608717ab"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
         | "pgcasttype_integer--a6fba6c5af1a8564"
@@ -1181,6 +1181,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let tp = match spelling.to_ascii_lowercase().as_str() {
                 "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
+                "bool" | "boolean" => parser_mysql::r#type::TypeTiny,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
                     return Err(1);
@@ -1191,6 +1192,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             let mut field_type = parser_types::types::NewFieldType(tp);
+            if tp == parser_mysql::r#type::TypeTiny {
+                field_type.AddFlag(parser_mysql::r#type::IsBooleanFlag);
+            }
             let (flen, decimal) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
             field_type.SetFlen(flen);
             field_type.SetDecimal(decimal);

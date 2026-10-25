@@ -4635,3 +4635,63 @@ fn pg_dialect_26_behavior() {
         assertions + 1
     );
 }
+
+#[test]
+fn pg_scalar_01_boolean_ast_identity() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT NULL::boolean",
+        "SELECT NULL::bool",
+        "SELECT CAST(NULL AS BOOLEAN)",
+        "SELECT CAST(NULL AS BOOL)",
+    ] {
+        let statement = pg.ParseOneStmt(sql, "", "").unwrap();
+        let select = statement
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expression = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } = &expression.Kind else {
+            panic!("missing cast");
+        };
+        assert_ne!(Tp.GetFlag() & parser_mysql::r#type::IsBooleanFlag, 0);
+        let restored = parser_ast::sql_restore::restore_expr(expression).unwrap();
+        assert_eq!(restored, "CAST(NULL AS BOOLEAN)");
+        let again = pg
+            .ParseOneStmt(&format!("SELECT {restored}"), "", "")
+            .unwrap();
+        let select = again
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert_eq!(
+            parser_ast::sql_restore::restore_expr(select.Fields.Fields[0].Expr.as_ref().unwrap())
+                .unwrap(),
+            restored
+        );
+        assert!(
+            parser::New().ParseOneStmt(sql, "", "").is_err(),
+            "PG cast leaked into MySQL: {sql}"
+        );
+    }
+    for dialect in [
+        parser_ast::SqlDialect::PostgreSQL,
+        parser_ast::SqlDialect::MySQL,
+    ] {
+        let mut parser = parser::Parser::with_dialect(dialect);
+        let statement = parser
+            .ParseOneStmt("CREATE TABLE t (a BOOL,b BOOLEAN,c TINYINT)", "", "")
+            .unwrap();
+        let create = statement
+            .as_any()
+            .downcast_ref::<parser_ast::CreateTableStmt>()
+            .unwrap();
+        for (index, column) in create.Cols.iter().enumerate() {
+            assert_eq!(column.Tp.GetType(), parser_mysql::r#type::TypeTiny);
+            assert_eq!(
+                column.Tp.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0,
+                dialect == parser_ast::SqlDialect::PostgreSQL && index < 2
+            );
+        }
+    }
+}

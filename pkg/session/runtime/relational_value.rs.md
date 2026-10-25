@@ -157,3 +157,7 @@ PostgreSQLInt4 标记在无会话参数的 Cast 消费者选择 pg_integer_relat
 2026-10-24 int8：pg_integer_relational_value 由共享 AST 的 PG int4/int8 标记选择严格内核，返回精确十进制文本；嵌套先求内层，再检查外层范围。
 
 PG int4/int8 Cast 在关系结果类型解析中直接返回 AST 声明的 Tp，供 Prepare 与执行共享，避免扩展查询将整数目标误报为默认 TEXT。
+
+## 2026-10-25 PG scalar 01
+
+CAST的明确bool目标字段直接保留到关系结果类型，即使NULL或零行也不从值推断。

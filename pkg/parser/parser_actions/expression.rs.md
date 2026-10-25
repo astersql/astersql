@@ -137,3 +137,7 @@ PgCastType 仅在 PostgreSQL 身份下接受 int4/integer/int 和 int8/bigint，
 `PgArray` 仍从 `ARRAY[...]` 的元素列表创建共享 `ExprKind::Array`。隐式二维语法用独立 `PgArrayRows` 聚合 `PgArrayRow` 节点；`PgArrayRow` 根据其普通表达式列表创建内层 Array，`PgArrayNestedFirst/Next` 保留行节点和外层逗号。显式 `ARRAY[ARRAY[...], ...]` 沿普通 Expression 递归路径。外层与内层各自保留开闭括号、元素跨度、逗号和 `OriginTextPosition`，不把不等长行补成 NULL。
 
 数组消费者在 `pkg/session/runtime/pg_array.rs` 递归推断共同叶类型，并把参数 OID 约束传播到内层标记。整数与 numeric 使用 PostgreSQL 共同类型提升；互不兼容的元素在 Prepare 以 42804 和原 SQL 字符位置报告。矩形约束在执行构造值时检查，非矩形行返回 2202E。`pkg/server/pg_result.rs` 按真实维度编码文本和 binary array，并保留元素 NULL、OID 与 binary 数值格式。
+
+## 2026-10-25 PG scalar 01
+
+PG BOOL/BOOLEAN转换目标构造TypeTiny+IsBooleanFlag，仅PG方言接受；后缀和CAST共用目标动作。

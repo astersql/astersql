@@ -70,3 +70,7 @@ Rust [`grammar/main.astergram`](../grammar/main.astergram) 保留产生式形状
 3. 涉及 AST 字段时同步检查 `pkg/parser/ast` 中的根类型和 restore/visitor 行为；涉及错误时保留 MySQL 错误码、文本、警告降级和 parser feature 开关，不只验证“能否解析”。
 4. 测试首先更新 [`ddl_aster_unit_test.rs`](./ddl_aster_unit_test.rs) 的 `DDL_NONTERMINALS`/预期 inventory，并保持无 numeric fallback。真实 SQL -> AST 行为应在 [`parser_3_aster_unit_test.rs`](../parser_3_aster_unit_test.rs) 或更靠近的独立 parser 测试中增加回归；分区错误和语义边界可延伸 [`parser_semantic_support_test.rs`](../parser_semantic_support_test.rs)，Go 对照则查看 `parser_test.go` 及与具体 DDL 特性相关的测试。
 5. 兼容性风险主要是 Go/Rust AST 字段、默认值和错误级别漂移；正确性风险是 RHS 位置、downcast 类型或 RuleId 漏映射；性能风险是在长列表规约中新增不必要的 AST/`Vec` 克隆。
+
+## 2026-10-25 PG scalar 01
+
+PG显式BOOL/BOOLEAN声明在NumericTypeAlt02保留IsBooleanFlag；MySQL仍为原始TINYINT(1)，不按值猜类型。

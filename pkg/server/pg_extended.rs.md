@@ -89,3 +89,7 @@ RustCodeGraph 的 `query`/`node` 确认 `Extended`（`:426`）、`markers`（`:6
 普通 Parse 先取得 `PreparedMetadata.parameter_cast_oids`，其索引是 engine `?` 的出现顺序。PG 层用现有 mapping 将约束折叠为 `$n` 编号顺序；省略/0 OID 使用首先出现的直接整数 cast，显式非零 OID 是源类型，不被目标 cast 覆盖。重复或乱序引用仍按 mapping 扩展 Bind 参数。未知参数在注册 PG statement 前关闭刚创建的 engine statement，返回 `42P18`。
 
 int4/int8 文本参数先清理 ASCII 首尾空白，使用有界整数解析区分语法 `22P02` 和溢出 `22003`。Bind 在全部参数和格式校验后才插入 portal。对于参数均受直接整数转换约束的语句，Bind 后共享内核会重解析字面值；结果列名沿用 Parse 描述，结果类型仍来自实际执行并接受原有一致性校验。`pg_core_integer_parameter_types` 通过真实 TCP 与 libpq 验证参数描述字节、编号绑定、NULL、显式源类型和 Sync 恢复。
+
+## 2026-10-25 PG scalar 01
+
+OID16的NULL参数保持共享TypeTiny并设置is_null，PG语句独立保留OID16；复用既有bool结果codec与一致性检查。

@@ -2787,6 +2787,13 @@ impl ConcreteSession {
     pub fn protocol_parameter_types(&self, sql: &str, supplied: &[u32]) -> SessionResult<Vec<u32>> {
         let markers = parameter_markers(sql);
         let mut oids = vec![0; markers.len()];
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            for (oid, supplied) in oids.iter_mut().zip(supplied) {
+                if *supplied == 16 {
+                    *oid = 16;
+                }
+            }
+        }
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
             return Ok(oids);
         }
@@ -2794,10 +2801,14 @@ impl ConcreteSession {
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
                 if let ast::ExprKind::Cast {
-                    Expr, FunctionType, ..
+                    Expr,
+                    FunctionType,
+                    Tp,
+                    ..
                 } = &input.Kind
                 {
                     let oid = match FunctionType {
+                        _ if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 => 16,
                         ast::CastFunctionType::PostgreSQLInt4 => 23,
                         ast::CastFunctionType::PostgreSQLInt8 => 20,
                         _ => 0,

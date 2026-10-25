@@ -149,3 +149,7 @@ PreparePlannedKVSelect 作为普通 SQL PREPARE 表查询的实际计划准备�
 ## 整数参数元数据接线
 
 `ConcreteSession::protocol_integer_parameter_types` 在 PostgreSQL 方言中解析共享 AST，仅收集 SELECT 投影、WHERE/HAVING、GROUP/ORDER 表达式内直接 int4/int8 Cast 的 ParamMarker（允许括号），按原 offset 对应 engine marker；返回每个出现位置的 OID 23/20，未约束位置为0。嵌套 cast 由最内侧直接参数约束源类型，PG 消费者按原编号折叠首个直接约束。它不执行SQL、不注册statement，不实现跨DML/子查询/模式的一般推导。
+
+## 2026-10-25 PG scalar 01
+
+PG参数约束保留供给OID16，并从带bool目标身份的CAST推导16，复用原有参数源位置映射。

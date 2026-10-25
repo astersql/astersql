@@ -149,3 +149,21 @@ fn pg_core_int8_explicit_cast() {
         );
     }
 }
+
+#[test]
+fn pg_scalar_01_boolean_type_and_null() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT TRUE::boolean,FALSE::bool,NULL::boolean",
+        "SELECT CAST(TRUE AS BOOL),CAST(FALSE AS BOOLEAN),CAST(NULL AS BOOLEAN)",
+    ] {
+        let mut records = pg.execute(sql).unwrap();
+        assert_eq!(
+            records[0].next_row().unwrap().unwrap(),
+            vec!["1", "0", "<nil>"]
+        );
+    }
+}

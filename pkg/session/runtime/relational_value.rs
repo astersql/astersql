@@ -2640,6 +2640,11 @@ pub(super) fn relational_expression_type(
             .map(super::pg_array::field_type)
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
+        ast::ExprKind::Cast { Tp, .. }
+            if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
+        {
+            Tp.clone()
+        }
         ast::ExprKind::Cast {
             Tp,
             FunctionType:

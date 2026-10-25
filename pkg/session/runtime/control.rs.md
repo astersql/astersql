@@ -127,3 +127,7 @@ describe_result_fields 在既有 AST/类型解析前使用所属会话的方言�
 ## PostgreSQL 整数参数与转换优先级（2026-10-24）
 
 execute_protocol_statement 仅在 PostgreSQL 连接中为负 Signed 参数的 SQL literal 添加括号，保留参数作为单个表达式的边界。否则 ?::int8 替换为 -9223372036854775808::int8 后会先转换越界正数，导致合法 i64::MIN 失败。结果类型仍由 Cast AST 推导，未按参数值猜测或覆盖结果元数据。独立 dispatch_test.rs 与 server/pg_extended_test.rs 的 pg_core_integer_result_metadata 回归覆盖重复绑定、精确值与协议字段一致性。
+
+## 2026-10-25 PG scalar 01
+
+准备时按参数源偏移与已定型OID16描述直接投影；保存OID16并在既有结构化参数绑定时生成BOOLEAN转换，NULL同样携带目标身份，继续核对实际执行描述。

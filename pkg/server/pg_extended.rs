@@ -299,7 +299,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let Some(value) = value else {
         return Ok(BinaryParam {
             is_null: true,
-            tp: 6,
+            tp: if oid == 16 { 1 } else { 6 },
             ..BinaryParam::default()
         });
     };

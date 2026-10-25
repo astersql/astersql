@@ -107,3 +107,7 @@ PostgreSQLInt4 CastFunctionType 恢复成 CAST(expr AS INT4)，保留严格 int4
 
 
 2026-10-24 int8：PostgreSQLInt8 标记恢复为 CAST(... AS INT8)，保持目标身份与重解析时的严格转换语义。
+
+## 2026-10-25 PG scalar 01
+
+带明确bool目标身份的CAST恢复为BOOLEAN，避免重解析退化成SIGNED。

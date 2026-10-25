@@ -7425,6 +7425,10 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             };
             let mut field_type = parser_types::types::NewFieldType(tp);
             field_type.SetFlen(1);
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                // Only an explicit PG BOOL/BOOLEAN declaration creates this identity.
+                field_type.AddFlag(parser_mysql::r#type::IsBooleanFlag);
+            }
             if let Some(options) = rhs
                 .borrow(rhs_len - (0))
                 .expect("DDL RHS position")
