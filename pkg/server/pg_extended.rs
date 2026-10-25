@@ -312,9 +312,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let (tp, value) = match oid {
         16 => (
             1,
-            vec![match text.to_ascii_lowercase().as_str() {
-                "t" | "true" | "1" => 1,
-                "f" | "false" | "0" => 0,
+            vec![match text
+                .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "t" | "tr" | "tru" | "true" | "y" | "ye" | "yes" | "on" | "1" => 1,
+                "f" | "fa" | "fal" | "fals" | "false" | "n" | "no" | "of" | "off" | "0" => 0,
                 _ => return Err(invalid()),
             }],
         ),

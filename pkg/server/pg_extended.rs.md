@@ -93,3 +93,7 @@ int4/int8 文本参数先清理 ASCII 首尾空白，使用有界整数解析区
 ## 2026-10-25 PG scalar 01
 
 OID16的NULL参数保持共享TypeTiny并设置is_null，PG语句独立保留OID16；复用既有bool结果codec与一致性检查。
+
+## 2026-10-25 PG scalar 02
+
+OID16文本参数仅在PG入口清理ASCII的六种isspace字符，忽略ASCII大小写，接受true/false、yes/no、on/off、1/0及唯一前缀；歧义o和空输入仍报22P02。UTF8及NUL先由既有校验报22021。目录参数复用此入口；binary与MySQL转换保持原行为。独立pg_scalar_02通过真实TCP验证词集、NULL/描述、错误恢复及MySQL隔离。
