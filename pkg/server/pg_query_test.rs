@@ -700,7 +700,7 @@ fn namespace_catalog_live_metadata() {
     for (name, oid) in [
         ("id", 20u32),
         ("state_number", 20),
-        ("name", 25),
+        ("name", 19),
         ("description", 25),
         ("owner", 25),
     ] {
@@ -910,9 +910,6 @@ fn pg_introspection_namespace_session_state() {
         vec![vec![Some("pg_catalog".into())], vec![Some("public".into())]]
     );
     for (sql, state) in [
-        ("SET search_path TO namespace_hidden", "0A000"),
-        ("SET search_path TO missing", "0A000"),
-        ("SET search_path TO public, missing", "0A000"),
         ("SET search_path TO NULL", "0A000"),
         ("SET search_path TO public; SELECT 1", "42601"),
     ] {
@@ -988,6 +985,8 @@ fn pg_introspection_namespace_session_state() {
 fn pg_introspection_names_live_tables() {
     let (domain, native) =
         astersql_session::runtime::CreateUnbootstrappedRootSessionForTest().unwrap();
+    // Effective PG public is backed by a real current-database schema.
+    native.execute("CREATE DATABASE test").unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let service = PgService::start(

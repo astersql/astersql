@@ -873,3 +873,96 @@ fn pg_dialect_21_behavior() {
         "pg_dialect_21_behavior: cases=6 guard_shapes=4; recursive AST, explicit gate, seed diagnostic, duplicate diagnostic and nonrecursive identity"
     );
 }
+
+#[test]
+fn pg_dialect_22_behavior() {
+    use crate::pg_session::SessionQuery;
+    for sql in [
+        "SET search_path TO missing, public",
+        r#"SET search_path TO "$user", public"#,
+        "SET search_path TO public, public, pg_catalog",
+        r#"SET search_path TO "PUBLIC", public"#,
+    ] {
+        assert!(
+            matches!(SessionQuery::parse(sql), Ok(Some(SessionQuery::Set(_)))),
+            "{sql}"
+        );
+    }
+    let sql = r#"/*中*/ SELECT $1::int4 FROM "t" /* public.t $1 */"#;
+    assert_eq!(rewrite(sql, "db", false).unwrap_err().0, "42P01");
+    let (statements, _) =
+        astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+    assert_eq!(statements.len(), 1);
+    use astersql_parser_ast as ast;
+    let select = statements[0]
+        .as_any()
+        .downcast_ref::<ast::SelectStmt>()
+        .unwrap();
+    let ast::ExprKind::Cast { Expr, .. } = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+    else {
+        panic!("original typed parameter");
+    };
+    assert_eq!(Expr.PostgreSQLParameterIndex(), Some(1));
+    struct Tables(Vec<Vec<ast::PostgreSQLIdentifier>>);
+    impl ast::Visitor for Tables {
+        fn enter(&mut self, _: &dyn ast::Node) -> bool {
+            false
+        }
+        fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+            self.0.push(table.PostgreSQLParts.clone());
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut tables = Tables(Vec::new());
+    statements[0].accept(&mut tables);
+    assert_eq!(tables.0.len(), 1);
+    assert_eq!(tables.0[0].len(), 1);
+    let part = &tables.0[0][0];
+    assert_eq!(part.Lookup, "t");
+    assert!(part.Quoted);
+    assert_eq!(&sql[part.Span.0..part.Span.1], r#""t""#);
+
+    assert!(
+        rewrite(sql, "db", true)
+            .unwrap()
+            .contains(r#"$1::int4 FROM `db`."t" /* public.t $1 */"#)
+    );
+    assert_eq!(
+        rewrite("WITH t AS (SELECT 1) SELECT * FROM t", "db", false).unwrap(),
+        "WITH t AS (SELECT 1) SELECT * FROM t"
+    );
+
+    let meta = crate::pg_catalog::CatalogQuery::parse(
+        "SELECT nspname AS visible_schema FROM pg_catalog.pg_namespace",
+    )
+    .unwrap()
+    .unwrap()
+    .metadata();
+    assert_eq!(meta.catalog_column_origins, vec![Some((2615, 2))]);
+    let mut result = crate::conn::QueryResult {
+        columns: meta.columns,
+        native_types: meta.native_types,
+        catalog_column_origins: meta.catalog_column_origins,
+        ..Default::default()
+    };
+    let encoded = crate::pg_result::encode(&result, "SELECT").unwrap();
+    assert_eq!(encoded[0].0, b'T');
+    result.catalog_column_origins = vec![Some((99999, 2))];
+    assert!(
+        crate::pg_result::encode(&result, "SELECT").is_err(),
+        "unregistered catalog origins must fail"
+    );
+    result.catalog_column_origins = vec![Some((2615, 0))];
+    assert!(
+        crate::pg_result::encode(&result, "SELECT").is_err(),
+        "invalid attribute must fail"
+    );
+    println!(
+        "pg_dialect_22_behavior: path_inputs=4 binding_cases=4; positions, original parameters/comments and CTE precedence"
+    );
+}

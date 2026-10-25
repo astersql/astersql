@@ -1209,6 +1209,11 @@ fn pg_dialect_21_libpq() {
 }
 
 #[test]
+fn pg_dialect_22_libpq() {
+    pg_dialect_libpq(22);
+}
+
+#[test]
 fn pg_dialect_24_libpq() {
     pg_dialect_libpq(24);
 }
@@ -2160,6 +2165,38 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 22 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            let sql = format!("SELECT v FROM {database}.t");
+            let values = mysql_query(socket, &sql);
+            assert_eq!(values, vec![vec![Some(b"9".to_vec())]]);
+            let mut request = vec![0x16];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let prepared = mysql_read(socket);
+            assert_eq!(prepared[0], 0);
+            assert_eq!(u16::from_le_bytes(prepared[5..7].try_into().unwrap()), 1);
+            assert_eq!(u16::from_le_bytes(prepared[7..9].try_into().unwrap()), 0);
+            let column = mysql_read(socket);
+            assert_eq!(column_type(&column), 3);
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            let mut close = vec![0x19];
+            close.extend_from_slice(&prepared[1..5]);
+            mysql_packet(socket, 0, &close);
+            let mut negative = vec![3];
+            negative.extend_from_slice(b"SET search_path TO public");
+            mysql_packet(socket, 0, &negative);
+            let rejected = mysql_read(socket);
+            assert_eq!(rejected[0], 0xff);
+            assert_eq!(u16::from_le_bytes(rejected[1..3].try_into().unwrap()), 1064);
+            assert_eq!(&rejected[4..9], b"42000");
+            assert_eq!(mysql_query(socket, &sql), values);
+            let mut output = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-path.jsonl"))
+                .unwrap();
+            writeln!(output, "{}", serde_json::json!({"case_id":phase.strip_prefix("PG_DIALECT_CHECKPOINT ").unwrap(),"sql":sql,"rows":values,"native_type":3,"prepared":true,"statement_closed":true,"pg_only_sql":"SET search_path TO public","pg_only_error":rejected})).unwrap();
+        }
         if task == 12 {
             use std::io::Write;
             mysql_query(socket, "SET time_zone='+00:00'");
@@ -3151,6 +3188,24 @@ fn pg_dialect_libpq(task: u8) {
             );
             assert!(entries.iter().all(|(_, actual)| *actual == dialect));
         }
+        return;
+    }
+    if task == 22 {
+        assert_eq!(checkpoints, 12);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        for (key, count) in [
+            ("unique_effective", 12),
+            ("primary_prepare_cases", 11),
+            ("primary_describe_cases", 11),
+            ("primary_execute_cases", 11),
+            ("diagnostic_cases", 1),
+        ] {
+            assert_eq!(summary[key], count);
+        }
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["failures"], serde_json::json!([]));
         return;
     }
     if task == 21 {

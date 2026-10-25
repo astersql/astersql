@@ -328,7 +328,7 @@ fn count(n: usize) -> io::Result<i16> {
 fn length(n: usize) -> io::Result<i32> {
     i32::try_from(n).map_err(|_| invalid("PostgreSQL result field exceeds maximum length"))
 }
-// Codes 230..237 are unused by native MySQL types, including JSON (245)
+// Codes 230..242 are unused by native MySQL types, including JSON (245)
 // and DECIMAL (246). They belong exclusively to PG catalog providers. Shared engine
 // NativeType inference and MySQL column/protocol mappings never use them.
 #[derive(Clone, Copy)]
@@ -346,6 +346,7 @@ pub(crate) enum CatalogColumnType {
     OidVector = 239,
     Char = 240,
     AclArray = 241,
+    Name = 242,
 }
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
@@ -362,12 +363,14 @@ impl CatalogColumnType {
             239 => Self::OidVector,
             240 => Self::Char,
             241 => Self::AclArray,
+            242 => Self::Name,
             _ => return None,
         })
     }
     fn wire_type(self) -> (u32, i16) {
         match self {
             Self::InternalChar => (18, 1),
+            Self::Name => (19, 64),
             Self::Char => (1042, -1),
             Self::AclArray => (1034, -1),
             Self::Oid => (26, 4),
@@ -934,6 +937,11 @@ pub(crate) fn encode_formats(
     if !result.column_origins.is_empty() && result.column_origins.len() != result.columns.len() {
         return Err(invalid("engine column origin count mismatch"));
     }
+    if !result.catalog_column_origins.is_empty()
+        && result.catalog_column_origins.len() != result.columns.len()
+    {
+        return Err(invalid("catalog column origin count mismatch"));
+    }
     let mut messages = Vec::new();
     if !result.columns.is_empty() {
         let mut body = count(result.columns.len())?.to_be_bytes().to_vec();
@@ -962,14 +970,30 @@ pub(crate) fn encode_formats(
             }
             body.extend_from_slice(column.name.as_bytes());
             body.push(0);
-            let (table_oid, attribute) = match result.column_origins.get(index).copied().flatten() {
-                Some(origin) if origin.attribute_number > 0 => (
-                    crate::pg_oid::table_oid(origin.table_id)
-                        .map_err(|error| invalid(&error.to_string()))?,
-                    origin.attribute_number,
-                ),
-                Some(_) => return Err(invalid("invalid physical column attribute number")),
-                None => (0, 0), // Unknown or non-physical expression; never infer from a label.
+            let catalog_origin = result.catalog_column_origins.get(index).copied().flatten();
+            let native_origin = result.column_origins.get(index).copied().flatten();
+            if catalog_origin.is_some() && native_origin.is_some() {
+                return Err(invalid("conflicting native and catalog column origins"));
+            }
+            let (table_oid, attribute) = if let Some((oid, attribute)) = catalog_origin {
+                if attribute <= 0
+                    || !crate::pg_oid::SYSTEM_RELATIONS
+                        .iter()
+                        .any(|(_, registered)| *registered == oid)
+                {
+                    return Err(invalid("unregistered catalog column origin"));
+                }
+                (oid, attribute)
+            } else {
+                match native_origin {
+                    Some(origin) if origin.attribute_number > 0 => (
+                        crate::pg_oid::table_oid(origin.table_id)
+                            .map_err(|error| invalid(&error.to_string()))?,
+                        origin.attribute_number,
+                    ),
+                    Some(_) => return Err(invalid("invalid physical column attribute number")),
+                    None => (0, 0), // Unknown or non-physical expression; never infer from a label.
+                }
             };
             body.extend_from_slice(&table_oid.to_be_bytes());
             body.extend_from_slice(&attribute.to_be_bytes());

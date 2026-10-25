@@ -292,6 +292,8 @@ impl Resolver<'_> {
         match parts.as_slice() {
             [name] => {
                 if !self.public {
+                    self.error_position =
+                        Some(self.sql[..self.tokens[start].start].chars().count() + 1);
                     return Err(error("42P01", "relation is not in the PG search path"));
                 }
                 name
@@ -1022,13 +1024,16 @@ pub(crate) fn adapt(
     session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
     // Queries without native relations must not execute an extra engine query.
-    let public = session.has_public();
-    match rewrite_with_position(sql, "", public, &mut session.relation_error_position) {
+    match rewrite_with_position(sql, "", true, &mut session.relation_error_position) {
         Err(("3D000", _)) => {}
         Err(("0A000", message))
             if message == "quoted mixed-case identifiers require exact name binding support" => {}
         result => return result,
     }
+    let path = session
+        .effective_explicit_path(context)
+        .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+    let public = path.iter().any(|name| name == "public");
     let current = context
         .execute_query("SELECT DATABASE()", false, &CancellationToken::new())
         .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;

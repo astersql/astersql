@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from pg_core_evidence import append_observation, compare_metadata, source_snapshot, validate_provenance
 
 task = int(sys.argv[1])
-assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 24), 'unregistered dialect task'
+assert task in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24), 'unregistered dialect task'
 evidence = Path(os.environ['PG_DIALECT_EVIDENCE_DIR'])
 root = Path(__file__).resolve().parents[3]
 
@@ -1229,7 +1229,23 @@ if task == 15:
              ('escaped','SELECT id FROM "a""b"',[]), ('typed_null','SELECT NULL::int4 AS "TypedNull"',[]),
              ('missing_relation','SELECT id FROM "Missing"',[]), ('missing_column','SELECT "Missing" FROM foo',[])]
 
-assert len({case[0] for case in cases}) == (8 if task == 21 else 8 if task == 15 else 10 if task in (11,12) else (10 if task == 6 else 6 if task in (5,8,18,19,24) else 5 if task in (16,20) else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11,12) else (8 if task in (4,10) else 10)))))
+if task == 22:
+    cases = [
+        ('public_first', "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'", []),
+        ('catalog_first', "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'", []),
+        ('implicit_catalog', "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'", []),
+        ('empty_missing', '/*中*/ SELECT v FROM t', []),
+        ('empty_qualified', 'SELECT v FROM public.t', []),
+        ('empty_catalog', "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'", []),
+        ('missing_schema', 'SELECT v FROM t', []),
+        ('user_schema', 'SELECT v FROM t', []),
+        ('duplicates', 'SELECT v FROM t', []),
+        ('empty_schema', 'SELECT current_schema()', []),
+        ('missing_only', 'SELECT current_schema()', []),
+        ('parameters', '/*中*/ SELECT $1::int4 AS x, v FROM public.t /* $1 public.t */', [23]),
+    ]
+
+assert len({case[0] for case in cases}) == (12 if task == 22 else 8 if task == 21 else 8 if task == 15 else 10 if task in (11,12) else (10 if task == 6 else 6 if task in (5,8,18,19,24) else 5 if task in (16,20) else 11 if task == 14 else (9 if task == 13 else (6 if task in (9,11,12) else (8 if task in (4,10) else 10)))))
 (evidence / 'cases.json').write_text(json.dumps([
     dict(case_id=name, capability_id='pg.dialect.row.syntax' if task in (11,12) else ('pg.dialect.array.nesting' if task == 10 else ('pg.dialect.array.syntax' if task == 9 else ('pg.dialect.ilike.syntax' if task == 1 else ('pg.dialect.escape.syntax' if task == 2 else 'pg.dialect.ilike.precedence')))), sql=sql,
          phase='PQprepare', parameter_oids=oids, arguments=((['5','7'] if task == 10 else (['7','9'] if task in (9,11,12) else [None]*len(oids))) if oids else []),
@@ -1307,7 +1323,7 @@ def observe(result, binary=False):
                     rows=[[None if is_null(result, r, col) else (c.string_at(raw_value(result,r,col),value_length(result,r,col)).hex() if binary else value(result, r, col).decode())
                            for col in range(columns(result))] for r in range(rows(result))],
                     command_tag=(command_tag(result) or b'').decode(),
-         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,24) else None))
+         table_origins=([[field_table(result,i),field_column(result,i)] for i in range(columns(result))] if task in (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24) else None))
     finally:
         clear(result)
 
@@ -4476,6 +4492,208 @@ def cte_recursive_handoff():
     assert done and clean, 'completion/cleanup: '+str(failures)
     print(json.dumps(summary),flush=True)
 
+def search_path_handoff():
+    """Order real public relations against virtual catalog relations in one database."""
+    conns, prepared, created = {}, [], []
+    checks = self_checks = eligible = 0
+    clean = True
+    done = False
+    failures = []
+    def check(ok, message):
+        nonlocal checks
+        checks += 1
+        if not ok:
+            failures.append(message)
+            raise AssertionError(message)
+    def record(name,label,data,result):
+        archive(name,'aster' if label.startswith('aster') else 'reference' if label.startswith('reference') else label,{k:v for k,v in data.items() if k in {'phase','sql','statement','parameter_oids','arguments','parameter_formats','result_format','command'}},dict(result,connection=label,context=data,transaction_after=({0:'I',2:'T',3:'E'}.get(transaction(conns[label])) if label in conns else None)))
+    def recover(label, name):
+        conn = conns[label]
+        if transaction(conn) in (2, 3):
+            check(query(conn, 'ROLLBACK')['status'] == 1, 'rollback '+label)
+        result = query(conn, 'SELECT 1::int4')
+        record(name+'_recovery', label, dict(phase='Q', sql='SELECT 1::int4'), result)
+        check(transaction(conn) == 0 and result['rows'] == [['1']], 'same connection recovery '+label)
+    paths = dict(public_first='public, pg_catalog', catalog_first='pg_catalog, public', implicit_catalog='public',
+                 empty_missing="''", empty_qualified="''", empty_catalog="''", missing_schema='missing, public',
+                 user_schema='"$user", public', duplicates='public, public, pg_catalog', empty_schema="''", missing_only='missing', parameters='public')
+    try:
+        local = f'host=127.0.0.1 port={sys.argv[2]} dbname={sys.argv[3]} user=root connect_timeout=5'
+        for label in ['reference', 'reference_b', 'reference_observer', 'aster', 'aster_b', 'aster_observer']:
+            conn = connect((os.environ['PG18_REFERENCE_DSN'] if label.startswith('reference') else local).encode())
+            conns[label] = conn
+            check(bool(conn) and status(conn) == 0, 'connect '+label)
+            if label.startswith('reference'):
+                check(query(conn, "SET TIME ZONE 'UTC'")['status'] == 1, 'UTC')
+            check(query(conn, 'SET search_path TO public')['status'] == 1, 'initial path')
+            check(parameter_status(conn,b'client_encoding') == b'UTF8' and parameter_status(conn,b'TimeZone') == b'UTC', 'encoding/timezone')
+        identity = query(conns['reference'], "SELECT version(),current_setting('server_version_num')")['rows'][0]
+        check(identity[1] == '180006', 'exact reference')
+        build = json.loads((evidence/'rust-build.json').read_text())
+        build['sha256'] = hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        provenance = dict(run=evidence.name, target_version='18.6', source=source_snapshot(root), build=build,
+            reference=dict(version=identity[0],server_version_num=identity[1]), reference_build=json.loads(Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE']).read_text()),
+            client=dict(python=sys.version,library=str(library),sha256=hashlib.sha256(library.read_bytes()).hexdigest(),PQlibVersion=version()),
+            os=platform.platform(),endpoints={s:endpoint(conns[s]) for s in conns},storage='CreateAnalyzeSession test storage',authentication='InsecureRootOnly',
+            mysql_reference_build=json.loads(Path(os.environ['MYSQL_REFERENCE_BUILD_FILE']).read_text()))
+        (evidence/'provenance.json').write_text(json.dumps(provenance,indent=2))
+        check(validate_provenance(provenance,copy.deepcopy(provenance)), 'provenance')
+        bad = copy.deepcopy(provenance); bad['reference_build']['server_version_num'] = 180004
+        check(not validate_provenance(bad,provenance), 'negative provenance'); self_checks += 1
+        # These are physical tables with independently resolved OIDs; no cloned catalog.
+        for label in ['reference','aster']:
+            for sql in ['CREATE TABLE public.t(v integer)', 'INSERT INTO public.t VALUES (9)',
+                        'CREATE TABLE public.pg_namespace(nspname text)', "INSERT INTO public.pg_namespace VALUES ('user_marker')"]:
+                result=query(conns[label],sql);record('setup',label,dict(phase='Q',sql=sql),result)
+                check(result['status']==1, 'fixture '+label+' '+sql+': '+str(result))
+                if sql.startswith('CREATE TABLE'):created.append((label,sql.split('(')[0].split()[-1]))
+        origins = {}
+        for label in ['reference','aster']:
+            origins[label] = {}
+            for table in ['t','pg_namespace']:
+                sql="SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname='"+table+"'"
+                result=query(conns[label],sql); record('oid_'+table,label,dict(phase='Q',sql=sql),result)
+                check(result['status']==2 and len(result['rows'])==1, 'physical OID '+label+' '+table+': '+str(result))
+                origins[label][table]=int(result['rows'][0][0])
+            check(origins[label]['t'] != origins[label]['pg_namespace'], 'distinct physical identities')
+        def observer(name):
+            for label in ['aster_observer','reference_observer']:
+                for sql, expected in [('SELECT v FROM public.t',[['9']]),('SELECT nspname FROM public.pg_namespace', [['user_marker']])]:
+                    result=query(conns[label],sql);record(name,label,dict(phase='Q',sql=sql),result)
+                    check(result['status']==2 and result['rows']==expected, 'independent rows unchanged '+label)
+        observer('initial')
+        if os.environ.get('PG_DIALECT_22_TEST_SIGINT') == '1':os.kill(os.getpid(),signal.SIGINT)
+        registry=[]
+        for index,(name,sql,oids) in enumerate(cases):
+            error = name == 'empty_missing'
+            expected = {'public_first':[], 'catalog_first':[['pg_catalog']], 'implicit_catalog':[['pg_catalog']],
+                'empty_qualified':[['9']], 'empty_catalog':[['pg_catalog']], 'missing_schema':[['9']], 'user_schema':[['9']],
+                'duplicates':[['9']], 'empty_schema':[[None]], 'missing_only':[[None]], 'parameters':[['7','9']]}.get(name)
+            expected_position = str(sql.index('FROM t')+6) if error else ''
+            data=dict(capability_id='pg.dialect.search_path.binding',case_id=name,sql=sql,phase='PQprepare',parameter_oids=oids,
+                arguments=['7'] if oids else [],parameter_formats=[0]*len(oids),result_format=0,encoding='UTF8',timezone='UTC',
+                search_path=paths[name],initial_state='I',object_mapping=origins,
+                roles={label:connection_user(conns[label]).decode() for label in ['reference','aster']},
+                expected_basis='PostgreSQL18.6 effective search path with real public physical relations',expected_state='42P01' if error else '',expected_position=expected_position,expected_rows=expected)
+            registry.append(data);(evidence/'cases.json').write_text(json.dumps(registry,indent=2))
+            descriptions={};executions={}
+            # A and B alternate as the owner; the other connection retains pg_catalog.
+            owner = '_b' if index%2 else ''
+            order=['aster'+owner,'reference'+owner] if index%2==0 else ['reference'+owner,'aster'+owner]
+            for label in order:
+                side='reference' if label.startswith('reference') else 'aster'
+                conn=conns[label]
+                result=query(conn,'SET search_path TO '+paths[name]);record(name+'_set',label,dict(data,phase='Q',sql='SET search_path TO '+paths[name]),result)
+                check(result['status']==1 and transaction(conn)==0,'SET '+name+' '+label+': '+str(result))
+                shown=query(conn,'SHOW search_path');record(name+'_show',label,dict(data,phase='Q',sql='SHOW search_path'),shown)
+                check(shown['rows']==[[paths[name] if paths[name]!="''" else '""']], 'raw search_path distinct from effective path '+label+': '+str(shown))
+                current=query(conn,'SELECT current_schema()');record(name+'_schema',label,dict(data,phase='Q',sql='SELECT current_schema()'),current)
+                schema=None if name in ('empty_missing','empty_qualified','empty_catalog','empty_schema','missing_only') else 'pg_catalog' if name=='catalog_first' else 'public'
+                check(current['rows']==[[schema]] and current['fields']==[['current_schema',19,64,-1]],'effective current_schema '+name+' '+label+': '+str(current))
+                statement=('path_'+str(index)).encode()
+                result=observe(prepare(conn,statement,sql.encode(),len(oids),(c.c_uint*len(oids))(*oids) if oids else None))
+                record(name,label,data,result)
+                check(transaction(conn)==0 and result['status']==(7 if error else 1) and result['state']==('42P01' if error else '') and result['position']==expected_position,'Prepare '+name+' '+label+': '+str(result))
+                if error:
+                    recover(label,name)
+                    result=query(conn,sql);record(name+'_Q',label,dict(data,phase='Q'),result)
+                    check(result['state']=='42P01' and result['position']==expected_position, 'Q original error position '+label+': '+str(result));recover(label,name)
+                else:
+                    prepared.append((conn,statement))
+                    desc=observe(describe(conn,statement));record(name+'_describe',label,dict(data,phase='Describe'),desc)
+                    check(desc['status']==1 and desc['params']==oids and desc['formats']==[0]*len(desc['fields']), 'Describe params/format')
+                    descriptions[side]=desc
+                    arguments=(text*len(oids))(b'7') if oids else None
+                    result=observe(exec_prepared(conn,statement,len(oids),arguments,None,None,0));record(name+'_execute',label,dict(data,phase='Bind/Execute'),result)
+                    check(result['status']==2 and result['rows']==expected and result['command_tag']=='SELECT '+str(len(expected)), 'Execute '+name+' '+label+': '+str(result))
+                    executions[side]=result
+                    table='pg_namespace' if name=='public_first' else 't' if name in ('empty_qualified','missing_schema','user_schema','duplicates','parameters') else None
+                    if table:
+                        want=[[origins[side][table],1]] if name!='parameters' else [[0,0],[origins[side][table],1]]
+                        check(desc['table_origins']==want and result['table_origins']==want, 'physical source identity '+name+' '+label+': '+str(desc))
+                    elif name in ('catalog_first','implicit_catalog','empty_catalog'):
+                        check(desc['table_origins']==[[2615,2]] and result['table_origins']==[[2615,2]], 'registered catalog source identity '+label)
+                    else:
+                        check(desc['table_origins']==[[0,0]] and result['table_origins']==[[0,0]], 'function has no physical origin')
+                    if oids:
+                        result=observe(exec_prepared(conn,statement,1,(text*1)(None),None,None,0));record(name+'_null',label,dict(data,phase='Bind/Execute',arguments=[None]),result)
+                        check(result['rows']==[[None,'9']] and result['fields']==desc['fields'], 'NULL typed parameter')
+                    else:
+                        result=query(conn,sql);record(name+'_Q',label,dict(data,phase='Q'),result)
+                        check(result['rows']==expected and result['fields']==desc['fields'] and result['formats']==desc['formats'] and result['table_origins']==desc['table_origins'] and result['command_tag']=='SELECT '+str(len(expected)), 'Q matches prepared '+name+' '+label)
+                for qualified, value, oid, source in [
+                    ('pg_catalog.pg_namespace', 'pg_catalog', 19, [2615,2]),
+                    ('public.pg_namespace', 'user_marker', 25, [origins[side]['pg_namespace'],1])]:
+                    qualified_sql="SELECT nspname FROM "+qualified+" WHERE nspname = '"+value+"'"
+                    qualified_result=query(conn,qualified_sql)
+                    record(name+'_qualified_'+qualified,label,dict(data,phase='Q',sql=qualified_sql),qualified_result)
+                    check(qualified_result['rows']==[[value]] and qualified_result['fields']==[['nspname',oid,64 if oid==19 else -1,-1]] and qualified_result['table_origins']==[source], 'qualified bypass of path '+label+': '+str(qualified_result))
+                other=side+('' if owner else '_b')
+                check(query(conns[other],'SET search_path TO pg_catalog')['status']==1,'other path')
+                result=query(conns[other],'SELECT v FROM public.t');record(name+'_other',other,dict(phase='Q',sql='SELECT v FROM public.t',search_path='pg_catalog'),result)
+                check(result['rows']==[['9']], 'qualified other connection')
+                result=query(conns[other],'SELECT v FROM t');record(name+'_other_error',other,dict(phase='Q',sql='SELECT v FROM t',search_path='pg_catalog'),result)
+                check(result['state']=='42P01' and result['position']=='15','other private search path');recover(other,name)
+                # Other connection settings cannot change this connection's effective path.
+                check(query(conn,'SELECT current_schema()')['rows']==[[schema]],'A/B path isolation')
+            if not error:
+                check(compare_metadata(descriptions['aster'],descriptions['reference'],'describe'), 'Describe differential '+name)
+                check(executions['aster']['fields']==executions['reference']['fields'] and executions['aster']['rows']==executions['reference']['rows'], 'Q/Execute differential '+name)
+                bad=copy.deepcopy(descriptions['aster']);bad['fields'][0][1]=99999
+                check(not compare_metadata(bad,descriptions['reference'],'describe'),'negative metadata');self_checks+=1
+            print('PG_DIALECT_CHECKPOINT '+name,flush=True)
+            check(sys.stdin.readline().strip()=='continue','MySQL checkpoint')
+            observer(name+'_observer')
+            eligible+=1
+        # A Parse error in T must enter E; Sync alone cannot clear it.
+        for label in ['aster','reference']:
+            conn=conns[label]
+            check(query(conn,"SET search_path TO ''")['status']==1,'empty transaction path')
+            check(query(conn,'BEGIN')['status']==1,'begin')
+            sql='/*中*/ SELECT v FROM t'
+            result=observe(prepare(conn,b'path_tx_error',sql.encode(),0,None));record('transaction',label,dict(phase='PQprepare',sql=sql),result)
+            check(result['state']=='42P01' and result['position']==str(sql.index('FROM t')+6) and transaction(conn)==3,'transaction failed');recover(label,'transaction')
+        parsed=urlsplit(os.environ['MYSQL_REFERENCE_DSN']);env=dict(os.environ,MYSQL_PWD=parsed.password or '')
+        args=['mysql','--protocol=TCP','-h',parsed.hostname,'-P',str(parsed.port),'-u',parsed.username or 'root','--batch','--raw','--skip-column-names']
+        def mysql_ref(sql):
+            p=subprocess.run(args+['-e',"SET SESSION sql_mode=''; SET NAMES utf8mb4 COLLATE utf8mb4_general_ci; "+sql],env=env,capture_output=True,text=True,timeout=15)
+            return dict(sql=sql,code=p.returncode,output=p.stdout.splitlines(),error=p.stderr)
+        db='ref22_'+evidence.name.replace('-','_')
+        try:
+            result=mysql_ref('SELECT VERSION(),@@version_compile_os,@@version_compile_machine; SELECT @@sql_mode,@@character_set_connection,@@collation_connection; CREATE DATABASE '+db+'; CREATE TABLE '+db+'.t(v INT); INSERT INTO '+db+'.t VALUES(9)')
+            record('mysql_identity','mysql',{},result);check(result['code']==0,'MySQL fixture')
+            for name,_,_ in cases:
+                sql='SELECT v FROM '+db+'.t'
+                result=mysql_ref(sql);record(name,'mysql',dict(phase='Q',sql=sql),result)
+                check(result['code']==0 and result['output']==['9'],'MySQL own name binding')
+                type_sql="SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.columns WHERE TABLE_SCHEMA='"+db+"' AND TABLE_NAME='t' AND COLUMN_NAME='v'"
+                result=mysql_ref(type_sql);record(name+'_type','mysql',dict(phase='Q',sql=type_sql),result)
+                check(result['code']==0 and result['output']==['int\tint\tYES\tNULL\tNULL'],'MySQL real column type')
+            result=mysql_ref('SET search_path TO public');record('pg_only','mysql',dict(phase='Q',sql='SET search_path TO public'),result)
+            check(result['code']!=0 and '1064 (42000)' in result['error'],'MySQL rejects PG SET syntax independently')
+            sql="USE "+db+"; PREPARE s FROM 'SELECT v FROM t WHERE v=?'; SET @v=9; EXECUTE s USING @v; DEALLOCATE PREPARE s"
+            result=mysql_ref(sql);record('mysql_prepare','mysql',dict(phase='PREPARE/EXECUTE',sql=sql),result);check(result['code']==0 and result['output']==['9'],'MySQL own prepared binding')
+        finally:
+            result=mysql_ref('DROP DATABASE IF EXISTS '+db);record('cleanup','mysql',{},result);clean=result['code']==0 and clean
+        final=copy.deepcopy(provenance);final['source']=source_snapshot(root);final['build']['sha256']=hashlib.sha256(Path(build['path']).read_bytes()).hexdigest()
+        check(validate_provenance(provenance,final),'source unchanged');done=True
+    finally:
+        for conn,statement in prepared:clean=observe(close_prepared(conn,statement))['status']==1 and clean
+        for conn in conns.values():
+            if conn and transaction(conn) in (2,3):clean=query(conn,'ROLLBACK')['status']==1 and clean
+            if conn:clean=query(conn,'RESET search_path')['status']==1 and clean
+        for label,table in reversed(created):
+            sql='DROP TABLE IF EXISTS '+table;result=query(conns[label],sql);record('cleanup',label,dict(phase='Q',sql=sql),result);clean=result['status']==1 and clean
+        for conn in conns.values():
+            if conn:finish(conn)
+        summary=dict(cases=12,primary_prepare_cases=11 if done and clean else 0,primary_describe_cases=11 if done and clean else 0,
+            primary_execute_cases=11 if done and clean else 0,diagnostic_cases=1 if done and clean else 0,failures=failures,assertions=checks,self_checks=self_checks,
+            unique_effective=eligible if done and clean else 0,cleanup_ok=clean)
+        (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
+    assert done and clean,'completion/cleanup'
+    print(json.dumps(summary),flush=True)
+
+
 def lifecycle_handoff():
     """Connection lifecycle through libpq18; named portals need a wire supplement."""
     import socket
@@ -4738,6 +4956,10 @@ if task == 17:
 
 if task == 24:
     lifecycle_handoff()
+    sys.exit(0)
+
+if task == 22:
+    search_path_handoff()
     sys.exit(0)
 
 if task == 21:

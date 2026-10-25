@@ -1106,6 +1106,7 @@ fn run_session_worker(
                     .and_then(
                         |((statement_id, parameter_count, fields), parameter_cast_oids)| {
                             Ok(PreparedMetadata {
+                                catalog_column_origins: Vec::new(),
                                 column_origins: fields
                                     .iter()
                                     .map(|field| field.column_origin)

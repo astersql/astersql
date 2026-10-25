@@ -964,10 +964,15 @@ impl Extended {
                     let execution = if let Some(query) = &portal.session_query {
                         self.session.execute(query, context.as_ref())
                     } else {
-                        let catalog = portal.catalog.clone().map(|mut query| {
-                            query.current_schema = self.session.schema().map(str::to_owned);
-                            query
-                        });
+                        let catalog = if let Some(mut query) = portal.catalog.clone() {
+                            query.current_schema = self
+                                .session
+                                .effective_schema(context.as_ref())
+                                .map_err(engine)?;
+                            Some(query)
+                        } else {
+                            None
+                        };
                         execute(portal.statement, &portal.args, catalog)
                             .map_err(|e| error("XX000", &e.to_string()))?
                     };
@@ -1085,6 +1090,7 @@ fn description_formats(
         columns: metadata.columns.clone(),
         native_types: metadata.native_types.clone(),
         column_origins: metadata.column_origins.clone(),
+        catalog_column_origins: metadata.catalog_column_origins.clone(),
         ..QueryResult::default()
     };
     let messages = crate::pg_result::encode_formats(&result, command, formats)

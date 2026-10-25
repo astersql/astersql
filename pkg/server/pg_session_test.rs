@@ -14,9 +14,6 @@ fn pg_introspection_namespace_parser_boundaries() {
     for sql in [
         "SET search_path TO public; SELECT 1",
         "SET search_path TO NULL",
-        "SET search_path TO missing",
-        "SET search_path TO \"PUBLIC\"",
-        "SET search_path TO public, public",
     ] {
         assert!(SessionQuery::parse(sql).is_err(), "{sql}");
     }

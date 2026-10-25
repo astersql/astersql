@@ -87,19 +87,34 @@ impl PgSession {
         }
     }
 
-    pub(crate) fn public_precedes_catalog(&self) -> bool {
-        // An omitted pg_catalog is implicitly searched before every user schema.
-        self.path
-            .iter()
-            .position(|s| s == "public")
-            .zip(self.path.iter().position(|s| s == "pg_catalog"))
-            .is_some_and(|(public, catalog)| public < catalog)
+    /// Expand only namespaces exposed by the authoritative directory provider.
+    /// Missing schemas (including an absent user schema) are silently skipped;
+    /// implicit pg_catalog belongs to relation lookup, not current_schema().
+    pub(crate) fn effective_explicit_path(
+        &self,
+        context: &dyn TiDBContext,
+    ) -> crate::conn::ConnResult<Vec<String>> {
+        let namespaces = crate::pg_catalog::namespace_names(context)?;
+        let identity = context.user_identity()?;
+        let user = identity
+            .rsplit_once('@')
+            .map_or(identity.as_str(), |(user, _)| user);
+        let mut effective = Vec::new();
+        for entry in &self.path {
+            let name = if entry == "$user" { user } else { entry };
+            if namespaces.iter().any(|namespace| namespace == name)
+                && !effective.iter().any(|existing| existing == name)
+            {
+                effective.push(name.to_owned());
+            }
+        }
+        Ok(effective)
     }
-    pub(crate) fn has_public(&self) -> bool {
-        self.path.iter().any(|name| name == "public")
-    }
-    pub(crate) fn schema(&self) -> Option<&str> {
-        self.path.first().map(String::as_str)
+    pub(crate) fn effective_schema(
+        &self,
+        context: &dyn TiDBContext,
+    ) -> crate::conn::ConnResult<Option<String>> {
+        Ok(self.effective_explicit_path(context)?.into_iter().next())
     }
     pub(crate) fn execute(
         &mut self,
@@ -107,7 +122,26 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
-            SessionQuery::Show => Some(Value::Text(self.path.join(", "))),
+            // PostgreSQL canonicalizes the empty string list item as a quoted
+            // empty identifier. It has no effective namespace, but SHOW is not NULL.
+            SessionQuery::Show if self.path.is_empty() => Some(Value::Text("\"\"".into())),
+            SessionQuery::Show => Some(Value::Text(
+                self.path
+                    .iter()
+                    .map(|name| {
+                        if name == "$user"
+                            || name.chars().any(|c| {
+                                !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                            })
+                        {
+                            format!("\"{}\"", name.replace('"', "\"\""))
+                        } else {
+                            name.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )),
             SessionQuery::Set(path) => {
                 self.path = path.clone();
                 None
@@ -116,9 +150,10 @@ impl PgSession {
                 *self = Self::default();
                 None
             }
-            SessionQuery::Schema(_) => {
-                Some(self.schema().map_or(Value::Null, |s| Value::Text(s.into())))
-            }
+            SessionQuery::Schema(_) => Some(
+                self.effective_schema(context)?
+                    .map_or(Value::Null, Value::Text),
+            ),
             SessionQuery::Database(_) => {
                 let result = context.execute_query(
                     "SELECT DATABASE()",
@@ -161,6 +196,7 @@ impl SessionQuery {
             _ => None,
         };
         let mut result = PreparedMetadata {
+            catalog_column_origins: Vec::new(),
             column_origins: Vec::new(),
             parameter_cast_oids: Vec::new(),
             statement_id: 0,
@@ -169,9 +205,14 @@ impl SessionQuery {
             native_types: Vec::new(),
         };
         if let Some(name) = name {
+            let code = if matches!(self, Self::Schema(_)) {
+                crate::pg_result::CatalogColumnType::Name as u8
+            } else {
+                253
+            };
             result.columns.push(ColumnInfo {
                 name: name.into(),
-                column_type: 253,
+                column_type: code,
                 charset: 45,
                 column_length: 64,
                 schema: String::new(),
@@ -183,7 +224,7 @@ impl SessionQuery {
                 default_value: None,
             });
             result.native_types.push(NativeType {
-                code: 253,
+                code,
                 flags: 0,
                 length: 64,
                 decimal: 0,
@@ -225,6 +266,9 @@ impl SessionQuery {
             if tokens.len() == 4 && word(tokens.get(3), "default") {
                 return Ok(Some(Self::Reset));
             }
+            if word(tokens.get(3), "null") {
+                return Err(("0A000", "NULL search_path is unsupported".into()));
+            }
             let values = &tokens[3..];
             if values == [Token::String(String::new())] {
                 return Ok(Some(Self::Set(Vec::new())));
@@ -244,15 +288,6 @@ impl SessionQuery {
                     Token::Word(s) | Token::Quoted(s) | Token::String(s) => s,
                     _ => return Err(("42601", "expected schema name".into())),
                 };
-                if !matches!(name.as_str(), "public" | "pg_catalog") {
-                    return Err(("0A000", format!("unsupported PostgreSQL schema {name}")));
-                }
-                if path.contains(name) {
-                    return Err((
-                        "0A000",
-                        "duplicate search_path schema is unsupported".into(),
-                    ));
-                }
                 path.push(name.clone());
             }
             return Ok(Some(Self::Set(path)));

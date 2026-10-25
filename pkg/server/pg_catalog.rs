@@ -118,9 +118,19 @@ impl CatalogQuery {
         session: &crate::pg_session::PgSession,
         oids: &[u32],
     ) -> ParseResult<Option<Self>> {
-        let mut shadowed = Vec::new();
-        let public_first = session.public_precedes_catalog();
         let names = pg_catalog_query::implicit_relations(sql);
+        if names.is_empty() && pg_catalog_query::parse(sql)?.is_none() {
+            return Ok(None);
+        }
+        let mut shadowed = Vec::new();
+        let path = session
+            .effective_explicit_path(context)
+            .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+        let public_first = path
+            .iter()
+            .position(|s| s == "public")
+            .zip(path.iter().position(|s| s == "pg_catalog"))
+            .is_some_and(|(public, catalog)| public < catalog);
         if public_first && !names.is_empty() {
             let current = context
                 .execute_query("SELECT DATABASE()", false, &CancellationToken::new())
@@ -149,7 +159,7 @@ impl CatalogQuery {
         };
         let mut query = Self {
             select,
-            current_schema: session.schema().map(str::to_owned),
+            current_schema: path.first().cloned(),
             public_first,
             cte_columns: CteColumns::new(),
             parameter_oids: Vec::new(),
@@ -615,7 +625,9 @@ impl CatalogQuery {
                     ("pg_database", "datallowconn") => Some((4, 1, boolean)),
                     ("pg_database", "datdba") => Some((5, 8, 0)),
                     ("pg_namespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                    ("pg_namespace", "nspname") => Some((1, 253, 0)),
+                    ("pg_namespace", "nspname") => {
+                        Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
                     ("pg_namespace", "nspowner") => Some((5, 8, 0)),
                     ("pg_namespace", "xmin") => Some((8, 8, 0)),
                     ("pg_tablespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
@@ -821,7 +833,7 @@ impl CatalogQuery {
                         Ok((253, 0))
                     }
                     ("current_schema", []) if self.select.from.name == "pg_namespace" => {
-                        Ok((253, 0))
+                        Ok((crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
                     ("pg_get_userbyid", [arg])
                         if matches!(arg, Expr::Null) || self.expr_type(arg)?.0 == 8 =>
@@ -1023,6 +1035,32 @@ impl CatalogQuery {
         // Catalog statement identity belongs to the PG statement name, not an
         // engine prepared statement. No backend handle is allocated or closed.
         PreparedMetadata {
+            catalog_column_origins: self
+                .select
+                .projections
+                .iter()
+                .map(|projection| {
+                    let Expr::Column(path) = &projection.expr else {
+                        return None;
+                    };
+                    let (slot, _, _) = self.column(path).ok()?;
+                    let relation = self.relations().nth(slot / CATALOG_ROW_WIDTH)?;
+                    if relation.cte_id.is_some() || relation.name != "pg_namespace" {
+                        return None;
+                    }
+                    let attribute = match slot % CATALOG_ROW_WIDTH {
+                        0 => 1,
+                        1 => 2,
+                        5 => 3,
+                        _ => return None,
+                    };
+                    let oid = crate::pg_oid::SYSTEM_RELATIONS
+                        .iter()
+                        .find(|(name, _)| *name == relation.name)?
+                        .1;
+                    Some((oid, attribute))
+                })
+                .collect(),
             column_origins: Vec::new(),
             parameter_cast_oids: Vec::new(),
             statement_id: 0,
@@ -1067,6 +1105,7 @@ impl CatalogQuery {
         };
         let rows = self.execute_select(&mut execution, true)?;
         Ok(QueryResult {
+            catalog_column_origins: metadata.catalog_column_origins,
             column_origins: Vec::new(),
             columns: metadata.columns,
             native_types: metadata.native_types,
@@ -1340,16 +1379,7 @@ impl CatalogQuery {
                 if name == "pg_class" {
                     class_rows(snapshot.as_ref(), database)?
                 } else if name == "pg_namespace" {
-                    // public is the current native database, never another database.
-                    // pg_catalog is implicit even when absent from search_path.
-                    let public = schemas
-                        .iter()
-                        .find(|s| s.name.lower == database.to_lowercase());
-                    let mut rows = vec![namespace_row(11, "pg_catalog")];
-                    if let Some(schema) = public {
-                        rows.push(namespace_row(namespace_oid(schema.id)?, "public"));
-                    }
-                    rows
+                    namespace_rows(snapshot.as_ref(), database)?
                 } else {
                     // Native schema metadata has no shared-description rows. A
                     // LEFT JOIN to this empty relation keeps every schema and
@@ -2219,7 +2249,8 @@ fn distinct_rows(rows: Vec<Vec<Value>>, execution: &Execution<'_>) -> ConnResult
 }
 
 fn textual_type(code: u8) -> bool {
-    code == 253
+    code == crate::pg_result::CatalogColumnType::Name as u8
+        || code == 253
         || code == crate::pg_result::CatalogColumnType::InternalChar as u8
         || code == crate::pg_result::CatalogColumnType::Char as u8
 }
@@ -3712,4 +3743,38 @@ fn index_constraint_rows(
         }
     }
     Ok(rows)
+}
+
+/// Current-database namespace identities, shared by pg_namespace and path binding.
+/// Native databases remain separate PG databases, never search-path schemas.
+fn namespace_rows(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+) -> ConnResult<Vec<Vec<Value>>> {
+    let mut rows = vec![namespace_row(11, "pg_catalog")];
+    if let Some(schema) = snapshot.SchemaByName(&astersql_infoschema::CiString::new(database)) {
+        rows.push(namespace_row(namespace_oid(schema.id)?, "public"));
+    }
+    Ok(rows)
+}
+pub(crate) fn namespace_names(context: &dyn TiDBContext) -> ConnResult<Vec<String>> {
+    let current = context.execute_query("SELECT DATABASE()", false, &CancellationToken::new())?;
+    let database = current
+        .first()
+        .and_then(|r| r.rows.first())
+        .and_then(|r| r.first());
+    let database = match database {
+        Some(Value::Text(name)) => name.as_str(),
+        _ => "",
+    };
+    let snapshot = context
+        .schema_snapshot()
+        .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
+    Ok(namespace_rows(snapshot.as_ref(), database)?
+        .into_iter()
+        .filter_map(|row| match row.into_iter().nth(1) {
+            Some(Value::Text(name)) => Some(name),
+            _ => None,
+        })
+        .collect())
 }

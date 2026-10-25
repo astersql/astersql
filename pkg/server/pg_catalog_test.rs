@@ -2560,7 +2560,7 @@ order by owner_id
         columns(&result[0].1),
         vec![
             ("relname".into(), 25),
-            ("nspname".into(), 25),
+            ("nspname".into(), 19),
             ("classid".into(), 26),
             ("refclassid".into(), 26),
             ("refobjsubid".into(), 23),
