@@ -1300,8 +1300,10 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
-            if Tp.PostgreSQLTextOid() == Some(1043) {
-                return pg_varchar_relational_value(
+            if Tp.PostgreSQLTextOid().is_some() {
+                return pg_text_relational_cast(
+                    Expr,
+                    row,
                     relational_expression_value(Expr, row)?,
                     Tp,
                     true,
@@ -3712,7 +3714,38 @@ pub(super) fn pg_varchar_relational_value(
     target: &astersql_parser_types::types::FieldType,
     explicit: bool,
 ) -> SessionResult<Option<String>> {
-    astersql_expression::pg_varchar(value.as_deref(), target.GetFlen(), explicit).map_err(|error| {
+    astersql_expression::pg_text_cast(
+        value.as_deref(),
+        false,
+        target.PostgreSQLTextOid().unwrap(),
+        target.GetFlen(),
+        explicit,
+    )
+    .map_err(|error| {
+        SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+    })
+}
+
+pub(super) fn pg_text_relational_cast(
+    source: &ast::ExprNode,
+    _row: &HashMap<String, Option<String>>,
+    value: Option<String>,
+    target: &astersql_parser_types::types::FieldType,
+    explicit: bool,
+) -> SessionResult<Option<String>> {
+    astersql_expression::pg_text_cast(
+        value.as_deref(),
+        PG_CAST_TABLE.with(|slot| {
+            let table = slot.borrow();
+            let empty = astersql_meta_model::TableInfo::default();
+            relational_expression_type(source, table.as_ref().unwrap_or(&empty)).PostgreSQLTextOid()
+                == Some(1042)
+        }),
+        target.PostgreSQLTextOid().unwrap(),
+        target.GetFlen(),
+        explicit,
+    )
+    .map_err(|error| {
         SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
     })
 }

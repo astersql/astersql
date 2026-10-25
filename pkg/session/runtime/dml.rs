@@ -2425,10 +2425,13 @@ impl ConcreteSession {
                         &column_info.unwrap().FieldType,
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                    && column_info
-                        .is_some_and(|column| column.FieldType.PostgreSQLTextOid() == Some(1043))
+                    && column_info.is_some_and(|column| {
+                        matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
+                    })
                 {
-                    pg_varchar_relational_value(
+                    pg_text_relational_cast(
+                        expression,
+                        &row,
                         relational_expression_value(expression, &row)?,
                         &column_info.unwrap().FieldType,
                         false,
@@ -3397,6 +3400,11 @@ impl ConcreteSession {
         let table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            Some(PgCastTable::enter_table(&table))
+        } else {
+            None
+        };
         let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
         self.record_transaction_table_write(&table);
         let matches_plan = |row: &HashMap<String, Option<String>>| -> SessionResult<bool> {
@@ -3616,10 +3624,12 @@ impl ConcreteSession {
                 };
                 let column_info = table.Columns.iter().find(|info| info.Name.L == *column);
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                    && column_info
-                        .is_some_and(|column| column.FieldType.PostgreSQLTextOid() == Some(1043))
-                {
-                    pg_varchar_relational_value(
+                    && column_info.is_some_and(|column| {
+                        matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
+                    }) {
+                    pg_text_relational_cast(
+                        expression,
+                        &row,
                         self.relational_query_expression_value(expression, &row, None)?,
                         &column_info.unwrap().FieldType,
                         false,

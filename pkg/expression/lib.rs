@@ -175,7 +175,7 @@ mod builtin_cast_kernel;
 pub use builtin_cast_kernel::{
     PgBoolError, PgBooleanCast, PgFloat4Error, PgFloat8Error, PgInt4Error, PgTextError,
     pg_boolean_cast, pg_boolean_cast_kind, pg_cast_float4, pg_cast_float8, pg_cast_int2,
-    pg_cast_int4, pg_cast_int8, pg_float_to_integer, pg_narrow_float4, pg_varchar,
+    pg_cast_int4, pg_cast_int8, pg_float_to_integer, pg_narrow_float4, pg_text_cast, pg_varchar,
     pg_varchar_length,
 };
 #[path = "builtin_cast_vec.rs"]

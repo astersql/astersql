@@ -212,3 +212,7 @@ PostgreSQLFloat8行表达式Cast使用pg_float8_relational_value，复用pg_cast
 ### 2026-10-26 varchar 字符长度（任务22）
 
 共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。
+
+### 2026-10-26 定长文本（任务23）
+
+pg_text_relational_cast 从现有 PgCastTable 与 AST 取得源类型，调用共享 pg_text_cast；pg_varchar_relational_value 继续承担列赋值，扩展覆盖 bpchar 补空格。

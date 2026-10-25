@@ -659,3 +659,42 @@ fn pg_scalar_22_varchar_relational() {
     }
     pg.execute("DROP TABLE pg_scalar_22_row").unwrap();
 }
+
+#[test]
+fn pg_scalar_23_bpchar_relational() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg_scalar_23_row (v CHAR(3), w VARCHAR(3))")
+        .unwrap();
+    pg.execute("INSERT INTO pg_scalar_23_row (v) VALUES ('é')")
+        .unwrap();
+    for (sql, expected) in [
+        ("SELECT v FROM pg_scalar_23_row", "é  "),
+        ("SELECT v::text FROM pg_scalar_23_row", "é"),
+        ("SELECT v::varchar(2) FROM pg_scalar_23_row", "é"),
+        (
+            "SELECT x::text FROM (SELECT v AS x FROM pg_scalar_23_row) s",
+            "é",
+        ),
+        ("SELECT ('é'::char(3))::text FROM pg_scalar_23_row", "é"),
+    ] {
+        let mut result = pg.execute(sql).unwrap();
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected],
+            "{sql}"
+        );
+    }
+    pg.execute("CREATE TABLE pg_scalar_23_varchar (v VARCHAR(3))")
+        .unwrap();
+    pg.execute("INSERT INTO pg_scalar_23_varchar SELECT v FROM pg_scalar_23_row")
+        .unwrap();
+    let mut result = pg.execute("SELECT v FROM pg_scalar_23_varchar").unwrap();
+    assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["é"]);
+    pg.execute("UPDATE pg_scalar_23_row SET w=v").unwrap();
+    let mut result = pg.execute("SELECT w FROM pg_scalar_23_row").unwrap();
+    assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["é"]);
+    pg.execute("DROP TABLE pg_scalar_23_varchar").unwrap();
+    pg.execute("DROP TABLE pg_scalar_23_row").unwrap();
+}

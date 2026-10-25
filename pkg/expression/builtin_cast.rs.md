@@ -132,3 +132,7 @@ pg_cast_float8提取原OID701参数解析规则，统一有限溢出/非零下�
 ### 2026-10-26 varchar 字符长度（任务22）
 
 共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。
+
+### 2026-10-26 定长文本（任务23）
+
+新增 pg_text_cast：复用 varchar 字符长度/显式与赋值截断规则，bpchar 按字符数补 U+0020；仅 bpchar 源向 text/varchar 转换去尾 U+0020，无约束 bpchar 保持输入。

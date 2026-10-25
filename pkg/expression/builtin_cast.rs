@@ -2117,3 +2117,31 @@ pub fn pg_varchar(
     }
     Ok(Some(value[..end].to_owned()))
 }
+
+/// Apply the declared PG text identity; only bpchar sources lose trailing U+0020.
+pub fn pg_text_cast(
+    value: Option<&str>,
+    source_bpchar: bool,
+    oid: u32,
+    length: isize,
+    explicit: bool,
+) -> Result<Option<String>, PgTextError> {
+    let value = value.map(|v| {
+        if source_bpchar && oid != 1042 {
+            v.trim_end_matches(' ')
+        } else {
+            v
+        }
+    });
+    if oid == 25 {
+        return Ok(value.map(str::to_owned));
+    }
+    let mut result = pg_varchar(value, length, explicit)?;
+    if oid == 1042 && length >= 0 {
+        if let Some(value) = result.as_mut() {
+            let padding = length as usize - value.chars().count();
+            value.extend(std::iter::repeat_n(' ', padding));
+        }
+    }
+    Ok(result)
+}

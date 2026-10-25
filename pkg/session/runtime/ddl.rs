@@ -715,17 +715,32 @@ impl ConcreteSession {
             // Keep PG modifiers from the AST, including unconstrained numeric
             // and negative scale, rather than MySQL DECIMAL defaults.
             for (column, definition) in table.Columns.iter_mut().zip(&statement.Cols) {
-                if column.GetType() == astersql_parser_mysql::r#type::TypeVarchar {
-                    astersql_expression::pg_varchar_length(definition.Tp.GetFlen()).map_err(
-                        |error| {
-                            SessionError::with_source(
-                                error.to_string(),
-                                astersql_errors::SharedError::new(error),
-                            )
+                if matches!(
+                    column.GetType(),
+                    astersql_parser_mysql::r#type::TypeVarchar
+                        | astersql_parser_mysql::r#type::TypeString
+                ) {
+                    let length = if column.GetType() == astersql_parser_mysql::r#type::TypeString
+                        && definition.Tp.GetFlen() == -1
+                    {
+                        1
+                    } else {
+                        definition.Tp.GetFlen()
+                    };
+                    astersql_expression::pg_varchar_length(length).map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?;
+                    column.FieldType.SetPostgreSQLTextOid(
+                        if column.GetType() == astersql_parser_mysql::r#type::TypeString {
+                            1042
+                        } else {
+                            1043
                         },
-                    )?;
-                    column.FieldType.SetPostgreSQLTextOid(1043);
-                    column.SetFlen(definition.Tp.GetFlen());
+                    );
+                    column.SetFlen(length);
                 }
                 if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
                     column.SetFlen(definition.Tp.GetFlen());

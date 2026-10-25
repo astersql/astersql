@@ -1257,8 +1257,10 @@ impl ConcreteSession {
                         return result;
                     }
                 }
-                if Tp.PostgreSQLTextOid() == Some(1043) {
-                    return pg_varchar_relational_value(
+                if Tp.PostgreSQLTextOid().is_some() {
+                    return pg_text_relational_cast(
+                        Expr,
+                        row,
                         self.relational_query_expression_value(Expr, row, group_rows)?,
                         Tp,
                         true,
@@ -2125,7 +2127,7 @@ impl ConcreteSession {
                     .or(self.numeric_error);
                 }
                 if let ast::ExprKind::Cast { Tp, .. } = &input.Kind {
-                    if Tp.PostgreSQLTextOid() == Some(1043) {
+                    if Tp.PostgreSQLTextOid().is_some() {
                         self.text_error = astersql_expression::pg_varchar_length(Tp.GetFlen())
                             .err()
                             .or(self.text_error);
@@ -2315,6 +2317,10 @@ impl ConcreteSession {
             }
             for field in &mut derived_fields {
                 field.column_origin = None;
+                if field.column.FieldType.PostgreSQLTextOid() == Some(1042) {
+                    // A derived bpchar source is referenced by its projected name.
+                    field.column.Name = field.column_as_name.clone();
+                }
             }
             fields.extend(derived_fields);
             return Ok(());
@@ -3091,6 +3097,11 @@ impl ConcreteSession {
             .Select
             .as_ref()
             .ok_or_else(|| SessionError::new("INSERT SELECT requires a SELECT source"))?;
+        let source_fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            self.relational_query_node_result_fields(select.as_ref(), &[])?
+        } else {
+            Vec::new()
+        };
         let selected = self.execute_insert_select_node(select.as_ref())?;
         if !statement.Columns.is_empty() && selected.columns.len() != statement.Columns.len() {
             return Err(SessionError::new(
@@ -3108,12 +3119,21 @@ impl ConcreteSession {
                 selected
                     .columns
                     .iter()
-                    .map(|column| {
+                    .enumerate()
+                    .map(|(index, column)| {
                         let value = row.get(column).cloned().unwrap_or(None);
                         if let Some(bytes) = value.as_deref().and_then(binary_runtime_bytes) {
                             return ast::ExprNode::HexValue(bytes, "binary", "binary");
                         }
-                        ast::NewValueExpr(value, "utf8mb4", "utf8mb4_bin")
+                        let mut expression = ast::NewValueExpr(value, "utf8mb4", "utf8mb4_bin");
+                        if let Some(field) = source_fields.get(index) {
+                            if field.column.FieldType.PostgreSQLTextOid() == Some(1042) {
+                                if let ast::ExprKind::Value(value) = &mut expression.Kind {
+                                    value.Type = field.column.FieldType.clone();
+                                }
+                            }
+                        }
+                        expression
                     })
                     .collect()
             })

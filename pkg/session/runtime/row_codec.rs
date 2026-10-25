@@ -344,7 +344,7 @@ pub(super) fn runtime_value_to_datum(
     let Some(value) = value else {
         return Ok(astersql_types::datum::Datum::default());
     };
-    if column.FieldType.PostgreSQLTextOid() == Some(1043) {
+    if matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043)) {
         return pg_varchar_relational_value(Some(value.clone()), &column.FieldType, false).map(
             |value| {
                 value

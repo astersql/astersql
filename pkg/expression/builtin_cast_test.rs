@@ -865,3 +865,83 @@ fn pg_scalar_22_formal_varchar() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_23_formal_bpchar() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    let mut target = *types::NewFieldType(mysql::TypeVarString);
+    target.SetCharset("utf8mb4".into());
+    target.SetCollate("utf8mb4_bin".into());
+    target.SetPostgreSQLTextOid(1042);
+    target.SetFlen(2);
+    for (input, expected) in [
+        (Some("é😀x"), Some("é😀")),
+        (Some("e\u{301}x"), Some("e\u{301}")),
+        (Some("a  "), Some("a ")),
+        (Some("é"), Some("é ")),
+        (Some(""), Some("  ")),
+        (None, None),
+    ] {
+        let datum = input
+            .map(|v| types::NewStringDatum(v.into()))
+            .unwrap_or_default();
+        let source: Box<dyn FormalExpression> =
+            Box::new(crate::Constant::with_type(datum, target.clone()));
+        let cast = crate::formal_registry::BuildCastFunction(&pg, &source, &target);
+        let actual = cast
+            .Eval(pg.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap();
+        assert_eq!(actual.IsNull(), expected.is_none());
+        if let Some(expected) = expected {
+            assert_eq!(actual.ToString().unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn pg_scalar_23_formal_bpchar_to_text() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    for source_oid in [1042, 25, 1043] {
+        for target_oid in [25, 1043] {
+            let mut source_type = *types::NewFieldType(mysql::TypeVarString);
+            source_type.SetCharset("utf8mb4".into());
+            source_type.SetCollate("utf8mb4_bin".into());
+            source_type.SetPostgreSQLTextOid(source_oid);
+            source_type.SetFlen(-1);
+            let mut target = source_type.clone();
+            target.SetPostgreSQLTextOid(target_oid);
+            for input in [Some("é  "), Some("a　 "), None] {
+                let datum = input
+                    .map(|v| types::NewStringDatum(v.into()))
+                    .unwrap_or_default();
+                let source: Box<dyn FormalExpression> =
+                    Box::new(crate::Constant::with_type(datum, source_type.clone()));
+                let cast = crate::formal_registry::BuildCastFunction(&pg, &source, &target);
+                let actual = cast
+                    .Eval(pg.GetEvalCtx(), crate::chunk::Row::default())
+                    .unwrap();
+                assert_eq!(actual.IsNull(), input.is_none());
+                if let Some(input) = input {
+                    assert_eq!(
+                        actual.ToString().unwrap(),
+                        if source_oid == 1042 {
+                            input.trim_end_matches(' ')
+                        } else {
+                            input
+                        }
+                    );
+                }
+            }
+        }
+    }
+}

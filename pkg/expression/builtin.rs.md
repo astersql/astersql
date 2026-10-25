@@ -164,3 +164,7 @@ PG目标TypeDouble在正式工厂选择PgFloat8分支，调用严格pg_cast_floa
 ### 2026-10-26 varchar 字符长度（任务22）
 
 共享 `pg_varchar` 按 Unicode 标量计数；显式 CAST 裁剪，赋值仅允许额外 U+0020，类型长度域为 1..10485760。沿已有 FieldType 文本身份及错误源传递，保留 MySQL 路径。回归见 `pg_extended_test::pg_scalar_22`、`builtin_cast_test::pg_scalar_22_formal_varchar` 和 `relational_value_test::pg_scalar_22_varchar_relational`。
+
+### 2026-10-26 定长文本（任务23）
+
+正式 PG CAST 按返回 FieldType 文本 OID 与源表达式类型调用 pg_text_cast；保留 PgBoolean 专属转换及 MySQL 分支。
