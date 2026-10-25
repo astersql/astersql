@@ -1173,6 +1173,811 @@ fn pg_dialect_24_libpq() {
     pg_dialect_libpq(24);
 }
 
+fn pg_dialect_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read evidence {}: {error}", path.display()))
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("parse evidence {}: {error}", path.display()))
+        })
+        .collect()
+}
+
+fn pg_dialect_records<'a>(
+    records: &'a [serde_json::Value],
+    case_id: &str,
+    side: &str,
+) -> Vec<&'a serde_json::Value> {
+    records
+        .iter()
+        .filter(|record| record["case_id"] == case_id && record["side"] == side)
+        .collect()
+}
+
+fn pg_dialect_07_origins_match(
+    description: &serde_json::Value,
+    expected_relation_oid: u64,
+    has_base_column: bool,
+) -> bool {
+    let Some(origins) = description["table_origins"].as_array() else {
+        return false;
+    };
+    if has_base_column {
+        origins.len() == 1
+            && origins[0][0].as_u64() == Some(expected_relation_oid)
+            && origins[0][1] == 1
+    } else {
+        origins.is_empty()
+    }
+}
+
+fn pg_dialect_07_audit(evidence: &std::path::Path) -> serde_json::Value {
+    use std::collections::{HashMap, HashSet};
+
+    let summary_path = evidence.join("summary.json");
+    let mut summary: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&summary_path).expect("Python evidence summary"),
+    )
+    .expect("Python evidence summary JSON");
+    let cases: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("cases.json")).expect("task 7 case registry"),
+    )
+    .expect("task 7 case registry JSON");
+    let cases = cases.as_array().expect("task 7 case registry array");
+    assert!(
+        cases.len() >= 6,
+        "task 7 requires at least six registered cases"
+    );
+    assert_eq!(summary["cases"].as_u64(), Some(cases.len() as u64));
+    assert_eq!(summary["provenance_ok"], true);
+    assert_eq!(summary["failures"], serde_json::json!([]));
+
+    let aster = pg_dialect_jsonl(&evidence.join("aster.jsonl"));
+    let reference = pg_dialect_jsonl(&evidence.join("reference.jsonl"));
+    let mysql = pg_dialect_jsonl(&evidence.join("mysql.jsonl"));
+    let mysql_local: Vec<serde_json::Value> =
+        std::fs::read_to_string(evidence.join("mysql-local.jsonl"))
+            .expect("task 7 MySQL local evidence")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .expect("task 7 MySQL local evidence JSON")
+            })
+            .filter(|record| record["mysql_on_duplicate_prepared"] == true)
+            .collect();
+    let provenance: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("provenance.json")).expect("task 7 provenance"),
+    )
+    .expect("task 7 provenance JSON");
+    let mysql_identity: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("mysql-reference.json")).expect("MySQL identity"),
+    )
+    .expect("MySQL identity JSON");
+    let ref_cleanup: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("reference-cleanup.json")).expect("PG cleanup"),
+    )
+    .expect("PG cleanup JSON");
+    let rust_cleanup: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("rust-cleanup.json")).expect("server cleanup"),
+    )
+    .expect("server cleanup JSON");
+    let child_exit: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(evidence.join("child-exit.json")).expect("Python child exit"),
+    )
+    .expect("Python child exit JSON");
+
+    assert_eq!(child_exit["success"], true);
+    assert_eq!(ref_cleanup["cleanup_ok"], true);
+    assert_eq!(ref_cleanup["reference_schema_dropped"], true);
+    assert_eq!(ref_cleanup["local_rows_preserved"], true);
+    assert_eq!(ref_cleanup["reference_rows_preserved"], true);
+    assert_eq!(rust_cleanup["database_dropped"], true);
+    assert_eq!(rust_cleanup["postgres_port_closed"], true);
+    assert_eq!(rust_cleanup["mysql_port_closed"], true);
+    assert_eq!(
+        mysql_identity["identity"][0]
+            .as_str()
+            .unwrap()
+            .split('\t')
+            .next(),
+        Some("8.4.7")
+    );
+    assert_eq!(
+        mysql_identity["identity"][1],
+        "\tutf8mb4\tutf8mb4_general_ci"
+    );
+    assert_eq!(mysql_identity["sql_mode"], "");
+    assert_eq!(mysql_identity["character_set_connection"], "utf8mb4");
+    assert_eq!(mysql_identity["collation_connection"], "utf8mb4_general_ci");
+    assert_eq!(provenance["target_version"], "18.6");
+    assert_eq!(provenance["reference"]["server_version_num"], "180006");
+    assert_eq!(provenance["client"]["PQlibVersion"], 180000);
+    assert!(
+        !provenance["source"]["workspace_sha256"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+    assert!(
+        !provenance["build"]["sha256"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+    assert!(
+        !provenance["reference_build"]["source_sha256"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+    assert!(
+        !provenance["reference_build"]["binary_sha256"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+    assert_eq!(provenance["mysql_reference"]["version"], "8.4.7");
+    assert!(
+        !provenance["mysql_reference"]["image_digest"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+
+    let mysql_by_case: HashMap<&str, &serde_json::Value> = mysql_local
+        .iter()
+        .map(|record| {
+            (
+                record["case_id"].as_str().expect("MySQL local case ID"),
+                record,
+            )
+        })
+        .collect();
+    assert_eq!(
+        mysql_by_case.len(),
+        mysql_local.len(),
+        "duplicate MySQL local case record"
+    );
+    assert_eq!(
+        mysql_local.len(),
+        cases.len(),
+        "one local MySQL bypass record per registered case"
+    );
+
+    let aster_relation_record = pg_dialect_records(&aster, "fixture_relation_oid", "aster");
+    let reference_relation_record =
+        pg_dialect_records(&reference, "fixture_relation_oid", "reference");
+    assert_eq!(aster_relation_record.len(), 1);
+    assert_eq!(reference_relation_record.len(), 1);
+    let aster_relation_oid: u64 = aster_relation_record[0]["observation"]["rows"][0][0]
+        .as_str()
+        .expect("Aster relation OID")
+        .parse()
+        .expect("numeric Aster relation OID");
+    let reference_relation_oid: u64 = reference_relation_record[0]["observation"]["rows"][0][0]
+        .as_str()
+        .expect("reference relation OID")
+        .parse()
+        .expect("numeric reference relation OID");
+    assert!(aster_relation_oid > 0 && reference_relation_oid > 0);
+    for (records, side) in [(&aster, "aster"), (&reference, "reference")] {
+        let attributes = pg_dialect_records(records, "fixture_relation_attributes", side);
+        assert_eq!(attributes.len(), 1);
+        assert_eq!(attributes[0]["observation"]["status"], 2);
+        assert_eq!(
+            attributes[0]["observation"]["rows"],
+            serde_json::json!([["1", "id"]])
+        );
+        let expected_oid = if side == "aster" {
+            aster_relation_oid
+        } else {
+            reference_relation_oid
+        }
+        .to_string();
+        assert!(
+            attributes[0]["input"]["sql"]
+                .as_str()
+                .unwrap()
+                .contains(&expected_oid)
+        );
+    }
+
+    let mut unique_ids = HashSet::new();
+    let mut valid_parse_describe_ids = HashSet::new();
+    let mut negative_parse_ids = HashSet::new();
+    let mut simple_gate_ids = HashSet::new();
+    let mut execute_gate_ids = HashSet::new();
+    let mut mysql_rejection_ids = HashSet::new();
+    let mut metadata_origin_ids = HashSet::new();
+    let mut explicit_parameter_ids = HashSet::new();
+    let mut full_dml_semantic_success_ids = HashSet::new();
+    let mut case_audit = Vec::new();
+
+    let state_is_31 = |record: &serde_json::Value| {
+        record["observation"]["status"] == 2
+            && record["observation"]["rows"] == serde_json::json!([["31"]])
+    };
+    let recovery_is_healthy = |record: &serde_json::Value| {
+        record["observation"]["status"] == 2
+            && record["observation"]["state"] == ""
+            && record["observation"]["rows"] == serde_json::json!([["1"]])
+            && record["observation"]["transaction_after"] == "I"
+    };
+
+    for case in cases {
+        let case_id = case["case_id"].as_str().expect("registered case ID");
+        assert!(
+            unique_ids.insert(case_id.to_string()),
+            "duplicate registered case {case_id}"
+        );
+        let valid = case["kind"] == "valid";
+        let original_sql = case["input"]["sql"]
+            .as_str()
+            .expect("registered source SQL");
+        let reference_sql = case["reference_sql"]
+            .as_str()
+            .expect("mapped PG source SQL");
+        let reference_relation = case["object_mapping"]["reference"]
+            .as_str()
+            .expect("mapped PostgreSQL relation");
+        let mysql_sql = original_sql.replace("public.t", "t").replace("$1", "31");
+        assert_eq!(case["input"]["phase"], "PQprepare");
+        assert_eq!(case["encoding"], "UTF8");
+        assert_eq!(case["timezone"], "UTC");
+        assert_eq!(case["search_path"], "public");
+        assert_eq!(case["initial_state"], "I");
+        assert_eq!(
+            case["object_mapping"]["aster"]
+                .as_str()
+                .unwrap()
+                .ends_with(".t"),
+            true
+        );
+        assert_eq!(
+            case["object_mapping"]["reference"]
+                .as_str()
+                .unwrap()
+                .ends_with(".t"),
+            true
+        );
+        assert_eq!(
+            reference_sql,
+            original_sql.replace("public.t", reference_relation)
+        );
+        assert_eq!(case["source_relation_oid"]["aster"], aster_relation_oid);
+        assert_eq!(
+            case["source_relation_oid"]["reference"],
+            reference_relation_oid
+        );
+        assert_eq!(case["source_attributes"]["aster"]["id"], 1);
+        assert_eq!(case["source_attributes"]["reference"]["id"], 1);
+        if valid {
+            assert_eq!(
+                case["input"]["parameter_oids"],
+                case["execution_input"]["parameter_oids"]
+            );
+            assert_eq!(case["execution_input"]["phase"], "PQexecPrepared");
+            assert_eq!(
+                case["execution_input"]["parameter_formats"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                case["execution_input"]["parameter_oids"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+            );
+        } else {
+            assert!(case["execution_input"].is_null());
+        }
+        let mysql_case = mysql_by_case[case_id];
+        let mysql_reference: Vec<&serde_json::Value> = mysql
+            .iter()
+            .filter(|record| record["case_id"] == case_id && record["side"] == "mysql")
+            .collect();
+        assert_eq!(
+            mysql_reference.len(),
+            1,
+            "one external MySQL outcome for {case_id}"
+        );
+        let mysql_outcome = &mysql_reference[0]["observation"];
+        assert_eq!(
+            mysql_outcome["error_code"], 1064,
+            "MySQL 8.4.7 rejection for {case_id}"
+        );
+        assert_eq!(
+            mysql_outcome["sqlstate"], "42000",
+            "MySQL SQLSTATE for {case_id}"
+        );
+        assert_eq!(mysql_outcome["sql_mode"], "");
+        assert_eq!(mysql_outcome["character_set"], "utf8mb4");
+        assert_eq!(mysql_outcome["collation"], "utf8mb4_general_ci");
+        assert_eq!(mysql_outcome["column_metadata"][0], "id");
+        assert_eq!(mysql_outcome["column_metadata"][1], "int");
+        assert_eq!(mysql_outcome["column_metadata"][2], "NO");
+        assert_eq!(mysql_outcome["column_metadata"][3], "PRI");
+        assert_eq!(mysql_outcome["row_before"], "31");
+        assert_eq!(mysql_outcome["row_after"], "31");
+        assert_eq!(mysql_outcome["recovery"], "1");
+        assert_eq!(mysql_outcome["legal_prepare_error_count"], 0);
+        assert_eq!(mysql_outcome["subprocess_exited"], true);
+        assert_eq!(mysql_outcome["temporary_connection_closed"], true);
+        assert!(
+            mysql_outcome["legal_prepare_sql"]
+                .as_str()
+                .unwrap()
+                .contains("ON DUPLICATE KEY UPDATE")
+        );
+        assert!(mysql_outcome["error"].as_str().unwrap().contains("near '"));
+        assert_eq!(mysql_case["mysql_error_code"], 1064);
+        assert_eq!(mysql_case["mysql_sqlstate"], "42000");
+        assert_eq!(mysql_case["postgresql_sql"], original_sql);
+        assert_eq!(mysql_case["mysql_sql"], mysql_sql);
+        assert_eq!(mysql_case["before"], serde_json::json!([[[51, 49]]]));
+        assert_eq!(
+            mysql_case["before"], mysql_case["after"],
+            "local MySQL state for {case_id}"
+        );
+        assert_eq!(
+            mysql_case["recovery"],
+            serde_json::json!([[[49]]]),
+            "local MySQL recovery for {case_id}"
+        );
+        assert_eq!(mysql_case["mysql_on_duplicate_prepared"], true);
+        assert_eq!(mysql_case["mysql_on_duplicate_prepare_packet"][0], 0);
+        assert_eq!(mysql_case["mysql_on_duplicate_prepare_columns"], 0);
+        assert_eq!(mysql_case["mysql_on_duplicate_prepare_parameters"], 0);
+        assert_eq!(mysql_case["mysql_on_duplicate_statement_closed"], true);
+        let packet = mysql_case["packet"].as_array().expect("MySQL error packet");
+        assert_eq!(packet.first().and_then(|byte| byte.as_u64()), Some(255));
+        assert_eq!(packet.get(1).and_then(|byte| byte.as_u64()), Some(40));
+        assert_eq!(packet.get(2).and_then(|byte| byte.as_u64()), Some(4));
+        mysql_rejection_ids.insert(case_id.to_string());
+
+        let reference_parse: Vec<&serde_json::Value> =
+            pg_dialect_records(&reference, case_id, "reference")
+                .into_iter()
+                .filter(|record| record["input"]["phase"] == "PQprepare")
+                .collect();
+        let local_parse: Vec<&serde_json::Value> = pg_dialect_records(&aster, case_id, "aster")
+            .into_iter()
+            .filter(|record| record["input"]["phase"] == "PQprepare")
+            .collect();
+        assert_eq!(reference_parse.len(), 1, "one PG18 Parse/Prepare per case");
+        assert_eq!(local_parse.len(), 2, "two Aster endpoints per case");
+        assert_eq!(reference_parse[0]["input"]["sql"], reference_sql);
+        assert_eq!(
+            reference_parse[0]["input"]["parameter_oids"],
+            case["input"]["parameter_oids"]
+        );
+        assert!(local_parse.iter().all(|record| {
+            record["input"]["sql"] == original_sql
+                && record["input"]["parameter_oids"] == case["input"]["parameter_oids"]
+        }));
+        let endpoints: HashSet<&str> = local_parse
+            .iter()
+            .map(|record| {
+                record["observation"]["endpoint"]
+                    .as_str()
+                    .expect("Aster endpoint")
+            })
+            .collect();
+        assert_eq!(endpoints, HashSet::from(["aster", "aster_b"]));
+
+        if valid {
+            for record in reference_parse.iter().chain(local_parse.iter()) {
+                assert_eq!(
+                    record["observation"]["status"], 1,
+                    "successful Prepare for {case_id}"
+                );
+                assert_eq!(
+                    record["observation"]["state"], "",
+                    "successful Prepare SQLSTATE for {case_id}"
+                );
+                assert_eq!(record["observation"]["transaction_after"], "I");
+            }
+            let reference_describe_id = format!("{case_id}_describe");
+            let reference_describe =
+                pg_dialect_records(&reference, &reference_describe_id, "reference");
+            let local_describe = pg_dialect_records(&aster, &reference_describe_id, "aster");
+            assert_eq!(
+                reference_describe.len(),
+                1,
+                "one PG18 Describe for {case_id}"
+            );
+            assert_eq!(
+                local_describe.len(),
+                2,
+                "Describe on both Aster endpoints for {case_id}"
+            );
+            let expected_metadata = &case["describe_expected"];
+            let has_base_column = case_id == "omitted_target";
+            let descriptions = reference_describe
+                .iter()
+                .map(|description| (*description, reference_relation_oid))
+                .chain(
+                    local_describe
+                        .iter()
+                        .map(|description| (*description, aster_relation_oid)),
+                );
+            for (description, expected_relation_oid) in descriptions {
+                let observed = &description["observation"];
+                assert_eq!(observed["status"], 1, "Describe status for {case_id}");
+                assert_eq!(observed["state"], "", "Describe SQLSTATE for {case_id}");
+                assert_eq!(
+                    observed["fields"], expected_metadata["fields"],
+                    "Describe columns for {case_id}"
+                );
+                assert_eq!(
+                    observed["formats"], expected_metadata["formats"],
+                    "Describe formats for {case_id}"
+                );
+                assert_eq!(
+                    observed["param_count"], expected_metadata["parameter_count"],
+                    "Describe parameter count for {case_id}"
+                );
+                assert_eq!(
+                    observed["params"], expected_metadata["parameter_oids"],
+                    "Describe parameter OIDs for {case_id}"
+                );
+                assert!(
+                    pg_dialect_07_origins_match(observed, expected_relation_oid, has_base_column),
+                    "Describe source-column origins for {case_id}"
+                );
+            }
+            let reference_metadata = &reference_describe[0]["observation"];
+            for description in &local_describe {
+                let observed = &description["observation"];
+                for key in ["fields", "formats", "param_count", "params"] {
+                    assert_eq!(
+                        observed[key], reference_metadata[key],
+                        "Aster/PG Describe {key} for {case_id}"
+                    );
+                }
+            }
+            metadata_origin_ids.insert(case_id.to_string());
+            if expected_metadata["parameter_count"] == 1 {
+                explicit_parameter_ids.insert(case_id.to_string());
+            }
+
+            let simple_id = format!("{case_id}_simple_query_gate");
+            let simple = pg_dialect_records(&aster, &simple_id, "aster");
+            assert_eq!(
+                simple.len(),
+                2,
+                "Simple Query gate on both endpoints for {case_id}"
+            );
+            let execute_id = format!("{case_id}_execute_gate");
+            let execute = pg_dialect_records(&aster, &execute_id, "aster");
+            assert_eq!(
+                execute.len(),
+                2,
+                "Extended Execute gate on both endpoints for {case_id}"
+            );
+            let expected_simple_sql = original_sql.replace("$1", "31");
+            let expected_arguments = &case["execution_input"]["arguments"];
+            for record in &simple {
+                assert_eq!(record["input"]["phase"], "PQexec");
+                assert_eq!(record["input"]["sql"], expected_simple_sql);
+            }
+            let mut simple_endpoints = HashSet::new();
+            for record in &simple {
+                assert_eq!(record["observation"]["status"], 7);
+                assert_eq!(record["observation"]["state"], "0A000");
+                assert_eq!(record["observation"]["transaction_after"], "I");
+                simple_endpoints.insert(record["observation"]["endpoint"].as_str().unwrap());
+            }
+            assert_eq!(simple_endpoints, HashSet::from(["aster", "aster_b"]));
+            let mut execute_endpoints = HashSet::new();
+            for record in &execute {
+                assert_eq!(record["input"]["phase"], "PQexecPrepared");
+                assert_eq!(
+                    record["input"]["parameter_oids"],
+                    case["execution_input"]["parameter_oids"]
+                );
+                assert_eq!(record["input"]["arguments"], *expected_arguments);
+                assert_eq!(
+                    record["input"]["parameter_formats"],
+                    case["execution_input"]["parameter_formats"]
+                );
+                assert_eq!(
+                    record["input"]["result_format"],
+                    case["execution_input"]["result_format"]
+                );
+                assert_eq!(record["observation"]["status"], 7);
+                assert_eq!(record["observation"]["state"], "0A000");
+                assert_eq!(record["observation"]["transaction_after"], "I");
+                execute_endpoints.insert(record["observation"]["endpoint"].as_str().unwrap());
+            }
+            assert_eq!(execute_endpoints, HashSet::from(["aster", "aster_b"]));
+            simple_gate_ids.insert(case_id.to_string());
+            execute_gate_ids.insert(case_id.to_string());
+
+            let reference_close = pg_dialect_records(
+                &reference,
+                &format!("{case_id}_reference_close"),
+                "reference",
+            );
+            let local_close =
+                pg_dialect_records(&aster, &format!("{case_id}_aster_close"), "aster");
+            assert_eq!(
+                reference_close.len(),
+                1,
+                "reference prepared statement close for {case_id}"
+            );
+            assert_eq!(reference_close[0]["observation"]["status"], 1);
+            assert_eq!(
+                local_close.len(),
+                2,
+                "Aster prepared statement closes for {case_id}"
+            );
+            assert!(
+                local_close
+                    .iter()
+                    .all(|record| record["observation"]["status"] == 1)
+            );
+
+            let state_phases = [
+                (format!("{case_id}_aster_state_before"), "aster", 1),
+                (format!("{case_id}_reference_state_before"), "reference", 1),
+                (
+                    format!("{case_id}_aster_state_after_prepare_describe"),
+                    "aster",
+                    1,
+                ),
+                (
+                    format!("{case_id}_reference_state_after_prepare_describe"),
+                    "reference",
+                    1,
+                ),
+                (
+                    format!("{case_id}_aster_state_after_simple_query_gate"),
+                    "aster",
+                    2,
+                ),
+                (
+                    format!("{case_id}_aster_state_after_execute_gate"),
+                    "aster",
+                    2,
+                ),
+                (format!("{case_id}_aster_state_after"), "aster", 1),
+                (format!("{case_id}_reference_state_after"), "reference", 1),
+            ];
+            for (state_id, side, expected_count) in state_phases {
+                let records = if side == "aster" {
+                    pg_dialect_records(&aster, &state_id, side)
+                } else {
+                    pg_dialect_records(&reference, &state_id, side)
+                };
+                assert_eq!(records.len(), expected_count, "state snapshots {state_id}");
+                assert!(
+                    records.iter().all(|record| state_is_31(record)),
+                    "row state changed in {state_id}"
+                );
+            }
+            valid_parse_describe_ids.insert(case_id.to_string());
+        } else {
+            assert_eq!(reference_parse[0]["observation"]["status"], 7);
+            assert_eq!(reference_parse[0]["observation"]["state"], "42601");
+            assert_eq!(reference_parse[0]["observation"]["transaction_after"], "I");
+            let reference_position: i64 = reference_parse[0]["observation"]["position"]
+                .as_str()
+                .expect("PG18 parse position")
+                .parse()
+                .expect("numeric PG18 parse position");
+            let mapping_delta =
+                reference_sql.chars().count() as i64 - original_sql.chars().count() as i64;
+            let expected_local_position = (reference_position - mapping_delta).to_string();
+            for record in &local_parse {
+                assert_eq!(record["observation"]["status"], 7);
+                assert_eq!(record["observation"]["state"], "42601");
+                assert_eq!(record["observation"]["position"], expected_local_position);
+                assert_eq!(record["observation"]["transaction_after"], "I");
+            }
+            negative_parse_ids.insert(case_id.to_string());
+
+            for (state_id, side) in [
+                (format!("{case_id}_aster_state_before"), "aster"),
+                (format!("{case_id}_reference_state_before"), "reference"),
+                (format!("{case_id}_aster_state_after"), "aster"),
+                (format!("{case_id}_reference_state_after"), "reference"),
+            ] {
+                let records = if side == "aster" {
+                    pg_dialect_records(&aster, &state_id, side)
+                } else {
+                    pg_dialect_records(&reference, &state_id, side)
+                };
+                assert_eq!(records.len(), 1, "state snapshot {state_id}");
+                assert!(state_is_31(records[0]), "row state changed in {state_id}");
+            }
+        }
+
+        let recovery_suffixes: Vec<String> = if valid {
+            vec![
+                format!("{case_id}_recovery"),
+                format!("{case_id}_simple_query_gate_recovery"),
+                format!("{case_id}_execute_gate_recovery"),
+            ]
+        } else {
+            vec![format!("{case_id}_recovery")]
+        };
+        let mut recovery_count = 0;
+        for suffix in recovery_suffixes {
+            let aster_recoveries = pg_dialect_records(&aster, &suffix, "aster");
+            let reference_recoveries = pg_dialect_records(&reference, &suffix, "reference");
+            let expected_count = if valid {
+                2
+            } else if suffix.ends_with("_recovery") {
+                2
+            } else {
+                0
+            };
+            assert_eq!(
+                aster_recoveries.len(),
+                expected_count,
+                "Aster recovery records for {suffix}"
+            );
+            if !valid && suffix == format!("{case_id}_recovery") {
+                assert_eq!(
+                    reference_recoveries.len(),
+                    1,
+                    "PG18 recovery after parse error for {case_id}"
+                );
+            } else {
+                assert!(
+                    reference_recoveries.is_empty(),
+                    "unexpected PG18 recovery record for {suffix}"
+                );
+            }
+            assert!(
+                aster_recoveries
+                    .iter()
+                    .all(|record| recovery_is_healthy(record))
+            );
+            assert!(
+                reference_recoveries
+                    .iter()
+                    .all(|record| recovery_is_healthy(record))
+            );
+            recovery_count += aster_recoveries.len() + reference_recoveries.len();
+        }
+        let order_recovery = pg_dialect_records(
+            &aster,
+            &format!("{case_id}_endpoint_order_recovery"),
+            "aster",
+        );
+        assert_eq!(order_recovery.len(), 1);
+        assert!(recovery_is_healthy(order_recovery[0]));
+        recovery_count += order_recovery.len();
+
+        let semantic_local_execute: Vec<&serde_json::Value> =
+            pg_dialect_records(&aster, &format!("{case_id}_execute_gate"), "aster")
+                .into_iter()
+                .filter(|record| record["observation"]["status"] == 2)
+                .collect();
+        let semantic_reference_execute: Vec<&serde_json::Value> = reference
+            .iter()
+            .filter(|record| {
+                record["case_id"] == case_id
+                    && record["input"]["phase"] == "PQexecPrepared"
+                    && record["observation"]["status"] == 2
+            })
+            .collect();
+        if !semantic_local_execute.is_empty()
+            && !semantic_reference_execute.is_empty()
+            && semantic_local_execute.iter().all(|local| {
+                semantic_reference_execute.iter().any(|reference| {
+                    local["observation"]["fields"] == reference["observation"]["fields"]
+                        && local["observation"]["rows"] == reference["observation"]["rows"]
+                        && local["observation"]["command_tag"]
+                            == reference["observation"]["command_tag"]
+                })
+            })
+        {
+            full_dml_semantic_success_ids.insert(case_id.to_string());
+        }
+
+        case_audit.push(serde_json::json!({
+            "case_id": case_id,
+            "kind": if valid { "valid" } else { "invalid" },
+            "prepare_describe": if valid { "success" } else { "not_applicable_parse_reject" },
+            "source_position": if valid { "not_applicable" } else { "PG18_position_mapped_to_both_Aster_endpoints" },
+            "simple_query": if valid { "0A000_pre_write_gate_on_A_and_B" } else { "not_applicable" },
+            "extended_execute": if valid { "0A000_pre_write_gate_on_A_and_B" } else { "not_applicable" },
+            "metadata": if valid { "fields_formats_parameter_oids_and_source_origins_verified" } else { "not_applicable_parse_reject" },
+            "side_effect_rows_preserved": true,
+            "recoveries": recovery_count,
+            "postgresql_reference_rejection": mysql_reference[0]["observation"]["error_code"] == 1064,
+            "mysql_local_rejection_recovery_and_legacy_prepare": true,
+            "full_dml_semantic_success": full_dml_semantic_success_ids.contains(case_id),
+            "effective": true
+        }));
+    }
+
+    assert_eq!(unique_ids.len(), cases.len());
+    let valid_case_count = cases.iter().filter(|case| case["kind"] == "valid").count();
+    assert_eq!(valid_parse_describe_ids.len(), valid_case_count);
+    assert_eq!(metadata_origin_ids.len(), valid_case_count);
+    assert_eq!(negative_parse_ids.len() + valid_case_count, cases.len());
+    assert_eq!(simple_gate_ids.len(), valid_case_count);
+    assert_eq!(execute_gate_ids.len(), valid_case_count);
+    assert_eq!(mysql_rejection_ids.len(), cases.len());
+    assert_eq!(explicit_parameter_ids.len(), 1);
+
+    let effective_ids: Vec<String> = case_audit
+        .iter()
+        .filter(|case| case["effective"] == true)
+        .map(|case| case["case_id"].as_str().unwrap().to_string())
+        .collect();
+    let semantic_ids: Vec<String> = full_dml_semantic_success_ids.into_iter().collect();
+    assert_eq!(
+        summary["syntax_eligible"].as_u64(),
+        Some(effective_ids.len() as u64)
+    );
+    assert_eq!(
+        summary["reference_syntax_cases"].as_u64(),
+        Some(valid_case_count as u64)
+    );
+    assert_eq!(
+        summary["reference_describe_cases"].as_u64(),
+        Some(valid_case_count as u64)
+    );
+    assert_eq!(
+        summary["local_prepare_describe_cases"].as_u64(),
+        Some(valid_case_count as u64)
+    );
+    assert_eq!(
+        summary["local_simple_query_gate_cases"].as_u64(),
+        Some(valid_case_count as u64)
+    );
+    assert_eq!(
+        summary["local_execute_gate_cases"].as_u64(),
+        Some(valid_case_count as u64)
+    );
+    assert_eq!(
+        summary["mysql_rejection_cases"].as_u64(),
+        Some(cases.len() as u64)
+    );
+
+    summary["unique_effective"] = serde_json::json!(effective_ids.len());
+    summary["effective_case_ids"] = serde_json::json!(effective_ids);
+    summary["valid_prepare_describe_cases"] = serde_json::json!(valid_parse_describe_ids.len());
+    summary["syntax_negative_parse_cases"] = serde_json::json!(negative_parse_ids.len());
+    summary["metadata_origin_verified_cases"] = serde_json::json!(metadata_origin_ids.len());
+    summary["explicit_parameter_metadata_cases"] = serde_json::json!(explicit_parameter_ids.len());
+    summary["mysql_local_bypass_recovery_cases"] = serde_json::json!(mysql_by_case.len());
+    summary["case_audit"] = serde_json::Value::Array(case_audit);
+    summary["full_dml_semantic_successes"] = serde_json::json!(semantic_ids.len());
+    summary["full_dml_semantic_success_case_ids"] = serde_json::json!(semantic_ids);
+    summary["dml_semantic_scope"] = serde_json::json!(
+        "not executed: the three registered valid cases have only archived Aster PQexecPrepared 0A000 gates; no paired successful PostgreSQL/Aster DML result exists"
+    );
+    summary["cleanup_ok"] = serde_json::json!(
+        ref_cleanup["cleanup_ok"] == true
+            && rust_cleanup["database_dropped"] == true
+            && rust_cleanup["postgres_port_closed"] == true
+            && rust_cleanup["mysql_port_closed"] == true
+    );
+    assert_eq!(summary["unique_effective"], cases.len() as u64);
+    assert_eq!(
+        summary["valid_prepare_describe_cases"],
+        valid_case_count as u64
+    );
+    assert_eq!(
+        summary["syntax_negative_parse_cases"],
+        negative_parse_ids.len() as u64
+    );
+    assert_eq!(summary["full_dml_semantic_successes"], 0);
+    assert_eq!(summary["cleanup_ok"], true);
+    std::fs::write(
+        &summary_path,
+        serde_json::to_string_pretty(&summary).unwrap(),
+    )
+    .unwrap();
+    summary
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1306,29 +2111,21 @@ fn pg_dialect_libpq(task: u8) {
             let case_id = phase
                 .strip_prefix("PG_DIALECT_CHECKPOINT ")
                 .expect("checkpoint prefix");
-            let sql = match case_id {
-                "omitted_target" => {
-                    "INSERT INTO public.t(id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id"
-                }
-                "inference_predicate" => {
-                    "INSERT INTO public.t(id) VALUES (2) ON CONFLICT (id) WHERE id > 0 DO NOTHING"
-                }
-                "constraint_target" => {
-                    "INSERT INTO public.t(id) VALUES (3) ON CONFLICT ON CONSTRAINT t_pkey DO NOTHING"
-                }
-                "missing_action" => "INSERT INTO public.t(id) VALUES (4) ON CONFLICT",
-                "empty_target" => "INSERT INTO public.t(id) VALUES (5) ON CONFLICT () DO NOTHING",
-                "target_missing_action" => {
-                    "INSERT INTO public.t(id) VALUES (6) ON CONFLICT (id) DO"
-                }
-                "quoted_conflict_keyword" => {
-                    "INSERT INTO public.t(id) VALUES (7) ON \"CONFLICT\" DO NOTHING"
-                }
-                "quoted_action_keyword" => {
-                    "INSERT INTO public.t(id) VALUES (8) ON CONFLICT DO \"NOTHING\""
-                }
-                _ => panic!("unregistered MySQL checkpoint: {case_id}"),
-            };
+            let cases: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(evidence.join("cases.json")).unwrap(),
+            )
+            .unwrap();
+            let sql =
+                cases
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|case| case["case_id"] == case_id)
+                    .unwrap_or_else(|| panic!("unregistered MySQL checkpoint: {case_id}"))["input"]
+                    ["sql"]
+                    .as_str()
+                    .expect("original SQL in task case registry")
+                    .to_owned();
             let mysql_sql = sql.replace("public.t", "t").replace("$1", "31");
             mysql_query(socket, &format!("USE {database}"));
             let before = mysql_query(socket, "SELECT id FROM t ORDER BY id");
@@ -1358,8 +2155,9 @@ fn pg_dialect_libpq(task: u8) {
             assert_eq!(sqlstate, "42000");
             let after = mysql_query(socket, "SELECT id FROM t ORDER BY id");
             assert_eq!(after, before, "rejected MySQL input changed the row");
+            let recovery = mysql_query(socket, "SELECT 1");
             assert_eq!(
-                mysql_query(socket, "SELECT 1"),
+                recovery,
                 vec![vec![Some(b"1".to_vec())]],
                 "MySQL connection did not recover after the syntax error"
             );
@@ -1380,7 +2178,13 @@ fn pg_dialect_libpq(task: u8) {
                     "mysql_sqlstate": sqlstate,
                     "before": before,
                     "after": after,
+                    "recovery": recovery,
                     "mysql_on_duplicate_prepared": true,
+                    "mysql_on_duplicate_prepare_packet": prepared,
+                    "mysql_on_duplicate_prepare_statement_id": prepared[1..5].to_vec(),
+                    "mysql_on_duplicate_prepare_columns": u16::from_le_bytes(prepared[5..7].try_into().unwrap()),
+                    "mysql_on_duplicate_prepare_parameters": u16::from_le_bytes(prepared[7..9].try_into().unwrap()),
+                    "mysql_on_duplicate_statement_closed": true,
                     "packet": response
                 })
             )
@@ -2063,53 +2867,12 @@ fn pg_dialect_libpq(task: u8) {
     }
     if task == 7 {
         assert_eq!(checkpoints, 8);
-        let summary: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
-                .unwrap();
+        let summary = pg_dialect_07_audit(&evidence);
         assert_eq!(summary["cases"], 8);
-        assert_eq!(summary["cleanup_ok"], true);
-        assert_eq!(summary["syntax_eligible"], 8);
-        assert_eq!(summary["reference_syntax_cases"], 3);
-        assert_eq!(summary["reference_describe_cases"], 3);
-        assert_eq!(summary["local_prepare_describe_cases"], 3);
-        assert_eq!(summary["local_simple_query_gate_cases"], 3);
-        assert_eq!(summary["local_execute_gate_cases"], 3);
-        assert_eq!(summary["mysql_rejection_cases"], 8);
-        assert_eq!(summary["unique_effective"], 0);
+        assert_eq!(summary["unique_effective"], 8);
+        assert_eq!(summary["valid_prepare_describe_cases"], 3);
+        assert_eq!(summary["syntax_negative_parse_cases"], 5);
         assert_eq!(summary["full_dml_semantic_successes"], 0);
-        let mysql_local = std::fs::read_to_string(evidence.join("mysql-local.jsonl")).unwrap();
-        let task_cases = mysql_local
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|record| record["mysql_on_duplicate_prepared"] == true)
-            .collect::<Vec<_>>();
-        assert_eq!(task_cases.len(), 8);
-        let case_ids = task_cases
-            .iter()
-            .filter_map(|record| record["case_id"].as_str())
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(case_ids.len(), 8);
-        let cases: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(evidence.join("cases.json")).unwrap())
-                .unwrap();
-        assert_eq!(cases.as_array().unwrap().len(), 8);
-        for case in cases
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|case| case["kind"] == "valid")
-        {
-            assert_eq!(
-                case["expected"]["aster"],
-                "Prepare/Describe success; Execute 0A000"
-            );
-            assert_eq!(case["execution_input"]["phase"], "PQexecPrepared");
-        }
-        let mysql: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(evidence.join("mysql-reference.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(mysql["identity"][0].as_str().unwrap().starts_with("8.4.7"));
         return;
     }
     assert_eq!(checkpoints, if task == 4 { 8 } else { 10 });
