@@ -107,3 +107,5 @@ RustCodeGraph 的精确 `query` 为 `encode_relational_row`、`encode_relational
 - 新增索引形态应检查 `relational_index_value_rows`（值展开）、`encode_relational_index_entries`（是否应维护）、`encode_relational_unique_index_entries`（冲突语义）和 `relational_index_mutations`（DDL 状态机）四层，并同步底层 tablecodec 与 Go 行为。
 - 性能修改需关注每列 Datum clone、整表/索引元数据 clone、MVIndex 笛卡尔积、重复 `relational_index_value_rows` 计算及 BTree 容器排序成本；优化不能改变 key/value 字节或 mutation 顺序语义。
 - 本文件所有 API 都是 runtime 私有边界。若要复用，优先在 session runtime 内新增窄接口，不应直接扩大为跨 crate 公共 API，除非同时定义清晰的字符串行不变量。
+
+批次15：新增表的PostgreSQLNumericText标记明确物理编码，缺省false保留既有表解码；声明numeric列的INSERT目标转换复用PgNumeric，物理行复用字符串Datum保留大精度/scale/特殊值，读取仅覆盖物理解码字段类型，逻辑目录numeric及typmod不变。MySQL创建表继续原MyDecimal路径；numeric索引/算术及DDL类型重建不在此接线范围。

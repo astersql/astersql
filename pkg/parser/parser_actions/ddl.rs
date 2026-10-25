@@ -520,6 +520,7 @@ enum DdlRule {
     RowFormatAlt13,
     RowFormatAlt14,
     RowFormatAlt15,
+    PgNumericDeclaration,
     NumericTypeAlt01,
     NumericTypeAlt02,
     NumericTypeAlt03,
@@ -1771,6 +1772,9 @@ fn identify(rule_id: RuleId) -> Option<DdlRule> {
         }
         "numerictype_integertype_optfieldlen_fieldopts--ec97fd5d088f6c01" => {
             Some(DdlRule::NumericTypeAlt01)
+        }
+        "numerictype_fixedpointtype_lengthnum_lengthnum_f--cac45a8aaf96197f" => {
+            Some(DdlRule::PgNumericDeclaration)
         }
         "numerictype_booleantype_fieldopts--31d2f06d6f785bd1" => Some(DdlRule::NumericTypeAlt02),
         "numerictype_fixedpointtype_floatopt_fieldopts--8115ff4a7ffc7c56" => {
@@ -6915,7 +6919,10 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         | DdlRule::TableOptionListAlt03
         | DdlRule::CreateTableOptionListAlt02
         | DdlRule::CreateTableOptionListAlt03 => {
-            let list_back = if matches!(rule, DdlRule::TableOptionListAlt02 | DdlRule::CreateTableOptionListAlt02) {
+            let list_back = if matches!(
+                rule,
+                DdlRule::TableOptionListAlt02 | DdlRule::CreateTableOptionListAlt02
+            ) {
                 1
             } else {
                 2
@@ -7447,6 +7454,27 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             }
             out.item = Some(Box::new(field_type));
         }
+        DdlRule::PgNumericDeclaration => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(ErrSyntax.GenWithStackByArgs(&[]));
+                return Err(1);
+            }
+            let precision = rhs
+                .borrow(3)
+                .and_then(|v| v.item.as_deref())
+                .and_then(semantic_numeric_isize)
+                .unwrap_or_default();
+            let scale = rhs
+                .borrow(6)
+                .and_then(|v| v.item.as_deref())
+                .and_then(semantic_numeric_isize)
+                .unwrap_or_default();
+            let mut field_type =
+                parser_types::types::NewFieldType(parser_mysql::r#type::TypeNewDecimal);
+            field_type.SetFlen(precision);
+            field_type.SetDecimal(-scale);
+            out.item = Some(Box::new(field_type));
+        }
         DdlRule::NumericTypeAlt03 | DdlRule::NumericTypeAlt04 => {
             let Some(tp) = rhs
                 .borrow(rhs_len - (2))
@@ -7489,7 +7517,17 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 }
                 field_type.SetFlen(parser_types::types::UnspecifiedLength);
             }
-            field_type.SetDecimal(float_opt.decimal);
+            field_type.SetDecimal(
+                if rule == DdlRule::NumericTypeAlt03
+                    && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                    && float_opt.flen >= 0
+                    && float_opt.decimal == -1
+                {
+                    0
+                } else {
+                    float_opt.decimal
+                },
+            );
             if let Some(options) = rhs
                 .borrow(rhs_len - (0))
                 .expect("DDL RHS position")

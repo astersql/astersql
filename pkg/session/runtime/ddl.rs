@@ -709,6 +709,17 @@ impl ConcreteSession {
         // existing durable catalog; MySQL keeps its canonical folded spelling.
         table.Name = ast::NewCIStr(relation_name(&statement.Table));
         table.ExactName = self.sql_dialect() == ast::SqlDialect::PostgreSQL;
+        if table.ExactName && statement.ReferTable.is_none() {
+            table.PostgreSQLNumericText = true;
+            // Keep PG modifiers from the AST, including unconstrained numeric
+            // and negative scale, rather than MySQL DECIMAL defaults.
+            for (column, definition) in table.Columns.iter_mut().zip(&statement.Cols) {
+                if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
+                    column.SetFlen(definition.Tp.GetFlen());
+                    column.SetDecimal(definition.Tp.GetDecimal());
+                }
+            }
+        }
         if is_local_temporary {
             // Go local temporary tables live in SessionExtendedInfoSchema rather
             // than the shared InfoSchema. A process-wide high ID gives the

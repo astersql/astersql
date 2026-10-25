@@ -831,6 +831,162 @@ def integer14_differential(aster_dsn):
     print('integer14 differential:',json.dumps(summary),flush=True)
 
 
+def numeric15_differential(aster_dsn):
+    """Numeric family only: collect each endpoint independently before comparison."""
+    import copy
+    import hashlib
+    import json
+    import signal
+    import time
+    import resource
+    from pathlib import Path
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    name = api('PQfname', text, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    transaction = api('PQtransactionStatus', integer, ptr)
+    evidence = Path(os.environ['PG_NUMERIC15_EVIDENCE_DIR'])
+    reference = os.environ['PG18_REFERENCE_DSN']
+    table = f'public.pg_numeric15_{os.getpid()}'
+    observations = {}
+    cleanup = {}
+    resources = {}
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('numeric15 client interrupted')
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    def compact(item):
+        if isinstance(item,str) and len(item)>256:
+            return {'length':len(item),'sha256':hashlib.sha256(item.encode()).hexdigest()}
+        return item
+    def observe(result, phase):
+        assert result
+        try:
+            state = ef(result, ord('C'))
+            if state == b'XX000':
+                print('numeric15 internal error:',result_error(result).decode(),flush=True)
+            return dict(phase=phase, status=result_status(result),
+                        sqlstate=state.decode() if state else None,
+                        metadata=[(name(result,i).decode(),field_type(result,i),size(result,i),mod(result,i)) for i in range(columns(result))],
+                        parameters=[pt(result,i) for i in range(np(result))],
+                        rows=[[None if is_null(result,r,i) else compact(value(result,r,i).decode()) for i in range(columns(result))] for r in range(rows(result))])
+        finally:
+            clear(result)
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn)==0, f'{side} connection failed'
+        collected = {}
+        resources[side] = {}
+        def q(case, sql, state=None, command=False):
+            started = time.perf_counter()
+            result = observe(execute(conn,sql.encode()), 'query')
+            if len(sql)>1000:
+                resources[side][case] = {'elapsed_seconds':time.perf_counter()-started,'input_bytes':len(sql.encode()),'python_maxrss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,'maxrss_unit':'bytes on macOS, KiB on Linux'}
+            result['input'] = compact(sql)
+            collected[case] = result
+            assert result['status']==(7 if state else 1 if command else 2), (side,case,result)
+            assert result['sqlstate']==state, (side,case,result)
+            return result
+        try:
+            if side=='reference':
+                identity=q('identity', "SELECT version(), current_setting('server_version_num')")
+                assert identity['rows'][0][1]=='180006', 'exact PostgreSQL 18.6 required'
+                (evidence/'reference-identity.json').write_text(json.dumps(collected.pop('identity')))
+                build_path=Path(os.environ['PG_CORE_REFERENCE_BUILD_FILE'])
+                build=json.loads(build_path.read_text())
+                assert hashlib.sha256(Path(build['artifact_path']).read_bytes()).hexdigest()==build['artifact_sha256']
+                (evidence/'reference-build.json').write_text(json.dumps(build))
+                (evidence/'client.json').write_text(json.dumps({'version':version(),'sha256':hashlib.sha256(Path(library).read_bytes()).hexdigest()}))
+            q('create',f'CREATE TABLE {table} (id INT PRIMARY KEY, n NUMERIC(5,2), neg NUMERIC(2,-3), wide NUMERIC(3,5))',command=True)
+            q('empty',f'SELECT n,neg,wide FROM {table}')
+            q('write',f"INSERT INTO {table} VALUES (1,12.345,12500,0.001234),(2,NULL,NULL,NULL)",command=True)
+            q('nan-write',f"INSERT INTO {table} VALUES (5,CAST('NaN' AS numeric),CAST('NaN' AS numeric),CAST('NaN' AS numeric))",command=True)
+            q('read',f'SELECT n,neg,wide FROM {table} ORDER BY id')
+            q('extra-create',f'CREATE TABLE {table}_extra (id INT PRIMARY KEY,u NUMERIC,p NUMERIC(2),h NUMERIC(1000,0))',command=True)
+            q('extra-empty',f'SELECT u,p,h FROM {table}_extra')
+            q('extra-write',f"INSERT INTO {table}_extra VALUES (1,CAST('Infinity' AS numeric),2.5,CAST('{ '9'*1000 }' AS numeric)),(2,CAST('NaN' AS numeric),NULL,NULL),(3,NULL,NULL,NULL)",command=True)
+            q('extra-read',f'SELECT u,p,h FROM {table}_extra ORDER BY id')
+            statement=b'write_numeric'
+            query=f'INSERT INTO {table} (id,n,neg,wide) VALUES (3,CAST($1 AS numeric),CAST($2 AS numeric),CAST($3 AS numeric))'.encode()
+            collected['write-prepare']=observe(prepare(conn,statement,query,3,(c.c_uint*3)(1700,1700,1700)),'prepare')
+            assert collected['write-prepare']['status']==1,(side,collected['write-prepare'])
+            collected['write-describe']=observe(describe(conn,statement),'describe')
+            assert collected['write-describe']['parameters']==[1700]*3,(side,collected['write-describe'])
+            collected['write-param']=observe(prepared(conn,statement,3,(text*3)(b'-12.345',b'-12500',b'0.001234'),None,None,0),'execute')
+            assert collected['write-param']['status']==1,(side,collected['write-param'])
+            q('write-param-read',f'SELECT n,neg,wide FROM {table} ORDER BY id')
+            for label,item,expected in [('integer-max','9'*131072,None),('fraction-max','0.'+'0'*16382+'1',None),('integer-over','9'*131073,'22003'),('fraction-over','0.'+'0'*16383+'1','22003')]:
+                q(label,f"SELECT CAST('{item}' AS numeric) AS n",state=expected)
+                if expected:q(label+'-sync','SELECT 1 AS n')
+            literals=['0','-0.000','1.2300','1e4','1e-5','NaN','Infinity','-Infinity','9'*1000,'0.'+'0'*999+'1']
+            for i,item in enumerate(literals):
+                q(f'literal-{i}',f"SELECT CAST('{item}' AS numeric) AS n")
+            for i,(item,typ) in enumerate([('12.345','numeric(5,2)'),('-12.345','numeric(5,2)'),('12500','numeric(2,-3)'),('0.001234','numeric(3,5)'),('NULL','numeric(5,2)')]):
+                expression='NULL' if item=='NULL' else "'"+item+"'"
+                q(f'typmod-{i}',f'SELECT CAST({expression} AS {typ}) AS n')
+            for declared in (0,1700):
+                statement=f'n{declared}'.encode()
+                oids=(c.c_uint*1)(declared) if declared else None
+                result=observe(prepare(conn,statement,b'SELECT CAST($1 AS numeric) AS n',1,oids),'prepare')
+                collected[f'prepare-{declared}']=result
+                assert result['status']==1,(side,result)
+                result=observe(describe(conn,statement),'describe')
+                collected[f'describe-{declared}']=result
+                assert result['parameters']==[1700],(side,result)
+                for i,item in enumerate(literals+[None,'bad','']):
+                    args=(text*1)(None if item is None else item.encode())
+                    result=observe(prepared(conn,statement,1,args,None,None,0),'execute')
+                    result['input']=compact(item)
+                    collected[f'param-{declared}-{i}']=result
+                    expected='22P02' if item in ('bad','') else None
+                    assert result['sqlstate']==expected,(side,i,result)
+                    assert result['status']==(7 if expected else 2),(side,i,result)
+                    if expected:q(f'sync-{declared}-{i}','SELECT 1 AS n')
+            for i,(item,typ) in enumerate([('2.5','int2'),('-2.5','int4'),('9223372036854775806.5','int8')]):
+                q(f'cast-{i}',f"SELECT CAST(CAST('{item}' AS numeric) AS {typ}) AS n")
+            for i,item in enumerate(['999.995','Infinity','-Infinity']):
+                q(f'reject-write-{i}',f"INSERT INTO {table} (id,n) VALUES (4,CAST('{item}' AS numeric))",state='22003')
+                q(f'reject-write-recovery-{i}',f'SELECT n,neg,wide FROM {table} ORDER BY id')
+            q('begin','BEGIN',command=True)
+            q('transaction-error',"SELECT CAST('bad' AS numeric)",state='22P02')
+            assert transaction(conn)==3
+            q('failed-transaction','SELECT 1',state='25P02')
+            q('rollback','ROLLBACK',command=True)
+            assert transaction(conn)==0
+            q('rollback-recovery',f'SELECT n,neg,wide FROM {table} ORDER BY id')
+            if side=='aster':
+                print('PG_NUMERIC15_MID',flush=True)
+                assert sys.stdin.readline().strip()=='continue'
+            observations[side]=collected
+        finally:
+            (evidence/f'{side}.json').write_text(json.dumps(collected,sort_keys=True))
+            try:
+                clear(execute(conn,b'ROLLBACK'))
+                result=observe(execute(conn,f'DROP TABLE IF EXISTS {table}'.encode()),'cleanup')
+                cleanup[side]=result['status']==1
+                extra=observe(execute(conn,f'DROP TABLE IF EXISTS {table}_extra'.encode()),'cleanup')
+                cleanup[side]=cleanup[side] and extra['status']==1
+            finally:
+                finish(conn)
+                (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+                (evidence/'resources.json').write_text(json.dumps(resources))
+    assert observations['aster']==observations['reference'], next(((k,observations['aster'].get(k),v) for k,v in observations['reference'].items() if observations['aster'].get(k)!=v),'different cases')
+    for field,replacement in [('rows',[['perturbed']]),('metadata',[('n',999,2,-1)]),('sqlstate','XXXXX')]:
+        changed=copy.deepcopy(observations['aster'])
+        changed['literal-0'][field]=replacement
+        assert changed!=observations['reference'],field
+    assert all(cleanup.values()) and len(cleanup)==2
+    summary={'cases':len(observations['aster']),'negative_controls':3,'cleanup':cleanup,'target_version':'18.6'}
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('numeric15 differential:',json.dumps(summary),flush=True)
+
+
 def boolean_differential(aster_dsn):
     """Compare independently collected text bool observations; never infer a side."""
     import copy
@@ -933,6 +1089,9 @@ conninfo = (
     f"host=127.0.0.1 port={int(sys.argv[1])} user=root dbname={sys.argv[2]} "
     "sslmode=disable gssencmode=disable connect_timeout=5"
 )
+if len(sys.argv) > 3 and sys.argv[3] == "numeric15-differential":
+    numeric15_differential(conninfo)
+    sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "integer14-differential":
     integer14_differential(conninfo)
     sys.exit(0)

@@ -127,3 +127,86 @@ fn reorg_global_index_copy_mutations_stop_at_delete_only() {
         }
     }
 }
+
+#[test]
+fn pg_scalar_15_numeric_row_formats_and_legacy_metadata() {
+    use astersql_meta_model::{ColumnInfo, SchemaState, TableInfo};
+    use std::collections::HashMap;
+    for pg_numeric in [false, true] {
+        for new_format in [false, true] {
+            let mut column = ColumnInfo::default();
+            column.ID = 1;
+            column.Name = astersql_parser_ast::NewCIStr("n");
+            column.State = SchemaState::Public;
+            column.SetType(astersql_parser_mysql::r#type::TypeNewDecimal);
+            let mut table = TableInfo {
+                ID: 9815,
+                ExactName: true,
+                PostgreSQLNumericText: pg_numeric,
+                Columns: vec![column],
+                ..Default::default()
+            };
+            let encoded_metadata = serde_json::to_vec(&table).unwrap();
+            table = serde_json::from_slice(&encoded_metadata).unwrap();
+            assert_eq!(table.PostgreSQLNumericText, pg_numeric);
+            if !pg_numeric {
+                assert!(
+                    !String::from_utf8(encoded_metadata)
+                        .unwrap()
+                        .contains("postgresql_numeric_text")
+                );
+            }
+            for (precision, scale, input, expected) in [
+                (5, 2, Some("12.345".to_owned()), Some("12.35".to_owned())),
+                (2, -3, Some("12500".to_owned()), Some("13000".to_owned())),
+                (
+                    3,
+                    5,
+                    Some("0.001234".to_owned()),
+                    Some("0.00123".to_owned()),
+                ),
+                (-1, -1, Some("9".repeat(1000)), Some("9".repeat(1000))),
+                (-1, -1, Some("NaN".to_owned()), Some("NaN".to_owned())),
+                (
+                    -1,
+                    -1,
+                    Some("Infinity".to_owned()),
+                    Some("Infinity".to_owned()),
+                ),
+                (5, 2, None, None),
+            ] {
+                if !pg_numeric && (precision != 5 || scale != 2) {
+                    continue;
+                }
+                table.Columns[0].SetFlen(precision);
+                table.Columns[0].SetDecimal(scale);
+                let row = HashMap::from([
+                    ("n".to_owned(), input),
+                    ("_tidb_rowid".to_owned(), Some("1".to_owned())),
+                ]);
+                let (_, bytes) = super::row_codec::encode_relational_row_with_format(
+                    &table,
+                    &row,
+                    astersql_types::Flags::default(),
+                    new_format,
+                )
+                .unwrap();
+                let fields = table
+                    .Columns
+                    .iter()
+                    .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                    .collect();
+                let handle = astersql_tablecodec::kv::IntHandle(1);
+                let (_, decoded) = super::relational_scan::decode_relational_row_value(
+                    &table, &fields, &handle, &bytes,
+                )
+                .unwrap_or_else(|error| panic!("PG={pg_numeric} new_format={new_format} precision={precision} scale={scale}: {error}"));
+                assert_eq!(
+                    decoded.get("n").cloned().flatten(),
+                    expected,
+                    "PG={pg_numeric} new_format={new_format} precision={precision} scale={scale}"
+                );
+            }
+        }
+    }
+}

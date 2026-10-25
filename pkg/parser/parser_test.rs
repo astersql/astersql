@@ -4855,3 +4855,32 @@ fn pg_scalar_09_numeric_modifiers() {
         );
     }
 }
+
+#[test]
+fn pg_scalar_15_negative_scale_declaration() {
+    let sql = "CREATE TABLE t (n NUMERIC(2,-3), d DECIMAL(2,-1), p NUMERIC(2), u NUMERIC)";
+    let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let statement = pg.ParseOneStmt(sql, "", "").unwrap();
+    let create = statement
+        .as_any()
+        .downcast_ref::<parser_ast::CreateTableStmt>()
+        .unwrap();
+    assert_eq!(
+        (create.Cols[0].Tp.GetFlen(), create.Cols[0].Tp.GetDecimal()),
+        (2, -3)
+    );
+    assert_eq!(
+        (create.Cols[1].Tp.GetFlen(), create.Cols[1].Tp.GetDecimal()),
+        (2, -1)
+    );
+    assert_eq!(
+        (create.Cols[2].Tp.GetFlen(), create.Cols[2].Tp.GetDecimal()),
+        (2, 0)
+    );
+    assert_eq!(
+        (create.Cols[3].Tp.GetFlen(), create.Cols[3].Tp.GetDecimal()),
+        (-1, -1)
+    );
+    let mut mysql = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(mysql.ParseOneStmt(sql, "", "").is_err());
+}

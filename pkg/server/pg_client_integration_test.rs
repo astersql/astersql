@@ -219,6 +219,154 @@ fn pg_scalar_04() {
 }
 
 #[test]
+fn pg_scalar_15() {
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN is required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg_numeric15_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        server.close();
+        native
+            .execute(&format!("DROP DATABASE {database}"))
+            .unwrap();
+    });
+    struct Client(std::process::Child);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_isolation(&mut mysql);
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-numeric15-evidence")
+        .join(&database);
+    std::fs::create_dir_all(&evidence).unwrap();
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    std::fs::write(evidence.join("aster-head.txt"), head.stdout).unwrap();
+    println!("PG_NUMERIC15_EVIDENCE_DIR={}", evidence.display());
+    let decimal_check = |socket: &mut TcpStream| {
+        mysql_packet(
+            socket,
+            0,
+            b"\x03SELECT CAST('12.340' AS DECIMAL(8,3)), CAST(NULL AS DECIMAL(8,3))",
+        );
+        assert_eq!(mysql_read(socket), vec![2]);
+        let columns = (0..2).map(|_| mysql_read(socket)).collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let row = mysql_read(socket);
+        assert_eq!(row, b"\x0612.340\xfb");
+        let eof = mysql_read(socket);
+        assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(socket, "SHOW WARNINGS").is_empty());
+        (columns, row)
+    };
+    let decimal_baseline = decimal_check(&mut mysql);
+    std::fs::write(
+        evidence.join("mysql-decimal-before.json"),
+        serde_json::to_vec(&decimal_baseline).unwrap(),
+    )
+    .unwrap();
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    std::fs::write(
+        evidence.join("mysql-before.json"),
+        serde_json::to_vec(&baseline).unwrap(),
+    )
+    .unwrap();
+    let mut child = Client(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_core_libpq.py"
+            ))
+            .args([
+                address.port().to_string(),
+                database.clone(),
+                "numeric15-differential".into(),
+            ])
+            .env("PG_NUMERIC15_EVIDENCE_DIR", &evidence)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("Python 3 is required"),
+    );
+    use std::io::BufRead;
+    let mut middle = false;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG_NUMERIC15_MID" {
+            assert_eq!(
+                crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+                baseline
+            );
+            assert_eq!(decimal_check(&mut mysql), decimal_baseline);
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    assert_eq!(decimal_check(&mut mysql), decimal_baseline);
+    let actual = mysql_query(
+        &mut mysql,
+        "SELECT id, CAST('-17' AS SIGNED) FROM public.client_isolation",
+    );
+    mysql_query(&mut mysql, "DROP DATABASE public");
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(child);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    assert!(TcpStream::connect(mysql_address).is_err());
+    assert_eq!(
+        actual,
+        vec![vec![Some(b"31".to_vec()), Some(b"-17".to_vec())]]
+    );
+    assert!(status.success(), "numeric15 differential failed");
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["cases"], 82);
+    assert_eq!(summary["negative_controls"], 3);
+    assert_eq!(summary["cleanup"]["reference"], true);
+    assert_eq!(summary["cleanup"]["aster"], true);
+    assert!(middle, "missing MySQL middle checkpoint");
+}
+
+#[test]
 fn pg_scalar_14() {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),

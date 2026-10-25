@@ -1045,9 +1045,22 @@ pub(super) fn decode_relational_row_value(
     handle: &dyn astersql_tablecodec::kv::Handle,
     value: &[u8],
 ) -> SessionResult<RelationalRow> {
+    // Match the existing string Datum used for exact numeric storage on
+    // PG-created relations. Only the physical decoder view changes; query
+    // metadata continues to use the declared numeric type and modifier.
+    let mut storage_fields = fields.clone();
+    if table.PostgreSQLNumericText {
+        for column in &table.Columns {
+            if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
+                if let Some(field) = storage_fields.get_mut(&column.ID) {
+                    field.SetType(astersql_parser_mysql::r#type::TypeVarchar);
+                }
+            }
+        }
+    }
     let datums = astersql_tablecodec::DecodeRowToDatumMap(
         Some(value.to_vec()),
-        fields.clone(),
+        storage_fields,
         Some(astersql_tablecodec::time::UTC),
     )
     .map_err(|error| session_error("decode relational row", error))?;

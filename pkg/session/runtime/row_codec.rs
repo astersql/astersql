@@ -589,6 +589,18 @@ pub(super) fn encode_relational_row_with_format(
                     &column.FieldType,
                 )
                 .map_err(|e| SessionError::new(e.to_string()))?
+        } else if table.PostgreSQLNumericText
+            && column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
+        {
+            // The durable numeric storage marker separates legacy decimal rows.
+            // Existing string Datum storage preserves PgNumeric beyond the
+            // MySQL decimal domain, including display scale and special values.
+            pg_numeric_relational_value(
+                row.get(&column.Name.L).cloned().flatten(),
+                &column.FieldType,
+            )?
+            .map(astersql_types::datum::NewStringDatum)
+            .unwrap_or_default()
         } else {
             runtime_value_to_datum(
                 row.get(&column.Name.L).and_then(Option::as_ref),

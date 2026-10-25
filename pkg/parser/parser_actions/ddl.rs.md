@@ -74,3 +74,5 @@ Rust [`grammar/main.astergram`](../grammar/main.astergram) 保留产生式形状
 ## 2026-10-25 PG scalar 01
 
 PG显式BOOL/BOOLEAN声明在NumericTypeAlt02保留IsBooleanFlag；MySQL仍为原始TINYINT(1)，不按值猜类型。
+
+批次15真实libpq红灯证明声明NUMERIC(2,-3)被拒；新增PG限定负scale声明动作，保留MySQL拒绝及原有正scale路径。

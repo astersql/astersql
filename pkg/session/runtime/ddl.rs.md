@@ -89,3 +89,5 @@ RustCodeGraph 的精确 `callees` 为 `execute_alter_table` 找到 `stats_table`
 - 会改变物理 table/partition ID 的操作应评估 snapshot、auto ID、region split/scatter、cross-keyspace 记录和 schema version 更新；失败后必须保证 `RuntimeDdlJobGuard` 收束。
 - 回归测试应继续放在独立的 [`pkg/session/runtime/ddl_test.rs`](ddl_test.rs)，不能内嵌到生产源文件；还应按行为补充邻近 session runtime 测试。涉及 Go 对齐时同步核对 `pkg/ddl/*_test.go` 的原始边界，但不要为了文档或单一增量递归补齐整个 DDL 子系统。
 - 兼容风险集中在 error code/message、IF EXISTS warning、权限访问顺序和 action JSON ABI；性能风险集中在 `scan_registered_table` 的全表唯一/外键校验、分区批量变更和同步预切分。
+
+PG新建表设置PostgreSQLNumericText并保留AST numeric precision及scale，避免MySQL默认化；CREATE LIKE沿用源表编码标记，不自动改写历史表。

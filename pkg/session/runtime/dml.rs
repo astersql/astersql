@@ -2414,6 +2414,16 @@ impl ConcreteSession {
                         }
                     }
                     value
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && table.PostgreSQLNumericText
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
+                    })
+                {
+                    pg_numeric_relational_value(
+                        relational_expression_value(expression, &row)?,
+                        &column_info.unwrap().FieldType,
+                    )?
                 } else if let Some(column_info) =
                     column_info.filter(|_| is_typed_literal(expression))
                 {

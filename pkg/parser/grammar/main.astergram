@@ -3670,6 +3670,7 @@ Type : DateAndTimeType;
 NumericType : IntegerType OptFieldLen FieldOpts @action;
 NumericType : BooleanType FieldOpts @action;
 NumericType : FixedPointType FloatOpt FieldOpts @action;
+NumericType : FixedPointType '(' LengthNum ',' '-' LengthNum ')' FieldOpts @action;
 NumericType : FloatingPointType FloatOpt FieldOpts @action;
 NumericType : BitValueType OptFieldLen @action;
 IntegerType : "TINYINT" @action;

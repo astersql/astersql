@@ -78,6 +78,13 @@ pub struct TableInfo {
     /// PostgreSQL relation names use exact decoded spelling in the durable catalog.
     #[serde(rename = "exact_name", skip_serializing_if = "std::ops::Not::not")]
     pub ExactName: bool,
+    /// Exact PG numeric columns use existing string Datum row storage.
+    /// Absent on older metadata, whose MySQL decimal encoding stays readable.
+    #[serde(
+        rename = "postgresql_numeric_text",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub PostgreSQLNumericText: bool,
     /// 默认字符集。
     #[serde(rename = "charset")]
     pub Charset: String,

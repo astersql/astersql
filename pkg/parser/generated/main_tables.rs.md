@@ -119,3 +119,5 @@
 ## PostgreSQL numeric 声明与舍入
 
 为numeric声明增加PgNumericOpt：裸类型、precision、precision加正/负scale；生成表由astersql-parsergen generate生成，未新增token。
+
+批次15：生成表增加FixedPointType负scale声明规则，供PG正式CREATE TABLE使用，MySQL在动作阶段拒绝。

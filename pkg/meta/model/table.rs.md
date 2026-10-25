@@ -80,3 +80,5 @@ Go 的指针/`nil` 多映射为 Rust 的引用/`Option`，Go 的手写深拷贝�
 - 新增时间或调度配置时，明确“缺失、空、零、非法”的兼容语义；TTL 的空值 `1h` 是升级契约，不能简单替换成当前默认 `24h`。涉及并发缓存时避免在锁内调用未知外部代码，并补充锁中毒/缓存共享策略说明。
 - 性能上，`Cols`、`MoveColumnInfo`、`GetPrimaryKey` 和多种查找均线性扫描并可能分配临时集合；表宽或索引多时应避免在热循环重复调用。若引入缓存，需要同时解决元数据 clone/修改后的失效问题。
 - 测试必须继续放在独立文件，优先扩展 `pkg/meta/model/table_test.rs` 或 `table_4_aster_unit_test.rs`，并用 `pkg/meta/model/table_test.go` 校验 Go 意图；不要把测试内嵌到 `table.rs`。
+
+PostgreSQLNumericText持久标记PG声明numeric列使用现有字符串Datum编码；缺省false，避免把历史MyDecimal行误解码。
