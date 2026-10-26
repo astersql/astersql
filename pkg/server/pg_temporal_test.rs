@@ -3519,3 +3519,232 @@ fn pg_temporal_ts_zone_identity() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_ts_special() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE ts_special_diff").unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    for sql in [
+        "SET time_zone = 'Asia/Shanghai'",
+        "SET timestamp = 946681200.123456",
+        "BEGIN",
+    ] {
+        let r = query(&mut socket, sql);
+        assert!(!r.iter().any(|m| m.0 == b'E'), "{sql}: {r:?}");
+    }
+    for (word, expected, micros) in [
+        ("-infinity", "-infinity", i64::MIN),
+        ("infinity", "infinity", i64::MAX),
+        ("epoch", "1970-01-01 00:00:00", -946684800000000),
+        ("now", "2000-01-01 07:00:00.123456", 25200123456),
+        ("today", "2000-01-01 00:00:00", 0),
+        ("yesterday", "1999-12-31 00:00:00", -86400000000),
+        ("tomorrow", "2000-01-02 00:00:00", 86400000000),
+    ] {
+        let literal = query(&mut socket, &format!("SELECT timestamp '{word}'"));
+        timestamp_description(&literal[0].1, 0, -1);
+        assert_eq!(date_text_row(&literal), expected.as_bytes(), "{word}");
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let bytes = micros.to_be_bytes();
+                let r = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp",
+                    1114,
+                    input,
+                    output,
+                    Some(if input == 0 { word.as_bytes() } else { &bytes }),
+                );
+                assert_eq!(
+                    r[1],
+                    (
+                        b't',
+                        [1i16.to_be_bytes().as_slice(), &1114u32.to_be_bytes()].concat()
+                    )
+                );
+                timestamp_description(&r[2].1, 0, -1);
+                timestamp_description(&r[4].1, output, -1);
+                assert_eq!(
+                    date_text_row(&r),
+                    if output == 0 {
+                        expected.as_bytes()
+                    } else {
+                        &bytes
+                    }
+                );
+            }
+        }
+    }
+    query(&mut socket, "SET timestamp = 946854000");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT timestamp 'now'")),
+        b"2000-01-01 07:00:00.123456"
+    );
+    query(&mut socket, "COMMIT");
+    // Parse freezes a typed constant; Bind samples a parameter later.
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"constant20\0SELECT timestamp 'now'\0".as_slice(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"relative20\0SELECT $1::timestamp\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1114u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert_eq!(
+        ready(&mut socket).iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"11Z"
+    );
+    query(&mut socket, "SET timestamp = 947026800");
+    query(&mut socket, "BEGIN");
+    for (portal, statement, value) in [
+        ("literal20", "constant20", None),
+        ("bound20", "relative20", Some(b"now".as_slice())),
+    ] {
+        let mut bind = [
+            portal.as_bytes(),
+            b"\0",
+            statement.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat();
+        bind.extend_from_slice(&(if value.is_some() { 1i16 } else { 0i16 }).to_be_bytes());
+        if let Some(v) = value {
+            bind.extend_from_slice(&(v.len() as i32).to_be_bytes());
+            bind.extend_from_slice(v);
+        }
+        bind.extend_from_slice(&0i16.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'H', &[]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+    }
+    query(&mut socket, "SET time_zone = 'UTC'");
+    query(&mut socket, "SET timestamp = 947199600");
+    for execution in 0..2 {
+        for (portal, expected) in [
+            ("literal20", "2000-01-03 07:00:00"),
+            ("bound20", "2000-01-05 07:00:00"),
+        ] {
+            send(
+                &mut socket,
+                b'D',
+                &[b"P", portal.as_bytes(), b"\0"].concat(),
+            );
+            send(
+                &mut socket,
+                b'E',
+                &[portal.as_bytes(), b"\0", &0i32.to_be_bytes()].concat(),
+            );
+            send(&mut socket, b'S', &[]);
+            let r = ready(&mut socket);
+            timestamp_description(&r[0].1, 0, -1);
+            if execution == 0 {
+                assert_eq!(date_text_row(&r), expected.as_bytes());
+            } else {
+                assert_eq!(r.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+            }
+        }
+    }
+    query(&mut socket, "ROLLBACK");
+    for output in [0, 1] {
+        let null = cycle_oid(&mut socket, "SELECT $1::timestamp", 1114, 0, output, None);
+        assert!(
+            null.iter()
+                .any(|m| m.0 == b'D' && m.1 == [0, 1, 255, 255, 255, 255])
+        );
+        for bad in [b"now\0".as_slice(), &[0xff]] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp",
+                    1114,
+                    0,
+                    output,
+                    Some(bad),
+                ),
+                "22021",
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+        for (sql, count) in [
+            ("SELECT $1::timestamp WHERE FALSE", 0),
+            ("SELECT NULL::timestamp UNION ALL SELECT $1::timestamp", 2),
+            (
+                "SELECT NULL::timestamp UNION ALL SELECT NULL::timestamp WHERE $1 IS NOT NULL",
+                2,
+            ),
+        ] {
+            let result = cycle_oid(&mut socket, sql, 1114, 0, output, Some(b"infinity"));
+            timestamp_description(&result[2].1, 0, -1);
+            timestamp_description(&result[4].1, output, -1);
+            assert_eq!(result.iter().filter(|m| m.0 == b'D').count(), count);
+        }
+        for bad in ["", "garbage", "allballs"] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp",
+                    1114,
+                    0,
+                    output,
+                    Some(bad.as_bytes()),
+                ),
+                "22007",
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    let differential = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_ts_special_libpq.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    service.close();
+    assert!(
+        differential.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&differential.stdout),
+        String::from_utf8_lossy(&differential.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&differential.stdout));
+}

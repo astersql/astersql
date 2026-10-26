@@ -295,7 +295,7 @@ pub(super) struct SessionState {
     pub(super) pg_date_order: astersql_types::pg_temporal::PgDateOrder,
     pub(super) pg_statement_time: f64,
     pub(super) pg_transaction_time: Option<f64>,
-    pub(super) pg_bound_date_constants: HashMap<usize, astersql_types::pg_temporal::PgDate>,
+    pub(super) pg_bound_date_constants: HashMap<usize, String>,
     pub(super) max_connections: u64,
     pub(super) tx_read_only: bool,
     pub(super) global_tx_read_only: bool,
@@ -385,7 +385,7 @@ pub(super) struct SessionState {
 /// Identity and cache state of one connection-owned protocol statement.
 #[derive(Clone)]
 pub(super) struct ProtocolPreparedState {
-    pub(super) pg_date_constants: HashMap<usize, astersql_types::pg_temporal::PgDate>,
+    pub(super) pg_date_constants: HashMap<usize, String>,
     pub(super) has_pg_constructors: bool,
     pub(super) constructor_parameter_oids: Vec<u32>,
     pub(super) dialect: ast::SqlDialect,

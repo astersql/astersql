@@ -3827,10 +3827,11 @@ pub(super) fn pg_time_relational_value(
 pub(super) fn pg_timestamp_relational_value(
     value: Option<String>,
     precision: isize,
+    context: astersql_types::pg_temporal::PgDateContext,
 ) -> SessionResult<Option<String>> {
     value
         .map(|text| {
-            text.parse::<astersql_types::pg_temporal::PgTimestamp>()
+            astersql_types::pg_temporal::PgTimestamp::parse_with_context(&text, context)
                 .and_then(|timestamp| timestamp.round_precision(precision))
                 .map(|timestamp| timestamp.to_string())
                 .map_err(|error| {

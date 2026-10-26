@@ -881,16 +881,29 @@ fn pg_temporal_time_precision_session_cast() {
 #[test]
 fn pg_timestamp_cast_rounds_across_epoch() {
     use super::pg_timestamp_relational_value;
-    assert_eq!(pg_timestamp_relational_value(None, 0).unwrap(), None);
+    use astersql_types::pg_temporal::{PgDateContext, PgDateOrder};
+    let context = PgDateContext {
+        order: PgDateOrder::Ymd,
+        today: "2000-01-01".parse().unwrap(),
+        time_micros: 123456,
+    };
     assert_eq!(
-        pg_timestamp_relational_value(Some("1999-12-31 23:59:59.5".into()), 0).unwrap(),
+        pg_timestamp_relational_value(Some("now".into()), 6, context).unwrap(),
+        Some("2000-01-01 00:00:00.123456".into())
+    );
+    assert_eq!(
+        pg_timestamp_relational_value(None, 0, context).unwrap(),
+        None
+    );
+    assert_eq!(
+        pg_timestamp_relational_value(Some("1999-12-31 23:59:59.5".into()), 0, context).unwrap(),
         Some("1999-12-31 23:59:59".into())
     );
     assert_eq!(
-        pg_timestamp_relational_value(Some("2000-01-01 00:00:00.5".into()), 0).unwrap(),
+        pg_timestamp_relational_value(Some("2000-01-01 00:00:00.5".into()), 0, context).unwrap(),
         Some("2000-01-01 00:00:01".into())
     );
-    assert!(pg_timestamp_relational_value(Some("2000-02-30 00:00:00".into()), 0).is_err());
+    assert!(pg_timestamp_relational_value(Some("2000-02-30 00:00:00".into()), 0, context).is_err());
 }
 
 #[test]

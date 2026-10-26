@@ -1046,7 +1046,8 @@ impl Extended {
                 }
                 let mut args = Vec::new();
                 let mut catalog_values = Vec::new();
-                let date_context = if statement.catalog.is_none() && statement.oids.contains(&1082)
+                let date_context = if statement.catalog.is_none()
+                    && statement.oids.iter().any(|oid| matches!(oid, 1082 | 1114))
                 {
                     Some(context.pg_date_context(None).map_err(engine)?)
                 } else {
@@ -1079,18 +1080,28 @@ impl Extended {
                         args.push(if format == 1 {
                             binary_parameter(*oid, value)?
                         } else {
-                            if *oid == 1082 && value.is_some() {
-                                let text = std::str::from_utf8(value.unwrap())
-                                    .map_err(|_| error("22021", "invalid UTF-8 date parameter"))?;
+                            if matches!(*oid, 1082 | 1114) && value.is_some() {
+                                let text = std::str::from_utf8(value.unwrap()).map_err(|_| {
+                                    error("22021", "invalid UTF-8 temporal parameter")
+                                })?;
                                 if text.contains('\0') {
-                                    return Err(error("22021", "NUL in date parameter"));
+                                    return Err(error("22021", "NUL in temporal parameter"));
                                 }
-                                let date = astersql_types::pg_temporal::PgDate::parse_with_context(
-                                    text,
-                                    date_context.unwrap(),
-                                )
+                                let date = if *oid == 1082 {
+                                    astersql_types::pg_temporal::PgDate::parse_with_context(
+                                        text,
+                                        date_context.unwrap(),
+                                    )
+                                    .map(|v| v.to_string())
+                                } else {
+                                    astersql_types::pg_temporal::PgTimestamp::parse_with_context(
+                                        text,
+                                        date_context.unwrap(),
+                                    )
+                                    .map(|v| v.to_string())
+                                }
                                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
-                                parameter(*oid, Some(date.to_string().as_bytes()))?
+                                parameter(*oid, Some(date.as_bytes()))?
                             } else {
                                 parameter(*oid, value)?
                             }

@@ -57,6 +57,8 @@ impl PgDateOrder {
 pub struct PgDateContext {
     pub order: PgDateOrder,
     pub today: PgDate,
+    /// Local time within the transaction day, sampled with the same timezone.
+    pub time_micros: i64,
 }
 
 /// A validated Gregorian day or an infinity sentinel, counted from 2000-01-01. Keeping days
@@ -460,6 +462,29 @@ impl fmt::Display for PgTime {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PgTimestamp(i64);
 impl PgTimestamp {
+    /// Resolve relative input once at its Parse/Bind/statement boundary.
+    pub fn parse_with_context(text: &str, context: PgDateContext) -> Result<Self, PgTemporalError> {
+        let word = text.trim().to_ascii_lowercase();
+        if matches!(word.as_str(), "now" | "today" | "yesterday" | "tomorrow") {
+            let date = PgDate::parse_with_context(&word, context)?;
+            let time = if word == "now" {
+                context.time_micros
+            } else {
+                0
+            };
+            if !(0..PgTime::END_OF_DAY).contains(&time) {
+                return Err(PgTemporalError::Range);
+            }
+            return Self::from_micros(
+                i64::from(date.0)
+                    .checked_mul(PgTime::END_OF_DAY)
+                    .and_then(|v| v.checked_add(time))
+                    .ok_or(PgTemporalError::Range)?,
+            );
+        }
+        text.parse()
+    }
+
     pub const MIN: i64 = -211_813_488_000_000_000;
     pub const END: i64 = 9_223_371_331_200_000_000;
 

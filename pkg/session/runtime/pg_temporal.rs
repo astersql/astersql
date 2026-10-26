@@ -1,9 +1,9 @@
 // Copyright 2026 AsterSQL.
-//! DATE's connection settings, transaction clock and prepared constant values.
+//! Temporal connection settings, transaction clock and prepared constant values.
 use super::session::RuntimeTimeZone;
 use super::*;
 use astersql_types::pg_temporal::{PgDate, PgDateContext, PgDateOrder};
-use chrono::Datelike;
+use chrono::{Datelike, Timelike};
 
 fn temporal_error(error: astersql_types::pg_temporal::PgTemporalError) -> SessionError {
     SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
@@ -38,18 +38,31 @@ impl ConcreteSession {
         let timestamp = chrono::DateTime::from_timestamp_micros((seconds * 1_000_000.0) as i64)
             .filter(|_| seconds.is_finite())
             .ok_or_else(|| temporal_error(astersql_types::pg_temporal::PgTemporalError::Range))?;
-        let (year, month, day) = match *self.time_zone.borrow() {
+        let (year, month, day, time_micros) = match *self.time_zone.borrow() {
             RuntimeTimeZone::Named(zone) => {
                 let date = timestamp.with_timezone(&zone);
-                (date.year(), date.month(), date.day())
+                (
+                    date.year(),
+                    date.month(),
+                    date.day(),
+                    i64::from(date.num_seconds_from_midnight()) * 1_000_000
+                        + i64::from(date.nanosecond() / 1000),
+                )
             }
             RuntimeTimeZone::Fixed(zone) => {
                 let date = timestamp.with_timezone(&zone);
-                (date.year(), date.month(), date.day())
+                (
+                    date.year(),
+                    date.month(),
+                    date.day(),
+                    i64::from(date.num_seconds_from_midnight()) * 1_000_000
+                        + i64::from(date.nanosecond() / 1000),
+                )
             }
         };
         Ok(PgDateContext {
             order: state.pg_date_order,
+            time_micros,
             today: PgDate::from_ymd(if year <= 0 { year - 1 } else { year }, month, day)
                 .map_err(temporal_error)?,
         })
@@ -60,13 +73,13 @@ impl ConcreteSession {
     pub(super) fn prepare_pg_date_constants(
         &self,
         nodes: &[Box<dyn ast::Node>],
-    ) -> SessionResult<HashMap<usize, PgDate>> {
+    ) -> SessionResult<HashMap<usize, String>> {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
             return Ok(HashMap::new());
         }
         struct Constants {
             context: PgDateContext,
-            values: HashMap<usize, PgDate>,
+            values: HashMap<usize, String>,
             error: Option<SessionError>,
         }
         impl ast::Visitor for Constants {
@@ -79,7 +92,11 @@ impl ConcreteSession {
             fn enter_embedded(&mut self, input: &dyn std::any::Any) -> bool {
                 if let Some(expr) = input.downcast_ref::<ast::ExprNode>()
                     && let ast::ExprKind::Cast { Expr, Tp, .. } = &expr.Kind
-                    && Tp.GetType() == astersql_parser_mysql::r#type::TypeDate
+                    && matches!(
+                        Tp.GetType(),
+                        astersql_parser_mysql::r#type::TypeDate
+                            | astersql_parser_mysql::r#type::TypeDatetime
+                    )
                 {
                     let mut source = Expr.as_ref();
                     while let ast::ExprKind::Parentheses(inner) = &source.Kind {
@@ -88,7 +105,17 @@ impl ConcreteSession {
                     if let ast::ExprKind::Value(value) = &source.Kind
                         && let ast::ValueDatum::String(text) = &value.Datum
                     {
-                        match PgDate::parse_with_context(text, self.context) {
+                        let value = if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate {
+                            PgDate::parse_with_context(text, self.context).map(|v| v.to_string())
+                        } else {
+                            astersql_types::pg_temporal::PgTimestamp::parse_with_context(
+                                text,
+                                self.context,
+                            )
+                            .and_then(|v| v.round_precision(Tp.GetDecimal()))
+                            .map(|v| v.to_string())
+                        };
+                        match value {
                             Ok(date) => {
                                 self.values.insert(expr.OriginTextPosition as usize, date);
                             }
@@ -113,10 +140,10 @@ impl ConcreteSession {
         Ok(constants.values)
     }
 
-    /// Reinstall prepared canonical dates in the bound AST, retaining real cast
+    /// Reinstall prepared canonical date/timestamp text in the typed AST, retaining real cast
     /// evaluation and metadata. No SQL spelling is searched or replaced.
     pub(super) fn apply_pg_date_constants(&self, nodes: &mut [Box<dyn ast::Node>]) {
-        struct Apply<'a>(&'a HashMap<usize, PgDate>);
+        struct Apply<'a>(&'a HashMap<usize, String>);
         impl ast::InPlaceVisitor for Apply<'_> {
             fn enter(&mut self, input: &mut dyn ast::Node) -> bool {
                 self.enter_embedded(input.as_any_mut())
@@ -128,9 +155,13 @@ impl ConcreteSession {
                 if let Some(expr) = input.downcast_mut::<ast::ExprNode>()
                     && let Some(date) = self.0.get(&(expr.OriginTextPosition as usize))
                     && let ast::ExprKind::Cast { Expr, Tp, .. } = &mut expr.Kind
-                    && Tp.GetType() == astersql_parser_mysql::r#type::TypeDate
+                    && matches!(
+                        Tp.GetType(),
+                        astersql_parser_mysql::r#type::TypeDate
+                            | astersql_parser_mysql::r#type::TypeDatetime
+                    )
                 {
-                    **Expr = ast::ExprNode::Value(date.to_string());
+                    **Expr = ast::ExprNode::Value(date.clone());
                 }
                 false
             }

@@ -1285,6 +1285,7 @@ impl ConcreteSession {
                     return pg_timestamp_relational_value(
                         self.relational_query_expression_value(Expr, row, group_rows)?,
                         Tp.GetDecimal(),
+                        self.pg_date_context(None)?,
                     );
                 }
                 if Tp.PostgreSQLTextOid().is_some() {

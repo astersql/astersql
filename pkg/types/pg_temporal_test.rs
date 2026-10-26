@@ -81,7 +81,11 @@ fn special_dates_and_numeric_field_orders() {
         (PgDateOrder::Dmy, "2003-02-01"),
         (PgDateOrder::Ymd, "2001-02-03"),
     ] {
-        let context = PgDateContext { order, today };
+        let context = PgDateContext {
+            order,
+            today,
+            time_micros: 0,
+        };
         assert_eq!(
             PgDate::parse_with_context("01/02/03", context)
                 .unwrap()
@@ -130,7 +134,8 @@ fn special_dates_and_numeric_field_orders() {
                 word,
                 PgDateContext {
                     order: PgDateOrder::Mdy,
-                    today
+                    today,
+                    time_micros: 0,
                 }
             ),
             Err(PgTemporalError::Range)
@@ -403,5 +408,28 @@ fn pg_timestamp_zone_identity() {
             format!("2024-03-10 02:30:00{suffix}").parse::<PgTimestamp>(),
             Err(expected)
         );
+    }
+}
+
+#[test]
+fn pg_timestamp_special_context() {
+    use super::pg_temporal::{PgDate, PgDateContext, PgDateOrder, PgTimestamp};
+    let context = PgDateContext {
+        order: PgDateOrder::Ymd,
+        today: PgDate::from_ymd(2000, 1, 1).unwrap(),
+        time_micros: 25200123456,
+    };
+    for (word, expected) in [
+        ("now", 25200123456),
+        (" TODAY ", 0),
+        ("yesterday", -86400000000),
+        ("Tomorrow", 86400000000),
+        ("epoch", -946684800000000),
+        ("infinity", i64::MAX),
+        ("-infinity", i64::MIN),
+    ] {
+        let value = PgTimestamp::parse_with_context(word, context).unwrap();
+        assert_eq!(value.micros(), expected);
+        assert_eq!(PgTimestamp::from_binary(&value.to_binary()).unwrap(), value);
     }
 }
