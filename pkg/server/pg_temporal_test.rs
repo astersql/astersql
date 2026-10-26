@@ -3936,3 +3936,177 @@ fn pg_temporal_ts_null_metadata() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_ts_invalid_length() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE ts_invalid_diff").unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for output in [0i16, 1] {
+        for in_transaction in [false, true] {
+            for (input, payload, state) in [
+                (1, vec![], "08P01"),
+                (1, vec![0; 7], "08P01"),
+                (1, vec![0; 9], "22P03"),
+                (1, (-211813488000000001i64).to_be_bytes().to_vec(), "22008"),
+                (1, (i64::MIN + 1).to_be_bytes().to_vec(), "22008"),
+                (1, (i64::MAX - 1).to_be_bytes().to_vec(), "22008"),
+                (1, 9223371331200000000i64.to_be_bytes().to_vec(), "22008"),
+                (0, vec![], "22007"),
+                (0, b"garbage".to_vec(), "22007"),
+                (0, b"2000-01-01 12:60:00".to_vec(), "22008"),
+                (0, vec![0xff], "22021"),
+                (0, vec![0xc3, 0x28], "22021"),
+                (0, b"2000-01-01 12:00:00\0".to_vec(), "22021"),
+            ] {
+                if in_transaction {
+                    assert!(!query(&mut socket, "BEGIN").iter().any(|m| m.0 == b'E'));
+                }
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp",
+                    1114,
+                    input,
+                    output,
+                    Some(&payload),
+                );
+                error_in_state(&result, state, if in_transaction { b"E" } else { b"I" });
+                assert!(!result.iter().any(|m| m.0 == b'D' || m.0 == b'2'));
+                if in_transaction {
+                    assert_eq!(
+                        query(&mut socket, "ROLLBACK").last().unwrap(),
+                        &(b'Z', b"I".to_vec())
+                    );
+                }
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+        for input in [0i16, 1] {
+            // Ordinary values, exact finite endpoints, and independent sentinels.
+            for (text, micros) in [
+                ("2000-01-01 00:00:00", 0i64),
+                ("1999-12-31 23:59:59.999999", -1),
+                ("4714-11-24 00:00:00 BC", -211813488000000000),
+                ("294276-12-31 23:59:59.999999", 9223371331199999999),
+                ("-infinity", i64::MIN),
+                ("infinity", i64::MAX),
+            ] {
+                let binary = micros.to_be_bytes();
+                let payload = if input == 0 { text.as_bytes() } else { &binary };
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp",
+                    1114,
+                    input,
+                    output,
+                    Some(payload),
+                );
+                assert_eq!(
+                    result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{result:?}"
+                );
+                assert_eq!(
+                    result[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1114u32.to_be_bytes()].concat()
+                );
+                timestamp_description(&result[2].1, 0, -1);
+                timestamp_description(&result[4].1, output, -1);
+                let expected = if output == 0 {
+                    text.as_bytes()
+                } else {
+                    &binary
+                };
+                assert_eq!(
+                    result[5].1,
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &(expected.len() as i32).to_be_bytes(),
+                        expected
+                    ]
+                    .concat()
+                );
+            }
+            let result = cycle_oid(
+                &mut socket,
+                "SELECT $1::timestamp",
+                1114,
+                input,
+                output,
+                None,
+            );
+            assert_eq!(result.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+            timestamp_description(&result[2].1, 0, -1);
+            timestamp_description(&result[4].1, output, -1);
+            assert_eq!(
+                result[5].1,
+                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+            );
+        }
+        // The declared Bind value exceeds its complete outer message body.
+        // Sync can therefore recover without guessing a TCP frame boundary.
+        for declared in [8i32, 12] {
+            let parse = [
+                b"\0SELECT $1::timestamp\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1114u32.to_be_bytes(),
+            ]
+            .concat();
+            send(&mut socket, b'P', &parse);
+            let bind = [
+                b"\0\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &declared.to_be_bytes(),
+                &[0; 7],
+            ]
+            .concat();
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'S', &[]);
+            let result = ready(&mut socket);
+            error(&result, "08P01");
+            assert!(!result.iter().any(|m| m.0 == b'2'));
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    let differential = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_ts_invalid_libpq.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    service.close();
+    assert!(
+        differential.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&differential.stdout),
+        String::from_utf8_lossy(&differential.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&differential.stdout));
+}
