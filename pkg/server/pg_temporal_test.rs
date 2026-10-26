@@ -5103,3 +5103,250 @@ fn tz_precision_description(body: &[u8], format: i16, precision: i32) {
     assert_eq!(&body[at + 12..at + 16], &precision.to_be_bytes());
     assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
 }
+
+#[test]
+fn pg_temporal_tz_cast_bridge() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE tz_bridge_diff").unwrap();
+    native
+        .execute("CREATE TABLE tz_bridge_diff.mysql_times (t TIMESTAMP(6), d DATETIME(6))")
+        .unwrap();
+    native.execute("INSERT INTO tz_bridge_diff.mysql_times VALUES ('2000-01-01 00:00:00', '2000-01-01 00:00:00'), (NULL, NULL)").unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0tz_bridge_diff\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for (zone, source_oid, target, text, raw, expected, result_raw) in [
+        (
+            "UTC",
+            1114u32,
+            "timestamptz",
+            "2000-01-01 00:00:00",
+            0i64,
+            "2000-01-01 00:00:00+00",
+            0i64,
+        ),
+        (
+            "Asia/Shanghai",
+            1114,
+            "timestamptz",
+            "2000-01-01 00:00:00",
+            0,
+            "2000-01-01 00:00:00+08",
+            -28800000000,
+        ),
+        (
+            "Asia/Shanghai",
+            1184,
+            "timestamp",
+            "2000-01-01 00:00:00+00",
+            0,
+            "2000-01-01 08:00:00",
+            28800000000,
+        ),
+        (
+            "America/New_York",
+            1184,
+            "timestamp",
+            "2018-11-04 01:30:00-04",
+            594624600000000,
+            "2018-11-04 01:30:00",
+            594610200000000,
+        ),
+        (
+            "America/New_York",
+            1184,
+            "timestamp",
+            "2018-11-04 01:30:00-05",
+            594628200000000,
+            "2018-11-04 01:30:00",
+            594610200000000,
+        ),
+        (
+            "Asia/Shanghai",
+            1114,
+            "timestamptz",
+            "infinity",
+            i64::MAX,
+            "infinity",
+            i64::MAX,
+        ),
+        (
+            "Asia/Shanghai",
+            1184,
+            "timestamp",
+            "-infinity",
+            i64::MIN,
+            "-infinity",
+            i64::MIN,
+        ),
+    ] {
+        assert_eq!(
+            query(&mut socket, &format!("SET time_zone = '{zone}'"))
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"CZ"
+        );
+        let sql = format!("SELECT CAST($1 AS {target})");
+        for input in [0i16, 1] {
+            for output in [0i16, 1] {
+                let bytes = raw.to_be_bytes();
+                let messages = cycle_oid(
+                    &mut socket,
+                    &sql,
+                    source_oid,
+                    input,
+                    output,
+                    Some(if input == 0 { text.as_bytes() } else { &bytes }),
+                );
+                assert_eq!(
+                    messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{zone} {sql}: {messages:?}"
+                );
+                assert_eq!(
+                    messages[1].1,
+                    [1i16.to_be_bytes().as_slice(), &source_oid.to_be_bytes()].concat()
+                );
+                for (index, format) in [(2, 0), (4, output)] {
+                    if target == "timestamp" {
+                        timestamp_description(&messages[index].1, format, -1)
+                    } else {
+                        tz_precision_description(&messages[index].1, format, -1)
+                    }
+                }
+                assert_eq!(
+                    date_text_row(&messages),
+                    if output == 0 {
+                        expected.as_bytes().to_vec()
+                    } else {
+                        result_raw.to_be_bytes().to_vec()
+                    },
+                    "{zone} {sql} input={input} output={output}"
+                );
+                let null = cycle_oid(&mut socket, &sql, source_oid, input, output, None);
+                assert_eq!(null.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+                assert_eq!(
+                    null[5].1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+            }
+        }
+    }
+    for (sql, oid, precision, rows) in [
+        (
+            "SELECT CAST(NULL AS timestamptz(3)) UNION ALL SELECT CAST(NULL AS timestamptz(3))",
+            1184u32,
+            3,
+            2,
+        ),
+        ("SELECT CAST(NULL AS timestamp(3)) WHERE false", 1114, 3, 0),
+        (
+            "SELECT CAST('2018-11-04 01:30:00-04' AS timestamptz)::timestamp UNION ALL SELECT CAST('2018-11-04 01:30:00-05' AS timestamptz)::timestamp",
+            1114,
+            -1,
+            2,
+        ),
+    ] {
+        query(&mut socket, "SET time_zone = 'America/New_York'");
+        let messages = query(&mut socket, sql);
+        assert_eq!(messages[0].0, b'T', "{sql}: {messages:?}");
+        if oid == 1184 {
+            tz_precision_description(&messages[0].1, 0, precision)
+        } else {
+            timestamp_description(&messages[0].1, 0, precision)
+        }
+        assert_eq!(messages.iter().filter(|m| m.0 == b'D').count(), rows);
+        for (_, body) in messages.iter().filter(|m| m.0 == b'D') {
+            if oid == 1184 {
+                assert_eq!(
+                    *body,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                )
+            } else {
+                assert_eq!(&body[6..], b"2018-11-04 01:30:00")
+            }
+        }
+    }
+    // A native DATETIME is a wall clock and uses the explicitly active zone.
+    query(&mut socket, "SET time_zone = 'Asia/Shanghai'");
+    let datetime = query(
+        &mut socket,
+        "SELECT CAST(d AS timestamptz) FROM mysql_times WHERE d IS NOT NULL",
+    );
+    assert_eq!(datetime[0].0, b'T', "{datetime:?}");
+    tz_precision_description(&datetime[0].1, 0, -1);
+    assert_eq!(date_text_row(&datetime), b"2000-01-01 00:00:00+08");
+    for (bytes, input, state) in [
+        (b"2000-01-01\0".as_slice(), 0, "22021"),
+        (b"1234567".as_slice(), 1, "08P01"),
+        (b"123456789".as_slice(), 1, "22P03"),
+    ] {
+        query(&mut socket, "BEGIN");
+        error_in_state(
+            &cycle_oid(
+                &mut socket,
+                "SELECT CAST($1 AS timestamp)",
+                1184,
+                input,
+                0,
+                Some(bytes),
+            ),
+            state,
+            b"E",
+        );
+        query(&mut socket, "ROLLBACK");
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    for suffix in ["", " WHERE false", " WHERE t IS NULL"] {
+        error(
+            &query(
+                &mut socket,
+                &format!("SELECT CAST(t AS timestamptz) FROM mysql_times{suffix}"),
+            ),
+            "0A000",
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    send(&mut socket, b'X', &[]);
+    let differential = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_tz_cast_bridge_libpq.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    service.close();
+    assert!(
+        differential.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&differential.stdout),
+        String::from_utf8_lossy(&differential.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&differential.stdout));
+}

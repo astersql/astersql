@@ -2149,6 +2149,7 @@ impl ConcreteSession {
             boolean_error: Option<astersql_expression::PgBoolError>,
             numeric_error: Option<astersql_types::pg_numeric::PgNumericError>,
             text_error: Option<astersql_expression::PgTextError>,
+            temporal_error: Option<astersql_types::pg_temporal::PgTemporalError>,
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
@@ -2175,6 +2176,15 @@ impl ConcreteSession {
                 if let ast::ExprKind::Cast { Expr, Tp, .. } = &input.Kind {
                     let source = pg_integer_literal_type(Expr)
                         .unwrap_or_else(|| relational_expression_type(Expr, self.table));
+                    // Native TIMESTAMP text has already lost its storage and
+                    // source-zone provenance. Check the catalog type before
+                    // rows (including empty/all-NULL scans) can hide that loss.
+                    if Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
+                        && source.GetType() == astersql_parser_mysql::r#type::TypeTimestamp
+                    {
+                        self.temporal_error =
+                            Some(astersql_types::pg_temporal::PgTemporalError::TimestampBridge);
+                    }
                     if let Err(error) = astersql_expression::pg_boolean_cast_kind(&source, Tp) {
                         self.boolean_error = Some(error);
                     }
@@ -2215,9 +2225,16 @@ impl ConcreteSession {
             boolean_error: None,
             numeric_error: None,
             text_error: None,
+            temporal_error: None,
         };
         for expr in expressions {
             let _ = expr.Accept(&mut visitor);
+        }
+        if let Some(error) = visitor.temporal_error {
+            return Err(SessionError::with_source(
+                error.to_string(),
+                astersql_errors::SharedError::new(error),
+            ));
         }
         if let Some(error) = visitor.text_error {
             return Err(SessionError::with_source(

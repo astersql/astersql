@@ -179,3 +179,46 @@ fn pg_timestamptz_dst_resolution() {
         assert_eq!(session.pg_timestamptz_input(wall).unwrap().to_string(), utc);
     }
 }
+
+#[test]
+fn timestamptz_cast_rejects_native_timestamp_without_provenance() {
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE tz_cast_source").unwrap();
+    native.execute("USE tz_cast_source").unwrap();
+    native
+        .execute("CREATE TABLE native_times (t TIMESTAMP(6), d DATETIME(6))")
+        .unwrap();
+    native.execute("INSERT INTO native_times VALUES ('2000-01-01 00:00:00', '2000-01-01 00:00:00'), (NULL, NULL)").unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.execute("USE tz_cast_source").unwrap();
+    session.execute("SET time_zone = 'Asia/Shanghai'").unwrap();
+    for suffix in ["", " WHERE false", " WHERE t IS NULL"] {
+        let error = session
+            .execute(&format!(
+                "SELECT CAST(t AS timestamptz) FROM native_times{suffix}"
+            ))
+            .err()
+            .expect("native TIMESTAMP has no conversion provenance");
+        assert_eq!(
+            error.pg_temporal_error(),
+            Some(astersql_types::pg_temporal::PgTemporalError::TimestampBridge)
+        );
+    }
+    let mut result = session
+        .execute("SELECT CAST(d AS timestamptz) FROM native_times WHERE d IS NOT NULL")
+        .unwrap();
+    assert_eq!(
+        result[0].next_row().unwrap().unwrap(),
+        ["2000-01-01 00:00:00+08"]
+    );
+    // The guard is PostgreSQL-only; native MySQL reads retain their behavior.
+    assert_eq!(
+        native
+            .execute("SELECT t FROM native_times WHERE t IS NOT NULL")
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        ["2000-01-01 00:00:00.000000"]
+    );
+}
