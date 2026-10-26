@@ -3023,3 +3023,250 @@ fn pg_temporal_ts_calendar_precision() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_ts_range_zero() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    // Independent PG epoch counts: exact finite endpoints, BC/AD without a
+    // year zero, expanded years and epoch zero (which must remain non-NULL).
+    for (text, micros) in [
+        ("4714-11-24 00:00:00 BC", -211813488000000000i64),
+        ("4714-11-24 00:00:00.000001 BC", -211813487999999999),
+        ("0001-12-31 23:59:59.999999 BC", -63082281600000001),
+        ("0001-01-01 00:00:00", -63082281600000000),
+        ("10000-01-01 00:00:00", 252455616000000000),
+        ("2000-01-01 00:00:00", 0),
+        ("294276-12-31 23:59:59.999999", 9223371331199999999),
+    ] {
+        for sql in [
+            "SELECT $1",
+            "SELECT $1::timestamp",
+            "SELECT CAST($1 AS TIMESTAMP)",
+        ] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let binary = micros.to_be_bytes();
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    let result = cycle_oid(&mut socket, sql, 1114, input, output, Some(value));
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{sql} {text}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1114u32.to_be_bytes()].concat()
+                    );
+                    timestamp_description(&result[2].1, 0, -1);
+                    timestamp_description(&result[4].1, output, -1);
+                    let expected = if output == 0 {
+                        text.as_bytes()
+                    } else {
+                        &binary
+                    };
+                    assert_eq!(
+                        result[5].1,
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(expected.len() as i32).to_be_bytes(),
+                            expected
+                        ]
+                        .concat(),
+                        "{sql} {text}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            date_text_row(&query(
+                &mut socket,
+                &format!("SELECT CAST('{text}' AS TIMESTAMP)")
+            )),
+            text.as_bytes()
+        );
+    }
+    for input in [0, 1] {
+        for output in [0, 1] {
+            let null = cycle_oid(&mut socket, "SELECT $1", 1114, input, output, None);
+            assert_eq!(null.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+            timestamp_description(&null[2].1, 0, -1);
+            timestamp_description(&null[4].1, output, -1);
+            assert_eq!(
+                null[5].1,
+                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+            );
+        }
+    }
+    for text in [
+        "0000-00-00 00:00:00",
+        "0000-01-01 00:00:00",
+        "2024-00-01 00:00:00",
+        "2024-01-00 00:00:00",
+        "0000-01-01 00:00:00 BC",
+        "4714-11-23 23:59:59.999999 BC",
+        "294277-01-01 00:00:00",
+    ] {
+        for output in [0, 1] {
+            for oid in [1114, 25] {
+                error(
+                    &cycle_oid(
+                        &mut socket,
+                        "SELECT $1::timestamp",
+                        oid,
+                        0,
+                        output,
+                        Some(text.as_bytes()),
+                    ),
+                    "22008",
+                );
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+        error(
+            &query(&mut socket, &format!("SELECT CAST('{text}' AS TIMESTAMP)")),
+            "22008",
+        );
+    }
+    for micros in [-211813488000000001i64, 9223371331200000000] {
+        for output in [0, 1] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1",
+                    1114,
+                    1,
+                    output,
+                    Some(&micros.to_be_bytes()),
+                ),
+                "22008",
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    // Keep zero rows and full-NULL/mixed multirows on the same real consumers.
+    for output in [0, 1] {
+        for (sql, rows) in [
+            ("SELECT $1::timestamp WHERE FALSE", 0),
+            ("SELECT NULL::timestamp UNION ALL SELECT $1::timestamp", 2),
+            (
+                "SELECT NULL::timestamp UNION ALL SELECT NULL::timestamp WHERE $1 IS NOT NULL",
+                2,
+            ),
+        ] {
+            let result = cycle_oid(
+                &mut socket,
+                sql,
+                1114,
+                0,
+                output,
+                Some(b"294276-12-31 23:59:59.999999"),
+            );
+            assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+            let descriptions = result.iter().filter(|m| m.0 == b'T').collect::<Vec<_>>();
+            timestamp_description(&descriptions[0].1, 0, -1);
+            timestamp_description(&descriptions[1].1, output, -1);
+            let data = result.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>();
+            assert_eq!(data.len(), rows);
+            if rows > 0 {
+                assert_eq!(
+                    data[0].1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+                if sql.contains("WHERE $1 IS NOT NULL") {
+                    assert_eq!(data[1].1, data[0].1);
+                } else {
+                    let binary = 9223371331199999999i64.to_be_bytes();
+                    let expected = if output == 0 {
+                        b"294276-12-31 23:59:59.999999".as_slice()
+                    } else {
+                        &binary
+                    };
+                    assert_eq!(
+                        data[1].1,
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(expected.len() as i32).to_be_bytes(),
+                            expected
+                        ]
+                        .concat()
+                    );
+                }
+            }
+        }
+    }
+    query(&mut socket, "BEGIN");
+    error_in_state(
+        &cycle_oid(
+            &mut socket,
+            "SELECT $1",
+            1114,
+            1,
+            0,
+            Some(&9223371331200000000i64.to_be_bytes()),
+        ),
+        "22008",
+        b"E",
+    );
+    query(&mut socket, "ROLLBACK");
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+
+    // Exercise invalid native DATETIME/TIMESTAMP cells at the actual result
+    // adapter: both encodings share calendar validation before emitting data.
+    use crate::conn::{CancellationToken, SessionDriver, Value};
+    let mysql = driver.open_ctx(75118, 0, 45, "", None).unwrap();
+    let mut internal = mysql
+        .execute_query(
+            "SELECT CAST('2024-02-29 12:00:00' AS DATETIME)",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .remove(0);
+    for code in [7, 12] {
+        internal.native_types[0].code = code;
+        for text in [
+            "0000-00-00 00:00:00",
+            "0000-01-01 00:00:00",
+            "2024-00-01 00:00:00",
+            "2024-01-00 00:00:00",
+        ] {
+            internal.rows[0][0] = Value::Text(text.into());
+            for output in [0, 1] {
+                let rejected = crate::pg_result::encode_formats(&internal, "SELECT", &[output])
+                    .expect_err("native zero date must be rejected");
+                assert_eq!(
+                    crate::pg_result::encoding_sqlstate(&rejected),
+                    "22008",
+                    "code={code} {text}"
+                );
+            }
+        }
+    }
+    mysql.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
