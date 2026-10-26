@@ -1597,3 +1597,232 @@ fn pg_temporal_time_day() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+fn time_precision_description(body: &[u8], format: i16, precision: i32) {
+    assert_eq!(&body[..2], &1i16.to_be_bytes());
+    let at = 3 + body[2..].iter().position(|b| *b == 0).unwrap();
+    assert_eq!(&body[at + 6..at + 10], &1083u32.to_be_bytes());
+    assert_eq!(&body[at + 10..at + 12], &8i16.to_be_bytes());
+    assert_eq!(&body[at + 12..at + 16], &precision.to_be_bytes());
+    assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+}
+
+#[test]
+fn pg_temporal_time_precision() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for postfix in [false, true] {
+        for (p, text, micros, expected, rounded) in [
+            (0, "12:34:56.5", 45296500000i64, "12:34:57", 45297000000i64),
+            (3, "12:34:56.1234", 45296123400, "12:34:56.123", 45296123000),
+            (3, "12:34:56.1235", 45296123500, "12:34:56.124", 45296124000),
+            (0, "23:59:59.999999", 86399999999, "24:00:00", 86400000000),
+            (3, "23:59:59.999999", 86399999999, "24:00:00", 86400000000),
+            (
+                6,
+                "12:34:56.1234567",
+                45296123457,
+                "12:34:56.123457",
+                45296123457,
+            ),
+            (6, "00:00:00", 0, "00:00:00", 0),
+            (6, "24:00:00", 86400000000, "24:00:00", 86400000000),
+            // Input rounding occurs before typmod rounding (double rounding).
+            (
+                3,
+                "12:34:56.1234999",
+                45296123500,
+                "12:34:56.124",
+                45296124000,
+            ),
+        ] {
+            let sql = if postfix {
+                format!("SELECT $1::time({p})")
+            } else {
+                format!("SELECT CAST($1 AS TIME({p}))")
+            };
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let binary = micros.to_be_bytes();
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    let result = cycle_oid(&mut socket, &sql, 1083, input, output, Some(value));
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{sql}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1083u32.to_be_bytes()].concat()
+                    );
+                    time_precision_description(&result[2].1, 0, p);
+                    time_precision_description(&result[4].1, output, p);
+                    let rounded = rounded.to_be_bytes();
+                    assert_eq!(
+                        date_text_row(&result),
+                        if output == 0 {
+                            expected.as_bytes()
+                        } else {
+                            &rounded
+                        },
+                        "{sql} {text}"
+                    );
+                    let null = cycle_oid(&mut socket, &sql, 1083, input, output, None);
+                    assert_eq!(
+                        null.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{null:?}"
+                    );
+                    time_precision_description(&null[2].1, 0, p);
+                    time_precision_description(&null[4].1, output, p);
+                    assert_eq!(
+                        null[5].1,
+                        [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                    );
+                }
+            }
+        }
+    }
+    for input in [0, 1] {
+        for output in [0, 1] {
+            for (sql, rows) in [
+                (
+                    "SELECT $1::time(3) WHERE FALSE",
+                    Vec::<Option<&[u8]>>::new(),
+                ),
+                (
+                    "SELECT $1::time(3) UNION ALL SELECT $1::time(3)",
+                    vec![Some(b"12:34:56.124".as_slice()); 2],
+                ),
+                (
+                    "SELECT NULL::time(3) UNION ALL SELECT $1::time(3)",
+                    vec![None, Some(b"12:34:56.124".as_slice())],
+                ),
+                (
+                    "SELECT NULL::time(3) UNION ALL SELECT NULL::time(3) WHERE $1 IS NOT NULL",
+                    vec![None, None],
+                ),
+            ] {
+                let binary = 45296123500i64.to_be_bytes();
+                let value = if input == 0 {
+                    b"12:34:56.1235".as_slice()
+                } else {
+                    &binary
+                };
+                let result = cycle_oid(&mut socket, sql, 1083, input, output, Some(value));
+                assert!(!result.iter().any(|m| m.0 == b'E'), "{sql}: {result:?}");
+                let descriptions = result.iter().filter(|m| m.0 == b'T').collect::<Vec<_>>();
+                assert_eq!(descriptions.len(), 2);
+                time_precision_description(&descriptions[0].1, 0, 3);
+                time_precision_description(&descriptions[1].1, output, 3);
+                let actual = result.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>();
+                assert_eq!(actual.len(), rows.len(), "{sql}");
+                for ((_, body), value) in actual.into_iter().zip(rows) {
+                    let expected_binary = 45296124000i64.to_be_bytes();
+                    let expected = match value {
+                        None => [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat(),
+                        Some(value) => {
+                            let payload = if output == 0 { value } else { &expected_binary };
+                            [
+                                1i16.to_be_bytes().as_slice(),
+                                &(payload.len() as i32).to_be_bytes(),
+                                payload,
+                            ]
+                            .concat()
+                        }
+                    };
+                    assert_eq!(*body, expected);
+                }
+            }
+            for (bytes, state) in [
+                (vec![0; 7], "08P01"),
+                (vec![0; 9], "22P03"),
+                ((-1i64).to_be_bytes().to_vec(), "22008"),
+                (86400000001i64.to_be_bytes().to_vec(), "22008"),
+            ] {
+                error(
+                    &cycle_oid(
+                        &mut socket,
+                        "SELECT $1::time(0)",
+                        1083,
+                        1,
+                        output,
+                        Some(&bytes),
+                    ),
+                    state,
+                );
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+    }
+    for sql in ["SELECT CAST(NULL AS TIME(-1))", "SELECT NULL::time(-1)"] {
+        error(&query(&mut socket, sql), "22023");
+        error(&cycle_oid(&mut socket, sql, 1083, 0, 0, None), "22023");
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    for sql in ["SELECT CAST($1 AS TIME(7))", "SELECT $1::time(7)"] {
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let binary = 45296123457i64.to_be_bytes();
+                let value = if input == 0 {
+                    b"12:34:56.1234567".as_slice()
+                } else {
+                    &binary
+                };
+                let result = cycle_oid(&mut socket, sql, 1083, input, output, Some(value));
+                assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+                let notices = result.iter().filter(|m| m.0 == b'N').collect::<Vec<_>>();
+                assert_eq!(notices.len(), 1, "{result:?}");
+                assert!(notices[0].1.windows(7).any(|w| w == b"C22023\0"));
+                assert!(notices[0].1.windows(9).any(|w| w == b"SWARNING\0"));
+                let descriptions = result.iter().filter(|m| m.0 == b'T').collect::<Vec<_>>();
+                time_precision_description(&descriptions[0].1, 0, 6);
+                time_precision_description(&descriptions[1].1, output, 6);
+                assert_eq!(
+                    date_text_row(&result),
+                    if output == 0 {
+                        b"12:34:56.123457".as_slice()
+                    } else {
+                        &binary
+                    }
+                );
+            }
+        }
+    }
+    for sql in [
+        "SELECT CAST('12:34:56.1234567' AS TIME(7))",
+        "SELECT '12:34:56.1234567'::time(7)",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(
+            result.iter().filter(|m| m.0 == b'N').count(),
+            1,
+            "{result:?}"
+        );
+        assert_eq!(date_text_row(&result), b"12:34:56.123457");
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+}

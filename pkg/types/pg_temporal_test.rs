@@ -173,3 +173,30 @@ fn pg_temporal_time_day_canonical_domain() {
     );
     assert_eq!(PgTime::from_binary(&[0; 9]), Err(PgTemporalError::Trailing));
 }
+
+#[test]
+fn pg_temporal_time_precision_rounding() {
+    use super::pg_temporal::PgTime;
+    for (text, expected) in [
+        ("12:34:56.1234567", "12:34:56.123457"),
+        ("12:34:56.1234565", "12:34:56.123456"),
+        ("12:34:56.1234575", "12:34:56.123458"),
+        ("23:59:59.9999999", "24:00:00"),
+    ] {
+        assert_eq!(text.parse::<PgTime>().unwrap().to_string(), expected);
+    }
+    for p in 0..=6 {
+        let value = "23:59:59.999999".parse::<PgTime>().unwrap();
+        assert_eq!(
+            value.round_precision(p).micros(),
+            if p == 6 { 86399999999 } else { 86400000000 }
+        );
+        let zero = PgTime::from_micros(0).unwrap();
+        assert_eq!(zero.round_precision(p), zero);
+    }
+    assert_eq!(
+        "24:00:00.0000001".parse::<PgTime>().unwrap().to_string(),
+        "24:00:00"
+    );
+    assert!("24:00:00.0000009".parse::<PgTime>().is_err());
+}

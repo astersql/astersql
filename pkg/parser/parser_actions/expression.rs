@@ -32,6 +32,8 @@ enum ExpressionRule {
     PgCastType,
     PgVarcharType,
     PgNumericOpt,
+    PgTimeNegative,
+    PgTimePositive,
     PgPostfixCast,
     ColumnNameAlt01,
     ColumnNameAlt02,
@@ -980,7 +982,10 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "casttype_year--f010dbb41c64c76c" => Some(ExpressionRule::CastTypeAlt04),
         "casttype_datetime_optfieldlen--d3a238a390d7eab6" => Some(ExpressionRule::CastTypeAlt05),
         "casttype_decimal_floatopt--3faf7a6bdfb2de03" => Some(ExpressionRule::CastTypeAlt06),
-        "casttype_time_optfieldlen--2150208d51e722ba" => Some(ExpressionRule::CastTypeAlt07),
+        "pgtimetype_time_optfieldlen--78f89b59baa631b1" => Some(ExpressionRule::CastTypeAlt07),
+        "pgtimetype_time_lengthnum--516de04a3171622f" => Some(ExpressionRule::PgTimeNegative),
+        "pgtimetype_time_lengthnum--f306ececd018540d" => Some(ExpressionRule::PgTimePositive),
+        "simpleexpr_simpleexpr_pgtypecast_pgtimetype_prec--f40c12ae46aa088d" => Some(ExpressionRule::PgPostfixCast),
         "casttype_signed_optinteger--e3908147841dbef4" => Some(ExpressionRule::CastTypeAlt08),
         "casttype_unsigned_optinteger--2b0b732acf947d27" => Some(ExpressionRule::CastTypeAlt09),
         "casttype_json--176b86924a0422e9" => Some(ExpressionRule::CastTypeAlt10),
@@ -2008,7 +2013,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             }
             if field_type.GetDecimal() == parser_types::types::UnspecifiedLength
                 && !(parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
-                    && field_type.GetType() == parser_mysql::r#type::TypeNewDecimal)
+                    && matches!(field_type.GetType(), parser_mysql::r#type::TypeNewDecimal | parser_mysql::r#type::TypeDuration))
             {
                 field_type.SetDecimal(decimal);
             }
@@ -2949,7 +2954,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             field_type.AddFlag(parser_mysql::r#type::BinaryFlag);
             out.item = Some(Box::new(field_type));
         }
-        ExpressionRule::CastTypeAlt05 | ExpressionRule::CastTypeAlt07 => {
+        ExpressionRule::CastTypeAlt05 | ExpressionRule::CastTypeAlt07
+        | ExpressionRule::PgTimeNegative | ExpressionRule::PgTimePositive => {
             let tp = if rule == ExpressionRule::CastTypeAlt05 {
                 parser_mysql::r#type::TypeDatetime
             } else {
@@ -2957,12 +2963,27 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             };
             let mut field_type = parser_types::types::NewFieldType(tp);
             let (flen, _) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
-            let decimal = rhs[rhs_len - (0)]
-                .item
-                .as_deref()
-                .and_then(|item| item.downcast_ref::<isize>())
-                .copied()
-                .unwrap_or_default();
+            let signed = matches!(rule, ExpressionRule::PgTimeNegative | ExpressionRule::PgTimePositive);
+            if signed && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("signed TIME precision requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            let mut decimal = if signed {
+                rhs[4].item.as_deref().and_then(semantic_numeric_isize).unwrap_or_default()
+            } else {
+                rhs[rhs_len].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(-1)
+            };
+            if tp == parser_mysql::r#type::TypeDuration
+                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                if rule == ExpressionRule::PgTimeNegative && decimal != 0 {
+                    yylex.AppendError(errors::New("PostgreSQL TIME precision must not be negative"));
+                    return Err(1);
+                }
+                if decimal > 6 {
+                    yylex.AppendWarn(errors::New("PostgreSQL TIME precision reduced to 6"));
+                    decimal = 6;
+                }
+            }
             field_type.SetFlen(flen + if decimal > 0 { 1 + decimal } else { 0 });
             field_type.SetDecimal(decimal);
             field_type.SetCharset("binary".to_owned());

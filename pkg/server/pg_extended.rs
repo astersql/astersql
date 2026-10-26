@@ -1008,6 +1008,7 @@ impl Extended {
                 if !name.is_empty() && self.statements.contains_key(&name) {
                     return Err(error("42P05", "prepared statement already exists"));
                 }
+                let mut diagnostics = crate::pg_result::time_precision_diagnostics(&sql)?;
                 let statement = self.prepare(sql, oids, context)?;
                 if let Some(previous) = self.statements.remove(&name) {
                     if previous.catalog.is_none() && previous.session_query.is_none() {
@@ -1021,7 +1022,8 @@ impl Extended {
                     self.portals.remove("");
                 }
                 self.statements.insert(name, statement);
-                Ok(vec![(b'1', vec![])])
+                diagnostics.push((b'1', vec![]));
+                Ok(diagnostics)
             }
             b'B' => {
                 let name = reader.string()?;

@@ -461,7 +461,11 @@ impl PgService {
                             context.as_ref(),
                             &extended.session,
                         );
-                        let parsed = if let Err(error) = &catalog {
+                        let temporal_diagnostics =
+                            crate::pg_result::time_precision_diagnostics(sql);
+                        let parsed = if let Err(error) = &temporal_diagnostics {
+                            Err(error.clone())
+                        } else if let Err(error) = &catalog {
                             Err(error.clone())
                         } else if catalog.as_ref().is_ok_and(|query| query.is_some()) {
                             Ok((std::borrow::Cow::Borrowed(sql), Some("SELECT")))
@@ -486,6 +490,9 @@ impl PgService {
                         match parsed {
                             Ok((_, None)) => write_message(socket, b'I', &[])?,
                             Ok((sql, Some(command))) => {
+                                for (tag, body) in temporal_diagnostics.as_ref().unwrap() {
+                                    write_message(socket, *tag, body)?;
+                                }
                                 if let Err((state, message)) = extended
                                     .session
                                     .check_transaction_command(Some(command), context.as_ref())

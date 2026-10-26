@@ -5116,3 +5116,50 @@ fn pg_temporal_date_postfix_cast() {
             .is_ok()
     );
 }
+
+#[test]
+fn pg_temporal_time_precision_grammar() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for (target, precision, warning) in [
+        ("time", -1, false),
+        ("time(0)", 0, false),
+        ("time(6)", 6, false),
+        ("time(7)", 6, true),
+        ("time(+3)", 3, false),
+        ("time(-0)", 0, false),
+    ] {
+        for sql in [
+            format!("SELECT $1::{target}"),
+            format!("SELECT CAST($1 AS {target})"),
+        ] {
+            let (statements, warnings) = pg.ParseSQL(&sql, &[]).unwrap();
+            assert_eq!(warnings.len(), usize::from(warning), "{sql}");
+            let select = statements[0]
+                .as_any()
+                .downcast_ref::<parser_ast::SelectStmt>()
+                .unwrap();
+            assert!(
+                matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+                ExprKind::Cast {Tp,..} if Tp.GetType() == parser_mysql::r#type::TypeDuration && Tp.GetDecimal() == precision),
+                "{sql}"
+            );
+        }
+    }
+    for sql in ["SELECT NULL::time(-1)", "SELECT CAST(NULL AS TIME(-2))"] {
+        assert_eq!(
+            pg.ParseSQL(sql, &[]).err().unwrap().to_string(),
+            "PostgreSQL TIME precision must not be negative"
+        );
+    }
+    let mut mysql = crate::Parser::with_dialect(SqlDialect::MySQL);
+    for sql in [
+        "SELECT NULL::time(3)",
+        "SELECT CAST(NULL AS TIME(-1))",
+        "SELECT CAST(NULL AS TIME(+3))",
+    ] {
+        assert!(mysql.ParseSQL(sql, &[]).is_err());
+    }
+    let (_, warnings) = mysql.ParseSQL("SELECT CAST(NULL AS TIME(7))", &[]).unwrap();
+    assert!(warnings.is_empty());
+}

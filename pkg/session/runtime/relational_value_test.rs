@@ -831,10 +831,10 @@ fn pg_temporal_time_day_prepared_identity() {
     }
     pg.close_protocol_statement(id).unwrap();
     assert_eq!(
-        super::pg_time_relational_value(Some("24:00:00".into())).unwrap(),
+        super::pg_time_relational_value(Some("24:00:00".into()), -1).unwrap(),
         Some("24:00:00".into())
     );
-    assert_eq!(super::pg_time_relational_value(None).unwrap(), None);
+    assert_eq!(super::pg_time_relational_value(None, -1).unwrap(), None);
     for bad in ["24:00:00.000001", "25:00:00", "12:60:00", "12:00:61"] {
         assert_eq!(
             pg.execute(&format!("SELECT CAST('{bad}' AS TIME)"))
@@ -854,4 +854,26 @@ fn pg_temporal_time_day_prepared_identity() {
             .unwrap(),
         ["25:00:00"]
     );
+}
+
+#[test]
+fn pg_temporal_time_precision_session_cast() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        ("SELECT CAST('12:34:56.1235' AS TIME(3))", "12:34:56.124"),
+        ("SELECT '12:34:56.5'::time(0)", "12:34:57"),
+        ("SELECT '23:59:59.999999'::time(3)", "24:00:00"),
+    ] {
+        let mut result = pg.execute(sql).unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap()[0], expected);
+    }
+    let mut union = pg
+        .execute("SELECT '12:34:56.1235'::time(3) UNION ALL SELECT '12:34:56.5'::time(0)")
+        .unwrap();
+    assert_eq!(union[0].next_row().unwrap().unwrap()[0], "12:34:56.124");
+    assert_eq!(union[0].next_row().unwrap().unwrap()[0], "12:34:57");
+    assert_eq!(super::pg_time_relational_value(None, 3).unwrap(), None);
 }

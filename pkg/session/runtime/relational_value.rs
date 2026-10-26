@@ -3805,11 +3805,14 @@ pub(super) fn pg_date_relational_value(
 }
 
 /// PG time casts validate day-time values without MySQL duration normalization.
-pub(super) fn pg_time_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+pub(super) fn pg_time_relational_value(
+    value: Option<String>,
+    precision: isize,
+) -> SessionResult<Option<String>> {
     value
         .map(|text| {
             text.parse::<astersql_types::pg_temporal::PgTime>()
-                .map(|time| time.to_string())
+                .map(|time| time.round_precision(precision).to_string())
                 .map_err(|error| {
                     SessionError::with_source(
                         error.to_string(),

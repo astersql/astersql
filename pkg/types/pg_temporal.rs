@@ -254,6 +254,15 @@ impl PgTime {
         }
         Ok(Self(micros))
     }
+    /// Apply a declared precision after input has been rounded to microseconds.
+    /// The validated nonnegative domain permits PostgreSQL's integer half-up rule.
+    pub fn round_precision(self, precision: isize) -> Self {
+        if !(0..=6).contains(&precision) {
+            return self;
+        }
+        let scale = 10i64.pow(6 - precision as u32);
+        Self(((self.0 + scale / 2) / scale) * scale)
+    }
     pub fn micros(self) -> i64 {
         self.0
     }
@@ -299,18 +308,16 @@ impl std::str::FromStr for PgTime {
         if hour > 24 || minute > 59 || second > 59 {
             return Err(PgTemporalError::Range);
         }
-        // Validate the 24:00 endpoint before any precision conversion.
-        if hour == 24 && (minute != 0 || second != 0 || fraction.bytes().any(|b| b != b'0')) {
-            return Err(PgTemporalError::Range);
-        }
-        if fraction.len() > 6 {
-            return Err(PgTemporalError::Unsupported);
-        }
+        // Match PG ParseFractionalSecond: convert to double, then rint at
+        // microsecond resolution (ties to even). Typmod rounding is separate.
         let micros = if fraction.is_empty() {
             0
         } else {
-            fraction.parse::<i64>().map_err(|_| syntax)? * 10i64.pow(6 - fraction.len() as u32)
+            (format!("0.{fraction}").parse::<f64>().map_err(|_| syntax)? * 1_000_000.0)
+                .round_ties_even() as i64
         };
+        // Check the input domain after fractional microsecond conversion and
+        // before applying a target typmod, as PG DecodeTimeOnly does.
         Self::from_micros(((hour * 60 + minute) * 60 + second) * 1_000_000 + micros)
     }
 }

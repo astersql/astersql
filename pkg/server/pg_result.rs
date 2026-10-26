@@ -15,6 +15,36 @@ fn parser_error(message: String) -> (&'static str, String) {
     (state, message)
 }
 
+/// Preserve TIME declaration diagnostics from the real parser at Query/Parse,
+/// before adapters or binding parse the statement again. Other syntax failures
+/// keep their existing owner and error-position handling.
+pub(crate) fn time_precision_diagnostics(
+    sql: &str,
+) -> Result<Vec<(u8, Vec<u8>)>, (&'static str, String)> {
+    let warnings = match astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+    {
+        Ok((_, warnings)) => warnings,
+        Err(error) if error.to_string() == "PostgreSQL TIME precision must not be negative" => {
+            return Err(("22023", error.to_string()));
+        }
+        Err(_) => return Ok(Vec::new()),
+    };
+    Ok(warnings
+        .into_iter()
+        .filter_map(|warning| {
+            let message = warning.to_string();
+            if !message.starts_with("PostgreSQL TIME precision reduced to 6") {
+                return None;
+            }
+            let mut body = b"SWARNING\0VWARNING\0C22023\0M".to_vec();
+            body.extend_from_slice(message.as_bytes());
+            body.extend_from_slice(&[0, 0]);
+            Some((b'N', body))
+        })
+        .collect())
+}
+
 /// Recognize the PostgreSQL startup-time probe before the canonical SQL parser.
 /// Its epoch value is fixed at PG service startup, shared by every connection.
 pub(crate) fn adapt_session_query(
@@ -1131,6 +1161,13 @@ pub(crate) fn encode_formats(
                     .filter(|tp| tp.length >= 0)
                     .and_then(|tp| i32::try_from(tp.length).ok())
                     .and_then(|length| length.checked_add(4))
+                    .unwrap_or(-1)
+            } else if *oid == 1083 {
+                result
+                    .native_types
+                    .get(index)
+                    .map(|tp| tp.decimal as i32)
+                    .filter(|precision| (0..=6).contains(precision))
                     .unwrap_or(-1)
             } else if *oid == 1700 {
                 result

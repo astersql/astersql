@@ -2820,7 +2820,7 @@ CastType : "DATE" @action;
 CastType : "YEAR" @action;
 CastType : "DATETIME" OptFieldLen @action;
 CastType : "DECIMAL" FloatOpt @action;
-CastType : "TIME" OptFieldLen @action;
+CastType : PgTimeType;
 CastType : "SIGNED" OptInteger @action;
 CastType : "UNSIGNED" OptInteger @action;
 CastType : "JSON" @action;
@@ -4332,3 +4332,8 @@ SimpleExpr : SimpleExpr pgTypecast PgPostfixText %prec pgTypecast @action;
 
 PgPostfixDate : "DATE" @action;
 SimpleExpr : SimpleExpr pgTypecast PgPostfixDate %prec pgTypecast @action;
+
+PgTimeType : "TIME" OptFieldLen @action;
+PgTimeType : "TIME" '(' '-' LengthNum ')' @action;
+PgTimeType : "TIME" '(' '+' LengthNum ')' @action;
+SimpleExpr : SimpleExpr pgTypecast PgTimeType %prec pgTypecast @action;
