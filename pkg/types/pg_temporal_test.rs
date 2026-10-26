@@ -617,6 +617,10 @@ fn pg_interval_components_preserve_dimensions() {
     }
     for bad in [
         "2147483648 months",
+        "-1 second 9223372036854775808 microseconds",
+        "-1 week 2147483648 days",
+        "-0.5 years 2147483648 months",
+        "-1 second 2562047788:00:54.775808",
         "-2147483649 days",
         "9223372036854775808 microseconds",
     ] {
@@ -790,5 +794,58 @@ fn pg_interval_typmod_fields_precision() {
     for special in ["infinity", "-infinity"] {
         let value = special.parse::<PgInterval>().unwrap();
         assert_eq!(value.apply_typmod(4, 0).unwrap(), value);
+    }
+}
+
+#[test]
+fn pg_interval_range_special_errors() {
+    use crate::pg_temporal::{PgInterval, PgTemporalError};
+    for text in [
+        "2147483648 months",
+        "-1 second 9223372036854775808 microseconds",
+        "-1 week 2147483648 days",
+        "-0.5 years 2147483648 months",
+        "-1 second 2562047788:00:54.775808",
+        "2147483648 months -1 year",
+        "2147483648 years",
+        "2147483647 days 1 week",
+        "9223372036854775807 microseconds 1 second",
+        "9223372036854775808 microseconds",
+    ] {
+        assert_eq!(
+            text.parse::<PgInterval>(),
+            Err(PgTemporalError::IntervalOverflow),
+            "{text}"
+        );
+    }
+    for text in [
+        "2147483647 months 1 year",
+        "-2147483648 months -1 year",
+        "178956971 years",
+    ] {
+        assert_eq!(
+            text.parse::<PgInterval>(),
+            Err(PgTemporalError::Range),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        "1.5 years".parse::<PgInterval>().unwrap().components(),
+        (18, 0, 0)
+    );
+    assert_eq!(
+        "2147483647 days 24 hours"
+            .parse::<PgInterval>()
+            .unwrap()
+            .components(),
+        (0, i32::MAX, 86_400_000_000)
+    );
+    for t in [i64::MIN, i64::MAX] {
+        let finite = PgInterval::from_components(0, 0, t);
+        assert_eq!(
+            PgInterval::from_binary(&finite.to_binary()).unwrap(),
+            finite
+        );
+        assert_eq!(finite.apply_typmod(-1, 0), Err(PgTemporalError::Range));
     }
 }

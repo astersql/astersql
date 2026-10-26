@@ -6720,3 +6720,206 @@ fn pg_temporal_iv_precision_fields() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg_temporal_iv_range_special() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    fn binary(m: i32, d: i32, t: i64) -> Vec<u8> {
+        [
+            t.to_be_bytes().as_slice(),
+            &d.to_be_bytes(),
+            &m.to_be_bytes(),
+        ]
+        .concat()
+    }
+    fn desc(body: &[u8], format: i16) {
+        assert_eq!(&body[..2], &1i16.to_be_bytes());
+        let at = 2 + body[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&body[at..at + 6], &[0; 6]);
+        assert_eq!(&body[at + 6..at + 10], &1186u32.to_be_bytes());
+        assert_eq!(&body[at + 10..at + 12], &16i16.to_be_bytes());
+        assert_eq!(&body[at + 12..at + 16], &(-1i32).to_be_bytes());
+        assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+    }
+    let mut cases = vec![
+        ((0, 0, 0), "00:00:00".to_owned()),
+        ((i32::MAX, i32::MAX, i64::MAX), "infinity".to_owned()),
+        ((i32::MIN, i32::MIN, i64::MIN), "-infinity".to_owned()),
+        (
+            (i32::MAX, i32::MIN, i64::MAX),
+            "178956970 years 7 mons -2147483648 days +2562047788:00:54.775807".to_owned(),
+        ),
+        (
+            (i32::MIN, i32::MAX, i64::MIN),
+            "-178956970 years -8 mons +2147483647 days -2562047788:00:54.775808".to_owned(),
+        ),
+    ];
+    cases.extend([
+        (
+            (i32::MAX, i32::MAX, i64::MIN),
+            "178956970 years 7 mons 2147483647 days -2562047788:00:54.775808".to_owned(),
+        ),
+        (
+            (i32::MAX, i32::MIN, i64::MIN),
+            "178956970 years 7 mons -2147483648 days -2562047788:00:54.775808".to_owned(),
+        ),
+        (
+            (i32::MIN, i32::MAX, i64::MAX),
+            "-178956970 years -8 mons +2147483647 days +2562047788:00:54.775807".to_owned(),
+        ),
+        (
+            (i32::MIN, i32::MIN, i64::MAX),
+            "-178956970 years -8 mons -2147483648 days +2562047788:00:54.775807".to_owned(),
+        ),
+    ]);
+    for (n, text) in [
+        (i32::MAX, "178956970 years 7 mons"),
+        (i32::MAX - 1, "178956970 years 6 mons"),
+        (i32::MIN, "-178956970 years -8 mons"),
+        (i32::MIN + 1, "-178956970 years -7 mons"),
+    ] {
+        cases.push(((n, 0, 0), text.to_owned()));
+    }
+    for n in [i32::MIN, i32::MIN + 1, i32::MAX - 1, i32::MAX] {
+        cases.push(((0, n, 0), format!("{n} days")));
+    }
+    for (n, text) in [
+        (i64::MAX, "2562047788:00:54.775807"),
+        (i64::MAX - 1, "2562047788:00:54.775806"),
+        (i64::MIN, "-2562047788:00:54.775808"),
+        (i64::MIN + 1, "-2562047788:00:54.775807"),
+    ] {
+        cases.push(((0, 0, n), text.to_owned()));
+    }
+    for ((m, d, t), canonical) in cases {
+        let bytes = binary(m, d, t);
+        for sql in [
+            "SELECT $1::interval AS v",
+            "SELECT CAST($1 AS interval) AS v",
+        ] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let result = cycle_oid(
+                        &mut socket,
+                        sql,
+                        1186,
+                        input,
+                        output,
+                        Some(if input == 0 {
+                            canonical.as_bytes()
+                        } else {
+                            &bytes
+                        }),
+                    );
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{canonical}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1186u32.to_be_bytes()].concat()
+                    );
+                    desc(&result[2].1, 0);
+                    desc(&result[4].1, output);
+                    assert_eq!(
+                        date_text_row(&result),
+                        if output == 0 {
+                            canonical.as_bytes()
+                        } else {
+                            &bytes
+                        },
+                        "{canonical}"
+                    );
+                    let null = cycle_oid(&mut socket, sql, 1186, input, output, None);
+                    desc(&null[2].1, 0);
+                    desc(&null[4].1, output);
+                    assert_eq!(
+                        null[5].1,
+                        [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                    );
+                }
+            }
+        }
+    }
+    for (text, state) in [
+        ("2147483648 months", "22015"),
+        ("-1 second 9223372036854775808 microseconds", "22015"),
+        ("-1 week 2147483648 days", "22015"),
+        ("-0.5 years 2147483648 months", "22015"),
+        ("-1 second 2562047788:00:54.775808", "22015"),
+        ("2147483648 months -1 year", "22015"),
+        ("2147483647 months 1 year", "22008"),
+        ("-2147483648 months -1 year", "22008"),
+        ("178956971 years", "22008"),
+        ("2147483648 years", "22015"),
+        ("2147483647 days 1 week", "22015"),
+        ("9223372036854775807 microseconds 1 second", "22015"),
+        ("9223372036854775808 microseconds", "22015"),
+    ] {
+        error(
+            &cycle_oid(
+                &mut socket,
+                "SELECT $1::interval",
+                1186,
+                0,
+                0,
+                Some(text.as_bytes()),
+            ),
+            state,
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        error(
+            &query(&mut socket, &format!("SELECT interval '{text}'")),
+            state,
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    for t in [i64::MIN, i64::MAX] {
+        for input in [0, 1] {
+            let bytes = binary(0, 0, t);
+            let text = format!("{t} microseconds");
+            query(&mut socket, "BEGIN");
+            error_in_state(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1::interval(0)",
+                    1186,
+                    input,
+                    1,
+                    Some(if input == 0 { text.as_bytes() } else { &bytes }),
+                ),
+                "22008",
+                b"E",
+            );
+            query(&mut socket, "ROLLBACK");
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

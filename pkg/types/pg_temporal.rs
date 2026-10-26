@@ -916,7 +916,7 @@ impl PgInterval {
             return Ok(Self::from_components(0, 0, 0));
         }
         let mut fields = input.split_whitespace().peekable();
-        let (mut months, mut days, mut micros) = (0i128, 0i128, 0i128);
+        let (mut years, mut months, mut days, mut micros) = (0i128, 0i128, 0i128, 0i128);
         let mut seen = std::collections::HashSet::new();
         while let Some(number) = fields.next() {
             let overflow = || PgTemporalError::IntervalOverflow;
@@ -949,9 +949,10 @@ impl PgInterval {
                         v.checked_add(interval_round(seconds.checked_mul(1_000_000)?, ss))
                     })
                     .ok_or_else(overflow)?;
-                micros = micros
-                    .checked_add(if negative { -time } else { time })
-                    .ok_or_else(overflow)?;
+                let time = if negative { -time } else { time };
+                i64::try_from(time).map_err(|_| overflow())?;
+                micros = micros.checked_add(time).ok_or_else(overflow)?;
+                i64::try_from(micros).map_err(|_| overflow())?;
                 continue;
             }
             let unit = fields
@@ -977,13 +978,20 @@ impl PgInterval {
             }
             match category {
                 "year" => {
+                    // PG decodes years separately from months, checking each
+                    // field before the final year-to-month conversion. A valid
+                    // year field can therefore overflow only at final assembly.
+                    years = n / d;
+                    i32::try_from(years).map_err(|_| overflow())?;
                     months = months
-                        .checked_add(n.checked_mul(12).ok_or_else(overflow)? / d)
+                        .checked_add((n % d).checked_mul(12).ok_or_else(overflow)? / d)
                         .ok_or_else(overflow)?;
                 }
                 "month" => {
+                    i32::try_from(n / d).map_err(|_| overflow())?;
                     months = months.checked_add(n / d).ok_or_else(overflow)?;
                     n = (n % d).checked_mul(30).ok_or_else(overflow)?;
+                    i32::try_from(n / d).map_err(|_| overflow())?;
                     days = days.checked_add(n / d).ok_or_else(overflow)?;
                     micros = micros
                         .checked_add(interval_round(
@@ -996,6 +1004,7 @@ impl PgInterval {
                     n = n
                         .checked_mul(if category == "week" { 7 } else { 1 })
                         .ok_or_else(overflow)?;
+                    i32::try_from(n / d).map_err(|_| overflow())?;
                     days = days.checked_add(n / d).ok_or_else(overflow)?;
                     micros = micros
                         .checked_add(interval_round(
@@ -1012,22 +1021,25 @@ impl PgInterval {
                         "millisecond" => 1000,
                         _ => 1,
                     };
-                    micros = micros
-                        .checked_add(interval_round(
-                            n.checked_mul(factor).ok_or_else(overflow)?,
-                            d,
-                        ))
-                        .ok_or_else(overflow)?;
+                    let time = interval_round(n.checked_mul(factor).ok_or_else(overflow)?, d);
+                    i64::try_from(time).map_err(|_| overflow())?;
+                    micros = micros.checked_add(time).ok_or_else(overflow)?;
                 }
             }
+            // Do not allow an out-of-range parsed field to be cancelled by
+            // another unit. Parsing/accumulation errors are 22015; only final
+            // year/month assembly and typmod rounding use 22008.
+            i32::try_from(months).map_err(|_| overflow())?;
+            i32::try_from(days).map_err(|_| overflow())?;
+            i64::try_from(micros).map_err(|_| overflow())?;
         }
         if seen.is_empty() {
             return Err(PgTemporalError::Syntax);
         }
         Ok(Self::from_components(
-            months
+            (years * 12 + months)
                 .try_into()
-                .map_err(|_| PgTemporalError::IntervalOverflow)?,
+                .map_err(|_| PgTemporalError::Range)?,
             days.try_into()
                 .map_err(|_| PgTemporalError::IntervalOverflow)?,
             micros
