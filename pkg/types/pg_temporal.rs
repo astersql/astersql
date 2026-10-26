@@ -12,6 +12,8 @@ pub enum PgTemporalError {
     ZoneRange,
     #[error("date spelling is not yet supported")]
     Unsupported,
+    #[error("time and duration cannot be bridged without loss")]
+    DurationBridge,
     #[error("insufficient data in date parameter")]
     Truncated,
     #[error("incorrect binary date parameter length")]
@@ -23,7 +25,7 @@ impl PgTemporalError {
             Self::Syntax => "22007",
             Self::Range => "22008",
             Self::ZoneRange => "22009",
-            Self::Unsupported => "0A000",
+            Self::Unsupported | Self::DurationBridge => "0A000",
             Self::Truncated => "08P01",
             Self::Trailing => "22P03",
         }
@@ -268,6 +270,31 @@ impl PgTime {
     }
     pub fn micros(self) -> i64 {
         self.0
+    }
+    /// Explicit, lossless bridge from a typed MySQL TIME duration. Native
+    /// duration legality remains MySQL's responsibility; non-daily values have
+    /// no PG time equivalent, even though both types count fractions of seconds.
+    pub fn from_mysql_duration(value: crate::time::Duration) -> Result<Self, PgTemporalError> {
+        if !(0..=6).contains(&value.Fsp)
+            || value.Duration % 1_000 != 0
+            || value.Duration < 0
+            || value.Duration > Self::END_OF_DAY * 1_000
+            || value.Duration % 10i64.pow(9 - value.Fsp as u32) != 0
+        {
+            return Err(PgTemporalError::DurationBridge);
+        }
+        Self::from_micros(value.Duration / 1_000)
+    }
+    /// Explicit reverse bridge. Reject a target FSP that would discard digits;
+    /// the closed daily endpoint remains a 24-hour duration, never midnight.
+    pub fn to_mysql_duration(self, fsp: i32) -> Result<crate::time::Duration, PgTemporalError> {
+        if !(0..=6).contains(&fsp) || self.0 % 10i64.pow(6 - fsp as u32) != 0 {
+            return Err(PgTemporalError::DurationBridge);
+        }
+        Ok(crate::time::Duration {
+            Duration: self.0 * 1_000,
+            Fsp: fsp,
+        })
     }
     pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
         if bytes.len() < 8 {

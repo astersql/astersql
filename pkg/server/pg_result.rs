@@ -1195,6 +1195,31 @@ pub(crate) fn encode_formats(
             }
             let mut body = count(row.len())?.to_be_bytes().to_vec();
             for (index, (value, (oid, _))) in row.iter().zip(&types).enumerate() {
+                // This adapter is the explicit native-result bridge. Validate a
+                // typed MySQL duration before the PG codec parses day-time text:
+                // a legal negative/long TIME is an unsupported conversion, not
+                // malformed PG input. Both result formats share this boundary.
+                if result.native_types[index].code == 11 {
+                    if let Value::Text(text) = value {
+                        let native = &result.native_types[index];
+                        if let Ok((duration, false)) = astersql_types::time::ParseDuration(
+                            &astersql_types::time::StrictContext,
+                            text,
+                            // Unspecified PG precision still retains all six
+                            // fractional digits at this shared transport boundary.
+                            if native.decimal == -1 {
+                                6
+                            } else {
+                                native.decimal as i32
+                            },
+                        ) {
+                            astersql_types::pg_temporal::PgTime::from_mysql_duration(duration)
+                                .map_err(|error| {
+                                    io::Error::new(io::ErrorKind::InvalidData, error)
+                                })?;
+                        }
+                    }
+                }
                 let binary = formats.get(index) == Some(&1);
                 let text = if binary {
                     if *oid == 2249 {

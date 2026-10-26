@@ -256,3 +256,64 @@ fn pg_temporal_time_numeric_zone_validation() {
         assert_eq!(error.sqlstate(), "22009");
     }
 }
+
+#[test]
+fn pg_temporal_time_duration_bridge() {
+    use super::pg_temporal::PgTime;
+    use super::time::{Duration, ParseDuration, StrictContext};
+    for (text, fsp, micros) in [
+        ("00:00:00", 0, 0i64),
+        ("12:34:56.123456", 6, 45_296_123_456),
+        ("23:59:59.999999", 6, 86_399_999_999),
+        ("24:00:00", 0, 86_400_000_000),
+    ] {
+        let pg: PgTime = text.parse().unwrap();
+        let native = pg.to_mysql_duration(fsp).unwrap();
+        assert_eq!(native.Duration, micros * 1_000);
+        assert_eq!(native.Fsp, fsp);
+        assert_eq!(native.String(), text);
+        assert_eq!(PgTime::from_mysql_duration(native).unwrap(), pg);
+        assert_eq!(
+            ParseDuration(&StrictContext, text, fsp).unwrap(),
+            (native, false)
+        );
+    }
+    for text in ["-00:00:01", "25:00:00", "838:59:59"] {
+        let native = ParseDuration(&StrictContext, text, 0).unwrap().0;
+        assert_eq!(native.String(), text);
+        assert_eq!(
+            PgTime::from_mysql_duration(native),
+            Err(PgTemporalError::DurationBridge)
+        );
+    }
+    for native in [
+        Duration {
+            Duration: 1,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: 1_000,
+            Fsp: 0,
+        },
+        Duration {
+            Duration: 0,
+            Fsp: 7,
+        },
+        Duration {
+            Duration: 0,
+            Fsp: -1,
+        },
+    ] {
+        assert_eq!(
+            PgTime::from_mysql_duration(native),
+            Err(PgTemporalError::DurationBridge)
+        );
+    }
+    let pg: PgTime = "12:34:56.123456".parse().unwrap();
+    for fsp in [-1, 0, 3, 5, 7] {
+        assert_eq!(
+            pg.to_mysql_duration(fsp),
+            Err(PgTemporalError::DurationBridge)
+        );
+    }
+}
