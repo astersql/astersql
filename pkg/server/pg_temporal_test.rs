@@ -316,3 +316,137 @@ fn pg_temporal_date_calendar() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_date_epoch() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    // Explicit wire fixtures are independent of PgDate and chrono arithmetic.
+    for (text, bytes) in [
+        ("1999-12-31", [0xff, 0xff, 0xff, 0xff]),
+        ("2000-01-01", [0, 0, 0, 0]),
+        ("2000-01-02", [0, 0, 0, 1]),
+        ("1970-01-01", (-10957i32).to_be_bytes()),
+    ] {
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let value = if input == 0 { text.as_bytes() } else { &bytes };
+                let messages = cycle(
+                    &mut socket,
+                    "SELECT CAST($1 AS DATE)",
+                    input,
+                    output,
+                    Some(value),
+                );
+                assert_eq!(
+                    messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ"
+                );
+                assert_eq!(
+                    messages[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1082u32.to_be_bytes()].concat()
+                );
+                description(&messages[2].1, 0);
+                description(&messages[4].1, output);
+                let expected = if output == 0 { text.as_bytes() } else { &bytes };
+                assert_eq!(
+                    messages[5].1,
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &(expected.len() as i32).to_be_bytes(),
+                        expected
+                    ]
+                    .concat()
+                );
+            }
+        }
+    }
+    // Bind the date once. Changing the real session timezone must not move
+    // the value already retained by the named portal, even across midnight.
+    for (index, zone) in ["Pacific/Kiritimati", "America/Los_Angeles"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            query(&mut socket, "BEGIN").last().unwrap(),
+            &(b'Z', b"T".to_vec())
+        );
+        let portal = format!("epoch{index}");
+        let mut parse = [portal.as_bytes(), b"\0SELECT CAST($1 AS DATE)\0"].concat();
+        parse.extend_from_slice(&1i16.to_be_bytes());
+        parse.extend_from_slice(&1082u32.to_be_bytes());
+        send(&mut socket, b'P', &parse);
+        let mut bind = [portal.as_bytes(), b"\0", portal.as_bytes(), b"\0"].concat();
+        bind.extend_from_slice(&0i16.to_be_bytes());
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&10i32.to_be_bytes());
+        bind.extend_from_slice(b"1970-01-01");
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(
+            ready(&mut socket).iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"12Z"
+        );
+        // The established session TimeZone interface uses the native variable
+        // name time_zone; full PostgreSQL GUC spelling/lifecycle is separate.
+        let changed = query(&mut socket, &format!("SET time_zone = '{zone}'"));
+        assert_eq!(
+            changed.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"CZ",
+            "{changed:?}"
+        );
+        send(
+            &mut socket,
+            b'D',
+            &[b"P".as_slice(), portal.as_bytes(), b"\0"].concat(),
+        );
+        send(&mut socket, b'E', &[portal.as_bytes(), &[0; 5]].concat());
+        send(&mut socket, b'S', &[]);
+        let result = ready(&mut socket);
+        assert_eq!(
+            result.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCZ",
+            "{result:?}"
+        );
+        description(&result[0].1, 1);
+        assert_eq!(
+            result[1].1,
+            [
+                1i16.to_be_bytes().as_slice(),
+                &4i32.to_be_bytes(),
+                &(-10957i32).to_be_bytes()
+            ]
+            .concat()
+        );
+        assert_eq!(
+            query(&mut socket, "COMMIT").last().unwrap(),
+            &(b'Z', b"I".to_vec())
+        );
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
