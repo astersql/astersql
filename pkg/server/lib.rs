@@ -201,3 +201,7 @@ mod pg_catalog_query_test;
 #[cfg(test)]
 #[path = "pg_datagrip_test.rs"]
 mod pg_datagrip_test;
+
+#[cfg(test)]
+#[path = "pg_temporal_test.rs"]
+mod pg_temporal_test;

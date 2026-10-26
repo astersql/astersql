@@ -61,6 +61,13 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_temporal_error(&self) -> Option<astersql_types::pg_temporal::PgTemporalError> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<astersql_types::pg_temporal::PgTemporalError>()
+            .copied()
+    }
+
     pub fn pg_numeric_error(&self) -> Option<astersql_types::pg_numeric::PgNumericError> {
         self.source
             .as_ref()?

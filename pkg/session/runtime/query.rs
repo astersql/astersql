@@ -1263,6 +1263,13 @@ impl ConcreteSession {
                 {
                     return Ok(Some(value));
                 }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && Tp.GetType() == astersql_parser_mysql::r#type::TypeDate
+                {
+                    return pg_date_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                    );
+                }
                 if Tp.PostgreSQLTextOid().is_some() {
                     return pg_text_relational_cast(
                         Expr,
@@ -2464,6 +2471,11 @@ impl ConcreteSession {
                 return tp;
             }
             match &expression.Kind {
+                ast::ExprKind::Cast { Tp, .. }
+                    if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate =>
+                {
+                    return Tp.clone();
+                }
                 // PG LIKE/ILIKE (including a bound ESCAPE) yields boolean.
                 // Preserve that identity for Prepare and Execute metadata.
                 ast::ExprKind::Like { .. } => {

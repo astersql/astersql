@@ -516,7 +516,7 @@ fn text_parameters_are_typed_and_reject_loss() {
     assert!(parameter(17, Some(b"\\xabc")).is_err());
     assert!(parameter(25, Some(b"a\0b")).is_err());
     assert!(parameter(25, Some(&[255])).is_err());
-    assert!(parameter(1082, Some(b"2026-02-29")).is_err());
+    assert_eq!(parameter(1082, Some(b"2026-02-29")).unwrap_err().0, "22008");
     assert!(parameter(1082, Some(b"2024-02-29")).is_ok());
     assert!(parameter(1083, Some(b"24:00:00")).is_err());
     assert!(parameter(1114, Some(b"2026-09-30 12:30:00.123456")).is_ok());

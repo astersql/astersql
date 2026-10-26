@@ -1259,6 +1259,9 @@ fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
     if let Some(float4) = error.pg_float4_error() {
         return ConnError::PgFloat4(float4);
     }
+    if let Some(temporal) = error.pg_temporal_error() {
+        return ConnError::PgTemporal(temporal);
+    }
     if let Some(numeric) = error.pg_numeric_error() {
         return ConnError::PgNumeric(numeric);
     }

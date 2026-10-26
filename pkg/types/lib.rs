@@ -110,3 +110,8 @@ mod json_constants_test;
 pub mod pg_numeric;
 #[cfg(test)]
 mod pg_numeric_test;
+
+pub mod pg_temporal;
+#[cfg(test)]
+#[path = "pg_temporal_test.rs"]
+mod pg_temporal_test;

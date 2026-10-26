@@ -401,7 +401,14 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             }
             (252, bytes)
         }
-        1082 | 1083 | 1114 => temporal(oid, text)?,
+        1082 => (
+            253,
+            text.parse::<astersql_types::pg_temporal::PgDate>()
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .to_string()
+                .into_bytes(),
+        ),
+        1083 | 1114 => temporal(oid, text)?,
         _ => return Err(error("0A000", "unsupported text parameter OID")),
     };
     Ok(BinaryParam {
@@ -451,6 +458,11 @@ fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_le_bytes()
                 .to_vec(),
         ),
+        1082 => {
+            let date = astersql_types::pg_temporal::PgDate::from_binary(value)
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+            return parameter(1082, Some(date.to_string().as_bytes()));
+        }
         17 => (252, value.to_vec()),
         25 | 1042 | 1043 => return parameter(oid, Some(value)),
         _ => return Err(error("0A000", "unsupported binary parameter OID")),
@@ -548,32 +560,24 @@ fn temporal(oid: u32, text: &str) -> Result<(u8, Vec<u8>)> {
         bytes.extend_from_slice(&(time.nanosecond() / 1000).to_le_bytes());
         return Ok((11, bytes));
     }
-    let (date, time) = if oid == 1082 {
-        (
-            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| invalid())?,
-            None,
-        )
-    } else {
-        let datetime = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
-            .map_err(|_| invalid())?;
-        (datetime.date(), Some(datetime.time()))
-    };
+    let datetime = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+        .map_err(|_| invalid())?;
+    let date = datetime.date();
+    let time = datetime.time();
     if !(1..=9999).contains(&date.year()) {
         return Err(error("0A000", "date outside engine range"));
     }
     let mut bytes = (date.year() as u16).to_le_bytes().to_vec();
     bytes.extend_from_slice(&[date.month() as u8, date.day() as u8]);
-    if let Some(time) = time {
-        if time.nanosecond() >= 1_000_000_000 || time.nanosecond() % 1000 != 0 {
-            return Err(error(
-                "0A000",
-                "timestamp exceeds engine microsecond precision",
-            ));
-        }
-        bytes.extend_from_slice(&[time.hour() as u8, time.minute() as u8, time.second() as u8]);
-        bytes.extend_from_slice(&(time.nanosecond() / 1000).to_le_bytes());
+    if time.nanosecond() >= 1_000_000_000 || time.nanosecond() % 1000 != 0 {
+        return Err(error(
+            "0A000",
+            "timestamp exceeds engine microsecond precision",
+        ));
     }
-    Ok((if oid == 1082 { 10 } else { 12 }, bytes))
+    bytes.extend_from_slice(&[time.hour() as u8, time.minute() as u8, time.second() as u8]);
+    bytes.extend_from_slice(&(time.nanosecond() / 1000).to_le_bytes());
+    Ok((12, bytes))
 }
 struct Statement {
     original_sql: String,
@@ -1237,7 +1241,9 @@ impl Extended {
                     }
                     let encoded =
                         crate::pg_result::encode_formats(&result, command, &portal.formats)
-                            .map_err(|e| error("0A000", &e.to_string()));
+                            .map_err(|e| {
+                                error(crate::pg_result::encoding_sqlstate(&e), &e.to_string())
+                            });
                     if let Some(lifecycle) = &result.response_lifecycle {
                         lifecycle.finish();
                     }

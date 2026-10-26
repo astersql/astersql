@@ -540,7 +540,7 @@ impl PgService {
                                                 write_error(
                                                     socket,
                                                     "ERROR",
-                                                    "0A000",
+                                                    crate::pg_result::encoding_sqlstate(&error),
                                                     &error.to_string(),
                                                 )?;
                                             } else {
@@ -840,6 +840,7 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
         ConnError::PgInt4(error) => error.sqlstate(),
         ConnError::PgBool(error) => error.sqlstate(),
         ConnError::PgNumeric(error) => error.sqlstate(),
+        ConnError::PgTemporal(error) => error.sqlstate(),
         ConnError::PgFloat4(error) => error.sqlstate(),
         ConnError::PgFloat8(error) => error.sqlstate(),
         ConnError::PgText(error) => error.sqlstate(),

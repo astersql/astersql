@@ -3783,3 +3783,20 @@ pub(super) fn pg_text_relational_cast(
         SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
     })
 }
+
+/// Strict date conversion for the PostgreSQL session consumer. MySQL retains
+/// its existing loose temporal conversion and warning behavior.
+pub(super) fn pg_date_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+    value
+        .map(|text| {
+            text.parse::<astersql_types::pg_temporal::PgDate>()
+                .map(|date| date.to_string())
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+        })
+        .transpose()
+}

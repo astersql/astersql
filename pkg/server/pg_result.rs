@@ -570,7 +570,11 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         },
         // MySQL accepts zero dates and extended/negative TIME durations;
         // PostgreSQL date/time input does not. Reject rather than changing values.
-        1082 | 1114 => {
+        1082 => text
+            .parse::<astersql_types::pg_temporal::PgDate>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_string(),
+        1114 => {
             let date = text.split(' ').next().unwrap_or_default();
             let parts: Vec<_> = date.split('-').collect();
             if parts.len() != 3
@@ -728,20 +732,16 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         19 | 25 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
-        1082 | 1083 | 1114 => {
+        1082 => text
+            .parse::<astersql_types::pg_temporal::PgDate>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_binary()
+            .to_vec(),
+        1083 | 1114 => {
             use chrono::Timelike;
             let epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
             let invalid_time = |_| invalid("invalid binary temporal value");
             match oid {
-                1082 => i32::try_from(
-                    chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
-                        .map_err(invalid_time)?
-                        .signed_duration_since(epoch)
-                        .num_days(),
-                )
-                .map_err(|_| invalid("date out of range"))?
-                .to_be_bytes()
-                .to_vec(),
                 1083 => {
                     let time = chrono::NaiveTime::parse_from_str(text, "%H:%M:%S%.f")
                         .map_err(invalid_time)?;
@@ -1226,4 +1226,13 @@ pub(crate) fn write_result(
         write_message(socket, tag, &body)?;
     }
     Ok(())
+}
+
+/// Preserve calendar diagnostics carried by the I/O encoder without changing
+/// unrelated unsupported-codec errors.
+pub(crate) fn encoding_sqlstate(error: &io::Error) -> &'static str {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<astersql_types::pg_temporal::PgTemporalError>())
+        .map_or("0A000", |error| error.sqlstate())
 }

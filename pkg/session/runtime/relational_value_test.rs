@@ -727,3 +727,62 @@ fn pg_scalar_25_bytea_prepared_identity() {
         assert_eq!(result[0].next_row().unwrap().unwrap()[0], expected);
     }
 }
+
+#[test]
+fn pg_temporal_date_calendar_prepared_identity() {
+    use super::pg_date_relational_value;
+    use crate::runtime::{ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT ?", &[1082]).unwrap(),
+        [1082]
+    );
+    let (id, count, fields) = pg
+        .prepare_protocol_statement_with_parameter_types("SELECT ?", &[1082])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.GetType(),
+        astersql_parser_mysql::r#type::TypeDate
+    );
+    for argument in [
+        ConcretePreparedArgument::Null,
+        ConcretePreparedArgument::Text("2024-02-29".into()),
+    ] {
+        let mut sets = pg.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            sets[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypeDate
+        );
+        assert!(sets[0].next_row().unwrap().is_some());
+    }
+    pg.close_protocol_statement(id).unwrap();
+    assert_eq!(
+        pg.execute("SELECT CAST('2023-02-29' AS DATE)")
+            .err()
+            .unwrap()
+            .pg_temporal_error()
+            .unwrap()
+            .sqlstate(),
+        "22008"
+    );
+    assert_eq!(
+        pg_date_relational_value(Some("2023-02-29".into()))
+            .unwrap_err()
+            .pg_temporal_error()
+            .unwrap()
+            .sqlstate(),
+        "22008"
+    );
+    assert_eq!(pg_date_relational_value(None).unwrap(), None);
+    // Existing MySQL zero-date acceptance remains independent of PG validation.
+    let mysql = ConcreteSession::new(domain);
+    assert!(mysql.execute("SELECT CAST('0000-00-00' AS DATE)").is_ok());
+}
