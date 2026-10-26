@@ -25,3 +25,31 @@ fn pg_introspection_namespace_parser_boundaries() {
         assert!(SessionQuery::parse(sql).unwrap().is_none(), "{sql}");
     }
 }
+
+#[test]
+fn date_style_parser_keeps_commands_and_literals_separate() {
+    for sql in [
+        "SET DateStyle TO 'ISO, DMY'",
+        "SET DateStyle = ISO, MDY",
+        "SET DateStyle TO YMD",
+        "SHOW DateStyle",
+        "RESET DateStyle",
+        "SET DateStyle = DEFAULT",
+    ] {
+        assert!(SessionQuery::parse(sql).unwrap().is_some(), "{sql}");
+    }
+    for sql in [
+        "SET DateStyle TO 'ISO, DMY'; SELECT 1",
+        "SET DateStyle TO NULL",
+        "SHOW DateStyle extra",
+        "SET DateStyle TO",
+        "SET DateStyle TO ISO,,DMY",
+    ] {
+        assert!(SessionQuery::parse(sql).is_err(), "{sql}");
+    }
+    assert!(
+        SessionQuery::parse("SELECT 'SET DateStyle TO DMY'")
+            .unwrap()
+            .is_none()
+    );
+}

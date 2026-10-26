@@ -71,3 +71,69 @@ fn finite_day_representation_preserves_calendar_eras() {
         assert_eq!(independent.month(), month);
     }
 }
+
+#[test]
+fn special_dates_and_numeric_field_orders() {
+    use super::pg_temporal::{PgDateContext, PgDateOrder};
+    let today = PgDate::from_ymd(2000, 1, 1).unwrap();
+    for (order, expected) in [
+        (PgDateOrder::Mdy, "2003-01-02"),
+        (PgDateOrder::Dmy, "2003-02-01"),
+        (PgDateOrder::Ymd, "2001-02-03"),
+    ] {
+        let context = PgDateContext { order, today };
+        assert_eq!(
+            PgDate::parse_with_context("01/02/03", context)
+                .unwrap()
+                .to_string(),
+            expected
+        );
+        for (input, expected) in [
+            ("now", "2000-01-01"),
+            ("today", "2000-01-01"),
+            ("yesterday", "1999-12-31"),
+            ("tomorrow", "2000-01-02"),
+            ("epoch", "1970-01-01"),
+            ("infinity", "infinity"),
+            ("-infinity", "-infinity"),
+            ("2024-02-29", "2024-02-29"),
+        ] {
+            let date = PgDate::parse_with_context(input, context).unwrap();
+            assert_eq!(date.to_string(), expected);
+            assert_eq!(PgDate::from_binary(&date.to_binary()).unwrap(), date);
+        }
+        for bad in ["allballs", "", "garbage"] {
+            assert_eq!(
+                PgDate::parse_with_context(bad, context),
+                Err(PgTemporalError::Syntax)
+            );
+        }
+        for bad in ["0000/01/01", "0000-01-01"] {
+            assert_eq!(
+                PgDate::parse_with_context(bad, context),
+                Err(PgTemporalError::Range)
+            );
+        }
+    }
+    for (input, bytes) in [
+        ("-infinity", i32::MIN.to_be_bytes()),
+        ("infinity", i32::MAX.to_be_bytes()),
+    ] {
+        assert_eq!(input.parse::<PgDate>().unwrap().to_binary(), bytes);
+    }
+    for (today, word) in [
+        (PgDate::from_ymd(-4714, 11, 24).unwrap(), "yesterday"),
+        (PgDate::from_ymd(5874897, 12, 31).unwrap(), "tomorrow"),
+    ] {
+        assert_eq!(
+            PgDate::parse_with_context(
+                word,
+                PgDateContext {
+                    order: PgDateOrder::Mdy,
+                    today
+                }
+            ),
+            Err(PgTemporalError::Range)
+        );
+    }
+}

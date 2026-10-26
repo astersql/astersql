@@ -4079,6 +4079,7 @@ impl ConcreteSession {
             );
             return Err(SessionError::new("mockGetTSFail"));
         }
+        self.begin_pg_date_statement();
         let normalized_sql = normalize_show_stats_pattern(sql);
         let state = self.state.borrow();
         let mut sql_mode = astersql_parser_mysql::r#const::GetSQLMode(&state.sql_mode)
@@ -4090,7 +4091,8 @@ impl ConcreteSession {
             );
         }
         drop(state);
-        let statements = parse_with_dialect(&normalized_sql, sql_mode, self.sql_dialect())?;
+        let mut statements = parse_with_dialect(&normalized_sql, sql_mode, self.sql_dialect())?;
+        self.apply_pg_date_constants(&mut statements);
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             super::pg_array::analyze(&normalized_sql, &statements, None)?;
             super::pg_record::analyze_in_session(self, &statements, None)?;

@@ -1026,6 +1026,7 @@ impl ConcreteSession {
         ) = {
             let mut state = self.state.borrow_mut();
             let transaction = state.transaction.take();
+            state.pg_transaction_time = None;
             let had_transaction = transaction.is_some();
             let was_pessimistic = state.transaction_pessimistic;
             let injected_commit_error = (commit && had_transaction)
@@ -1486,6 +1487,8 @@ impl ConcreteSession {
             .TxnCtx
             .FairLockingEffective
             .store(false, std::sync::atomic::Ordering::Release);
+        state.pg_transaction_time =
+            (self.sql_dialect() == ast::SqlDialect::PostgreSQL).then_some(state.pg_statement_time);
         state.transaction = Some(transaction);
         state.transaction_info_schema = Some(transaction_info_schema);
         self.transaction_mdl.clear();
@@ -1773,7 +1776,9 @@ impl ConcreteSession {
         sql: &str,
         supplied: &[u32],
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
+        self.begin_pg_date_statement();
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let pg_date_constants = self.prepare_pg_date_constants(&statements)?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
@@ -1901,6 +1906,7 @@ impl ConcreteSession {
         state.protocol_prepared_planned.insert(
             statement_id,
             super::session::ProtocolPreparedState {
+                pg_date_constants,
                 dialect: self.sql_dialect(),
                 planned: false,
                 has_pg_constructors: has_pg_values,
@@ -2070,9 +2076,36 @@ impl ConcreteSession {
             })
             .collect::<SessionResult<Vec<_>>>()?;
         let bound = bind_parameter_markers(&sql, &literals)?;
+        // Binding changes byte offsets but not the identity of original cast
+        // nodes. Translate only saved constant positions, excluding parameters.
+        let markers = parameter_markers(&sql);
+        let constants = self
+            .state
+            .borrow()
+            .protocol_prepared_planned
+            .get(&statement_id)
+            .map(|prepared| prepared.pg_date_constants.clone())
+            .unwrap_or_default();
+        let constants = constants
+            .into_iter()
+            .map(|(offset, date)| {
+                let shift: usize = markers
+                    .iter()
+                    .zip(&literals)
+                    .filter(|(marker, _)| marker.offset < offset)
+                    .map(|(_, literal)| literal.len() - 1)
+                    .sum();
+                (offset + shift, date)
+            })
+            .collect();
+        let previous_constants = std::mem::replace(
+            &mut self.state.borrow_mut().pg_bound_date_constants,
+            constants,
+        );
         self.state.borrow_mut().observation_sql_override = Some(sql);
         let execution = self.execute(&bound);
         let mut state = self.state.borrow_mut();
+        state.pg_bound_date_constants = previous_constants;
         state.observation_sql_override = None;
         state.last_plan_from_cache = from_plan_cache;
         let prepared_plan_cache = state.prepared_plan_cache;

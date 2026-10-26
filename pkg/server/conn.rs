@@ -912,6 +912,15 @@ pub trait TiDBContext: Send + Sync {
     fn set_connection_status(&self, status: i32);
     fn wait_timeout(&self) -> Duration;
     fn in_transaction(&self) -> bool;
+    /// DATE Parse/Bind context from the owning session worker.
+    fn pg_date_context(
+        &self,
+        _order: Option<astersql_types::pg_temporal::PgDateOrder>,
+    ) -> ConnResult<astersql_types::pg_temporal::PgDateContext> {
+        Err(ConnError::Session(
+            "PostgreSQL date context unavailable".into(),
+        ))
+    }
     fn auth_plugin_for_user(&self, user: &str, host: &str) -> ConnResult<String>;
     fn authenticate(&self, request: &AuthRequest) -> ConnResult<()>;
     fn set_compression(&self, algorithm: CompressionAlgorithm, zstd_level: i32);

@@ -6,6 +6,9 @@ use crate::pg_catalog_query::{ParseResult, Token, lex};
 #[derive(Clone, Debug)]
 pub(crate) enum SessionQuery {
     Show,
+    DateStyleShow,
+    DateStyleSet(Option<astersql_types::pg_temporal::PgDateOrder>),
+    DateStyleReset,
     Set(Vec<String>),
     Reset,
     Schema(String),
@@ -122,6 +125,18 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
+            SessionQuery::DateStyleShow => Some(Value::Text(format!(
+                "ISO, {}",
+                context.pg_date_context(None)?.order.name()
+            ))),
+            SessionQuery::DateStyleSet(order) => {
+                context.pg_date_context(*order)?;
+                None
+            }
+            SessionQuery::DateStyleReset => {
+                context.pg_date_context(Some(Default::default()))?;
+                None
+            }
             // PostgreSQL canonicalizes the empty string list item as a quoted
             // empty identifier. It has no effective namespace, but SHOW is not NULL.
             SessionQuery::Show if self.path.is_empty() => Some(Value::Text("\"\"".into())),
@@ -183,15 +198,16 @@ impl PgSession {
 impl SessionQuery {
     pub(crate) fn command(&self) -> &'static str {
         match self {
-            Self::Show => "SHOW",
-            Self::Set(_) => "SET",
-            Self::Reset => "RESET",
+            Self::Show | Self::DateStyleShow => "SHOW",
+            Self::Set(_) | Self::DateStyleSet(_) => "SET",
+            Self::Reset | Self::DateStyleReset => "RESET",
             _ => "SELECT",
         }
     }
     pub(crate) fn metadata(&self) -> PreparedMetadata {
         let name = match self {
             Self::Show => Some("search_path"),
+            Self::DateStyleShow => Some("DateStyle"),
             Self::Schema(name) | Self::Database(name) => Some(name.as_str()),
             _ => None,
         };
@@ -246,6 +262,60 @@ impl SessionQuery {
             tokens.pop();
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
+        if word(tokens.get(1), "datestyle") {
+            use astersql_types::pg_temporal::PgDateOrder;
+            if word(tokens.first(), "show") && tokens.len() == 2 {
+                return Ok(Some(Self::DateStyleShow));
+            }
+            if word(tokens.first(), "reset") && tokens.len() == 2 {
+                return Ok(Some(Self::DateStyleReset));
+            }
+            if word(tokens.first(), "set")
+                && (word(tokens.get(2), "to") || tokens.get(2) == Some(&Token::Symbol('=')))
+            {
+                if tokens.len() == 4 && word(tokens.get(3), "default") {
+                    return Ok(Some(Self::DateStyleReset));
+                }
+                let mut order = None;
+                let mut expect_value = true;
+                for token in &tokens[3..] {
+                    if token == &Token::Symbol(',') {
+                        if expect_value {
+                            return Err(("42601", "expected DateStyle value".into()));
+                        }
+                        expect_value = true;
+                        continue;
+                    }
+                    if !expect_value {
+                        return Err(("42601", "expected comma in DateStyle".into()));
+                    }
+                    expect_value = false;
+                    let text = match token {
+                        Token::String(text) | Token::Word(text) => text.as_str(),
+                        _ => return Err(("42601", "invalid DateStyle".into())),
+                    };
+                    for part in text.split(',').map(str::trim) {
+                        match part.to_ascii_uppercase().as_str() {
+                            "ISO" => {}
+                            "MDY" => order = Some(PgDateOrder::Mdy),
+                            "DMY" => order = Some(PgDateOrder::Dmy),
+                            "YMD" => order = Some(PgDateOrder::Ymd),
+                            _ => {
+                                return Err((
+                                    "22023",
+                                    "unsupported DateStyle; use ISO with MDY, DMY or YMD".into(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                if expect_value {
+                    return Err(("42601", "expected DateStyle value".into()));
+                }
+                return Ok(Some(Self::DateStyleSet(order)));
+            }
+            return Err(("42601", "invalid DateStyle command".into()));
+        }
         if word(tokens.first(), "show") && word(tokens.get(1), "search_path") {
             return if tokens.len() == 2 {
                 Ok(Some(Self::Show))

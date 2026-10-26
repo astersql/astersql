@@ -801,6 +801,10 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgDateContext {
+        order: Option<astersql_types::pg_temporal::PgDateOrder>,
+        response: mpsc::SyncSender<ConnResult<astersql_types::pg_temporal::PgDateContext>>,
+    },
     BeginCommand {
         response: mpsc::SyncSender<()>,
     },
@@ -945,6 +949,13 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgDateContext { order, response } => {
+                session.begin_pg_date_statement();
+                let result = session
+                    .pg_date_context(order)
+                    .map_err(session_protocol_error);
+                let _ = response.send(result);
+            }
             SessionRequest::BeginCommand { response } => {
                 session.WithSessionVars(|vars| vars.ResetDurationParse());
                 let _ = response.send(());
@@ -1692,6 +1703,17 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn pg_date_context(
+        &self,
+        order: Option<astersql_types::pg_temporal::PgDateOrder>,
+    ) -> ConnResult<astersql_types::pg_temporal::PgDateContext> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgDateContext {
+            order,
+            response: response_tx,
+        })?;
+        response_rx.recv().map_err(packet_error)?
+    }
     fn begin_command(&self) {
         self.in_multi_statements.store(false, Ordering::Release);
         let (tx, rx) = mpsc::sync_channel(1);

@@ -27,7 +27,32 @@ impl PgTemporalError {
     }
 }
 
-/// A validated finite Gregorian day, counted from 2000-01-01. Keeping days
+/// Input field order for ISO DateStyle. Output remains unambiguous ISO.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PgDateOrder {
+    #[default]
+    Mdy,
+    Dmy,
+    Ymd,
+}
+impl PgDateOrder {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mdy => "MDY",
+            Self::Dmy => "DMY",
+            Self::Ymd => "YMD",
+        }
+    }
+}
+
+/// Immutable context sampled at a real Parse, Bind or SQL statement boundary.
+#[derive(Clone, Copy, Debug)]
+pub struct PgDateContext {
+    pub order: PgDateOrder,
+    pub today: PgDate,
+}
+
+/// A validated Gregorian day or an infinity sentinel, counted from 2000-01-01. Keeping days
 /// directly avoids MySQL bit fields and calendar-library year limitations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PgDate(i32);
@@ -77,7 +102,7 @@ impl PgDate {
         }
         let days = i32::from_be_bytes(bytes.try_into().unwrap());
         if days == i32::MIN || days == i32::MAX {
-            return Err(PgTemporalError::Unsupported);
+            return Ok(Self(days));
         }
         if !(-2451545..=2145031948).contains(&days) {
             return Err(PgTemporalError::Range);
@@ -86,6 +111,71 @@ impl PgDate {
     }
     pub fn to_binary(self) -> [u8; 4] {
         self.0.to_be_bytes()
+    }
+    /// Interpret relative words only with the caller's transaction/zone context.
+    pub fn parse_with_context(text: &str, context: PgDateContext) -> Result<Self, PgTemporalError> {
+        let text = text.trim();
+        let offset = match text.to_ascii_lowercase().as_str() {
+            "today" | "now" => Some(0),
+            "yesterday" => Some(-1),
+            "tomorrow" => Some(1),
+            _ => None,
+        };
+        if let Some(offset) = offset {
+            let days = context
+                .today
+                .0
+                .checked_add(offset)
+                .ok_or(PgTemporalError::Range)?;
+            if !(-2451545..=2145031948).contains(&days) {
+                return Err(PgTemporalError::Range);
+            }
+            return Ok(Self(days));
+        }
+        if matches!(
+            text.to_ascii_lowercase().as_str(),
+            "infinity" | "-infinity" | "epoch"
+        ) {
+            return text.parse();
+        }
+        // ISO year-first spellings are independent of field order. Numeric
+        // slash-separated dates use DateStyle, never MySQL's loose parser.
+        if text.contains('/')
+            || (text.contains('-') && text.split('-').next().is_some_and(|p| p.len() < 3))
+        {
+            let bc = text.to_ascii_uppercase().ends_with(" BC");
+            let date = if bc { &text[..text.len() - 3] } else { text };
+            let parts = date.split(['/', '-']).collect::<Vec<_>>();
+            if parts.len() != 3
+                || parts
+                    .iter()
+                    .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(PgTemporalError::Syntax);
+            }
+            let nums = parts
+                .iter()
+                .map(|p| p.parse::<i32>().map_err(|_| PgTemporalError::Range))
+                .collect::<Result<Vec<_>, _>>()?;
+            let year_first = parts[0].len() >= 3 || context.order == PgDateOrder::Ymd;
+            let year_digits = if year_first {
+                parts[0].len()
+            } else {
+                parts[2].len()
+            };
+            let (mut year, month, day) = if year_first {
+                (nums[0], nums[1], nums[2])
+            } else if context.order == PgDateOrder::Dmy {
+                (nums[2], nums[1], nums[0])
+            } else {
+                (nums[2], nums[0], nums[1])
+            };
+            if !bc && year_digits <= 2 && year < 100 {
+                year += if year < 70 { 2000 } else { 1900 };
+            }
+            return Self::from_ymd(if bc { -year } else { year }, month as u32, day as u32);
+        }
+        text.parse()
     }
     fn ymd(self) -> (i64, i64, i64) {
         let days = i64::from(self.0) + 730425;
@@ -105,11 +195,12 @@ impl std::str::FromStr for PgDate {
     type Err = PgTemporalError;
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let text = text.trim();
-        if matches!(
-            text.to_ascii_lowercase().as_str(),
-            "infinity" | "-infinity" | "epoch" | "now" | "today" | "yesterday" | "tomorrow"
-        ) {
-            return Err(PgTemporalError::Unsupported);
+        match text.to_ascii_lowercase().as_str() {
+            "infinity" => return Ok(Self(i32::MAX)),
+            "-infinity" => return Ok(Self(i32::MIN)),
+            "epoch" => return Self::from_ymd(1970, 1, 1),
+            "now" | "today" | "yesterday" | "tomorrow" => return Err(PgTemporalError::Unsupported),
+            _ => {}
         }
         let bc = text.to_ascii_uppercase().ends_with(" BC");
         let text = if bc { &text[..text.len() - 3] } else { text };
@@ -135,6 +226,12 @@ impl std::str::FromStr for PgDate {
 }
 impl fmt::Display for PgDate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == i32::MIN {
+            return f.write_str("-infinity");
+        }
+        if self.0 == i32::MAX {
+            return f.write_str("infinity");
+        }
         let (year, month, day) = self.ymd();
         if year <= 0 {
             write!(f, "{:04}-{month:02}-{day:02} BC", 1 - year)

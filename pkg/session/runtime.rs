@@ -85,6 +85,9 @@ mod pg_array_test;
 mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
+mod pg_temporal;
+#[cfg(test)]
+mod pg_temporal_test;
 pub use astersql_parser_types::{PostgreSQLArrayElement, PostgreSQLRecordField};
 pub use pg_array::PgArrayError;
 mod relational_value;

@@ -774,14 +774,17 @@ fn pg_temporal_date_calendar_prepared_identity() {
         "22008"
     );
     assert_eq!(
-        pg_date_relational_value(Some("2023-02-29".into()))
+        pg_date_relational_value(Some("2023-02-29".into()), pg.pg_date_context(None).unwrap())
             .unwrap_err()
             .pg_temporal_error()
             .unwrap()
             .sqlstate(),
         "22008"
     );
-    assert_eq!(pg_date_relational_value(None).unwrap(), None);
+    assert_eq!(
+        pg_date_relational_value(None, pg.pg_date_context(None).unwrap()).unwrap(),
+        None
+    );
     // Existing MySQL zero-date acceptance remains independent of PG validation.
     let mysql = ConcreteSession::new(domain);
     assert!(mysql.execute("SELECT CAST('0000-00-00' AS DATE)").is_ok());

@@ -80,6 +80,284 @@ fn description(body: &[u8], format: i16) {
 fn error(messages: &[(u8, Vec<u8>)], state: &str) {
     error_in_state(messages, state, b"I");
 }
+
+fn date_text_row(messages: &[(u8, Vec<u8>)]) -> Vec<u8> {
+    let row = &messages
+        .iter()
+        .find(|m| m.0 == b'D')
+        .unwrap_or_else(|| panic!("{messages:?}"))
+        .1;
+    assert_eq!(&row[..2], &1i16.to_be_bytes());
+    row[6..].to_vec()
+}
+
+#[test]
+fn pg_temporal_date_special_style() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0TimeZone\0Asia/Shanghai\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for sql in ["SELECT $1", "SELECT CAST($1 AS DATE)"] {
+        for input in [0, 1] {
+            for output in [0, 1] {
+                for (text, days) in [
+                    ("-infinity", i32::MIN),
+                    ("infinity", i32::MAX),
+                    ("1970-01-01", -10957),
+                    ("2000-01-01", 0),
+                ] {
+                    let binary = days.to_be_bytes();
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    let result = cycle(&mut socket, sql, input, output, Some(value));
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1082u32.to_be_bytes()].concat()
+                    );
+                    description(&result[2].1, 0);
+                    description(&result[4].1, output);
+                    let expected = if output == 0 {
+                        text.as_bytes()
+                    } else {
+                        &binary
+                    };
+                    assert_eq!(&result[5].1[6..], expected);
+                }
+                let null = cycle(&mut socket, sql, input, output, None);
+                assert_eq!(null.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+                description(&null[4].1, output);
+                assert_eq!(
+                    null[5].1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+            }
+        }
+    }
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT CAST('epoch' AS DATE)")),
+        b"1970-01-01"
+    );
+    for (order, expected) in [("MDY", "2003-01-02"), ("DMY", "2003-02-01")] {
+        let set = query(&mut socket, &format!("SET DateStyle TO 'ISO, {order}'"));
+        assert!(!set.iter().any(|m| m.0 == b'E'), "{set:?}");
+        assert_eq!(
+            date_text_row(&query(&mut socket, "SHOW DateStyle")),
+            format!("ISO, {order}").as_bytes()
+        );
+        assert_eq!(
+            date_text_row(&query(&mut socket, "SELECT CAST('01/02/2003' AS DATE)")),
+            expected.as_bytes()
+        );
+        for output in [0, 1] {
+            let result = cycle(&mut socket, "SELECT $1", 0, output, Some(b"01/02/2003"));
+            let binary = expected
+                .parse::<astersql_types::pg_temporal::PgDate>()
+                .unwrap()
+                .to_binary();
+            let expected = if output == 0 {
+                expected.as_bytes()
+            } else {
+                &binary
+            };
+            assert_eq!(date_text_row(&result), expected);
+        }
+        assert_eq!(
+            date_text_row(&query(
+                &mut socket,
+                &format!("SELECT CAST('{expected}' AS DATE)")
+            )),
+            expected.as_bytes()
+        );
+    }
+    for bad in ["allballs", "", "garbage"] {
+        for output in [0, 1] {
+            error(
+                &cycle(&mut socket, "SELECT $1", 0, output, Some(bad.as_bytes())),
+                "22007",
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+        error(
+            &query(&mut socket, &format!("SELECT CAST('{bad}' AS DATE)")),
+            "22007",
+        );
+    }
+    // Fixed UTC 1999-12-31 23:00 belongs to 2000-01-01 in the session zone.
+    for sql in ["SET timestamp = 946681200", "BEGIN"] {
+        let result = query(&mut socket, sql);
+        assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+    }
+    for (word, expected) in [
+        ("now", "2000-01-01"),
+        ("today", "2000-01-01"),
+        ("yesterday", "1999-12-31"),
+        ("tomorrow", "2000-01-02"),
+        ("epoch", "1970-01-01"),
+    ] {
+        assert_eq!(
+            date_text_row(&query(
+                &mut socket,
+                &format!("SELECT CAST('{word}' AS DATE)")
+            )),
+            expected.as_bytes()
+        );
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let binary = expected
+                    .parse::<astersql_types::pg_temporal::PgDate>()
+                    .unwrap()
+                    .to_binary();
+                let value = if input == 0 { word.as_bytes() } else { &binary };
+                let result = cycle(&mut socket, "SELECT $1", input, output, Some(value));
+                description(&result[2].1, 0);
+                description(&result[4].1, output);
+                assert_eq!(
+                    date_text_row(&result),
+                    if output == 0 {
+                        expected.as_bytes()
+                    } else {
+                        &binary
+                    }
+                );
+            }
+        }
+    }
+    query(&mut socket, "SET timestamp = 946854000");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT CAST('today' AS DATE)")),
+        b"2000-01-01"
+    );
+    query(&mut socket, "COMMIT");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT CAST('today' AS DATE)")),
+        b"2000-01-03"
+    );
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"constant\0SELECT CAST('today' AS DATE)\0".as_slice(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert_eq!(ready(&mut socket)[0].0, b'1');
+    query(&mut socket, "SET timestamp = 947026800");
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"\0constant\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+    send(&mut socket, b'S', &[]);
+    assert_eq!(date_text_row(&ready(&mut socket)), b"2000-01-03");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT CAST('today' AS DATE)")),
+        b"2000-01-05"
+    );
+    // The OID1082 parameter is resolved at Bind, after Parse. A subsequent
+    // zone change before Execute must not reinterpret the bound day.
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"relative\0SELECT $1\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1082u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert_eq!(ready(&mut socket)[0].0, b'1');
+    query(&mut socket, "SET timestamp = 947199600");
+    query(&mut socket, "BEGIN");
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"bound\0relative\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &5i32.to_be_bytes(),
+            b"today",
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Pbound\0");
+    send(&mut socket, b'H', &[]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    let described = read(&mut socket);
+    assert_eq!(described.0, b'T');
+    description(&described.1, 1);
+    query(&mut socket, "SET time_zone = 'UTC'");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT CAST('today' AS DATE)")),
+        b"2000-01-06"
+    );
+    for _ in 0..2 {
+        send(
+            &mut socket,
+            b'E',
+            &[b"bound\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+    }
+    send(&mut socket, b'S', &[]);
+    let result = ready(&mut socket);
+    assert_eq!(result.iter().map(|m| m.0).collect::<Vec<_>>(), b"DCCZ");
+    assert_eq!(date_text_row(&result), 6i32.to_be_bytes());
+    error_in_state(
+        &cycle(&mut socket, "SELECT $1", 0, 0, Some(b"allballs")),
+        "22007",
+        b"E",
+    );
+    query(&mut socket, "ROLLBACK");
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    query(&mut socket, "RESET DateStyle");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SHOW DateStyle")),
+        b"ISO, MDY"
+    );
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
 fn error_in_state(messages: &[(u8, Vec<u8>)], state: &str, status: &[u8]) {
     let errors = messages.iter().filter(|m| m.0 == b'E').collect::<Vec<_>>();
     assert_eq!(errors.len(), 1, "{messages:?}");
