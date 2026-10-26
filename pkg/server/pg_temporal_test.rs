@@ -450,3 +450,182 @@ fn pg_temporal_date_epoch() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_date_range() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    // Fixed DATE-RANGE contract fixtures, without using PgDate to calculate
+    // expected bytes. The adjacent BC/AD days must never display year zero.
+    for (text, days) in [
+        ("4714-11-24 BC", -2451545i32),
+        ("5874897-12-31", 2145031948),
+        ("0001-01-01 BC", -730485),
+        ("0001-12-31 BC", -730120),
+        ("0001-01-01", -730119),
+        ("9999-12-31", 2921939),
+        ("10000-01-01", 2921940),
+        ("2000-01-01", 0),
+    ] {
+        let binary = days.to_be_bytes();
+        for sql in ["SELECT $1", "SELECT CAST($1 AS DATE)"] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    let messages = cycle(&mut socket, sql, input, output, Some(value));
+                    assert_eq!(
+                        messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{sql}, {text}, {input}/{output}: {messages:?}"
+                    );
+                    assert_eq!(
+                        messages[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1082u32.to_be_bytes()].concat()
+                    );
+                    description(&messages[2].1, 0);
+                    description(&messages[4].1, output);
+                    let expected = if output == 0 {
+                        text.as_bytes()
+                    } else {
+                        &binary
+                    };
+                    assert_eq!(
+                        messages[5].1,
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(expected.len() as i32).to_be_bytes(),
+                            expected
+                        ]
+                        .concat()
+                    );
+                }
+            }
+        }
+        // Literals use the real SQL cast path, separately from Bind decoding.
+        let literal = query(&mut socket, &format!("SELECT CAST('{text}' AS DATE)"));
+        assert_eq!(
+            literal.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCZ",
+            "{literal:?}"
+        );
+        description(&literal[0].1, 0);
+        assert_eq!(
+            literal[1].1,
+            [
+                1i16.to_be_bytes().as_slice(),
+                &(text.len() as i32).to_be_bytes(),
+                text.as_bytes()
+            ]
+            .concat()
+        );
+    }
+    for input in [0, 1] {
+        for output in [0, 1] {
+            for sql in [
+                "SELECT CAST($1 AS DATE)",
+                "SELECT CAST($1 AS DATE) WHERE FALSE",
+                "SELECT CAST($1 AS DATE) UNION ALL SELECT CAST($1 AS DATE)",
+            ] {
+                let messages = cycle(&mut socket, sql, input, output, None);
+                assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+                description(&messages[2].1, 0);
+                description(&messages[4].1, output);
+                let rows = messages.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>();
+                let count = if sql.contains("FALSE") {
+                    0
+                } else if sql.contains("UNION") {
+                    2
+                } else {
+                    1
+                };
+                assert_eq!(rows.len(), count);
+                for row in rows {
+                    assert_eq!(
+                        row.1,
+                        [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                    );
+                }
+            }
+        }
+    }
+    for (text, days) in [
+        ("4714-11-23 BC", -2451546i32),
+        ("5874898-01-01", 2145031949),
+    ] {
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let binary = days.to_be_bytes();
+                let value = if input == 0 { text.as_bytes() } else { &binary };
+                error(
+                    &cycle(
+                        &mut socket,
+                        "SELECT CAST($1 AS DATE)",
+                        input,
+                        output,
+                        Some(value),
+                    ),
+                    "22008",
+                );
+                assert_eq!(
+                    query(&mut socket, "SELECT 1::int4")
+                        .iter()
+                        .map(|m| m.0)
+                        .collect::<Vec<_>>(),
+                    b"TDCZ"
+                );
+            }
+        }
+        error(
+            &query(&mut socket, &format!("SELECT CAST('{text}' AS DATE)")),
+            "22008",
+        );
+    }
+    for text in ["0000-01-01", "0000-01-01 BC"] {
+        for output in [0, 1] {
+            assert_eq!(
+                query(&mut socket, "BEGIN").last().unwrap(),
+                &(b'Z', b"T".to_vec())
+            );
+            error_in_state(
+                &cycle(&mut socket, "SELECT $1", 0, output, Some(text.as_bytes())),
+                "22008",
+                b"E",
+            );
+            assert_eq!(
+                query(&mut socket, "ROLLBACK").last().unwrap(),
+                &(b'Z', b"I".to_vec())
+            );
+            assert_eq!(
+                query(&mut socket, "SELECT 1::int4")
+                    .iter()
+                    .map(|m| m.0)
+                    .collect::<Vec<_>>(),
+                b"TDCZ"
+            );
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
