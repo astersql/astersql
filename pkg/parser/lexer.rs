@@ -335,6 +335,12 @@ impl Scanner {
             tok = token::timestampType;
             self.lastKeyword = tok;
         }
+        if self.postgres && tok == token::interval && self.getNextToken() == token::stringLit {
+            tok = token::timestampType;
+        }
+        if self.postgres && tok == token::interval {
+            tok = token::identifier;
+        }
         if tok == token::full && self.getNextTwoTokens() == (token::outer, token::join) {
             tok = token::fullJoinType;
             self.lastKeyword = tok;

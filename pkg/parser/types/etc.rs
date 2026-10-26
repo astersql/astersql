@@ -63,6 +63,7 @@ static type2Str: LazyLock<HashMap<u8, &'static str>> = LazyLock::new(|| {
         (mysql::TypeGeometry, "geometry"),
         (mysql::TypeTiDBVectorFloat32, "vector"),
         (mysql::TypePgTimestampTz, "timestamptz"),
+        (mysql::TypePgInterval, "interval"),
         (mysql::TypeInt24, "mediumint"),
         (mysql::TypeJSON, "json"),
         (mysql::TypeLong, "int"),

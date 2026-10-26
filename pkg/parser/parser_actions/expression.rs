@@ -1272,6 +1272,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "float" | "float8" | "double" => parser_mysql::r#type::TypeDouble,
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
                 "timestamptz" => parser_mysql::r#type::TypePgTimestampTz,
+                "interval" => parser_mysql::r#type::TypePgInterval,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
                     return Err(1);
@@ -2290,7 +2291,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             {
                 // PG temporal literals use the typed cast consumer. The lexer
                 // retains the unreserved timestamptz spelling for instant identity.
-                let code = if rhs[1].ident.eq_ignore_ascii_case("timestamptz") {
+                let code = if rhs[1].ident.eq_ignore_ascii_case("interval") {
+                    parser_mysql::r#type::TypePgInterval
+                } else if rhs[1].ident.eq_ignore_ascii_case("timestamptz") {
                     parser_mysql::r#type::TypePgTimestampTz
                 } else {
                     parser_mysql::r#type::TypeDatetime

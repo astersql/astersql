@@ -5319,3 +5319,34 @@ fn pg_timestamptz_typed_literal() {
         }
     }
 }
+
+#[test]
+fn pg_interval_cast_and_literal_identity() {
+    let mut pg = crate::Parser::with_dialect(crate::ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT $1::interval AS v",
+        "SELECT CAST($1 AS interval)",
+        "SELECT INTERVAL '1.5 months'",
+    ] {
+        let (nodes, warnings) = pg.ParseSQL(sql, &[]).unwrap();
+        assert!(warnings.is_empty());
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert!(
+            matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,parser_ast::ExprKind::Cast{Tp,..} if Tp.GetType()==parser_mysql::r#type::TypePgInterval)
+        );
+    }
+    let mut mysql = crate::Parser::with_dialect(crate::ast::SqlDialect::MySQL);
+    assert!(
+        mysql
+            .ParseSQL("SELECT CAST('1 month' AS interval)", &[])
+            .is_err()
+    );
+    assert!(
+        mysql
+            .ParseSQL("SELECT DATE_ADD('2000-01-01', INTERVAL 1 DAY)", &[])
+            .is_ok()
+    );
+}

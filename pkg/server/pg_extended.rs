@@ -415,6 +415,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_string()
                 .into_bytes(),
         ),
+        1186 => (
+            253,
+            text.parse::<astersql_types::pg_temporal::PgInterval>()
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .to_string()
+                .into_bytes(),
+        ),
         1184 => (
             253,
             text.parse::<astersql_types::pg_temporal::PgTimestampTz>()
@@ -487,6 +494,11 @@ fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             let time = astersql_types::pg_temporal::PgTime::from_binary(value)
                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
             return parameter(1083, Some(time.to_string().as_bytes()));
+        }
+        1186 => {
+            let interval = astersql_types::pg_temporal::PgInterval::from_binary(value)
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+            return parameter(1186, Some(interval.to_string().as_bytes()));
         }
         1184 => {
             let timestamp = astersql_types::pg_temporal::PgTimestampTz::from_binary(value)
@@ -828,6 +840,7 @@ impl Extended {
                         | 1083
                         | 1114
                         | 1184
+                        | 1186
                         | 1700
                 )
             {

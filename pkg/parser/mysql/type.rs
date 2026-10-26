@@ -222,3 +222,5 @@ pub fn HasFlag(flag: usize, flagItem: usize) -> bool {
 
 /// Internal PG timestamptz identity; never a MySQL protocol type code.
 pub const TypePgTimestampTz: u8 = 0xe2;
+/// Internal PG interval identity; never a MySQL duration or wire type.
+pub const TypePgInterval: u8 = 0xe3;

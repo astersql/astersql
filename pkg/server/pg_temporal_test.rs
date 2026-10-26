@@ -5761,3 +5761,223 @@ fn pg_temporal_tz_invalid() {
     );
     println!("{}", String::from_utf8_lossy(&differential.stdout));
 }
+
+#[test]
+fn pg_temporal_iv_components() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0TimeZone\0Asia/Shanghai\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    fn desc(body: &[u8], format: i16) {
+        assert_eq!(&body[..2], &1i16.to_be_bytes());
+        let at = 2 + body[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&body[at + 6..at + 10], &1186u32.to_be_bytes());
+        assert_eq!(&body[at + 10..at + 12], &16i16.to_be_bytes());
+        assert_eq!(&body[at + 12..at + 16], &(-1i32).to_be_bytes());
+        assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+    }
+    for sql in [
+        "SELECT $1 AS v",
+        "SELECT $1::interval AS v",
+        "SELECT CAST($1 AS interval) AS v",
+    ] {
+        for input in [0, 1] {
+            for output in [0, 1] {
+                for (text, canonical, months, days, micros) in [
+                    ("1 month", "1 mon", 1i32, 0i32, 0i64),
+                    ("30 days", "30 days", 0, 30, 0),
+                    ("1 day", "1 day", 0, 1, 0),
+                    ("24 hours", "24:00:00", 0, 0, 86400000000),
+                    ("1.5 months", "1 mon 15 days", 1, 15, 0),
+                    ("0", "00:00:00", 0, 0, 0),
+                    (
+                        "-1 month 2 days -03:04:05.000006",
+                        "-1 mons +2 days -03:04:05.000006",
+                        -1,
+                        2,
+                        -11045000006,
+                    ),
+                    (
+                        "2147483647 months",
+                        "178956970 years 7 mons",
+                        i32::MAX,
+                        0,
+                        0,
+                    ),
+                    ("-2147483648 days", "-2147483648 days", 0, i32::MIN, 0),
+                    (
+                        "9223372036854775807 microseconds",
+                        "2562047788:00:54.775807",
+                        0,
+                        0,
+                        i64::MAX,
+                    ),
+                    (
+                        "-9223372036854775808 microseconds",
+                        "-2562047788:00:54.775808",
+                        0,
+                        0,
+                        i64::MIN,
+                    ),
+                    ("infinity", "infinity", i32::MAX, i32::MAX, i64::MAX),
+                    ("-infinity", "-infinity", i32::MIN, i32::MIN, i64::MIN),
+                ] {
+                    let binary = [
+                        micros.to_be_bytes().as_slice(),
+                        &days.to_be_bytes(),
+                        &months.to_be_bytes(),
+                    ]
+                    .concat();
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    let result = cycle_oid(&mut socket, sql, 1186, input, output, Some(value));
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{sql}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1186u32.to_be_bytes()].concat()
+                    );
+                    desc(&result[2].1, 0);
+                    desc(&result[4].1, output);
+                    assert_eq!(
+                        date_text_row(&result),
+                        if output == 0 {
+                            canonical.as_bytes()
+                        } else {
+                            &binary
+                        },
+                        "{text}"
+                    );
+                }
+                let null = cycle_oid(&mut socket, sql, 1186, input, output, None);
+                assert_eq!(
+                    null.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{null:?}"
+                );
+                desc(&null[2].1, 0);
+                desc(&null[4].1, output);
+                assert_eq!(
+                    null[5].1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+            }
+        }
+    }
+    for (input, value, state) in [
+        (0, b"garbage".as_slice(), "22007"),
+        (0, b"".as_slice(), "22007"),
+        (0, b"2147483648 months".as_slice(), "22015"),
+        (0, b"a\0b".as_slice(), "22021"),
+        (0, b"\xff".as_slice(), "22021"),
+        (1, &[0; 15], "08P01"),
+        (1, &[0; 17], "22P03"),
+    ] {
+        for output in [0, 1] {
+            error(
+                &cycle_oid(&mut socket, "SELECT $1", 1186, input, output, Some(value)),
+                state,
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SELECT CAST('1.5 months' AS interval)")),
+        b"1 mon 15 days"
+    );
+    for input in [0, 1] {
+        for output in [0, 1] {
+            let binary = [
+                0i64.to_be_bytes().as_slice(),
+                &0i32.to_be_bytes(),
+                &1i32.to_be_bytes(),
+            ]
+            .concat();
+            let value = if input == 0 {
+                b"1 month".as_slice()
+            } else {
+                &binary
+            };
+            for (sql, rows) in [
+                ("SELECT $1::interval AS v WHERE false", 0),
+                (
+                    "SELECT NULL::interval AS v UNION ALL SELECT $1::interval",
+                    2,
+                ),
+                (
+                    "SELECT NULL::interval AS v UNION ALL SELECT $1::interval WHERE false",
+                    1,
+                ),
+            ] {
+                let result = cycle_oid(&mut socket, sql, 1186, input, output, Some(value));
+                assert!(!result.iter().any(|m| m.0 == b'E'), "{sql}: {result:?}");
+                for m in result.iter().filter(|m| m.0 == b'T') {
+                    desc(
+                        &m.1,
+                        if std::ptr::eq(m, &result[2]) {
+                            0
+                        } else {
+                            output
+                        },
+                    );
+                }
+                let data = result.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>();
+                assert_eq!(data.len(), rows, "{sql}");
+                if rows > 0 {
+                    assert_eq!(
+                        data[0].1,
+                        [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                    );
+                }
+                if rows == 2 {
+                    assert_eq!(
+                        &data[1].1[6..],
+                        if output == 0 {
+                            b"1 mon".as_slice()
+                        } else {
+                            &binary
+                        }
+                    );
+                }
+            }
+        }
+    }
+    query(&mut socket, "BEGIN");
+    error_in_state(
+        &cycle_oid(&mut socket, "SELECT $1", 1186, 0, 0, Some(b"bad")),
+        "22007",
+        b"E",
+    );
+    query(&mut socket, "ROLLBACK");
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

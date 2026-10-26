@@ -559,3 +559,75 @@ fn pg_timestamptz_invalid_zone_and_payload() {
         "22P03"
     );
 }
+
+#[test]
+fn pg_interval_components_preserve_dimensions() {
+    use super::pg_temporal::PgInterval;
+    for (text, components) in [
+        ("1 month", (1, 0, 0)),
+        ("30 days", (0, 30, 0)),
+        ("1 day", (0, 1, 0)),
+        ("24 hours", (0, 0, 86_400_000_000)),
+        ("1.5 months", (1, 15, 0)),
+        ("-1.5 months", (-1, -15, 0)),
+        ("0.5 days", (0, 0, 43_200_000_000)),
+        (
+            "1 year 2 months 3 days 04:05:06.123456",
+            (14, 3, 14_706_123_456),
+        ),
+    ] {
+        let value = text.parse::<PgInterval>().unwrap();
+        assert_eq!(value.components(), components, "{text}");
+        assert_eq!(PgInterval::from_binary(&value.to_binary()).unwrap(), value);
+        assert_eq!(value.to_string().parse::<PgInterval>().unwrap(), value);
+    }
+    for parts in [
+        (i32::MIN, 0, 0),
+        (i32::MAX, 0, 0),
+        (0, i32::MIN, 0),
+        (0, i32::MAX, 0),
+        (0, 0, i64::MIN),
+        (0, 0, i64::MAX),
+        (i32::MIN, i32::MIN, i64::MIN),
+        (i32::MAX, i32::MAX, i64::MAX),
+    ] {
+        let value = PgInterval::from_components(parts.0, parts.1, parts.2);
+        assert_eq!(PgInterval::from_binary(&value.to_binary()).unwrap(), value);
+        assert_eq!(
+            value.to_string().parse::<PgInterval>().unwrap(),
+            value,
+            "{parts:?}"
+        );
+    }
+    for bad in [
+        "",
+        "garbage",
+        "1 day 2 days",
+        "1:60:00",
+        "1:00:60",
+        "1:-1:00",
+        "1:-999999999999999999999999999999999999:00",
+        "1 monthssss",
+    ] {
+        assert_eq!(
+            bad.parse::<PgInterval>().unwrap_err().sqlstate(),
+            "22007",
+            "{bad}"
+        );
+    }
+    for bad in [
+        "2147483648 months",
+        "-2147483649 days",
+        "9223372036854775808 microseconds",
+    ] {
+        assert_eq!(bad.parse::<PgInterval>().unwrap_err().sqlstate(), "22015");
+    }
+    assert_eq!(
+        PgInterval::from_binary(&[0; 15]).unwrap_err().sqlstate(),
+        "08P01"
+    );
+    assert_eq!(
+        PgInterval::from_binary(&[0; 17]).unwrap_err().sqlstate(),
+        "22P03"
+    );
+}

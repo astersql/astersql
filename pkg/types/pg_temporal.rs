@@ -6,6 +6,8 @@ use std::fmt;
 pub enum PgTemporalError {
     #[error("invalid date input syntax")]
     Syntax,
+    #[error("interval field overflow")]
+    IntervalOverflow,
     #[error("date field out of range")]
     Range,
     #[error("time zone displacement out of range")]
@@ -28,6 +30,7 @@ impl PgTemporalError {
         match self {
             Self::Syntax => "22007",
             Self::Range => "22008",
+            Self::IntervalOverflow => "22015",
             Self::ZoneRange => "22009",
             Self::UnknownZone => "22023",
             Self::Unsupported | Self::DurationBridge | Self::TimestampBridge => "0A000",
@@ -774,5 +777,267 @@ impl std::str::FromStr for PgTimestampTz {
 impl fmt::Display for PgTimestampTz {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.format_with_offset(0).map_err(|_| fmt::Error)?)
+    }
+}
+
+/// PostgreSQL interval keeps calendar months, calendar days and elapsed microseconds
+/// independent. In particular, 24 hours never carries into the day component.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PgInterval {
+    months: i32,
+    days: i32,
+    time_microseconds: i64,
+}
+impl PgInterval {
+    pub const fn from_components(months: i32, days: i32, time_microseconds: i64) -> Self {
+        Self {
+            months,
+            days,
+            time_microseconds,
+        }
+    }
+    pub const fn components(self) -> (i32, i32, i64) {
+        (self.months, self.days, self.time_microseconds)
+    }
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
+        if bytes.len() < 16 {
+            return Err(PgTemporalError::Truncated);
+        }
+        if bytes.len() > 16 {
+            return Err(PgTemporalError::Trailing);
+        }
+        Ok(Self::from_components(
+            i32::from_be_bytes(bytes[12..16].try_into().unwrap()),
+            i32::from_be_bytes(bytes[8..12].try_into().unwrap()),
+            i64::from_be_bytes(bytes[..8].try_into().unwrap()),
+        ))
+    }
+    pub fn to_binary(self) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&self.time_microseconds.to_be_bytes());
+        bytes[8..12].copy_from_slice(&self.days.to_be_bytes());
+        bytes[12..].copy_from_slice(&self.months.to_be_bytes());
+        bytes
+    }
+}
+// Exact decimal input avoids rounding large integer months through floating point.
+fn interval_decimal(text: &str) -> Result<(i128, i128), PgTemporalError> {
+    let negative = text.starts_with('-');
+    let text = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let mut parts = text.split('.');
+    let integer = parts.next().unwrap_or("");
+    let fraction = parts.next().unwrap_or("");
+    if parts.next().is_some()
+        || (integer.is_empty() && fraction.is_empty())
+        || !integer
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return Err(PgTemporalError::Syntax);
+    }
+    let scale = 10i128
+        .checked_pow(
+            fraction
+                .len()
+                .try_into()
+                .map_err(|_| PgTemporalError::IntervalOverflow)?,
+        )
+        .ok_or(PgTemporalError::IntervalOverflow)?;
+    let digits = format!("{integer}{fraction}")
+        .parse::<i128>()
+        .map_err(|_| PgTemporalError::IntervalOverflow)?;
+    Ok((if negative { -digits } else { digits }, scale))
+}
+fn interval_round(n: i128, d: i128) -> i128 {
+    let q = n / d;
+    let remainder = n % d;
+    q + if remainder.abs() > d / 2 || (d % 2 == 0 && remainder.abs() == d / 2 && q % 2 != 0) {
+        n.signum()
+    } else {
+        0
+    }
+}
+impl std::str::FromStr for PgInterval {
+    type Err = PgTemporalError;
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
+        if input.eq_ignore_ascii_case("infinity") {
+            return Ok(Self::from_components(i32::MAX, i32::MAX, i64::MAX));
+        }
+        if input.eq_ignore_ascii_case("-infinity") {
+            return Ok(Self::from_components(i32::MIN, i32::MIN, i64::MIN));
+        }
+        if input == "0" {
+            return Ok(Self::from_components(0, 0, 0));
+        }
+        let mut fields = input.split_whitespace().peekable();
+        let (mut months, mut days, mut micros) = (0i128, 0i128, 0i128);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(number) = fields.next() {
+            let overflow = || PgTemporalError::IntervalOverflow;
+            if number.contains(':') {
+                if !seen.insert("time") {
+                    return Err(PgTemporalError::Syntax);
+                }
+                let negative = number.starts_with('-');
+                let clock = number.strip_prefix(['-', '+']).unwrap_or(number);
+                let parts = clock.split(':').collect::<Vec<_>>();
+                if parts.len() != 3 {
+                    return Err(PgTemporalError::Syntax);
+                }
+                let (hours, hs) = interval_decimal(parts[0])?;
+                let (minutes, ms) = interval_decimal(parts[1])?;
+                let (seconds, ss) = interval_decimal(parts[2])?;
+                if hs != 1
+                    || ms != 1
+                    || hours < 0
+                    || !(0..60).contains(&minutes)
+                    || seconds < 0
+                    || seconds / ss >= 60
+                {
+                    return Err(PgTemporalError::Syntax);
+                }
+                let time = hours
+                    .checked_mul(3_600_000_000)
+                    .and_then(|h| h.checked_add(minutes * 60_000_000))
+                    .and_then(|v| {
+                        v.checked_add(interval_round(seconds.checked_mul(1_000_000)?, ss))
+                    })
+                    .ok_or_else(overflow)?;
+                micros = micros
+                    .checked_add(if negative { -time } else { time })
+                    .ok_or_else(overflow)?;
+                continue;
+            }
+            let unit = fields
+                .next()
+                .ok_or(PgTemporalError::Syntax)?
+                .to_ascii_lowercase();
+            let unit = unit.strip_suffix('s').unwrap_or(&unit);
+            let (mut n, d) = interval_decimal(number)?;
+            let category = match unit {
+                "year" | "yr" => "year",
+                "month" | "mon" => "month",
+                "week" => "week",
+                "day" => "day",
+                "hour" | "hr" => "hour",
+                "minute" | "min" => "minute",
+                "second" | "sec" => "second",
+                "millisecond" => "millisecond",
+                "microsecond" => "microsecond",
+                _ => return Err(PgTemporalError::Syntax),
+            };
+            if !seen.insert(category) {
+                return Err(PgTemporalError::Syntax);
+            }
+            match category {
+                "year" => {
+                    months = months
+                        .checked_add(n.checked_mul(12).ok_or_else(overflow)? / d)
+                        .ok_or_else(overflow)?;
+                }
+                "month" => {
+                    months = months.checked_add(n / d).ok_or_else(overflow)?;
+                    n = (n % d).checked_mul(30).ok_or_else(overflow)?;
+                    days = days.checked_add(n / d).ok_or_else(overflow)?;
+                    micros = micros
+                        .checked_add(interval_round(
+                            (n % d).checked_mul(86_400_000_000).ok_or_else(overflow)?,
+                            d,
+                        ))
+                        .ok_or_else(overflow)?;
+                }
+                "week" | "day" => {
+                    n = n
+                        .checked_mul(if category == "week" { 7 } else { 1 })
+                        .ok_or_else(overflow)?;
+                    days = days.checked_add(n / d).ok_or_else(overflow)?;
+                    micros = micros
+                        .checked_add(interval_round(
+                            (n % d).checked_mul(86_400_000_000).ok_or_else(overflow)?,
+                            d,
+                        ))
+                        .ok_or_else(overflow)?;
+                }
+                _ => {
+                    let factor = match category {
+                        "hour" => 3_600_000_000,
+                        "minute" => 60_000_000,
+                        "second" => 1_000_000,
+                        "millisecond" => 1000,
+                        _ => 1,
+                    };
+                    micros = micros
+                        .checked_add(interval_round(
+                            n.checked_mul(factor).ok_or_else(overflow)?,
+                            d,
+                        ))
+                        .ok_or_else(overflow)?;
+                }
+            }
+        }
+        if seen.is_empty() {
+            return Err(PgTemporalError::Syntax);
+        }
+        Ok(Self::from_components(
+            months
+                .try_into()
+                .map_err(|_| PgTemporalError::IntervalOverflow)?,
+            days.try_into()
+                .map_err(|_| PgTemporalError::IntervalOverflow)?,
+            micros
+                .try_into()
+                .map_err(|_| PgTemporalError::IntervalOverflow)?,
+        ))
+    }
+}
+impl fmt::Display for PgInterval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.components() == (i32::MAX, i32::MAX, i64::MAX) {
+            return f.write_str("infinity");
+        }
+        if self.components() == (i32::MIN, i32::MIN, i64::MIN) {
+            return f.write_str("-infinity");
+        }
+        let mut parts = Vec::new();
+        let mut negative = false;
+        for (n, unit) in [
+            (self.months / 12, "year"),
+            (self.months % 12, "mon"),
+            (self.days, "day"),
+        ] {
+            if n != 0 {
+                parts.push(format!(
+                    "{}{n} {unit}{}",
+                    if negative && n > 0 { "+" } else { "" },
+                    if n == 1 { "" } else { "s" }
+                ));
+                negative |= n < 0;
+            }
+        }
+        if self.time_microseconds != 0 || parts.is_empty() {
+            let n = self.time_microseconds.unsigned_abs();
+            let fraction = n % 1_000_000;
+            let suffix = if fraction == 0 {
+                String::new()
+            } else {
+                format!(".{fraction:06}").trim_end_matches('0').to_owned()
+            };
+            parts.push(format!(
+                "{}{:02}:{:02}:{:02}{suffix}",
+                if self.time_microseconds < 0 {
+                    "-"
+                } else if negative {
+                    "+"
+                } else {
+                    ""
+                },
+                n / 3_600_000_000,
+                n / 60_000_000 % 60,
+                n / 1_000_000 % 60
+            ));
+        }
+        f.write_str(&parts.join(" "))
     }
 }

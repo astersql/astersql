@@ -1280,6 +1280,23 @@ impl ConcreteSession {
                     );
                 }
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                {
+                    return self
+                        .relational_query_expression_value(Expr, row, group_rows)?
+                        .map(|text| {
+                            text.parse::<astersql_types::pg_temporal::PgInterval>()
+                                .map(|v| v.to_string())
+                                .map_err(|e| {
+                                    SessionError::with_source(
+                                        e.to_string(),
+                                        astersql_errors::SharedError::new(e),
+                                    )
+                                })
+                        })
+                        .transpose();
+                }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
                 {
                     return self.pg_timestamptz_relational_value(

@@ -947,3 +947,28 @@ fn pg_timestamp_prepared_identity() {
     }
     pg.close_protocol_statement(id).unwrap();
 }
+
+#[test]
+fn pg_interval_components_session_identity() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT ?::interval", &[1186])
+            .unwrap(),
+        [1186]
+    );
+    for (sql, expected) in [
+        ("SELECT INTERVAL '1.5 months'", "1 mon 15 days"),
+        ("SELECT CAST('24 hours' AS interval)", "24:00:00"),
+    ] {
+        let mut records = pg.execute(sql).unwrap();
+        assert_eq!(records[0].next_row().unwrap().unwrap(), vec![expected]);
+        let fields = pg.describe_result_fields(sql).unwrap();
+        assert_eq!(
+            fields[0].column.FieldType.GetType(),
+            astersql_parser_mysql::r#type::TypePgInterval
+        );
+    }
+}
