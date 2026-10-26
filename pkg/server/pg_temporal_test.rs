@@ -2361,3 +2361,173 @@ fn pg_temporal_time_null_metadata() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_time_invalid() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for output in [0i16, 1] {
+        for in_transaction in [false, true] {
+            for (input, payload, state) in [
+                (1, vec![], "08P01"),
+                (1, vec![0; 7], "08P01"),
+                (1, vec![0; 9], "22P03"),
+                (1, (-1i64).to_be_bytes().to_vec(), "22008"),
+                (1, i64::MIN.to_be_bytes().to_vec(), "22008"),
+                (1, i64::MAX.to_be_bytes().to_vec(), "22008"),
+                (1, 86400000001i64.to_be_bytes().to_vec(), "22008"),
+                (0, vec![], "22007"),
+                (0, b"garbage".to_vec(), "22007"),
+                (0, b"12:60:00".to_vec(), "22008"),
+                (0, vec![0xff], "22021"),
+                (0, vec![0xc3, 0x28], "22021"),
+                (0, b"12:00:00\0".to_vec(), "22021"),
+            ] {
+                if in_transaction {
+                    assert!(!query(&mut socket, "BEGIN").iter().any(|m| m.0 == b'E'));
+                }
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::time",
+                    1083,
+                    input,
+                    output,
+                    Some(&payload),
+                );
+                error_in_state(&result, state, if in_transaction { b"E" } else { b"I" });
+                assert!(!result.iter().any(|m| m.0 == b'D' || m.0 == b'2'));
+                if in_transaction {
+                    assert_eq!(
+                        query(&mut socket, "ROLLBACK").last().unwrap(),
+                        &(b'Z', b"I".to_vec())
+                    );
+                }
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+        for input in [0i16, 1] {
+            // Midnight, an ordinary time and the closed daily endpoints.
+            for (text, micros) in [
+                ("00:00:00", 0i64),
+                ("12:34:56.123456", 45296123456),
+                ("23:59:59.999999", 86399999999),
+                ("24:00:00", 86400000000),
+            ] {
+                let binary = micros.to_be_bytes();
+                let payload = if input == 0 { text.as_bytes() } else { &binary };
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::time",
+                    1083,
+                    input,
+                    output,
+                    Some(payload),
+                );
+                assert_eq!(
+                    result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{result:?}"
+                );
+                assert_eq!(
+                    result[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1083u32.to_be_bytes()].concat()
+                );
+                time_precision_description(&result[2].1, 0, -1);
+                time_precision_description(&result[4].1, output, -1);
+                let expected = if output == 0 {
+                    text.as_bytes()
+                } else {
+                    &binary
+                };
+                assert_eq!(
+                    result[5].1,
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &(expected.len() as i32).to_be_bytes(),
+                        expected
+                    ]
+                    .concat()
+                );
+            }
+            let result = cycle_oid(&mut socket, "SELECT $1::time", 1083, input, output, None);
+            assert_eq!(result.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+            time_precision_description(&result[2].1, 0, -1);
+            time_precision_description(&result[4].1, output, -1);
+            assert_eq!(
+                result[5].1,
+                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+            );
+        }
+        // The declared Bind value exceeds its complete outer message body.
+        // Sync can therefore recover without guessing a TCP frame boundary.
+        for declared in [8i32, 12] {
+            let parse = [
+                b"\0SELECT $1::time\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1083u32.to_be_bytes(),
+            ]
+            .concat();
+            send(&mut socket, b'P', &parse);
+            let bind = [
+                b"\0\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &declared.to_be_bytes(),
+                &[0; 7],
+            ]
+            .concat();
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'S', &[]);
+            let result = ready(&mut socket);
+            error(&result, "08P01");
+            assert!(!result.iter().any(|m| m.0 == b'2'));
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    // Deliberately corrupt an internal cell while retaining real TIME metadata.
+    // PgTime itself has a private, validated representation; this exercises the
+    // shared native-result boundary where external cells can still be malformed.
+    use crate::conn::{CancellationToken, SessionDriver, Value};
+    let mysql = driver.open_ctx(75114, 0, 45, "", None).unwrap();
+    let mut internal = mysql
+        .execute_query(
+            "SELECT CAST('12:00:00' AS TIME)",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .remove(0);
+    assert_eq!(internal.native_types[0].code, 11);
+    internal.rows[0][0] = Value::Text("12:60:00".into());
+    for output in [0, 1] {
+        let rejected = crate::pg_result::encode_formats(&internal, "SELECT", &[output])
+            .expect_err("invalid internal minute must not normalize to 13:00");
+        assert_eq!(crate::pg_result::encoding_sqlstate(&rejected), "22008");
+    }
+    mysql.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
