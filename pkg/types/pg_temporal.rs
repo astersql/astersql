@@ -8,6 +8,8 @@ pub enum PgTemporalError {
     Syntax,
     #[error("date field out of range")]
     Range,
+    #[error("time zone displacement out of range")]
+    ZoneRange,
     #[error("date spelling is not yet supported")]
     Unsupported,
     #[error("insufficient data in date parameter")]
@@ -20,6 +22,7 @@ impl PgTemporalError {
         match self {
             Self::Syntax => "22007",
             Self::Range => "22008",
+            Self::ZoneRange => "22009",
             Self::Unsupported => "0A000",
             Self::Truncated => "08P01",
             Self::Trailing => "22P03",
@@ -283,28 +286,99 @@ impl std::str::FromStr for PgTime {
     type Err = PgTemporalError;
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let syntax = PgTemporalError::Syntax;
-        let mut fields = text.trim().split(':');
-        let mut number = || {
-            let field = fields.next().ok_or(syntax)?;
+        let number = |field: &str| -> Result<i64, PgTemporalError> {
             if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(syntax);
             }
             field.parse::<i64>().map_err(|_| PgTemporalError::Range)
         };
-        let hour = number()?;
-        let minute = number()?;
-        let seconds = fields.next().ok_or(syntax)?;
-        if fields.next().is_some() {
+        let mut text = text.trim();
+        if text.eq_ignore_ascii_case("allballs") {
+            return Self::from_micros(0);
+        }
+        // A numeric displacement is validated even though time without time
+        // zone does not retain it. Never apply it to the wall-clock fields.
+        if let Some(at) = text.find(['+', '-']).filter(|at| *at > 0) {
+            let offset = text[at + 1..].trim();
+            let (hours, minutes, seconds) = if offset.contains(':') {
+                let mut fields = offset.split(':');
+                let hours = number(fields.next().ok_or(syntax)?)?;
+                let minutes = number(fields.next().ok_or(syntax)?)?;
+                let seconds = fields.next().map(number).transpose()?.unwrap_or(0);
+                if fields.next().is_some() {
+                    return Err(syntax);
+                }
+                (hours, minutes, seconds)
+            } else {
+                if !offset.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(syntax);
+                }
+                match offset.len() {
+                    1 | 2 => (number(offset)?, 0, 0),
+                    4 => (number(&offset[..2])?, number(&offset[2..])?, 0),
+                    6 => (
+                        number(&offset[..2])?,
+                        number(&offset[2..4])?,
+                        number(&offset[4..])?,
+                    ),
+                    _ => return Err(syntax),
+                }
+            };
+            if hours > 15 || minutes > 59 || seconds > 59 {
+                return Err(PgTemporalError::ZoneRange);
+            }
+            text = text[..at].trim_end();
+        }
+        let meridian = text.get(text.len().saturating_sub(2)..).and_then(|suffix| {
+            if suffix.eq_ignore_ascii_case("am") {
+                Some(false)
+            } else if suffix.eq_ignore_ascii_case("pm") {
+                Some(true)
+            } else {
+                None
+            }
+        });
+        if meridian.is_some() {
+            text = text[..text.len() - 2].trim_end();
+        }
+        let (clock, fraction) = text.split_once('.').unwrap_or((text, ""));
+        let (mut hour, minute, second) = if clock.contains(':') {
+            let mut fields = clock.split(':');
+            let hour = number(fields.next().ok_or(syntax)?)?;
+            let minute = number(fields.next().ok_or(syntax)?)?;
+            let seconds = fields.next();
+            if fields.next().is_some() || (seconds.is_none() && text.contains('.')) {
+                return Err(syntax);
+            }
+            (hour, minute, seconds.map(number).transpose()?.unwrap_or(0))
+        } else {
+            if !clock.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(syntax);
+            }
+            match clock.len() {
+                4 if !text.contains('.') => (number(&clock[..2])?, number(&clock[2..])?, 0),
+                6 => (
+                    number(&clock[..2])?,
+                    number(&clock[2..4])?,
+                    number(&clock[4..])?,
+                ),
+                _ => return Err(syntax),
+            }
+        };
+        if !fraction.bytes().all(|b| b.is_ascii_digit()) {
             return Err(syntax);
         }
-        let (seconds, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
-        if seconds.is_empty()
-            || !seconds.bytes().all(|b| b.is_ascii_digit())
-            || !fraction.bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err(syntax);
+        if let Some(pm) = meridian {
+            if hour > 12 {
+                return Err(PgTemporalError::Range);
+            }
+            if hour == 12 {
+                hour = 0;
+            }
+            if pm {
+                hour += 12;
+            }
         }
-        let second = seconds.parse::<i64>().map_err(|_| PgTemporalError::Range)?;
         if hour > 24 || minute > 59 || second > 59 {
             return Err(PgTemporalError::Range);
         }

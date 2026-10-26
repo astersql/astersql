@@ -200,3 +200,59 @@ fn pg_temporal_time_precision_rounding() {
     );
     assert!("24:00:00.0000009".parse::<PgTime>().is_err());
 }
+
+#[test]
+fn pg_temporal_time_text_zone() {
+    use super::pg_temporal::PgTime;
+    for (text, expected) in [
+        ("04:05", "04:05:00"),
+        ("040506", "04:05:06"),
+        ("0405", "04:05:00"),
+        ("04:05 PM", "16:05:00"),
+        ("12:00 am", "00:00:00"),
+        ("12:00 PM", "12:00:00"),
+        ("ALLBALLS", "00:00:00"),
+        ("04:05:06+08:00", "04:05:06"),
+        ("04:05:06-08:00", "04:05:06"),
+        ("04:05:06+0800", "04:05:06"),
+        ("04:05:06+08", "04:05:06"),
+        ("04:05:06-15:59:59", "04:05:06"),
+        ("24:00", "24:00:00"),
+        ("040506.1234567", "04:05:06.123457"),
+    ] {
+        let time = text.parse::<PgTime>().unwrap();
+        assert_eq!(time.to_string(), expected, "{text}");
+        assert_eq!(PgTime::from_binary(&time.to_binary()).unwrap(), time);
+    }
+    for text in ["13:05 PM", "24:01", "04:60", "246000"] {
+        assert_eq!(
+            text.parse::<PgTime>(),
+            Err(PgTemporalError::Range),
+            "{text}"
+        );
+    }
+    for text in [
+        "",
+        "garbage",
+        "04:05 XM",
+        "04:05:06+xx",
+        "04050",
+        "04:05:06+08:00junk",
+    ] {
+        assert_eq!(
+            text.parse::<PgTime>(),
+            Err(PgTemporalError::Syntax),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn pg_temporal_time_numeric_zone_validation() {
+    use super::pg_temporal::PgTime;
+    for text in ["04:05:06+16:00", "04:05:06-08:60", "04:05:06+08:00:60"] {
+        let error = text.parse::<PgTime>().unwrap_err();
+        assert_eq!(error, PgTemporalError::ZoneRange);
+        assert_eq!(error.sqlstate(), "22009");
+    }
+}

@@ -1826,3 +1826,181 @@ fn pg_temporal_time_precision() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_time_text_zone() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    for zone in ["+00:00", "Pacific/Kiritimati", "America/Los_Angeles"] {
+        let changed = query(&mut socket, &format!("SET time_zone = '{zone}'"));
+        assert_eq!(
+            changed.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"CZ",
+            "{changed:?}"
+        );
+        for (text, canonical, micros) in [
+            ("04:05", "04:05:00", 14700000000i64),
+            ("040506", "04:05:06", 14706000000),
+            ("04:05 PM", "16:05:00", 57900000000),
+            ("allballs", "00:00:00", 0),
+            ("04:05:06+08:00", "04:05:06", 14706000000),
+            ("12:00 AM", "00:00:00", 0),
+            ("12:00 PM", "12:00:00", 43200000000),
+            ("24:00", "24:00:00", 86400000000),
+            ("040506.1234567", "04:05:06.123457", 14706123457),
+        ] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let binary = micros.to_be_bytes();
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    for sql in ["SELECT $1", "SELECT CAST($1 AS TIME)"] {
+                        let rows = cycle_oid(&mut socket, sql, 1083, input, output, Some(value));
+                        assert_eq!(
+                            rows.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            b"1tT2TDCCZ",
+                            "{text} {zone}: {rows:?}"
+                        );
+                        assert_eq!(
+                            rows[1].1,
+                            [1i16.to_be_bytes().as_slice(), &1083u32.to_be_bytes()].concat()
+                        );
+                        time_precision_description(&rows[2].1, 0, -1);
+                        time_precision_description(&rows[4].1, output, -1);
+                        assert_eq!(
+                            date_text_row(&rows),
+                            if output == 0 {
+                                canonical.as_bytes()
+                            } else {
+                                &binary
+                            }
+                        );
+                    }
+                }
+            }
+            let literal = query(&mut socket, &format!("SELECT CAST('{text}' AS TIME)"));
+            time_precision_description(&literal[0].1, 0, -1);
+            assert_eq!(date_text_row(&literal), canonical.as_bytes());
+        }
+    }
+    for input in [0, 1] {
+        for output in [0, 1] {
+            let rows = cycle_oid(&mut socket, "SELECT $1", 1083, input, output, None);
+            time_precision_description(&rows[2].1, 0, -1);
+            time_precision_description(&rows[4].1, output, -1);
+            assert_eq!(
+                rows[5].1,
+                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+            );
+        }
+    }
+    for (text, state) in [
+        ("", "22007"),
+        ("garbage", "22007"),
+        ("04:05 XM", "22007"),
+        ("13:05 PM", "22008"),
+        ("04:60", "22008"),
+        ("24:01", "22008"),
+        ("04:05:06+16:00", "22009"),
+        ("04:05:06+08:60", "22009"),
+        ("04:05:06+08:00junk", "22007"),
+    ] {
+        for output in [0, 1] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1",
+                    1083,
+                    0,
+                    output,
+                    Some(text.as_bytes()),
+                ),
+                state,
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    // Keep a bound value in a named portal while changing session timezone.
+    for output in [0i16, 1] {
+        query(&mut socket, "BEGIN");
+        let mut parse = b"kept\0SELECT CAST($1 AS TIME)\0".to_vec();
+        parse.extend_from_slice(&1i16.to_be_bytes());
+        parse.extend_from_slice(&1083u32.to_be_bytes());
+        send(&mut socket, b'P', &parse);
+        let value = b"04:05:06+08:00";
+        let mut bind = b"kept\0kept\0".to_vec();
+        bind.extend_from_slice(&0i16.to_be_bytes());
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&(value.len() as i32).to_be_bytes());
+        bind.extend_from_slice(value);
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&output.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(
+            ready(&mut socket).iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"12Z"
+        );
+        let changed = query(&mut socket, "SET time_zone = 'Pacific/Kiritimati'");
+        assert_eq!(changed.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+        send(&mut socket, b'D', b"Pkept\0");
+        send(&mut socket, b'E', b"kept\0\0\0\0\0");
+        send(&mut socket, b'E', b"kept\0\0\0\0\0");
+        send(&mut socket, b'S', &[]);
+        let rows = ready(&mut socket);
+        assert_eq!(
+            rows.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCCZ",
+            "{rows:?}"
+        );
+        time_precision_description(&rows[0].1, output, -1);
+        assert_eq!(
+            date_text_row(&rows),
+            if output == 0 {
+                b"04:05:06".to_vec()
+            } else {
+                14706000000i64.to_be_bytes().to_vec()
+            }
+        );
+        query(&mut socket, "ROLLBACK");
+        send(&mut socket, b'C', b"Skept\0");
+        send(&mut socket, b'S', &[]);
+        ready(&mut socket);
+    }
+    error(
+        &cycle_oid(
+            &mut socket,
+            "SELECT $1",
+            1266,
+            0,
+            0,
+            Some(b"04:05:06+08:00"),
+        ),
+        "0A000",
+    );
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
