@@ -7482,3 +7482,56 @@ fn pg_temporal_iv_bridge() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_iv_typmod_overflow_at_bind() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for micros in [i64::MIN, i64::MAX] {
+        let binary =
+            astersql_types::pg_temporal::PgInterval::from_components(0, 0, micros).to_binary();
+        let text = format!("{micros} microseconds");
+        for input in [0, 1] {
+            for output in [0, 1] {
+                for sql in ["SELECT $1::interval(0)", "SELECT CAST(($1) AS interval(0))"] {
+                    let result = cycle_oid(
+                        &mut socket,
+                        sql,
+                        1186,
+                        input,
+                        output,
+                        Some(if input == 0 { text.as_bytes() } else { &binary }),
+                    );
+                    error_in_state(&result, "22008", b"I");
+                    assert!(!result.iter().any(|m| matches!(m.0, b'2' | b'D' | b'C')));
+                    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+                }
+            }
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

@@ -1002,9 +1002,7 @@ impl PgInterval {
                 "microsecond" => "microsecond",
                 _ => return Err(PgTemporalError::Syntax),
             };
-            if !seen.insert(category) {
-                return Err(PgTemporalError::Syntax);
-            }
+            let duplicate = !seen.insert(category);
             match category {
                 "year" => {
                     // PG decodes years separately from months, checking each
@@ -1061,6 +1059,11 @@ impl PgInterval {
             i32::try_from(months).map_err(|_| overflow())?;
             i32::try_from(days).map_err(|_| overflow())?;
             i64::try_from(micros).map_err(|_| overflow())?;
+            // PG checks field accumulation before rejecting a repeated unit:
+            // an overflowing duplicate is 22015, an in-range duplicate 22007.
+            if duplicate {
+                return Err(PgTemporalError::Syntax);
+            }
         }
         if seen.is_empty() {
             return Err(PgTemporalError::Syntax);

@@ -5373,3 +5373,292 @@ fn pg_temporal_tz_diff() {
     assert_eq!(summary["cleanup"]["reference"], true);
     assert_eq!(summary["cleanup"]["aster"], true);
 }
+
+#[test]
+fn pg_temporal_iv_diff() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN is required (no skip)"
+    );
+    let run = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-iv-evidence")
+        .join(&run);
+    std::fs::create_dir_all(&evidence).unwrap();
+    println!("PG_IV_EVIDENCE_DIR={}", evidence.display());
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg_iv_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup_guard = Cleanup(|| {
+        server.close();
+        let record = serde_json::json!({"database_dropped": native.execute(&format!("DROP DATABASE {database}")).is_ok(),
+            "postgres_port_closed": TcpStream::connect(address).is_err(), "mysql_port_closed": TcpStream::connect(mysql_address).is_err()});
+        let _ = std::fs::write(evidence.join("rust-cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(&mut mysql, &format!("USE {database}"));
+    mysql_query(&mut mysql, "SET SESSION sql_mode = ''");
+    mysql_query(&mut mysql, "SET time_zone = 'UTC'");
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE ts_isolation (id INT PRIMARY KEY, d DATETIME(6), t TIMESTAMP(6))",
+    );
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO ts_isolation VALUES (1, '2024-03-10 02:30:00', '2024-03-10 02:30:00'), (2, '0000-00-00 00:00:00', '0000-00-00 00:00:00')",
+    );
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE iv_isolation (id INT PRIMARY KEY, t TIME(6))",
+    );
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO iv_isolation VALUES (1, '-51:00:00.000001'), (2, '838:59:59'), (3, NULL)",
+    );
+    // Retain raw MySQL column definitions, including type and decimals (Fsp),
+    // and row payloads. Repeated writes prove the same connection stays usable.
+    let checkpoint = |mysql: &mut TcpStream, phase: &str| {
+        use astersql_types::pg_temporal::PgInterval;
+        use astersql_types::time::{ParseDuration, StrictContext};
+        let times = mysql_query(mysql, "SELECT t FROM iv_isolation ORDER BY id");
+        assert_eq!(
+            times,
+            vec![
+                vec![Some(b"-51:00:00.000001".to_vec())],
+                vec![Some(b"838:59:59.000000".to_vec())],
+                vec![None]
+            ]
+        );
+        let mut time_request = vec![3];
+        time_request.extend_from_slice(b"SELECT t FROM iv_isolation ORDER BY id");
+        mysql_packet(mysql, 0, &time_request);
+        assert_eq!(mysql_read(mysql), vec![1]);
+        let time_column = mysql_read(mysql);
+        let mut at = 0;
+        for _ in 0..6 {
+            at += 1 + usize::from(time_column[at]);
+        }
+        assert_eq!((time_column[at + 7], time_column[at + 10]), (11, 6));
+        assert_eq!(mysql_read(mysql)[0], 0xfe);
+        let time_rows = [mysql_read(mysql), mysql_read(mysql), mysql_read(mysql)];
+        assert_eq!(mysql_read(mysql)[0], 0xfe);
+        for (row, micros) in
+            times
+                .iter()
+                .zip([Some(-183_600_000_001), Some(3_020_399_000_000), None])
+        {
+            let bridged = row[0].as_ref().map(|raw| {
+                let source = std::str::from_utf8(raw).unwrap();
+                let native = ParseDuration(&StrictContext, source, 6).unwrap().0;
+                let pg = PgInterval::from_mysql_duration(native).unwrap();
+                assert_eq!(pg.components(), (0, 0, micros.unwrap()));
+                assert_eq!(pg.to_mysql_duration(6).unwrap(), native);
+                pg.to_binary().to_vec()
+            });
+            assert_eq!(bridged.is_some(), micros.is_some());
+        }
+        mysql_query(mysql, "UPDATE iv_isolation SET id=4 WHERE id=3");
+        mysql_query(mysql, "UPDATE iv_isolation SET id=3 WHERE id=4");
+        mysql_query(mysql, "UPDATE ts_isolation SET id=4 WHERE id=2");
+        mysql_query(mysql, "UPDATE ts_isolation SET id=2 WHERE id=4");
+        assert_eq!(
+            mysql_query(mysql, "SELECT @@sql_mode"),
+            vec![vec![Some(b"".to_vec())]]
+        );
+        for zone in ["UTC", "Asia/Shanghai", "America/New_York"] {
+            mysql_query(mysql, &format!("SET time_zone = '{zone}'"));
+            let values = mysql_query(mysql, "SELECT d, t FROM ts_isolation WHERE id=1");
+            assert_eq!(
+                values,
+                vec![vec![Some(b"2024-03-10 02:30:00.000000".to_vec()); 2]]
+            );
+        }
+        mysql_query(mysql, "SET time_zone = 'UTC'");
+        let sql = "SELECT d, t FROM ts_isolation ORDER BY id";
+        let mut request = vec![3];
+        request.extend_from_slice(sql.as_bytes());
+        mysql_packet(mysql, 0, &request);
+        assert_eq!(mysql_read(mysql), vec![2]);
+        let columns = [mysql_read(mysql), mysql_read(mysql)];
+        let mut types = Vec::new();
+        for column in &columns {
+            let mut at = 0;
+            for _ in 0..6 {
+                let n = usize::from(column[at]);
+                assert!(n < 251);
+                at += n + 1;
+            }
+            assert_eq!(column[at], 12);
+            types.push((column[at + 7], column[at + 10]));
+        }
+        assert_eq!(types, vec![(12, 6), (7, 6)]);
+        assert_eq!(mysql_read(mysql)[0], 0xfe);
+        let mut rows = Vec::new();
+        loop {
+            let row = mysql_read(mysql);
+            if row[0] == 0xfe && row.len() < 9 {
+                break;
+            }
+            assert_ne!(row[0], 0xff);
+            rows.push(row);
+        }
+        assert_eq!(
+            rows,
+            vec![
+                [
+                    b"\x1a2024-03-10 02:30:00.000000".as_slice(),
+                    b"\x1a2024-03-10 02:30:00.000000"
+                ]
+                .concat(),
+                [
+                    b"\x1a0000-00-00 00:00:00.000000".as_slice(),
+                    b"\x1a0000-00-00 00:00:00.000000"
+                ]
+                .concat(),
+            ]
+        );
+        let record = serde_json::json!({"phase":phase, "sql_mode":"", "columns":columns, "rows":rows, "types_fsp":types, "interval_bridge_native_rows":times, "interval_bridge_column":time_column, "interval_bridge_raw_rows":time_rows});
+        std::fs::write(
+            evidence.join(format!("mysql-{phase}.json")),
+            record.to_string(),
+        )
+        .unwrap();
+        (columns, rows)
+    };
+    let baseline = checkpoint(&mut mysql, "before");
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_core_libpq.py"
+            ))
+            .args([
+                address.port().to_string(),
+                database.clone(),
+                "interval-differential".into(),
+            ])
+            .env("PG_IV_EVIDENCE_DIR", &evidence)
+            .env("PG_IV_RUST_BINARY", std::env::current_exe().unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let mut middle = false;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG_IV_MID" {
+            assert_eq!(checkpoint(&mut mysql, "during"), baseline);
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    std::fs::write(
+        evidence.join("child-exit.json"),
+        serde_json::json!({"success":status.success(),"code":status.code()}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(checkpoint(&mut mysql, "after"), baseline);
+    if status.success() {
+        use astersql_types::pg_temporal::PgInterval;
+        let observed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("aster.json")).unwrap())
+                .unwrap();
+        for (index, expected) in [
+            (0, None),
+            (2, None),
+            (11, Some("-51:00:00.000000")),
+            (12, None),
+            (13, Some("-51:00:00.000001")),
+        ] {
+            let hex = observed[format!("value-{index}-1-1")]["rows"][0][0]
+                .as_str()
+                .unwrap();
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+                .collect();
+            let pg = PgInterval::from_binary(&bytes).unwrap();
+            if let Some(expected) = expected {
+                let native = pg.to_mysql_duration(6).unwrap();
+                assert_eq!(
+                    mysql_query(
+                        &mut mysql,
+                        &format!("SELECT CAST('{}' AS TIME(6))", native.String())
+                    ),
+                    vec![vec![Some(expected.as_bytes().to_vec())]]
+                );
+            } else {
+                assert_eq!(pg.to_mysql_duration(6).unwrap_err().sqlstate(), "0A000");
+                assert_eq!(
+                    mysql_query(&mut mysql, "SELECT 1"),
+                    vec![vec![Some(b"1".to_vec())]]
+                );
+            }
+        }
+    }
+    mysql_packet(&mut mysql, 0, &[1]);
+    drop(cleanup_guard);
+    let cleanup: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("rust-cleanup.json")).unwrap())
+            .unwrap();
+    for key in [
+        "database_dropped",
+        "postgres_port_closed",
+        "mysql_port_closed",
+    ] {
+        assert_eq!(cleanup[key], true);
+    }
+    assert!(status.success(), "interval differential client failed");
+    assert!(middle, "missing MySQL middle checkpoint");
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+            .unwrap();
+    assert_eq!(summary["passed"], true);
+    assert_eq!(summary["negative_controls"], 3);
+    assert_eq!(summary["capabilities"].as_array().unwrap().len(), 7);
+    assert_eq!(summary["cases"], 608);
+    assert_eq!(summary["cleanup"]["reference"], true);
+    assert_eq!(summary["cleanup"]["aster"], true);
+}

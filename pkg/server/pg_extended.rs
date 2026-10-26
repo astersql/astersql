@@ -209,6 +209,58 @@ pub(crate) fn indexed_parameter_contract(sql: &str) -> Result<Vec<(usize, usize,
         .collect())
 }
 
+/// Typmods on direct interval parameter projections are constant at Bind.
+/// Collect from the real AST; column metadata cannot identify which parameter
+/// a projection consumes, and conditional expressions must stay lazy.
+fn interval_parameter_modifiers(sql: &str) -> Result<Vec<(usize, isize, isize)>> {
+    use astersql_parser_ast::{ExprKind, ExprNode, Node, SelectStmt, SqlDialect, Visitor};
+    #[derive(Default)]
+    struct Modifiers(Vec<(usize, isize, isize)>);
+    impl Visitor for Modifiers {
+        fn enter(&mut self, node: &dyn Node) -> bool {
+            if let Some(select) = node.as_any().downcast_ref::<SelectStmt>() {
+                for field in &select.Fields.Fields {
+                    let Some(mut expression) = field.Expr.as_ref() else {
+                        continue;
+                    };
+                    while let ExprKind::Parentheses(inner) = &expression.Kind {
+                        expression = inner;
+                    }
+                    if let ExprKind::Cast { Expr, Tp, .. } = &expression.Kind
+                        && Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                        && (Tp.GetFlen() != -1 || Tp.GetDecimal() != -1)
+                    {
+                        let mut source: &ExprNode = Expr;
+                        while let ExprKind::Parentheses(inner) = &source.Kind {
+                            source = inner;
+                        }
+                        if let Some(index) = source.PostgreSQLParameterIndex()
+                            && matches!(source.Kind, ExprKind::ParamMarker { .. })
+                        {
+                            self.0
+                                .push((usize::from(index) - 1, Tp.GetFlen(), Tp.GetDecimal()));
+                        }
+                    }
+                }
+                // Do not eagerly inspect subqueries in conditional projections.
+                return true;
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn Node) -> bool {
+            true
+        }
+    }
+    let (statements, _) = astersql_parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .map_err(|_| error("42601", "invalid interval parameter source"))?;
+    let mut visitor = Modifiers::default();
+    for statement in statements {
+        statement.accept(&mut visitor);
+    }
+    Ok(visitor.0)
+}
+
 fn question_mark_positions(sql: &str) -> Result<Vec<usize>> {
     let bytes = sql.as_bytes();
     let mut positions = Vec::new();
@@ -600,6 +652,7 @@ struct Statement {
     session_query: Option<crate::pg_session::SessionQuery>,
     metadata: PreparedMetadata,
     oids: Vec<u32>,
+    interval_modifiers: Vec<(usize, isize, isize)>,
     mapping: Vec<usize>,
     command: Option<&'static str>,
     returning: bool,
@@ -940,7 +993,13 @@ impl Extended {
             }
             return Err(error("42P18", "could not determine data type of parameter"));
         }
+        let interval_modifiers = if catalog.is_none() && oids.contains(&1186) {
+            interval_parameter_modifiers(&original_sql)?
+        } else {
+            Vec::new()
+        };
         Ok(Statement {
+            interval_modifiers,
             original_sql,
             path,
             session_query,
@@ -1181,6 +1240,20 @@ impl Extended {
                                 parameter(*oid, value)?
                             }
                         });
+                    }
+                }
+                for &(index, fields, precision) in &statement.interval_modifiers {
+                    if statement.oids.get(index) == Some(&1186)
+                        && let Some(argument) = args.get(index).filter(|arg| !arg.is_null)
+                    {
+                        // The parameter codec already validated text/binary and
+                        // froze IntervalStyle. Validate its cast before BindComplete;
+                        // Execute still consumes the original value and the same cast.
+                        std::str::from_utf8(&argument.value)
+                            .map_err(|_| error("22021", "invalid interval parameter"))?
+                            .parse::<astersql_types::pg_temporal::PgInterval>()
+                            .and_then(|value| value.apply_typmod(fields, precision))
+                            .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
                     }
                 }
                 let description = description_formats(

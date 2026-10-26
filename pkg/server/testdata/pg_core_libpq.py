@@ -1790,6 +1790,410 @@ def timestamptz_differential(aster_dsn):
     print('timestamptz differential:',json.dumps(summary),flush=True)
 
 
+def interval_differential(aster_dsn):
+    """IV-DIFF: independent libpq observations plus explicit-length wire probes."""
+    import copy
+    import json
+    import socket
+    import struct
+    import subprocess
+    import hashlib
+    from pathlib import Path
+
+    repository = Path(__file__).resolve().parents[3]
+    reference = os.environ.get('PG18_REFERENCE_DSN')
+    assert reference, 'PG18_REFERENCE_DSN is required (no skip)'
+    evidence = Path(os.environ['PG_IV_EVIDENCE_DIR'])
+    evidence.mkdir(parents=True, exist_ok=True)
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    fmt = api('PQfformat', integer, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    length = api('PQgetlength', integer, ptr, integer, integer)
+    raw_value = api('PQgetvalue', ptr, ptr, integer, integer)
+    pq_socket = api('PQsocket', integer, ptr)
+    notice_api = api('PQsetNoticeReceiver', ptr, ptr, ptr, ptr)
+    notices = []
+    @c.CFUNCTYPE(None, ptr, ptr)
+    def on_notice(arg, result):
+        notices.append((ef(result, ord('C')) or b'').decode())
+
+    def observe(result):
+        assert result, 'libpq returned no result'
+        try:
+            return dict(status=result_status(result), state=(ef(result, ord('C')) or b'').decode(),
+                        metadata=[[field_type(result, i), size(result, i), mod(result, i), fmt(result, i)]
+                                  for i in range(columns(result))],
+                        parameters=[pt(result, i) for i in range(np(result))],
+                        rows=[[None if is_null(result, r, i) else
+                               c.string_at(raw_value(result, r, i), length(result, r, i)).hex()
+                               for i in range(columns(result))] for r in range(rows(result))],
+                        warnings=list(notices))
+        finally:
+            notices.clear()
+            clear(result)
+
+    def scalar(obs):
+        assert obs['status'] == 2 and len(obs['rows']) == 1, obs
+        return bytes.fromhex(obs['rows'][0][0]).decode()
+
+    class Wire:
+        # Startup and authentication are real libpq; duplicate only its idle socket.
+        # No libpq operations run while these raw message probes own the connection.
+        def __init__(self, dsn):
+            self.conn = connect(dsn.encode())
+            assert self.conn and status(self.conn) == 0, 'wire connection failed'
+            self.raw = socket.socket(fileno=os.dup(pq_socket(self.conn)))
+            self.blocking = os.get_blocking(pq_socket(self.conn))
+            self.raw.settimeout(10)
+            self.diagnostics = []
+        def close(self):
+            self.raw.close()
+            os.set_blocking(pq_socket(self.conn), self.blocking)
+            finish(self.conn)
+        def send(self, tag, body):
+            self.raw.sendall(tag + struct.pack('!I', len(body) + 4) + body)
+        def exact(self, n):
+            data = b''
+            while len(data) < n:
+                part = self.raw.recv(n-len(data))
+                assert part, 'unexpected EOF'
+                data += part
+            return data
+        def ready(self):
+            obs = dict(tags='', descriptions=[], parameters=[], rows=[], errors=[], warnings=[], ready='')
+            while True:
+                tag = self.exact(1).decode()
+                n = struct.unpack('!I', self.exact(4))[0]
+                assert 4 <= n < 1 << 20
+                body = self.exact(n-4)
+                # ParameterStatus and NoticeResponse are async, not phase delimiters.
+                if tag not in ('S', 'N'):
+                    obs['tags'] += tag
+                if tag == 'T':
+                    count = struct.unpack('!H', body[:2])[0]
+                    at, fields = 2, []
+                    for _ in range(count):
+                        at = body.index(b'\0', at) + 1
+                        _, _, oid, width, typmod, output = struct.unpack('!IhIhih', body[at:at+18])
+                        at += 18
+                        fields.append([oid, width, typmod, output])
+                    obs['descriptions'].append(fields)
+                elif tag == 't':
+                    count = struct.unpack('!H', body[:2])[0]
+                    obs['parameters'] = list(struct.unpack('!'+'I'*count, body[2:]))
+                elif tag == 'D':
+                    count = struct.unpack('!H', body[:2])[0]
+                    at, cells = 2, []
+                    for _ in range(count):
+                        size_ = struct.unpack('!i', body[at:at+4])[0]
+                        at += 4
+                        assert size_ >= -1
+                        cells.append(dict(length=size_, hex=None if size_ == -1 else body[at:at+size_].hex()))
+                        if size_ >= 0:
+                            at += size_
+                    assert at == len(body)
+                    obs['rows'].append(cells)
+                elif tag in ('E', 'N'):
+                    fields = {chr(f[0]): f[1:].decode(errors='replace') for f in body.split(b'\0') if f}
+                    self.diagnostics.append(fields)
+                    obs['errors' if tag == 'E' else 'warnings'].append(fields['C'])
+                elif tag == 'Z':
+                    obs['ready'] = body.decode()
+                    return obs
+        def query(self, sql):
+            self.send(b'Q', sql.encode()+b'\0')
+            return self.ready()
+        def parse(self, sql, name=b'', parameter=True):
+            self.send(b'P', name+b'\0'+sql.encode()+b'\0'+
+                      (struct.pack('!HI',1,1186) if parameter else struct.pack('!H',0)))
+        def bind(self, payload, input_, output, statement=b'', portal=b'', declared=None, parameter=True):
+            val = struct.pack('!i', -1 if payload is None else len(payload) if declared is None else declared)
+            values = struct.pack('!hhh',1,input_,1)+val+(payload or b'') if parameter else struct.pack('!hh',0,0)
+            self.send(b'B',portal+b'\0'+statement+b'\0'+values+struct.pack('!hh',1,output))
+        def execute(self, portal=b''):
+            self.send(b'E', portal+b'\0'+struct.pack('!I', 0))
+        def sync(self):
+            self.send(b'S', b'')
+            return self.ready()
+        def cycle(self, sql, payload, input_, output, declared=None, parameter=True):
+            self.parse(sql, parameter=parameter)
+            self.send(b'D', b'S\0')
+            self.bind(payload, input_, output, declared=declared, parameter=parameter)
+            self.send(b'D', b'P\0')
+            self.execute()
+            self.execute()
+            return self.sync()
+
+    canonical_values={}
+    observations, cleanup, identity = {}, {}, {}
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn) == 0, side+' connection failed'
+        notice_api(conn, c.cast(on_notice, ptr), None)
+        collected, wire = {}, None
+        def keep(case, result):
+            assert case not in collected, case
+            collected[case] = result
+            return result
+        def q(case, sql):
+            return keep(case, observe(execute(conn, sql.encode())))
+        def ok(obs):
+            assert obs['status'] in (1, 2) and not obs['warnings'], (side, obs)
+            return obs
+        def zone_sql(zone):
+            # The preceding temporal tasks expose the native time_zone setting.
+            # Use that real session interface until full PG GUC spelling lands.
+            return f"SET TimeZone TO '{zone}'" if side == 'reference' else f"SET time_zone = '{zone}'"
+        try:
+            if side == 'reference':
+                identity['server'] = observe(execute(conn, b"SELECT version(), current_setting('server_version_num')"))
+                assert 180000 <= int(bytes.fromhex(identity['server']['rows'][0][1]).decode()) < 190000
+                identity['libpq_version'] = version()
+                identity['source_head'] = subprocess.check_output(['git','rev-parse','HEAD'], text=True,cwd=repository).strip()
+                identity['source_diff_sha256'] = hashlib.sha256(subprocess.check_output(['git','diff','HEAD','--','pkg/server','pkg/types','pkg/session','pkg/parser'],cwd=repository)).hexdigest()
+                identity['rust_test_binary'] = os.environ['PG_IV_RUST_BINARY']
+                identity['rust_test_binary_sha256'] = hashlib.sha256(Path(identity['rust_test_binary']).read_bytes()).hexdigest()
+                identity['cargo_lock_sha256'] = hashlib.sha256((repository/'Cargo.lock').read_bytes()).hexdigest()
+                identity['fixture_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                # Installed server builds do not always expose a tzdb release label.
+                # Optional fingerprints identify its actual compiled zone data.
+                tzdir = os.environ.get('PG_IV_REFERENCE_TZDIR')
+                identity['reference_tzdata'] = ({zone: hashlib.sha256((Path(tzdir)/zone).read_bytes()).hexdigest()
+                    for zone in ['UTC','Asia/Shanghai','America/New_York','Etc/GMT+12','Etc/GMT-14']}
+                    if tzdir else 'compiled tzdata directory not provided')
+                identity['source_status'] = subprocess.check_output(['git','status','--short'], text=True,cwd=repository)
+                tz = Path('/usr/share/zoneinfo/tzdata.zi')
+                version_file = Path('/usr/share/zoneinfo/+VERSION')
+                identity['tzdata'] = tz.read_text().splitlines()[0] if tz.exists() else version_file.read_text().strip() if version_file.exists() else 'system tzdata version unavailable'
+                tz_binary = Path('/usr/share/zoneinfo/UTC')
+                identity['tzdata_utc_sha256'] = hashlib.sha256(tz_binary.read_bytes()).hexdigest()
+            for setting in ["SET DateStyle TO 'ISO, MDY'", zone_sql("UTC")]:
+                setup = observe(execute(conn, setting.encode()))
+                assert setup['status'] in (1,2), (side, setting, setup)
+            identity[side] = {setting: scalar(ok(observe(execute(conn, sql.encode()))))
+                              for setting, sql in [('DateStyle','SHOW DateStyle'),
+                                  ('TimeZone','SHOW TimeZone' if side == 'reference' else 'SELECT @@time_zone')]}
+            identity[side]['IntervalStyle'] = observe(execute(conn,b'SHOW IntervalStyle'))
+            ok(observe(execute(conn,b"SET IntervalStyle TO 'postgres'")))
+            statement=b'interval_value'
+            ok(keep('prepare',observe(prepare(conn,statement,b'SELECT $1::interval AS d',1,(c.c_uint*1)(1186)))))
+            desc=keep('describe',observe(describe(conn,statement)))
+            assert desc['parameters']==[1186] and desc['metadata']==[[1186,16,-1,0]],(side,desc)
+            wire=Wire(dsn)
+            assert not wire.query("SET IntervalStyle TO 'postgres'")['errors']
+            # Tuple order below is months, days, microseconds; wire is qii.
+            def binary(parts):
+                m,d,t=parts
+                return struct.pack('!qii',t,d,m)
+            fixtures=[('1 month',(1,0,0)),('30 days',(0,30,0)),('1 day',(0,1,0)),
+                ('24 hours',(0,0,86400000000)),('1.5 months',(1,15,0)),
+                ('-1 month +2 days -03:04:05.123456',(-1,2,-11045123456)),
+                ('-1 month -2 days -03:04:05.123456',(-1,-2,-11045123456)),
+                ('0',(0,0,0)),('PT1H2M3.123456S',(0,0,3723123456)),
+                ('infinity',(2147483647,2147483647,9223372036854775807)),
+                ('-infinity',(-2147483648,-2147483648,-9223372036854775808)),
+                ('-51 hours',(0,0,-183600000000)),('839 hours',(0,0,3020400000000)),('-51:00:00.000001',(0,0,-183600000001))]
+            # Reference canonical text is independently read, while binary expectations
+            # are specified here, so paired mistakes cannot pass by display equality.
+            for idx,(spelling,parts) in enumerate(fixtures+[(None,None)]):
+                expected_binary=None if parts is None else binary(parts)
+                if side=='reference':
+                    canonical=observe(prepared(conn,statement,1,(text*1)(None if spelling is None else spelling.encode()),None,None,0))
+                    canonical_values[idx]=None if parts is None else bytes.fromhex(canonical['rows'][0][0])
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload=None if parts is None else spelling.encode() if input_==0 else expected_binary
+                        obs=keep(f'value-{idx}-{input_}-{output}',observe(prepared(conn,statement,1,(text*1)(payload),
+                            (integer*1)(0 if payload is None else len(payload)),(integer*1)(input_),output)))
+                        expected=canonical_values[idx] if output==0 else expected_binary
+                        assert obs['status']==2 and not obs['warnings'] and obs['metadata']==[[1186,16,-1,output]],(side,idx,obs)
+                        assert obs['rows']==[[None if expected is None else expected.hex()]],(side,idx,obs,expected)
+                        w=keep(f'wire-{idx}-{input_}-{output}',wire.cycle('SELECT $1::interval AS d',payload,input_,output))
+                        assert w['tags']=='1tT2TDCCZ' and w['parameters']==[1186],(side,w)
+                        assert w['descriptions']==[[[1186,16,-1,0]],[[1186,16,-1,output]]],(side,w)
+                        assert w['rows']==[[dict(length=-1 if expected is None else len(expected),hex=None if expected is None else expected.hex())]],(side,w)
+            # Independent component extrema include mixed finite values beside sentinels.
+            for idx,parts in enumerate([(2147483647,0,0),(-2147483648,0,0),(0,2147483647,0),
+                    (0,-2147483648,0),(0,0,9223372036854775807),(0,0,-9223372036854775808),
+                    (2147483647,-2147483648,9223372036854775806),(-2147483648,2147483647,-9223372036854775807)]):
+                payload=binary(parts)
+                for output in (0,1):
+                    obs=keep(f'extreme-{idx}-{output}',observe(prepared(conn,statement,1,(text*1)(payload),(integer*1)(16),(integer*1)(1),output)))
+                    assert obs['status']==2 and obs['metadata']==[[1186,16,-1,output]],(side,obs)
+                    if output: assert obs['rows']==[[payload.hex()]],(side,obs)
+                    else:
+                        # Feed displayed finite text back, proving dimensions survive text.
+                        back=observe(prepared(conn,statement,1,(text*1)(bytes.fromhex(obs['rows'][0][0])),None,None,1))
+                        if parts[2]==-9223372036854775808 and side=='reference':
+                            assert back['state']=='22007',back
+                            identity['reference_min_time_text_readback']=back
+                        else: assert back['rows']==[[payload.hex()]],(side,idx,back)
+            for idx,parts in enumerate([(2147483647,0,0),(-2147483648,0,0),(0,2147483647,0),
+                    (0,-2147483648,0),(0,0,9223372036854775807),(0,0,-9223372036854775808),
+                    (2147483647,-2147483648,9223372036854775806),(-2147483648,2147483647,-9223372036854775807)]):
+                source=f'{parts[0]} months {parts[1]} days {parts[2]} microseconds'.encode()
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload=source if input_==0 else binary(parts)
+                        obs=keep(f'extreme-four-{idx}-{input_}-{output}',observe(prepared(conn,statement,1,(text*1)(payload),
+                            (integer*1)(len(payload)),(integer*1)(input_),output)))
+                        assert obs['status']==2 and obs['metadata']==[[1186,16,-1,output]],(side,idx,obs)
+                        if output: assert obs['rows']==[[binary(parts).hex()]],(side,obs)
+            for style in ['postgres','postgres_verbose','sql_standard','iso_8601']:
+                ok(observe(execute(conn,f"SET IntervalStyle TO '{style}'".encode())))
+                for idx,(source,parts) in enumerate(fixtures):
+                    payload=binary(parts)
+                    canonical=observe(prepared(conn,statement,1,(text*1)(payload),(integer*1)(16),(integer*1)(1),0))
+                    # Read each server's own text output back to its original components.
+                    displayed=bytes.fromhex(canonical['rows'][0][0])
+                    for input_ in (0,1):
+                        for output in (0,1):
+                            value=displayed if input_==0 else payload
+                            obs=keep(f'style-{style}-{idx}-{input_}-{output}',observe(prepared(conn,statement,1,(text*1)(value),
+                                (integer*1)(len(value)),(integer*1)(input_),output)))
+                            assert obs['status']==2 and obs['rows']==[[(displayed if output==0 else payload).hex()]],(side,style,obs)
+                for input_ in (0,1):
+                    for output in (0,1):
+                        obs=keep(f'style-null-{style}-{input_}-{output}',observe(prepared(conn,statement,1,
+                            (text*1)(None),None,(integer*1)(input_),output)))
+                        assert obs['status']==2 and obs['metadata']==[[1186,16,-1,output]] and obs['rows']==[[None]],(side,obs)
+                short=keep('short-sign-'+style,observe(prepared(conn,statement,1,(text*1)(b'-1 2:03:04'),None,None,1)))
+                assert short['rows']==[[binary((0,-1,-7384000000 if style=='sql_standard' else 7384000000)).hex()]],(side,short)
+            ok(observe(execute(conn,b"SET IntervalStyle TO 'postgres'")))
+            for idx,(type_,source,parts,result,typmod) in enumerate([
+                ('interval(3)','1.2345 seconds',(0,0,1234500),(0,0,1235000),2147418115),
+                ('interval(3)','-1.2345 seconds',(0,0,-1234500),(0,0,-1235000),2147418115),
+                ('interval(0)','0.5 seconds',(0,0,500000),(0,0,1000000),2147418112),
+                ('interval(0)','-0.5 seconds',(0,0,-500000),(0,0,-1000000),2147418112),
+                ('interval(6)','1.1234567 seconds',(0,0,1123457),(0,0,1123457),2147418118),
+                ('interval(6)','59.9999997 seconds',(0,0,60000000),(0,0,60000000),2147418118),
+                ('interval hour to minute','1 day 2:03:04',(0,1,7384000000),(0,1,7380000000),201392127),
+                ('interval year','1 year 2 months',(14,0,0),(12,0,0),327679)]):
+                stmt=f'precision{idx}'.encode()
+                ok(observe(prepare(conn,stmt,f'SELECT $1::{type_} AS d'.encode(),1,(c.c_uint*1)(1186))))
+                desc=keep(f'precision-desc-{idx}',observe(describe(conn,stmt)))
+                assert desc['parameters']==[1186] and desc['metadata']==[[1186,16,typmod,0]],(side,desc)
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload=source.encode() if input_==0 else binary(parts)
+                        obs=keep(f'precision-{idx}-{input_}-{output}',observe(prepared(conn,stmt,1,(text*1)(payload),
+                            (integer*1)(len(payload)),(integer*1)(input_),output)))
+                        assert obs['status']==2 and obs['metadata']==[[1186,16,typmod,output]],(side,obs)
+                        if output: assert obs['rows']==[[binary(result).hex()]],(side,obs)
+            warning=q('precision-warning',"SELECT CAST('1.123456 seconds' AS interval(7))")
+            assert warning['warnings']==['22023'] and warning['metadata']==[[1186,16,2147418118,0]],(side,warning)
+            negative=observe(execute(conn,b'SELECT NULL::interval(-1)'))
+            assert negative['state']==('42601' if side=='reference' else '22023'),(side,negative)
+            identity[side]['negative_precision_contract_difference']=negative
+            for typmod,type_ in [(-1,'interval'),(2147418112,'interval(0)'),(2147418115,'interval(3)'),(2147418118,'interval(6)')]:
+                for name,sql in [('typed',f'SELECT $1::{type_} AS d'),('null',f'SELECT NULL::{type_} AS d'),
+                    ('first-null',f"SELECT NULL::{type_} AS d UNION ALL SELECT CAST('0' AS {type_}) AS d"),
+                    ('all-null',f'SELECT NULL::{type_} AS d UNION ALL SELECT NULL::{type_} AS d'),
+                    ('zero-rows',f'SELECT $1::{type_} AS d WHERE FALSE')]:
+                    for input_ in (0,1):
+                        for output in (0,1):
+                            obs=keep(f'null-{typmod}-{name}-{input_}-{output}',wire.cycle(sql,None,input_,output,parameter=name in ('typed','zero-rows')))
+                            assert not obs['errors'] and obs['descriptions']==[[[1186,16,typmod,0]],[[1186,16,typmod,output]]],(side,obs)
+                            expected=[] if name=='zero-rows' else [[dict(length=-1,hex=None)]]
+                            if name=='first-null':
+                                zero=b'00:00:00' if output==0 else b'\0'*16
+                                expected.append([dict(length=len(zero),hex=zero.hex())])
+                            elif name=='all-null':expected.append([dict(length=-1,hex=None)])
+                            assert obs['rows']==expected,(side,obs)
+            wire.parse('SELECT $1::interval AS d',b'switch')
+            assert wire.sync()['tags']=='1Z'
+            for output in (0,1,0):
+                wire.bind(b'0',0,output,statement=b'switch');wire.send(b'D',b'P\0');wire.execute()
+                obs=keep(f'switch-{len(collected)}',wire.sync())
+                assert obs['descriptions']==[[[1186,16,-1,output]]] and len(obs['rows'])==1,(side,obs)
+            # IntervalStyle changes the meaning of unsigned fields after a minus.
+            # Parse freezes literals; Bind freezes text parameters, independent of
+            # the later style used by Execute. Named portals live in one transaction.
+            assert wire.query('BEGIN')['ready']=='T'
+            assert not wire.query("SET IntervalStyle TO 'postgres'")['errors']
+            wire.parse("SELECT CAST('-1 2:03:04' AS interval)",b'frozen',parameter=False)
+            assert not wire.sync()['errors']
+            wire.bind(None,0,1,statement=b'frozen',portal=b'literal',parameter=False)
+            wire.parse('SELECT $1::interval',b'bound')
+            assert not wire.sync()['errors']
+            wire.bind(b'-1 2:03:04',0,1,statement=b'bound',portal=b'boundp')
+            assert not wire.sync()['errors']
+            assert not wire.query("SET IntervalStyle TO 'sql_standard'")['errors']
+            for portal in (b'literal',b'boundp'):
+                wire.execute(portal)
+                obs=keep('frozen-'+portal.decode(),wire.sync())
+                assert obs['rows']==[[dict(length=16,hex=binary((0,-1,7384000000)).hex())]],(side,obs)
+            wire.bind(b'-1 2:03:04',0,1,statement=b'bound',portal=b'changed')
+            wire.execute(b'changed')
+            obs=keep('frozen-new-bind',wire.sync())
+            assert obs['rows']==[[dict(length=16,hex=binary((0,-1,-7384000000)).hex())]],(side,obs)
+            assert wire.query('ROLLBACK')['ready']=='I'
+            for bound in [9223372036854775807,-9223372036854775808]:
+                obs=keep(f'typmod-overflow-{bound}',wire.cycle('SELECT $1::interval(0)',binary((0,0,bound)),1,1))
+                assert obs['errors']==['22008'] and obs['ready']=='I',obs
+                recovery=wire.query('SELECT 1::int4')
+                assert recovery['rows']==[[dict(length=1,hex='31')]] and not recovery['errors'],recovery
+            bad=[(s.encode(),0,state,None) for s,state in [('', '22007'),('garbage','22007'),('now','22007'),('today','22007'),('tomorrow','22007'),('yesterday','22007'),
+                ('2147483648 months','22015'),('2147483647 months 1 month','22015'),('9223372036854.775808 seconds','22015')]]
+            bad += [(b'\xff',0,'22021',None),(b'1 day\0junk',0,'22021',None),
+                (b'',1,'08P01',None),(b'\0'*15,1,'08P01',None),(b'\0'*17,1,'22P03',None),
+                (b'\0'*16,1,'08P01',100)]
+            for idx,(payload,input_,state,declared) in enumerate(bad):
+                for output in (0,1):
+                    obs=keep(f'bad-{idx}-{output}',wire.cycle('SELECT $1::interval AS d',payload,input_,output,declared))
+                    assert obs['errors']==[state] and not obs['rows'] and obs['ready']=='I',(side,idx,obs)
+                    recovery=keep(f'recovery-{idx}-{output}',wire.query('SELECT 1::int4 AS n'))
+                    assert recovery['rows']==[[dict(length=1,hex='31')]] and not recovery['errors'],(side,recovery)
+            for idx,(source,state) in enumerate([('garbage','22007'),('2147483648 months','22015'),
+                    ('2147483647 months 1 year','22008')]):
+                for parameter in (False,):
+                    obs=keep(f'literal-error-{idx}-{parameter}',wire.cycle(f"SELECT CAST('{source}' AS interval)",None,0,0,parameter=parameter))
+                    assert obs['tags']=='EZ' and obs['errors']==[state],(side,obs)
+                    recovery=wire.query('SELECT 1::int4')
+                    assert recovery['rows']==[[dict(length=1,hex='31')]] and not recovery['errors'],recovery
+            assert wire.query('BEGIN')['ready']=='T'
+            obs=keep('transaction-error',wire.cycle('SELECT $1::interval AS d',b'garbage',0,1))
+            assert obs['errors']==['22007'] and obs['ready']=='E',obs
+            assert wire.query('ROLLBACK')['ready']=='I'
+            recovery=keep('transaction-recovery',wire.query('SELECT 1::int4'))
+            assert recovery['rows']==[[dict(length=1,hex='31')]] and not recovery['errors'],recovery
+            if side == 'aster':
+                print('PG_IV_MID',flush=True)
+                assert sys.stdin.readline().strip() == 'continue'
+            observations[side]=collected
+        finally:
+            if wire is not None:
+                (evidence/(side+'-diagnostics.json')).write_text(json.dumps(wire.diagnostics,sort_keys=True))
+                try:wire.query('ROLLBACK')
+                finally:wire.close()
+            rolled=observe(execute(conn,b'ROLLBACK'))
+            notices.clear()
+            finish(conn)
+            cleanup[side]=rolled['status'] == 1
+            (evidence/(side+'.json')).write_text(json.dumps(collected,sort_keys=True))
+            (evidence/'identity.json').write_text(json.dumps(identity,sort_keys=True))
+            (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+    assert observations['aster'].keys() == observations['reference'].keys()
+    for case, actual in observations['aster'].items():
+        assert actual == observations['reference'][case], (case,actual,observations['reference'][case])
+    for key, replacement in [('rows',[['00']]),('metadata',[[25,-1,-1,0]]),('state','XXXXX')]:
+        changed=copy.deepcopy(observations['reference'])
+        changed['value-0-0-0'][key]=replacement
+        assert changed != observations['aster'], key
+    summary=dict(cases=len(observations['aster']),negative_controls=3,cleanup=cleanup,passed=True,
+                 capabilities=['IV-COMPONENTS','IV-SIGNS-STYLE','IV-PRECISION-FIELDS','IV-RANGE-SPECIAL',
+                               'IV-BRIDGE','IV-NULL-METADATA','IV-INVALID'])
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('interval differential:',json.dumps(summary),flush=True)
+
+
 def integer_differential(aster_dsn):
     import copy
     import signal
@@ -3408,6 +3812,9 @@ conninfo = (
 )
 if len(sys.argv) > 3 and sys.argv[3] == "bytea28-differential":
     bytea28_differential(conninfo)
+    sys.exit(0)
+if len(sys.argv) > 3 and sys.argv[3] == "interval-differential":
+    interval_differential(conninfo)
     sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "timestamptz-differential":
     timestamptz_differential(conninfo)

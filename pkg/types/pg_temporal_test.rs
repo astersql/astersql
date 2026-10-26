@@ -940,3 +940,33 @@ fn pg_temporal_iv_bridge_duration_limits() {
         assert_eq!(PgInterval::from_mysql_duration(duration).unwrap(), pg);
     }
 }
+
+#[test]
+fn pg_interval_duplicate_field_overflow_precedes_syntax() {
+    use super::pg_temporal::PgInterval;
+    for text in [
+        "2147483647 months 1 month",
+        "1 month 2147483647 months",
+        "2147483647 days 1 day",
+        "-2147483648 days -1 day",
+        "9223372036854775807 microseconds 1 microsecond",
+    ] {
+        assert_eq!(
+            text.parse::<PgInterval>().unwrap_err().sqlstate(),
+            "22015",
+            "{text}"
+        );
+    }
+    for text in [
+        "2 months 1 month",
+        "2147483646 months 1 month",
+        "2147483647 months -1 month",
+        "2147483647 days 0 days",
+    ] {
+        assert_eq!(
+            text.parse::<PgInterval>().unwrap_err().sqlstate(),
+            "22007",
+            "{text}"
+        );
+    }
+}
