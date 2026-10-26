@@ -4299,6 +4299,8 @@ DropQueryWatchStmt : "QUERY" "WATCH" "REMOVE" "RESOURCE" "GROUP" ResourceGroupNa
 DropQueryWatchStmt : "QUERY" "WATCH" "REMOVE" "RESOURCE" "GROUP" UserVariable @action;
 
 PgCastType : identifier @action;
+PgCastType : identifier '(' LengthNum ')' @action;
+PgCastType : identifier '(' '-' LengthNum ')' @action;
 PgCastType : "SMALLINT" @action;
 PgCastType : "INT2" @action;
 PgCastType : "INT" @action;

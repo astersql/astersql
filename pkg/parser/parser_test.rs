@@ -5241,17 +5241,38 @@ fn pg_temporal_ts_typed_literal() {
 fn pg_timestamptz_cast_identity() {
     use crate::ast::SqlDialect;
     let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
-    for sql in ["SELECT $1::timestamptz", "SELECT CAST($1 AS timestamptz)"] {
-        let (nodes, _) = pg.ParseSQL(sql, &[]).unwrap();
-        let select = nodes[0]
-            .as_any()
-            .downcast_ref::<parser_ast::SelectStmt>()
-            .unwrap();
-        assert!(
-            matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
-            parser_ast::ExprKind::Cast { Tp, .. } if Tp.GetType() == parser_mysql::r#type::TypePgTimestampTz)
-        );
-        let mut mysql = crate::Parser::with_dialect(SqlDialect::MySQL);
-        assert!(mysql.ParseSQL(sql, &[]).is_err());
+    for (target, precision, warning) in [
+        ("timestamptz", -1, false),
+        ("timestamptz(0)", 0, false),
+        ("timestamptz(-0)", 0, false),
+        ("timestamptz(6)", 6, false),
+        ("timestamptz(7)", 6, true),
+    ] {
+        for sql in [
+            format!("SELECT $1::{target}"),
+            format!("SELECT CAST($1 AS {target})"),
+        ] {
+            let (nodes, warnings) = pg.ParseSQL(&sql, &[]).unwrap();
+            assert_eq!(warnings.len(), usize::from(warning));
+            let select = nodes[0]
+                .as_any()
+                .downcast_ref::<parser_ast::SelectStmt>()
+                .unwrap();
+            assert!(
+                matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+            parser_ast::ExprKind::Cast { Tp, .. } if Tp.GetType() == parser_mysql::r#type::TypePgTimestampTz && Tp.GetDecimal() == precision)
+            );
+            let mut mysql = crate::Parser::with_dialect(SqlDialect::MySQL);
+            assert!(mysql.ParseSQL(&sql, &[]).is_err());
+        }
+    }
+
+    for target in [
+        "timestamptz(-1)",
+        "timestamptz(+3)",
+        "timestamptz(3,2)",
+        "text(3)",
+    ] {
+        assert!(pg.ParseSQL(&format!("SELECT NULL::{target}"), &[]).is_err());
     }
 }

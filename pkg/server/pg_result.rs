@@ -7,7 +7,9 @@ use std::io;
 use std::net::TcpStream;
 
 fn parser_error(message: String) -> (&'static str, String) {
-    let state = if message == "PostgreSQL float precision must be between 1 and 53" {
+    let state = if message == "PostgreSQL float precision must be between 1 and 53"
+        || message == "PostgreSQL TIMESTAMPTZ precision must not be negative"
+    {
         "22023"
     } else {
         "42601"
@@ -30,6 +32,11 @@ pub(crate) fn time_precision_diagnostics(
             // the client supplied an unused parameter OID for invalid SQL.
             return Err(("42601", error.to_string()));
         }
+        Err(error)
+            if error.to_string() == "PostgreSQL TIMESTAMPTZ precision must not be negative" =>
+        {
+            return Err(("22023", error.to_string()));
+        }
         Err(_) => return Ok(Vec::new()),
     };
     Ok(warnings
@@ -38,6 +45,7 @@ pub(crate) fn time_precision_diagnostics(
             let message = warning.to_string();
             if !message.starts_with("PostgreSQL TIME precision reduced to 6")
                 && !message.starts_with("PostgreSQL TIMESTAMP precision reduced to 6")
+                && !message.starts_with("PostgreSQL TIMESTAMPTZ precision reduced to 6")
             {
                 return None;
             }

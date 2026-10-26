@@ -68,6 +68,16 @@ pub struct PgDate(i32);
 impl PgDate {
     /// Years use SQL numbering: 1 is 1 AD, -1 is 1 BC, and zero is invalid.
     pub fn from_ymd(year: i32, month: u32, day: u32) -> Result<Self, PgTemporalError> {
+        Self::calendar_day(year, month, day, true)
+    }
+    // Zone normalization may move the adjacent calendar day back into the
+    // instantaneous domain. Public DATE construction still checks its domain.
+    fn calendar_day(
+        year: i32,
+        month: u32,
+        day: u32,
+        check_domain: bool,
+    ) -> Result<Self, PgTemporalError> {
         if year == 0 || month == 0 || month > 12 || day == 0 || day > 31 {
             return Err(PgTemporalError::Range);
         }
@@ -97,7 +107,9 @@ impl PgDate {
         let days = era * 146097 + year_of_era * 365 + year_of_era / 4 - year_of_era / 100
             + day_of_year
             - 730425;
-        if !(-2451545..=2145031948).contains(&days) {
+        if (check_domain && !(-2451545..=2145031948).contains(&days))
+            || i32::try_from(days).is_err()
+        {
             return Err(PgTemporalError::Range);
         }
         Ok(Self(days as i32))
@@ -203,6 +215,11 @@ impl PgDate {
 impl std::str::FromStr for PgDate {
     type Err = PgTemporalError;
     fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::parse_calendar(text, true)
+    }
+}
+impl PgDate {
+    fn parse_calendar(text: &str, check_domain: bool) -> Result<Self, PgTemporalError> {
         let text = text.trim();
         match text.to_ascii_lowercase().as_str() {
             "infinity" => return Ok(Self(i32::MAX)),
@@ -230,7 +247,7 @@ impl std::str::FromStr for PgDate {
         let day = parts[2]
             .parse::<u32>()
             .map_err(|_| PgTemporalError::Range)?;
-        Self::from_ymd(if bc { -year } else { year }, month, day)
+        Self::calendar_day(if bc { -year } else { year }, month, day, check_domain)
     }
 }
 impl fmt::Display for PgDate {
@@ -527,6 +544,12 @@ impl PgTimestamp {
 impl std::str::FromStr for PgTimestamp {
     type Err = PgTemporalError;
     fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::from_micros(Self::parse_wall(text)?.micros())
+    }
+}
+impl PgTimestamp {
+    // Private intermediate only: validate the instant after applying the zone.
+    fn parse_wall(text: &str) -> Result<Self, PgTemporalError> {
         let text = text.trim();
         match text.to_ascii_lowercase().as_str() {
             "infinity" => return Ok(Self(i64::MAX)),
@@ -539,9 +562,9 @@ impl std::str::FromStr for PgTimestamp {
         let text = if bc { &text[..text.len() - 3] } else { text };
         let (date, clock) = text.split_once([' ', 'T']).ok_or(PgTemporalError::Syntax)?;
         let date: PgDate = if bc {
-            format!("{date} BC").parse()?
+            PgDate::parse_calendar(&format!("{date} BC"), false)?
         } else {
-            date.parse()?
+            PgDate::parse_calendar(date, false)?
         };
         if matches!(date.0, i32::MIN | i32::MAX) {
             return Err(PgTemporalError::Syntax);
@@ -602,7 +625,9 @@ impl std::str::FromStr for PgTimestamp {
         };
         let total = i128::from(date.0) * i128::from(PgTime::END_OF_DAY)
             + i128::from((hour * 3600 + minute * 60 + second) * 1_000_000 + micros);
-        Self::from_micros(i64::try_from(total).map_err(|_| PgTemporalError::Range)?)
+        Ok(Self(
+            i64::try_from(total).map_err(|_| PgTemporalError::Range)?,
+        ))
     }
 }
 impl fmt::Display for PgTimestamp {
@@ -689,7 +714,7 @@ impl PgTimestampTz {
         } else {
             wall.to_owned()
         };
-        let wall: PgTimestamp = wall.parse()?;
+        let wall = PgTimestamp::parse_wall(&wall)?;
         Self::from_micros(
             wall.micros()
                 .checked_sub(i64::from(offset) * 1_000_000)
@@ -706,7 +731,7 @@ impl PgTimestampTz {
             .0
             .checked_add(i64::from(offset) * 1_000_000)
             .ok_or(PgTemporalError::Range)?;
-        let wall = PgTimestamp::from_micros(local)?.to_string();
+        let wall = PgTimestamp(local).to_string();
         let (wall, era) = wall
             .strip_suffix(" BC")
             .map_or((wall.as_str(), ""), |s| (s, " BC"));

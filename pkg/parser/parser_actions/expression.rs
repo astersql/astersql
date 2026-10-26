@@ -368,6 +368,8 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         | "pgcasttype_bool--d9658361f98a2bfa"
         | "pgcasttype_boolean--3e6aa45e36d3b626"
         | "pgcasttype_bigint--ae5884bd608717ab"
+        | "pgcasttype_identifier_lengthnum--4c25e8b2c0e2b52d"
+        | "pgcasttype_identifier_lengthnum--6d08680015c4c720"
         | "pgcasttype_identifier--cd3c6a728f9b6dbd"
         | "pgcasttype_int--1751d0591dd29f2d"
         | "pgcasttype_integer--a6fba6c5af1a8564"
@@ -1281,6 +1283,12 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 yylex.AppendError(yylex.Errorf("PostgreSQL cast requires PostgreSQL dialect", &[]));
                 return Err(1);
             }
+            // Timestamptz uses one SQL fractional-second precision, independently
+            // of the parameter's OID. Other identifier targets have no modifier.
+            if matches!(rhs_len, 4 | 5) && tp != parser_mysql::r#type::TypePgTimestampTz {
+                yylex.AppendError(errors::New("unsupported PostgreSQL type modifier"));
+                return Err(1);
+            }
             if spelling.eq_ignore_ascii_case("float") {
                 if rhs[2].item.as_deref()
                     .and_then(|item| item.downcast_ref::<FloatOptSemantic>())
@@ -1308,6 +1316,21 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let (flen, decimal) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
             field_type.SetFlen(flen);
             field_type.SetDecimal(decimal);
+            if tp == parser_mysql::r#type::TypePgTimestampTz {
+                if rhs_len == 5 && rhs[4].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(1) != 0 {
+                    yylex.AppendError(errors::New("PostgreSQL TIMESTAMPTZ precision must not be negative"));
+                    return Err(1);
+                }
+                let mut precision = if rhs_len == 5 { 0 } else if rhs_len == 4 {
+                    rhs[3].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(-1)
+                } else { -1 };
+                if precision > 6 {
+                    yylex.AppendWarn(errors::New("PostgreSQL TIMESTAMPTZ precision reduced to 6"));
+                    precision = 6;
+                }
+                field_type.SetDecimal(precision);
+            }
+
             if tp == parser_mysql::r#type::TypeNewDecimal
                 && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
             {

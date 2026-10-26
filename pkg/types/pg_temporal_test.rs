@@ -474,3 +474,46 @@ fn pg_timestamptz_instant_identity() {
         assert!(text.parse::<PgTimestampTz>().is_err());
     }
 }
+
+#[test]
+fn pg_timestamptz_normalized_range() {
+    use super::pg_temporal::{PgTimestamp, PgTimestampTz};
+    for (text, micros, offset, display) in [
+        (
+            "294277-01-01 00:59:59.999999+01",
+            PgTimestamp::END - 1,
+            3600,
+            "294277-01-01 00:59:59.999999+01",
+        ),
+        (
+            "4714-11-23 23:00:00-01 BC",
+            PgTimestamp::MIN,
+            -3600,
+            "4714-11-23 23:00:00-01 BC",
+        ),
+    ] {
+        let value: PgTimestampTz = text.parse().unwrap();
+        assert_eq!(value.micros(), micros);
+        assert_eq!(value.format_with_offset(offset).unwrap(), display);
+        assert_eq!(
+            PgTimestampTz::from_binary(&value.to_binary()).unwrap(),
+            value
+        );
+    }
+    for text in [
+        "4714-11-24 00:00:00+00:00:01 BC",
+        "294276-12-31 23:59:59.999999-00:00:01",
+    ] {
+        assert_eq!(
+            text.parse::<PgTimestampTz>().unwrap_err().sqlstate(),
+            "22008"
+        );
+    }
+    // The no-zone type and DATE retain their existing finite domains.
+    assert!(
+        "4714-11-23 BC"
+            .parse::<super::pg_temporal::PgDate>()
+            .is_err()
+    );
+    assert!("294277-01-01 00:00:00".parse::<PgTimestamp>().is_err());
+}
