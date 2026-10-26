@@ -52,3 +52,18 @@ fn field_list_enforces_go_table_privilege_check() {
         vec!["id", "secret"]
     );
 }
+
+#[test]
+fn pg_timestamp_constant_union_precision() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    let mut records = pg.execute("SELECT '1999-12-31 23:59:59.5'::timestamp(0) UNION ALL SELECT '2000-01-01 00:00:00.5'::timestamp(0)").unwrap();
+    assert_eq!(
+        records[0].next_row().unwrap().unwrap()[0],
+        "1999-12-31 23:59:59"
+    );
+    assert_eq!(
+        records[0].next_row().unwrap().unwrap()[0],
+        "2000-01-01 00:00:01"
+    );
+}

@@ -4061,10 +4061,14 @@ impl ConcreteSession {
                     self.state.borrow().last_commit_ts.to_string()
                 }
                 // Constant UNION branches use this consumer instead of the
-                // ordinary SELECT evaluator. Keep PG TIME typmod coercion there too.
+                // ordinary SELECT evaluator. Keep PG temporal typmod coercion there too.
                 ast::ExprKind::Cast { Tp, .. }
                     if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                        && Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration =>
+                        && matches!(
+                            Tp.GetType(),
+                            astersql_parser_mysql::r#type::TypeDuration
+                                | astersql_parser_mysql::r#type::TypeDatetime
+                        ) =>
                 {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
                         .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())

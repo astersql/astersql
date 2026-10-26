@@ -5163,3 +5163,53 @@ fn pg_temporal_time_precision_grammar() {
     let (_, warnings) = mysql.ParseSQL("SELECT CAST(NULL AS TIME(7))", &[]).unwrap();
     assert!(warnings.is_empty());
 }
+
+#[test]
+fn pg_temporal_ts_precision_grammar() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for (target, precision, warning) in [
+        ("timestamp", -1, false),
+        ("timestamp(0)", 0, false),
+        ("timestamp(6)", 6, false),
+        ("timestamp(7)", 6, true),
+    ] {
+        for sql in [
+            format!("SELECT $1::{target}"),
+            format!("SELECT CAST($1 AS {target})"),
+        ] {
+            let (statements, warnings) = pg.ParseSQL(&sql, &[]).unwrap();
+            assert_eq!(warnings.len(), usize::from(warning), "{sql}");
+            let select = statements[0]
+                .as_any()
+                .downcast_ref::<parser_ast::SelectStmt>()
+                .unwrap();
+            assert!(
+                matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+                ExprKind::Cast {Tp,..} if Tp.GetType() == parser_mysql::r#type::TypeDatetime && Tp.GetDecimal() == precision),
+                "{sql}"
+            );
+        }
+    }
+    for target in ["timestamp(-1)", "timestamp(-0)", "timestamp(+3)"] {
+        for sql in [
+            format!("SELECT NULL::{target}"),
+            format!("SELECT CAST(NULL AS {target})"),
+        ] {
+            assert!(pg.ParseSQL(&sql, &[]).is_err(), "{sql}");
+        }
+    }
+    let mut mysql = crate::Parser::with_dialect(SqlDialect::MySQL);
+    for sql in [
+        "SELECT NULL::timestamp(3)",
+        "SELECT CAST(NULL AS TIMESTAMP(-1))",
+        "SELECT CAST(NULL AS TIMESTAMP(+3))",
+    ] {
+        assert!(mysql.ParseSQL(sql, &[]).is_err());
+    }
+    assert!(
+        mysql
+            .ParseSQL("SELECT CAST(NULL AS TIMESTAMP(7))", &[])
+            .is_err()
+    );
+}

@@ -2791,7 +2791,7 @@ impl ConcreteSession {
             for (oid, supplied) in oids.iter_mut().zip(supplied) {
                 if matches!(
                     *supplied,
-                    16 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083
+                    16 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
                 ) {
                     *oid = *supplied;
                 }
@@ -2820,6 +2820,7 @@ impl ConcreteSession {
                         ast::CastFunctionType::PostgreSQLFloat8 => 701,
                         _ if Tp.PostgreSQLTextOid().is_some() => Tp.PostgreSQLTextOid().unwrap(),
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration => 1083,
+                        _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime => 1114,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeVarString => 25,
                         _ => 0,
                     };

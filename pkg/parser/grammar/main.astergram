@@ -4337,3 +4337,7 @@ PgTimeType : "TIME" OptFieldLen @action;
 PgTimeType : "TIME" '(' '-' LengthNum ')' @action;
 PgTimeType : "TIME" '(' '+' LengthNum ')' @action;
 SimpleExpr : SimpleExpr pgTypecast PgTimeType %prec pgTypecast @action;
+
+CastType : PgTimestampType;
+PgTimestampType : "TIMESTAMP" OptFieldLen @action;
+SimpleExpr : SimpleExpr pgTypecast PgTimestampType %prec pgTypecast @action;

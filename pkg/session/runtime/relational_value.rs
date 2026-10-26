@@ -3822,3 +3822,23 @@ pub(super) fn pg_time_relational_value(
         })
         .transpose()
 }
+
+/// Timestamp typmod rounding uses signed PG epoch microseconds, not wall-clock seconds.
+pub(super) fn pg_timestamp_relational_value(
+    value: Option<String>,
+    precision: isize,
+) -> SessionResult<Option<String>> {
+    value
+        .map(|text| {
+            text.parse::<astersql_types::pg_temporal::PgTimestamp>()
+                .and_then(|timestamp| timestamp.round_precision(precision))
+                .map(|timestamp| timestamp.to_string())
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+        })
+        .transpose()
+}

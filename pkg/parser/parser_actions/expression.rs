@@ -32,6 +32,7 @@ enum ExpressionRule {
     PgCastType,
     PgVarcharType,
     PgNumericOpt,
+    PgTimestampType,
     PgTimeNegative,
     PgTimePositive,
     PgPostfixCast,
@@ -329,6 +330,8 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        "pgtimestamptype_timestamp_optfieldlen--d3b3124e6a81d49d" => Some(ExpressionRule::PgTimestampType),
+        "simpleexpr_simpleexpr_pgtypecast_pgtimestamptype--afa940ac3a3d226c" => Some(ExpressionRule::PgPostfixCast),
         "pgcasttype_varchar_optfieldlen--116589e92d510659" => Some(ExpressionRule::PgVarcharType),
         "pgpostfixtext_char_optfieldlen--320e44b3ecc2f331" => Some(ExpressionRule::PgCastType),
         "simpleexpr_simpleexpr_pgtypecast_pgpostfixtext_p--f8d6065aff3724c2" => {
@@ -2013,7 +2016,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             }
             if field_type.GetDecimal() == parser_types::types::UnspecifiedLength
                 && !(parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
-                    && matches!(field_type.GetType(), parser_mysql::r#type::TypeNewDecimal | parser_mysql::r#type::TypeDuration))
+                    && matches!(field_type.GetType(), parser_mysql::r#type::TypeNewDecimal | parser_mysql::r#type::TypeDuration | parser_mysql::r#type::TypeDatetime))
             {
                 field_type.SetDecimal(decimal);
             }
@@ -2955,8 +2958,12 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             out.item = Some(Box::new(field_type));
         }
         ExpressionRule::CastTypeAlt05 | ExpressionRule::CastTypeAlt07
-        | ExpressionRule::PgTimeNegative | ExpressionRule::PgTimePositive => {
-            let tp = if rule == ExpressionRule::CastTypeAlt05 {
+        | ExpressionRule::PgTimeNegative | ExpressionRule::PgTimePositive | ExpressionRule::PgTimestampType => {
+            if rule == ExpressionRule::PgTimestampType && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(errors::New("TIMESTAMP cast requires PostgreSQL dialect"));
+                return Err(1);
+            }
+            let tp = if matches!(rule, ExpressionRule::CastTypeAlt05 | ExpressionRule::PgTimestampType) {
                 parser_mysql::r#type::TypeDatetime
             } else {
                 parser_mysql::r#type::TypeDuration
@@ -2971,10 +2978,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             let mut decimal = rhs[rhs_len].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(-1);
-            if tp == parser_mysql::r#type::TypeDuration
+            if matches!(tp, parser_mysql::r#type::TypeDuration | parser_mysql::r#type::TypeDatetime)
                 && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
                 if decimal > 6 {
-                    yylex.AppendWarn(errors::New("PostgreSQL TIME precision reduced to 6"));
+                    yylex.AppendWarn(errors::New(if tp == parser_mysql::r#type::TypeDatetime { "PostgreSQL TIMESTAMP precision reduced to 6" } else { "PostgreSQL TIME precision reduced to 6" }));
                     decimal = 6;
                 }
             }

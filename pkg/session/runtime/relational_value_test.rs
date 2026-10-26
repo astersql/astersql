@@ -877,3 +877,60 @@ fn pg_temporal_time_precision_session_cast() {
     assert_eq!(union[0].next_row().unwrap().unwrap()[0], "12:34:57");
     assert_eq!(super::pg_time_relational_value(None, 3).unwrap(), None);
 }
+
+#[test]
+fn pg_timestamp_cast_rounds_across_epoch() {
+    use super::pg_timestamp_relational_value;
+    assert_eq!(pg_timestamp_relational_value(None, 0).unwrap(), None);
+    assert_eq!(
+        pg_timestamp_relational_value(Some("1999-12-31 23:59:59.5".into()), 0).unwrap(),
+        Some("1999-12-31 23:59:59".into())
+    );
+    assert_eq!(
+        pg_timestamp_relational_value(Some("2000-01-01 00:00:00.5".into()), 0).unwrap(),
+        Some("2000-01-01 00:00:01".into())
+    );
+    assert!(pg_timestamp_relational_value(Some("2000-02-30 00:00:00".into()), 0).is_err());
+}
+
+#[test]
+fn pg_timestamp_prepared_identity() {
+    use crate::runtime::{ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT ?", &[1114]).unwrap(),
+        [1114]
+    );
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT CAST(? AS TIMESTAMP)", &[])
+            .unwrap(),
+        [1114]
+    );
+    let (id, count, fields) = pg
+        .prepare_protocol_statement_with_parameter_types("SELECT ?", &[1114])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.GetType(),
+        astersql_parser_mysql::r#type::TypeDatetime
+    );
+    for argument in [
+        ConcretePreparedArgument::Null,
+        ConcretePreparedArgument::Text("1999-12-31 23:59:59.999999".into()),
+    ] {
+        let mut sets = pg.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            sets[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypeDatetime
+        );
+        assert!(sets[0].next_row().unwrap().is_some());
+    }
+    pg.close_protocol_statement(id).unwrap();
+}

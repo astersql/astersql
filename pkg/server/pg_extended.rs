@@ -415,7 +415,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_string()
                 .into_bytes(),
         ),
-        1114 => temporal(text)?,
+        1114 => (
+            253,
+            text.parse::<astersql_types::pg_temporal::PgTimestamp>()
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .to_string()
+                .into_bytes(),
+        ),
         _ => return Err(error("0A000", "unsupported text parameter OID")),
     };
     Ok(BinaryParam {
@@ -474,6 +480,11 @@ fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             let time = astersql_types::pg_temporal::PgTime::from_binary(value)
                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
             return parameter(1083, Some(time.to_string().as_bytes()));
+        }
+        1114 => {
+            let timestamp = astersql_types::pg_temporal::PgTimestamp::from_binary(value)
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+            return parameter(1114, Some(timestamp.to_string().as_bytes()));
         }
         17 => (252, value.to_vec()),
         25 | 1042 | 1043 => return parameter(oid, Some(value)),
@@ -558,28 +569,6 @@ fn catalog_binary_parameter(
     })
 }
 
-fn temporal(text: &str) -> Result<(u8, Vec<u8>)> {
-    use chrono::{Datelike, Timelike};
-    let invalid = || error("22007", "invalid date or time parameter");
-    let datetime = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
-        .map_err(|_| invalid())?;
-    let date = datetime.date();
-    let time = datetime.time();
-    if !(1..=9999).contains(&date.year()) {
-        return Err(error("0A000", "date outside engine range"));
-    }
-    let mut bytes = (date.year() as u16).to_le_bytes().to_vec();
-    bytes.extend_from_slice(&[date.month() as u8, date.day() as u8]);
-    if time.nanosecond() >= 1_000_000_000 || time.nanosecond() % 1000 != 0 {
-        return Err(error(
-            "0A000",
-            "timestamp exceeds engine microsecond precision",
-        ));
-    }
-    bytes.extend_from_slice(&[time.hour() as u8, time.minute() as u8, time.second() as u8]);
-    bytes.extend_from_slice(&(time.nanosecond() / 1000).to_le_bytes());
-    Ok((12, bytes))
-}
 struct Statement {
     original_sql: String,
     path: Vec<String>,

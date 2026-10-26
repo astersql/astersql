@@ -439,3 +439,123 @@ impl fmt::Display for PgTime {
         Ok(())
     }
 }
+
+/// PostgreSQL timestamp without time zone, counted in microseconds from
+/// 2000-01-01. Calendar conversion never consults a timezone or a MySQL bit field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PgTimestamp(i64);
+impl PgTimestamp {
+    pub const MIN: i64 = -211_813_488_000_000_000;
+    pub const END: i64 = 9_223_371_331_200_000_000;
+
+    pub fn from_micros(micros: i64) -> Result<Self, PgTemporalError> {
+        if micros != i64::MIN && micros != i64::MAX && !(Self::MIN..Self::END).contains(&micros) {
+            return Err(PgTemporalError::Range);
+        }
+        Ok(Self(micros))
+    }
+    pub fn micros(self) -> i64 {
+        self.0
+    }
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
+        if bytes.len() < 8 {
+            return Err(PgTemporalError::Truncated);
+        }
+        if bytes.len() > 8 {
+            return Err(PgTemporalError::Trailing);
+        }
+        Self::from_micros(i64::from_be_bytes(bytes.try_into().unwrap()))
+    }
+    pub fn to_binary(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+    /// PostgreSQL typmod rounding is relative to the epoch, with ties away
+    /// from zero. Widen before adding the half-unit to avoid i64 overflow.
+    pub fn round_precision(self, precision: isize) -> Result<Self, PgTemporalError> {
+        if !(0..=6).contains(&precision) || matches!(self.0, i64::MIN | i64::MAX) {
+            return Ok(self);
+        }
+        let scale = 10i128.pow(6 - precision as u32);
+        let value = i128::from(self.0);
+        let rounded = value.signum() * ((value.abs() + scale / 2) / scale) * scale;
+        Self::from_micros(i64::try_from(rounded).map_err(|_| PgTemporalError::Range)?)
+    }
+}
+impl std::str::FromStr for PgTimestamp {
+    type Err = PgTemporalError;
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let text = text.trim();
+        match text.to_ascii_lowercase().as_str() {
+            "infinity" => return Ok(Self(i64::MAX)),
+            "-infinity" => return Ok(Self(i64::MIN)),
+            "epoch" => return "1970-01-01 00:00:00".parse(),
+            "now" | "today" | "yesterday" | "tomorrow" => return Err(PgTemporalError::Unsupported),
+            _ => {}
+        }
+        let bc = text.to_ascii_uppercase().ends_with(" BC");
+        let text = if bc { &text[..text.len() - 3] } else { text };
+        let (date, clock) = text.split_once([' ', 'T']).ok_or(PgTemporalError::Syntax)?;
+        let date: PgDate = if bc {
+            format!("{date} BC").parse()?
+        } else {
+            date.parse()?
+        };
+        if matches!(date.0, i32::MIN | i32::MAX) {
+            return Err(PgTemporalError::Syntax);
+        }
+        // Keep the timestamp input fractional conversion separate from typmod:
+        // PG first rounds fractional seconds to microseconds, then adjusts p.
+        let (clock, fraction) = clock.split_once('.').unwrap_or((clock, ""));
+        let fields = clock.split(':').collect::<Vec<_>>();
+        if fields.len() != 3
+            || fields
+                .iter()
+                .any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()))
+            || !fraction.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(PgTemporalError::Syntax);
+        }
+        let fields = fields
+            .iter()
+            .map(|v| v.parse::<i64>().map_err(|_| PgTemporalError::Range))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (hour, minute, second) = (fields[0], fields[1], fields[2]);
+        if hour > 24
+            || minute > 59
+            || second > 60
+            || (hour == 24 && (minute != 0 || second != 0 || fraction.bytes().any(|b| b != b'0')))
+        {
+            return Err(PgTemporalError::Range);
+        }
+        let micros = if fraction.is_empty() {
+            0
+        } else {
+            (format!("0.{fraction}")
+                .parse::<f64>()
+                .map_err(|_| PgTemporalError::Syntax)?
+                * 1_000_000.0)
+                .round_ties_even() as i64
+        };
+        let total = i128::from(date.0) * i128::from(PgTime::END_OF_DAY)
+            + i128::from((hour * 3600 + minute * 60 + second) * 1_000_000 + micros);
+        Self::from_micros(i64::try_from(total).map_err(|_| PgTemporalError::Range)?)
+    }
+}
+impl fmt::Display for PgTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == i64::MIN {
+            return f.write_str("-infinity");
+        }
+        if self.0 == i64::MAX {
+            return f.write_str("infinity");
+        }
+        let date = PgDate(self.0.div_euclid(PgTime::END_OF_DAY) as i32);
+        let clock = PgTime(self.0.rem_euclid(PgTime::END_OF_DAY));
+        let (year, month, day) = date.ymd();
+        if year <= 0 {
+            write!(f, "{:04}-{month:02}-{day:02} {clock} BC", 1 - year)
+        } else {
+            write!(f, "{year:04}-{month:02}-{day:02} {clock}")
+        }
+    }
+}

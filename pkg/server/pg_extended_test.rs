@@ -520,7 +520,9 @@ fn text_parameters_are_typed_and_reject_loss() {
     assert!(parameter(1082, Some(b"2024-02-29")).is_ok());
     assert!(parameter(1083, Some(b"24:00:00")).is_ok());
     assert!(parameter(1114, Some(b"2026-09-30 12:30:00.123456")).is_ok());
-    assert!(parameter(1114, Some(b"2026-09-30 12:30:00.1234567")).is_err());
+    let rounded = parameter(1114, Some(b"2026-09-30 12:30:00.1234567")).unwrap();
+    assert_eq!(rounded.tp, 253);
+    assert_eq!(rounded.value, b"2026-09-30 12:30:00.123457");
     assert!(parameter(1700, Some(b"12.340")).is_ok());
     assert!(parameter(1700, Some(b"12bad")).is_err());
     assert!(parameter(23, None).unwrap().is_null);

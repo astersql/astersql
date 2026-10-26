@@ -36,7 +36,9 @@ pub(crate) fn time_precision_diagnostics(
         .into_iter()
         .filter_map(|warning| {
             let message = warning.to_string();
-            if !message.starts_with("PostgreSQL TIME precision reduced to 6") {
+            if !message.starts_with("PostgreSQL TIME precision reduced to 6")
+                && !message.starts_with("PostgreSQL TIMESTAMP precision reduced to 6")
+            {
                 return None;
             }
             let mut body = b"SWARNING\0VWARNING\0C22023\0M".to_vec();
@@ -606,18 +608,10 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_string(),
-        1114 => {
-            let date = text.split(' ').next().unwrap_or_default();
-            let parts: Vec<_> = date.split('-').collect();
-            if parts.len() != 3
-                || parts[0].parse::<u32>().unwrap_or(0) == 0
-                || !(1..=12).contains(&parts[1].parse::<u32>().unwrap_or(0))
-                || !(1..=31).contains(&parts[2].parse::<u32>().unwrap_or(0))
-            {
-                return Err(invalid("engine zero or invalid date is unsupported"));
-            }
-            text
-        }
+        1114 => text
+            .parse::<astersql_types::pg_temporal::PgTimestamp>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_string(),
         1083 => text
             .parse::<astersql_types::pg_temporal::PgTime>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -769,22 +763,11 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_binary()
             .to_vec(),
-        1114 => {
-            use chrono::Timelike;
-            let epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
-            let invalid_time = |_| invalid("invalid binary temporal value");
-            let datetime = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
-                .map_err(invalid_time)?;
-            if datetime.nanosecond() >= 1_000_000_000 || datetime.nanosecond() % 1000 != 0 {
-                return Err(invalid("timestamp exceeds engine microsecond precision"));
-            }
-            datetime
-                .signed_duration_since(epoch.and_hms_opt(0, 0, 0).unwrap())
-                .num_microseconds()
-                .ok_or_else(|| invalid("timestamp out of range"))?
-                .to_be_bytes()
-                .to_vec()
-        }
+        1114 => text
+            .parse::<astersql_types::pg_temporal::PgTimestamp>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_binary()
+            .to_vec(),
         _ => return Err(invalid("unsupported binary result type")),
     };
     Ok(Some(bytes))
@@ -1164,7 +1147,7 @@ pub(crate) fn encode_formats(
                     .and_then(|tp| i32::try_from(tp.length).ok())
                     .and_then(|length| length.checked_add(4))
                     .unwrap_or(-1)
-            } else if *oid == 1083 {
+            } else if matches!(*oid, 1083 | 1114) {
                 result
                     .native_types
                     .get(index)

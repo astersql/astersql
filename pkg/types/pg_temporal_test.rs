@@ -317,3 +317,60 @@ fn pg_temporal_time_duration_bridge() {
         );
     }
 }
+
+#[test]
+fn pg_timestamp_epoch_precision_and_domain() {
+    use super::pg_temporal::{PgTemporalError, PgTimestamp};
+    for (text, micros) in [
+        ("1999-12-31 23:59:59.999999", -1i64),
+        ("2000-01-01 00:00:00", 0),
+        ("2000-01-01 00:00:00.000001", 1),
+        ("2000-01-01 00:00:00.1234567", 123457),
+        ("4714-11-24 00:00:00 BC", PgTimestamp::MIN),
+        ("294276-12-31 23:59:59.999999", PgTimestamp::END - 1),
+        ("-infinity", i64::MIN),
+        ("infinity", i64::MAX),
+    ] {
+        let value: PgTimestamp = text.parse().unwrap();
+        assert_eq!(value.micros(), micros, "{text}");
+        assert_eq!(PgTimestamp::from_binary(&value.to_binary()).unwrap(), value);
+        assert_eq!(value.to_string().parse::<PgTimestamp>().unwrap(), value);
+    }
+    for (micros, expected) in [
+        (-500000, -1000000),
+        (500000, 1000000),
+        (-499999, 0),
+        (499999, 0),
+    ] {
+        assert_eq!(
+            PgTimestamp::from_micros(micros)
+                .unwrap()
+                .round_precision(0)
+                .unwrap()
+                .micros(),
+            expected
+        );
+    }
+    assert_eq!(
+        PgTimestamp::from_micros(PgTimestamp::MIN - 1),
+        Err(PgTemporalError::Range)
+    );
+    assert_eq!(
+        PgTimestamp::from_micros(PgTimestamp::END),
+        Err(PgTemporalError::Range)
+    );
+    assert_eq!(
+        PgTimestamp::from_micros(PgTimestamp::END - 1)
+            .unwrap()
+            .round_precision(0),
+        Err(PgTemporalError::Range)
+    );
+    assert_eq!(
+        PgTimestamp::from_binary(&[0; 7]),
+        Err(PgTemporalError::Truncated)
+    );
+    assert_eq!(
+        PgTimestamp::from_binary(&[0; 9]),
+        Err(PgTemporalError::Trailing)
+    );
+}

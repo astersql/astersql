@@ -1279,6 +1279,14 @@ impl ConcreteSession {
                         Tp.GetDecimal(),
                     );
                 }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime
+                {
+                    return pg_timestamp_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                        Tp.GetDecimal(),
+                    );
+                }
                 if Tp.PostgreSQLTextOid().is_some() {
                     return pg_text_relational_cast(
                         Expr,
@@ -2484,6 +2492,7 @@ impl ConcreteSession {
                     if matches!(
                         Tp.GetType(),
                         astersql_parser_mysql::r#type::TypeDate
+                            | astersql_parser_mysql::r#type::TypeDatetime
                             | astersql_parser_mysql::r#type::TypeDuration
                     ) =>
                 {
