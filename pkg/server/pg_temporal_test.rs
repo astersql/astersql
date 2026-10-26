@@ -629,3 +629,145 @@ fn pg_temporal_date_range() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_date_zero() {
+    use crate::conn::{CancellationToken, SessionDriver};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    let mysql = driver.open_ctx(75094, 0, 45, "", None).unwrap();
+    let cancel = CancellationToken::new();
+    // Fix the native policy explicitly: zero components remain legal in MySQL.
+    mysql
+        .execute_query("SET sql_mode = ''", false, &cancel)
+        .unwrap();
+    for text in ["0000-00-00", "0000-01-01", "2024-00-01", "2024-01-00"] {
+        let sql = format!("SELECT CAST('{text}' AS DATE)");
+        let native = mysql.execute_query(&sql, false, &cancel).unwrap().remove(0);
+        assert_eq!(
+            native.rows,
+            vec![vec![crate::conn::Value::Text(text.into())]]
+        );
+        assert_eq!(native.native_types[0].code, 10);
+        let warnings = mysql.state().warning_count;
+        assert_eq!(warnings, 0);
+        for output in [0, 1] {
+            // Use the actual MySQL result, without synthesizing values/metadata.
+            let rejected =
+                crate::pg_result::encode_formats(&native, "SELECT", &[output]).unwrap_err();
+            assert_eq!(crate::pg_result::encoding_sqlstate(&rejected), "22008");
+            assert_eq!(mysql.state().warning_count, warnings);
+            for sql in ["SELECT $1", "SELECT CAST($1 AS DATE)"] {
+                error(
+                    &cycle(&mut socket, sql, 0, output as i16, Some(text.as_bytes())),
+                    "22008",
+                );
+                assert_eq!(
+                    query(&mut socket, "SELECT 1::int4")
+                        .iter()
+                        .map(|m| m.0)
+                        .collect::<Vec<_>>(),
+                    b"TDCZ"
+                );
+            }
+        }
+        error(&query(&mut socket, &sql), "22008");
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"TDCZ"
+        );
+        // Re-execute after PG rejection to prove native policy did not change.
+        assert_eq!(
+            mysql.execute_query(&sql, false, &cancel).unwrap()[0].rows,
+            native.rows
+        );
+        assert_eq!(mysql.state().warning_count, warnings);
+    }
+    // Zero binary day count is the valid PG epoch, distinct from MySQL zero date.
+    for input in [0, 1] {
+        for output in [0, 1] {
+            for value in [
+                None,
+                Some(if input == 0 {
+                    b"2000-01-01".as_slice()
+                } else {
+                    &[0; 4]
+                }),
+            ] {
+                let result = cycle(&mut socket, "SELECT $1", input, output, value);
+                assert_eq!(result.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+                assert_eq!(
+                    result[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1082u32.to_be_bytes()].concat()
+                );
+                description(&result[2].1, 0);
+                description(&result[4].1, output);
+                let expected = match value {
+                    None => [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat(),
+                    Some(_) => {
+                        let bytes = if output == 0 {
+                            b"2000-01-01".as_slice()
+                        } else {
+                            &[0; 4]
+                        };
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(bytes.len() as i32).to_be_bytes(),
+                            bytes,
+                        ]
+                        .concat()
+                    }
+                };
+                assert_eq!(result[5].1, expected);
+            }
+        }
+    }
+    for output in [0, 1] {
+        query(&mut socket, "BEGIN");
+        error_in_state(
+            &cycle(&mut socket, "SELECT $1", 0, output, Some(b"0000-00-00")),
+            "22008",
+            b"E",
+        );
+        assert_eq!(
+            query(&mut socket, "ROLLBACK").last().unwrap(),
+            &(b'Z', b"I".to_vec())
+        );
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"TDCZ"
+        );
+    }
+    mysql.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
