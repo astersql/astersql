@@ -126,6 +126,7 @@ impl ConcreteSession {
                                 text,
                                 self.session.pg_interval_style(None),
                             )
+                            .and_then(|v| v.apply_typmod(Tp.GetFlen(), Tp.GetDecimal()))
                             .map(|v| v.to_string())
                         } else if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate {
                             PgDate::parse_with_context(text, self.context).map(|v| v.to_string())

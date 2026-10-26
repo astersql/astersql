@@ -67,3 +67,31 @@ fn pg_timestamp_constant_union_precision() {
         "2000-01-01 00:00:01"
     );
 }
+
+#[test]
+fn pg_interval_constant_union_precision() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types(
+            "SELECT NULL::interval(3) UNION ALL SELECT CAST(? AS interval(3))",
+            &[25],
+        )
+        .unwrap();
+    for (input, expected) in [
+        ("1.2345 seconds", "00:00:01.235"),
+        ("-1.2345 seconds", "-00:00:01.235"),
+    ] {
+        let mut sets = session
+            .execute_protocol_statement(
+                id,
+                &[crate::runtime::ConcretePreparedArgument::Text(input.into())],
+            )
+            .unwrap();
+        sets[0].next_row().unwrap().unwrap();
+        assert_eq!(sets[0].next_row().unwrap().unwrap(), [expected]);
+        assert!(sets[0].next_row().unwrap().is_none());
+    }
+    session.close_protocol_statement(id).unwrap();
+}

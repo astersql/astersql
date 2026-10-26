@@ -1289,6 +1289,7 @@ impl ConcreteSession {
                                 &text,
                                 self.pg_interval_style(None),
                             )
+                            .and_then(|v| v.apply_typmod(Tp.GetFlen(), Tp.GetDecimal()))
                             .map(|v| v.to_string())
                             .map_err(|e| {
                                 SessionError::with_source(

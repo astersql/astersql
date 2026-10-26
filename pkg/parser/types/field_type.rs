@@ -697,7 +697,32 @@ impl FieldType {
             }
             mysql::TypeDate => ctx.WriteKeyWord("DATE")?,
             mysql::TypePgTimestampTz => ctx.WriteKeyWord("TIMESTAMPTZ")?,
-            mysql::TypePgInterval => ctx.WriteKeyWord("INTERVAL")?,
+            mysql::TypePgInterval => {
+                ctx.WriteKeyWord("INTERVAL")?;
+                let fields = match self.flen {
+                    4 => "YEAR",
+                    2 => "MONTH",
+                    6 => "YEAR TO MONTH",
+                    8 => "DAY",
+                    1024 => "HOUR",
+                    2048 => "MINUTE",
+                    4096 => "SECOND",
+                    1032 => "DAY TO HOUR",
+                    3080 => "DAY TO MINUTE",
+                    7176 => "DAY TO SECOND",
+                    3072 => "HOUR TO MINUTE",
+                    7168 => "HOUR TO SECOND",
+                    6144 => "MINUTE TO SECOND",
+                    _ => "",
+                };
+                if !fields.is_empty() {
+                    ctx.WritePlain(" ")?;
+                    ctx.WriteKeyWord(fields)?;
+                }
+                if self.decimal >= 0 {
+                    ctx.WritePlain(&format!("({})", self.decimal))?;
+                }
+            }
             mysql::TypeDatetime => {
                 ctx.WriteKeyWord("DATETIME")?;
                 write_scale(ctx, self.decimal)?;

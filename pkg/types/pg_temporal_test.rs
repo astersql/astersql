@@ -726,3 +726,69 @@ fn pg_interval_signs_style() {
         );
     }
 }
+
+#[test]
+fn pg_interval_typmod_fields_precision() {
+    use super::pg_temporal::PgInterval;
+    for (micros, p, rounded) in [
+        (1234500, 3, 1235000),
+        (-1234500, 3, -1235000),
+        (500000, 0, 1000000),
+        (-500000, 0, -1000000),
+        (59999999, 0, 60000000),
+        (1234567, 6, 1234567),
+    ] {
+        assert_eq!(
+            PgInterval::from_components(14, 1, micros)
+                .apply_typmod(-1, p)
+                .unwrap()
+                .components(),
+            (14, 1, rounded)
+        );
+    }
+    assert_eq!(
+        PgInterval::from_components(14, 1, 7384000000)
+            .apply_typmod(3072, -1)
+            .unwrap()
+            .components(),
+        (14, 1, 7380000000)
+    );
+    assert_eq!(
+        PgInterval::from_components(-14, 1, 1)
+            .apply_typmod(4, -1)
+            .unwrap()
+            .components(),
+        (-12, 0, 0)
+    );
+    assert_eq!(
+        PgInterval::from_components(0, 0, i64::MAX).apply_typmod(-1, 0),
+        Err(PgTemporalError::Range)
+    );
+    for (mask, expected) in [
+        (4, (12, 0, 0)),
+        (2, (14, 0, 0)),
+        (6, (14, 0, 0)),
+        (8, (14, 2, 0)),
+        (1024, (14, 2, 7200000000)),
+        (1032, (14, 2, 7200000000)),
+        (2048, (14, 2, 7380000000)),
+        (3072, (14, 2, 7380000000)),
+        (3080, (14, 2, 7380000000)),
+        (4096, (14, 2, 7384567890)),
+        (6144, (14, 2, 7384567890)),
+        (7168, (14, 2, 7384567890)),
+        (7176, (14, 2, 7384567890)),
+    ] {
+        assert_eq!(
+            PgInterval::from_components(14, 2, 7384567890)
+                .apply_typmod(mask, -1)
+                .unwrap()
+                .components(),
+            expected
+        );
+    }
+    for special in ["infinity", "-infinity"] {
+        let value = special.parse::<PgInterval>().unwrap();
+        assert_eq!(value.apply_typmod(4, 0).unwrap(), value);
+    }
+}

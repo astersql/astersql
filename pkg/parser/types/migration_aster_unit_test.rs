@@ -211,3 +211,22 @@ fn restore_propagates_writer_errors_in_rust_api() {
         io::ErrorKind::Other
     );
 }
+
+#[test]
+fn interval_cast_restore_preserves_fields_and_zero_precision() {
+    for (mask, p, expected) in [
+        (-1, -1, "INTERVAL"),
+        (32767, 0, "INTERVAL(0)"),
+        (32767, 3, "INTERVAL(3)"),
+        (3072, -1, "INTERVAL HOUR TO MINUTE"),
+        (7176, 3, "INTERVAL DAY TO SECOND(3)"),
+        (4, -1, "INTERVAL YEAR"),
+    ] {
+        let mut ft = NewFieldType(mysql::TypePgInterval);
+        ft.SetFlen(mask);
+        ft.SetDecimal(p);
+        let mut out = Vec::new();
+        ft.FormatAsCastType(&mut out, false).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
+    }
+}

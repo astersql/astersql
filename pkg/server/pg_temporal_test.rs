@@ -6344,3 +6344,379 @@ fn pg_temporal_iv_signs_style() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg_temporal_iv_precision_fields() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0TimeZone\0Asia/Shanghai\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    fn desc(body: &[u8], format: i16, typmod: i32) {
+        assert_eq!(&body[..2], &1i16.to_be_bytes());
+        let at = 2 + body[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&body[at..at + 6], &[0; 6]);
+        assert_eq!(&body[at + 6..at + 10], &1186u32.to_be_bytes());
+        assert_eq!(&body[at + 10..at + 12], &16i16.to_be_bytes());
+        assert_eq!(&body[at + 12..at + 16], &typmod.to_be_bytes());
+        assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+    }
+    fn binary(months: i32, days: i32, micros: i64) -> Vec<u8> {
+        [
+            micros.to_be_bytes().as_slice(),
+            &days.to_be_bytes(),
+            &months.to_be_bytes(),
+        ]
+        .concat()
+    }
+    for (declaration, text, source, expected, canonical, typmod) in [
+        (
+            "interval(3)",
+            "1.2345 seconds",
+            (0, 0, 1234500),
+            (0, 0, 1235000),
+            "00:00:01.235",
+            0x7fff0003,
+        ),
+        (
+            "interval(3)",
+            "-1.2345 seconds",
+            (0, 0, -1234500),
+            (0, 0, -1235000),
+            "-00:00:01.235",
+            0x7fff0003,
+        ),
+        (
+            "interval(0)",
+            "0.5 seconds",
+            (0, 0, 500000),
+            (0, 0, 1000000),
+            "00:00:01",
+            0x7fff0000,
+        ),
+        (
+            "interval(0)",
+            "-0.5 seconds",
+            (0, 0, -500000),
+            (0, 0, -1000000),
+            "-00:00:01",
+            0x7fff0000,
+        ),
+        (
+            "interval(6)",
+            "1.1234567 seconds",
+            (0, 0, 1123457),
+            (0, 0, 1123457),
+            "00:00:01.123457",
+            0x7fff0006,
+        ),
+        (
+            "interval(3)",
+            "59.999999 seconds",
+            (0, 0, 59999999),
+            (0, 0, 60000000),
+            "00:01:00",
+            0x7fff0003,
+        ),
+        (
+            "interval(0)",
+            "-59.999999 seconds",
+            (0, 0, -59999999),
+            (0, 0, -60000000),
+            "-00:01:00",
+            0x7fff0000,
+        ),
+        (
+            "interval HOUR TO MINUTE",
+            "1 day 2:03:04",
+            (0, 1, 7384000000),
+            (0, 1, 7380000000),
+            "1 day 02:03:00",
+            0x0c00ffff,
+        ),
+        (
+            "interval YEAR",
+            "1 year 2 months",
+            (14, 0, 0),
+            (12, 0, 0),
+            "1 year",
+            0x0004ffff,
+        ),
+        (
+            "interval YEAR",
+            "-1 year -2 months 1 day",
+            (-14, 1, 0),
+            (-12, 0, 0),
+            "-1 years",
+            0x0004ffff,
+        ),
+        (
+            "interval DAY TO SECOND(3)",
+            "1 day 2:03:04.5678",
+            (0, 1, 7384567800),
+            (0, 1, 7384568000),
+            "1 day 02:03:04.568",
+            0x1c080003,
+        ),
+        (
+            "interval(6)",
+            "59.9999997 seconds",
+            (0, 0, 60000000),
+            (0, 0, 60000000),
+            "00:01:00",
+            0x7fff0006,
+        ),
+        (
+            "interval(6)",
+            "0",
+            (0, 0, 0),
+            (0, 0, 0),
+            "00:00:00",
+            0x7fff0006,
+        ),
+    ] {
+        for sql in [
+            format!("SELECT $1::{declaration} AS v"),
+            format!("SELECT CAST($1 AS {declaration}) AS v"),
+        ] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let payload = binary(source.0, source.1, source.2);
+                    let expected_bytes = binary(expected.0, expected.1, expected.2);
+                    let result = cycle_oid(
+                        &mut socket,
+                        &sql,
+                        1186,
+                        input,
+                        output,
+                        Some(if input == 0 {
+                            text.as_bytes()
+                        } else {
+                            &payload
+                        }),
+                    );
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{sql}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1186u32.to_be_bytes()].concat()
+                    );
+                    desc(&result[2].1, 0, typmod);
+                    desc(&result[4].1, output, typmod);
+                    assert_eq!(
+                        date_text_row(&result),
+                        if output == 0 {
+                            canonical.as_bytes()
+                        } else {
+                            &expected_bytes
+                        },
+                        "{sql} {text}"
+                    );
+                    let null = cycle_oid(&mut socket, &sql, 1186, input, output, None);
+                    desc(&null[2].1, 0, typmod);
+                    desc(&null[4].1, output, typmod);
+                    assert_eq!(
+                        null[5].1,
+                        [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                    );
+                }
+            }
+        }
+    }
+    for (sql, expected) in [
+        (
+            "SELECT CAST('1.2345 seconds' AS interval(3))",
+            "00:00:01.235",
+        ),
+        ("SELECT interval(0) '-0.5 seconds'", "-00:00:01"),
+        (
+            "SELECT interval '1 day 2:03:04' HOUR TO MINUTE",
+            "1 day 02:03:00",
+        ),
+        ("SELECT interval '1 year 2 months' YEAR", "1 year"),
+        (
+            "SELECT CAST(CAST('1.2345 seconds' AS text) AS interval(3))",
+            "00:00:01.235",
+        ),
+    ] {
+        assert_eq!(
+            date_text_row(&query(&mut socket, sql)),
+            expected.as_bytes(),
+            "{sql}"
+        );
+    }
+    for input in [0, 1] {
+        for output in [0, 1] {
+            let payload = binary(0, 0, 1234500);
+            for (sql, rows) in [
+                ("SELECT $1::interval(3) WHERE false", 0),
+                (
+                    "SELECT NULL::interval(3) UNION ALL SELECT $1::interval(3)",
+                    2,
+                ),
+                (
+                    "SELECT NULL::interval(3) UNION ALL SELECT $1::interval(3) WHERE false",
+                    1,
+                ),
+            ] {
+                let result = cycle_oid(
+                    &mut socket,
+                    sql,
+                    1186,
+                    input,
+                    output,
+                    Some(if input == 0 {
+                        b"1.2345 seconds"
+                    } else {
+                        &payload
+                    }),
+                );
+                assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+                desc(&result[2].1, 0, 0x7fff0003);
+                desc(&result[4].1, output, 0x7fff0003);
+                assert_eq!(result.iter().filter(|m| m.0 == b'D').count(), rows);
+                if rows == 2 {
+                    let data = result.iter().filter(|m| m.0 == b'D').nth(1).unwrap();
+                    let expected = binary(0, 0, 1235000);
+                    assert_eq!(
+                        &data.1[6..],
+                        if output == 0 {
+                            b"00:00:01.235".as_slice()
+                        } else {
+                            &expected
+                        }
+                    );
+                }
+                if rows > 0 {
+                    assert_eq!(
+                        result.iter().find(|m| m.0 == b'D').unwrap().1,
+                        [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                    );
+                }
+            }
+        }
+    }
+    for sql in [
+        "SELECT NULL::interval(-1)",
+        "SELECT CAST('1 second' AS interval(-1))",
+    ] {
+        error(&query(&mut socket, sql), "22023");
+        error(&cycle_oid(&mut socket, sql, 1186, 0, 0, None), "22023");
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    for output in [0, 1] {
+        let warning = cycle_oid(
+            &mut socket,
+            "SELECT $1::interval(7)",
+            1186,
+            0,
+            output,
+            Some(b"1.1234567 seconds"),
+        );
+        let notice = warning
+            .iter()
+            .find(|m| m.0 == b'N')
+            .expect("precision warning");
+        assert!(notice.1.windows(7).any(|w| w == b"C22023\0"));
+        for (_, body) in warning.iter().filter(|m| m.0 == b'T') {
+            desc(
+                body,
+                if body == &warning.iter().find(|m| m.0 == b'T').unwrap().1 {
+                    0
+                } else {
+                    output
+                },
+                0x7fff0006,
+            );
+        }
+    }
+    for (input, value, state) in [
+        (0, b"garbage".as_slice(), "22007"),
+        (0, b"a\0b", "22021"),
+        (0, b"\xff", "22021"),
+        (1, &[0; 15], "08P01"),
+        (1, &[0; 17], "22P03"),
+    ] {
+        for output in [0, 1] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1::interval(3)",
+                    1186,
+                    input,
+                    output,
+                    Some(value),
+                ),
+                state,
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    for declared in [16i32, 20] {
+        let parse = [
+            b"\0SELECT $1::interval(3)\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1186u32.to_be_bytes(),
+        ]
+        .concat();
+        send(&mut socket, b'P', &parse);
+        let bind = [
+            b"\0\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &declared.to_be_bytes(),
+            &[0; 15],
+        ]
+        .concat();
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'S', &[]);
+        error(&ready(&mut socket), "08P01");
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    query(&mut socket, "BEGIN");
+    error_in_state(
+        &cycle_oid(
+            &mut socket,
+            "SELECT $1::interval(0)",
+            1186,
+            0,
+            0,
+            Some(b"9223372036854775807 microseconds"),
+        ),
+        "22008",
+        b"E",
+    );
+    query(&mut socket, "ROLLBACK");
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

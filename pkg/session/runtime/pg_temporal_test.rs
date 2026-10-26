@@ -320,3 +320,39 @@ fn interval_style_lifecycle() {
     assert!(session.execute("COMMIT").is_err());
     assert_eq!(session.pg_interval_style(None), S::Postgres);
 }
+
+#[test]
+fn interval_precision_prepared_constants_and_parameters() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types(
+            "SELECT CAST('1.2345 seconds' AS interval(3)), CAST(? AS interval HOUR TO MINUTE)",
+            &[25],
+        )
+        .unwrap();
+    for value in ["1 day 2:03:04", "1 day -2:03:04"] {
+        let mut results = session
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Text(value.into())])
+            .unwrap();
+        assert_eq!(
+            results[0].next_row().unwrap().unwrap(),
+            [
+                "00:00:01.235",
+                if value.contains('-') {
+                    "1 day -02:03:00"
+                } else {
+                    "1 day 02:03:00"
+                }
+            ]
+        );
+    }
+    let mut results = session
+        .execute_protocol_statement(id, &[ConcretePreparedArgument::Null])
+        .unwrap();
+    assert_eq!(
+        results[0].next_row().unwrap().unwrap(),
+        ["00:00:01.235", "<nil>"]
+    );
+    session.close_protocol_statement(id).unwrap();
+}

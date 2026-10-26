@@ -949,6 +949,7 @@
 %token result 58268 "RESULT";
 %token returnKwd 58269 "RETURN";
 %token pgTypecast 58270;
+%token pgInterval 58271;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -994,6 +995,7 @@
 %precedence vectorType;
 %precedence columnar;
 %left tableRefPriority;
+%precedence yearType month day hour minute second;
 %precedence lowerThanParenthese;
 %right "(";
 %left ")";
@@ -4343,3 +4345,31 @@ SimpleExpr : SimpleExpr pgTypecast PgTimeType %prec pgTypecast @action;
 CastType : PgTimestampType;
 PgTimestampType : "TIMESTAMP" OptFieldLen @action;
 SimpleExpr : SimpleExpr pgTypecast PgTimestampType %prec pgTypecast @action;
+
+// PostgreSQL interval declarations retain the field mask and fractional precision.
+PgCastType : pgInterval %prec empty @action;
+PgCastType : pgInterval PgIntervalOpt @action;
+UnReservedKeyword : pgInterval %prec empty;
+PgIntervalLiteralOpt : ε %prec empty @action;
+PgIntervalLiteralOpt : PgIntervalOpt @action;
+PgIntervalOpt : '(' LengthNum ')' %prec empty @action;
+PgIntervalOpt : '(' LengthNum ')' PgIntervalFields @action;
+PgIntervalOpt : '(' '-' LengthNum ')' @action;
+PgIntervalOpt : PgIntervalFields %prec lowerThanParenthese @action;
+PgIntervalOpt : PgIntervalFields '(' LengthNum ')' @action;
+PgIntervalOpt : PgIntervalFields '(' '-' LengthNum ')' @action;
+SimpleExpr : pgInterval stringLit PgIntervalLiteralOpt @action;
+SimpleExpr : pgInterval '(' LengthNum ')' stringLit @action;
+PgIntervalFields : "YEAR" @action;
+PgIntervalFields : "MONTH" @action;
+PgIntervalFields : "DAY" @action;
+PgIntervalFields : "HOUR" @action;
+PgIntervalFields : "MINUTE" @action;
+PgIntervalFields : "SECOND" @action;
+PgIntervalFields : "YEAR" "TO" "MONTH" @action;
+PgIntervalFields : "DAY" "TO" "HOUR" @action;
+PgIntervalFields : "DAY" "TO" "MINUTE" @action;
+PgIntervalFields : "DAY" "TO" "SECOND" @action;
+PgIntervalFields : "HOUR" "TO" "MINUTE" @action;
+PgIntervalFields : "HOUR" "TO" "SECOND" @action;
+PgIntervalFields : "MINUTE" "TO" "SECOND" @action;

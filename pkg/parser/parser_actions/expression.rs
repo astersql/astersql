@@ -30,6 +30,11 @@ enum ExpressionRule {
     PgArrayNestedNext,
     PgArrayRow,
     PgCastType,
+    PgIntervalType,
+    PgIntervalOpt,
+    PgIntervalLiteralOpt,
+    PgIntervalFields,
+    PgIntervalLiteral,
     PgVarcharType,
     PgNumericOpt,
     PgTimestampType,
@@ -330,6 +335,11 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        id if id.starts_with("pgcasttype_pginterval_pgintervalopt--") || id.starts_with("pgcasttype_pginterval_prec_empty--") => Some(ExpressionRule::PgIntervalType),
+        id if id.starts_with("pgintervalliteralopt") => Some(ExpressionRule::PgIntervalLiteralOpt),
+        id if id.starts_with("pgintervalopt") => Some(ExpressionRule::PgIntervalOpt),
+        id if id.starts_with("pgintervalfields_") => Some(ExpressionRule::PgIntervalFields),
+        id if id.starts_with("simpleexpr_pginterval_") => Some(ExpressionRule::PgIntervalLiteral),
         "pgtimestamptype_timestamp_optfieldlen--d3b3124e6a81d49d" => Some(ExpressionRule::PgTimestampType),
         "simpleexpr_simpleexpr_pgtypecast_pgtimestamptype--afa940ac3a3d226c" => Some(ExpressionRule::PgPostfixCast),
         "pgcasttype_varchar_optfieldlen--116589e92d510659" => Some(ExpressionRule::PgVarcharType),
@@ -1253,6 +1263,157 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     .unwrap_or_default(),
             };
             out.item = Some(Box::new(FloatOptSemantic { flen, decimal }));
+        }
+        ExpressionRule::PgIntervalLiteralOpt => {
+            let value = if rhs_len == 0 {
+                (0x7fffisize, -1isize)
+            } else {
+                rhs[1]
+                    .item
+                    .as_deref()
+                    .and_then(|v| v.downcast_ref::<(isize, isize)>())
+                    .copied()
+                    .unwrap_or((0x7fff, -1))
+            };
+            out.item = Some(Box::new(value));
+        }
+        ExpressionRule::PgIntervalFields => {
+            // PostgreSQL DTK field positions, independent of MySQL TimeUnit/Fsp.
+            let bit = |name: &str| match name.to_ascii_uppercase().as_str() {
+                "YEAR" => 4isize,
+                "MONTH" => 2,
+                "DAY" => 8,
+                "HOUR" => 1024,
+                "MINUTE" => 2048,
+                "SECOND" => 4096,
+                _ => 0,
+            };
+            let first = bit(&rhs[1].ident);
+            let last = if rhs_len == 3 {
+                bit(&rhs[3].ident)
+            } else {
+                first
+            };
+            let mask = match (first, last) {
+                (8, 2048) => 8 | 1024 | 2048,
+                (8, 4096) => 8 | 1024 | 2048 | 4096,
+                (1024, 4096) => 1024 | 2048 | 4096,
+                _ => first | last,
+            };
+            out.item = Some(Box::new(mask));
+        }
+        ExpressionRule::PgIntervalOpt => {
+            // A field following interval(p) is not a bare SELECT alias in PG.
+            if rhs_len == 4
+                && rhs[4]
+                    .item
+                    .as_deref()
+                    .and_then(|v| v.downcast_ref::<isize>())
+                    .is_some()
+            {
+                yylex.AppendError(errors::New(
+                    "interval precision must follow the final SECOND field",
+                ));
+                return Err(1);
+            }
+            let fields = (if rhs_len > 0 {
+                rhs[1].item.as_deref()
+            } else {
+                None
+            })
+            .and_then(|v| v.downcast_ref::<isize>())
+            .copied();
+            let mask = if matches!(rhs_len, 1 | 4 | 5) {
+                fields.unwrap_or(0x7fff)
+            } else {
+                0x7fff
+            };
+            if fields.is_some() && rhs_len > 1 && mask & 4096 == 0 {
+                yylex.AppendError(errors::New(
+                    "interval precision requires SECOND as the final field",
+                ));
+                return Err(1);
+            }
+            let negative = rhs_len == 4 && fields.is_none() || rhs_len == 5;
+            let precision = if matches!(rhs_len, 0 | 1) {
+                -1
+            } else {
+                rhs[rhs_len - 1]
+                    .item
+                    .as_deref()
+                    .and_then(semantic_numeric_isize)
+                    .unwrap_or(-1)
+            };
+            if negative && precision != 0 {
+                yylex.AppendError(errors::New(
+                    "PostgreSQL INTERVAL precision must not be negative",
+                ));
+                return Err(1);
+            }
+            if precision > 6 {
+                yylex.AppendWarn(errors::New("PostgreSQL INTERVAL precision reduced to 6"));
+            }
+            out.item = Some(Box::new((mask, precision.min(6))));
+        }
+        ExpressionRule::PgIntervalType | ExpressionRule::PgIntervalLiteral => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(errors::New(
+                    "PostgreSQL interval declaration requires PostgreSQL dialect",
+                ));
+                return Err(1);
+            }
+            let (mask, precision) = if rule == ExpressionRule::PgIntervalLiteral && rhs_len == 5 {
+                let p = rhs[3]
+                    .item
+                    .as_deref()
+                    .and_then(semantic_numeric_isize)
+                    .unwrap_or(-1);
+                if p > 6 {
+                    yylex.AppendWarn(errors::New("PostgreSQL INTERVAL precision reduced to 6"));
+                }
+                (0x7fff, p.min(6))
+            } else {
+                rhs[rhs_len]
+                    .item
+                    .as_deref()
+                    .and_then(|v| v.downcast_ref::<(isize, isize)>())
+                    .copied()
+                    .unwrap_or((0x7fff, -1))
+            };
+            if rule == ExpressionRule::PgIntervalLiteral
+                && rhs_len == 3
+                && mask == 0x7fff
+                && precision >= 0
+            {
+                yylex.AppendError(errors::New(
+                    "interval literal precision must precede its value",
+                ));
+                return Err(1);
+            }
+            let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypePgInterval);
+            tp.SetFlen(if mask == 0x7fff && precision == -1 {
+                -1
+            } else {
+                mask
+            });
+            tp.SetDecimal(precision);
+            tp.SetCharset("binary".to_owned());
+            tp.SetCollate("binary".to_owned());
+            if rule == ExpressionRule::PgIntervalType {
+                out.item = Some(Box::new(tp));
+            } else {
+                let text_at = if rhs_len == 5 { 5 } else { 2 };
+                let start = rhs[1].offset.max(0) as usize;
+                let mut node = parser_ast::ExprNode::Value(String::new());
+                node.OriginTextPosition = start as i32;
+                node.Kind = parser_ast::ExprKind::Cast {
+                    Expr: Box::new(parser_ast::ExprNode::Value(rhs[text_at].ident.clone())),
+                    Tp: tp,
+                    FunctionType: parser_ast::CastFunctionType::Cast,
+                    ExplicitCharSet: false,
+                };
+                out.expr = Some(node);
+            }
         }
         ExpressionRule::PgCastType | ExpressionRule::PgVarcharType => {
             let spelling = if rule == ExpressionRule::PgVarcharType {

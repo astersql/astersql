@@ -335,11 +335,9 @@ impl Scanner {
             tok = token::timestampType;
             self.lastKeyword = tok;
         }
-        if self.postgres && tok == token::interval && self.getNextToken() == token::stringLit {
-            tok = token::timestampType;
-        }
+        // Keep PG interval declarations separate from MySQL interval arithmetic.
         if self.postgres && tok == token::interval {
-            tok = token::identifier;
+            tok = token::pgInterval;
         }
         if tok == token::full && self.getNextTwoTokens() == (token::outer, token::join) {
             tok = token::fullJoinType;

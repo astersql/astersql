@@ -5350,3 +5350,67 @@ fn pg_interval_cast_and_literal_identity() {
             .is_ok()
     );
 }
+
+#[test]
+fn pg_interval_declaration_fields_precision() {
+    for (sql, mask, precision) in [
+        ("SELECT $1::interval", -1, -1),
+        ("SELECT $1::interval(3)", 32767, 3),
+        ("SELECT $1::interval(3) AS YEAR", 32767, 3),
+        ("SELECT CAST($1 AS interval HOUR TO MINUTE)", 3072, -1),
+        ("SELECT interval '1 year 2 months' YEAR", 4, -1),
+        ("SELECT interval(3) '1.2345 seconds'", 32767, 3),
+        ("SELECT $1::interval DAY TO SECOND(2)", 7176, 2),
+    ] {
+        let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+        let (nodes, warnings) = parser.ParseSQL(sql, &[]).unwrap();
+        assert!(warnings.is_empty());
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("{sql}");
+        };
+        assert_eq!(
+            (Tp.GetType(), Tp.GetFlen(), Tp.GetDecimal()),
+            (parser_mysql::r#type::TypePgInterval, mask, precision),
+            "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT interval '1 second' (3)",
+        "SELECT $1::interval YEAR(3)",
+        "SELECT $1::interval(3) YEAR",
+        "SELECT $1::interval HOUR TO DAY",
+        "SELECT $1::interval(-1)",
+    ] {
+        assert!(
+            crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(sql, &[])
+                .is_err(),
+            "{sql}"
+        );
+    }
+    let (_, warnings) = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+        .ParseSQL("SELECT NULL::interval(7)", &[])
+        .unwrap();
+    assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn pg_interval_unreserved_names() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT interval FROM interval",
+        "SELECT t.interval AS interval FROM interval AS t",
+        "SELECT interval.interval FROM interval",
+        "CREATE TABLE interval(interval int4)",
+    ] {
+        parser
+            .ParseSQL(sql, &[])
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+}

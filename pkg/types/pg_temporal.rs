@@ -6,6 +6,8 @@ use std::fmt;
 pub enum PgTemporalError {
     #[error("invalid date input syntax")]
     Syntax,
+    #[error("invalid interval type modifier")]
+    IntervalModifier,
     #[error("interval field overflow")]
     IntervalOverflow,
     #[error("date field out of range")]
@@ -29,6 +31,7 @@ impl PgTemporalError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::Syntax => "22007",
+            Self::IntervalModifier => "22023",
             Self::Range => "22008",
             Self::IntervalOverflow => "22015",
             Self::ZoneRange => "22009",
@@ -798,6 +801,48 @@ impl PgInterval {
     }
     pub const fn components(self) -> (i32, i32, i64) {
         (self.months, self.days, self.time_microseconds)
+    }
+    /// Apply PG's trailing-field truncation, then round fractional seconds.
+    /// Months and days remain independent even when only time fields are named.
+    pub fn apply_typmod(self, fields: isize, precision: isize) -> Result<Self, PgTemporalError> {
+        if !(-1..=6).contains(&precision) {
+            return Err(PgTemporalError::IntervalModifier);
+        }
+        let mut value = self;
+        if (self.months, self.days, self.time_microseconds) == (i32::MAX, i32::MAX, i64::MAX)
+            || (self.months, self.days, self.time_microseconds) == (i32::MIN, i32::MIN, i64::MIN)
+        {
+            return Ok(self);
+        }
+        let unit = match fields {
+            -1 | 0x7fff | 4096 | 6144 | 7168 | 7176 => 1,
+            4 => {
+                value.months = value.months / 12 * 12;
+                value.days = 0;
+                value.time_microseconds = 0;
+                1
+            }
+            2 | 6 => {
+                value.days = 0;
+                value.time_microseconds = 0;
+                1
+            }
+            8 => {
+                value.time_microseconds = 0;
+                1
+            }
+            1024 | 1032 => 3_600_000_000,
+            2048 | 3072 | 3080 => 60_000_000,
+            _ => return Err(PgTemporalError::IntervalModifier),
+        };
+        value.time_microseconds = value.time_microseconds / unit * unit;
+        if precision >= 0 && precision < 6 {
+            let scale = 10i128.pow(6 - precision as u32);
+            let micros = i128::from(value.time_microseconds);
+            let rounded = (micros.abs() + scale / 2) / scale * scale * micros.signum();
+            value.time_microseconds = i64::try_from(rounded).map_err(|_| PgTemporalError::Range)?;
+        }
+        Ok(value)
     }
     pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
         if bytes.len() < 16 {

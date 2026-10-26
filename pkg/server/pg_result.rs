@@ -9,6 +9,7 @@ use std::net::TcpStream;
 fn parser_error(message: String) -> (&'static str, String) {
     let state = if message == "PostgreSQL float precision must be between 1 and 53"
         || message == "PostgreSQL TIMESTAMPTZ precision must not be negative"
+        || message == "PostgreSQL INTERVAL precision must not be negative"
     {
         "22023"
     } else {
@@ -33,7 +34,11 @@ pub(crate) fn time_precision_diagnostics(
             return Err(("42601", error.to_string()));
         }
         Err(error)
-            if error.to_string() == "PostgreSQL TIMESTAMPTZ precision must not be negative" =>
+            if matches!(
+                error.to_string().as_str(),
+                "PostgreSQL TIMESTAMPTZ precision must not be negative"
+                    | "PostgreSQL INTERVAL precision must not be negative"
+            ) =>
         {
             return Err(("22023", error.to_string()));
         }
@@ -46,6 +51,7 @@ pub(crate) fn time_precision_diagnostics(
             if !message.starts_with("PostgreSQL TIME precision reduced to 6")
                 && !message.starts_with("PostgreSQL TIMESTAMP precision reduced to 6")
                 && !message.starts_with("PostgreSQL TIMESTAMPTZ precision reduced to 6")
+                && !message.starts_with("PostgreSQL INTERVAL precision reduced to 6")
             {
                 return None;
             }
@@ -1195,6 +1201,24 @@ pub(crate) fn encode_formats_interval(
                     .get(index)
                     .map(|tp| tp.decimal as i32)
                     .filter(|precision| (0..=6).contains(precision))
+                    .unwrap_or(-1)
+            } else if *oid == 1186 {
+                result
+                    .native_types
+                    .get(index)
+                    .filter(|tp| tp.length >= 0 || tp.decimal >= 0)
+                    .map(|tp| {
+                        ((if tp.length < 0 {
+                            0x7fff
+                        } else {
+                            tp.length as i32
+                        }) << 16)
+                            | if tp.decimal < 0 {
+                                0xffff
+                            } else {
+                                tp.decimal as i32
+                            }
+                    })
                     .unwrap_or(-1)
             } else if *oid == 1700 {
                 result

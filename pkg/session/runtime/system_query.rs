@@ -4069,6 +4069,7 @@ impl ConcreteSession {
                             astersql_parser_mysql::r#type::TypeDuration
                                 | astersql_parser_mysql::r#type::TypeDatetime
                                 | astersql_parser_mysql::r#type::TypePgTimestampTz
+                                | astersql_parser_mysql::r#type::TypePgInterval
                         ) =>
                 {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
