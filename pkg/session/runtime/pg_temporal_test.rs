@@ -222,3 +222,21 @@ fn timestamptz_cast_rejects_native_timestamp_without_provenance() {
         ["2000-01-01 00:00:00.000000"]
     );
 }
+
+#[test]
+fn pg_timestamptz_null_union_session_display() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (zone, expected) in [
+        ("UTC", "2000-01-01 00:00:00+00"),
+        ("Asia/Shanghai", "2000-01-01 08:00:00+08"),
+    ] {
+        session
+            .execute(&format!("SET time_zone = '{zone}'"))
+            .unwrap();
+        let mut sets = session.execute("SELECT NULL::timestamptz(3) UNION ALL SELECT '2000-01-01 00:00:00+00'::timestamptz(3)").unwrap();
+        assert_eq!(sets[0].next_row().unwrap().unwrap(), [CONCRETE_NULL_VALUE]);
+        assert_eq!(sets[0].next_row().unwrap().unwrap(), [expected]);
+        assert!(sets[0].next_row().unwrap().is_none());
+    }
+}

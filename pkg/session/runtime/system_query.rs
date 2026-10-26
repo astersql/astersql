@@ -4068,6 +4068,7 @@ impl ConcreteSession {
                             Tp.GetType(),
                             astersql_parser_mysql::r#type::TypeDuration
                                 | astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
                         ) =>
                 {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
