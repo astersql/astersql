@@ -5981,3 +5981,366 @@ fn pg_temporal_iv_components() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg_temporal_iv_signs_style() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0TimeZone\0Asia/Shanghai\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    for (style, mixed, negative, zero) in [
+        (
+            "postgres",
+            "-1 mons +2 days -03:04:05.123456",
+            "-1 mons -2 days -03:04:05.123456",
+            "00:00:00",
+        ),
+        (
+            "postgres_verbose",
+            "@ 1 mon -2 days 3 hours 4 mins 5.123456 secs ago",
+            "@ 1 mon 2 days 3 hours 4 mins 5.123456 secs ago",
+            "@ 0",
+        ),
+        (
+            "sql_standard",
+            "-0-1 +2 -3:04:05.123456",
+            "-0-1 -2 -3:04:05.123456",
+            "0",
+        ),
+        (
+            "iso_8601",
+            "P-1M2DT-3H-4M-5.123456S",
+            "P-1M-2DT-3H-4M-5.123456S",
+            "PT0S",
+        ),
+    ] {
+        let set = query(&mut socket, &format!("SET IntervalStyle TO '{style}'"));
+        assert!(!set.iter().any(|m| m.0 == b'E'), "{set:?}");
+        assert_eq!(
+            date_text_row(&query(&mut socket, "SHOW IntervalStyle")),
+            style.as_bytes()
+        );
+        for (text, parts) in [
+            (mixed, (-1i32, 2i32, -11045123456i64)),
+            (negative, (-1, -2, -11045123456)),
+            (zero, (0, 0, 0)),
+        ] {
+            let binary = [
+                parts.2.to_be_bytes().as_slice(),
+                &parts.1.to_be_bytes(),
+                &parts.0.to_be_bytes(),
+            ]
+            .concat();
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let result = cycle_oid(
+                        &mut socket,
+                        "SELECT $1::interval AS v",
+                        1186,
+                        input,
+                        output,
+                        Some(if input == 0 { text.as_bytes() } else { &binary }),
+                    );
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{style} {result:?}"
+                    );
+                    assert_eq!(
+                        date_text_row(&result),
+                        if output == 0 {
+                            text.as_bytes()
+                        } else {
+                            &binary
+                        },
+                        "{style}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1186u32.to_be_bytes()].concat()
+                    );
+                    for (index, format) in [(2, 0i16), (4, output)] {
+                        let body = &result[index].1;
+                        let at = 2 + body[2..].iter().position(|b| *b == 0).unwrap() + 1;
+                        assert_eq!(&body[at + 6..at + 10], &1186u32.to_be_bytes());
+                        assert_eq!(&body[at + 10..at + 12], &16i16.to_be_bytes());
+                        assert_eq!(&body[at + 12..at + 16], &(-1i32).to_be_bytes());
+                        assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+                    }
+                }
+            }
+        }
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let null = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::interval",
+                    1186,
+                    input,
+                    output,
+                    None,
+                );
+                assert!(!null.iter().any(|m| m.0 == b'E'), "{null:?}");
+                assert_eq!(
+                    null.iter().find(|m| m.0 == b'D').unwrap().1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+            }
+        }
+    }
+    fn command(socket: &mut TcpStream, sql: &str, extended: bool) -> Vec<(u8, Vec<u8>)> {
+        if !extended {
+            return query(socket, sql);
+        }
+        send(
+            socket,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+        );
+        send(socket, b'B', b"\0\0\0\0\0\0\0\0");
+        send(socket, b'E', &[0; 5]);
+        send(socket, b'S', &[]);
+        ready(socket)
+    }
+    for extended in [false, true] {
+        for (sql, expected) in [
+            ("RESET IntervalStyle", "postgres"),
+            ("BEGIN", "postgres"),
+            ("SET SESSION IntervalStyle='iso_8601'", "iso_8601"),
+            ("SAVEPOINT style_point", "iso_8601"),
+            ("SET LOCAL IntervalStyle='sql_standard'", "sql_standard"),
+            ("ROLLBACK TO SAVEPOINT style_point", "iso_8601"),
+            ("ROLLBACK", "postgres"),
+            ("BEGIN", "postgres"),
+            ("SET IntervalStyle='iso_8601'", "iso_8601"),
+            (
+                "SET LOCAL IntervalStyle='postgres_verbose'",
+                "postgres_verbose",
+            ),
+            ("COMMIT", "iso_8601"),
+            ("RESET IntervalStyle", "postgres"),
+        ] {
+            let result = command(&mut socket, sql, extended);
+            assert!(!result.iter().any(|m| m.0 == b'E'), "{sql}: {result:?}");
+            assert_eq!(
+                date_text_row(&query(&mut socket, "SHOW IntervalStyle")),
+                expected.as_bytes(),
+                "{sql}"
+            );
+        }
+        error(
+            &command(&mut socket, "SET IntervalStyle='bad'", extended),
+            "22023",
+        );
+        assert_eq!(
+            date_text_row(&query(&mut socket, "SHOW IntervalStyle")),
+            b"postgres"
+        );
+    }
+    for (style, expected) in [
+        ("postgres", b"-1 mons +2 days -03:04:05.123456".as_slice()),
+        ("iso_8601", b"P-1M2DT-3H-4M-5.123456S"),
+    ] {
+        query(&mut socket, &format!("SET IntervalStyle='{style}'"));
+        assert_eq!(
+            date_text_row(&query(
+                &mut socket,
+                "SELECT interval '-1 month +2 days -03:04:05.123456'"
+            )),
+            expected
+        );
+        assert_eq!(
+            date_text_row(&query(
+                &mut socket,
+                "SELECT CAST(interval '-1 month +2 days -03:04:05.123456' AS text)"
+            )),
+            expected
+        );
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let binary = [
+                    (-11045123456i64).to_be_bytes().as_slice(),
+                    &2i32.to_be_bytes(),
+                    &(-1i32).to_be_bytes(),
+                ]
+                .concat();
+                for (sql, rows) in [
+                    ("SELECT $1::interval WHERE false", 0),
+                    ("SELECT NULL::interval UNION ALL SELECT $1::interval", 2),
+                    (
+                        "SELECT NULL::interval UNION ALL SELECT $1::interval WHERE false",
+                        1,
+                    ),
+                ] {
+                    let result = cycle_oid(
+                        &mut socket,
+                        sql,
+                        1186,
+                        input,
+                        output,
+                        Some(if input == 0 {
+                            b"-1 month +2 days -03:04:05.123456"
+                        } else {
+                            &binary
+                        }),
+                    );
+                    assert!(!result.iter().any(|m| m.0 == b'E'), "{result:?}");
+                    let data = result.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>();
+                    assert_eq!(data.len(), rows);
+                    if rows > 0 {
+                        assert_eq!(
+                            data[0].1,
+                            [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                        );
+                    }
+                    if rows == 2 {
+                        assert_eq!(
+                            &data[1].1[6..],
+                            if output == 0 { expected } else { &binary }
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for (input, value, state) in [
+        (0, b"bad".as_slice(), "22007"),
+        (0, b"a\0b", "22021"),
+        (0, b"\xff", "22021"),
+        (1, &[0; 15], "08P01"),
+        (1, &[0; 17], "22P03"),
+    ] {
+        error(
+            &cycle_oid(
+                &mut socket,
+                "SELECT $1::interval",
+                1186,
+                input,
+                0,
+                Some(value),
+            ),
+            state,
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    query(&mut socket, "BEGIN");
+    query(&mut socket, "SET IntervalStyle='sql_standard'");
+    error_in_state(
+        &cycle_oid(&mut socket, "SELECT $1::interval", 1186, 0, 0, Some(b"bad")),
+        "22007",
+        b"E",
+    );
+    query(&mut socket, "ROLLBACK");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SHOW IntervalStyle")),
+        b"iso_8601"
+    );
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    for (style, micros) in [("postgres", 7384000000i64), ("sql_standard", -7384000000)] {
+        query(&mut socket, &format!("SET IntervalStyle='{style}'"));
+        let result = cycle_oid(
+            &mut socket,
+            "SELECT $1::interval",
+            1186,
+            0,
+            1,
+            Some(b"-1 2:03:04"),
+        );
+        assert_eq!(
+            date_text_row(&result),
+            [
+                micros.to_be_bytes().as_slice(),
+                &(-1i32).to_be_bytes(),
+                &0i32.to_be_bytes()
+            ]
+            .concat()
+        );
+    }
+    query(&mut socket, "RESET IntervalStyle");
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SHOW IntervalStyle")),
+        b"postgres"
+    );
+    let mut other = TcpStream::connect(addr).unwrap();
+    other
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0IntervalStyle\0iso_8601\0\0",
+    ]
+    .concat();
+    other
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    other.write_all(&startup).unwrap();
+    ready(&mut other);
+    assert_eq!(
+        date_text_row(&query(&mut other, "SHOW IntervalStyle")),
+        b"iso_8601"
+    );
+    assert_eq!(
+        date_text_row(&query(&mut socket, "SHOW IntervalStyle")),
+        b"postgres"
+    );
+    query(&mut other, "SET IntervalStyle='sql_standard'");
+    query(&mut other, "BEGIN");
+    query(&mut other, "SET LOCAL IntervalStyle=DEFAULT");
+    assert_eq!(
+        date_text_row(&query(&mut other, "SHOW IntervalStyle")),
+        b"iso_8601"
+    );
+    query(&mut other, "COMMIT");
+    assert_eq!(
+        date_text_row(&query(&mut other, "SHOW IntervalStyle")),
+        b"sql_standard"
+    );
+    query(&mut other, "RESET IntervalStyle");
+    assert_eq!(
+        date_text_row(&query(&mut other, "SHOW IntervalStyle")),
+        b"iso_8601"
+    );
+    for extended in [false, true] {
+        let messages = command(&mut other, "SET LOCAL IntervalStyle='postgres'", extended);
+        let notice = &messages
+            .iter()
+            .find(|m| m.0 == b'N')
+            .expect("SET LOCAL warning")
+            .1;
+        assert!(notice.windows(7).any(|w| w == b"C25P01\0"));
+        assert_eq!(
+            date_text_row(&query(&mut other, "SHOW IntervalStyle")),
+            b"iso_8601"
+        );
+    }
+    send(&mut other, b'X', &[]);
+    drop(other);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

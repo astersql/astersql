@@ -97,6 +97,7 @@ impl ConcreteSession {
                         Tp.GetType(),
                         astersql_parser_mysql::r#type::TypeDate
                             | astersql_parser_mysql::r#type::TypeDatetime
+                            | astersql_parser_mysql::r#type::TypePgInterval
                             | astersql_parser_mysql::r#type::TypePgTimestampTz
                     )
                 {
@@ -120,6 +121,12 @@ impl ConcreteSession {
                                 Err(error) => self.error = Some(error),
                             }
                             return false;
+                        } else if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval {
+                            astersql_types::pg_temporal::PgInterval::parse_with_style(
+                                text,
+                                self.session.pg_interval_style(None),
+                            )
+                            .map(|v| v.to_string())
                         } else if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate {
                             PgDate::parse_with_context(text, self.context).map(|v| v.to_string())
                         } else {
@@ -175,6 +182,7 @@ impl ConcreteSession {
                         Tp.GetType(),
                         astersql_parser_mysql::r#type::TypeDate
                             | astersql_parser_mysql::r#type::TypeDatetime
+                            | astersql_parser_mysql::r#type::TypePgInterval
                             | astersql_parser_mysql::r#type::TypePgTimestampTz
                     )
                 {
@@ -298,5 +306,69 @@ impl ConcreteSession {
                 .ok_or_else(|| temporal_error(PgTemporalError::Range))?,
         )
         .map_err(temporal_error)
+    }
+}
+
+/// IntervalStyle uses the same state in casts and the protocol worker. The
+/// transaction snapshot restores SET on abort; LOCAL expires at either end.
+#[derive(Clone, Default)]
+pub(super) struct IntervalSettings {
+    default: astersql_types::pg_temporal::PgIntervalStyle,
+    session: astersql_types::pg_temporal::PgIntervalStyle,
+    local: Option<astersql_types::pg_temporal::PgIntervalStyle>,
+    transaction: Option<astersql_types::pg_temporal::PgIntervalStyle>,
+}
+impl IntervalSettings {
+    pub(super) fn begin(&mut self) {
+        self.transaction = Some(self.session);
+    }
+    pub(super) fn finish(&mut self, commit: bool) {
+        if let Some(initial) = self.transaction.take() {
+            if !commit {
+                self.session = initial;
+            }
+        }
+        self.local = None;
+    }
+}
+impl ConcreteSession {
+    pub fn pg_interval_style(
+        &self,
+        setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
+    ) -> astersql_types::pg_temporal::PgIntervalStyle {
+        use astersql_types::pg_temporal::PgIntervalSetting;
+        let mut state = self.state.borrow_mut();
+        let active = state.transaction.is_some();
+        let values = &mut state.pg_interval_settings;
+        match setting {
+            Some(PgIntervalSetting::Startup(style)) => {
+                values.default = style;
+                values.session = style;
+                values.local = None;
+            }
+            Some(PgIntervalSetting::ResetLocal) => {
+                if active {
+                    values.local = Some(values.default);
+                }
+            }
+            Some(PgIntervalSetting::Reset) => {
+                values.session = values.default;
+                values.local = None;
+            }
+            Some(PgIntervalSetting::Set { style, local: true }) => {
+                if active {
+                    values.local = Some(style);
+                }
+            }
+            Some(PgIntervalSetting::Set {
+                style,
+                local: false,
+            }) => {
+                values.session = style;
+                values.local = None;
+            }
+            None => {}
+        }
+        values.local.unwrap_or(values.session)
     }
 }

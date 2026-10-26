@@ -1285,14 +1285,17 @@ impl ConcreteSession {
                     return self
                         .relational_query_expression_value(Expr, row, group_rows)?
                         .map(|text| {
-                            text.parse::<astersql_types::pg_temporal::PgInterval>()
-                                .map(|v| v.to_string())
-                                .map_err(|e| {
-                                    SessionError::with_source(
-                                        e.to_string(),
-                                        astersql_errors::SharedError::new(e),
-                                    )
-                                })
+                            astersql_types::pg_temporal::PgInterval::parse_with_style(
+                                &text,
+                                self.pg_interval_style(None),
+                            )
+                            .map(|v| v.to_string())
+                            .map_err(|e| {
+                                SessionError::with_source(
+                                    e.to_string(),
+                                    astersql_errors::SharedError::new(e),
+                                )
+                            })
                         })
                         .transpose();
                 }
@@ -1314,6 +1317,27 @@ impl ConcreteSession {
                     );
                 }
                 if Tp.PostgreSQLTextOid().is_some() {
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && self
+                            .relational_query_expression_type_from_sources(Expr, &[])
+                            .GetType()
+                            == astersql_parser_mysql::r#type::TypePgInterval
+                    {
+                        let formatted = self
+                            .relational_query_expression_value(Expr, row, group_rows)?
+                            .map(|text| {
+                                text.parse::<astersql_types::pg_temporal::PgInterval>()
+                                    .map(|v| v.format_with_style(self.pg_interval_style(None)))
+                                    .map_err(|e| {
+                                        SessionError::with_source(
+                                            e.to_string(),
+                                            astersql_errors::SharedError::new(e),
+                                        )
+                                    })
+                            })
+                            .transpose()?;
+                        return pg_text_relational_cast(Expr, row, formatted, Tp, true);
+                    }
                     return pg_text_relational_cast(
                         Expr,
                         row,

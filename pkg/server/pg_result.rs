@@ -322,6 +322,10 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         "COMMIT"
     } else if node.is::<ast::RollbackStmt>() {
         "ROLLBACK"
+    } else if node.is::<ast::SavepointStmt>() {
+        "SAVEPOINT"
+    } else if node.is::<ast::ReleaseSavepointStmt>() {
+        "RELEASE"
     } else if node.is::<ast::SetStmt>() {
         "SET"
     } else {
@@ -1098,6 +1102,15 @@ pub(crate) fn encode_formats(
     command: &str,
     formats: &[usize],
 ) -> io::Result<Vec<(u8, Vec<u8>)>> {
+    encode_formats_interval(result, command, formats, Default::default())
+}
+
+pub(crate) fn encode_formats_interval(
+    result: &QueryResult,
+    command: &str,
+    formats: &[usize],
+    interval_style: astersql_types::pg_temporal::PgIntervalStyle,
+) -> io::Result<Vec<(u8, Vec<u8>)>> {
     if !formats.is_empty()
         && (formats.len() != result.columns.len() || formats.iter().any(|f| *f > 1))
     {
@@ -1252,6 +1265,17 @@ pub(crate) fn encode_formats(
                     } else {
                         value_binary(value, *oid)?
                     }
+                } else if *oid == 1186 {
+                    value_text(value, *oid)?
+                        .map(|text| {
+                            let text = std::str::from_utf8(&text)
+                                .map_err(|_| invalid("invalid interval UTF8"))?;
+                            let v = text
+                                .parse::<astersql_types::pg_temporal::PgInterval>()
+                                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                            Ok::<_, io::Error>(v.format_with_style(interval_style).into_bytes())
+                        })
+                        .transpose()?
                 } else {
                     value_text(value, *oid)?
                 };
@@ -1291,8 +1315,9 @@ pub(crate) fn write_result(
     socket: &mut TcpStream,
     result: &QueryResult,
     command: &str,
+    style: astersql_types::pg_temporal::PgIntervalStyle,
 ) -> io::Result<()> {
-    for (tag, body) in encode(result, command)? {
+    for (tag, body) in encode_formats_interval(result, command, &[], style)? {
         write_message(socket, tag, &body)?;
     }
     Ok(())
@@ -1305,4 +1330,21 @@ pub(crate) fn encoding_sqlstate(error: &io::Error) -> &'static str {
         .get_ref()
         .and_then(|source| source.downcast_ref::<astersql_types::pg_temporal::PgTemporalError>())
         .map_or("0A000", |error| error.sqlstate())
+}
+
+/// Fetch the worker setting only for interval results; other SQL traffic does
+/// not need an additional worker round trip.
+pub(crate) fn interval_style(
+    result: &QueryResult,
+    context: &dyn crate::conn::TiDBContext,
+) -> crate::conn::ConnResult<astersql_types::pg_temporal::PgIntervalStyle> {
+    if result
+        .native_types
+        .iter()
+        .any(|tp| tp.code == astersql_parser_mysql::r#type::TypePgInterval)
+    {
+        context.pg_interval_style(None)
+    } else {
+        Ok(Default::default())
+    }
 }

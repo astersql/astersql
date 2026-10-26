@@ -1109,7 +1109,20 @@ impl Extended {
                         args.push(if format == 1 {
                             binary_parameter(*oid, value)?
                         } else {
-                            if *oid == 1184 && value.is_some() {
+                            if *oid == 1186 && value.is_some() {
+                                let text = std::str::from_utf8(value.unwrap()).map_err(|_| {
+                                    error("22021", "invalid UTF-8 interval parameter")
+                                })?;
+                                if text.contains('\0') {
+                                    return Err(error("22021", "NUL in interval parameter"));
+                                }
+                                let v = astersql_types::pg_temporal::PgInterval::parse_with_style(
+                                    text,
+                                    context.pg_interval_style(None).map_err(engine)?,
+                                )
+                                .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+                                parameter(*oid, Some(v.to_string().as_bytes()))?
+                            } else if *oid == 1184 && value.is_some() {
                                 let text = std::str::from_utf8(value.unwrap()).map_err(|_| {
                                     error("22021", "invalid UTF-8 temporal parameter")
                                 })?;
@@ -1305,16 +1318,24 @@ impl Extended {
                             column.name.clone_from(&prepared.name);
                         }
                     }
-                    let encoded =
-                        crate::pg_result::encode_formats(&result, command, &portal.formats)
-                            .map_err(|e| {
-                                error(crate::pg_result::encoding_sqlstate(&e), &e.to_string())
-                            });
+                    let encoded = crate::pg_result::encode_formats_interval(
+                        &result,
+                        command,
+                        &portal.formats,
+                        crate::pg_result::interval_style(&result, context.as_ref())
+                            .map_err(engine)?,
+                    )
+                    .map_err(|e| error(crate::pg_result::encoding_sqlstate(&e), &e.to_string()));
                     if let Some(lifecycle) = &result.response_lifecycle {
                         lifecycle.finish();
                     }
                     context.finish_protocol_response(std::time::Duration::ZERO);
                     let mut messages = encoded?;
+                    if let Some(query) = &portal.session_query {
+                        let mut notices = query.notices(context.as_ref());
+                        notices.append(&mut messages);
+                        messages = notices;
+                    }
                     if messages.first().is_some_and(|m| m.0 == b'T') {
                         let metadata = messages.remove(0).1;
                         if portal.description.as_ref() != Some(&metadata) {

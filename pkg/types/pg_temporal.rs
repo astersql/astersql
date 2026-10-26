@@ -858,9 +858,8 @@ fn interval_round(n: i128, d: i128) -> i128 {
         0
     }
 }
-impl std::str::FromStr for PgInterval {
-    type Err = PgTemporalError;
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
+impl PgInterval {
+    fn parse_postgres(input: &str) -> Result<Self, PgTemporalError> {
         let input = input.trim();
         if input.eq_ignore_ascii_case("infinity") {
             return Ok(Self::from_components(i32::MAX, i32::MAX, i64::MAX));
@@ -1039,5 +1038,294 @@ impl fmt::Display for PgInterval {
             ));
         }
         f.write_str(&parts.join(" "))
+    }
+}
+
+/// PostgreSQL's four interval input/output conventions; independent of DateStyle.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PgIntervalStyle {
+    #[default]
+    Postgres,
+    PostgresVerbose,
+    SqlStandard,
+    Iso8601,
+}
+impl PgIntervalStyle {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "postgres" => Some(Self::Postgres),
+            "postgres_verbose" => Some(Self::PostgresVerbose),
+            "sql_standard" => Some(Self::SqlStandard),
+            "iso_8601" => Some(Self::Iso8601),
+            _ => None,
+        }
+    }
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgres",
+            Self::PostgresVerbose => "postgres_verbose",
+            Self::SqlStandard => "sql_standard",
+            Self::Iso8601 => "iso_8601",
+        }
+    }
+}
+/// Changes applied by the owning session, including its startup reset value.
+#[derive(Clone, Copy, Debug)]
+pub enum PgIntervalSetting {
+    Set { style: PgIntervalStyle, local: bool },
+    Reset,
+    ResetLocal,
+    Startup(PgIntervalStyle),
+}
+impl PgInterval {
+    pub fn parse_with_style(input: &str, style: PgIntervalStyle) -> Result<Self, PgTemporalError> {
+        let mut input = input.trim();
+        let ago = input.ends_with(" ago");
+        if ago {
+            input = input[..input.len() - 4].trim_end();
+        }
+        input = input.strip_prefix('@').unwrap_or(input).trim();
+        let mut normalized = String::new();
+        if let Some(iso) = input.strip_prefix('P') {
+            let mut time = false;
+            let mut start = 0;
+            for (i, c) in iso.char_indices() {
+                if c == 'T' {
+                    if i != start || time {
+                        return Err(PgTemporalError::Syntax);
+                    }
+                    time = true;
+                    start = i + 1;
+                    continue;
+                }
+                if c.is_ascii_alphabetic() {
+                    let unit = match (c, time) {
+                        ('Y', false) => "years",
+                        ('M', false) => "months",
+                        ('W', false) => "weeks",
+                        ('D', false) => "days",
+                        ('H', true) => "hours",
+                        ('M', true) => "minutes",
+                        ('S', true) => "seconds",
+                        _ => return Err(PgTemporalError::Syntax),
+                    };
+                    if start == i {
+                        return Err(PgTemporalError::Syntax);
+                    }
+                    normalized.push_str(&format!("{} {unit} ", &iso[start..i]));
+                    start = i + 1;
+                }
+            }
+            if start != iso.len() || normalized.is_empty() || iso.ends_with('T') {
+                return Err(PgTemporalError::Syntax);
+            }
+        } else {
+            let fields = input.split_whitespace().collect::<Vec<_>>();
+            // In SQL standard input a single leading minus covers unsigned
+            // fields. Any subsequent explicit sign restores independent signs.
+            let negate = style == PgIntervalStyle::SqlStandard
+                && input.starts_with('-')
+                && !fields
+                    .iter()
+                    .skip(1)
+                    .any(|field| field.starts_with(['+', '-']));
+            for (i, field) in fields.iter().enumerate() {
+                let number = field.strip_prefix(['+', '-']).unwrap_or(field);
+                if let Some((years, months)) = number.split_once('-') {
+                    if years.is_empty() || months.is_empty() || months.contains('-') {
+                        return Err(PgTemporalError::Syntax);
+                    }
+                    let sign = if field.starts_with('-') { "-" } else { "+" };
+                    normalized.push_str(&format!("{sign}{years} years {sign}{months} months "));
+                } else {
+                    let unsigned = !field.starts_with(['+', '-']);
+                    if negate
+                        && i > 0
+                        && unsigned
+                        && field.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                    {
+                        normalized.push('-');
+                    }
+                    normalized.push_str(field);
+                    // A bare number before a clock (or the final SQL-standard
+                    // day field) is a calendar day, never elapsed hours.
+                    if !field.contains(':')
+                        && number.parse::<i128>().is_ok()
+                        && (fields.get(i + 1).is_some_and(|s| s.contains(':'))
+                            || (style == PgIntervalStyle::SqlStandard
+                                && fields.len() > 1
+                                && i + 1 == fields.len()))
+                    {
+                        normalized.push_str(" days");
+                    }
+                    normalized.push(' ');
+                }
+            }
+        }
+        if ago {
+            normalized = normalized
+                .split_whitespace()
+                .map(|field| {
+                    if let Some(n) = field.strip_prefix('-') {
+                        n.to_owned()
+                    } else if field
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|b| b.is_ascii_digit() || *b == b'+')
+                    {
+                        format!("-{}", field.strip_prefix('+').unwrap_or(field))
+                    } else {
+                        field.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+        Self::parse_postgres(normalized.trim())
+    }
+
+    pub fn format_with_style(self, style: PgIntervalStyle) -> String {
+        if style == PgIntervalStyle::Postgres
+            || self.components() == (i32::MAX, i32::MAX, i64::MAX)
+            || self.components() == (i32::MIN, i32::MIN, i64::MIN)
+        {
+            return self.to_string();
+        }
+        let (m, d, t) = (
+            i64::from(self.months),
+            i64::from(self.days),
+            i128::from(self.time_microseconds),
+        );
+        let seconds = |v: i128| {
+            let n = v.abs();
+            let frac = n % 1_000_000;
+            format!(
+                "{}{}{}",
+                if v < 0 { "-" } else { "" },
+                n / 1_000_000,
+                if frac == 0 {
+                    String::new()
+                } else {
+                    format!(".{frac:06}").trim_end_matches('0').to_owned()
+                }
+            )
+        };
+        match style {
+            PgIntervalStyle::Iso8601 => {
+                let mut s = String::from("P");
+                for (n, u) in [(m / 12, "Y"), (m % 12, "M"), (d, "D")] {
+                    if n != 0 {
+                        s.push_str(&format!("{n}{u}"));
+                    }
+                }
+                if t != 0 {
+                    s.push('T');
+                    for (n, u) in [(t / 3_600_000_000, "H"), (t / 60_000_000 % 60, "M")] {
+                        if n != 0 {
+                            s.push_str(&format!("{n}{u}"));
+                        }
+                    }
+                    if t % 60_000_000 != 0 {
+                        s.push_str(&format!("{}S", seconds(t % 60_000_000)));
+                    }
+                }
+                if s == "P" {
+                    s.push_str("T0S");
+                }
+                s
+            }
+            PgIntervalStyle::PostgresVerbose => {
+                let negative = if m != 0 {
+                    m < 0
+                } else if d != 0 {
+                    d < 0
+                } else {
+                    t < 0
+                };
+                let sign = if negative { -1 } else { 1 };
+                let (m, d, t) = (m * sign, d * sign, t * i128::from(sign));
+                let mut parts = Vec::new();
+                for (n, u) in [
+                    (i128::from(m / 12), "year"),
+                    (i128::from(m % 12), "mon"),
+                    (i128::from(d), "day"),
+                    (t / 3_600_000_000, "hour"),
+                    (t / 60_000_000 % 60, "min"),
+                ] {
+                    if n != 0 {
+                        parts.push(format!("{n} {u}{}", if n.abs() == 1 { "" } else { "s" }));
+                    }
+                }
+                if t % 60_000_000 != 0 {
+                    let n = t % 60_000_000;
+                    parts.push(format!(
+                        "{} sec{}",
+                        seconds(n),
+                        if n.abs() == 1_000_000 { "" } else { "s" }
+                    ));
+                }
+                if parts.is_empty() {
+                    parts.push("0".into());
+                }
+                format!(
+                    "@ {}{}",
+                    parts.join(" "),
+                    if negative { " ago" } else { "" }
+                )
+            }
+            PgIntervalStyle::SqlStandard => {
+                let mixed = (m < 0 || d < 0 || t < 0) && (m > 0 || d > 0 || t > 0);
+
+                let signed = mixed || (m != 0 && (d != 0 || t != 0));
+                let mut parts = Vec::new();
+                if m != 0 {
+                    parts.push(format!(
+                        "{}{}-{}",
+                        if m < 0 {
+                            "-"
+                        } else if signed {
+                            "+"
+                        } else {
+                            ""
+                        },
+                        m.abs() / 12,
+                        m.abs() % 12
+                    ));
+                }
+                if d != 0 || (m != 0 && t != 0) {
+                    parts.push(format!("{}{d}", if signed && d >= 0 { "+" } else { "" }));
+                }
+                if t != 0 || d != 0 {
+                    let n = t.abs();
+                    parts.push(format!(
+                        "{}{}:{:02}:{}{}",
+                        if t < 0 && (signed || parts.is_empty()) {
+                            "-"
+                        } else if signed {
+                            "+"
+                        } else {
+                            ""
+                        },
+                        n / 3_600_000_000,
+                        n / 60_000_000 % 60,
+                        if n / 1_000_000 % 60 < 10 { "0" } else { "" },
+                        seconds(n % 60_000_000)
+                    ));
+                }
+                if parts.is_empty() {
+                    return "0".into();
+                }
+                // SQL standard uses one leading minus for a wholly negative
+                // day/time interval, and signed fields for mixed categories.
+                parts.join(" ")
+            }
+            PgIntervalStyle::Postgres => unreachable!(),
+        }
+    }
+}
+impl std::str::FromStr for PgInterval {
+    type Err = PgTemporalError;
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        Self::parse_with_style(input, PgIntervalStyle::Postgres)
     }
 }

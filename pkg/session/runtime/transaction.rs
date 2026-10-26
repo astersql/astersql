@@ -61,6 +61,7 @@ pub(super) struct RuntimeRowLockState {
 #[derive(Clone)]
 /// 保存点创建时的事务可见数据与已持有锁快照。
 pub(super) struct RuntimeSavepoint {
+    pub(super) pg_interval_settings: super::pg_temporal::IntervalSettings,
     pub(super) name: String,
     pub(super) visible: BTreeMap<Vec<u8>, Vec<u8>>,
     pub(super) held_locks: HashSet<RuntimeRowLockKey>,

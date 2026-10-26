@@ -631,3 +631,98 @@ fn pg_interval_components_preserve_dimensions() {
         "22P03"
     );
 }
+
+#[test]
+fn pg_interval_signs_style() {
+    use super::pg_temporal::{PgInterval, PgIntervalStyle as S};
+    for (style, cases) in [
+        (
+            S::Postgres,
+            [
+                "-1 mons +2 days -03:04:05.123456",
+                "-1 mons -2 days -03:04:05.123456",
+                "00:00:00",
+            ],
+        ),
+        (
+            S::PostgresVerbose,
+            [
+                "@ 1 mon -2 days 3 hours 4 mins 5.123456 secs ago",
+                "@ 1 mon 2 days 3 hours 4 mins 5.123456 secs ago",
+                "@ 0",
+            ],
+        ),
+        (
+            S::SqlStandard,
+            ["-0-1 +2 -3:04:05.123456", "-0-1 -2 -3:04:05.123456", "0"],
+        ),
+        (
+            S::Iso8601,
+            [
+                "P-1M2DT-3H-4M-5.123456S",
+                "P-1M-2DT-3H-4M-5.123456S",
+                "PT0S",
+            ],
+        ),
+    ] {
+        for (text, parts) in
+            cases
+                .into_iter()
+                .zip([(-1, 2, -11045123456), (-1, -2, -11045123456), (0, 0, 0)])
+        {
+            let v = PgInterval::parse_with_style(text, style).unwrap();
+            assert_eq!(v.components(), parts, "{text}");
+            assert_eq!(v.format_with_style(style), text);
+        }
+        for parts in [
+            (i32::MIN, 0, 0),
+            (0, i32::MIN, 0),
+            (0, 0, i64::MIN),
+            (i32::MAX, i32::MIN, i64::MAX),
+            (0, 2, 0),
+            (1, 2, 11045000000),
+            (0, -2, -11045000000),
+            (0, 1, -1),
+        ] {
+            let v = PgInterval::from_components(parts.0, parts.1, parts.2);
+            let text = v.format_with_style(style);
+            assert_eq!(
+                PgInterval::parse_with_style(&text, style)
+                    .unwrap_or_else(|e| panic!("{style:?} {text}: {e:?}"))
+                    .components(),
+                parts,
+                "{style:?} {text}"
+            );
+        }
+    }
+    for (style, t) in [(S::Postgres, 7384000000), (S::SqlStandard, -7384000000)] {
+        assert_eq!(
+            PgInterval::parse_with_style("-1 2:03:04", style)
+                .unwrap()
+                .components(),
+            (0, -1, t)
+        );
+    }
+    for (parts, expected) in [
+        ((1, 2, 11045000000), "+0-1 +2 +3:04:05"),
+        ((0, 1, 0), "1 0:00:00"),
+        ((0, -1, 0), "-1 0:00:00"),
+        ((1, -2, 0), "+0-1 -2 +0:00:00"),
+        ((0, -2, -10800000000), "-2 3:00:00"),
+    ] {
+        assert_eq!(
+            PgInterval::from_components(parts.0, parts.1, parts.2)
+                .format_with_style(S::SqlStandard),
+            expected
+        );
+    }
+    for bad in ["P", "PT", "P1DT", "P1Q", "@ bad ago", "1-", "1 day 2 days"] {
+        assert_eq!(
+            PgInterval::parse_with_style(bad, S::Postgres)
+                .unwrap_err()
+                .sqlstate(),
+            "22007",
+            "{bad}"
+        );
+    }
+}

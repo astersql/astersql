@@ -967,6 +967,20 @@ impl ConcreteSession {
         commit: bool,
         allow_mutation_retry: bool,
     ) -> SessionResult<()> {
+        let mut interval_before = self.state.borrow().pg_interval_settings.clone();
+        let result = self.finish_transaction_with_retry_inner(commit, allow_mutation_retry);
+        if result.is_err() && self.state.borrow().transaction.is_none() {
+            interval_before.finish(false);
+            self.state.borrow_mut().pg_interval_settings = interval_before;
+        }
+        result
+    }
+
+    fn finish_transaction_with_retry_inner(
+        &self,
+        commit: bool,
+        allow_mutation_retry: bool,
+    ) -> SessionResult<()> {
         struct ReleaseMDL<'a>(&'a ConcreteSession);
         impl Drop for ReleaseMDL<'_> {
             fn drop(&mut self) {
@@ -1027,6 +1041,7 @@ impl ConcreteSession {
             let mut state = self.state.borrow_mut();
             let transaction = state.transaction.take();
             state.pg_transaction_time = None;
+            state.pg_interval_settings.finish(commit);
             let had_transaction = transaction.is_some();
             let was_pessimistic = state.transaction_pessimistic;
             let injected_commit_error = (commit && had_transaction)
@@ -1489,6 +1504,7 @@ impl ConcreteSession {
             .store(false, std::sync::atomic::Ordering::Release);
         state.pg_transaction_time =
             (self.sql_dialect() == ast::SqlDialect::PostgreSQL).then_some(state.pg_statement_time);
+        state.pg_interval_settings.begin();
         state.transaction = Some(transaction);
         state.transaction_info_schema = Some(transaction_info_schema);
         self.transaction_mdl.clear();
@@ -1553,7 +1569,9 @@ impl ConcreteSession {
         let deferred_optimistic_constraint_errors =
             state.deferred_optimistic_constraint_errors.clone();
         let pending_ttl_insert_rows = state.pending_ttl_insert_rows;
+        let pg_interval_settings = state.pg_interval_settings.clone();
         state.savepoints.push(RuntimeSavepoint {
+            pg_interval_settings,
             name,
             visible,
             held_locks,
@@ -1597,6 +1615,7 @@ impl ConcreteSession {
                 )));
             };
             let savepoint = state.savepoints[position].clone();
+            state.pg_interval_settings = savepoint.pg_interval_settings.clone();
             let transaction = state
                 .transaction
                 .as_mut()

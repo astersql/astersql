@@ -230,6 +230,8 @@ impl PgService {
                     && matches!(value.to_ascii_uppercase().as_str(), "UTF8" | "UTF-8"))
                 // The text codec uses ISO dates. JDBC requests ISO at startup;
                 // reject alternate formats rather than advertising unsupported output.
+                || (name.eq_ignore_ascii_case("intervalstyle")
+                    && astersql_types::pg_temporal::PgIntervalStyle::parse(value).is_some())
                 || (name.eq_ignore_ascii_case("datestyle")
                     && matches!(value.to_ascii_uppercase().as_str(), "ISO" | "ISO, MDY"))
                 // Positive extra_float_digits requests shortest round-trip output,
@@ -320,6 +322,19 @@ impl PgService {
                 write_error(socket, "FATAL", "22023", &error.to_string())?;
                 return Ok(false);
             }
+            if let Some((_, value)) = startup
+                .parameters
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("intervalstyle"))
+            {
+                context
+                    .pg_interval_style(Some(
+                        astersql_types::pg_temporal::PgIntervalSetting::Startup(
+                            astersql_types::pg_temporal::PgIntervalStyle::parse(value).unwrap(),
+                        ),
+                    ))
+                    .map_err(io::Error::other)?;
+            }
             let key_length = cancel_key_length(startup.protocol_version);
             let mut key = vec![0; key_length];
             rustls::crypto::aws_lc_rs::default_provider()
@@ -407,6 +422,9 @@ impl PgService {
                                 )?;
                                 continue;
                             }
+                            for (tag, body) in query.notices(context.as_ref()) {
+                                write_message(socket, tag, &body)?;
+                            }
                             match self.with_query(pid, |context| {
                                 extended.session.execute(query, context.as_ref())
                             })? {
@@ -414,6 +432,8 @@ impl PgService {
                                     socket,
                                     &result,
                                     query.command(),
+                                    crate::pg_result::interval_style(&result, context.as_ref())
+                                        .map_err(io::Error::other)?,
                                 )?,
                                 Err(error) => {
                                     extended.session.record_error(context.as_ref());
@@ -527,6 +547,11 @@ impl PgService {
                                                 socket,
                                                 &results[0],
                                                 command,
+                                                crate::pg_result::interval_style(
+                                                    &results[0],
+                                                    context.as_ref(),
+                                                )
+                                                .map_err(io::Error::other)?,
                                             )
                                         } else {
                                             write_error(

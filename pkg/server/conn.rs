@@ -918,6 +918,15 @@ pub trait TiDBContext: Send + Sync {
             "PostgreSQL timestamptz context unavailable".into(),
         ))
     }
+    /// Read or update IntervalStyle in the owning SQL worker.
+    fn pg_interval_style(
+        &self,
+        _setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
+    ) -> ConnResult<astersql_types::pg_temporal::PgIntervalStyle> {
+        Err(ConnError::Session(
+            "PostgreSQL interval context unavailable".into(),
+        ))
+    }
     /// DATE Parse/Bind context from the owning session worker.
     fn pg_date_context(
         &self,

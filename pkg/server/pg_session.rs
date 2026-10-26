@@ -6,6 +6,8 @@ use crate::pg_catalog_query::{ParseResult, Token, lex};
 #[derive(Clone, Debug)]
 pub(crate) enum SessionQuery {
     Show,
+    IntervalStyleShow,
+    IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting),
     DateStyleShow,
     DateStyleSet(Option<astersql_types::pg_temporal::PgDateOrder>),
     DateStyleReset,
@@ -125,6 +127,13 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
+            SessionQuery::IntervalStyleShow => {
+                Some(Value::Text(context.pg_interval_style(None)?.name().into()))
+            }
+            SessionQuery::IntervalStyleSet(setting) => {
+                context.pg_interval_style(Some(*setting))?;
+                None
+            }
             SessionQuery::DateStyleShow => Some(Value::Text(format!(
                 "ISO, {}",
                 context.pg_date_context(None)?.order.name()
@@ -196,10 +205,28 @@ impl PgSession {
     }
 }
 impl SessionQuery {
+    pub(crate) fn notices(&self, context: &dyn TiDBContext) -> Vec<(u8, Vec<u8>)> {
+        use astersql_types::pg_temporal::PgIntervalSetting;
+        if !context.in_transaction()
+            && matches!(
+                self,
+                Self::IntervalStyleSet(
+                    PgIntervalSetting::Set { local: true, .. } | PgIntervalSetting::ResetLocal
+                )
+            )
+        {
+            vec![(b'N',b"SWARNING\0VWARNING\0C25P01\0MSET LOCAL can only be used in transaction blocks\0\0".to_vec())]
+        } else {
+            Vec::new()
+        }
+    }
     pub(crate) fn command(&self) -> &'static str {
         match self {
-            Self::Show | Self::DateStyleShow => "SHOW",
-            Self::Set(_) | Self::DateStyleSet(_) => "SET",
+            Self::Show | Self::DateStyleShow | Self::IntervalStyleShow => "SHOW",
+            Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
+                "RESET"
+            }
+            Self::Set(_) | Self::DateStyleSet(_) | Self::IntervalStyleSet(_) => "SET",
             Self::Reset | Self::DateStyleReset => "RESET",
             _ => "SELECT",
         }
@@ -208,6 +235,7 @@ impl SessionQuery {
         let name = match self {
             Self::Show => Some("search_path"),
             Self::DateStyleShow => Some("DateStyle"),
+            Self::IntervalStyleShow => Some("IntervalStyle"),
             Self::Schema(name) | Self::Database(name) => Some(name.as_str()),
             _ => None,
         };
@@ -262,6 +290,41 @@ impl SessionQuery {
             tokens.pop();
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
+        let scoped = word(tokens.get(1), "local") || word(tokens.get(1), "session");
+        let index = if scoped { 2 } else { 1 };
+        if word(tokens.get(index), "intervalstyle") {
+            use astersql_types::pg_temporal::{PgIntervalSetting, PgIntervalStyle};
+            if !scoped && word(tokens.first(), "show") && tokens.len() == 2 {
+                return Ok(Some(Self::IntervalStyleShow));
+            }
+            if !scoped && word(tokens.first(), "reset") && tokens.len() == 2 {
+                return Ok(Some(Self::IntervalStyleSet(PgIntervalSetting::Reset)));
+            }
+            if word(tokens.first(), "set")
+                && tokens.len() == index + 3
+                && (word(tokens.get(index + 1), "to")
+                    || tokens.get(index + 1) == Some(&Token::Symbol('=')))
+            {
+                let value = match &tokens[index + 2] {
+                    Token::Word(s) | Token::String(s) => s,
+                    _ => return Err(("42601", "invalid IntervalStyle".into())),
+                };
+                let style = if word(tokens.get(index + 2), "default") {
+                    if !word(tokens.get(1), "local") {
+                        return Ok(Some(Self::IntervalStyleSet(PgIntervalSetting::Reset)));
+                    }
+                    return Ok(Some(Self::IntervalStyleSet(PgIntervalSetting::ResetLocal)));
+                } else {
+                    PgIntervalStyle::parse(value)
+                        .ok_or(("22023", "invalid value for IntervalStyle".into()))?
+                };
+                return Ok(Some(Self::IntervalStyleSet(PgIntervalSetting::Set {
+                    style,
+                    local: word(tokens.get(1), "local"),
+                })));
+            }
+            return Err(("42601", "invalid IntervalStyle command".into()));
+        }
         if word(tokens.get(1), "datestyle") {
             use astersql_types::pg_temporal::PgDateOrder;
             if word(tokens.first(), "show") && tokens.len() == 2 {

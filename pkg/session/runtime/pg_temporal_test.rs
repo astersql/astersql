@@ -240,3 +240,83 @@ fn pg_timestamptz_null_union_session_display() {
         assert!(sets[0].next_row().unwrap().is_none());
     }
 }
+
+#[test]
+fn interval_style_lifecycle() {
+    use astersql_types::pg_temporal::{PgIntervalSetting as A, PgIntervalStyle as S};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let other = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.pg_interval_style(Some(A::Startup(S::Iso8601)));
+    session.execute("BEGIN").unwrap();
+    session.pg_interval_style(Some(A::Set {
+        style: S::SqlStandard,
+        local: false,
+    }));
+    session.execute("SAVEPOINT s").unwrap();
+    session.pg_interval_style(Some(A::Set {
+        style: S::PostgresVerbose,
+        local: true,
+    }));
+    assert_eq!(session.pg_interval_style(None), S::PostgresVerbose);
+    session.execute("ROLLBACK TO SAVEPOINT s").unwrap();
+    assert_eq!(session.pg_interval_style(None), S::SqlStandard);
+    session.execute("ROLLBACK").unwrap();
+    assert_eq!(session.pg_interval_style(None), S::Iso8601);
+    assert_eq!(other.pg_interval_style(None), S::Postgres);
+    session.execute("BEGIN").unwrap();
+    session.pg_interval_style(Some(A::Set {
+        style: S::SqlStandard,
+        local: false,
+    }));
+    session.pg_interval_style(Some(A::Set {
+        style: S::PostgresVerbose,
+        local: true,
+    }));
+    session.execute("COMMIT").unwrap();
+    assert_eq!(session.pg_interval_style(None), S::SqlStandard);
+    session.pg_interval_style(Some(A::Reset));
+    assert_eq!(session.pg_interval_style(None), S::Iso8601);
+    session.pg_interval_style(Some(A::Set {
+        style: S::PostgresVerbose,
+        local: true,
+    }));
+    assert_eq!(session.pg_interval_style(None), S::Iso8601);
+    session.pg_interval_style(Some(A::Set {
+        style: S::SqlStandard,
+        local: false,
+    }));
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types(
+            "SELECT CAST('-1 2:03:04' AS interval), CAST(? AS interval)",
+            &[25],
+        )
+        .unwrap();
+    session.pg_interval_style(Some(A::Set {
+        style: S::Postgres,
+        local: false,
+    }));
+    let mut result = session
+        .execute_protocol_statement(id, &[ConcretePreparedArgument::Text("-1 2:03:04".into())])
+        .unwrap();
+    assert_eq!(
+        result[0].next_row().unwrap().unwrap(),
+        ["-1 days -02:03:04", "-1 days +02:03:04"]
+    );
+    session.close_protocol_statement(id).unwrap();
+    session.execute("BEGIN").unwrap();
+    session.pg_interval_style(Some(A::Set {
+        style: S::Iso8601,
+        local: false,
+    }));
+    session.execute("SAVEPOINT release_style").unwrap();
+    session.pg_interval_style(Some(A::Set {
+        style: S::PostgresVerbose,
+        local: true,
+    }));
+    session.execute("RELEASE SAVEPOINT release_style").unwrap();
+    assert_eq!(session.pg_interval_style(None), S::PostgresVerbose);
+    session.state.borrow_mut().next_dml_commit_error = Some("interval style commit failure".into());
+    assert!(session.execute("COMMIT").is_err());
+    assert_eq!(session.pg_interval_style(None), S::Postgres);
+}

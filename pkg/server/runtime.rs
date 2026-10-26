@@ -801,6 +801,10 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgIntervalStyle {
+        setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
+        response: mpsc::SyncSender<ConnResult<astersql_types::pg_temporal::PgIntervalStyle>>,
+    },
     PgTimestampTzInput {
         text: String,
         response: mpsc::SyncSender<ConnResult<String>>,
@@ -953,6 +957,9 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgIntervalStyle { setting, response } => {
+                let _ = response.send(Ok(session.pg_interval_style(setting)));
+            }
             SessionRequest::PgTimestampTzInput { text, response } => {
                 let result = session
                     .pg_timestamptz_input(&text)
@@ -1714,6 +1721,17 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn pg_interval_style(
+        &self,
+        setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
+    ) -> ConnResult<astersql_types::pg_temporal::PgIntervalStyle> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgIntervalStyle {
+            setting,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_timestamptz_input(&self, text: &str) -> ConnResult<String> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgTimestampTzInput {

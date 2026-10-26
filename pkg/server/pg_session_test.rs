@@ -53,3 +53,31 @@ fn date_style_parser_keeps_commands_and_literals_separate() {
             .is_none()
     );
 }
+
+#[test]
+fn interval_style_commands() {
+    for sql in [
+        "SET IntervalStyle TO 'postgres'",
+        "SET SESSION IntervalStyle = iso_8601",
+        "SET LOCAL IntervalStyle = DEFAULT",
+        "SHOW IntervalStyle",
+        "RESET IntervalStyle",
+    ] {
+        assert!(SessionQuery::parse(sql).unwrap().is_some(), "{sql}");
+    }
+    for (sql, state) in [
+        ("SET IntervalStyle='bad'", "22023"),
+        ("SET IntervalStyle='default'", "22023"),
+        ("SET IntervalStyle = NULL", "22023"),
+        ("SHOW IntervalStyle extra", "42601"),
+        ("SET IntervalStyle TO", "42601"),
+        ("SET IntervalStyle='postgres'; SELECT 1", "42601"),
+    ] {
+        assert_eq!(SessionQuery::parse(sql).unwrap_err().0, state, "{sql}");
+    }
+    assert!(
+        SessionQuery::parse("SELECT 'SET IntervalStyle=iso_8601'")
+            .unwrap()
+            .is_none()
+    );
+}
