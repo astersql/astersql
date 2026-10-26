@@ -1230,3 +1230,139 @@ fn pg_temporal_date_null_metadata() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_date_invalid_binary() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for output in [0i16, 1] {
+        for in_transaction in [false, true] {
+            for (input, payload, state) in [
+                (1, vec![], "08P01"),
+                (1, vec![0; 3], "08P01"),
+                (1, vec![0; 5], "22P03"),
+                (1, (-2451546i32).to_be_bytes().to_vec(), "22008"),
+                (1, 2145031949i32.to_be_bytes().to_vec(), "22008"),
+                (0, vec![0xff], "22021"),
+                (0, b"2000-01-01\0".to_vec(), "22021"),
+            ] {
+                if in_transaction {
+                    assert!(!query(&mut socket, "BEGIN").iter().any(|m| m.0 == b'E'));
+                }
+                let result = cycle(
+                    &mut socket,
+                    "SELECT $1::date",
+                    input,
+                    output,
+                    Some(&payload),
+                );
+                error_in_state(&result, state, if in_transaction { b"E" } else { b"I" });
+                assert!(!result.iter().any(|m| m.0 == b'D' || m.0 == b'2'));
+                if in_transaction {
+                    assert_eq!(
+                        query(&mut socket, "ROLLBACK").last().unwrap(),
+                        &(b'Z', b"I".to_vec())
+                    );
+                }
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+        for input in [0i16, 1] {
+            // Finite endpoints, epoch zero and both sentinels remain non-NULL.
+            for (text, days) in [
+                ("4714-11-24 BC", -2451545i32),
+                ("5874897-12-31", 2145031948),
+                ("2000-01-01", 0),
+                ("-infinity", i32::MIN),
+                ("infinity", i32::MAX),
+            ] {
+                let binary = days.to_be_bytes();
+                let payload = if input == 0 { text.as_bytes() } else { &binary };
+                let result = cycle(&mut socket, "SELECT $1::date", input, output, Some(payload));
+                assert_eq!(
+                    result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{result:?}"
+                );
+                assert_eq!(
+                    result[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1082u32.to_be_bytes()].concat()
+                );
+                description(&result[2].1, 0);
+                description(&result[4].1, output);
+                let expected = if output == 0 {
+                    text.as_bytes()
+                } else {
+                    &binary
+                };
+                assert_eq!(
+                    result[5].1,
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &(expected.len() as i32).to_be_bytes(),
+                        expected
+                    ]
+                    .concat()
+                );
+            }
+            let result = cycle(&mut socket, "SELECT $1::date", input, output, None);
+            assert_eq!(result.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+            description(&result[2].1, 0);
+            description(&result[4].1, output);
+            assert_eq!(
+                result[5].1,
+                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+            );
+        }
+        // The declared Bind value exceeds its complete outer message body.
+        // Sync can therefore recover without guessing a TCP frame boundary.
+        for declared in [4i32, 8] {
+            let parse = [
+                b"\0SELECT $1::date\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1082u32.to_be_bytes(),
+            ]
+            .concat();
+            send(&mut socket, b'P', &parse);
+            let bind = [
+                b"\0\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &declared.to_be_bytes(),
+                &[0; 3],
+            ]
+            .concat();
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'S', &[]);
+            let result = ready(&mut socket);
+            error(&result, "08P01");
+            assert!(!result.iter().any(|m| m.0 == b'2'));
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
