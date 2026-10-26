@@ -912,6 +912,12 @@ pub trait TiDBContext: Send + Sync {
     fn set_connection_status(&self, status: i32);
     fn wait_timeout(&self) -> Duration;
     fn in_transaction(&self) -> bool;
+    /// Resolve timestamptz text at Bind using the owning session's zone/clock.
+    fn pg_timestamptz_input(&self, _text: &str) -> ConnResult<String> {
+        Err(ConnError::Session(
+            "PostgreSQL timestamptz context unavailable".into(),
+        ))
+    }
     /// DATE Parse/Bind context from the owning session worker.
     fn pg_date_context(
         &self,

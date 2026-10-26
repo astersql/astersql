@@ -801,6 +801,10 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgTimestampTzInput {
+        text: String,
+        response: mpsc::SyncSender<ConnResult<String>>,
+    },
     PgDateContext {
         order: Option<astersql_types::pg_temporal::PgDateOrder>,
         response: mpsc::SyncSender<ConnResult<astersql_types::pg_temporal::PgDateContext>>,
@@ -949,6 +953,13 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgTimestampTzInput { text, response } => {
+                let result = session
+                    .pg_timestamptz_input(&text)
+                    .map(|v| v.to_string())
+                    .map_err(session_protocol_error);
+                let _ = response.send(result);
+            }
             SessionRequest::PgDateContext { order, response } => {
                 session.begin_pg_date_statement();
                 let result = session
@@ -1703,6 +1714,14 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn pg_timestamptz_input(&self, text: &str) -> ConnResult<String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgTimestampTzInput {
+            text: text.to_owned(),
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_date_context(
         &self,
         order: Option<astersql_types::pg_temporal::PgDateOrder>,

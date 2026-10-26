@@ -4277,3 +4277,231 @@ fn pg_temporal_tz_same_instant() {
     );
     println!("{}", String::from_utf8_lossy(&differential.stdout));
 }
+
+#[test]
+fn pg_temporal_tz_session() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE tz_session_diff").unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    for (zone, wall, micros) in [
+        ("UTC", "2000-01-01 00:00:00+00", 0i64),
+        ("Asia/Shanghai", "2000-01-01 08:00:00+08", -28_800_000_000),
+    ] {
+        assert!(
+            !query(&mut socket, &format!("SET time_zone = '{zone}'"))
+                .iter()
+                .any(|m| m.0 == b'E')
+        );
+        for input in [0i16, 1] {
+            for output in [0i16, 1] {
+                let binary = 0i64.to_be_bytes();
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamptz",
+                    1184,
+                    input,
+                    output,
+                    Some(if input == 0 {
+                        b"2000-01-01 00:00:00+00"
+                    } else {
+                        &binary
+                    }),
+                );
+                assert_eq!(
+                    result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{result:?}"
+                );
+                assert_eq!(
+                    result[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1184u32.to_be_bytes()].concat()
+                );
+                tz_session_description(&result[2].1, 0);
+                tz_session_description(&result[4].1, output);
+                let null = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamptz",
+                    1184,
+                    input,
+                    output,
+                    None,
+                );
+                assert_eq!(null.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+                tz_session_description(&null[2].1, 0);
+                tz_session_description(&null[4].1, output);
+                assert_eq!(
+                    null[5].1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+                assert_eq!(
+                    date_text_row(&result),
+                    if output == 0 {
+                        wall.as_bytes()
+                    } else {
+                        &binary
+                    }
+                );
+                let local = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamptz",
+                    1184,
+                    0,
+                    1,
+                    Some(b"2000-01-01 00:00:00"),
+                );
+                assert_eq!(date_text_row(&local), micros.to_be_bytes(), "{local:?}");
+            }
+        }
+    }
+    // A named portal survives SET within the transaction. Its input zone is
+    // captured at Bind; result formatting reads the zone at Execute.
+    for (bind_zone, execute_zone, expected, micros) in [
+        ("UTC", "Asia/Shanghai", "2000-01-01 08:00:00+08", 0i64),
+        (
+            "Asia/Shanghai",
+            "UTC",
+            "1999-12-31 16:00:00+00",
+            -28_800_000_000,
+        ),
+    ] {
+        for input in [0i16, 1] {
+            for output in [0i16, 1] {
+                query(&mut socket, &format!("SET time_zone = '{bind_zone}'"));
+                query(&mut socket, "BEGIN");
+                let parse = [
+                    b"kept\0SELECT $1::timestamptz\0".as_slice(),
+                    &1i16.to_be_bytes(),
+                    &1184u32.to_be_bytes(),
+                ]
+                .concat();
+                send(&mut socket, b'P', &parse);
+                send(&mut socket, b'D', b"Skept\0");
+                let binary = micros.to_be_bytes();
+                let payload = if input == 0 {
+                    b"2000-01-01 00:00:00".as_slice()
+                } else {
+                    &binary
+                };
+                let bind = [
+                    b"kept\0kept\0".as_slice(),
+                    &1i16.to_be_bytes(),
+                    &input.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                    &(payload.len() as i32).to_be_bytes(),
+                    payload,
+                    &1i16.to_be_bytes(),
+                    &output.to_be_bytes(),
+                ]
+                .concat();
+                send(&mut socket, b'B', &bind);
+                send(&mut socket, b'S', &[]);
+                let bound = ready(&mut socket);
+                assert_eq!(
+                    bound.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2Z",
+                    "{bound:?}"
+                );
+                tz_session_description(&bound[2].1, 0);
+                assert_eq!(
+                    bound[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1184u32.to_be_bytes()].concat()
+                );
+                query(&mut socket, &format!("SET time_zone = '{execute_zone}'"));
+                send(&mut socket, b'D', b"Pkept\0");
+                send(&mut socket, b'E', b"kept\0\0\0\0\0");
+                send(&mut socket, b'E', b"kept\0\0\0\0\0");
+                send(&mut socket, b'S', &[]);
+                let rows = ready(&mut socket);
+                assert_eq!(
+                    rows.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"TDCCZ",
+                    "{rows:?}"
+                );
+                tz_session_description(&rows[0].1, output);
+                assert_eq!(
+                    date_text_row(&rows),
+                    if output == 0 {
+                        expected.as_bytes()
+                    } else {
+                        &binary
+                    }
+                );
+                query(&mut socket, "ROLLBACK");
+                send(&mut socket, b'C', b"Skept\0");
+                send(&mut socket, b'S', &[]);
+                ready(&mut socket);
+            }
+        }
+    }
+    for (input, bytes, state) in [
+        (0, b"".to_vec(), "22007"),
+        (0, b"garbage".to_vec(), "22007"),
+        (0, b"2000-02-30 00:00:00".to_vec(), "22008"),
+        (0, vec![0xff], "22021"),
+        (0, b"2000-01-01 00:00:00\0".to_vec(), "22021"),
+        (1, vec![0; 7], "08P01"),
+        (1, vec![0; 9], "22P03"),
+    ] {
+        error(
+            &cycle_oid(
+                &mut socket,
+                "SELECT $1::timestamptz",
+                1184,
+                input,
+                0,
+                Some(&bytes),
+            ),
+            state,
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    send(&mut socket, b'X', &[]);
+    let differential = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_tz_session_libpq.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    service.close();
+    assert!(
+        differential.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&differential.stdout),
+        String::from_utf8_lossy(&differential.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&differential.stdout));
+}
+
+fn tz_session_description(body: &[u8], format: i16) {
+    assert_eq!(&body[..2], &1i16.to_be_bytes());
+    let at = 3 + body[2..].iter().position(|b| *b == 0).unwrap();
+    assert_eq!(&body[at + 6..at + 10], &1184u32.to_be_bytes());
+    assert_eq!(&body[at + 10..at + 12], &8i16.to_be_bytes());
+    assert_eq!(&body[at + 12..at + 16], &(-1i32).to_be_bytes());
+    assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+}

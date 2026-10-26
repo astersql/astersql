@@ -1060,7 +1060,10 @@ impl Extended {
                 let mut args = Vec::new();
                 let mut catalog_values = Vec::new();
                 let date_context = if statement.catalog.is_none()
-                    && statement.oids.iter().any(|oid| matches!(oid, 1082 | 1114))
+                    && statement
+                        .oids
+                        .iter()
+                        .any(|oid| matches!(oid, 1082 | 1114 | 1184))
                 {
                     Some(context.pg_date_context(None).map_err(engine)?)
                 } else {
@@ -1093,7 +1096,17 @@ impl Extended {
                         args.push(if format == 1 {
                             binary_parameter(*oid, value)?
                         } else {
-                            if matches!(*oid, 1082 | 1114) && value.is_some() {
+                            if *oid == 1184 && value.is_some() {
+                                let text = std::str::from_utf8(value.unwrap()).map_err(|_| {
+                                    error("22021", "invalid UTF-8 temporal parameter")
+                                })?;
+                                if text.contains('\0') {
+                                    return Err(error("22021", "NUL in temporal parameter"));
+                                }
+                                let canonical =
+                                    context.pg_timestamptz_input(text).map_err(engine)?;
+                                parameter(*oid, Some(canonical.as_bytes()))?
+                            } else if matches!(*oid, 1082 | 1114) && value.is_some() {
                                 let text = std::str::from_utf8(value.unwrap()).map_err(|_| {
                                     error("22021", "invalid UTF-8 temporal parameter")
                                 })?;

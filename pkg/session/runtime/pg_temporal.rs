@@ -77,12 +77,13 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
             return Ok(HashMap::new());
         }
-        struct Constants {
+        struct Constants<'a> {
+            session: &'a ConcreteSession,
             context: PgDateContext,
             values: HashMap<usize, String>,
             error: Option<SessionError>,
         }
-        impl ast::Visitor for Constants {
+        impl ast::Visitor for Constants<'_> {
             fn enter(&mut self, input: &dyn ast::Node) -> bool {
                 self.enter_embedded(input.as_any())
             }
@@ -96,6 +97,7 @@ impl ConcreteSession {
                         Tp.GetType(),
                         astersql_parser_mysql::r#type::TypeDate
                             | astersql_parser_mysql::r#type::TypeDatetime
+                            | astersql_parser_mysql::r#type::TypePgTimestampTz
                     )
                 {
                     let mut source = Expr.as_ref();
@@ -105,7 +107,20 @@ impl ConcreteSession {
                     if let ast::ExprKind::Value(value) = &source.Kind
                         && let ast::ValueDatum::String(text) = &value.Datum
                     {
-                        let value = if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate {
+                        let value = if Tp.GetType()
+                            == astersql_parser_mysql::r#type::TypePgTimestampTz
+                        {
+                            match self.session.pg_timestamptz_input(text).and_then(|v| {
+                                v.round_precision(Tp.GetDecimal()).map_err(temporal_error)
+                            }) {
+                                Ok(v) => {
+                                    self.values
+                                        .insert(expr.OriginTextPosition as usize, v.to_string());
+                                }
+                                Err(error) => self.error = Some(error),
+                            }
+                            return false;
+                        } else if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate {
                             PgDate::parse_with_context(text, self.context).map(|v| v.to_string())
                         } else {
                             astersql_types::pg_temporal::PgTimestamp::parse_with_context(
@@ -127,6 +142,7 @@ impl ConcreteSession {
             }
         }
         let mut constants = Constants {
+            session: self,
             context: self.pg_date_context(None)?,
             values: HashMap::new(),
             error: None,
@@ -159,6 +175,7 @@ impl ConcreteSession {
                         Tp.GetType(),
                         astersql_parser_mysql::r#type::TypeDate
                             | astersql_parser_mysql::r#type::TypeDatetime
+                            | astersql_parser_mysql::r#type::TypePgTimestampTz
                     )
                 {
                     **Expr = ast::ExprNode::Value(date.clone());
@@ -183,15 +200,17 @@ impl ConcreteSession {
         value: Option<String>,
         precision: isize,
     ) -> SessionResult<Option<String>> {
-        use astersql_types::pg_temporal::{PgTemporalError, PgTimestampTz};
+        use astersql_types::pg_temporal::PgTemporalError;
         use chrono::Offset;
         value
             .map(|text| {
-                let instant = text
-                    .parse::<PgTimestampTz>()
-                    .map_err(temporal_error)?
+                let instant = self
+                    .pg_timestamptz_input(&text)?
                     .round_precision(precision)
                     .map_err(temporal_error)?;
+                if matches!(instant.micros(), i64::MIN | i64::MAX) {
+                    return Ok(instant.to_string());
+                }
                 let offset = match *self.time_zone.borrow() {
                     RuntimeTimeZone::Fixed(zone) => zone.local_minus_utc(),
                     RuntimeTimeZone::Named(chrono_tz::UTC) => 0,
@@ -208,5 +227,68 @@ impl ConcreteSession {
                 instant.format_with_offset(offset).map_err(temporal_error)
             })
             .transpose()
+    }
+}
+
+impl ConcreteSession {
+    /// Resolve text only at a real Parse/Bind/cast boundary. Canonical UTC text
+    /// subsequently travels through the existing typed parameter/row carrier.
+    pub fn pg_timestamptz_input(
+        &self,
+        text: &str,
+    ) -> SessionResult<astersql_types::pg_temporal::PgTimestampTz> {
+        use astersql_types::pg_temporal::{PgTemporalError, PgTimestamp, PgTimestampTz};
+        use chrono::{Offset, TimeZone};
+        if !matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "now" | "today" | "yesterday" | "tomorrow"
+        ) {
+            match text.parse::<PgTimestampTz>() {
+                Ok(value) => return Ok(value),
+                Err(PgTemporalError::Unsupported) => {}
+                Err(error) => return Err(temporal_error(error)),
+            }
+        }
+        if text.trim().eq_ignore_ascii_case("now") {
+            let state = self.state.borrow();
+            let seconds = if state.transaction.is_some() {
+                state.pg_transaction_time.unwrap_or(state.pg_statement_time)
+            } else {
+                state.pg_statement_time
+            };
+            let micros = (seconds * 1_000_000.0) as i64;
+            return PgTimestampTz::from_micros(
+                micros
+                    .checked_sub(946_684_800_000_000)
+                    .ok_or_else(|| temporal_error(PgTemporalError::Range))?,
+            )
+            .map_err(temporal_error);
+        }
+        let wall = PgTimestamp::parse_with_context(text, self.pg_date_context(None)?)
+            .map_err(temporal_error)?;
+        let offset = match *self.time_zone.borrow() {
+            RuntimeTimeZone::Fixed(zone) => zone.local_minus_utc(),
+            RuntimeTimeZone::Named(chrono_tz::UTC) => 0,
+            RuntimeTimeZone::Named(zone) => {
+                let unix = wall
+                    .micros()
+                    .checked_add(946_684_800_000_000)
+                    .ok_or_else(|| temporal_error(PgTemporalError::Range))?;
+                let local = chrono::DateTime::from_timestamp_micros(unix)
+                    .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?
+                    .naive_utc();
+                let resolved = zone
+                    .from_local_datetime(&local)
+                    .single()
+                    .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?;
+                resolved.offset().fix().local_minus_utc()
+            }
+        };
+        PgTimestampTz::from_micros(
+            wall.micros()
+                .checked_sub(i64::from(offset) * 1_000_000)
+                .ok_or_else(|| temporal_error(PgTemporalError::Range))?,
+        )
+        .map_err(temporal_error)
     }
 }

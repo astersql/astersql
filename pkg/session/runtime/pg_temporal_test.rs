@@ -101,3 +101,63 @@ fn pg_timestamptz_session_cast_identity() {
         [1184]
     );
 }
+
+#[test]
+fn pg_timestamptz_session_input_boundaries() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let scalar = |sql: &str| {
+        session.execute(sql).unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap()
+    };
+    session.execute("SET time_zone = 'Asia/Shanghai'").unwrap();
+    session.execute("SET timestamp = 946684800.123456").unwrap();
+    assert_eq!(
+        scalar("SELECT CAST('2000-01-01 00:00:00' AS timestamptz)"),
+        ["2000-01-01 00:00:00+08"]
+    );
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types(
+            "SELECT CAST('now' AS timestamptz), CAST(? AS timestamptz)",
+            &[25],
+        )
+        .unwrap();
+    session.execute("SET timestamp = 946771200").unwrap();
+    session.execute("SET time_zone = 'UTC'").unwrap();
+    let mut result = session
+        .execute_protocol_statement(id, &[ConcretePreparedArgument::Text("now".into())])
+        .unwrap();
+    assert_eq!(
+        result[0].next_row().unwrap().unwrap(),
+        ["2000-01-01 00:00:00.123456+00", "2000-01-02 00:00:00+00"]
+    );
+    session.close_protocol_statement(id).unwrap();
+    session.execute("BEGIN").unwrap();
+    session.execute("SET timestamp = 946857600").unwrap();
+    assert_eq!(
+        scalar("SELECT CAST('now' AS timestamptz)"),
+        ["2000-01-02 00:00:00+00"]
+    );
+    session.execute("SET time_zone = 'Asia/Shanghai'").unwrap();
+    assert_eq!(
+        scalar("SELECT CAST('now' AS timestamptz)"),
+        ["2000-01-02 08:00:00+08"]
+    );
+    for (word, expected) in [
+        ("today", "2000-01-02 00:00:00+08"),
+        ("yesterday", "2000-01-01 00:00:00+08"),
+        ("tomorrow", "2000-01-03 00:00:00+08"),
+    ] {
+        assert_eq!(
+            scalar(&format!("SELECT CAST('{word}' AS timestamptz)")),
+            [expected]
+        );
+    }
+    session.execute("ROLLBACK").unwrap();
+    assert_eq!(
+        scalar("SELECT CAST('now' AS timestamptz)"),
+        ["2000-01-03 08:00:00+08"]
+    );
+}
