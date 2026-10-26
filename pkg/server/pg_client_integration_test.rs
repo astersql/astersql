@@ -5171,3 +5171,205 @@ fn pg_temporal_ts_diff() {
     assert_eq!(summary["cleanup"]["reference"], true);
     assert_eq!(summary["cleanup"]["aster"], true);
 }
+
+#[test]
+fn pg_temporal_tz_diff() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN is required (no skip)"
+    );
+    let run = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-tz-evidence")
+        .join(&run);
+    std::fs::create_dir_all(&evidence).unwrap();
+    println!("PG_TZ_EVIDENCE_DIR={}", evidence.display());
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let address = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg_tz_{}_{}", std::process::id(), address.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup_guard = Cleanup(|| {
+        server.close();
+        let record = serde_json::json!({"database_dropped": native.execute(&format!("DROP DATABASE {database}")).is_ok(),
+            "postgres_port_closed": TcpStream::connect(address).is_err(), "mysql_port_closed": TcpStream::connect(mysql_address).is_err()});
+        let _ = std::fs::write(evidence.join("rust-cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(&mut mysql, &format!("USE {database}"));
+    mysql_query(&mut mysql, "SET SESSION sql_mode = ''");
+    mysql_query(&mut mysql, "SET time_zone = 'UTC'");
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE ts_isolation (id INT PRIMARY KEY, d DATETIME(6), t TIMESTAMP(6))",
+    );
+    mysql_query(
+        &mut mysql,
+        "INSERT INTO ts_isolation VALUES (1, '2024-03-10 02:30:00', '2024-03-10 02:30:00'), (2, '0000-00-00 00:00:00', '0000-00-00 00:00:00')",
+    );
+    // Retain raw MySQL column definitions, including type and decimals (Fsp),
+    // and row payloads. Repeated writes prove the same connection stays usable.
+    let checkpoint = |mysql: &mut TcpStream, phase: &str| {
+        mysql_query(mysql, "UPDATE ts_isolation SET id=4 WHERE id=2");
+        mysql_query(mysql, "UPDATE ts_isolation SET id=2 WHERE id=4");
+        assert_eq!(
+            mysql_query(mysql, "SELECT @@sql_mode"),
+            vec![vec![Some(b"".to_vec())]]
+        );
+        for zone in ["UTC", "Asia/Shanghai", "America/New_York"] {
+            mysql_query(mysql, &format!("SET time_zone = '{zone}'"));
+            let values = mysql_query(mysql, "SELECT d, t FROM ts_isolation WHERE id=1");
+            assert_eq!(
+                values,
+                vec![vec![Some(b"2024-03-10 02:30:00.000000".to_vec()); 2]]
+            );
+        }
+        mysql_query(mysql, "SET time_zone = 'UTC'");
+        let sql = "SELECT d, t FROM ts_isolation ORDER BY id";
+        let mut request = vec![3];
+        request.extend_from_slice(sql.as_bytes());
+        mysql_packet(mysql, 0, &request);
+        assert_eq!(mysql_read(mysql), vec![2]);
+        let columns = [mysql_read(mysql), mysql_read(mysql)];
+        let mut types = Vec::new();
+        for column in &columns {
+            let mut at = 0;
+            for _ in 0..6 {
+                let n = usize::from(column[at]);
+                assert!(n < 251);
+                at += n + 1;
+            }
+            assert_eq!(column[at], 12);
+            types.push((column[at + 7], column[at + 10]));
+        }
+        assert_eq!(types, vec![(12, 6), (7, 6)]);
+        assert_eq!(mysql_read(mysql)[0], 0xfe);
+        let mut rows = Vec::new();
+        loop {
+            let row = mysql_read(mysql);
+            if row[0] == 0xfe && row.len() < 9 {
+                break;
+            }
+            assert_ne!(row[0], 0xff);
+            rows.push(row);
+        }
+        assert_eq!(
+            rows,
+            vec![
+                [
+                    b"\x1a2024-03-10 02:30:00.000000".as_slice(),
+                    b"\x1a2024-03-10 02:30:00.000000"
+                ]
+                .concat(),
+                [
+                    b"\x1a0000-00-00 00:00:00.000000".as_slice(),
+                    b"\x1a0000-00-00 00:00:00.000000"
+                ]
+                .concat(),
+            ]
+        );
+        let record = serde_json::json!({"phase":phase, "sql_mode":"", "columns":columns, "rows":rows, "types_fsp":types});
+        std::fs::write(
+            evidence.join(format!("mysql-{phase}.json")),
+            record.to_string(),
+        )
+        .unwrap();
+        (columns, rows)
+    };
+    let baseline = checkpoint(&mut mysql, "before");
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg_core_libpq.py"
+            ))
+            .args([
+                address.port().to_string(),
+                database.clone(),
+                "timestamptz-differential".into(),
+            ])
+            .env("PG_TZ_EVIDENCE_DIR", &evidence)
+            .env("PG_TZ_RUST_BINARY", std::env::current_exe().unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let mut middle = false;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG_TZ_MID" {
+            assert_eq!(checkpoint(&mut mysql, "during"), baseline);
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    std::fs::write(
+        evidence.join("child-exit.json"),
+        serde_json::json!({"success":status.success(),"code":status.code()}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(checkpoint(&mut mysql, "after"), baseline);
+    mysql_packet(&mut mysql, 0, &[1]);
+    drop(cleanup_guard);
+    let cleanup: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("rust-cleanup.json")).unwrap())
+            .unwrap();
+    for key in [
+        "database_dropped",
+        "postgres_port_closed",
+        "mysql_port_closed",
+    ] {
+        assert_eq!(cleanup[key], true);
+    }
+    assert!(status.success(), "timestamptz differential client failed");
+    assert!(middle, "missing MySQL middle checkpoint");
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+            .unwrap();
+    assert_eq!(summary["passed"], true);
+    assert_eq!(summary["negative_controls"], 3);
+    assert_eq!(summary["capabilities"].as_array().unwrap().len(), 7);
+    assert_eq!(summary["cases"], 517);
+    assert_eq!(summary["cleanup"]["reference"], true);
+    assert_eq!(summary["cleanup"]["aster"], true);
+}

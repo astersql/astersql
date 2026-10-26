@@ -323,6 +323,18 @@ impl Scanner {
                 self.lastKeyword = keyword;
             }
         }
+        // TIMESTAMPTZ is unreserved. Only its unquoted typed-literal form
+        // enters the timestamp-literal grammar; casts and column names keep
+        // their existing identifier path and the semantic action keeps 1184.
+        if self.postgres
+            && tok == token::identifier
+            && lit.eq_ignore_ascii_case("timestamptz")
+            && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`')
+            && self.getNextToken() == token::stringLit
+        {
+            tok = token::timestampType;
+            self.lastKeyword = tok;
+        }
         if tok == token::full && self.getNextTwoTokens() == (token::outer, token::join) {
             tok = token::fullJoinType;
             self.lastKeyword = tok;

@@ -2288,9 +2288,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             if rule == ExpressionRule::FunctionCallKeywordAlt10
                 && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
             {
-                // A PG typed literal uses the same wall-clock type and cast
-                // consumer as ::timestamp, never the native TIMESTAMP function.
-                let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypeDatetime);
+                // PG temporal literals use the typed cast consumer. The lexer
+                // retains the unreserved timestamptz spelling for instant identity.
+                let code = if rhs[1].ident.eq_ignore_ascii_case("timestamptz") {
+                    parser_mysql::r#type::TypePgTimestampTz
+                } else {
+                    parser_mysql::r#type::TypeDatetime
+                };
+                let mut tp = parser_types::types::NewFieldType(code);
                 tp.SetDecimal(-1);
                 tp.SetCharset("binary".to_owned());
                 tp.SetCollate("binary".to_owned());

@@ -5276,3 +5276,46 @@ fn pg_timestamptz_cast_identity() {
         assert!(pg.ParseSQL(&format!("SELECT NULL::{target}"), &[]).is_err());
     }
 }
+
+#[test]
+fn pg_timestamptz_typed_literal() {
+    use crate::ast::SqlDialect;
+    for sql in [
+        "SELECT TIMESTAMPTZ 'now'",
+        "SELECT timestamptz '2000-01-01 08:00:00+08' AS v",
+        "SELECT (timestamptz /* literal */ 'infinity')",
+    ] {
+        let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+        let (nodes, warnings) = pg.ParseSQL(sql, &[]).unwrap();
+        assert!(warnings.is_empty());
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let mut expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        if let parser_ast::ExprKind::Parentheses(inner) = &expr.Kind {
+            expr = inner;
+        }
+        assert!(
+            matches!(&expr.Kind, parser_ast::ExprKind::Cast {Tp, Expr, ..}
+            if Tp.GetType() == parser_mysql::r#type::TypePgTimestampTz && Tp.GetDecimal() == -1
+            && matches!(Expr.Kind, parser_ast::ExprKind::Value(_))),
+            "{sql}: {expr:?}"
+        );
+    }
+    // The unreserved identifier and quoted identifier remain column references.
+    for dialect in [SqlDialect::MySQL, SqlDialect::PostgreSQL] {
+        let mut parser = crate::Parser::with_dialect(dialect);
+        for sql in ["SELECT timestamptz", "SELECT \"timestamptz\" 'label'"] {
+            let (nodes, _) = parser.ParseSQL(sql, &[]).unwrap();
+            let select = nodes[0]
+                .as_any()
+                .downcast_ref::<parser_ast::SelectStmt>()
+                .unwrap();
+            assert!(!matches!(
+                select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+                parser_ast::ExprKind::Cast { .. }
+            ));
+        }
+    }
+}
