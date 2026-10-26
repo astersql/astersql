@@ -2964,21 +2964,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let mut field_type = parser_types::types::NewFieldType(tp);
             let (flen, _) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
             let signed = matches!(rule, ExpressionRule::PgTimeNegative | ExpressionRule::PgTimePositive);
-            if signed && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
-                yylex.AppendError(yylex.Errorf("signed TIME precision requires PostgreSQL dialect", &[]));
+            if signed {
+                // PostgreSQL gram.y ConstDatetime uses Iconst, not SignedIconst.
+                // Even -0 and +3 are syntax errors before typmod validation.
+                yylex.AppendError(errors::New("signed TIME precision is not valid syntax"));
                 return Err(1);
             }
-            let mut decimal = if signed {
-                rhs[4].item.as_deref().and_then(semantic_numeric_isize).unwrap_or_default()
-            } else {
-                rhs[rhs_len].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(-1)
-            };
+            let mut decimal = rhs[rhs_len].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(-1);
             if tp == parser_mysql::r#type::TypeDuration
                 && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
-                if rule == ExpressionRule::PgTimeNegative && decimal != 0 {
-                    yylex.AppendError(errors::New("PostgreSQL TIME precision must not be negative"));
-                    return Err(1);
-                }
                 if decimal > 6 {
                     yylex.AppendWarn(errors::New("PostgreSQL TIME precision reduced to 6"));
                     decimal = 6;

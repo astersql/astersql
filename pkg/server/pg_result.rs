@@ -25,8 +25,10 @@ pub(crate) fn time_precision_diagnostics(
         .ParseSQL(sql, &[])
     {
         Ok((_, warnings)) => warnings,
-        Err(error) if error.to_string() == "PostgreSQL TIME precision must not be negative" => {
-            return Err(("22023", error.to_string()));
+        Err(error) if error.to_string() == "signed TIME precision is not valid syntax" => {
+            // Syntax precedes Bind/parameter-count validation, including when
+            // the client supplied an unused parameter OID for invalid SQL.
+            return Err(("42601", error.to_string()));
         }
         Err(_) => return Ok(Vec::new()),
     };

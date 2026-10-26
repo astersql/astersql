@@ -1777,9 +1777,16 @@ fn pg_temporal_time_precision() {
             }
         }
     }
-    for sql in ["SELECT CAST(NULL AS TIME(-1))", "SELECT NULL::time(-1)"] {
-        error(&query(&mut socket, sql), "22023");
-        error(&cycle_oid(&mut socket, sql, 1083, 0, 0, None), "22023");
+    // Signed SQL precision fails at Parse; the internal typmod validator's
+    // 22023 is not reachable through PostgreSQL's unsigned TIME(p) grammar.
+    for sql in [
+        "SELECT CAST(NULL AS TIME(-1))",
+        "SELECT NULL::time(-1)",
+        "SELECT NULL::time(-0)",
+        "SELECT CAST(NULL AS TIME(+3))",
+    ] {
+        error(&query(&mut socket, sql), "42601");
+        error(&cycle_oid(&mut socket, sql, 1083, 0, 0, None), "42601");
         assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
     }
     for sql in ["SELECT CAST($1 AS TIME(7))", "SELECT $1::time(7)"] {

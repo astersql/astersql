@@ -5126,8 +5126,6 @@ fn pg_temporal_time_precision_grammar() {
         ("time(0)", 0, false),
         ("time(6)", 6, false),
         ("time(7)", 6, true),
-        ("time(+3)", 3, false),
-        ("time(-0)", 0, false),
     ] {
         for sql in [
             format!("SELECT $1::{target}"),
@@ -5146,11 +5144,13 @@ fn pg_temporal_time_precision_grammar() {
             );
         }
     }
-    for sql in ["SELECT NULL::time(-1)", "SELECT CAST(NULL AS TIME(-2))"] {
-        assert_eq!(
-            pg.ParseSQL(sql, &[]).err().unwrap().to_string(),
-            "PostgreSQL TIME precision must not be negative"
-        );
+    for target in ["time(-1)", "time(-0)", "time(+3)"] {
+        for sql in [
+            format!("SELECT NULL::{target}"),
+            format!("SELECT CAST(NULL AS {target})"),
+        ] {
+            assert!(pg.ParseSQL(&sql, &[]).is_err(), "{sql}");
+        }
     }
     let mut mysql = crate::Parser::with_dialect(SqlDialect::MySQL);
     for sql in [

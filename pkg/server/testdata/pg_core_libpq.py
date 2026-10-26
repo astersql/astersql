@@ -429,6 +429,388 @@ def date_differential(aster_dsn):
     print('date differential:',json.dumps(summary),flush=True)
 
 
+def time_differential(aster_dsn):
+    """TIME-DIFF: independent libpq observations plus explicit-length wire probes."""
+    import copy
+    import json
+    import socket
+    import struct
+    import subprocess
+    import hashlib
+    from pathlib import Path
+
+    repository = Path(__file__).resolve().parents[3]
+    reference = os.environ.get('PG18_REFERENCE_DSN')
+    assert reference, 'PG18_REFERENCE_DSN is required (no skip)'
+    evidence = Path(os.environ['PG_TIME_EVIDENCE_DIR'])
+    evidence.mkdir(parents=True, exist_ok=True)
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    fmt = api('PQfformat', integer, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    length = api('PQgetlength', integer, ptr, integer, integer)
+    raw_value = api('PQgetvalue', ptr, ptr, integer, integer)
+    pq_socket = api('PQsocket', integer, ptr)
+    notice_api = api('PQsetNoticeReceiver', ptr, ptr, ptr, ptr)
+    notices = []
+    @c.CFUNCTYPE(None, ptr, ptr)
+    def on_notice(arg, result):
+        notices.append((ef(result, ord('C')) or b'').decode())
+
+    def observe(result):
+        assert result, 'libpq returned no result'
+        try:
+            return dict(status=result_status(result), state=(ef(result, ord('C')) or b'').decode(),
+                        metadata=[[field_type(result, i), size(result, i), mod(result, i), fmt(result, i)]
+                                  for i in range(columns(result))],
+                        parameters=[pt(result, i) for i in range(np(result))],
+                        rows=[[None if is_null(result, r, i) else
+                               c.string_at(raw_value(result, r, i), length(result, r, i)).hex()
+                               for i in range(columns(result))] for r in range(rows(result))],
+                        warnings=list(notices))
+        finally:
+            notices.clear()
+            clear(result)
+
+    def scalar(obs):
+        assert obs['status'] == 2 and len(obs['rows']) == 1, obs
+        return bytes.fromhex(obs['rows'][0][0]).decode()
+
+    class Wire:
+        # Startup and authentication are real libpq; duplicate only its idle socket.
+        # No libpq operations run while these raw message probes own the connection.
+        def __init__(self, dsn):
+            self.conn = connect(dsn.encode())
+            assert self.conn and status(self.conn) == 0, 'wire connection failed'
+            self.raw = socket.socket(fileno=os.dup(pq_socket(self.conn)))
+            self.blocking = os.get_blocking(pq_socket(self.conn))
+            self.raw.settimeout(10)
+            self.diagnostics = []
+        def close(self):
+            self.raw.close()
+            os.set_blocking(pq_socket(self.conn), self.blocking)
+            finish(self.conn)
+        def send(self, tag, body):
+            self.raw.sendall(tag + struct.pack('!I', len(body) + 4) + body)
+        def exact(self, n):
+            data = b''
+            while len(data) < n:
+                part = self.raw.recv(n-len(data))
+                assert part, 'unexpected EOF'
+                data += part
+            return data
+        def ready(self):
+            obs = dict(tags='', descriptions=[], parameters=[], rows=[], errors=[], warnings=[], ready='')
+            while True:
+                tag = self.exact(1).decode()
+                n = struct.unpack('!I', self.exact(4))[0]
+                assert 4 <= n < 1 << 20
+                body = self.exact(n-4)
+                # ParameterStatus and NoticeResponse are async, not phase delimiters.
+                if tag not in ('S', 'N'):
+                    obs['tags'] += tag
+                if tag == 'T':
+                    count = struct.unpack('!H', body[:2])[0]
+                    at, fields = 2, []
+                    for _ in range(count):
+                        at = body.index(b'\0', at) + 1
+                        _, _, oid, width, typmod, output = struct.unpack('!IhIhih', body[at:at+18])
+                        at += 18
+                        fields.append([oid, width, typmod, output])
+                    obs['descriptions'].append(fields)
+                elif tag == 't':
+                    count = struct.unpack('!H', body[:2])[0]
+                    obs['parameters'] = list(struct.unpack('!'+'I'*count, body[2:]))
+                elif tag == 'D':
+                    count = struct.unpack('!H', body[:2])[0]
+                    at, cells = 2, []
+                    for _ in range(count):
+                        size_ = struct.unpack('!i', body[at:at+4])[0]
+                        at += 4
+                        assert size_ >= -1
+                        cells.append(dict(length=size_, hex=None if size_ == -1 else body[at:at+size_].hex()))
+                        if size_ >= 0:
+                            at += size_
+                    assert at == len(body)
+                    obs['rows'].append(cells)
+                elif tag in ('E', 'N'):
+                    fields = {chr(f[0]): f[1:].decode(errors='replace') for f in body.split(b'\0') if f}
+                    self.diagnostics.append(fields)
+                    obs['errors' if tag == 'E' else 'warnings'].append(fields['C'])
+                elif tag == 'Z':
+                    obs['ready'] = body.decode()
+                    return obs
+        def query(self, sql):
+            self.send(b'Q', sql.encode()+b'\0')
+            return self.ready()
+        def parse(self, sql, name=b'', parameter=True):
+            self.send(b'P', name+b'\0'+sql.encode()+b'\0'+
+                      (struct.pack('!HI',1,1083) if parameter else struct.pack('!H',0)))
+        def bind(self, payload, input_, output, statement=b'', portal=b'', declared=None, parameter=True):
+            val = struct.pack('!i', -1 if payload is None else len(payload) if declared is None else declared)
+            values = struct.pack('!hhh',1,input_,1)+val+(payload or b'') if parameter else struct.pack('!hh',0,0)
+            self.send(b'B',portal+b'\0'+statement+b'\0'+values+struct.pack('!hh',1,output))
+        def execute(self, portal=b''):
+            self.send(b'E', portal+b'\0'+struct.pack('!I', 0))
+        def sync(self):
+            self.send(b'S', b'')
+            return self.ready()
+        def cycle(self, sql, payload, input_, output, declared=None, parameter=True):
+            self.parse(sql, parameter=parameter)
+            self.send(b'D', b'S\0')
+            self.bind(payload, input_, output, declared=declared, parameter=parameter)
+            self.send(b'D', b'P\0')
+            self.execute()
+            self.execute()
+            return self.sync()
+
+    fixtures = [('00:00:00', 0), ('23:59:59.999999', 86399999999),
+                ('24:00:00', 86400000000), ('12:34:56.123456',45296123456),
+                ('04:05:00',14700000000), ('04:05:06',14706000000),
+                ('16:05:00',57900000000)]
+    observations, cleanup, identity = {}, {}, {}
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn) == 0, side+' connection failed'
+        notice_api(conn, c.cast(on_notice, ptr), None)
+        collected, wire = {}, None
+        def keep(case, result):
+            assert case not in collected, case
+            collected[case] = result
+            return result
+        def q(case, sql):
+            return keep(case, observe(execute(conn, sql.encode())))
+        def ok(obs):
+            assert obs['status'] in (1, 2) and not obs['warnings'], (side, obs)
+            return obs
+        def check_value(obs, expected, output):
+            assert obs['status'] == 2 and not obs['warnings'], (side, obs)
+            assert obs['metadata'] == [[1083, 8, -1, output]], (side, obs)
+            assert obs['rows'] == [[None if expected is None else expected.hex()]], (side, obs, expected)
+        def zone_sql(zone):
+            # The preceding temporal tasks expose the native time_zone setting.
+            # Use that real session interface until full PG GUC spelling lands.
+            return f"SET TimeZone TO '{zone}'" if side == 'reference' else f"SET time_zone = '{zone}'"
+        try:
+            if side == 'reference':
+                identity['server'] = observe(execute(conn, b"SELECT version(), current_setting('server_version_num')"))
+                assert 180000 <= int(bytes.fromhex(identity['server']['rows'][0][1]).decode()) < 190000
+                identity['libpq_version'] = version()
+                identity['source_head'] = subprocess.check_output(['git','rev-parse','HEAD'], text=True,cwd=repository).strip()
+                identity['source_diff_sha256'] = hashlib.sha256(subprocess.check_output(['git','diff','HEAD','--','pkg/server','pkg/types','pkg/session','pkg/parser'],cwd=repository)).hexdigest()
+                identity['rust_test_binary'] = os.environ['PG_TIME_RUST_BINARY']
+                identity['rust_test_binary_sha256'] = hashlib.sha256(Path(identity['rust_test_binary']).read_bytes()).hexdigest()
+                identity['cargo_lock_sha256'] = hashlib.sha256((repository/'Cargo.lock').read_bytes()).hexdigest()
+                identity['fixture_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                # Installed server builds do not always expose a tzdb release label.
+                # Optional fingerprints identify its actual compiled zone data.
+                tzdir = os.environ.get('PG_TIME_REFERENCE_TZDIR')
+                identity['reference_tzdata'] = ({zone: hashlib.sha256((Path(tzdir)/zone).read_bytes()).hexdigest()
+                    for zone in ['UTC','Asia/Shanghai','America/New_York','Etc/GMT+12','Etc/GMT-14']}
+                    if tzdir else 'compiled tzdata directory not provided')
+                identity['source_status'] = subprocess.check_output(['git','status','--short'], text=True,cwd=repository)
+                tz = Path('/usr/share/zoneinfo/tzdata.zi')
+                version_file = Path('/usr/share/zoneinfo/+VERSION')
+                identity['tzdata'] = tz.read_text().splitlines()[0] if tz.exists() else version_file.read_text().strip() if version_file.exists() else 'system tzdata version unavailable'
+                tz_binary = Path('/usr/share/zoneinfo/UTC')
+                identity['tzdata_utc_sha256'] = hashlib.sha256(tz_binary.read_bytes()).hexdigest()
+            for setting in ["SET DateStyle TO 'ISO, MDY'", zone_sql("UTC")]:
+                setup = observe(execute(conn, setting.encode()))
+                assert setup['status'] in (1,2), (side, setting, setup)
+            identity[side] = {setting: scalar(ok(observe(execute(conn, sql.encode()))))
+                              for setting, sql in [('DateStyle','SHOW DateStyle'),
+                                  ('TimeZone','SHOW TimeZone' if side == 'reference' else 'SELECT @@time_zone')]}
+            # IntervalStyle belongs to the interval/session lifecycle workstream;
+            # record its actual availability without treating it as a time codec.
+            identity[side]['IntervalStyle'] = observe(execute(conn,b'SHOW IntervalStyle'))
+            statement = b'time_value'
+            ok(keep('prepare', observe(prepare(conn, statement, b'SELECT $1::time AS d', 1, (c.c_uint*1)(1083)))))
+            desc = keep('statement-describe', observe(describe(conn, statement)))
+            assert desc['parameters'] == [1083] and desc['metadata'] == [[1083,8,-1,0]], (side, desc)
+            for idx, (spelling, micros) in enumerate(fixtures + [(None, None)]):
+                binary = None if micros is None else struct.pack('!q', micros)
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload = None if spelling is None else spelling.encode() if input_ == 0 else binary
+                        result = keep(f'libpq-{idx}-{input_}-{output}', observe(prepared(
+                            conn, statement, 1, (text*1)(payload), (integer*1)(0 if payload is None else len(payload)),
+                            (integer*1)(input_), output)))
+                        expected = None if spelling is None else spelling.encode() if output == 0 else binary
+                        check_value(result, expected, output)
+                if spelling is not None:
+                    check_value(q(f'literal-{idx}', f"SELECT CAST('{spelling}' AS time) AS d"), spelling.encode(), 0)
+            if side == 'aster':
+                bridge = {}
+                for row in (1,2,3):
+                    for output in (0,1):
+                        obs = observe(params(conn,f'SELECT t FROM time_isolation WHERE id = {row}'.encode(),0,None,None,None,None,output))
+                        bridge[f'{row}-{output}'] = obs
+                        assert obs['status'] == 7 and obs['state'] == '0A000' and not obs['rows'], obs
+                        ok(observe(execute(conn,b'SELECT 1::int4')))
+                (evidence/'mysql-duration-bridge.json').write_text(json.dumps(bridge,sort_keys=True))
+            for idx,(source,canonical,micros) in enumerate([
+                    ('04:05','04:05:00',14700000000),('040506','04:05:06',14706000000),
+                    ('04:05 PM','16:05:00',57900000000),('allballs','00:00:00',0),
+                    ('04:05:06+08:00','04:05:06',14706000000),
+                    ('12:34:56.1234567','12:34:56.123457',45296123457)]):
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload=source.encode() if input_==0 else struct.pack('!q',micros)
+                        obs=keep(f'forms-{idx}-{input_}-{output}',observe(prepared(conn,statement,1,
+                            (text*1)(payload),(integer*1)(len(payload)),(integer*1)(input_),output)))
+                        check_value(obs,canonical.encode() if output==0 else struct.pack('!q',micros),output)
+            for precision,source,micros,canonical in [(0,'12:34:56.5',45296500000,'12:34:57'),
+                    (3,'12:34:56.1234',45296123400,'12:34:56.123'),
+                    (3,'12:34:56.1235',45296123500,'12:34:56.124'),
+                    (0,'23:59:59.999999',86399999999,'24:00:00'),
+                    (3,'23:59:59.999999',86399999999,'24:00:00'),
+                    (6,'12:34:56.123456',45296123456,'12:34:56.123456')]:
+                stmt=f'p{len(collected)}'.encode()
+                ok(observe(prepare(conn,stmt,f'SELECT $1::time({precision}) AS d'.encode(),1,(c.c_uint*1)(1083))))
+                desc=keep(f'precision-describe-{len(collected)}',observe(describe(conn,stmt)))
+                assert desc['parameters']==[1083] and desc['metadata']==[[1083,8,precision,0]],(side,desc)
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload=source.encode() if input_==0 else struct.pack('!q',micros)
+                        obs=keep(f'precision-{len(collected)}',observe(prepared(conn,stmt,1,(text*1)(payload),
+                            (integer*1)(len(payload)),(integer*1)(input_),output)))
+                        assert obs['status']==2 and not obs['warnings'] and obs['metadata']==[[1083,8,precision,output]],(side,obs)
+                        # Explicit expected integer rounding uses the canonical text, never Python ties-to-even.
+                        h,m,sec=canonical.split(':'); whole,_,fraction=sec.partition('.')
+                        result_micros=(int(h)*3600+int(m)*60+int(whole))*1000000+int(fraction.ljust(6,'0') or '0')
+                        expected=canonical.encode() if output==0 else struct.pack('!q',result_micros)
+                        assert obs['rows']==[[expected.hex()]],(side,obs)
+            # gram.y ConstDatetime accepts Iconst, not SignedIconst. These
+            # declarations never reach date.c anytime_typmod_check.
+            for precision in ('-1','-0','+3'):
+                for spelling in (f"CAST('12:00:00' AS time({precision}))",f"NULL::time({precision})"):
+                    obs=q(f'signed-precision-{len(collected)}','SELECT '+spelling)
+                    assert obs['state']=='42601',(side,obs)
+                    ok(observe(execute(conn,b'SELECT 1::int4')))
+            if side=='reference':
+                internal=observe(execute(conn,b"SELECT pg_catalog.timetypmodin(ARRAY['-1']::cstring[])"))
+                assert internal['state']=='22023',internal
+                identity['reference_internal_negative_typmod']=internal
+            warning=q('precision-warning',"SELECT CAST('12:00:00.123456' AS time(7))")
+            assert warning['warnings']==['22023'] and warning['metadata']==[[1083,8,6,0]],(side,warning)
+            wire = Wire(dsn)
+            assert not wire.query("SET DateStyle TO 'ISO, MDY'")['errors']
+            assert not wire.query(zone_sql("UTC"))['errors']
+            for precision in ('-1','-0','+3'):
+                for sql in [f'SELECT NULL::time({precision})',f'SELECT CAST(NULL AS time({precision}))']:
+                    for parameter in (False,True):
+                        obs=keep(f'signed-parse-{len(collected)}',wire.cycle(sql,None,0,0,parameter=parameter))
+                        assert obs['tags']=='EZ' and obs['errors']==['42601'] and obs['ready']=='I', (side,obs)
+                        recovery=wire.query('SELECT 1::int4')
+                        assert not recovery['errors'] and recovery['rows']==[[dict(length=1,hex='31')]],(side,recovery)
+            for idx, (spelling, micros) in enumerate(fixtures + [(None,None)]):
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload = None if micros is None else spelling.encode() if input_ == 0 else struct.pack('!q', micros)
+                        obs = keep(f'wire-{idx}-{input_}-{output}',wire.cycle('SELECT $1::time AS d',payload,input_,output))
+                        assert obs['tags'] == '1tT2TDCCZ' and obs['parameters'] == [1083], (side,obs)
+                        assert obs['descriptions'] == [[[1083,8,-1,0]],[[1083,8,-1,output]]], (side,obs)
+                        expected = None if micros is None else spelling.encode() if output == 0 else struct.pack('!q',micros)
+                        assert obs['rows'] == [[dict(length=-1 if expected is None else len(expected),hex=None if expected is None else expected.hex())]], (side,obs)
+            for name, sql in [('null','SELECT NULL::time AS d'),
+                              ('first-null',"SELECT NULL::time AS d UNION ALL SELECT CAST('00:00:00' AS time) AS d"),
+                              ('all-null','SELECT NULL::time AS d UNION ALL SELECT NULL::time AS d'),
+                              ('zero-rows','SELECT $1::time AS d WHERE FALSE')]:
+                for output in (0,1):
+                    obs = keep(f'wire-{name}-{output}',wire.cycle(sql,None,0,output,parameter=name=='zero-rows'))
+                    assert not obs['errors'] and obs['descriptions'] == [[[1083,8,-1,0]],[[1083,8,-1,output]]], (side,obs)
+            for precision in (0,3,6):
+                for name,sql in [('typed',f'SELECT $1::time({precision}) AS d'),
+                        ('null',f'SELECT NULL::time({precision}) AS d'),
+                        ('first-null',f"SELECT NULL::time({precision}) AS d UNION ALL SELECT CAST('00:00:00' AS time({precision})) AS d"),
+                        ('all-null',f'SELECT NULL::time({precision}) AS d UNION ALL SELECT NULL::time({precision}) AS d'),
+                        ('zero-rows',f'SELECT $1::time({precision}) AS d WHERE FALSE')]:
+                    for input_ in (0,1):
+                        for output in (0,1):
+                            obs=keep(f'null-{precision}-{name}-{input_}-{output}',wire.cycle(sql,None,input_,output,
+                                parameter=name in ('typed','zero-rows')))
+                            assert not obs['errors'] and obs['descriptions']==[[[1083,8,precision,0]],[[1083,8,precision,output]]],(side,obs)
+                            expected=[] if name=='zero-rows' else [[dict(length=-1,hex=None)]]
+                            if name=='first-null':
+                                zero=b'00:00:00' if output==0 else b'\0'*8
+                                expected.append([dict(length=8,hex=zero.hex())])
+                            elif name=='all-null': expected.append([dict(length=-1,hex=None)])
+                            assert obs['rows']==expected,(side,obs)
+            # One prepared statement, multiple portals and result format switches.
+            wire.parse('SELECT $1::time AS d', b'switch')
+            assert wire.sync()['tags'] == '1Z'
+            for output in (0,1,0):
+                wire.bind(b'00:00:00',0,output,statement=b'switch')
+                wire.send(b'D',b'P\0');wire.execute()
+                obs = wire.sync()
+                keep(f'switch-{len(collected)}',obs)
+                assert obs['descriptions'] == [[[1083,8,-1,output]]] and len(obs['rows']) == 1, obs
+            bad_text = ['24:00:00.000001','25:00:00','12:60:00','12:00:61']
+            bad = [(s.encode(),0,'22008',None) for s in bad_text]
+            bad += [(s.encode(),0,'22007',None) for s in ['','garbage']]
+            bad += [(b'\xff',0,'22021',None),(b'12:00:00\0junk',0,'22021',None),
+                    (b'',1,'08P01',None),(b'\0'*7,1,'08P01',None),(b'\0'*9,1,'22P03',None)]
+            bad += [(struct.pack('!q',n),1,'22008',None) for n in [-1,86400000001,-9223372036854775808,9223372036854775807]]
+            bad += [(b'\0'*8,1,'08P01',100)]
+            for idx,(payload,input_,state,declared) in enumerate(bad):
+                for output in (0,1):
+                    obs = keep(f'bad-{idx}-{output}',wire.cycle('SELECT $1::time AS d',payload,input_,output,declared))
+                    assert obs['errors'] == [state] and not obs['rows'] and obs['ready'] == 'I', (side,idx,obs)
+                    recovery = keep(f'recovery-{idx}-{output}',wire.query('SELECT 1::int4 AS n'))
+                    assert recovery['rows'] == [[{'length':1,'hex':'31'}]] and not recovery['errors'], recovery
+            for idx, spelling in enumerate(bad_text+['','garbage']):
+                obs = q(f'bad-literal-{idx}', f"SELECT CAST('{spelling}' AS time) AS d")
+                assert obs['state'] == ('22008' if idx < len(bad_text) else '22007'), (side,obs)
+            assert wire.query('BEGIN')['ready'] == 'T'
+            obs = keep('transaction-error',wire.cycle('SELECT $1::time AS d',b'25:00:00',0,1))
+            assert obs['errors'] == ['22008'] and obs['ready'] == 'E',obs
+            assert wire.query('ROLLBACK')['ready'] == 'I'
+            keep('transaction-recovery',wire.query('SELECT 1::int4 AS n'))
+            # Changing session zone cannot move an already bound time.
+            wire.parse('SELECT $1::time AS d',b'zone')
+            wire.sync()
+            for zone in ['UTC','Asia/Shanghai','America/New_York']:
+                assert not wire.query(zone_sql(zone))['errors']
+                wire.bind(b'04:05:06+08:00',0,1,statement=b'zone')
+                wire.execute()
+                obs=keep('zone-'+zone,wire.sync())
+                assert obs['rows'] == [[dict(length=8,hex=struct.pack('!q',14706000000).hex())]],obs
+            if side == 'aster':
+                print('PG_TIME_MID',flush=True)
+                assert sys.stdin.readline().strip() == 'continue'
+            observations[side]=collected
+        finally:
+            if wire is not None:
+                (evidence/(side+'-diagnostics.json')).write_text(json.dumps(wire.diagnostics,sort_keys=True))
+                try:wire.query('ROLLBACK')
+                finally:wire.close()
+            rolled=observe(execute(conn,b'ROLLBACK'))
+            notices.clear()
+            finish(conn)
+            cleanup[side]=rolled['status'] == 1
+            (evidence/(side+'.json')).write_text(json.dumps(collected,sort_keys=True))
+            (evidence/'identity.json').write_text(json.dumps(identity,sort_keys=True))
+            (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+    assert observations['aster'].keys() == observations['reference'].keys()
+    for case, actual in observations['aster'].items():
+        assert actual == observations['reference'][case], (case,actual,observations['reference'][case])
+    for key, replacement in [('rows',[['00']]),('metadata',[[25,-1,-1,0]]),('state','XXXXX')]:
+        changed=copy.deepcopy(observations['reference'])
+        changed['libpq-0-0-0'][key]=replacement
+        assert changed != observations['aster'], key
+    summary=dict(cases=len(observations['aster']),negative_controls=3,cleanup=cleanup,passed=True,
+                 capabilities=['TIME-DAY','TIME-PRECISION','TIME-TEXT-ZONE','TIME-DURATION',
+                               'TIME-NULL-METADATA','TIME-INVALID'])
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('time differential:',json.dumps(summary),flush=True)
+
+
 def integer_differential(aster_dsn):
     import copy
     import signal
@@ -2047,6 +2429,9 @@ conninfo = (
 )
 if len(sys.argv) > 3 and sys.argv[3] == "bytea28-differential":
     bytea28_differential(conninfo)
+    sys.exit(0)
+if len(sys.argv) > 3 and sys.argv[3] == "time-differential":
+    time_differential(conninfo)
     sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "date-differential":
     date_differential(conninfo)
