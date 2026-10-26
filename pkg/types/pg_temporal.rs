@@ -10,6 +10,8 @@ pub enum PgTemporalError {
     Range,
     #[error("time zone displacement out of range")]
     ZoneRange,
+    #[error("time zone not recognized")]
+    UnknownZone,
     #[error("date spelling is not yet supported")]
     Unsupported,
     #[error("time and duration cannot be bridged without loss")]
@@ -27,6 +29,7 @@ impl PgTemporalError {
             Self::Syntax => "22007",
             Self::Range => "22008",
             Self::ZoneRange => "22009",
+            Self::UnknownZone => "22023",
             Self::Unsupported | Self::DurationBridge | Self::TimestampBridge => "0A000",
             Self::Truncated => "08P01",
             Self::Trailing => "22P03",
@@ -687,6 +690,18 @@ impl PgTimestampTz {
         let bc = text.to_ascii_uppercase().ends_with(" BC");
         let body = if bc { &text[..text.len() - 3] } else { text };
         let clock_at = body.find([' ', 'T']).ok_or(PgTemporalError::Syntax)?;
+        // Reject unknown zone names before requesting session context.
+        // Otherwise the wall-clock fallback would misclassify them as
+        // datetime syntax errors (or accept them in the session zone).
+        if let Some((_, zone)) = body[clock_at + 1..].rsplit_once(' ') {
+            if zone.starts_with(|ch: char| ch.is_ascii_alphabetic())
+                && !zone.eq_ignore_ascii_case("UTC")
+                && !zone.eq_ignore_ascii_case("GMT")
+                && zone.parse::<chrono_tz::Tz>().is_err()
+            {
+                return Err(PgTemporalError::UnknownZone);
+            }
+        }
         let zone_at = body[clock_at + 1..]
             .find(['+', '-'])
             .map(|at| at + clock_at + 1);

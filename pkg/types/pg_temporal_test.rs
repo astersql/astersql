@@ -517,3 +517,45 @@ fn pg_timestamptz_normalized_range() {
     );
     assert!("294277-01-01 00:00:00".parse::<PgTimestamp>().is_err());
 }
+
+#[test]
+fn pg_timestamptz_invalid_zone_and_payload() {
+    use super::pg_temporal::PgTimestampTz;
+    for offset in [None, Some(0), Some(28800)] {
+        for text in [
+            "2000-01-01 00:00:00 Aster/Unknown",
+            "2000-01-01 00:00:00 Aster/Unknown-Zone",
+            "2000-01-01 00:00:00 Unknown",
+            "0001-01-01 00:00:00 Aster/Unknown BC",
+        ] {
+            assert_eq!(
+                PgTimestampTz::parse_with_offset(text, offset)
+                    .unwrap_err()
+                    .sqlstate(),
+                "22023"
+            );
+        }
+    }
+    for (text, state) in [
+        ("", "22007"),
+        ("garbage", "22007"),
+        ("2000-02-30 00:00:00+00", "22008"),
+        ("4714-11-24 00:00:00+00:00:01 BC", "22008"),
+        ("294276-12-31 23:59:59.999999-00:00:01", "22008"),
+    ] {
+        assert_eq!(
+            PgTimestampTz::parse_with_offset(text, Some(0))
+                .unwrap_err()
+                .sqlstate(),
+            state
+        );
+    }
+    assert_eq!(
+        PgTimestampTz::from_binary(&[0; 7]).unwrap_err().sqlstate(),
+        "08P01"
+    );
+    assert_eq!(
+        PgTimestampTz::from_binary(&[0; 9]).unwrap_err().sqlstate(),
+        "22P03"
+    );
+}
