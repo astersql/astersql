@@ -2260,13 +2260,36 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 ExpressionRule::FunctionCallKeywordAlt09 => "TIME",
                 _ => "TIMESTAMP",
             };
-            out.expr = Some(parser_ast::ExprNode::Function(
-                parser_ast::CIStr::default(),
-                parser_ast::NewCIStr(name),
-                vec![parser_ast::ExprNode::Value(
-                    rhs[rhs_len - (0)].ident.clone(),
-                )],
-            ));
+            let value = parser_ast::ExprNode::Value(rhs[rhs_len].ident.clone());
+            if rule == ExpressionRule::FunctionCallKeywordAlt10
+                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+            {
+                // A PG typed literal uses the same wall-clock type and cast
+                // consumer as ::timestamp, never the native TIMESTAMP function.
+                let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypeDatetime);
+                tp.SetDecimal(-1);
+                tp.SetCharset("binary".to_owned());
+                tp.SetCollate("binary".to_owned());
+                let start = rhs[1].offset.max(0) as usize;
+                let end = rhs[rhs_len].end_offset;
+                let mut node_text = parser_ast::base::AstNode::default();
+                node_text.SetOriginTextPosition(start as i32);
+                node_text.SetText(None, &parser_state.src[start..end]);
+                out.expr = Some(parser_ast::ExprNode {
+                    node_text,
+                    Kind: parser_ast::ExprKind::Cast {
+                        Expr: Box::new(value), Tp: tp,
+                        FunctionType: parser_ast::CastFunctionType::Cast,
+                        ExplicitCharSet: false,
+                    },
+                    OriginTextPosition: start as i32,
+                    Flag: Default::default(),
+                });
+            } else {
+                out.expr = Some(parser_ast::ExprNode::Function(
+                    parser_ast::CIStr::default(), parser_ast::NewCIStr(name), vec![value],
+                ));
+            }
         }
         ExpressionRule::FunctionCallKeywordAlt12 => {
             let (Some(left), Some(right)) = (

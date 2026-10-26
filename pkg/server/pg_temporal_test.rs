@@ -3270,3 +3270,252 @@ fn pg_temporal_ts_range_zero() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_ts_zone_identity() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    for zone in ["UTC", "Asia/Shanghai", "America/New_York"] {
+        let changed = query(&mut socket, &format!("SET time_zone = '{zone}'"));
+        assert_eq!(changed.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+        for (text, canonical, micros) in [
+            (
+                "2004-10-19 10:23:54+02",
+                "2004-10-19 10:23:54",
+                151496634000000i64,
+            ),
+            (
+                "2024-03-10 02:30:00",
+                "2024-03-10 02:30:00",
+                763353000000000,
+            ),
+            (
+                "2024-03-10 02:30:00-05:00",
+                "2024-03-10 02:30:00",
+                763353000000000,
+            ),
+            (
+                "2024-03-10 02:30:00 America/New_York",
+                "2024-03-10 02:30:00",
+                763353000000000,
+            ),
+            ("2000-01-01 00:00:00+15:59:59", "2000-01-01 00:00:00", 0),
+        ] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let bytes = micros.to_be_bytes();
+                    let result = cycle_oid(
+                        &mut socket,
+                        "SELECT $1::timestamp",
+                        1114,
+                        input,
+                        output,
+                        Some(if input == 0 { text.as_bytes() } else { &bytes }),
+                    );
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{zone} {text}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1114u32.to_be_bytes()].concat()
+                    );
+                    timestamp_description(&result[2].1, 0, -1);
+                    timestamp_description(&result[4].1, output, -1);
+                    assert_eq!(
+                        date_text_row(&result),
+                        if output == 0 {
+                            canonical.as_bytes()
+                        } else {
+                            &bytes
+                        }
+                    );
+                }
+            }
+            let literal = query(
+                &mut socket,
+                &format!("SELECT TIMESTAMP '{text}' AS timezone"),
+            );
+            timestamp_description(&literal[0].1, 0, -1);
+            assert_eq!(date_text_row(&literal), canonical.as_bytes());
+        }
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let null = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp",
+                    1114,
+                    input,
+                    output,
+                    None,
+                );
+                timestamp_description(&null[2].1, 0, -1);
+                timestamp_description(&null[4].1, output, -1);
+                assert_eq!(
+                    null[5].1,
+                    [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                );
+            }
+        }
+    }
+    for (text, state) in [
+        ("2004-10-19 10:23:54+16", "22009"),
+        ("2004-10-19 10:23:54+02:60", "22009"),
+        ("2004-10-19 10:23:54+bad", "22007"),
+        ("2024-02-30 02:30:00+02", "22008"),
+    ] {
+        for output in [0, 1] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1",
+                    1114,
+                    0,
+                    output,
+                    Some(text.as_bytes()),
+                ),
+                state,
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+
+    // Retain six independently bound portals before changing the session.
+    // Execute each only after switching zones, then verify exhaustion too.
+    query(&mut socket, "BEGIN");
+    for index in 0..3 {
+        for output in [0i16, 1] {
+            let name = format!("wall{index}_{output}");
+            let mut parse = [name.as_bytes(), b"\0SELECT $1::timestamp\0"].concat();
+            parse.extend_from_slice(&1i16.to_be_bytes());
+            parse.extend_from_slice(&1114u32.to_be_bytes());
+            send(&mut socket, b'P', &parse);
+            let mut bind = [name.as_bytes(), b"\0", name.as_bytes(), b"\0"].concat();
+            bind.extend_from_slice(&0i16.to_be_bytes());
+            bind.extend_from_slice(&1i16.to_be_bytes());
+            bind.extend_from_slice(&19i32.to_be_bytes());
+            bind.extend_from_slice(b"2024-03-10 02:30:00");
+            bind.extend_from_slice(&1i16.to_be_bytes());
+            bind.extend_from_slice(&output.to_be_bytes());
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                ready(&mut socket).iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"12Z"
+            );
+        }
+    }
+    for (index, zone) in ["UTC", "Asia/Shanghai", "America/New_York"]
+        .iter()
+        .enumerate()
+    {
+        let changed = query(&mut socket, &format!("SET time_zone = '{zone}'"));
+        assert_eq!(changed.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+        for output in [0i16, 1] {
+            let name = format!("wall{index}_{output}");
+            send(
+                &mut socket,
+                b'D',
+                &[b"P".as_slice(), name.as_bytes(), b"\0"].concat(),
+            );
+            send(&mut socket, b'E', &[name.as_bytes(), &[0; 5]].concat());
+            send(&mut socket, b'E', &[name.as_bytes(), &[0; 5]].concat());
+            send(&mut socket, b'S', &[]);
+            let result = ready(&mut socket);
+            timestamp_description(&result[0].1, output, -1);
+            assert_eq!(result.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCCZ");
+            let bytes = 763353000000000i64.to_be_bytes();
+            assert_eq!(
+                date_text_row(&result),
+                if output == 0 {
+                    b"2024-03-10 02:30:00".as_slice()
+                } else {
+                    &bytes
+                }
+            );
+        }
+    }
+    query(&mut socket, "COMMIT");
+
+    use crate::conn::{CancellationToken, SessionDriver};
+    let mysql = driver.open_ctx(75119, 0, 45, "", None).unwrap();
+    let run = |sql: &str| {
+        mysql
+            .execute_query(sql, false, &CancellationToken::new())
+            .unwrap()
+    };
+    run("CREATE DATABASE ts_zone_identity");
+    run("USE ts_zone_identity");
+    run("SET sql_mode = ''");
+    run("SET time_zone = 'UTC'");
+    run("CREATE TABLE walls (d DATETIME(6), t TIMESTAMP(6))");
+    run("INSERT INTO walls VALUES ('2024-03-10 02:30:00', '2024-03-10 02:30:00')");
+    for zone in ["UTC", "Asia/Shanghai", "America/New_York"] {
+        run(&format!("SET time_zone = '{zone}'"));
+        let result = run("SELECT d, t FROM walls").remove(0);
+        assert_eq!(
+            result
+                .native_types
+                .iter()
+                .map(|t| (t.code, t.decimal))
+                .collect::<Vec<_>>(),
+            vec![(12, 6), (7, 6)]
+        );
+        println!("MySQL stored values zone={zone}: {:?}", result.rows);
+        assert_eq!(
+            result.rows[0][0],
+            crate::conn::Value::Text("2024-03-10 02:30:00.000000".into())
+        );
+        // Current native runtime retains both field sets; it does not expose
+        // TIMESTAMP storage/session conversion provenance. Do not infer a PG
+        // instant or a safe bridge merely from this unchanged display.
+        assert_eq!(result.rows[0][1], result.rows[0][0]);
+        let datetime = run("SELECT d FROM walls").remove(0);
+        for output in [0, 1] {
+            let encoded = crate::pg_result::encode_formats(&datetime, "SELECT", &[output]).unwrap();
+            timestamp_description(&encoded[0].1, output as i16, 6);
+            let bytes = 763353000000000i64.to_be_bytes();
+            assert_eq!(
+                date_text_row(&encoded),
+                if output == 0 {
+                    b"2024-03-10 02:30:00".as_slice()
+                } else {
+                    &bytes
+                }
+            );
+        }
+        for output in [0, 1] {
+            let rejected = crate::pg_result::encode_formats(&result, "SELECT", &[output, output])
+                .expect_err("TIMESTAMP bridge needs storage/session conversion provenance");
+            assert_eq!(crate::pg_result::encoding_sqlstate(&rejected), "0A000");
+        }
+    }
+    run("DROP DATABASE ts_zone_identity");
+    mysql.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+}

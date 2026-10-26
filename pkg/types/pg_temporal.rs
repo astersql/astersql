@@ -14,6 +14,8 @@ pub enum PgTemporalError {
     Unsupported,
     #[error("time and duration cannot be bridged without loss")]
     DurationBridge,
+    #[error("native TIMESTAMP requires storage and session timezone conversion provenance")]
+    TimestampBridge,
     #[error("insufficient data in date parameter")]
     Truncated,
     #[error("incorrect binary date parameter length")]
@@ -25,7 +27,7 @@ impl PgTemporalError {
             Self::Syntax => "22007",
             Self::Range => "22008",
             Self::ZoneRange => "22009",
-            Self::Unsupported | Self::DurationBridge => "0A000",
+            Self::Unsupported | Self::DurationBridge | Self::TimestampBridge => "0A000",
             Self::Truncated => "08P01",
             Self::Trailing => "22P03",
         }
@@ -309,6 +311,46 @@ impl PgTime {
         self.0.to_be_bytes()
     }
 }
+// Shared numeric-zone validation; callers discard the displacement only after
+// checking its complete spelling and PostgreSQL's +/-15:59:59 limit.
+fn validate_numeric_zone(offset: &str) -> Result<(), PgTemporalError> {
+    let syntax = PgTemporalError::Syntax;
+    let number = |field: &str| -> Result<i64, PgTemporalError> {
+        if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(syntax);
+        }
+        field.parse().map_err(|_| PgTemporalError::Range)
+    };
+    let (hours, minutes, seconds) = if offset.contains(':') {
+        let mut fields = offset.split(':');
+        let hours = number(fields.next().ok_or(syntax)?)?;
+        let minutes = number(fields.next().ok_or(syntax)?)?;
+        let seconds = fields.next().map(number).transpose()?.unwrap_or(0);
+        if fields.next().is_some() {
+            return Err(syntax);
+        }
+        (hours, minutes, seconds)
+    } else {
+        if !offset.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(syntax);
+        }
+        match offset.len() {
+            1 | 2 => (number(offset)?, 0, 0),
+            4 => (number(&offset[..2])?, number(&offset[2..])?, 0),
+            6 => (
+                number(&offset[..2])?,
+                number(&offset[2..4])?,
+                number(&offset[4..])?,
+            ),
+            _ => return Err(syntax),
+        }
+    };
+    if hours > 15 || minutes > 59 || seconds > 59 {
+        return Err(PgTemporalError::ZoneRange);
+    }
+    Ok(())
+}
+
 impl std::str::FromStr for PgTime {
     type Err = PgTemporalError;
     fn from_str(text: &str) -> Result<Self, Self::Err> {
@@ -326,34 +368,7 @@ impl std::str::FromStr for PgTime {
         // A numeric displacement is validated even though time without time
         // zone does not retain it. Never apply it to the wall-clock fields.
         if let Some(at) = text.find(['+', '-']).filter(|at| *at > 0) {
-            let offset = text[at + 1..].trim();
-            let (hours, minutes, seconds) = if offset.contains(':') {
-                let mut fields = offset.split(':');
-                let hours = number(fields.next().ok_or(syntax)?)?;
-                let minutes = number(fields.next().ok_or(syntax)?)?;
-                let seconds = fields.next().map(number).transpose()?.unwrap_or(0);
-                if fields.next().is_some() {
-                    return Err(syntax);
-                }
-                (hours, minutes, seconds)
-            } else {
-                if !offset.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(syntax);
-                }
-                match offset.len() {
-                    1 | 2 => (number(offset)?, 0, 0),
-                    4 => (number(&offset[..2])?, number(&offset[2..])?, 0),
-                    6 => (
-                        number(&offset[..2])?,
-                        number(&offset[2..4])?,
-                        number(&offset[4..])?,
-                    ),
-                    _ => return Err(syntax),
-                }
-            };
-            if hours > 15 || minutes > 59 || seconds > 59 {
-                return Err(PgTemporalError::ZoneRange);
-            }
+            validate_numeric_zone(text[at + 1..].trim())?;
             text = text[..at].trim_end();
         }
         let meridian = text.get(text.len().saturating_sub(2)..).and_then(|suffix| {
@@ -502,6 +517,27 @@ impl std::str::FromStr for PgTimestamp {
         };
         if matches!(date.0, i32::MIN | i32::MAX) {
             return Err(PgTemporalError::Syntax);
+        }
+        // A timestamp is already typed as a wall clock. Validate its zone
+        // without resolving a local instant: DST gaps must remain unchanged.
+        let (clock, zone) = if let Some((clock, zone)) = clock.rsplit_once(' ') {
+            (clock.trim_end(), Some(zone))
+        } else if let Some(at) = clock.find(['+', '-']).filter(|at| *at > 0) {
+            (&clock[..at], Some(&clock[at..]))
+        } else if let Some(clock) = clock.strip_suffix(['Z', 'z']) {
+            (clock, Some("UTC"))
+        } else {
+            (clock, None)
+        };
+        if let Some(zone) = zone {
+            if zone.starts_with(['+', '-']) {
+                validate_numeric_zone(&zone[1..])?;
+            } else if !(zone.eq_ignore_ascii_case("UTC")
+                || zone.eq_ignore_ascii_case("GMT")
+                || zone.parse::<chrono_tz::Tz>().is_ok())
+            {
+                return Err(PgTemporalError::Syntax);
+            }
         }
         // Keep the timestamp input fractional conversion separate from typmod:
         // PG first rounds fractional seconds to microseconds, then adjusts p.

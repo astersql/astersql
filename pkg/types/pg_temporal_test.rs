@@ -374,3 +374,34 @@ fn pg_timestamp_epoch_precision_and_domain() {
         Err(PgTemporalError::Trailing)
     );
 }
+
+#[test]
+fn pg_timestamp_zone_identity() {
+    use crate::pg_temporal::{PgTemporalError, PgTimestamp};
+    for suffix in [
+        "+02",
+        "-0500",
+        "+15:59:59",
+        "Z",
+        " UTC",
+        " America/New_York",
+        " America/Port-au-Prince",
+        " Etc/GMT+5",
+        " +02",
+    ] {
+        let value: PgTimestamp = format!("2024-03-10 02:30:00{suffix}").parse().unwrap();
+        assert_eq!(value.to_string(), "2024-03-10 02:30:00");
+        assert_eq!(value.micros(), 763353000000000);
+    }
+    for (suffix, expected) in [
+        ("+16", PgTemporalError::ZoneRange),
+        ("+02:60", PgTemporalError::ZoneRange),
+        ("+bad", PgTemporalError::Syntax),
+        (" Invalid/Zone", PgTemporalError::Syntax),
+    ] {
+        assert_eq!(
+            format!("2024-03-10 02:30:00{suffix}").parse::<PgTimestamp>(),
+            Err(expected)
+        );
+    }
+}

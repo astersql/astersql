@@ -5213,3 +5213,26 @@ fn pg_temporal_ts_precision_grammar() {
             .is_err()
     );
 }
+
+#[test]
+fn pg_temporal_ts_typed_literal() {
+    use parser_ast::{ExprKind, SqlDialect};
+    for dialect in [SqlDialect::PostgreSQL, SqlDialect::MySQL] {
+        let mut parser = crate::Parser::with_dialect(dialect);
+        let (statements, _) = parser
+            .ParseSQL("SELECT TIMESTAMP '2004-10-19 10:23:54+02'", &[])
+            .unwrap();
+        let select = statements[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let kind = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind;
+        if dialect == SqlDialect::PostgreSQL {
+            assert!(
+                matches!(kind, ExprKind::Cast { Tp, .. } if Tp.GetType() == parser_mysql::r#type::TypeDatetime && Tp.GetDecimal() == -1)
+            );
+        } else {
+            assert!(matches!(kind, ExprKind::Function { .. }));
+        }
+    }
+}

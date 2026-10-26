@@ -1226,6 +1226,16 @@ pub(crate) fn encode_formats(
                 } else {
                     value_text(value, *oid)?
                 };
+                if result.native_types[index].code == 7 && text.is_some() {
+                    // Native TIMESTAMP displays cannot prove which storage and
+                    // session timezone conversions have run. Calendar validation
+                    // above still reports invalid/zero dates as 22008, but a
+                    // valid display needs explicit provenance before bridging.
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        astersql_types::pg_temporal::PgTemporalError::TimestampBridge,
+                    ));
+                }
                 if let Some(text) = text {
                     if !binary && text.contains(&0) {
                         return Err(invalid("PostgreSQL text cannot contain NUL"));
