@@ -316,6 +316,9 @@ impl PgTime {
 // Shared numeric-zone validation; callers discard the displacement only after
 // checking its complete spelling and PostgreSQL's +/-15:59:59 limit.
 fn validate_numeric_zone(offset: &str) -> Result<(), PgTemporalError> {
+    numeric_zone_seconds(offset).map(|_| ())
+}
+fn numeric_zone_seconds(offset: &str) -> Result<i32, PgTemporalError> {
     let syntax = PgTemporalError::Syntax;
     let number = |field: &str| -> Result<i64, PgTemporalError> {
         if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
@@ -350,7 +353,7 @@ fn validate_numeric_zone(offset: &str) -> Result<(), PgTemporalError> {
     if hours > 15 || minutes > 59 || seconds > 59 {
         return Err(PgTemporalError::ZoneRange);
     }
-    Ok(())
+    Ok((hours * 3600 + minutes * 60 + seconds) as i32)
 }
 
 impl std::str::FromStr for PgTime {
@@ -618,5 +621,118 @@ impl fmt::Display for PgTimestamp {
         } else {
             write!(f, "{year:04}-{month:02}-{day:02} {clock}")
         }
+    }
+}
+
+/// PostgreSQL timestamptz identity: signed UTC microseconds from 2000-01-01.
+/// The input zone is deliberately absent from the stored value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PgTimestampTz(i64);
+impl PgTimestampTz {
+    pub fn from_micros(micros: i64) -> Result<Self, PgTemporalError> {
+        PgTimestamp::from_micros(micros).map(|v| Self(v.micros()))
+    }
+    pub fn micros(self) -> i64 {
+        self.0
+    }
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
+        PgTimestamp::from_binary(bytes).map(|v| Self(v.micros()))
+    }
+    pub fn to_binary(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+    pub fn round_precision(self, precision: isize) -> Result<Self, PgTemporalError> {
+        PgTimestamp(self.0)
+            .round_precision(precision)
+            .map(|v| Self(v.micros()))
+    }
+    /// An explicit numeric displacement takes precedence over the caller's
+    /// session displacement. With no displacement, the caller must supply one.
+    pub fn parse_with_offset(
+        text: &str,
+        session_offset: Option<i32>,
+    ) -> Result<Self, PgTemporalError> {
+        let text = text.trim();
+        if matches!(
+            text.to_ascii_lowercase().as_str(),
+            "infinity" | "-infinity" | "epoch"
+        ) {
+            return text.parse::<PgTimestamp>().map(|v| Self(v.micros()));
+        }
+        let bc = text.to_ascii_uppercase().ends_with(" BC");
+        let body = if bc { &text[..text.len() - 3] } else { text };
+        let clock_at = body.find([' ', 'T']).ok_or(PgTemporalError::Syntax)?;
+        let zone_at = body[clock_at + 1..]
+            .find(['+', '-'])
+            .map(|at| at + clock_at + 1);
+        let (wall, offset) = if let Some(at) = zone_at {
+            let zone = &body[at..];
+            let seconds = numeric_zone_seconds(&zone[1..])?;
+            (
+                &body[..at],
+                if zone.starts_with('-') {
+                    -seconds
+                } else {
+                    seconds
+                },
+            )
+        } else if let Some(wall) = body
+            .strip_suffix(['Z', 'z'])
+            .or_else(|| body.strip_suffix(" UTC"))
+        {
+            (wall, 0)
+        } else {
+            (body, session_offset.ok_or(PgTemporalError::Unsupported)?)
+        };
+        let wall = if bc {
+            format!("{wall} BC")
+        } else {
+            wall.to_owned()
+        };
+        let wall: PgTimestamp = wall.parse()?;
+        Self::from_micros(
+            wall.micros()
+                .checked_sub(i64::from(offset) * 1_000_000)
+                .ok_or(PgTemporalError::Range)?,
+        )
+    }
+    /// Canonical transport is UTC; the SQL consumer supplies the session offset
+    /// for display, independently of the original input spelling.
+    pub fn format_with_offset(self, offset: i32) -> Result<String, PgTemporalError> {
+        if matches!(self.0, i64::MIN | i64::MAX) {
+            return Ok(PgTimestamp(self.0).to_string());
+        }
+        let local = self
+            .0
+            .checked_add(i64::from(offset) * 1_000_000)
+            .ok_or(PgTemporalError::Range)?;
+        let wall = PgTimestamp::from_micros(local)?.to_string();
+        let (wall, era) = wall
+            .strip_suffix(" BC")
+            .map_or((wall.as_str(), ""), |s| (s, " BC"));
+        let magnitude = offset.unsigned_abs();
+        let mut zone = format!(
+            "{}{:02}",
+            if offset < 0 { '-' } else { '+' },
+            magnitude / 3600
+        );
+        if magnitude % 3600 != 0 {
+            zone.push_str(&format!(":{:02}", magnitude % 3600 / 60));
+        }
+        if magnitude % 60 != 0 {
+            zone.push_str(&format!(":{:02}", magnitude % 60));
+        }
+        Ok(format!("{wall}{zone}{era}"))
+    }
+}
+impl std::str::FromStr for PgTimestampTz {
+    type Err = PgTemporalError;
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::parse_with_offset(text, None)
+    }
+}
+impl fmt::Display for PgTimestampTz {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.format_with_offset(0).map_err(|_| fmt::Error)?)
     }
 }

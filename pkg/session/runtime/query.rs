@@ -1280,6 +1280,14 @@ impl ConcreteSession {
                     );
                 }
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
+                {
+                    return self.pg_timestamptz_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                        Tp.GetDecimal(),
+                    );
+                }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime
                 {
                     return pg_timestamp_relational_value(

@@ -696,6 +696,7 @@ impl FieldType {
                 }
             }
             mysql::TypeDate => ctx.WriteKeyWord("DATE")?,
+            mysql::TypePgTimestampTz => ctx.WriteKeyWord("TIMESTAMPTZ")?,
             mysql::TypeDatetime => {
                 ctx.WriteKeyWord("DATETIME")?;
                 write_scale(ctx, self.decimal)?;

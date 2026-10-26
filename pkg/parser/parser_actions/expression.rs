@@ -1269,6 +1269,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "float4" | "real" => parser_mysql::r#type::TypeFloat,
                 "float" | "float8" | "double" => parser_mysql::r#type::TypeDouble,
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
+                "timestamptz" => parser_mysql::r#type::TypePgTimestampTz,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
                     return Err(1);

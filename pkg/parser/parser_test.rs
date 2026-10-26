@@ -5236,3 +5236,22 @@ fn pg_temporal_ts_typed_literal() {
         }
     }
 }
+
+#[test]
+fn pg_timestamptz_cast_identity() {
+    use crate::ast::SqlDialect;
+    let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for sql in ["SELECT $1::timestamptz", "SELECT CAST($1 AS timestamptz)"] {
+        let (nodes, _) = pg.ParseSQL(sql, &[]).unwrap();
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert!(
+            matches!(&select.Fields.Fields[0].Expr.as_ref().unwrap().Kind,
+            parser_ast::ExprKind::Cast { Tp, .. } if Tp.GetType() == parser_mysql::r#type::TypePgTimestampTz)
+        );
+        let mut mysql = crate::Parser::with_dialect(SqlDialect::MySQL);
+        assert!(mysql.ParseSQL(sql, &[]).is_err());
+    }
+}

@@ -79,3 +79,25 @@ fn timestamp_clock_lifecycle_and_prepared_ast_constants() {
     );
     session.close_protocol_statement(id).unwrap();
 }
+
+#[test]
+fn pg_timestamptz_session_cast_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.execute("SET time_zone = 'UTC'").unwrap();
+    for (text, expected) in [
+        ("2000-01-01 08:00:00+08", "2000-01-01 00:00:00+00"),
+        ("2000-01-01 00:00:00+08", "1999-12-31 16:00:00+00"),
+    ] {
+        let mut records = session
+            .execute(&format!("SELECT CAST('{text}' AS timestamptz)"))
+            .unwrap();
+        assert_eq!(records[0].next_row().unwrap().unwrap(), [expected]);
+    }
+    assert_eq!(
+        session
+            .protocol_parameter_types("SELECT ?::timestamptz", &[1184])
+            .unwrap(),
+        [1184]
+    );
+}

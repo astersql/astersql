@@ -433,3 +433,44 @@ fn pg_timestamp_special_context() {
         assert_eq!(PgTimestamp::from_binary(&value.to_binary()).unwrap(), value);
     }
 }
+
+#[test]
+fn pg_timestamptz_instant_identity() {
+    use super::pg_temporal::PgTimestampTz;
+    let epoch: PgTimestampTz = "2000-01-01 00:00:00+00".parse().unwrap();
+    assert_eq!(epoch, "2000-01-01 08:00:00+08".parse().unwrap());
+    for text in [
+        "2000-01-01 08:00:00+08:00",
+        "2000-01-01 08:00:00+0800",
+        "2000-01-01 08:00:00+8",
+    ] {
+        assert_eq!(text.parse::<PgTimestampTz>().unwrap(), epoch);
+    }
+    assert_eq!(epoch.to_binary(), [0; 8]);
+    assert_eq!(
+        "2000-01-01 00:00:00+08"
+            .parse::<PgTimestampTz>()
+            .unwrap()
+            .micros(),
+        -28_800_000_000
+    );
+    assert_eq!(PgTimestampTz::from_binary(&[0; 8]).unwrap(), epoch);
+    assert_eq!(
+        epoch.format_with_offset(19800).unwrap(),
+        "2000-01-01 05:30:00+05:30"
+    );
+    for (bytes, state) in [(vec![0; 7], "08P01"), (vec![0; 9], "22P03")] {
+        assert_eq!(
+            PgTimestampTz::from_binary(&bytes).unwrap_err().sqlstate(),
+            state
+        );
+    }
+    for text in [
+        "",
+        "garbage",
+        "2000-02-30 00:00:00+00",
+        "0000-01-01 00:00:00+00",
+    ] {
+        assert!(text.parse::<PgTimestampTz>().is_err());
+    }
+}

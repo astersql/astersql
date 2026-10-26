@@ -459,7 +459,8 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         0 | 246 => (1700, -1),
         4 => (700, 4),
         5 => (701, 8),
-        6 => (25, -1),       // NULL has no stronger engine type
+        6 => (25, -1), // NULL has no stronger engine type
+        astersql_parser_mysql::r#type::TypePgTimestampTz => (1184, 8),
         7 | 12 => (1114, 8), // native wall-clock timestamp, no invented timezone
         10 | 14 => (1082, 4),
         11 => (1083, 8),
@@ -608,6 +609,11 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_string(),
+        1184 => {
+            text.parse::<astersql_types::pg_temporal::PgTimestampTz>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            text
+        }
         1114 => text
             .parse::<astersql_types::pg_temporal::PgTimestamp>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -760,6 +766,11 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .to_vec(),
         1083 => text
             .parse::<astersql_types::pg_temporal::PgTime>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_binary()
+            .to_vec(),
+        1184 => text
+            .parse::<astersql_types::pg_temporal::PgTimestampTz>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_binary()
             .to_vec(),
@@ -1147,7 +1158,7 @@ pub(crate) fn encode_formats(
                     .and_then(|tp| i32::try_from(tp.length).ok())
                     .and_then(|length| length.checked_add(4))
                     .unwrap_or(-1)
-            } else if matches!(*oid, 1083 | 1114) {
+            } else if matches!(*oid, 1083 | 1114 | 1184) {
                 result
                     .native_types
                     .get(index)

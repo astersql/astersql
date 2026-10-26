@@ -219,3 +219,6 @@ pub fn HasEnumSetAsIntFlag(flag: usize) -> bool {
 pub fn HasFlag(flag: usize, flagItem: usize) -> bool {
     (flag & flagItem) > 0
 }
+
+/// Internal PG timestamptz identity; never a MySQL protocol type code.
+pub const TypePgTimestampTz: u8 = 0xe2;

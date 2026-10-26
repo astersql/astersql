@@ -175,3 +175,38 @@ impl ConcreteSession {
         }
     }
 }
+
+impl ConcreteSession {
+    /// Convert the typed instantaneous value to the active session's display.
+    pub(super) fn pg_timestamptz_relational_value(
+        &self,
+        value: Option<String>,
+        precision: isize,
+    ) -> SessionResult<Option<String>> {
+        use astersql_types::pg_temporal::{PgTemporalError, PgTimestampTz};
+        use chrono::Offset;
+        value
+            .map(|text| {
+                let instant = text
+                    .parse::<PgTimestampTz>()
+                    .map_err(temporal_error)?
+                    .round_precision(precision)
+                    .map_err(temporal_error)?;
+                let offset = match *self.time_zone.borrow() {
+                    RuntimeTimeZone::Fixed(zone) => zone.local_minus_utc(),
+                    RuntimeTimeZone::Named(chrono_tz::UTC) => 0,
+                    RuntimeTimeZone::Named(zone) => {
+                        let unix = instant
+                            .micros()
+                            .checked_add(946_684_800_000_000)
+                            .ok_or_else(|| temporal_error(PgTemporalError::Range))?;
+                        let date = chrono::DateTime::from_timestamp_micros(unix)
+                            .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?;
+                        date.with_timezone(&zone).offset().fix().local_minus_utc()
+                    }
+                };
+                instant.format_with_offset(offset).map_err(temporal_error)
+            })
+            .transpose()
+    }
+}

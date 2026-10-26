@@ -1797,7 +1797,7 @@ impl ConcreteSession {
             && supplied.iter().any(|oid| {
                 matches!(
                     oid,
-                    16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
+                    16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114 | 1184
                 )
             });
         let constructor_oids = array_oids
@@ -1849,14 +1849,16 @@ impl ConcreteSession {
                             .position(|marker| marker.offset == Offset)
                             .and_then(|index| supplied.get(index));
                         if let Some(
-                            oid
-                            @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114),
+                            oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
+                            | 1184),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
                                 astersql_parser_mysql::r#type::TypeBlob
                             } else if *oid == 1082 {
                                 astersql_parser_mysql::r#type::TypeDate
+                            } else if *oid == 1184 {
+                                astersql_parser_mysql::r#type::TypePgTimestampTz
                             } else if *oid == 1114 {
                                 astersql_parser_mysql::r#type::TypeDatetime
                             } else if *oid == 1083 {
@@ -1925,7 +1927,7 @@ impl ConcreteSession {
                     for (oid, supplied) in oids.iter_mut().zip(supplied) {
                         if matches!(
                             *supplied,
-                            16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
+                            16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114 | 1184
                         ) {
                             *oid = *supplied;
                         }
@@ -2042,6 +2044,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&1184) {
+                    return Ok(format!("CAST({literal} AS TIMESTAMPTZ)"));
+                }
                 if constructor_oids.get(index) == Some(&1114) {
                     return Ok(format!("CAST({literal} AS TIMESTAMP)"));
                 }
@@ -2135,6 +2140,7 @@ impl ConcreteSession {
                 || constructor_oids.contains(&1082)
                 || constructor_oids.contains(&1083)
                 || constructor_oids.contains(&1114)
+                || constructor_oids.contains(&1184)
                 || (dialect == ast::SqlDialect::PostgreSQL
                     && records.len() == 1
                     && !records[0].columns.is_empty()

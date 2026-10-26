@@ -2709,7 +2709,8 @@ pub(super) fn relational_expression_type(
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }
-            if Tp.PostgreSQLTextOid().is_some()
+            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
+                || Tp.PostgreSQLTextOid().is_some()
                 || (Tp.GetCharset() == "binary"
                     && matches!(
                         Tp.GetType(),
