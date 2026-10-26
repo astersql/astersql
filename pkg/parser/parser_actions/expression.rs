@@ -972,6 +972,10 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "casttype_char_optfieldlen_optbinary--e53ea511cb69d16d" => {
             Some(ExpressionRule::CastTypeAlt02)
         }
+        "pgpostfixdate_date--d2c79744ae38b0c4" => Some(ExpressionRule::CastTypeAlt03),
+        "simpleexpr_simpleexpr_pgtypecast_pgpostfixdate_p--6dd8899613fa15bf" => {
+            Some(ExpressionRule::PgPostfixCast)
+        }
         "casttype_date--5a326cc6643a40af" => Some(ExpressionRule::CastTypeAlt03),
         "casttype_year--f010dbb41c64c76c" => Some(ExpressionRule::CastTypeAlt04),
         "casttype_datetime_optfieldlen--d3a238a390d7eab6" => Some(ExpressionRule::CastTypeAlt05),

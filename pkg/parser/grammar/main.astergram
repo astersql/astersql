@@ -4329,3 +4329,6 @@ SimpleExpr : SimpleExpr pgTypecast PgPostfixFloat %prec pgTypecast @action;
 PgCastType : Varchar OptFieldLen @action;
 PgPostfixText : Char OptFieldLen @action;
 SimpleExpr : SimpleExpr pgTypecast PgPostfixText %prec pgTypecast @action;
+
+PgPostfixDate : "DATE" @action;
+SimpleExpr : SimpleExpr pgTypecast PgPostfixDate %prec pgTypecast @action;

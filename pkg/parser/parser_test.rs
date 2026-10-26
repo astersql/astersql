@@ -5062,3 +5062,57 @@ fn pg_scalar_21_text_cast_identity() {
     assert_eq!(Tp.PostgreSQLTextOid(), None);
     assert_eq!(Tp.GetFlen(), -1);
 }
+
+#[test]
+fn pg_temporal_date_postfix_cast() {
+    use parser_ast::{CastFunctionType, ExprKind, SqlDialect};
+    for sql in [
+        "SELECT NULL::date",
+        "SELECT $1::DATE",
+        "SELECT '2000-01-01'::date",
+        "SELECT NULL::date::date",
+    ] {
+        let (statements, _) = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        let select = statements[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let ExprKind::Cast {
+            Expr,
+            Tp,
+            FunctionType,
+            ..
+        } = &expr.Kind
+        else {
+            panic!("{sql}")
+        };
+        assert_eq!(Tp.GetType(), parser_mysql::r#type::TypeDate);
+        assert_eq!(*FunctionType, CastFunctionType::Cast);
+        assert_eq!(expr.node_text.OriginalText(), &sql.as_bytes()[7..]);
+        if sql == "SELECT $1::DATE" {
+            assert_eq!(Expr.PostgreSQLParameterIndex(), Some(1));
+        }
+        assert!(
+            crate::Parser::with_dialect(SqlDialect::MySQL)
+                .ParseSQL(sql, &[])
+                .is_err(),
+            "{sql}"
+        );
+    }
+    for sql in ["SELECT NULL::date(2)", "SELECT NULL::date[]"] {
+        assert!(
+            crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+                .ParseSQL(sql, &[])
+                .is_err(),
+            "{sql}"
+        );
+    }
+    assert!(
+        crate::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseSQL("SELECT CAST(NULL AS DATE)", &[])
+            .is_ok()
+    );
+}
