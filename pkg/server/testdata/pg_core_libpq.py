@@ -48,6 +48,387 @@ assert version() >= 180000, "libpq 18 is required"
 print("external libpq version:", version(), flush=True)
 
 # Differential mode keeps independent observations from both real endpoints.
+def date_differential(aster_dsn):
+    """DATE-DIFF: independent libpq observations plus explicit-length wire probes."""
+    import copy
+    import json
+    import socket
+    import struct
+    import subprocess
+    import hashlib
+    from pathlib import Path
+
+    repository = Path(__file__).resolve().parents[3]
+    reference = os.environ.get('PG18_REFERENCE_DSN')
+    assert reference, 'PG18_REFERENCE_DSN is required (no skip)'
+    evidence = Path(os.environ['PG_DATE_EVIDENCE_DIR'])
+    evidence.mkdir(parents=True, exist_ok=True)
+    prepare = api('PQprepare', ptr, ptr, text, text, integer, c.POINTER(c.c_uint))
+    describe = api('PQdescribePrepared', ptr, ptr, text)
+    prepared = api('PQexecPrepared', ptr, ptr, text, integer, c.POINTER(text),
+                   c.POINTER(integer), c.POINTER(integer), integer)
+    size = api('PQfsize', integer, ptr, integer)
+    mod = api('PQfmod', integer, ptr, integer)
+    fmt = api('PQfformat', integer, ptr, integer)
+    np = api('PQnparams', integer, ptr)
+    pt = api('PQparamtype', c.c_uint, ptr, integer)
+    ef = api('PQresultErrorField', text, ptr, integer)
+    length = api('PQgetlength', integer, ptr, integer, integer)
+    raw_value = api('PQgetvalue', ptr, ptr, integer, integer)
+    pq_socket = api('PQsocket', integer, ptr)
+    notice_api = api('PQsetNoticeReceiver', ptr, ptr, ptr, ptr)
+    notices = []
+    @c.CFUNCTYPE(None, ptr, ptr)
+    def on_notice(arg, result):
+        notices.append((ef(result, ord('C')) or b'').decode())
+
+    def observe(result):
+        assert result, 'libpq returned no result'
+        try:
+            return dict(status=result_status(result), state=(ef(result, ord('C')) or b'').decode(),
+                        metadata=[[field_type(result, i), size(result, i), mod(result, i), fmt(result, i)]
+                                  for i in range(columns(result))],
+                        parameters=[pt(result, i) for i in range(np(result))],
+                        rows=[[None if is_null(result, r, i) else
+                               c.string_at(raw_value(result, r, i), length(result, r, i)).hex()
+                               for i in range(columns(result))] for r in range(rows(result))],
+                        warnings=list(notices))
+        finally:
+            notices.clear()
+            clear(result)
+
+    def scalar(obs):
+        assert obs['status'] == 2 and len(obs['rows']) == 1, obs
+        return bytes.fromhex(obs['rows'][0][0]).decode()
+
+    class Wire:
+        # Startup and authentication are real libpq; duplicate only its idle socket.
+        # No libpq operations run while these raw message probes own the connection.
+        def __init__(self, dsn):
+            self.conn = connect(dsn.encode())
+            assert self.conn and status(self.conn) == 0, 'wire connection failed'
+            self.raw = socket.socket(fileno=os.dup(pq_socket(self.conn)))
+            self.blocking = os.get_blocking(pq_socket(self.conn))
+            self.raw.settimeout(10)
+            self.diagnostics = []
+        def close(self):
+            self.raw.close()
+            os.set_blocking(pq_socket(self.conn), self.blocking)
+            finish(self.conn)
+        def send(self, tag, body):
+            self.raw.sendall(tag + struct.pack('!I', len(body) + 4) + body)
+        def exact(self, n):
+            data = b''
+            while len(data) < n:
+                part = self.raw.recv(n-len(data))
+                assert part, 'unexpected EOF'
+                data += part
+            return data
+        def ready(self):
+            obs = dict(tags='', descriptions=[], parameters=[], rows=[], errors=[], warnings=[], ready='')
+            while True:
+                tag = self.exact(1).decode()
+                n = struct.unpack('!I', self.exact(4))[0]
+                assert 4 <= n < 1 << 20
+                body = self.exact(n-4)
+                # ParameterStatus and NoticeResponse are async, not phase delimiters.
+                if tag not in ('S', 'N'):
+                    obs['tags'] += tag
+                if tag == 'T':
+                    count = struct.unpack('!H', body[:2])[0]
+                    at, fields = 2, []
+                    for _ in range(count):
+                        at = body.index(b'\0', at) + 1
+                        _, _, oid, width, typmod, output = struct.unpack('!IhIhih', body[at:at+18])
+                        at += 18
+                        fields.append([oid, width, typmod, output])
+                    obs['descriptions'].append(fields)
+                elif tag == 't':
+                    count = struct.unpack('!H', body[:2])[0]
+                    obs['parameters'] = list(struct.unpack('!'+'I'*count, body[2:]))
+                elif tag == 'D':
+                    count = struct.unpack('!H', body[:2])[0]
+                    at, cells = 2, []
+                    for _ in range(count):
+                        size_ = struct.unpack('!i', body[at:at+4])[0]
+                        at += 4
+                        assert size_ >= -1
+                        cells.append(dict(length=size_, hex=None if size_ == -1 else body[at:at+size_].hex()))
+                        if size_ >= 0:
+                            at += size_
+                    assert at == len(body)
+                    obs['rows'].append(cells)
+                elif tag in ('E', 'N'):
+                    fields = {chr(f[0]): f[1:].decode(errors='replace') for f in body.split(b'\0') if f}
+                    self.diagnostics.append(fields)
+                    obs['errors' if tag == 'E' else 'warnings'].append(fields['C'])
+                elif tag == 'Z':
+                    obs['ready'] = body.decode()
+                    return obs
+        def query(self, sql):
+            self.send(b'Q', sql.encode()+b'\0')
+            return self.ready()
+        def parse(self, sql, name=b'', parameter=True):
+            self.send(b'P', name+b'\0'+sql.encode()+b'\0'+
+                      (struct.pack('!HI',1,1082) if parameter else struct.pack('!H',0)))
+        def bind(self, payload, input_, output, statement=b'', portal=b'', declared=None, parameter=True):
+            val = struct.pack('!i', -1 if payload is None else len(payload) if declared is None else declared)
+            values = struct.pack('!hhh',1,input_,1)+val+(payload or b'') if parameter else struct.pack('!hh',0,0)
+            self.send(b'B',portal+b'\0'+statement+b'\0'+values+struct.pack('!hh',1,output))
+        def execute(self, portal=b''):
+            self.send(b'E', portal+b'\0'+struct.pack('!I', 0))
+        def sync(self):
+            self.send(b'S', b'')
+            return self.ready()
+        def cycle(self, sql, payload, input_, output, declared=None, parameter=True):
+            self.parse(sql, parameter=parameter)
+            self.send(b'D', b'S\0')
+            self.bind(payload, input_, output, declared=declared, parameter=parameter)
+            self.send(b'D', b'P\0')
+            self.execute()
+            self.execute()
+            return self.sync()
+
+    fixtures = [('2024-02-29', 8825), ('2000-02-29', 59),
+                ('1999-12-31', -1), ('2000-01-01', 0), ('2000-01-02', 1),
+                ('1970-01-01', -10957), ('4714-11-24 BC', -2451545),
+                ('5874897-12-31', 2145031948), ('0001-01-01 BC', -730485),
+                ('0001-12-31 BC', -730120), ('0001-01-01', -730119),
+                ('9999-12-31', 2921939), ('10000-01-01', 2921940),
+                ('-infinity', -2147483648), ('infinity', 2147483647)]
+    observations, cleanup, identity = {}, {}, {}
+    epoch, relatives, wire_epoch, style_binary = None, {}, None, {}
+    for side, dsn in [('reference', reference), ('aster', aster_dsn)]:
+        conn = connect(dsn.encode())
+        assert conn and status(conn) == 0, side+' connection failed'
+        notice_api(conn, c.cast(on_notice, ptr), None)
+        collected, wire = {}, None
+        def keep(case, result):
+            assert case not in collected, case
+            collected[case] = result
+            return result
+        def q(case, sql):
+            return keep(case, observe(execute(conn, sql.encode())))
+        def ok(obs):
+            assert obs['status'] in (1, 2) and not obs['warnings'], (side, obs)
+            return obs
+        def check_value(obs, expected, output):
+            assert obs['status'] == 2 and not obs['warnings'], (side, obs)
+            assert obs['metadata'] == [[1082, 4, -1, output]], (side, obs)
+            assert obs['rows'] == [[None if expected is None else expected.hex()]], (side, obs, expected)
+        def zone_sql(zone):
+            # The preceding DATE-EPOCH task exposes the native time_zone setting.
+            # Use that real session interface until full PG GUC spelling lands.
+            return f"SET TimeZone TO '{zone}'" if side == 'reference' else f"SET time_zone = '{zone}'"
+        try:
+            if side == 'reference':
+                identity['server'] = observe(execute(conn, b"SELECT version(), current_setting('server_version_num')"))
+                assert 180000 <= int(bytes.fromhex(identity['server']['rows'][0][1]).decode()) < 190000
+                identity['libpq_version'] = version()
+                identity['source_head'] = subprocess.check_output(['git','rev-parse','HEAD'], text=True,cwd=repository).strip()
+                identity['source_diff_sha256'] = hashlib.sha256(subprocess.check_output(['git','diff','HEAD','--','pkg/server','pkg/types','pkg/session','pkg/parser'],cwd=repository)).hexdigest()
+                identity['rust_test_binary'] = os.environ['PG_DATE_RUST_BINARY']
+                identity['rust_test_binary_sha256'] = hashlib.sha256(Path(identity['rust_test_binary']).read_bytes()).hexdigest()
+                identity['cargo_lock_sha256'] = hashlib.sha256((repository/'Cargo.lock').read_bytes()).hexdigest()
+                identity['fixture_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                # Installed server builds do not always expose a tzdb release label.
+                # Optional fingerprints identify its actual compiled zone data.
+                tzdir = os.environ.get('PG_DATE_REFERENCE_TZDIR')
+                identity['reference_tzdata'] = ({zone: hashlib.sha256((Path(tzdir)/zone).read_bytes()).hexdigest()
+                    for zone in ['UTC','Asia/Shanghai','America/New_York','Etc/GMT+12','Etc/GMT-14']}
+                    if tzdir else 'compiled tzdata directory not provided')
+                identity['source_status'] = subprocess.check_output(['git','status','--short'], text=True,cwd=repository)
+                tz = Path('/usr/share/zoneinfo/tzdata.zi')
+                version_file = Path('/usr/share/zoneinfo/+VERSION')
+                identity['tzdata'] = tz.read_text().splitlines()[0] if tz.exists() else version_file.read_text().strip() if version_file.exists() else 'system tzdata version unavailable'
+                tz_binary = Path('/usr/share/zoneinfo/UTC')
+                identity['tzdata_utc_sha256'] = hashlib.sha256(tz_binary.read_bytes()).hexdigest()
+            for setting in ["SET DateStyle TO 'ISO, MDY'", zone_sql("UTC")]:
+                setup = observe(execute(conn, setting.encode()))
+                assert setup['status'] in (1,2), (side, setting, setup)
+            identity[side] = {setting: scalar(ok(observe(execute(conn, sql.encode()))))
+                              for setting, sql in [('DateStyle','SHOW DateStyle'),
+                                  ('TimeZone','SHOW TimeZone' if side == 'reference' else 'SELECT @@time_zone')]}
+            # IntervalStyle belongs to the interval/session lifecycle workstream;
+            # record its actual availability without treating it as a date codec.
+            identity[side]['IntervalStyle'] = observe(execute(conn,b'SHOW IntervalStyle'))
+            statement = b'date_value'
+            ok(keep('prepare', observe(prepare(conn, statement, b'SELECT $1::date AS d', 1, (c.c_uint*1)(1082)))))
+            desc = keep('statement-describe', observe(describe(conn, statement)))
+            assert desc['parameters'] == [1082] and desc['metadata'] == [[1082,4,-1,0]], (side, desc)
+            for idx, (spelling, days) in enumerate(fixtures + [(None, None)]):
+                binary = None if days is None else struct.pack('!i', days)
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload = None if spelling is None else spelling.encode() if input_ == 0 else binary
+                        result = keep(f'libpq-{idx}-{input_}-{output}', observe(prepared(
+                            conn, statement, 1, (text*1)(payload), (integer*1)(0 if payload is None else len(payload)),
+                            (integer*1)(input_), output)))
+                        expected = None if spelling is None else spelling.encode() if output == 0 else binary
+                        check_value(result, expected, output)
+                if spelling is not None:
+                    check_value(q(f'literal-{idx}', f"SELECT CAST('{spelling}' AS date) AS d"), spelling.encode(), 0)
+            if side == 'aster':
+                bridge = {}
+                for output in (0,1):
+                    obs = observe(params(conn,b'SELECT d FROM date_isolation WHERE id = 1',0,None,None,None,None,output))
+                    bridge[str(output)] = obs
+                    assert obs['status'] == 7 and obs['state'] == '22008' and not obs['rows'], obs
+                    ok(observe(execute(conn,b'SELECT 1::int4')))
+                (evidence/'mysql-zero-bridge.json').write_text(json.dumps(bridge,sort_keys=True))
+            # Relative words resolve against the reference transaction instant, never host time.
+            ok(observe(execute(conn,b'BEGIN')))
+            if side == 'reference':
+                epoch = scalar(ok(observe(execute(conn, b'SELECT EXTRACT(EPOCH FROM transaction_timestamp())'))))
+                identity['transaction_epoch'] = epoch
+            else:
+                ok(observe(execute(conn,b'ROLLBACK')))
+                ok(observe(execute(conn,('SET timestamp = '+epoch).encode())))
+                ok(observe(execute(conn,b'BEGIN')))
+            for word in ['now','today','yesterday','tomorrow','epoch']:
+                result = q('relative-literal-'+word, f"SELECT CAST('{word}' AS date) AS d")
+                if side == 'reference':
+                    text_result = bytes.fromhex(result['rows'][0][0])
+                    binary_result = observe(prepared(conn,statement,1,(text*1)(text_result),None,None,1))
+                    relatives[word] = (text_result, bytes.fromhex(binary_result['rows'][0][0]))
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload = word.encode() if input_ == 0 else relatives[word][1]
+                        obs = keep(f'relative-{word}-{input_}-{output}',observe(prepared(conn,statement,1,(text*1)(payload),
+                            (integer*1)(len(payload)),(integer*1)(input_),output)))
+                        check_value(obs, relatives[word][output], output)
+            ok(q('relative-end','ROLLBACK'))
+            for order, expected in [('MDY',b'2003-01-02'),('DMY',b'2003-02-01')]:
+                ok(observe(execute(conn,f"SET DateStyle TO 'ISO, {order}'".encode())))
+                if side == 'reference':
+                    encoded = observe(prepared(conn,statement,1,(text*1)(expected),None,None,1))
+                    style_binary[order] = bytes.fromhex(encoded['rows'][0][0])
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload = b'01/02/2003' if input_ == 0 else style_binary[order]
+                        obs = keep(f'style-{order}-{input_}-{output}',observe(prepared(conn,statement,1,
+                            (text*1)(payload),(integer*1)(len(payload)),(integer*1)(input_),output)))
+                        check_value(obs,expected if output == 0 else style_binary[order],output)
+                check_value(q('style-readback-'+order, f"SELECT CAST('{expected.decode()}' AS date) AS d"),expected,0)
+            ok(observe(execute(conn,b"SET DateStyle TO 'ISO, MDY'")))
+            wire = Wire(dsn)
+            assert not wire.query("SET DateStyle TO 'ISO, MDY'")['errors']
+            assert not wire.query(zone_sql("UTC"))['errors']
+            for idx, (spelling, days) in enumerate(fixtures + [(None,None)]):
+                for input_ in (0,1):
+                    for output in (0,1):
+                        payload = None if days is None else spelling.encode() if input_ == 0 else struct.pack('!i', days)
+                        obs = keep(f'wire-{idx}-{input_}-{output}',wire.cycle('SELECT $1::date AS d',payload,input_,output))
+                        assert obs['tags'] == '1tT2TDCCZ' and obs['parameters'] == [1082], (side,obs)
+                        assert obs['descriptions'] == [[[1082,4,-1,0]],[[1082,4,-1,output]]], (side,obs)
+                        expected = None if days is None else spelling.encode() if output == 0 else struct.pack('!i',days)
+                        assert obs['rows'] == [[dict(length=-1 if expected is None else len(expected),hex=None if expected is None else expected.hex())]], (side,obs)
+            for name, sql in [('null','SELECT NULL::date AS d'),
+                              ('first-null',"SELECT NULL::date AS d UNION ALL SELECT CAST('2000-01-01' AS date) AS d"),
+                              ('all-null','SELECT NULL::date AS d UNION ALL SELECT NULL::date AS d'),
+                              ('zero-rows','SELECT $1::date AS d WHERE FALSE')]:
+                for output in (0,1):
+                    obs = keep(f'wire-{name}-{output}',wire.cycle(sql,None,0,output,parameter=name=='zero-rows'))
+                    assert not obs['errors'] and obs['descriptions'] == [[[1082,4,-1,0]],[[1082,4,-1,output]]], (side,obs)
+            # One prepared statement, multiple portals and result format switches.
+            wire.parse('SELECT $1::date AS d', b'switch')
+            assert wire.sync()['tags'] == '1Z'
+            for output in (0,1,0):
+                wire.bind(b'2000-01-01',0,output,statement=b'switch')
+                wire.send(b'D',b'P\0');wire.execute()
+                obs = wire.sync()
+                keep(f'switch-{len(collected)}',obs)
+                assert obs['descriptions'] == [[[1082,4,-1,output]]] and len(obs['rows']) == 1, obs
+            bad_text = ['2023-02-29','1900-02-29','2024-04-31','2024-00-01','2024-13-01',
+                        '2024-01-00','2024-01-32','0000-00-00','0000-01-01','4714-11-23 BC','5874898-01-01']
+            bad = [(s.encode(),0,'22008',None) for s in bad_text]
+            bad += [(s.encode(),0,'22007',None) for s in ['allballs','','garbage']]
+            bad += [(b'\xff',0,'22021',None),(b'2024-02-29\0junk',0,'22021',None),
+                    (b'',1,'08P01',None),(b'\0'*3,1,'08P01',None),(b'\0'*5,1,'22P03',None),
+                    (struct.pack('!i',-2451546),1,'22008',None),(struct.pack('!i',2145031949),1,'22008',None),
+                    (b'\0'*4,1,'08P01',100)]
+            for idx,(payload,input_,state,declared) in enumerate(bad):
+                for output in (0,1):
+                    obs = keep(f'bad-{idx}-{output}',wire.cycle('SELECT $1::date AS d',payload,input_,output,declared))
+                    assert obs['errors'] == [state] and not obs['rows'] and obs['ready'] == 'I', (side,idx,obs)
+                    recovery = keep(f'recovery-{idx}-{output}',wire.query('SELECT 1::int4 AS n'))
+                    assert recovery['rows'] == [[{'length':1,'hex':'31'}]] and not recovery['errors'], recovery
+            for idx, spelling in enumerate(bad_text+['allballs','','garbage']):
+                obs = q(f'bad-literal-{idx}', f"SELECT CAST('{spelling}' AS date) AS d")
+                assert obs['state'] == ('22008' if idx < len(bad_text) else '22007'), (side,obs)
+            assert wire.query('BEGIN')['ready'] == 'T'
+            obs = keep('transaction-error',wire.cycle('SELECT $1::date AS d',b'2023-02-29',0,1))
+            assert obs['errors'] == ['22008'] and obs['ready'] == 'E',obs
+            assert wire.query('ROLLBACK')['ready'] == 'I'
+            keep('transaction-recovery',wire.query('SELECT 1::int4 AS n'))
+            # Changing session zone cannot move an already bound date.
+            wire.parse('SELECT $1::date AS d',b'zone')
+            wire.sync()
+            for zone in ['UTC','Asia/Shanghai','America/New_York']:
+                assert not wire.query(zone_sql(zone))['errors']
+                wire.bind(b'1999-12-31',0,1,statement=b'zone')
+                wire.execute()
+                obs=keep('zone-'+zone,wire.sync())
+                assert obs['rows'] == [[dict(length=4,hex='ffffffff')]],obs
+            if side == 'reference':
+                assert wire.query('BEGIN')['ready'] == 'T'
+                instant = wire.query('SELECT EXTRACT(EPOCH FROM transaction_timestamp())')
+                wire_epoch = bytes.fromhex(instant['rows'][0][0]['hex']).decode()
+                identity['wire_transaction_epoch'] = wire_epoch
+            else:
+                assert not wire.query('SET timestamp = '+wire_epoch)['errors']
+                assert wire.query('BEGIN')['ready'] == 'T'
+            # Parse a relative literal, then change zone without sleeping. Two zones
+            # 26 hours apart guarantee a changed calendar day at the same instant.
+            assert not wire.query(zone_sql("Etc/GMT+12"))['errors']
+            wire.parse("SELECT CAST('today' AS date) AS d",b'constant',parameter=False)
+            assert not wire.sync()['errors']
+            before=keep('prepare-relative-before',wire.query("SELECT CAST('today' AS date) AS d"))
+            assert not wire.query(zone_sql("Etc/GMT-14"))['errors']
+            wire.bind(None,0,0,statement=b'constant',parameter=False)
+            wire.execute()
+            parsed=keep('prepare-relative-execute',wire.sync())
+            assert parsed['rows'] == before['rows'],(side,before,parsed)
+            after=keep('prepare-relative-after',wire.query("SELECT CAST('today' AS date) AS d"))
+            assert after['rows'] != before['rows'],(side,before,after)
+            wire.parse('SELECT $1::date AS d',b'bound')
+            wire.sync()
+            wire.bind(b'today',0,0,statement=b'bound',portal=b'p')
+            assert not wire.sync()['errors']
+            assert not wire.query(zone_sql("Etc/GMT+12"))['errors']
+            wire.execute(b'p')
+            bound=keep('bind-relative-execute',wire.sync())
+            assert bound['rows'] == after['rows'],(side,after,bound)
+            if side == 'aster':
+                print('PG_DATE_MID',flush=True)
+                assert sys.stdin.readline().strip() == 'continue'
+            observations[side]=collected
+        finally:
+            if wire is not None:
+                (evidence/(side+'-diagnostics.json')).write_text(json.dumps(wire.diagnostics,sort_keys=True))
+                try:wire.query('ROLLBACK')
+                finally:wire.close()
+            rolled=observe(execute(conn,b'ROLLBACK'))
+            notices.clear()
+            finish(conn)
+            cleanup[side]=rolled['status'] == 1
+            (evidence/(side+'.json')).write_text(json.dumps(collected,sort_keys=True))
+            (evidence/'identity.json').write_text(json.dumps(identity,sort_keys=True))
+            (evidence/'cleanup.json').write_text(json.dumps(cleanup))
+    assert observations['aster'].keys() == observations['reference'].keys()
+    for case, actual in observations['aster'].items():
+        assert actual == observations['reference'][case], (case,actual,observations['reference'][case])
+    for key, replacement in [('rows',[['00']]),('metadata',[[25,-1,-1,0]]),('state','XXXXX')]:
+        changed=copy.deepcopy(observations['reference'])
+        changed['libpq-0-0-0'][key]=replacement
+        assert changed != observations['aster'], key
+    summary=dict(cases=len(observations['aster']),negative_controls=3,cleanup=cleanup,passed=True,
+                 capabilities=['DATE-CALENDAR','DATE-EPOCH','DATE-RANGE','DATE-ZERO',
+                               'DATE-SPECIAL-STYLE','DATE-NULL-METADATA','DATE-INVALID-BINARY'])
+    (evidence/'summary.json').write_text(json.dumps(summary))
+    print('date differential:',json.dumps(summary),flush=True)
+
+
 def integer_differential(aster_dsn):
     import copy
     import signal
@@ -1666,6 +2047,9 @@ conninfo = (
 )
 if len(sys.argv) > 3 and sys.argv[3] == "bytea28-differential":
     bytea28_differential(conninfo)
+    sys.exit(0)
+if len(sys.argv) > 3 and sys.argv[3] == "date-differential":
+    date_differential(conninfo)
     sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[3] == "text24-differential":
     text24_differential(conninfo)
