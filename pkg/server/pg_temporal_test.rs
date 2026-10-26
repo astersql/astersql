@@ -2793,3 +2793,233 @@ fn pg_temporal_ts_epoch_fraction() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_ts_calendar_precision() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    // Independent epoch microseconds, including leap-day and year carry.
+    for (p, text, micros, expected, rounded) in [
+        (
+            0,
+            "2024-02-29 00:00:00",
+            762480000000000i64,
+            "2024-02-29 00:00:00",
+            762480000000000i64,
+        ),
+        (
+            6,
+            "2024-02-29 12:34:56.123456",
+            762525296123456,
+            "2024-02-29 12:34:56.123456",
+            762525296123456,
+        ),
+        (
+            0,
+            "2024-12-31 23:59:59.999999",
+            789004799999999,
+            "2025-01-01 00:00:00",
+            789004800000000,
+        ),
+        (
+            3,
+            "2024-12-31 23:59:59.999999",
+            789004799999999,
+            "2025-01-01 00:00:00",
+            789004800000000,
+        ),
+        (
+            6,
+            "2024-12-31 23:59:59.999999",
+            789004799999999,
+            "2024-12-31 23:59:59.999999",
+            789004799999999,
+        ),
+        (
+            7,
+            "2024-02-29 12:34:56.1234567",
+            762525296123457,
+            "2024-02-29 12:34:56.123457",
+            762525296123457,
+        ),
+    ] {
+        for sql in [
+            format!("SELECT $1::timestamp({p})"),
+            format!("SELECT CAST($1 AS TIMESTAMP({p}))"),
+        ] {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let binary = micros.to_be_bytes();
+                    let value = if input == 0 { text.as_bytes() } else { &binary };
+                    for value in [Some(value), None] {
+                        let result = cycle_oid(&mut socket, &sql, 1114, input, output, value);
+                        assert!(
+                            !result.iter().any(|m| m.0 == b'E'),
+                            "{sql} {text}: {result:?}"
+                        );
+                        let parameters = result.iter().find(|m| m.0 == b't').unwrap();
+                        assert_eq!(
+                            parameters.1,
+                            [1i16.to_be_bytes().as_slice(), &1114u32.to_be_bytes()].concat()
+                        );
+                        let descriptions =
+                            result.iter().filter(|m| m.0 == b'T').collect::<Vec<_>>();
+                        assert_eq!(descriptions.len(), 2);
+                        timestamp_description(&descriptions[0].1, 0, p.min(6));
+                        timestamp_description(&descriptions[1].1, output, p.min(6));
+                        let notices = result.iter().filter(|m| m.0 == b'N').collect::<Vec<_>>();
+                        assert_eq!(notices.len(), usize::from(p == 7), "{sql}: {result:?}");
+                        if p == 7 {
+                            assert!(notices[0].1.windows(7).any(|w| w == b"C22023\0"));
+                            assert!(notices[0].1.windows(9).any(|w| w == b"SWARNING\0"));
+                        }
+                        let row = result.iter().find(|m| m.0 == b'D').unwrap();
+                        if value.is_none() {
+                            assert_eq!(
+                                row.1,
+                                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                            );
+                        } else {
+                            assert_eq!(
+                                date_text_row(&result),
+                                if output == 0 {
+                                    expected.as_bytes().to_vec()
+                                } else {
+                                    rounded.to_be_bytes().to_vec()
+                                },
+                                "{sql} {text}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Calendar failures occur at Bind, and at execution for text casts. Each
+    // failure must leave the existing Sync path usable without a new session.
+    for text in [
+        "2023-02-29 00:00:00",
+        "1900-02-29 00:00:00",
+        "2024-04-31 00:00:00",
+        "2024-13-01 00:00:00",
+        "2024-01-01 12:60:00",
+        "2024-01-01 25:00:00",
+        "2024-01-01 12:00:61",
+    ] {
+        for output in [0, 1] {
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp(3)",
+                    1114,
+                    0,
+                    output,
+                    Some(text.as_bytes()),
+                ),
+                "22008",
+            );
+            error(
+                &cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamp(3)",
+                    25,
+                    0,
+                    output,
+                    Some(text.as_bytes()),
+                ),
+                "22008",
+            );
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+        error(
+            &query(&mut socket, &format!("SELECT CAST('{text}' AS TIMESTAMP)")),
+            "22008",
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    // PostgreSQL ConstDatetime uses unsigned Iconst: signed precision fails
+    // syntax before anytimestamp_typmod_check can return 22023.
+    for sql in [
+        "SELECT NULL::timestamp(-1)",
+        "SELECT CAST(NULL AS TIMESTAMP(-1))",
+        "SELECT NULL::timestamp(-0)",
+        "SELECT NULL::timestamp(+3)",
+    ] {
+        error(&query(&mut socket, sql), "42601");
+        error(&cycle_oid(&mut socket, sql, 1114, 0, 0, None), "42601");
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    query(&mut socket, "BEGIN");
+    error_in_state(
+        &cycle_oid(
+            &mut socket,
+            "SELECT $1",
+            1114,
+            0,
+            0,
+            Some(b"2023-02-29 00:00:00"),
+        ),
+        "22008",
+        b"E",
+    );
+    query(&mut socket, "ROLLBACK");
+    assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+
+    // Validated PgTimestamp cannot contain invalid calendar fields. Exercise
+    // malformed native DATETIME cells at the result boundary for both codecs.
+    use crate::conn::{CancellationToken, SessionDriver, Value};
+    let mysql = driver.open_ctx(75117, 0, 45, "", None).unwrap();
+    let mut internal = mysql
+        .execute_query(
+            "SELECT CAST('2024-02-29 12:00:00' AS DATETIME)",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .remove(0);
+    assert_eq!(internal.native_types[0].code, 12);
+    for text in [
+        "2023-02-29 12:00:00",
+        "2024-04-31 12:00:00",
+        "2024-01-01 25:00:00",
+        "2024-01-01 12:60:00",
+        "2024-01-01 12:00:61",
+    ] {
+        internal.rows[0][0] = Value::Text(text.into());
+        for output in [0, 1] {
+            let rejected = crate::pg_result::encode_formats(&internal, "SELECT", &[output])
+                .expect_err("invalid native timestamp must not normalize");
+            assert_eq!(
+                crate::pg_result::encoding_sqlstate(&rejected),
+                "22008",
+                "{text}"
+            );
+        }
+    }
+    mysql.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+}

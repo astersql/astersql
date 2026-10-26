@@ -894,6 +894,9 @@ fn pg_introspection_parameters_live() {
     send(&mut socket, b'S', &[]);
     assert_eq!(read(&mut socket).0, b'Z');
     for (sql, oids, state) in [
+        ("SELECT NULL::timestamp(-1)", vec![1114], "42601"),
+        ("SELECT CAST(NULL AS TIMESTAMP(-1))", vec![1114], "42601"),
+        ("SELECT NULL::timestamp(0)", vec![1114], "08P01"),
         ("SELECT $0::oid FROM pg_class", vec![], "42P02"),
         ("SELECT $32768::oid FROM pg_class", vec![], "42P02"),
         ("SELECT $32767::oid FROM pg_class", vec![], "42P18"),

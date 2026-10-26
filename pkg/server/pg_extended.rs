@@ -791,6 +791,10 @@ impl Extended {
             oids = query.parameter_oids().to_vec();
         }
         if count > n {
+            // Preserve SQL syntax diagnostics before checking unused OIDs. For
+            // example TIMESTAMP(-1) fails grammar, not the Parse frame shape.
+            // Reuse command analysis on the original PG SQL, before adaptation.
+            crate::pg_result::prepare_command(&original_sql)?;
             return Err(error("08P01", "too many parameter OIDs"));
         }
         oids.resize(n, 0);
