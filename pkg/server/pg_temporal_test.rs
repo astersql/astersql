@@ -7184,3 +7184,97 @@ fn pg_temporal_iv_null_metadata() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg_temporal_iv_invalid() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    for output in [0i16, 1] {
+        for in_transaction in [false, true] {
+            for (input, payload, state) in [
+                (0, vec![], "22007"),
+                (0, b"garbage".to_vec(), "22007"),
+                (0, vec![0xff], "22021"),
+                (0, vec![0xc3, 0x28], "22021"),
+                (0, b"1 month\0".to_vec(), "22021"),
+                (1, vec![], "08P01"),
+                (1, vec![0; 15], "08P01"),
+                (1, vec![0; 17], "22P03"),
+            ] {
+                if in_transaction {
+                    assert!(!query(&mut socket, "BEGIN").iter().any(|m| m.0 == b'E'));
+                }
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::interval",
+                    1186,
+                    input,
+                    output,
+                    Some(&payload),
+                );
+                error_in_state(&result, state, if in_transaction { b"E" } else { b"I" });
+                assert!(!result.iter().any(|m| matches!(m.0, b'D' | b'2' | b'C')));
+                if in_transaction {
+                    assert_eq!(
+                        query(&mut socket, "ROLLBACK").last().unwrap(),
+                        &(b'Z', b"I".to_vec())
+                    );
+                }
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+        // Complete outer frames with inconsistent Bind value lengths must fail
+        // framing before interpreting the interval payload.
+        for declared in [15i32, 17, 32] {
+            let parse = [
+                b"\0SELECT $1::interval\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1186u32.to_be_bytes(),
+            ]
+            .concat();
+            send(&mut socket, b'P', &parse);
+            let bind = [
+                b"\0\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &declared.to_be_bytes(),
+                &[0; 16],
+                &1i16.to_be_bytes(),
+                &output.to_be_bytes(),
+            ]
+            .concat();
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'S', &[]);
+            let result = ready(&mut socket);
+            error(&result, "08P01");
+            assert!(!result.iter().any(|m| matches!(m.0, b'D' | b'2' | b'C')));
+            assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

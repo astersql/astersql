@@ -1082,7 +1082,8 @@ impl Extended {
                 } else {
                     None
                 };
-                for (index, oid) in statement.oids.iter().enumerate() {
+                let mut raw_parameters = Vec::with_capacity(count);
+                for index in 0..count {
                     let format = match parameter_formats.as_slice() {
                         [] => 0,
                         [format] => *format,
@@ -1099,6 +1100,28 @@ impl Extended {
                             )?,
                         )
                     };
+                    raw_parameters.push((format, value));
+                }
+                let formats = reader.count()?;
+                if !(formats == 0 || formats == 1 || formats == statement.metadata.columns.len()) {
+                    return Err(error("08P01", "result format count mismatch"));
+                }
+                let mut result_formats = Vec::with_capacity(formats);
+                for _ in 0..formats {
+                    let format = reader.count()?;
+                    if format > 1 {
+                        return Err(error("08P01", "invalid result format code"));
+                    }
+                    result_formats.push(format);
+                }
+                let result_formats = match result_formats.as_slice() {
+                    [] => vec![0; statement.metadata.columns.len()],
+                    [format] => vec![*format; statement.metadata.columns.len()],
+                    _ => result_formats,
+                };
+                reader.end()?;
+                // Frame errors take precedence over type-specific payload errors.
+                for (oid, (format, value)) in statement.oids.iter().zip(raw_parameters) {
                     if statement.catalog.is_some() {
                         catalog_values.push(if format == 1 {
                             catalog_binary_parameter(*oid, value)?
@@ -1160,24 +1183,6 @@ impl Extended {
                         });
                     }
                 }
-                let formats = reader.count()?;
-                if !(formats == 0 || formats == 1 || formats == statement.metadata.columns.len()) {
-                    return Err(error("08P01", "result format count mismatch"));
-                }
-                let mut result_formats = Vec::with_capacity(formats);
-                for _ in 0..formats {
-                    let format = reader.count()?;
-                    if format > 1 {
-                        return Err(error("08P01", "invalid result format code"));
-                    }
-                    result_formats.push(format);
-                }
-                let result_formats = match result_formats.as_slice() {
-                    [] => vec![0; statement.metadata.columns.len()],
-                    [format] => vec![*format; statement.metadata.columns.len()],
-                    _ => result_formats,
-                };
-                reader.end()?;
                 let description = description_formats(
                     &statement.metadata,
                     &result_formats,
