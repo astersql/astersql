@@ -277,11 +277,19 @@ impl ConcreteSession {
                 let local = chrono::DateTime::from_timestamp_micros(unix)
                     .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?
                     .naive_utc();
-                let resolved = zone
-                    .from_local_datetime(&local)
-                    .single()
-                    .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?;
-                resolved.offset().fix().local_minus_utc()
+                // PostgreSQL resolves a forward gap with the pre-transition
+                // offset and a backward overlap with the post-transition one.
+                // Use transition data rather than assuming a one-hour change.
+                match zone.from_local_datetime(&local) {
+                    chrono::LocalResult::Single(value) => value.offset().fix().local_minus_utc(),
+                    chrono::LocalResult::Ambiguous(_, after) => {
+                        after.offset().fix().local_minus_utc()
+                    }
+                    chrono::LocalResult::None => chrono_tz::GapInfo::new(&local, &zone)
+                        .and_then(|gap| gap.begin)
+                        .map(|(_, before)| before.fix().local_minus_utc())
+                        .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?,
+                }
             }
         };
         PgTimestampTz::from_micros(

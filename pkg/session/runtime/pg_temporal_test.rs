@@ -161,3 +161,21 @@ fn pg_timestamptz_session_input_boundaries() {
         ["2000-01-03 08:00:00+08"]
     );
 }
+
+#[test]
+fn pg_timestamptz_dst_resolution() {
+    println!("native_tzdata={}", chrono_tz::IANA_TZDB_VERSION);
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session
+        .execute("SET time_zone = 'America/New_York'")
+        .unwrap();
+    for (wall, utc) in [
+        ("2018-03-11 02:30:00", "2018-03-11 07:30:00+00"),
+        ("2018-11-04 01:30:00", "2018-11-04 06:30:00+00"),
+        ("2018-11-04 01:30:00-04", "2018-11-04 05:30:00+00"),
+        ("2018-11-04 01:30:00-05", "2018-11-04 06:30:00+00"),
+    ] {
+        assert_eq!(session.pg_timestamptz_input(wall).unwrap().to_string(), utc);
+    }
+}

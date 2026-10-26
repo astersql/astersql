@@ -4505,3 +4505,211 @@ fn tz_session_description(body: &[u8], format: i16) {
     assert_eq!(&body[at + 12..at + 16], &(-1i32).to_be_bytes());
     assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
 }
+
+#[test]
+fn pg_temporal_tz_dst() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE tz_dst_diff").unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+
+    query(&mut socket, "SET time_zone = 'America/New_York'");
+    for (text, utc, local) in [
+        (
+            "2018-03-11 02:30:00",
+            "2018-03-11 07:30:00+00",
+            "2018-03-11 03:30:00-04",
+        ),
+        (
+            "2018-11-04 01:30:00",
+            "2018-11-04 06:30:00+00",
+            "2018-11-04 01:30:00-05",
+        ),
+        (
+            "2018-11-04 01:30:00-04",
+            "2018-11-04 05:30:00+00",
+            "2018-11-04 01:30:00-04",
+        ),
+        (
+            "2018-11-04 01:30:00-05",
+            "2018-11-04 06:30:00+00",
+            "2018-11-04 01:30:00-05",
+        ),
+        (
+            "2018-03-11 01:59:59.999999",
+            "2018-03-11 06:59:59.999999+00",
+            "2018-03-11 01:59:59.999999-05",
+        ),
+        (
+            "2018-03-11 03:00:00",
+            "2018-03-11 07:00:00+00",
+            "2018-03-11 03:00:00-04",
+        ),
+        (
+            "2018-11-04 00:59:59.999999",
+            "2018-11-04 04:59:59.999999+00",
+            "2018-11-04 00:59:59.999999-04",
+        ),
+        (
+            "2018-11-04 02:00:00",
+            "2018-11-04 07:00:00+00",
+            "2018-11-04 02:00:00-05",
+        ),
+    ] {
+        let binary = utc
+            .parse::<astersql_types::pg_temporal::PgTimestampTz>()
+            .unwrap()
+            .micros()
+            .to_be_bytes();
+        for input in [0i16, 1] {
+            for output in [0i16, 1] {
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::timestamptz",
+                    1184,
+                    input,
+                    output,
+                    Some(if input == 0 { text.as_bytes() } else { &binary }),
+                );
+                assert_eq!(
+                    result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"1tT2TDCCZ",
+                    "{text}: {result:?}"
+                );
+                assert_eq!(
+                    result[1].1,
+                    [1i16.to_be_bytes().as_slice(), &1184u32.to_be_bytes()].concat()
+                );
+                tz_session_description(&result[2].1, 0);
+                tz_session_description(&result[4].1, output);
+                assert_eq!(
+                    date_text_row(&result),
+                    if output == 0 {
+                        local.as_bytes()
+                    } else {
+                        &binary
+                    }
+                );
+            }
+        }
+        assert_eq!(
+            date_text_row(&query(
+                &mut socket,
+                &format!("SELECT CAST('{text}' AS timestamptz)")
+            )),
+            local.as_bytes()
+        );
+        // Redisplay the exact same binary instant in UTC without reinterpreting it.
+        query(&mut socket, "SET time_zone = 'UTC'");
+        let result = cycle_oid(
+            &mut socket,
+            "SELECT $1::timestamptz",
+            1184,
+            1,
+            0,
+            Some(&binary),
+        );
+        assert_eq!(date_text_row(&result), utc.as_bytes());
+        query(&mut socket, "SET time_zone = 'America/New_York'");
+    }
+    for input in [0i16, 1] {
+        for output in [0i16, 1] {
+            let null = cycle_oid(
+                &mut socket,
+                "SELECT $1::timestamptz",
+                1184,
+                input,
+                output,
+                None,
+            );
+            assert_eq!(null.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tT2TDCCZ");
+            tz_session_description(&null[2].1, 0);
+            tz_session_description(&null[4].1, output);
+            assert_eq!(
+                null[5].1,
+                [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+            );
+        }
+    }
+    for (input, bytes, state) in [
+        (0, b"".to_vec(), "22007"),
+        (0, b"2018-03-32 02:30:00".to_vec(), "22008"),
+        (0, vec![0xff], "22021"),
+        (0, b"2018-03-11 02:30:00\0".to_vec(), "22021"),
+        (1, vec![0; 7], "08P01"),
+        (1, vec![0; 9], "22P03"),
+    ] {
+        error(
+            &cycle_oid(
+                &mut socket,
+                "SELECT $1::timestamptz",
+                1184,
+                input,
+                0,
+                Some(&bytes),
+            ),
+            state,
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    let zero = query(
+        &mut socket,
+        "SELECT CAST('2018-03-11 02:30:00' AS timestamptz) WHERE false",
+    );
+    assert!(!zero.iter().any(|m| m.0 == b'D' || m.0 == b'E'), "{zero:?}");
+    tz_session_description(&zero.iter().find(|m| m.0 == b'T').unwrap().1, 0);
+    let multi = query(
+        &mut socket,
+        "SELECT CAST('2018-11-04 01:30:00-04' AS timestamptz) UNION ALL SELECT CAST('2018-11-04 01:30:00-05' AS timestamptz)",
+    );
+    assert_eq!(multi.iter().filter(|m| m.0 == b'D').count(), 2, "{multi:?}");
+    assert_eq!(
+        multi
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1[6..].to_vec())
+            .collect::<Vec<_>>(),
+        [
+            b"2018-11-04 01:30:00-04".to_vec(),
+            b"2018-11-04 01:30:00-05".to_vec()
+        ]
+    );
+    send(&mut socket, b'X', &[]);
+    let differential = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg_tz_dst_libpq.py"
+        ))
+        .arg(addr.port().to_string())
+        .output()
+        .unwrap();
+    service.close();
+    assert!(
+        differential.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&differential.stdout),
+        String::from_utf8_lossy(&differential.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&differential.stdout));
+}
