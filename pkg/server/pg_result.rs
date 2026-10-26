@@ -586,15 +586,10 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             }
             text
         }
-        1083 => {
-            let hour = text.split(':').next().unwrap_or_default().parse::<u32>();
-            if !hour.is_ok_and(|hour| hour < 24) {
-                return Err(invalid(
-                    "engine TIME duration is not a PostgreSQL time of day",
-                ));
-            }
-            text
-        }
+        1083 => text
+            .parse::<astersql_types::pg_temporal::PgTime>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_string(),
         _ => text,
     };
     if text.contains('\0') {
@@ -737,37 +732,26 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_binary()
             .to_vec(),
-        1083 | 1114 => {
+        1083 => text
+            .parse::<astersql_types::pg_temporal::PgTime>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_binary()
+            .to_vec(),
+        1114 => {
             use chrono::Timelike;
             let epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
             let invalid_time = |_| invalid("invalid binary temporal value");
-            match oid {
-                1083 => {
-                    let time = chrono::NaiveTime::parse_from_str(text, "%H:%M:%S%.f")
-                        .map_err(invalid_time)?;
-                    if time.nanosecond() >= 1_000_000_000 || time.nanosecond() % 1000 != 0 {
-                        return Err(invalid("time exceeds engine microsecond precision"));
-                    }
-                    (i64::from(time.num_seconds_from_midnight()) * 1_000_000
-                        + i64::from(time.nanosecond() / 1000))
-                    .to_be_bytes()
-                    .to_vec()
-                }
-                _ => {
-                    let datetime =
-                        chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
-                            .map_err(invalid_time)?;
-                    if datetime.nanosecond() >= 1_000_000_000 || datetime.nanosecond() % 1000 != 0 {
-                        return Err(invalid("timestamp exceeds engine microsecond precision"));
-                    }
-                    datetime
-                        .signed_duration_since(epoch.and_hms_opt(0, 0, 0).unwrap())
-                        .num_microseconds()
-                        .ok_or_else(|| invalid("timestamp out of range"))?
-                        .to_be_bytes()
-                        .to_vec()
-                }
+            let datetime = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+                .map_err(invalid_time)?;
+            if datetime.nanosecond() >= 1_000_000_000 || datetime.nanosecond() % 1000 != 0 {
+                return Err(invalid("timestamp exceeds engine microsecond precision"));
             }
+            datetime
+                .signed_duration_since(epoch.and_hms_opt(0, 0, 0).unwrap())
+                .num_microseconds()
+                .ok_or_else(|| invalid("timestamp out of range"))?
+                .to_be_bytes()
+                .to_vec()
         }
         _ => return Err(invalid("unsupported binary result type")),
     };

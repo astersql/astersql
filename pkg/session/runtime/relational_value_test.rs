@@ -789,3 +789,69 @@ fn pg_temporal_date_calendar_prepared_identity() {
     let mysql = ConcreteSession::new(domain);
     assert!(mysql.execute("SELECT CAST('0000-00-00' AS DATE)").is_ok());
 }
+
+#[test]
+fn pg_temporal_time_day_prepared_identity() {
+    use crate::runtime::{ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT ?", &[1083]).unwrap(),
+        [1083]
+    );
+    assert_eq!(
+        pg.protocol_parameter_types("SELECT CAST(? AS TIME)", &[])
+            .unwrap(),
+        [1083]
+    );
+    let (id, count, fields) = pg
+        .prepare_protocol_statement_with_parameter_types("SELECT ?", &[1083])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.GetType(),
+        astersql_parser_mysql::r#type::TypeDuration
+    );
+    for argument in [
+        ConcretePreparedArgument::Null,
+        ConcretePreparedArgument::Text("24:00:00".into()),
+    ] {
+        let mut sets = pg.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            sets[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypeDuration
+        );
+        assert!(sets[0].next_row().unwrap().is_some());
+    }
+    pg.close_protocol_statement(id).unwrap();
+    assert_eq!(
+        super::pg_time_relational_value(Some("24:00:00".into())).unwrap(),
+        Some("24:00:00".into())
+    );
+    assert_eq!(super::pg_time_relational_value(None).unwrap(), None);
+    for bad in ["24:00:00.000001", "25:00:00", "12:60:00", "12:00:61"] {
+        assert_eq!(
+            pg.execute(&format!("SELECT CAST('{bad}' AS TIME)"))
+                .err()
+                .unwrap()
+                .pg_temporal_error()
+                .unwrap()
+                .sqlstate(),
+            "22008"
+        );
+    }
+    let mysql = ConcreteSession::new(domain);
+    assert_eq!(
+        mysql.execute("SELECT CAST('25:00:00' AS TIME)").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        ["25:00:00"]
+    );
+}

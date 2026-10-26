@@ -1271,6 +1271,13 @@ impl ConcreteSession {
                         self.pg_date_context(None)?,
                     );
                 }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration
+                {
+                    return pg_time_relational_value(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                    );
+                }
                 if Tp.PostgreSQLTextOid().is_some() {
                     return pg_text_relational_cast(
                         Expr,
@@ -2473,7 +2480,11 @@ impl ConcreteSession {
             }
             match &expression.Kind {
                 ast::ExprKind::Cast { Tp, .. }
-                    if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate =>
+                    if matches!(
+                        Tp.GetType(),
+                        astersql_parser_mysql::r#type::TypeDate
+                            | astersql_parser_mysql::r#type::TypeDuration
+                    ) =>
                 {
                     return Tp.clone();
                 }

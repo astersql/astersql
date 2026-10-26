@@ -1794,9 +1794,12 @@ impl ConcreteSession {
         };
         let has_pg_values = !array_types.is_empty() || !record_types.is_empty();
         let has_scalar_parameters = self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && supplied
-                .iter()
-                .any(|oid| matches!(oid, 16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082));
+            && supplied.iter().any(|oid| {
+                matches!(
+                    oid,
+                    16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083
+                )
+            });
         let constructor_oids = array_oids
             .iter()
             .copied()
@@ -1845,13 +1848,16 @@ impl ConcreteSession {
                             .iter()
                             .position(|marker| marker.offset == Offset)
                             .and_then(|index| supplied.get(index));
-                        if let Some(oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082)) =
-                            oid
+                        if let Some(
+                            oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083),
+                        ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
                                 astersql_parser_mysql::r#type::TypeBlob
                             } else if *oid == 1082 {
                                 astersql_parser_mysql::r#type::TypeDate
+                            } else if *oid == 1083 {
+                                astersql_parser_mysql::r#type::TypeDuration
                             } else if *oid == 701 {
                                 astersql_parser_mysql::r#type::TypeDouble
                             } else if *oid == 700 {
@@ -1916,7 +1922,7 @@ impl ConcreteSession {
                     for (oid, supplied) in oids.iter_mut().zip(supplied) {
                         if matches!(
                             *supplied,
-                            16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082
+                            16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083
                         ) {
                             *oid = *supplied;
                         }
@@ -2033,6 +2039,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&1083) {
+                    return Ok(format!("CAST({literal} AS TIME)"));
+                }
                 if constructor_oids.get(index) == Some(&1082) {
                     return Ok(format!("CAST({literal} AS DATE)"));
                 }
@@ -2118,6 +2127,7 @@ impl ConcreteSession {
         execution.and_then(|mut records| {
             if has_pg_constructors
                 || constructor_oids.contains(&1082)
+                || constructor_oids.contains(&1083)
                 || (dialect == ast::SqlDialect::PostgreSQL
                     && records.len() == 1
                     && !records[0].columns.is_empty()

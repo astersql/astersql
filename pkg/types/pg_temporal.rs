@@ -1,5 +1,5 @@
 // Copyright 2026 AsterSQL.
-//! PostgreSQL calendar dates, independent of MySQL's packed temporal values.
+//! PostgreSQL calendar dates and day times, independent of MySQL temporal values.
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -238,5 +238,96 @@ impl fmt::Display for PgDate {
         } else {
             write!(f, "{year:04}-{month:02}-{day:02}")
         }
+    }
+}
+
+/// PostgreSQL time without time zone: microseconds since midnight, including
+/// the distinct end-of-day value 24:00:00. This is not a MySQL duration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PgTime(i64);
+impl PgTime {
+    pub const END_OF_DAY: i64 = 86_400_000_000;
+
+    pub fn from_micros(micros: i64) -> Result<Self, PgTemporalError> {
+        if !(0..=Self::END_OF_DAY).contains(&micros) {
+            return Err(PgTemporalError::Range);
+        }
+        Ok(Self(micros))
+    }
+    pub fn micros(self) -> i64 {
+        self.0
+    }
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
+        if bytes.len() < 8 {
+            return Err(PgTemporalError::Truncated);
+        }
+        if bytes.len() > 8 {
+            return Err(PgTemporalError::Trailing);
+        }
+        Self::from_micros(i64::from_be_bytes(bytes.try_into().unwrap()))
+    }
+    pub fn to_binary(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+impl std::str::FromStr for PgTime {
+    type Err = PgTemporalError;
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let syntax = PgTemporalError::Syntax;
+        let mut fields = text.trim().split(':');
+        let mut number = || {
+            let field = fields.next().ok_or(syntax)?;
+            if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(syntax);
+            }
+            field.parse::<i64>().map_err(|_| PgTemporalError::Range)
+        };
+        let hour = number()?;
+        let minute = number()?;
+        let seconds = fields.next().ok_or(syntax)?;
+        if fields.next().is_some() {
+            return Err(syntax);
+        }
+        let (seconds, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
+        if seconds.is_empty()
+            || !seconds.bytes().all(|b| b.is_ascii_digit())
+            || !fraction.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(syntax);
+        }
+        let second = seconds.parse::<i64>().map_err(|_| PgTemporalError::Range)?;
+        if hour > 24 || minute > 59 || second > 59 {
+            return Err(PgTemporalError::Range);
+        }
+        // Validate the 24:00 endpoint before any precision conversion.
+        if hour == 24 && (minute != 0 || second != 0 || fraction.bytes().any(|b| b != b'0')) {
+            return Err(PgTemporalError::Range);
+        }
+        if fraction.len() > 6 {
+            return Err(PgTemporalError::Unsupported);
+        }
+        let micros = if fraction.is_empty() {
+            0
+        } else {
+            fraction.parse::<i64>().map_err(|_| syntax)? * 10i64.pow(6 - fraction.len() as u32)
+        };
+        Self::from_micros(((hour * 60 + minute) * 60 + second) * 1_000_000 + micros)
+    }
+}
+impl fmt::Display for PgTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let seconds = self.0 / 1_000_000;
+        write!(
+            f,
+            "{:02}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )?;
+        let fraction = self.0 % 1_000_000;
+        if fraction != 0 {
+            write!(f, ".{}", format!("{fraction:06}").trim_end_matches('0'))?;
+        }
+        Ok(())
     }
 }

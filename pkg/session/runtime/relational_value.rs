@@ -3803,3 +3803,19 @@ pub(super) fn pg_date_relational_value(
         })
         .transpose()
 }
+
+/// PG time casts validate day-time values without MySQL duration normalization.
+pub(super) fn pg_time_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+    value
+        .map(|text| {
+            text.parse::<astersql_types::pg_temporal::PgTime>()
+                .map(|time| time.to_string())
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+        })
+        .transpose()
+}

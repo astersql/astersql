@@ -137,3 +137,39 @@ fn special_dates_and_numeric_field_orders() {
         );
     }
 }
+
+#[test]
+fn pg_temporal_time_day_canonical_domain() {
+    use super::pg_temporal::PgTime;
+    for (text, micros) in [
+        ("00:00:00", 0),
+        ("12:34:56.123456", 45296123456),
+        ("23:59:59.999999", 86399999999),
+        ("24:00:00", 86400000000),
+    ] {
+        let time = text.parse::<PgTime>().unwrap();
+        assert_eq!(time.micros(), micros);
+        assert_eq!(time.to_binary(), micros.to_be_bytes());
+        assert_eq!(PgTime::from_binary(&time.to_binary()).unwrap(), time);
+        assert_eq!(time.to_string(), text);
+    }
+    assert_ne!(
+        PgTime::from_micros(0).unwrap(),
+        PgTime::from_micros(PgTime::END_OF_DAY).unwrap()
+    );
+    for value in [i64::MIN, -1, 86400000001, i64::MAX] {
+        assert_eq!(PgTime::from_micros(value), Err(PgTemporalError::Range));
+        assert_eq!(
+            PgTime::from_binary(&value.to_be_bytes()),
+            Err(PgTemporalError::Range)
+        );
+    }
+    for text in ["24:00:00.000001", "25:00:00", "12:60:00", "12:00:61"] {
+        assert_eq!(text.parse::<PgTime>(), Err(PgTemporalError::Range));
+    }
+    assert_eq!(
+        PgTime::from_binary(&[0; 7]),
+        Err(PgTemporalError::Truncated)
+    );
+    assert_eq!(PgTime::from_binary(&[0; 9]), Err(PgTemporalError::Trailing));
+}
