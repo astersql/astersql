@@ -849,3 +849,94 @@ fn pg_interval_range_special_errors() {
         assert_eq!(finite.apply_typmod(-1, 0), Err(PgTemporalError::Range));
     }
 }
+
+#[test]
+fn pg_temporal_iv_bridge_duration_limits() {
+    use super::pg_temporal::PgInterval;
+    use super::time::{Duration, MaxTime, MinTime, ParseDuration, StrictContext};
+    for text in [
+        "-51:00:00",
+        "00:00:00",
+        "838:59:59",
+        "-838:59:59",
+        "00:00:00.000001",
+    ] {
+        let duration = ParseDuration(&StrictContext, text, 6).unwrap().0;
+        let pg = PgInterval::from_mysql_duration(duration).unwrap();
+        assert_eq!(pg.components(), (0, 0, duration.Duration / 1_000));
+        assert_eq!(pg.to_mysql_duration(6).unwrap(), duration);
+    }
+    for duration in [
+        Duration {
+            Duration: MaxTime + 1_000,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: MinTime - 1_000,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: i64::MIN,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: i64::MAX,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: 1,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: -1,
+            Fsp: 6,
+        },
+        Duration {
+            Duration: 1_000,
+            Fsp: 0,
+        },
+        Duration {
+            Duration: 0,
+            Fsp: -1,
+        },
+        Duration {
+            Duration: 0,
+            Fsp: 7,
+        },
+    ] {
+        let error = PgInterval::from_mysql_duration(duration).unwrap_err();
+        assert_eq!(error, PgTemporalError::DurationBridge);
+        assert_eq!(error.sqlstate(), "0A000");
+    }
+    for pg in [
+        PgInterval::from_components(1, 0, 0),
+        PgInterval::from_components(0, 1, 0),
+        PgInterval::from_components(-1, 30, 0),
+        PgInterval::from_components(0, -1, 86_400_000_000),
+        PgInterval::from_components(0, 0, MaxTime / 1_000 + 1),
+        PgInterval::from_components(0, 0, MinTime / 1_000 - 1),
+        PgInterval::from_components(0, 0, i64::MAX),
+        PgInterval::from_components(0, 0, i64::MIN),
+    ] {
+        assert_eq!(
+            pg.to_mysql_duration(6),
+            Err(PgTemporalError::DurationBridge)
+        );
+    }
+    for fsp in [-1, 0, 3, 5, 7] {
+        for micros in [-1, 1] {
+            assert_eq!(
+                PgInterval::from_components(0, 0, micros).to_mysql_duration(fsp),
+                Err(PgTemporalError::DurationBridge)
+            );
+        }
+    }
+    for fsp in 0..=6 {
+        let micros = -10i64.pow(6 - fsp as u32);
+        let pg = PgInterval::from_components(0, 0, micros);
+        let duration = pg.to_mysql_duration(fsp).unwrap();
+        assert_eq!(duration.Fsp, fsp);
+        assert_eq!(duration.Duration, micros * 1_000);
+        assert_eq!(PgInterval::from_mysql_duration(duration).unwrap(), pg);
+    }
+}

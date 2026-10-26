@@ -7278,3 +7278,207 @@ fn pg_temporal_iv_invalid() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg_temporal_iv_bridge() {
+    use crate::conn::{CancellationToken, SessionDriver, Value};
+    use astersql_types::pg_temporal::{PgInterval, PgTemporalError};
+    use astersql_types::time::{ParseDuration, StrictContext};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    let mysql = driver.open_ctx(75138, 0, 45, "", None).unwrap();
+    let cancel = CancellationToken::new();
+    mysql
+        .execute_query("SET sql_mode = ''", false, &cancel)
+        .unwrap();
+    fn desc(body: &[u8], format: i16) {
+        assert_eq!(&body[..2], &1i16.to_be_bytes());
+        let at = 2 + body[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&body[at + 6..at + 10], &1186u32.to_be_bytes());
+        assert_eq!(&body[at + 10..at + 12], &16i16.to_be_bytes());
+        assert_eq!(&body[at + 12..at + 16], &(-1i32).to_be_bytes());
+        assert_eq!(&body[at + 16..at + 18], &format.to_be_bytes());
+    }
+    for (text, micros) in [
+        ("-51:00:00.000000", -183_600_000_000i64),
+        ("00:00:00.000000", 0),
+        ("00:00:00.000001", 1),
+        ("-00:00:00.000001", -1),
+        ("838:59:59.000000", 3_020_399_000_000),
+        ("-838:59:59.000000", -3_020_399_000_000),
+    ] {
+        let sql = format!("SELECT CAST('{text}' AS TIME(6))");
+        let native = mysql.execute_query(&sql, false, &cancel).unwrap().remove(0);
+        assert_eq!(native.native_types[0].code, 11);
+        assert_eq!(native.rows, vec![vec![Value::Text(text.into())]]);
+        assert_eq!(mysql.state().warning_count, 0);
+        // The caller explicitly selects interval. No generic TIME/OID mapping changes.
+        let Value::Text(source) = &native.rows[0][0] else {
+            panic!("native TIME")
+        };
+        let duration = ParseDuration(&StrictContext, source, 6).unwrap().0;
+        let interval = PgInterval::from_mysql_duration(duration).unwrap();
+        assert_eq!(interval.components(), (0, 0, micros));
+        if micros == -183_600_000_000 {
+            assert_eq!(interval.to_string(), "-51:00:00");
+        }
+        assert_eq!(
+            interval.to_binary().as_slice(),
+            [micros.to_be_bytes().as_slice(), &[0; 8]].concat()
+        );
+        let binary = interval.to_binary();
+        let canonical = interval.to_string();
+        for input in [0, 1] {
+            for output in [0, 1] {
+                for value in [
+                    Some(if input == 0 {
+                        canonical.as_bytes()
+                    } else {
+                        &binary
+                    }),
+                    None,
+                ] {
+                    let result = cycle_oid(
+                        &mut socket,
+                        "SELECT CAST($1 AS interval)",
+                        1186,
+                        input,
+                        output,
+                        value,
+                    );
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1186u32.to_be_bytes()].concat()
+                    );
+                    desc(&result[2].1, 0);
+                    desc(&result[4].1, output);
+                    let reverse = if value.is_some() {
+                        let payload = date_text_row(&result);
+                        assert_eq!(
+                            payload,
+                            if output == 0 {
+                                canonical.as_bytes()
+                            } else {
+                                &binary
+                            }
+                        );
+                        let pg = if output == 0 {
+                            std::str::from_utf8(&payload)
+                                .unwrap()
+                                .parse::<PgInterval>()
+                                .unwrap()
+                        } else {
+                            PgInterval::from_binary(&payload).unwrap()
+                        };
+                        assert_eq!(pg.components(), (0, 0, micros));
+                        Some(pg.to_mysql_duration(6).unwrap())
+                    } else {
+                        assert_eq!(
+                            result[5].1,
+                            [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+                        );
+                        None
+                    };
+                    let source = reverse.map_or("NULL".to_owned(), |d| format!("'{}'", d.String()));
+                    let roundtrip = mysql
+                        .execute_query(&format!("SELECT CAST({source} AS TIME(6))"), false, &cancel)
+                        .unwrap()
+                        .remove(0);
+                    assert_eq!(roundtrip.native_types[0].code, 11);
+                    assert_eq!(roundtrip.native_types[0].decimal, 6);
+                    assert_eq!(
+                        roundtrip.rows,
+                        vec![vec![
+                            reverse.map_or(Value::Null, |d| Value::Text(d.String()))
+                        ]]
+                    );
+                    assert_eq!(mysql.state().warning_count, 0);
+                }
+            }
+        }
+        assert_eq!(
+            mysql.execute_query(&sql, false, &cancel).unwrap()[0].rows,
+            native.rows
+        );
+    }
+    for text in [
+        "1 month",
+        "1 day",
+        "-1 month 1 day",
+        "839 hours",
+        "-839 hours",
+        "838:59:59.000001",
+        "infinity",
+        "-infinity",
+    ] {
+        let pg: PgInterval = text.parse().unwrap();
+        for input in [0, 1] {
+            for output in [0, 1] {
+                let binary = pg.to_binary();
+                let result = cycle_oid(
+                    &mut socket,
+                    "SELECT $1::interval",
+                    1186,
+                    input,
+                    output,
+                    Some(if input == 0 { text.as_bytes() } else { &binary }),
+                );
+                let payload = date_text_row(&result);
+                let actual = if output == 0 {
+                    std::str::from_utf8(&payload)
+                        .unwrap()
+                        .parse::<PgInterval>()
+                        .unwrap()
+                } else {
+                    PgInterval::from_binary(&payload).unwrap()
+                };
+                let error = actual.to_mysql_duration(6).unwrap_err();
+                assert_eq!(error, PgTemporalError::DurationBridge);
+                assert_eq!(error.sqlstate(), "0A000");
+                assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+            }
+        }
+    }
+    // Changing the native sql_mode does not turn a valid negative TIME into
+    // a PG type or change its own MySQL result/metadata.
+    mysql
+        .execute_query("SET sql_mode = 'STRICT_TRANS_TABLES'", false, &cancel)
+        .unwrap();
+    let native = mysql
+        .execute_query("SELECT CAST('-51:00:00' AS TIME(6))", false, &cancel)
+        .unwrap()
+        .remove(0);
+    assert_eq!(native.native_types[0].code, 11);
+    assert_eq!(native.rows, vec![vec![Value::Text("-51:00:00".into())]]);
+    assert_eq!(mysql.state().warning_count, 0);
+    mysql.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+}

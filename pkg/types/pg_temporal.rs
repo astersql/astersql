@@ -792,6 +792,35 @@ pub struct PgInterval {
     time_microseconds: i64,
 }
 impl PgInterval {
+    /// Explicit lossless bridge from a typed MySQL TIME duration. A caller must
+    /// choose this mapping; ordinary TIME results retain their native identity.
+    /// Elapsed hours stay in the time component, including negative/long TIME.
+    pub fn from_mysql_duration(value: crate::time::Duration) -> Result<Self, PgTemporalError> {
+        if !(0..=6).contains(&value.Fsp)
+            || !(crate::time::MinTime..=crate::time::MaxTime).contains(&value.Duration)
+            || value.Duration % 10i64.pow(9 - value.Fsp as u32) != 0
+        {
+            return Err(PgTemporalError::DurationBridge);
+        }
+        Ok(Self::from_components(0, 0, value.Duration / 1_000))
+    }
+    /// Explicit reverse bridge. Calendar months/days are never folded into
+    /// elapsed hours, and neither target range nor FSP may lose information.
+    pub fn to_mysql_duration(self, fsp: i32) -> Result<crate::time::Duration, PgTemporalError> {
+        if self.months != 0
+            || self.days != 0
+            || !(0..=6).contains(&fsp)
+            || !(crate::time::MinTime / 1_000..=crate::time::MaxTime / 1_000)
+                .contains(&self.time_microseconds)
+            || self.time_microseconds % 10i64.pow(6 - fsp as u32) != 0
+        {
+            return Err(PgTemporalError::DurationBridge);
+        }
+        Ok(crate::time::Duration {
+            Duration: self.time_microseconds * 1_000,
+            Fsp: fsp,
+        })
+    }
     pub const fn from_components(months: i32, days: i32, time_microseconds: i64) -> Self {
         Self {
             months,
