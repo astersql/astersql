@@ -2173,3 +2173,191 @@ fn pg_temporal_time_duration() {
     send(&mut socket, b'X', &[]);
     service.close();
 }
+
+#[test]
+fn pg_temporal_time_null_metadata() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    ready(&mut socket);
+    let null_row = [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat();
+    // The same typed parameter is NULL, midnight zero, or an invalid empty value.
+    for (sql, precision) in [
+        ("SELECT $1", -1),
+        ("SELECT $1::time", -1),
+        ("SELECT CAST($1 AS TIME)", -1),
+        ("SELECT $1::time(3)", 3),
+        ("SELECT CAST($1 AS TIME(3))", 3),
+        ("SELECT $1::time(6)", 6),
+    ] {
+        for input in [0, 1] {
+            for output in [0, 1] {
+                for is_null in [true, false] {
+                    let binary = 0i64.to_be_bytes();
+                    let value = if is_null {
+                        None
+                    } else if input == 0 {
+                        Some(b"00:00:00".as_slice())
+                    } else {
+                        Some(binary.as_slice())
+                    };
+                    let result = cycle_oid(&mut socket, sql, 1083, input, output, value);
+                    assert_eq!(
+                        result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        b"1tT2TDCCZ",
+                        "{sql}: {result:?}"
+                    );
+                    assert_eq!(
+                        result[1].1,
+                        [1i16.to_be_bytes().as_slice(), &1083u32.to_be_bytes()].concat()
+                    );
+                    time_precision_description(&result[2].1, 0, precision);
+                    time_precision_description(&result[4].1, output, precision);
+                    let expected = if is_null {
+                        null_row.clone()
+                    } else {
+                        let payload = if output == 0 {
+                            b"00:00:00".as_slice()
+                        } else {
+                            binary.as_slice()
+                        };
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(payload.len() as i32).to_be_bytes(),
+                            payload,
+                        ]
+                        .concat()
+                    };
+                    assert_eq!(result[5].1, expected);
+                }
+            }
+        }
+    }
+    // Literal NULL, first-row NULL, all NULL, and zero rows retain prepared types.
+    // Rebind one named statement in each result format without changing identity.
+    for (index, (sql, rows)) in [
+        ("SELECT NULL::time(3)", vec![None]),
+        (
+            "SELECT NULL::time(3) UNION ALL SELECT '00:00:00'::time(3)",
+            vec![None, Some(0i64)],
+        ),
+        (
+            "SELECT NULL::time(3) UNION ALL SELECT NULL::time(3)",
+            vec![None, None],
+        ),
+        ("SELECT NULL::time(3) WHERE false", vec![]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("time_null_{index}");
+        send(
+            &mut socket,
+            b'P',
+            &[
+                name.as_bytes(),
+                b"\0",
+                sql.as_bytes(),
+                b"\0",
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        send(&mut socket, b'S', &[]);
+        let prepared = ready(&mut socket);
+        assert_eq!(
+            prepared.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"1tTZ",
+            "{sql}: {prepared:?}"
+        );
+        assert_eq!(prepared[1].1, 0i16.to_be_bytes());
+        time_precision_description(&prepared[2].1, 0, 3);
+        for output in [0i16, 1, 0] {
+            send(
+                &mut socket,
+                b'B',
+                &[
+                    b"\0".as_slice(),
+                    name.as_bytes(),
+                    b"\0",
+                    &0i16.to_be_bytes(),
+                    &0i16.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                    &output.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(&mut socket, b'D', b"P\0");
+            send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+            send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+            // Describe again after execution, including an exhausted zero-row portal.
+            send(&mut socket, b'D', b"P\0");
+            send(&mut socket, b'S', &[]);
+            let result = ready(&mut socket);
+            let tags = [b"2T".as_slice(), &vec![b'D'; rows.len()], b"CCTZ"].concat();
+            assert_eq!(
+                result.iter().map(|m| m.0).collect::<Vec<_>>(),
+                tags,
+                "{sql}: {result:?}"
+            );
+            time_precision_description(&result[1].1, output, 3);
+            time_precision_description(&result[result.len() - 2].1, output, 3);
+            for (message, value) in result.iter().filter(|m| m.0 == b'D').zip(&rows) {
+                let expected = match value {
+                    None => null_row.clone(),
+                    Some(micros) => {
+                        let binary = micros.to_be_bytes();
+                        let payload = if output == 0 {
+                            b"00:00:00".as_slice()
+                        } else {
+                            binary.as_slice()
+                        };
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(payload.len() as i32).to_be_bytes(),
+                            payload,
+                        ]
+                        .concat()
+                    }
+                };
+                assert_eq!(message.1, expected);
+            }
+        }
+    }
+    for output in [0, 1] {
+        // Empty payloads are non-NULL, including the binary zero-length case.
+        error(
+            &cycle_oid(&mut socket, "SELECT $1", 1083, 0, output, Some(b"")),
+            "22007",
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+        error(
+            &cycle_oid(&mut socket, "SELECT $1", 1083, 1, output, Some(b"")),
+            "08P01",
+        );
+        assert_eq!(date_text_row(&query(&mut socket, "SELECT 1::int4")), b"1");
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+}
