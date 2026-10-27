@@ -292,3 +292,8 @@ prepared描述与参数推断识别Date数组1182，空集与全NULL不退化为
 ## UUID 数组接线（任务40）
 
 prepared推断和显式Uuid数组cast返回2951，与标量2950分离。
+
+
+## PostgreSQL json 数组（任务41）
+
+注册元素114/数组199，复用PgJson保留原文；此文件承担规范载体、类型身份或既有消费者分派的局部接线，不扩展标量算法。独立pg05_array_json测试及18.6四方向差分见docs/postgresql-pg05-array-json-evidence.md。

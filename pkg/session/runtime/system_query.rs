@@ -4067,6 +4067,7 @@ impl ConcreteSession {
                             astersql_parser_types::PostgreSQLArrayElement::Timestamptz
                                 | astersql_parser_types::PostgreSQLArrayElement::Interval
                                 | astersql_parser_types::PostgreSQLArrayElement::Uuid
+                                | astersql_parser_types::PostgreSQLArrayElement::Json
                         ) =>
                 {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
@@ -4080,6 +4081,7 @@ impl ConcreteSession {
                                 astersql_parser_types::PostgreSQLArrayElement::Timestamptz
                                     | astersql_parser_types::PostgreSQLArrayElement::Interval
                                     | astersql_parser_types::PostgreSQLArrayElement::Uuid
+                                    | astersql_parser_types::PostgreSQLArrayElement::Json
                             )
                         ) =>
                 {

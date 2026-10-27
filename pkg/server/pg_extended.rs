@@ -382,7 +382,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
         1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1187
-        | 2951 | 1016 | 1021 | 1022 | 1231 => (
+        | 2951 | 199 | 1016 | 1021 | 1022 | 1231 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -611,7 +611,7 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
         1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1187
-        | 2951 | 1016 | 1021 | 1022 | 1231 => {
+        | 2951 | 199 | 1016 | 1021 | 1022 | 1231 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
@@ -627,6 +627,7 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                     1185 => 1184,
                     1187 => 1186,
                     2951 => 2950,
+                    199 => 114,
                     1016 => 20,
                     1000 => 16,
                     1009 => 25,
@@ -673,6 +674,14 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                             .map_err(|e| (e.sqlstate(), e.to_string()))?;
                         *payload = &[];
                         return Ok(PgArrayElement::Timestamp(value));
+                    }
+                    if oid == 199 {
+                        let scalar = binary_parameter(114, Some(payload))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Json(
+                            astersql_types::pg_json::PgJson::from_bytes(&scalar.value)
+                                .map_err(|e| (e.sqlstate(), e.to_string()))?,
+                        ));
                     }
                     if oid == 2951 {
                         let scalar = binary_parameter(2950, Some(payload))?;
@@ -1139,6 +1148,7 @@ impl Extended {
                         | 1185
                         | 1187
                         | 2951
+                        | 199
                         | 1016
                         | 1000
                         | 1007
@@ -1868,6 +1878,7 @@ fn array_text_with_context(
             1185 => 1184,
             1187 => 1186,
             2951 => 2950,
+            199 => 114,
             1016 => 20,
             1000 => 16,
             1009 => 25,
@@ -1897,6 +1908,11 @@ fn array_text_with_context(
                 Ok(PgArrayElement::Bytea(
                     parameter(17, Some(text.as_bytes()))?.value,
                 ))
+            } else if oid == 199 {
+                let scalar = parameter(114, Some(text.as_bytes()))?;
+                astersql_types::pg_json::PgJson::from_bytes(&scalar.value)
+                    .map(PgArrayElement::Json)
+                    .map_err(|e| (e.sqlstate(), e.to_string()))
             } else if oid == 2951 {
                 text.parse::<astersql_types::pg_uuid::PgUuid>()
                     .map(PgArrayElement::Uuid)

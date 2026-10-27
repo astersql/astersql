@@ -95,3 +95,8 @@ timestamp数组构造/同族cast委派PgTimestamp及round_precision，保留上�
 ## UUID 数组接线（任务40）
 
 Uuid元素推断、ARRAY构造、显式cast和规范数组转换复用PgUuid标量解析；禁止跨族数组转换，非法元素原子拒绝。
+
+
+## PostgreSQL json 数组（任务41）
+
+注册元素114/数组199，复用PgJson保留原文；此文件承担规范载体、类型身份或既有消费者分派的局部接线，不扩展标量算法。独立pg05_array_json测试及18.6四方向差分见docs/postgresql-pg05-array-json-evidence.md。

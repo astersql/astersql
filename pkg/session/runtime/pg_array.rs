@@ -41,6 +41,7 @@ fn element_name(element: Element) -> &'static str {
         Element::Timestamptz => "timestamp with time zone",
         Element::Interval => "interval",
         Element::Uuid => "uuid",
+        Element::Json => "json",
         Element::Int2 => "smallint",
         Element::Int4 => "integer",
         Element::Int8 => "bigint",
@@ -87,6 +88,7 @@ pub(super) fn element_type(
             1184 => Some(Element::Timestamptz),
             1186 => Some(Element::Interval),
             2950 => Some(Element::Uuid),
+            114 => Some(Element::Json),
             21 => Some(Element::Int2),
             23 => Some(Element::Int4),
             20 => Some(Element::Int8),
@@ -172,6 +174,12 @@ pub(super) fn element_type(
                 && Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz =>
         {
             Some(Element::Timestamptz)
+        }
+        ast::ExprKind::Cast { Tp, .. }
+            if Tp.PostgreSQLArrayElement().is_none()
+                && Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson =>
+        {
+            Some(Element::Json)
         }
         ast::ExprKind::Cast { Tp, .. }
             if Tp.PostgreSQLArrayElement().is_none()
@@ -339,7 +347,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval | Element::Uuid)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval | Element::Uuid | Element::Json)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -430,7 +438,8 @@ pub(super) fn analyze(
                     | Element::Timestamp
                     | Element::Timestamptz
                     | Element::Interval
-                    | Element::Uuid),
+                    | Element::Uuid
+                    | Element::Json),
                 ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
@@ -786,6 +795,11 @@ fn value_as(
                             .map_err(|e| error(e.sqlstate(), e.to_string()))?;
                         format!("\"{date}\"")
                     }
+                    Element::Json => {
+                        let json = astersql_types::pg_json::PgJson::from_bytes(value.as_bytes())
+                            .map_err(|e| error(e.sqlstate(), e.to_string()))?;
+                        format!("\"{}\"", json.as_str().replace('\\', "\\\\").replace('"', "\\\""))
+                    }
                     Element::Uuid => value.parse::<astersql_types::pg_uuid::PgUuid>().map_err(|e| error(e.sqlstate(), e.to_string()))?.to_string(),
                     Element::Numeric => value,
                     Element::Bool => {
@@ -864,6 +878,7 @@ fn value_as(
             | Element::Timestamptz
             | Element::Interval
             | Element::Uuid
+            | Element::Json
     ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
@@ -929,6 +944,9 @@ fn typed_array_with_modifier(
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Float8 => astersql_expression::pg_cast_float8(Some(text))
                 .map(|v| PgArrayElement::Float8(v.unwrap().to_bits()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Json => astersql_types::pg_json::PgJson::from_bytes(text.as_bytes())
+                .map(PgArrayElement::Json)
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Uuid => text
                 .parse::<astersql_types::pg_uuid::PgUuid>()
@@ -1052,6 +1070,7 @@ pub(super) fn validate_cast(
                 | Element::Timestamptz
                 | Element::Interval
                 | Element::Uuid
+                | Element::Json
         )
     ) {
         return Ok(());
@@ -1066,7 +1085,7 @@ pub(super) fn validate_cast(
                 || supported_array_element(child, target)
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
-                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval | Element::Uuid) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval | Element::Uuid) => source == target,
+                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval | Element::Uuid | Element::Json) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval | Element::Uuid | Element::Json) => source == target,
                 Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text | Element::Varchar | Element::Bpchar) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
@@ -1096,6 +1115,7 @@ pub(super) fn validate_cast(
                         | Element::Timestamptz
                         | Element::Interval
                         | Element::Uuid
+                        | Element::Json
                 ) {
                     return source == Some(target)
                         || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
@@ -1145,6 +1165,7 @@ pub(super) fn validate_cast(
                 | Element::Timestamptz
                 | Element::Interval
                 | Element::Uuid
+                | Element::Json
         )
     ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
@@ -1274,6 +1295,7 @@ pub(super) fn cast_value_in_session(
                 | Element::Timestamptz
                 | Element::Interval
                 | Element::Uuid
+                | Element::Json
         ) || matches!(
             target,
             Element::Text
@@ -1291,6 +1313,7 @@ pub(super) fn cast_value_in_session(
                 | Element::Timestamptz
                 | Element::Interval
                 | Element::Uuid
+                | Element::Json
         ))
     {
         return Err(error("0A000", "array cast source is not supported"));

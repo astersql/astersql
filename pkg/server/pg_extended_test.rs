@@ -7812,7 +7812,7 @@ fn pg05_int4_array_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8108,7 +8108,7 @@ fn pg05_array_cast_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8336,7 +8336,7 @@ fn pg05_array_text_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8559,7 +8559,7 @@ fn pg05_array_bool_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8841,7 +8841,7 @@ fn pg05_array_int2_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9118,7 +9118,7 @@ fn pg05_array_int8_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9339,7 +9339,7 @@ fn pg05_array_bytea_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9826,7 +9826,7 @@ fn pg05_array_varchar_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10077,7 +10077,7 @@ fn pg05_array_bpchar_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10326,7 +10326,7 @@ fn pg05_array_date_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10606,7 +10606,7 @@ fn pg05_array_time_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[199]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10774,4 +10774,27 @@ fn pg05_array_uuid_registered_input() {
             .0,
         "22P02"
     );
+}
+
+#[test]
+fn pg05_array_json_registered_input() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    let scalar = br#" { "k":1, "k":2, "n":1e100000 } "#;
+    for codec in [parameter, binary_parameter] {
+        assert_eq!(codec(114, Some(scalar)).unwrap().value, scalar);
+        assert_eq!(codec(114, Some(b"null")).unwrap().value, b"null");
+        assert!(codec(114, None).unwrap().is_null);
+    }
+    let text = br#"[-1:1]={" { \"k\":1, \"k\":2, \"n\":1e100000 } ","null",NULL}"#;
+    assert_eq!(parameter(199, Some(text)).unwrap().value, text);
+    let binary = [1i32, 1, 114, 3, -1, scalar.len() as i32]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .chain(scalar.iter().copied())
+        .chain(4i32.to_be_bytes())
+        .chain(*b"null")
+        .chain((-1i32).to_be_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(binary_parameter(199, Some(&binary)).unwrap().value, text);
+    assert_eq!(parameter(199, Some(b"{null,bad}")).unwrap_err().0, "22P02");
 }

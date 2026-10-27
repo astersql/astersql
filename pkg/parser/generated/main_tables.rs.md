@@ -166,3 +166,8 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## timestamp数组接线（任务37）
 
 由release parsergen再生，包含PgTimestampType数组规则；交付运行parsergen check验证一致性。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## PostgreSQL json 数组（任务41）
+
+由release parsergen根据PgCastType : PgPostfixJson数组后缀规则重新生成；仅补通JSON[]语法，实际元素验证仍委托PgJson。使用同一生成器check核对输出一致性。

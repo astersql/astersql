@@ -4381,6 +4381,7 @@ PgCastType : PgCastType '[' ']' @action;
 PgCastType : PgPostfixFloat '[' ']' @action;
 PgCastType : PgPostfixText '[' ']' @action;
 PgCastType : PgPostfixDate '[' ']' @action;
+PgCastType : PgPostfixJson '[' ']' @action;
 PgCastType : PgTimeType '[' ']' @action;
 
 PgCastType : PgTimestampType '[' ']' @action;

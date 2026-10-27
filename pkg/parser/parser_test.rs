@@ -5980,3 +5980,35 @@ fn pg05_array_uuid_parser_identity() {
         );
     }
 }
+
+#[test]
+fn pg05_array_json_parser_identity() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT $1::json[]",
+        "SELECT $1::json[][]",
+        "SELECT ARRAY[]::json[]",
+        "SELECT CAST(NULL AS json[])",
+    ] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("expected cast")
+        };
+        assert_eq!(
+            Tp.PostgreSQLArrayElement(),
+            Some(parser_types::PostgreSQLArrayElement::Json)
+        );
+    }
+    let mut mysql = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(
+        mysql
+            .ParseOneStmt("SELECT CAST(NULL AS JSON[])", "", "")
+            .is_err()
+    );
+}
