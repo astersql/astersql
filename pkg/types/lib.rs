@@ -119,3 +119,7 @@ mod pg_temporal_test;
 pub mod pg_uuid;
 #[cfg(test)]
 mod pg_uuid_test;
+
+pub mod pg_json;
+#[cfg(test)]
+mod pg_json_test;
