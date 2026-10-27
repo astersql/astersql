@@ -184,3 +184,9 @@ prepared参数白名单和字段定型沿既有1007路径增加1009→Element::T
 ## bool 数组逐族接入（任务26）
 
 OID1000加入已有prepared参数声明与投影类型分派；直接参数沿既有literal binder包裹CAST(... AS BOOL[])，NULL和非NULL均保留1000身份。
+
+## 2026-10-27 int2数组局部接线
+
+声明参数、typed NULL及prepared literal binder保留1005并还原INT2[]。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

@@ -218,3 +218,9 @@ protocol_parameter_types在显式text[] cast和声明1009处保留1009，不能�
 ## bool 数组逐族接入（任务26）
 
 现有PG数组参数白名单与显式Cast上下文增加Bool/1000，OID0和省略OID由既有约束遍历推断；不增加另一套规划器。
+
+## 2026-10-27 int2数组局部接线
+
+参数声明/上下文约束保留Int2数组OID1005。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

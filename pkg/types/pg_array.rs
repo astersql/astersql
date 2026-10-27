@@ -103,6 +103,7 @@ impl<E> PgArrayBinaryError<E> {
 /// Scalar values only: dimensions belong to PgArray, never nested arrays.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PgArrayElement {
+    Int2(i16),
     Bool(bool),
     Int4(i32),
     Int8(i64),
@@ -127,12 +128,13 @@ impl PgArray {
         lower_bounds: Vec<i32>,
         elements: Vec<Option<PgArrayElement>>,
     ) -> Result<Self, PgArrayError> {
-        if !matches!(element_oid, 16 | 20 | 23 | 25) {
+        if !matches!(element_oid, 16 | 20 | 21 | 23 | 25) {
             return Err(PgArrayError::UnsupportedElement);
         }
         Self::validate_layout(&shape, &lower_bounds, elements.len())?;
         for element in elements.iter().flatten() {
             match (element_oid, element) {
+                (21, PgArrayElement::Int2(_)) => {}
                 (16, PgArrayElement::Bool(_)) => {}
                 (23, PgArrayElement::Int4(_)) | (20, PgArrayElement::Int8(_)) => {}
                 (25, PgArrayElement::Text(s)) => {
@@ -220,7 +222,7 @@ impl PgArray {
         if bytes.contains(&0) {
             return Err(Error::Encoding);
         }
-        if !matches!(element_oid, 16 | 20 | 23 | 25) {
+        if !matches!(element_oid, 16 | 20 | 21 | 23 | 25) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
         // A catalog delimiter is one ASCII punctuation character. Other
@@ -292,7 +294,7 @@ impl PgArray {
             lower.push(binary_word(&mut bytes)?);
         }
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
-        let supported = matches!(element_oid, 16 | 23 | 25);
+        let supported = matches!(element_oid, 16 | 21 | 23 | 25);
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
         let mut elements = Vec::new();
@@ -339,6 +341,7 @@ impl PgArray {
             let length = match element {
                 None => 0,
                 Some(PgArrayElement::Bool(_)) => 1,
+                Some(PgArrayElement::Int2(_)) => 2,
                 Some(PgArrayElement::Int4(_)) => 4,
                 Some(PgArrayElement::Int8(_)) => 8,
                 Some(PgArrayElement::Text(value)) => value.len(),
@@ -367,6 +370,10 @@ impl PgArray {
                 Some(PgArrayElement::Bool(value)) => {
                     output.extend_from_slice(&1i32.to_be_bytes());
                     output.push(u8::from(*value));
+                }
+                Some(PgArrayElement::Int2(value)) => {
+                    output.extend_from_slice(&2i32.to_be_bytes());
+                    output.extend_from_slice(&value.to_be_bytes());
                 }
                 Some(PgArrayElement::Int4(value)) => {
                     output.extend_from_slice(&4i32.to_be_bytes());
@@ -430,6 +437,9 @@ impl PgArray {
             match elements.next().unwrap() {
                 None => output.push_str("NULL"),
                 Some(PgArrayElement::Bool(value)) => output.push(if *value { 't' } else { 'f' }),
+                Some(PgArrayElement::Int2(value)) => {
+                    write_array_element_text(&value.to_string(), delimiter, output);
+                }
                 Some(PgArrayElement::Int4(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output);
                 }

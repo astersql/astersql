@@ -166,3 +166,9 @@ OID1016转换结果通过规范PgArray与pg_cast_int8解析后输出文本或bin
 ## bool 数组逐族接入（任务26）
 
 OID1000结果与int4/text数组使用同一规范PgArray，元素Bool编码为text t/f或binary00/01，避免旧目录字符串数组路径丢失下界；RowDescription保持1000/-1/-1。
+
+## 2026-10-27 int2数组局部接线
+
+OID1005文本/二进制结果沿规范PgArray，保留形状、下界和两层NULL。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

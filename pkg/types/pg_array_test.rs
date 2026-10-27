@@ -901,3 +901,53 @@ fn pg05_array_bool_canonical_identity_shape_null_and_bytes() {
         Err(Error::ElementTypeMismatch)
     );
 }
+
+#[test]
+fn pg05_array_int2_canonical_shape_typmod_null_and_network_bytes() {
+    use crate::pg_array::PgArrayElement::Int2;
+    let array = PgArray::new(
+        21,
+        7,
+        vec![2, 2],
+        vec![0, -2],
+        vec![
+            Some(Int2(i16::MIN)),
+            None,
+            Some(Int2(0)),
+            Some(Int2(i16::MAX)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(array.element_typmod(), 7);
+    assert_eq!(
+        array.to_text(b',').unwrap(),
+        "[0:1][-2:-1]={{-32768,NULL},{0,32767}}"
+    );
+    let mut binary: Vec<u8> = [2i32, 1, 21, 2, 0, 2, -2, 2]
+        .into_iter()
+        .flat_map(i32::to_be_bytes)
+        .collect();
+    binary.extend_from_slice(&i16::MIN.to_be_bytes());
+    binary.extend_from_slice(&(-1i32).to_be_bytes());
+    for value in [0i16, i16::MAX] {
+        binary.extend_from_slice(&2i32.to_be_bytes());
+        binary.extend_from_slice(&value.to_be_bytes());
+    }
+    assert_eq!(array.to_binary().unwrap(), binary);
+    let decoded = PgArray::from_binary_with(&binary, 21, 7, |payload, _| -> Result<_, ()> {
+        let bytes = payload.get(..2).ok_or(())?;
+        let number = i16::from_be_bytes(bytes.try_into().unwrap());
+        *payload = &payload[2..];
+        Ok(Int2(number))
+    })
+    .unwrap();
+    assert_eq!(decoded, array);
+    assert_eq!(
+        PgArray::new(21, -1, vec![1], vec![1], vec![Some(Int4(1))]),
+        Err(Error::ElementTypeMismatch)
+    );
+    assert_eq!(
+        PgArray::new(23, -1, vec![1], vec![1], vec![Some(Int2(1))]),
+        Err(Error::ElementTypeMismatch)
+    );
+}

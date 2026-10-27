@@ -135,3 +135,9 @@ Restore/RestoreAsCastType按独立PostgreSQLArrayElement输出INT4[]或TEXT[]，
 ## bool 数组逐族接入（任务26）
 
 Restore/RestoreAsCastType为独立PostgreSQLArrayElement::Bool输出BOOL[]，身份OID16/数组1000沿原有serde与元数据保留。
+
+## 2026-10-27 int2数组局部接线
+
+Int2元素身份21/1005，Restore/RestoreAsCastType保持INT2[]。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

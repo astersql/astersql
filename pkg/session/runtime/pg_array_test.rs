@@ -633,3 +633,144 @@ fn pg05_array_bool_unopened_cross_family_casts_even_for_null() {
         );
     }
 }
+#[test]
+fn pg05_array_int2_declared_parameter_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, count, fields) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ? AS v", &[1005])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.PostgreSQLArrayElement(),
+        Some(Element::Int2)
+    );
+    for (input, expected) in [
+        (
+            Some("[0:1][-2:-1]={{-32768,NULL},{0,32767}}"),
+            Some("[0:1][-2:-1]={{-32768,NULL},{0,32767}}"),
+        ),
+        (Some("{}"), Some("{}")),
+        (None, None),
+    ] {
+        let argument = input
+            .map(|s| ConcretePreparedArgument::Text(s.to_owned()))
+            .unwrap_or(ConcretePreparedArgument::Null);
+        let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Int2)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.unwrap_or("<nil>").to_owned()]
+        );
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_int2_shared_casts_and_constructors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY[-32768,32767,NULL]::int2[] AS v",
+            "{-32768,32767,NULL}",
+        ),
+        (
+            "SELECT '[-2:-1]={-32768,NULL}'::int2[] AS v",
+            "[-2:-1]={-32768,NULL}",
+        ),
+        ("SELECT ARRAY[]::int2[] AS v", "{}"),
+        ("SELECT NULL::int2[] AS v", "<nil>"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Int2)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+    }
+}
+
+#[test]
+fn pg05_array_int2_unopened_cross_family_casts_even_for_null() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT NULL::int2[]::int4[]",
+        "SELECT (NULL::int4[])::int2[]",
+        "SELECT ARRAY[1::int2]::boolean[]",
+    ] {
+        let failure = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[])
+            .unwrap_err();
+        assert_eq!(
+            failure.pg_array_error().map(|e| e.state),
+            Some("0A000"),
+            "{sql}: {failure}"
+        );
+    }
+}
+
+#[test]
+fn pg05_array_int2_scalar_identity_and_common_integer_type() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, element, expected) in [
+        (
+            "SELECT ARRAY[(-32768)::int2,32767::int2,NULL]",
+            Element::Int2,
+            "{-32768,32767,NULL}",
+        ),
+        ("SELECT ARRAY[1::int2,2::int4]", Element::Int4, "{1,2}"),
+        (
+            "SELECT ARRAY[1::int2,2147483648::int8]",
+            Element::Int8,
+            "{1,2147483648}",
+        ),
+    ] {
+        let (id, count, fields) = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[])
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(
+            fields[0].column.FieldType.PostgreSQLArrayElement(),
+            Some(element)
+        );
+        let mut result = session.execute_protocol_statement(id, &[]).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(element)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+        session.close_protocol_statement(id).unwrap();
+    }
+}

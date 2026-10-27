@@ -19,3 +19,9 @@ analyze/value_as/validate_cast注册Text上下文（OID25/数组1009），text�
 ## bool 数组逐族接入（任务26）
 
 Bool数组沿既有analyze/value_as/typed_array/validate_cast/cast_value注册，元素调用pg_boolean_cast(TextToBool)，保留两层NULL与原子失败。跨bool数组与整数/text数组cast矩阵未开放，显式0A000；不以MySQL真值替代PG标量契约。
+
+## 2026-10-27 int2数组局部接线
+
+Int2定型、共同整数类型选择、构造及文本转换复用pg_cast_int2；跨数组族转换仍0A000。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

@@ -79,3 +79,9 @@ Ready按根AGENTS与testing-flow选取。只修改Rust和说明不自动触发ba
 ## bool 数组逐族接入（任务26）
 
 新增PgArrayElement::Bool(bool)与元素OID16的严格身份校验。文本输出t/f、binary输出单字节00/01；接收codec由from_text_with/from_binary_with回调委派，不在容器复制标量解析。shape/lower/typmod、两层NULL、空数组规范化沿原内核。
+
+## 2026-10-27 int2数组局部接线
+
+增加Int2(i16)规范元素；沿既有shape/lower/typmod/两层NULL容器校验，输出2字节网络序。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

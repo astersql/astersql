@@ -224,3 +224,9 @@ PostgreSQL直接查询的Cast分派增加Element::Text，沿pg_array::validate_c
 ## bool 数组逐族接入（任务26）
 
 Cast分派注册Element::Bool并复用pg_array::validate_cast/cast_value，同一共享执行消费者保持bool数组身份、shape/lower和NULL。
+
+## 2026-10-27 int2数组局部接线
+
+Int2数组转换复用共享pg_array消费者。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

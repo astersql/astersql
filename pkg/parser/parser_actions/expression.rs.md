@@ -210,3 +210,9 @@ PgArrayType仅新增OID25的text标量身份→Text数组映射；不把varchar/
 ## bool 数组逐族接入（任务26）
 
 PgArrayType从标量IsBooleanFlag识别bool/boolean并保留Bool数组族，重复[]不改变1000身份；不修改MySQL语法。
+
+## 2026-10-27 int2数组局部接线
+
+PgArrayType从既有TypeShort注册Int2，支持int2[]/smallint[]及多维拼写。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。

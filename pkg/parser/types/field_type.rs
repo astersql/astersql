@@ -38,6 +38,7 @@ pub static mut TiDBStrictIntegerDisplayWidth: bool = false;
 /// PostgreSQL array element identity, separate from MySQL JSON/multi-valued indexes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PostgreSQLArrayElement {
+    Int2,
     Int4,
     Int8,
     Numeric,
@@ -47,6 +48,7 @@ pub enum PostgreSQLArrayElement {
 impl PostgreSQLArrayElement {
     pub fn oid(self) -> u32 {
         match self {
+            Self::Int2 => 21,
             Self::Int4 => 23,
             Self::Int8 => 20,
             Self::Numeric => 1700,
@@ -56,6 +58,7 @@ impl PostgreSQLArrayElement {
     }
     pub fn array_oid(self) -> u32 {
         match self {
+            Self::Int2 => 1005,
             Self::Int4 => 1007,
             Self::Int8 => 1016,
             Self::Numeric => 1231,
@@ -601,8 +604,8 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
-        if let Some(element @ (PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text)) = self.postgresql_array_element {
-            return ctx.WriteKeyWord(match element { PostgreSQLArrayElement::Bool => "BOOL[]", PostgreSQLArrayElement::Text => "TEXT[]", _ => "INT4[]" });
+        if let Some(element @ (PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text)) = self.postgresql_array_element {
+            return ctx.WriteKeyWord(match element { PostgreSQLArrayElement::Int2 => "INT2[]", PostgreSQLArrayElement::Bool => "BOOL[]", PostgreSQLArrayElement::Text => "TEXT[]", _ => "INT4[]" });
         }
         if let Some(oid) = self.postgresql_text_oid {
             ctx.WriteKeyWord(match oid {
@@ -676,7 +679,7 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
-        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text)) {
+        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text)) {
             return self.Restore(ctx);
         }
         match self.tp {

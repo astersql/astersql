@@ -254,3 +254,9 @@ int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分�
 ## bool 数组逐族接入（任务26）
 
 行表达式Cast消费者与query同步注册Bool，沿同一pg_array内核求值；不复制数组或标量解释器。
+
+## 2026-10-27 int2数组局部接线
+
+行求值Int2数组转换复用共享pg_array消费者。
+
+行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
