@@ -57,14 +57,14 @@ fn pg05_jsonb_sql_parameters_revalidate_and_recover() {
         );
         for (value, state) in [
             (r#""\u0000""#, "22P05"),
-            (r#""\ud800""#, "22P05"),
+            (r#""\ud800""#, "22P02"),
             ("1e200000", "22003"),
             ("[1,]", "22P02"),
             ("bad", "22P02"),
         ] {
             // Raw JSON can retain the first three inputs. JSONB must validate
             // them anew at conversion, even when the source already is JSON.
-            if oid == 114 && state != "22P02" {
+            if oid == 114 && matches!(value, r#""\u0000""# | r#""\ud800""# | "1e200000") {
                 let (raw_id, _, _) = pg
                     .prepare_protocol_statement_with_parameter_types("SELECT ?::json", &[114])
                     .unwrap();
@@ -251,4 +251,25 @@ fn pg05_jsonb_sql_unsupported_bridges_and_shared_evaluator() {
             .unwrap(),
         ["true"]
     );
+}
+
+#[test]
+fn pg05_jsonb_input_shared_sql_diagnostics_and_recovery() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, _, _) = pg
+        .prepare_protocol_statement_with_parameter_types("SELECT ?::jsonb", &[3802])
+        .unwrap();
+    for (value, state) in [(r#""\ud800""#, "22P02"), (r#""\u0000""#, "22P05")] {
+        let error = pg
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Text(value.into())])
+            .err()
+            .unwrap();
+        assert_eq!(error.pg_json_error().unwrap().sqlstate(), state);
+        let mut rows = pg
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Text("null".into())])
+            .unwrap();
+        assert_eq!(rows[0].next_row().unwrap().unwrap(), ["null"]);
+    }
+    pg.close_protocol_statement(id).unwrap();
 }

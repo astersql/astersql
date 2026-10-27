@@ -142,3 +142,10 @@ Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。p
 普通Parse接受OID114；显式OID或明确json cast推断保留身份。文本与binary Bind共用PgJson严格词法校验和既有tp253 BinaryParam载荷；binary是原始JSON文本，没有jsonb版本前缀。共享prepared OID上下文负责JSON身份与typed NULL，不拼SQL字符串，不使用MySQL BinaryJSON，不重序列化。空白、成员顺序/重复、大数、数字拼写及Unicode转义原样保留，SQL NULL与JSON null独立。非法JSON及01前缀返回22P02，非法UTF-8/原始NUL返回22021；错误沿既有Bind失败/Sync恢复路径处理。
 
 独立pg_extended_test.rs的pg05_json_input_text_binary_codec覆盖两种解码器原文及诊断；pg05_json_input_parse_bind_execute_and_recovery使用真实CreateAnalyzeSession/ConcreteSessionDriver与TCP，覆盖声明114、cast推断、OID0、114/-1/-1描述、NULL、重绑定、Bind拒绝与Sync恢复及Close。pg05_json_input_shared_prepared_identity_and_rebinding补充真实共享session的定型、NULL与重绑定断言。binary_parameter的crate可见性仅用于同目录独立codec测试；BinaryParam结构及共享执行桥接均无需修改。二进制结果与参考端四方向差分属于后续任务。
+
+
+## JSONB参数与版本边界（任务14）
+
+普通Parse接受OID3802，声明、cast推断及OID0沿现有共享prepared上下文保留JSONB身份和typed NULL。text参数调用PgJsonb::from_bytes严格校验并规范化，再复用tp253文本桥接；binary参数先读取一字节版本，空载荷08P01，非01版本XX000，仅01无文档22P02，01后的文档复用text路径。未知版本诊断经精确PostgreSQL18.6（server_version_num=180006）独立临时数据库采集，00/02/ff均XX000。文档语法22P02、编码22021、转义u0000为22P05、数字超域22003按原阶段保留，不统一包装22P03；孤立代理项经共享解析器修正为参考22P02。SQL NULL在取版本前处理，不要求版本字节。
+
+独立pg05_jsonb_input测试覆盖两种输入的规范值、精确数字、Unicode和NULL；真实TCP覆盖声明/推断参数3802及结果3802/-1/-1、重绑定、Bind拒绝、Sync恢复、载荷声明截断和Close清理。二进制结果及四方向差分由后续任务承担，本任务不开放新的结果codec。conn_stmt无需修改，复用既有BinaryParam和OID定型。

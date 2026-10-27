@@ -35,4 +35,4 @@
 
 ## 2026-10-27 JSONB显式转换接线
 
-JSON词法校验后的字符串解码失败只可能为不可表示代理项，映射UntranslatableCharacter/22P05；原始非法转义仍由前置词法校验返回22P02。对应独立测试同步边界断言。
+JSON词法校验后的字符串解码失败（孤立代理项）映射InvalidSyntax/22P02，与任务14独立PostgreSQL18.6实际Bind诊断一致；解码得到u0000仍为UntranslatableCharacter/22P05。原始非法转义由前置词法校验返回22P02，独立测试同步全部BMP代理边界、对象键/值及SQL转换断言。

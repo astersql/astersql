@@ -411,6 +411,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .as_bytes()
                 .to_vec(),
         ),
+        3802 => (
+            253,
+            astersql_types::pg_jsonb::PgJsonb::from_bytes(value)
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .as_bytes()
+                .to_vec(),
+        ),
         2950 => (
             253,
             text.parse::<astersql_types::pg_uuid::PgUuid>()
@@ -589,6 +596,19 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
         17 => (252, value.to_vec()),
+        3802 => {
+            let Some((&version, document)) = value.split_first() else {
+                return Err(error("08P01", "insufficient data left in JSONB parameter"));
+            };
+            if version != 1 {
+                // PostgreSQL jsonb_recv reports unknown versions as internal errors.
+                return Err(error(
+                    "XX000",
+                    &format!("unsupported jsonb version number {version}"),
+                ));
+            }
+            return parameter(oid, Some(document));
+        }
         // json_recv consumes the same JSON text as json_in, with no version byte.
         // The prepared OID context supplies JSON identity through the text bridge.
         114 | 25 | 1042 | 1043 => return parameter(oid, Some(value)),
@@ -925,6 +945,7 @@ impl Extended {
                         | 1186
                         | 1700
                         | 2950
+                        | 3802
                 )
             {
                 return Err(error("0A000", "unsupported text parameter OID"));

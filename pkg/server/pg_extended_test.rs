@@ -7157,3 +7157,256 @@ fn pg05_json_output_portal_formats_rebinding_and_empty_rows() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg05_jsonb_input_text_binary_codec() {
+    for (input, expected) in [
+        (r#" { "b":1, "a":2,"b":3 } "#, r#"{"a": 2, "b": 3}"#),
+        ("18446744073709551617", "18446744073709551617"),
+        ("1.230e-5", "0.00001230"),
+        ("[null,true,1,1]", "[null, true, 1, 1]"),
+        (r#""\ud83d\ude00""#, "\"😀\""),
+        ("null", "null"),
+        (r#""null""#, r#""null""#),
+    ] {
+        for binary in [false, true] {
+            let bytes = if binary {
+                [b"\x01".as_slice(), input.as_bytes()].concat()
+            } else {
+                input.as_bytes().to_vec()
+            };
+            let decode = if binary {
+                crate::pg_extended::binary_parameter
+            } else {
+                crate::pg_extended::parameter
+            };
+            let value = decode(3802, Some(&bytes)).unwrap();
+            assert!(!value.is_null);
+            assert_eq!(value.tp, 253);
+            assert_eq!(value.value, expected.as_bytes());
+        }
+    }
+    for (input, state) in [
+        (b"".as_slice(), "22P02"),
+        (b"{} []", "22P02"),
+        (b"[1,]", "22P02"),
+        (b"{}garbage", "22P02"),
+        (b"\"\\u0000\"", "22P05"),
+        (b"\"\\ud800\"", "22P02"),
+        (b"1e131072", "22003"),
+        (b"\xff", "22021"),
+        (b"\0", "22021"),
+    ] {
+        assert_eq!(
+            crate::pg_extended::parameter(3802, Some(input))
+                .unwrap_err()
+                .0,
+            state
+        );
+        let bytes = [b"\x01".as_slice(), input].concat();
+        assert_eq!(
+            crate::pg_extended::binary_parameter(3802, Some(&bytes))
+                .unwrap_err()
+                .0,
+            state
+        );
+    }
+    assert_eq!(
+        crate::pg_extended::binary_parameter(3802, Some(b""))
+            .unwrap_err()
+            .0,
+        "08P01"
+    );
+    // PostgreSQL 18.6 jsonb_recv, captured using a separate reference cluster.
+    for input in [b"\x00{}".as_slice(), b"\x02{}", b"\xff{}"] {
+        assert_eq!(
+            crate::pg_extended::binary_parameter(3802, Some(input))
+                .unwrap_err()
+                .0,
+            "XX000"
+        );
+    }
+    for decode in [
+        crate::pg_extended::parameter,
+        crate::pg_extended::binary_parameter,
+    ] {
+        assert!(decode(3802, None).unwrap().is_null);
+    }
+}
+
+#[test]
+fn pg05_jsonb_input_parse_bind_execute_and_recovery() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (name, sql, oids) in [
+        ("jsonb_declared", "SELECT $1 AS v", vec![3802]),
+        ("jsonb_inferred", "SELECT $1::jsonb AS v", vec![]),
+        ("jsonb_zero", "SELECT $1::jsonb AS v", vec![0]),
+    ] {
+        parse(&mut socket, name, sql, &oids);
+        assert_eq!(read(&mut socket), (b'1', vec![]), "{name}");
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &3802u32.to_be_bytes()].concat()
+            )
+        );
+        let description = read(&mut socket);
+        let expected = [
+            1i16.to_be_bytes().as_slice(),
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &3802u32.to_be_bytes(),
+            &(-1i16).to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat();
+        assert_eq!(description, (b'T', expected));
+        for format in [0, 1] {
+            for (input, expected) in [
+                (None, None),
+                (Some("null"), Some("null")),
+                (Some(r#""null""#), Some(r#""null""#)),
+                (
+                    Some(r#" { "b":1, "a":2,"b":3 } "#),
+                    Some(r#"{"a": 2, "b": 3}"#),
+                ),
+                (Some("18446744073709551617"), Some("18446744073709551617")),
+                (Some("1.230e-5"), Some("0.00001230")),
+                (Some("[true,false,null]"), Some("[true, false, null]")),
+            ] {
+                let payload = input.map(|v| {
+                    if format == 1 {
+                        [b"\x01".as_slice(), v.as_bytes()].concat()
+                    } else {
+                        v.as_bytes().to_vec()
+                    }
+                });
+                bind_formats(&mut socket, name, &[format], &[payload.as_deref()]);
+                assert_eq!(
+                    read(&mut socket),
+                    (b'2', vec![]),
+                    "{name}/{format}/{input:?}"
+                );
+                send(&mut socket, b'D', b"P\0");
+                assert_eq!(read(&mut socket), description);
+                execute(&mut socket, "", 0);
+                assert_eq!(
+                    read(&mut socket),
+                    (b'D', row(&[expected])),
+                    "{name}/{format}/{input:?}"
+                );
+                assert_eq!(read(&mut socket).0, b'C');
+                send(&mut socket, b'S', &[]);
+                assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+            }
+        }
+    }
+    for format in [0, 1] {
+        for (input, state) in [
+            (b"".as_slice(), "22P02"),
+            (b" \t\n", "22P02"),
+            (b"{} []", "22P02"),
+            (b"[1,]", "22P02"),
+            (b"\x01{}", "22P02"),
+            (b"\"\\uZZZZ\"", "22P02"),
+            (b"\"\n\"", "22P02"),
+            (b"\xff", "22021"),
+            (b"\0", "22021"),
+        ] {
+            let payload = if format == 1 {
+                [b"\x01".as_slice(), input].concat()
+            } else {
+                input.to_vec()
+            };
+            bind_formats(&mut socket, "jsonb_declared", &[format], &[Some(&payload)]);
+            assert_state(&read(&mut socket), state);
+            execute(&mut socket, "", 0);
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+            bind_formats(
+                &mut socket,
+                "jsonb_declared",
+                &[format],
+                &[Some(if format == 1 { b"\x01null" } else { b"null" })],
+            );
+            assert_eq!(read(&mut socket).0, b'2');
+            execute(&mut socket, "", 0);
+            assert_eq!(read(&mut socket), (b'D', row(&[Some("null")])));
+            assert_eq!(read(&mut socket).0, b'C');
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket).0, b'Z');
+        }
+    }
+    for (input, state) in [
+        (b"".as_slice(), "08P01"),
+        (b"\x01", "22P02"),
+        (b"\x00{}", "XX000"),
+        (b"\x02{}", "XX000"),
+        (b"\xff{}", "XX000"),
+        (b"\x01{}garbage", "22P02"),
+        (b"\x01\"\\ud800\"", "22P02"),
+        (b"\x01\"\\u0000\"", "22P05"),
+        (b"\x011e131072", "22003"),
+    ] {
+        bind_formats(&mut socket, "jsonb_declared", &[1], &[Some(input)]);
+        assert_state(&read(&mut socket), state);
+        execute(&mut socket, "", 0);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        bind_formats(&mut socket, "jsonb_declared", &[1], &[Some(b"\x01null")]);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[Some("null")])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    // One version byte is present, but the parameter declares two bytes.
+    let truncated = [
+        b"\0jsonb_declared\0".as_slice(),
+        &1i16.to_be_bytes(),
+        &1i16.to_be_bytes(),
+        &1i16.to_be_bytes(),
+        &2i32.to_be_bytes(),
+        b"\x01",
+    ]
+    .concat();
+    send(&mut socket, b'B', &truncated);
+    assert_state(&read(&mut socket), "08P01");
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    for name in ["jsonb_declared", "jsonb_inferred", "jsonb_zero"] {
+        send(&mut socket, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

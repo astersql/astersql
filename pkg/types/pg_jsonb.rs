@@ -175,8 +175,8 @@ fn decode_string(input: &str, pos: &mut usize) -> Result<String, PgJsonbError> {
     *pos += 1;
     // Lexical validity is already established, so string decoding can fail only
     // for unpaired surrogates. serde is used for strings alone, never numbers.
-    let decoded: String = serde_json::from_str(&input[start..*pos])
-        .map_err(|_| PgJsonbError::UntranslatableCharacter)?;
+    let decoded: String =
+        serde_json::from_str(&input[start..*pos]).map_err(|_| PgJsonbError::InvalidSyntax)?;
     if decoded.contains('\0') {
         return Err(PgJsonbError::UntranslatableCharacter);
     }
