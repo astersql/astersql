@@ -164,3 +164,262 @@ fn pg_dialect_26_assignment_occurrence_constraints() {
         .execute("DROP TABLE test.parameter26_constraints")
         .unwrap();
 }
+
+#[test]
+fn pg05_record_consumer_layout_values_and_null() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected, oids) in [
+        ("SELECT ROW(1)", "(1)", vec![23]),
+        ("SELECT ROW(NULL)", "()", vec![705]),
+        ("SELECT ROW(1,ROW(2,NULL))", "(1,\"(2,)\")", vec![23, 2249]),
+        ("SELECT (1,2)", "(1,2)", vec![23, 23]),
+        (
+            "SELECT ROW(NULL::uuid,NULL::json,NULL::jsonb,NULL::int4[])",
+            "(,,,)",
+            vec![2950, 114, 3802, 1007],
+        ),
+        (
+            "SELECT ROW('{1,NULL}'::int4[],NULL::jsonb[])",
+            "(\"{1,NULL}\",)",
+            vec![1007, 3807],
+        ),
+        (
+            "SELECT ROW('00000000000000000000000000000001'::uuid,' [1, 2] '::json,'{\"aa\":1,\"b\":2}'::jsonb)",
+            "(00000000-0000-0000-0000-000000000001,\" [1, 2] \",\"{\"\"b\"\": 2, \"\"aa\"\": 1}\")",
+            vec![2950, 114, 3802],
+        ),
+    ] {
+        let (id, _, fields) = session
+            .prepare_protocol_statement(sql)
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let layout = fields[0].column.FieldType.PostgreSQLRecordFields().unwrap();
+        assert_eq!(
+            layout.iter().map(|f| f.oid).collect::<Vec<_>>(),
+            oids,
+            "{sql}"
+        );
+        if sql.contains("ROW(2,NULL)") {
+            assert_eq!(
+                layout[1]
+                    .fields
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.oid)
+                    .collect::<Vec<_>>(),
+                [23, 705]
+            );
+        }
+        let result = session.execute_protocol_statement(id, &[]).unwrap();
+        assert_eq!(result[0].rows, vec![vec![expected.to_owned()]], "{sql}");
+        session.close_protocol_statement(id).unwrap();
+    }
+    let (_, _, fields) = session.prepare_protocol_statement("SELECT (1)").unwrap();
+    assert!(
+        fields[0]
+            .column
+            .FieldType
+            .PostgreSQLRecordFields()
+            .is_none()
+    );
+}
+
+#[test]
+fn pg05_record_consumer_declared_parameters_and_rebinding() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (oid, text, expected) in [
+        (
+            2950,
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000001",
+        ),
+        (114, " [null] ", "\" [null] \""),
+        (3802, "1.00", "1.00"),
+        (1007, "[0:1]={1,NULL}", "\"[0:1]={1,NULL}\""),
+        (3807, "{\"null\",NULL}", "\"{\"\"null\"\",NULL}\""),
+    ] {
+        let sql = "SELECT ROW(?,?,?)";
+        let (id, count, fields) = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[oid, oid, oid])
+            .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            fields[0]
+                .column
+                .FieldType
+                .PostgreSQLRecordFields()
+                .unwrap()
+                .iter()
+                .map(|f| f.oid)
+                .collect::<Vec<_>>(),
+            [oid, oid, oid]
+        );
+        for args in [
+            vec![
+                ConcretePreparedArgument::Null,
+                ConcretePreparedArgument::Text(text.into()),
+                ConcretePreparedArgument::Null,
+            ],
+            vec![
+                ConcretePreparedArgument::Text(text.into()),
+                ConcretePreparedArgument::Null,
+                ConcretePreparedArgument::Text(text.into()),
+            ],
+        ] {
+            let first_null = matches!(args[0], ConcretePreparedArgument::Null);
+            let result = session.execute_protocol_statement(id, &args).unwrap();
+            let expected = if first_null {
+                format!("(,{expected},)")
+            } else {
+                format!("({expected},,{expected})")
+            };
+            assert_eq!(result[0].rows, vec![vec![expected]], "oid {oid}");
+        }
+        session.close_protocol_statement(id).unwrap();
+    }
+}
+
+#[test]
+fn pg05_record_consumer_scalar_subquery_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (cast, oid) in [
+        ("uuid", 2950),
+        ("json", 114),
+        ("jsonb", 3802),
+        ("jsonb[]", 3807),
+    ] {
+        let sql = format!("SELECT ROW((SELECT NULL::{cast}))");
+        let (id, _, fields) = session.prepare_protocol_statement(&sql).unwrap();
+        assert_eq!(
+            fields[0].column.FieldType.PostgreSQLRecordFields().unwrap()[0].oid,
+            oid,
+            "{sql}"
+        );
+        assert_eq!(
+            session.execute_protocol_statement(id, &[]).unwrap()[0].rows,
+            vec![vec!["()".to_owned()]]
+        );
+        session.close_protocol_statement(id).unwrap();
+    }
+}
+
+#[test]
+fn pg05_record_consumer_unsupported_and_invalid_recover() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT ROW(1)=ROW(1)",
+        "SELECT ARRAY[ROW(1)]",
+        "SELECT ROW(ARRAY[1,NULL])",
+    ] {
+        let e = session.prepare_protocol_statement(sql).unwrap_err();
+        assert_eq!(
+            e.pg_array_error().map(|e| e.state),
+            Some("0A000"),
+            "{sql}: {e}"
+        );
+    }
+    let e = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ROW($1)", &[2249])
+        .unwrap_err();
+    assert_eq!(e.pg_array_error().map(|e| e.state), Some("0A000"));
+    let (id, _, _) = session
+        .prepare_protocol_statement("SELECT ROW('bad'::uuid)")
+        .unwrap();
+    assert_eq!(
+        session
+            .execute_protocol_statement(id, &[])
+            .err()
+            .unwrap()
+            .pg_uuid_error()
+            .map(|e| e.sqlstate()),
+        Some("22P02")
+    );
+    session.close_protocol_statement(id).unwrap();
+    assert_eq!(
+        session.execute("SELECT ROW(1)").unwrap()[0].rows,
+        vec![vec!["(1)".to_owned()]]
+    );
+}
+
+#[test]
+fn pg05_record_consumer_all_array_null_layouts_and_empty_results() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (name, oid) in [
+        ("bool", 1000),
+        ("bytea", 1001),
+        ("int2", 1005),
+        ("int4", 1007),
+        ("text", 1009),
+        ("bpchar", 1014),
+        ("varchar", 1015),
+        ("int8", 1016),
+        ("float4", 1021),
+        ("float8", 1022),
+        ("numeric", 1231),
+        ("date", 1182),
+        ("time", 1183),
+        ("timestamp", 1115),
+        ("timestamptz", 1185),
+        ("interval", 1187),
+        ("uuid", 2951),
+        ("json", 199),
+        ("jsonb", 3807),
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT ROW(NULL::{name}[]){}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let (id, _, fields) = session.prepare_protocol_statement(&sql).unwrap();
+            let layout = fields[0].column.FieldType.PostgreSQLRecordFields().unwrap();
+            assert_eq!(layout[0].oid, oid, "{sql}");
+            let results = session.execute_protocol_statement(id, &[]).unwrap();
+            if empty {
+                assert!(results[0].rows.is_empty());
+            } else {
+                assert_eq!(results[0].rows, vec![vec!["()".to_owned()]]);
+            }
+            assert_eq!(
+                results[0].result_fields[0]
+                    .as_ref()
+                    .unwrap()
+                    .column
+                    .FieldType
+                    .PostgreSQLRecordFields(),
+                Some(layout)
+            );
+            session.close_protocol_statement(id).unwrap();
+        }
+    }
+}
+
+#[test]
+fn pg05_record_consumer_nested_subquery_layout() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, _, fields) = session
+        .prepare_protocol_statement("SELECT ROW((SELECT ROW(1,NULL)))")
+        .unwrap();
+    let layout = fields[0].column.FieldType.PostgreSQLRecordFields().unwrap();
+    assert_eq!(layout[0].oid, 2249);
+    assert_eq!(
+        layout[0]
+            .fields
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|f| f.oid)
+            .collect::<Vec<_>>(),
+        [23, 705]
+    );
+    assert_eq!(
+        session.execute_protocol_statement(id, &[]).unwrap()[0].rows,
+        vec![vec!["(\"(1,)\")".to_owned()]]
+    );
+    session.close_protocol_statement(id).unwrap();
+}

@@ -1197,3 +1197,294 @@ fn pg05_jsonb_output_invalid_carrier_writes_no_messages() {
     );
     assert!(client.read(&mut [0]).is_err());
 }
+
+// Independent wire fixtures: record_send samples from PostgreSQL 18.6; no
+// production record/array encoder participates in constructing expectations.
+#[test]
+fn pg05_record_consumer_wire_four_directions() {
+    struct ServiceGuard(Arc<PgService>);
+    impl Drop for ServiceGuard {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    fn until_ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = vec![];
+        loop {
+            let m = read(socket);
+            let done = m.0 == b'Z';
+            messages.push(m);
+            if done {
+                return messages;
+            }
+        }
+    }
+    fn record(oid: u32, values: &[Option<&[u8]>]) -> Vec<u8> {
+        let mut b = (values.len() as i32).to_be_bytes().to_vec();
+        for v in values {
+            b.extend(oid.to_be_bytes());
+            if let Some(v) = v {
+                b.extend((v.len() as i32).to_be_bytes());
+                b.extend(*v);
+            } else {
+                b.extend((-1i32).to_be_bytes());
+            }
+        }
+        b
+    }
+    fn record_quote(s: &str) -> String {
+        if s.is_empty()
+            || s.chars()
+                .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '"' | '\\'))
+        {
+            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\"\""))
+        } else {
+            s.into()
+        }
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let service = ServiceGuard(service);
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    until_ready(&mut socket);
+    for (sql, text, binary) in [
+        ("SELECT ROW(1)", "(1)", "00000001000000170000000400000001"),
+        (
+            "SELECT ROW((SELECT ROW(1,NULL)))",
+            "(\"(1,)\")",
+            "00000001000008c90000001800000002000000170000000400000001000002c1ffffffff",
+        ),
+        ("SELECT ROW(NULL)", "()", "00000001000002c1ffffffff"),
+        (
+            "SELECT ROW(1,ROW(2,NULL))",
+            "(1,\"(2,)\")",
+            "00000002000000170000000400000001000008c90000001800000002000000170000000400000002000002c1ffffffff",
+        ),
+        (
+            "SELECT ROW('00000000000000000000000000000001'::uuid,' [1, 2] '::json,'{\"aa\":1,\"b\":2}'::jsonb,'{1,NULL}'::int4[],NULL::jsonb[])",
+            "(00000000-0000-0000-0000-000000000001,\" [1, 2] \",\"{\"\"b\"\": 2, \"\"aa\"\": 1}\",\"{1,NULL}\",)",
+            "0000000500000b8600000010000000000000000000000000000000010000007200000008205b312c20325d2000000eda00000012017b2262223a20322c20226161223a20317d000003ef0000002000000001000000010000001700000002000000010000000400000001ffffffff00000edfffffffff",
+        ),
+    ] {
+        for format in [0i16, 1] {
+            let parse = [b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat();
+            send(&mut socket, b'P', &parse);
+            let bind = [b"\0\0\0\0\0\0\0\x01".as_slice(), &format.to_be_bytes()].concat();
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'D', b"P\0");
+            send(&mut socket, b'E', b"\0\0\0\0\0");
+            send(&mut socket, b'S', b"");
+            let messages = until_ready(&mut socket);
+            assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+            assert_eq!(
+                oids(&messages.iter().find(|m| m.0 == b'T').unwrap().1),
+                [2249]
+            );
+            let expected = if format == 0 {
+                text.as_bytes().to_vec()
+            } else {
+                hex(binary)
+            };
+            let data = [
+                1i16.to_be_bytes().as_slice(),
+                &(expected.len() as i32).to_be_bytes(),
+                &expected,
+            ]
+            .concat();
+            assert_eq!(
+                messages.iter().find(|m| m.0 == b'D').unwrap().1,
+                data,
+                "{sql} format {format}"
+            );
+        }
+    }
+    for (oid, text, canonical, binary) in [
+        (
+            2950u32,
+            "00000000000000000000000000000001",
+            "00000000-0000-0000-0000-000000000001",
+            hex("00000000000000000000000000000001"),
+        ),
+        (114, " [1, 2] ", " [1, 2] ", b" [1, 2] ".to_vec()),
+        (
+            3802,
+            "{\"aa\":1,\"b\":2}",
+            "{\"b\": 2, \"aa\": 1}",
+            b"\x01{\"b\": 2, \"aa\": 1}".to_vec(),
+        ),
+        (
+            1007,
+            "[0:1]={1,NULL}",
+            "[0:1]={1,NULL}",
+            hex("00000001000000010000001700000002000000000000000400000001ffffffff"),
+        ),
+        (
+            3807,
+            "{\"null\",NULL}",
+            "{\"null\",NULL}",
+            hex("000000010000000100000eda000000020000000100000005016e756c6cffffffff"),
+        ),
+    ] {
+        let mut parse = b"\0SELECT ROW($2,$1,$2)\0".to_vec();
+        parse.extend(2i16.to_be_bytes());
+        parse.extend(oid.to_be_bytes());
+        parse.extend(oid.to_be_bytes());
+        send(&mut socket, b'P', &parse);
+        send(&mut socket, b'D', b"S\0");
+        send(&mut socket, b'S', b"");
+        let messages = until_ready(&mut socket);
+        assert!(
+            !messages.iter().any(|m| m.0 == b'E'),
+            "oid {oid}: {messages:?}"
+        );
+        assert_eq!(
+            messages.iter().find(|m| m.0 == b't').unwrap().1,
+            [
+                2i16.to_be_bytes().as_slice(),
+                &oid.to_be_bytes(),
+                &oid.to_be_bytes()
+            ]
+            .concat()
+        );
+        assert_eq!(
+            oids(&messages.iter().find(|m| m.0 == b'T').unwrap().1),
+            [2249]
+        );
+        for input in [0i16, 1] {
+            for output in [0i16, 1] {
+                for flip in [false, true] {
+                    let payload = if input == 0 { text.as_bytes() } else { &binary };
+                    let values = if flip {
+                        [None, Some(payload)]
+                    } else {
+                        [Some(payload), None]
+                    };
+                    let mut bind = b"\0\0".to_vec();
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(input.to_be_bytes());
+                    bind.extend(2i16.to_be_bytes());
+                    for v in values {
+                        if let Some(v) = v {
+                            bind.extend((v.len() as i32).to_be_bytes());
+                            bind.extend(v);
+                        } else {
+                            bind.extend((-1i32).to_be_bytes());
+                        }
+                    }
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(output.to_be_bytes());
+                    send(&mut socket, b'B', &bind);
+                    send(&mut socket, b'D', b"P\0");
+                    send(&mut socket, b'E', b"\0\0\0\0\0");
+                    send(&mut socket, b'S', b"");
+                    let messages = until_ready(&mut socket);
+                    assert!(
+                        !messages.iter().any(|m| m.0 == b'E'),
+                        "oid {oid} in {input} out {output}: {messages:?}"
+                    );
+                    let description = &messages.iter().find(|m| m.0 == b'T').unwrap().1;
+                    assert_eq!(oids(description), [2249]);
+                    assert_eq!(
+                        &description[description.len() - 8..],
+                        &[
+                            (-1i16).to_be_bytes().as_slice(),
+                            &(-1i32).to_be_bytes(),
+                            &output.to_be_bytes()
+                        ]
+                        .concat()
+                    );
+                    let quoted = record_quote(canonical);
+                    let expected = if output == 0 {
+                        if flip {
+                            format!("({quoted},,{quoted})")
+                        } else {
+                            format!("(,{quoted},)")
+                        }
+                        .into_bytes()
+                    } else {
+                        let v = Some(binary.as_slice());
+                        if flip {
+                            record(oid, &[v, None, v])
+                        } else {
+                            record(oid, &[None, v, None])
+                        }
+                    };
+                    assert_eq!(
+                        messages.iter().find(|m| m.0 == b'D').unwrap().1,
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &(expected.len() as i32).to_be_bytes(),
+                            &expected
+                        ]
+                        .concat(),
+                        "oid {oid} in {input} out {output} flip {flip}"
+                    );
+                }
+            }
+        }
+    }
+    for (sql, state) in [
+        ("SELECT ROW(1)=ROW(1)", "0A000"),
+        ("SELECT ARRAY[ROW(1)]", "0A000"),
+        ("SELECT ROW(ARRAY[1,NULL])", "0A000"),
+        ("SELECT ROW('bad'::uuid)", "22P02"),
+    ] {
+        let messages = query(&mut socket, sql);
+        let error = &messages.iter().find(|m| m.0 == b'E').unwrap().1;
+        assert!(
+            error
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{messages:?}"
+        );
+        assert!(!messages.iter().any(|m| m.0 == b'D'));
+        assert_eq!(query(&mut socket, "SELECT 1")[1].1, row(&[Some("1")]));
+    }
+    let mut parse = b"\0SELECT ROW($1)\0".to_vec();
+    parse.extend(1i16.to_be_bytes());
+    parse.extend(2249u32.to_be_bytes());
+    send(&mut socket, b'P', &parse);
+    send(&mut socket, b'E', b"\0\0\0\0\0");
+    send(&mut socket, b'S', b"");
+    let rejected = until_ready(&mut socket);
+    assert!(
+        rejected
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap()
+            .1
+            .windows(7)
+            .any(|w| w == b"C0A000\0")
+    );
+    assert!(!rejected.iter().any(|m| m.0 == b'D'));
+    assert_eq!(query(&mut socket, "SELECT 1")[1].1, row(&[Some("1")]));
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    drop(service);
+}

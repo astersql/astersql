@@ -38,7 +38,9 @@ fn scalar_type(expr: &ast::ExprNode, parameters: &HashMap<usize, u32>) -> Sessio
                 ));
             }
             match oid {
-                16 | 20 | 23 | 25 | 1700 => oid,
+                16 | 20 | 23 | 25 | 1700 | 2950 | 114 | 3802 | 1000 | 1001 | 1005 | 1007 | 1009
+                | 1014 | 1015 | 1016 | 1021 | 1022 | 1231 | 1182 | 1183 | 1115 | 1185 | 1187
+                | 2951 | 199 | 3807 => oid,
                 _ => {
                     return Err(error(
                         "0A000",
@@ -47,6 +49,9 @@ fn scalar_type(expr: &ast::ExprNode, parameters: &HashMap<usize, u32>) -> Sessio
                     ));
                 }
             }
+        }
+        ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some() => {
+            Tp.PostgreSQLArrayElement().unwrap().array_oid()
         }
         ast::ExprKind::Parentheses(inner) => return scalar_type(inner, parameters),
         _ => super::pg_array::element_type(expr, parameters)?
@@ -116,10 +121,25 @@ pub(super) fn record_type_in_context(
                 } else {
                     session.relational_query_expression_type_from_sources(source, sources)
                 };
-                let oid = if tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 {
+                if let Some(fields) = tp.PostgreSQLRecordFields() {
+                    return Ok(Field {
+                        oid: 2249,
+                        fields: Some(fields.to_vec()),
+                    });
+                }
+                // Preserve the explicit PG identity before consulting the legacy
+                // transport code (arrays and text variants share that code).
+                let oid = if let Some(element) = tp.PostgreSQLArrayElement() {
+                    element.array_oid()
+                } else if let Some(oid) = tp.PostgreSQLTextOid() {
+                    oid
+                } else if tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 {
                     16
                 } else {
                     match tp.GetType() {
+                        astersql_parser_mysql::r#type::TypePgUuid => 2950,
+                        astersql_parser_mysql::r#type::TypePgJson => 114,
+                        astersql_parser_mysql::r#type::TypePgJsonb => 3802,
                         1 | 2 => 21,
                         3 | 9 => 23,
                         8 => 20,

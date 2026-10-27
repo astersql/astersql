@@ -1944,6 +1944,7 @@
 
 ## pkg/session
 
+- [x] [`pkg/session/runtime/pg_record.rs.md`](../pkg/session/runtime/pg_record.rs.md)
 - [x] [`pkg/session/runtime/pg_uuid.rs.md`](../pkg/session/runtime/pg_uuid.rs.md)
 - [x] [`pkg/session/runtime/pg_json.rs.md`](../pkg/session/runtime/pg_json.rs.md)
 - [x] [`pkg/session/runtime/pg_jsonb.rs.md`](../pkg/session/runtime/pg_jsonb.rs.md)
