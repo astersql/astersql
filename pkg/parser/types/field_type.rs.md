@@ -174,3 +174,7 @@ PostgreSQLArrayElement::Float4保留元素OID700、数组OID1021，并在CAST/Re
 Float8元素OID701/数组1022，恢复FLOAT8[]，保留typed NULL的独立身份。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+PostgreSQLArrayElement::Varchar独立1043/1015身份；Restore保留varchar字符长度，维度仍属于值。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

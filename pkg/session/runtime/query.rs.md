@@ -258,3 +258,7 @@ PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast
 共享查询消费者开放Float8[]，调用带源表达式的float8值桥，保留同族位型与语义text cast。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+现有关系查询cast消费者分派Varchar数组到pg_array，不经过通用字符串cast。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

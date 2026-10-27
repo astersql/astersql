@@ -1365,3 +1365,39 @@ fn pg05_array_float8_cross_family_is_explicitly_unsupported() {
         );
     }
 }
+
+#[test]
+fn pg05_array_varchar_sql_modifiers_constructors_and_null() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={é😀x,NULL}'::varchar(2)[]",
+            Some("[-2:-1]={é😀,NULL}"),
+        ),
+        (
+            "SELECT ARRAY[['é😀x',NULL],['a  ','éx']]::varchar(2)[]",
+            Some("{{é😀,NULL},{\"a \",é}}"),
+        ),
+        ("SELECT ARRAY[]::varchar(2)[]", Some("{}")),
+        ("SELECT ARRAY[NULL,NULL]::varchar(2)[]", Some("{NULL,NULL}")),
+        ("SELECT ARRAY['é'::varchar,'😀'::varchar]", Some("{é,😀}")),
+        ("SELECT NULL::varchar(2)[]", None),
+        (
+            "SELECT '{abcdef}'::varchar(3)[]::varchar(2)[]",
+            Some("{ab}"),
+        ),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        let row = results[0].next_row().unwrap().unwrap();
+        assert_eq!(row[0], expected.unwrap_or("<nil>"), "{sql}");
+        results[0].close().unwrap();
+    }
+    for n in [0, -2, 10485761] {
+        for suffix in ["", " WHERE false"] {
+            let sql = format!("SELECT NULL::varchar({n})[]{suffix}");
+            assert!(session.execute(&sql).is_err(), "{sql}");
+        }
+    }
+    assert!(session.execute("SELECT 1").is_ok());
+}

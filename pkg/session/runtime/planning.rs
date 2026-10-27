@@ -2816,6 +2816,7 @@ impl ConcreteSession {
                         | 1016
                         | 1000
                         | 1009
+                        | 1015
                 ) {
                     *oid = *supplied;
                 }
@@ -2864,6 +2865,11 @@ impl ConcreteSession {
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Bool) =>
                         {
                             1000
+                        }
+                        _ if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Varchar) =>
+                        {
+                            1015
                         }
                         _ if Tp.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Text) =>

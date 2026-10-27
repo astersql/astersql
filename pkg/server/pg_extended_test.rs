@@ -7812,7 +7812,7 @@ fn pg05_int4_array_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8108,7 +8108,7 @@ fn pg05_array_cast_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8336,7 +8336,7 @@ fn pg05_array_text_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8559,7 +8559,7 @@ fn pg05_array_bool_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8841,7 +8841,7 @@ fn pg05_array_int2_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9118,7 +9118,7 @@ fn pg05_array_int8_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9339,7 +9339,7 @@ fn pg05_array_bytea_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9597,5 +9597,256 @@ fn pg05_array_float8_scalar_nan_bits_prerequisite() {
         assert_eq!(read(&mut socket).0, b'C');
         send(&mut socket, b'S', &[]);
         assert_eq!(read(&mut socket).0, b'Z');
+    }
+}
+
+#[test]
+fn pg05_array_varchar_wire_four_formats_metadata_and_recovery() {
+    fn words(values: &[i32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_be_bytes()).collect()
+    }
+    fn description(format: i16) -> (u8, Vec<u8>) {
+        (
+            b'T',
+            [
+                1i16.to_be_bytes().as_slice(),
+                b"v\0",
+                &[0; 6],
+                &1015u32.to_be_bytes(),
+                &(-1i16).to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &format.to_be_bytes(),
+            ]
+            .concat(),
+        )
+    }
+    fn bind_value(
+        socket: &mut TcpStream,
+        statement: &str,
+        input: i16,
+        output: i16,
+        value: Option<&[u8]>,
+    ) {
+        let mut body = [
+            b"\0".as_slice(),
+            statement.as_bytes(),
+            b"\0",
+            &1i16.to_be_bytes(),
+            &input.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat();
+        body.extend_from_slice(&value.map_or(-1, |v| v.len() as i32).to_be_bytes());
+        if let Some(v) = value {
+            body.extend_from_slice(v);
+        }
+        body.extend_from_slice(&1i16.to_be_bytes());
+        body.extend_from_slice(&output.to_be_bytes());
+        send(socket, b'B', &body);
+    }
+    fn data(value: Option<&[u8]>) -> (u8, Vec<u8>) {
+        let mut body = 1i16.to_be_bytes().to_vec();
+        body.extend_from_slice(&value.map_or(-1, |v| v.len() as i32).to_be_bytes());
+        if let Some(v) = value {
+            body.extend_from_slice(v);
+        }
+        (b'D', body)
+    }
+    fn sync(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for (statement, sql, oids) in [
+        ("declared", "SELECT $1 AS v", vec![1015]),
+        ("inferred", "SELECT $1::varchar[] AS v", vec![0]),
+        ("cast", "SELECT CAST($1 AS varchar[]) AS v", vec![]),
+        ("empty", "SELECT $1::varchar[] AS v WHERE false", vec![]),
+        (
+            "first_null",
+            "SELECT NULL::varchar[] AS v UNION ALL SELECT $1::varchar[] AS v",
+            vec![1015],
+        ),
+    ] {
+        parse(&mut socket, statement, sql, &oids);
+        assert_eq!(read(&mut socket), (b'1', vec![]));
+        send(
+            &mut socket,
+            b'D',
+            &[b"S", statement.as_bytes(), b"\0"].concat(),
+        );
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &1015u32.to_be_bytes()].concat()
+            )
+        );
+        assert_eq!(read(&mut socket), description(0));
+        let cases = [
+            (
+                Some("{a,b}"),
+                Some(
+                    [
+                        words(&[1, 0, 1043, 2, 1, 1]),
+                        b"a".to_vec(),
+                        words(&[1]),
+                        b"b".to_vec(),
+                    ]
+                    .concat(),
+                ),
+            ),
+            (
+                Some("[0:1][-2:-1]={{a,NULL},{b,c}}"),
+                Some(
+                    [
+                        words(&[2, 1, 1043, 2, 0, 2, -2, 1]),
+                        b"a".to_vec(),
+                        words(&[-1, 1]),
+                        b"b".to_vec(),
+                        words(&[1]),
+                        b"c".to_vec(),
+                    ]
+                    .concat(),
+                ),
+            ),
+            (Some("{}"), Some(words(&[0, 0, 1043]))),
+            (Some("{NULL}"), Some(words(&[1, 1, 1043, 1, 1, -1]))),
+            (
+                Some("{NULL,NULL}"),
+                Some(words(&[1, 1, 1043, 2, 1, -1, -1])),
+            ),
+            (None, None),
+        ];
+        for (text, binary) in cases {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let payload = if input == 0 {
+                        text.map(str::as_bytes)
+                    } else {
+                        binary.as_deref()
+                    };
+                    bind_value(&mut socket, statement, input, output, payload);
+                    assert_eq!(
+                        read(&mut socket),
+                        (b'2', vec![]),
+                        "{statement} input={input} output={output} {text:?}"
+                    );
+                    send(&mut socket, b'D', b"P\0");
+                    assert_eq!(read(&mut socket), description(output));
+                    execute(&mut socket, "", 0);
+                    if statement == "first_null" {
+                        assert_eq!(read(&mut socket), data(None));
+                    }
+                    if statement != "empty" {
+                        let expected = if output == 0 {
+                            text.map(str::as_bytes)
+                        } else {
+                            binary.as_deref()
+                        };
+                        assert_eq!(
+                            read(&mut socket),
+                            data(expected),
+                            "{statement} input={input} output={output} {text:?}"
+                        );
+                    }
+                    assert_eq!(read(&mut socket).0, b'C');
+                    sync(&mut socket);
+                }
+            }
+        }
+    }
+    for (sql, text) in [
+        (
+            "SELECT ARRAY[['a','b'],['c','d']]::varchar[] AS v",
+            Some("{{a,b},{c,d}}"),
+        ),
+        (
+            "SELECT ARRAY[NULL,'NULL','']::varchar[] AS v",
+            Some(r#"{NULL,"NULL",""}"#),
+        ),
+        ("SELECT ARRAY[]::varchar[] AS v", Some("{}")),
+        (
+            "SELECT ARRAY[NULL,NULL]::varchar[] AS v",
+            Some("{NULL,NULL}"),
+        ),
+        ("SELECT NULL::varchar[] AS v", None),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0], description(0), "{sql}: {result:?}");
+        assert_eq!(result[1], data(text.map(str::as_bytes)), "{sql}");
+    }
+    for (format, payload, state) in [
+        (0, b"{{1,2},{3}}".to_vec(), "22P02"),
+        (0, b"[0:2]={1,2}".to_vec(), "22P02"),
+        (0, b"{1,}".to_vec(), "22P02"),
+        (0, b"{\xff}".to_vec(), "22021"),
+        (1, words(&[0, 0, 23]), "42804"),
+        (1, words(&[-1, 0, 1043]), "22P03"),
+        (1, words(&[0, 2, 1043]), "22P03"),
+        (1, vec![0], "08P01"),
+        (1, words(&[1, 0, 1043, 1, 1, -2]), "22P03"),
+        (1, words(&[0, 0, 1043, 0]), "22P03"),
+    ] {
+        bind_value(&mut socket, "declared", format, 1, Some(&payload));
+        assert_state(&read(&mut socket), state);
+        execute(&mut socket, "", 0);
+        sync(&mut socket);
+        bind_value(&mut socket, "declared", 0, 0, Some(b"{7,NULL}"));
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), data(Some(b"{7,NULL}")));
+        assert_eq!(read(&mut socket).0, b'C');
+        sync(&mut socket);
+    }
+    parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
+    assert_state(&read(&mut socket), "42P18");
+    sync(&mut socket);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1014]);
+    assert_state(&read(&mut socket), "0A000");
+    sync(&mut socket);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}
+
+#[test]
+fn pg05_array_varchar_scalar_codec_prerequisite() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    for decode in [parameter, binary_parameter] {
+        for input in ["", "é😀", "a  "] {
+            assert_eq!(
+                decode(1043, Some(input.as_bytes())).unwrap().value,
+                input.as_bytes()
+            );
+        }
+        assert!(decode(1043, None).unwrap().is_null);
+        for input in [b"a\0b".as_slice(), b"\xff", b"\xc3"] {
+            assert_eq!(decode(1043, Some(input)).unwrap_err().0, "22021");
+        }
     }
 }

@@ -46,6 +46,7 @@ pub enum PostgreSQLArrayElement {
     Float8,
     Bool,
     Text,
+    Varchar,
     Bytea,
 }
 impl PostgreSQLArrayElement {
@@ -59,6 +60,7 @@ impl PostgreSQLArrayElement {
             Self::Float8 => 701,
             Self::Bool => 16,
             Self::Text => 25,
+            Self::Varchar => 1043,
             Self::Bytea => 17,
         }
     }
@@ -72,6 +74,7 @@ impl PostgreSQLArrayElement {
             Self::Float8 => 1022,
             Self::Bool => 1000,
             Self::Text => 1009,
+            Self::Varchar => 1015,
             Self::Bytea => 1001,
         }
     }
@@ -613,7 +616,12 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
-        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8)) = self.postgresql_array_element {
+        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8)) = self.postgresql_array_element {
+            if element == PostgreSQLArrayElement::Varchar {
+                ctx.WriteKeyWord("VARCHAR")?;
+                if self.flen >= 0 { ctx.WritePlain(&format!("({})", self.flen))?; }
+                return ctx.WritePlain("[]");
+            }
             if element == PostgreSQLArrayElement::Numeric {
                 ctx.WriteKeyWord("NUMERIC")?;
                 if self.flen >= 0 { ctx.WritePlain(&format!("({},{})",self.flen,self.decimal))?; }
@@ -693,7 +701,7 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
-        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8)) {
+        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8)) {
             return self.Restore(ctx);
         }
         match self.tp {

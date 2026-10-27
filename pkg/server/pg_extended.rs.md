@@ -203,3 +203,7 @@ parameter/binary_parameter为OID700保存原始binary32字节，通过内部Bina
 OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量codec，私有Float8参数标签保留原位型。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+1015参数text/binary codec委托已有1043标量codec；头元素OID固定1043，UTF8/NUL/NULL沿标量契约，维度与元素长度沿通用容器。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

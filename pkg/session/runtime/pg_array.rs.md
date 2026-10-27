@@ -58,3 +58,7 @@ Float4身份/分析/定型接入既有ARRAY消费者。构造器逐叶调用已�
 Float8分析、定型、构造与同族cast，和Float4共用矩形shape收集；元素按各族标量codec解析，原子发布；私有常量应用器扩展64位，跨族数组cast仍0A000。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+数组分析、构造及cast注册Varchar；逐元素调用已有pg_text_cast/pg_varchar_length，显式字符截断和typmod校验在数组shape/lower之外处理。非法元素整值失败，跨族合法未支持转换仍0A000。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

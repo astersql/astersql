@@ -205,3 +205,7 @@ OID700与1021的内部Value::Bytes载体直接按原始位型编码binary；text
 OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec；身份、shape/lower/NULL不经文本往返丢失。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+普通结果1015使用规范数组text/binary输出和n+4 typmod；无行/NULL仍由NativeType保留类型。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

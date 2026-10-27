@@ -223,3 +223,7 @@ OID1021在Prepare/typed NULL/参数推断及重绑定中保留身份；float4位
 OID1022参数约束/typed NULL与私有Float8Bits/Float8Array AST绑定复用批次31生命周期；公开SQL仅安全CAST(NULL AS FLOAT8/ FLOAT8[])占位。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+prepared参数/typed NULL识别1015，恢复独立数组FieldType；参数替换沿既有安全literal桥加VARCHAR[]类型，保留形状/下界。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

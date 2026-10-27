@@ -257,3 +257,7 @@ OID1700/1231加入既有声明参数和array cast约束分派，继续使用原�
 OID1022参数推导与显式数组cast约束，复用现有ARRAY消费者。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+Parse参数推断白名单注册1015，显式varchar[]类型提供数组参数约束，避免text fallback。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

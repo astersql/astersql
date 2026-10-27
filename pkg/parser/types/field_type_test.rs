@@ -505,3 +505,21 @@ fn pg05_array_float8_restore_identity() {
     assert_eq!(output, b"FLOAT8[]");
     assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1022);
 }
+
+#[test]
+fn pg05_array_varchar_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Varchar);
+    for (length, expected) in [
+        (-1, "VARCHAR[]"),
+        (2, "VARCHAR(2)[]"),
+        (10485760, "VARCHAR(10485760)[]"),
+    ] {
+        tp.SetFlen(length);
+        let mut output = Vec::new();
+        tp.FormatAsCastType(&mut output, false).unwrap();
+        assert_eq!(output, expected.as_bytes());
+        assert_eq!(tp.PostgreSQLArrayElement().unwrap().oid(), 1043);
+        assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1015);
+    }
+}

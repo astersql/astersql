@@ -377,7 +377,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231 => (
+        1000 | 1001 | 1005 | 1007 | 1009 | 1015 | 1016 | 1021 | 1022 | 1231 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -605,7 +605,7 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231 => {
+        1000 | 1001 | 1005 | 1007 | 1009 | 1015 | 1016 | 1021 | 1022 | 1231 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
@@ -618,6 +618,7 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                     1016 => 20,
                     1000 => 16,
                     1009 => 25,
+                    1015 => 1043,
                     _ => 23,
                 },
                 -1,
@@ -667,8 +668,9 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                         *payload = &[];
                         return Ok(PgArrayElement::Bool(scalar.value[0] != 0));
                     }
-                    if oid == 1009 {
-                        let scalar = binary_parameter(25, Some(payload))?;
+                    if matches!(oid, 1009 | 1015) {
+                        let scalar =
+                            binary_parameter(if oid == 1015 { 1043 } else { 25 }, Some(payload))?;
                         *payload = &[];
                         return Ok(PgArrayElement::Text(
                             String::from_utf8(scalar.value).unwrap(),
@@ -1078,6 +1080,7 @@ impl Extended {
                         | 1000
                         | 1007
                         | 1009
+                        | 1015
                 )
             {
                 return Err(error("0A000", "unsupported text parameter OID"));
@@ -1713,6 +1716,7 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
             1016 => 20,
             1000 => 16,
             1009 => 25,
+            1015 => 1043,
             _ => 23,
         },
         -1,
@@ -1750,8 +1754,8 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
             } else if oid == 1000 {
                 let scalar = parameter(16, Some(text.as_bytes()))?;
                 Ok(PgArrayElement::Bool(scalar.value[0] != 0))
-            } else if oid == 1009 {
-                let scalar = parameter(25, Some(text.as_bytes()))?;
+            } else if matches!(oid, 1009 | 1015) {
+                let scalar = parameter(if oid == 1015 { 1043 } else { 25 }, Some(text.as_bytes()))?;
                 Ok(PgArrayElement::Text(
                     String::from_utf8(scalar.value).unwrap(),
                 ))

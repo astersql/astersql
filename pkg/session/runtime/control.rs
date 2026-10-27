@@ -1841,6 +1841,7 @@ impl ConcreteSession {
                         | 1016
                         | 1000
                         | 1009
+                        | 1015
                 )
             });
         let constructor_oids = array_oids
@@ -1894,7 +1895,7 @@ impl ConcreteSession {
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
                             | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1700 | 1021
-                            | 1022 | 1231 | 1001 | 1016 | 1000 | 1009),
+                            | 1022 | 1231 | 1001 | 1016 | 1000 | 1009 | 1015),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 1700 {
@@ -1930,7 +1931,7 @@ impl ConcreteSession {
                             });
                             if matches!(
                                 *oid,
-                                1007 | 1005 | 1021 | 1022 | 1231 | 1001 | 1016 | 1000 | 1009
+                                1007 | 1005 | 1021 | 1022 | 1231 | 1001 | 1016 | 1000 | 1009 | 1015
                             ) {
                                 tp = super::pg_array::field_type(if *oid == 1022 {
                                     astersql_parser_types::PostgreSQLArrayElement::Float8
@@ -1946,6 +1947,8 @@ impl ConcreteSession {
                                     astersql_parser_types::PostgreSQLArrayElement::Int2
                                 } else if *oid == 1000 {
                                     astersql_parser_types::PostgreSQLArrayElement::Bool
+                                } else if *oid == 1015 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Varchar
                                 } else if *oid == 1009 {
                                     astersql_parser_types::PostgreSQLArrayElement::Text
                                 } else {
@@ -2030,6 +2033,7 @@ impl ConcreteSession {
                                 | 1016
                                 | 1000
                                 | 1009
+                                | 1015
                         ) {
                             *oid = *supplied;
                         }
@@ -2188,6 +2192,9 @@ impl ConcreteSession {
                 }
                 if constructor_oids.get(index) == Some(&1000) {
                     return Ok(format!("CAST({literal} AS BOOL[])"));
+                }
+                if constructor_oids.get(index) == Some(&1015) {
+                    return Ok(format!("CAST({literal} AS VARCHAR[])"));
                 }
                 if constructor_oids.get(index) == Some(&1009) {
                     return Ok(format!("CAST({literal} AS TEXT[])"));

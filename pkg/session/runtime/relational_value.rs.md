@@ -288,3 +288,7 @@ Float4数组进入共享cast_value；pg_float4_relational_value识别私有Float
 同步另一真实执行消费者的Float8[]与标量位型桥；同族直接复制，语义text转换才规范化NaN，公开字符串不能伪造私有载体。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+现有共享关系表达式cast消费者分派Varchar数组到同一个pg_array实现。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

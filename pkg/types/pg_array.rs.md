@@ -116,3 +116,7 @@ PgArrayElement::Float4(u32)是原始IEEE位型，Eq不执行NaN比较；规范�
 PgArrayElement::Float8(u64)规范载体、共享float8_binary_input及float8_text，8字节网络位型不计算NaN；长度不足08P01、超长22P03。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+规范数组载体注册1043元素，复用Text(String)值和既有text/binary输出；身份/typmod在容器独立保存，不把varchar折为text OID。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。

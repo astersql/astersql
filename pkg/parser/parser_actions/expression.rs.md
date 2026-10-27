@@ -242,3 +242,7 @@ PgArrayType只新增float4/real到既有数组身份分派，重复[]声明不�
 PgArrayType复用已有double precision/float8/float(p>24)标量声明，注册Float8数组身份；不改grammar或生成表。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+## 2026-10-28 varchar数组局部接线
+
+PgArrayType从已有标量1043取得Varchar数组身份，复制字符长度而非数组维长；无需扩展grammar。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。
