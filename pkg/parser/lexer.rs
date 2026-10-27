@@ -335,6 +335,12 @@ impl Scanner {
             tok = token::timestampType;
             self.lastKeyword = tok;
         }
+        // PostgreSQL UUID is an unreserved type name. Reuse the existing
+        // identifier cast production; MySQL keeps its UUID function token.
+        if self.postgres && tok == token::uuid {
+            tok = token::identifier;
+            self.lastKeyword = 0;
+        }
         // Keep PG interval declarations separate from MySQL interval arithmetic.
         if self.postgres && tok == token::interval {
             tok = token::pgInterval;

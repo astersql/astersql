@@ -696,6 +696,7 @@ impl FieldType {
                 }
             }
             mysql::TypeDate => ctx.WriteKeyWord("DATE")?,
+            mysql::TypePgUuid => ctx.WriteKeyWord("UUID")?,
             mysql::TypePgTimestampTz => ctx.WriteKeyWord("TIMESTAMPTZ")?,
             mysql::TypePgInterval => {
                 ctx.WriteKeyWord("INTERVAL")?;

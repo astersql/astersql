@@ -480,6 +480,7 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         6 => (25, -1), // NULL has no stronger engine type
         astersql_parser_mysql::r#type::TypePgTimestampTz => (1184, 8),
         astersql_parser_mysql::r#type::TypePgInterval => (1186, 16),
+        astersql_parser_mysql::r#type::TypePgUuid => (2950, 16),
         7 | 12 => (1114, 8), // native wall-clock timestamp, no invented timezone
         10 | 14 => (1082, 4),
         11 => (1083, 8),
@@ -626,6 +627,10 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // PostgreSQL date/time input does not. Reject rather than changing values.
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .to_string(),
+        2950 => text
+            .parse::<astersql_types::pg_uuid::PgUuid>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_string(),
         1186 => text

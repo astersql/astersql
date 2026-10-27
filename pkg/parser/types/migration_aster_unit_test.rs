@@ -230,3 +230,24 @@ fn interval_cast_restore_preserves_fields_and_zero_precision() {
         assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 }
+
+#[test]
+fn pg05_uuid_sql_type_restore_and_serde_identity() {
+    let ft = NewFieldType(mysql::TypePgUuid);
+    assert_ne!(ft, NewFieldType(mysql::TypeVarString));
+    assert_ne!(ft, NewFieldType(mysql::TypeString));
+    let mut out = Vec::new();
+    ft.FormatAsCastType(&mut out, false).unwrap();
+    assert_eq!(out, b"UUID");
+    let mut restored = Vec::new();
+    ft.Restore(&mut format::NewRestoreCtx(
+        format::DefaultRestoreFlags,
+        &mut restored,
+    ))
+    .unwrap();
+    assert_eq!(restored, b"UUID");
+    let encoded = serde_json::to_string(&ft).unwrap();
+    let decoded: FieldType = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, ft);
+    assert_eq!(TypeStr(decoded.GetType()), "uuid");
+}

@@ -61,6 +61,13 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_uuid_error(&self) -> Option<runtime::PgUuidCastError> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<runtime::PgUuidCastError>()
+            .copied()
+    }
+
     pub fn pg_temporal_error(&self) -> Option<astersql_types::pg_temporal::PgTemporalError> {
         self.source
             .as_ref()?

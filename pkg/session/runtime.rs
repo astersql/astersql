@@ -88,8 +88,12 @@ mod pg_record_test;
 mod pg_temporal;
 #[cfg(test)]
 mod pg_temporal_test;
+mod pg_uuid;
+#[cfg(test)]
+mod pg_uuid_test;
 pub use astersql_parser_types::{PostgreSQLArrayElement, PostgreSQLRecordField};
 pub use pg_array::PgArrayError;
+pub use pg_uuid::PgUuidCastError;
 mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};
 mod bootstrap_wait;

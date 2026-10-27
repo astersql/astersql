@@ -115,3 +115,7 @@ PG Errorf 的行列由原 SQL token 起始字节偏移转换为一基字符行�
 ## 默认数值常量（任务12）
 
 PG 数值常量在 Lex 保留小数、指数及超 u64 的原始文本，交给十进制 AST 动作和共享 PgNumeric 校验，不经过 f64/MyDecimal。MySQL 分支保持原转换。
+
+## UUID类型名
+
+PostgreSQL方言将UUID关键字映射为非保留identifier，复用既有cast类型名语法；MySQL维持原UUID token与函数入口。

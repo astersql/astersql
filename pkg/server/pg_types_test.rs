@@ -429,3 +429,81 @@ fn pg_scalar_27_escape_output() {
         assert_eq!(encoded, expected.as_bytes(), "byte {byte}");
     }
 }
+
+#[test]
+fn pg05_uuid_sql_wire_metadata_null_errors_and_recovery() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (sql, expected) in [
+        (
+            "SELECT '{00112233445566778899AABBCCDDEEFF}'::text::uuid",
+            Some("00112233-4455-6677-8899-aabbccddeeff"),
+        ),
+        ("SELECT NULL::uuid", None),
+        ("SELECT NULL::uuid WHERE false", None),
+    ] {
+        let messages = query(&mut socket, sql);
+        let description = &messages
+            .iter()
+            .find(|m| m.0 == b'T')
+            .expect("RowDescription")
+            .1;
+        assert_eq!(oids(description), [2950]);
+        let at = 2 + description[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&description[at + 10..at + 12], &16i16.to_be_bytes());
+        assert_eq!(&description[at + 12..at + 16], &(-1i32).to_be_bytes());
+        if sql.contains("WHERE") {
+            assert!(!messages.iter().any(|m| m.0 == b'D'));
+        } else {
+            assert_eq!(
+                messages.iter().find(|m| m.0 == b'D').unwrap().1,
+                row(&[expected])
+            );
+        }
+    }
+    for (sql, state) in [
+        ("SELECT 'bad'::uuid", "22P02"),
+        ("SELECT NULL::int4::uuid WHERE false", "0A000"),
+    ] {
+        let messages = query(&mut socket, sql);
+        let error = &messages
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("ErrorResponse")
+            .1;
+        assert!(
+            error
+                .windows(6)
+                .any(|w| w == [b"C", state.as_bytes()].concat())
+        );
+        assert!(
+            query(&mut socket, "SELECT NULL::uuid::text")
+                .iter()
+                .any(|m| m.0 == b'D')
+        );
+    }
+    send(&mut socket, b'X', b"");
+    service.close();
+}

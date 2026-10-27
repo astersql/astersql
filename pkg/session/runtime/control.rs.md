@@ -156,3 +156,7 @@ PG OID701准备描述保留DOUBLE类型；已验证参数通过既有CAST(... AS
 ## bytea 参数描述
 
 PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collation 的 Blob FieldType，保持 Statement/Portal 描述为 17/-1/-1，不能退回 text。该分支仅作用于 PostgreSQL supplied OID，与 MySQL 无关。
+
+## UUID显式转换局部接线
+
+显式声明2950参数沿原标量参数入口保留UUID身份，绑定为真实UUID cast；已定型text/bytea仍携带原来源类型，不按外观推断。

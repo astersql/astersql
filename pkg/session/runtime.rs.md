@@ -124,3 +124,7 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ## PostgreSQL 任务18：浮点宽度与文本
 
 将解析器产生的精确float精度错误映射到PgFloat4Error::InvalidPrecision，沿现有SharedError通道向PG传递22023。仅PG方言且完整错误文本相等时映射，SQL源码中的同名片段不触发映射。
+
+## UUID显式转换局部接线
+
+挂载pg_uuid及独立pg_uuid_test；显式转换闭环见runtime/pg_uuid.rs.md。

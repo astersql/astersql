@@ -1286,6 +1286,9 @@ pub(super) fn relational_expression_value(
             FunctionType,
             ..
         } => {
+            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid {
+                return super::pg_uuid::cast_value(relational_expression_value(Expr, row)?);
+            }
             if let Some(result) = pg_boolean_relational_value(
                 Expr,
                 Tp,
@@ -2709,7 +2712,8 @@ pub(super) fn relational_expression_type(
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }
-            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid
+                || Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
                 || Tp.PostgreSQLTextOid().is_some()
                 || (Tp.GetCharset() == "binary"

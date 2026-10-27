@@ -873,6 +873,7 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
         ConnError::PgBool(error) => error.sqlstate(),
         ConnError::PgNumeric(error) => error.sqlstate(),
         ConnError::PgTemporal(error) => error.sqlstate(),
+        ConnError::PgUuid(error) => error.sqlstate(),
         ConnError::PgFloat4(error) => error.sqlstate(),
         ConnError::PgFloat8(error) => error.sqlstate(),
         ConnError::PgText(error) => error.sqlstate(),

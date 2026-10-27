@@ -1816,7 +1816,19 @@ impl ConcreteSession {
             && supplied.iter().any(|oid| {
                 matches!(
                     oid,
-                    16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114 | 1184 | 1186
+                    16 | 17
+                        | 21
+                        | 25
+                        | 1042
+                        | 1043
+                        | 700
+                        | 701
+                        | 1082
+                        | 1083
+                        | 1114
+                        | 1184
+                        | 1186
+                        | 2950
                 )
             });
         let constructor_oids = array_oids
@@ -1869,13 +1881,15 @@ impl ConcreteSession {
                             .and_then(|index| supplied.get(index));
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
-                            | 1184 | 1186),
+                            | 1184 | 1186 | 2950),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
                                 astersql_parser_mysql::r#type::TypeBlob
                             } else if *oid == 1082 {
                                 astersql_parser_mysql::r#type::TypeDate
+                            } else if *oid == 2950 {
+                                astersql_parser_mysql::r#type::TypePgUuid
                             } else if *oid == 1186 {
                                 astersql_parser_mysql::r#type::TypePgInterval
                             } else if *oid == 1184 {
@@ -1960,6 +1974,7 @@ impl ConcreteSession {
                                 | 1114
                                 | 1184
                                 | 1186
+                                | 2950
                         ) {
                             *oid = *supplied;
                         }
@@ -2076,6 +2091,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&2950) {
+                    return Ok(format!("CAST({literal} AS UUID)"));
+                }
                 if constructor_oids.get(index) == Some(&1186) {
                     return Ok(format!("CAST({literal} AS INTERVAL)"));
                 }

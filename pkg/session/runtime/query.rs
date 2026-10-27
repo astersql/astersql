@@ -1248,6 +1248,11 @@ impl ConcreteSession {
                 ..
             } => {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    if Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid {
+                        return super::pg_uuid::cast_value(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                        );
+                    }
                     if let Some(result) = pg_boolean_relational_value(
                         Expr,
                         Tp,
@@ -2192,6 +2197,7 @@ impl ConcreteSession {
             numeric_error: Option<astersql_types::pg_numeric::PgNumericError>,
             text_error: Option<astersql_expression::PgTextError>,
             temporal_error: Option<astersql_types::pg_temporal::PgTemporalError>,
+            uuid_error: Option<SessionError>,
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
@@ -2218,6 +2224,11 @@ impl ConcreteSession {
                 if let ast::ExprKind::Cast { Expr, Tp, .. } = &input.Kind {
                     let source = pg_integer_literal_type(Expr)
                         .unwrap_or_else(|| relational_expression_type(Expr, self.table));
+                    if !matches!(Expr.Kind, ast::ExprKind::ParamMarker { .. }) {
+                        self.uuid_error = super::pg_uuid::validate_cast(&source, Tp)
+                            .err()
+                            .or(self.uuid_error.take());
+                    }
                     // Native TIMESTAMP text has already lost its storage and
                     // source-zone provenance. Check the catalog type before
                     // rows (including empty/all-NULL scans) can hide that loss.
@@ -2268,9 +2279,13 @@ impl ConcreteSession {
             numeric_error: None,
             text_error: None,
             temporal_error: None,
+            uuid_error: None,
         };
         for expr in expressions {
             let _ = expr.Accept(&mut visitor);
+        }
+        if let Some(error) = visitor.uuid_error {
+            return Err(error);
         }
         if let Some(error) = visitor.temporal_error {
             return Err(SessionError::with_source(

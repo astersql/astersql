@@ -75,3 +75,7 @@ Rust 保留了 Go 的全部类型编号、`TypeTiDBVectorFloat32`、第 0 至 24
 新增常用标志 helper 时，优先沿用“专用函数委托 `HasFlag`”的结构，并在独立测试文件 `pkg/parser/mysql/type_test.rs` 增加自身位为真、零值为假、无关位为假的断言；同步核对 Go 测试意图。Rust 单元测试不要放回 `type.rs`。若需求是“组合掩码全部存在”，应新增语义明确的实现与测试，而不是误用当前的任一位相交逻辑。
 
 兼容性风险高于实现复杂度：类型编号改变会影响协议和跨组件类型解释；标志位碰撞会让元数据属性不可区分；更改 helper 语义会波及 planner、executor、DDL、table、server 与 codec。性能风险很低，当前所有访问均为常量读取或单次按位运算；扩展时应维持无分配和纯函数属性。
+
+## UUID显式转换局部接线
+
+新增 `TypePgUuid=0xe4` 作为PG UUID内部身份，不能作为MySQL协议类型码发送。

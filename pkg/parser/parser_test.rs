@@ -5414,3 +5414,41 @@ fn pg_interval_unreserved_names() {
             .unwrap_or_else(|e| panic!("{sql}: {e}"));
     }
 }
+
+#[test]
+fn pg05_uuid_sql_parser_identity_and_dialect() {
+    for dialect in [
+        crate::ast::SqlDialect::PostgreSQL,
+        crate::ast::SqlDialect::MySQL,
+    ] {
+        let mut parser = crate::Parser::with_dialect(dialect);
+        assert!(parser.ParseSQL("SELECT uuid FROM t", &[]).is_ok());
+        assert!(parser.ParseSQL("SELECT UUID()", &[]).is_ok());
+    }
+    let mut pg = crate::Parser::with_dialect(crate::ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT $1::uuid",
+        "SELECT CAST(NULL AS uuid)",
+        "SELECT '00112233445566778899aabbccddeeff'::uuid",
+    ] {
+        let (nodes, warnings) = pg.ParseSQL(sql, &[]).unwrap();
+        assert!(warnings.is_empty());
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } = &expr.Kind else {
+            panic!("missing cast")
+        };
+        assert_eq!(Tp.GetType(), parser_mysql::r#type::TypePgUuid);
+        assert_eq!(Tp.GetFlen(), 16);
+        assert_eq!(Tp.GetDecimal(), -1);
+        assert!(Tp.PostgreSQLTextOid().is_none());
+    }
+    for sql in ["SELECT NULL::uuid(3)", "SELECT CAST(NULL AS uuid)"] {
+        let mut mysql = crate::Parser::with_dialect(crate::ast::SqlDialect::MySQL);
+        assert!(mysql.ParseSQL(sql, &[]).is_err());
+    }
+    assert!(pg.ParseSQL("SELECT NULL::uuid(3)", &[]).is_err());
+}

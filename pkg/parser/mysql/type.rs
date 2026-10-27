@@ -224,3 +224,5 @@ pub fn HasFlag(flag: usize, flagItem: usize) -> bool {
 pub const TypePgTimestampTz: u8 = 0xe2;
 /// Internal PG interval identity; never a MySQL duration or wire type.
 pub const TypePgInterval: u8 = 0xe3;
+/// Internal PostgreSQL UUID identity, distinct from text and bytea.
+pub const TypePgUuid: u8 = 0xe4;

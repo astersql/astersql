@@ -107,3 +107,7 @@ RustCodeGraph 的文件级结果给出 162 个引用文件，但本次对 `NewFi
 ## 2026-10-26 文本族身份边界（任务21）
 
 新增独立 PostgreSQLTextOid；随克隆/JSON传递，参与类型比较与哈希，SetType 清除；Restore/RestoreAsCastType 保留文本身份和修饰符，不改变 MySQL 字段。
+
+## UUID显式转换局部接线
+
+PG UUID使用独立内部类型码；Restore及RestoreAsCastType输出UUID，typed NULL不退化为text。

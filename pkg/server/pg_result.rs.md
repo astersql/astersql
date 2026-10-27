@@ -115,3 +115,7 @@ U64 来源 code=8 + UnsignedFlag 提升为无约束 numeric；其 MySQL 显示�
 结果 OID 优先使用共享内核文本身份，varchar/bpchar 的 typmod 来自声明长度；无长度为 -1，NULL及零行沿用固定元数据。
 
 任务27：`bytea_escape(&[u8])` 提供会话 bytea_output 工作流可复用的纯字节 escape 编码（可打印 ASCII 直出、反斜杠双写、其他字节三位八进制）。默认结果仍沿 `bytea` 小写 hex；本任务不接线会话设置。独立 pg_types_test 覆盖全部256字节及空序列。
+
+## UUID显式转换局部接线
+
+UUID内部类型描述为OID2950、typlen16、typmod=-1，简单查询文本出口使用PgUuid规范输出；不按首行或显示文本决定身份。

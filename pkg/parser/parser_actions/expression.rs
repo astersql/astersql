@@ -1434,6 +1434,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
                 "timestamptz" => parser_mysql::r#type::TypePgTimestampTz,
                 "interval" => parser_mysql::r#type::TypePgInterval,
+                "uuid" => parser_mysql::r#type::TypePgUuid,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
                     return Err(1);
@@ -1478,6 +1479,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let (flen, decimal) = parser_mysql::util::GetDefaultFieldLengthAndDecimalForCast(tp);
             field_type.SetFlen(flen);
             field_type.SetDecimal(decimal);
+            if tp == parser_mysql::r#type::TypePgUuid {
+                field_type.SetFlen(16);
+                field_type.SetDecimal(-1);
+            }
             if tp == parser_mysql::r#type::TypePgTimestampTz {
                 if rhs_len == 5 && rhs[4].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(1) != 0 {
                     yylex.AppendError(errors::New("PostgreSQL TIMESTAMPTZ precision must not be negative"));

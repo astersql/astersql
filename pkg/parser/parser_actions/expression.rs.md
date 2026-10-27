@@ -178,3 +178,7 @@ PostgreSQL下既有DOUBLE Cast标记PostgreSQLFloat8，供OID701绑定保留目�
 ## 2026-10-26 文本族身份边界（任务21）
 
 PostgreSQL 文本 CAST 保留 text/varchar/bpchar 的独立 OID；无长度 varchar/bpchar 的 flen=-1，char 默认 flen=1。MySQL CHAR 动作不变。
+
+## UUID显式转换局部接线
+
+PG现有cast类型名分支接受uuid，生成独立TypePgUuid、固定长度16、typmod=-1；不开放UUID类型修饰符或MySQL方言资格。
