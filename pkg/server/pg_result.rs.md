@@ -223,3 +223,7 @@ OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec�
 ## 任务36：time数组
 
 注册1183文本/二进制结果，OID1183/typlen-1及time precision metadata保持；规范元素字节由共享PgArray输出。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+1115沿规范数组文本/二进制结果消费者输出，RowDescription保持-1 typlen及p=0..6 typmod。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

@@ -260,3 +260,7 @@ PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重�
 ## 任务36：time数组
 
 将已有PgTimeType接入数组动作，继承标量decimal，不扩展其他时间族。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+将现有PgTimestampType接入PgArrayType动作；TIMESTAMP数组沿原标量类型提取decimal，不重写标量语法。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

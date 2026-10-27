@@ -134,3 +134,7 @@ PgArrayElement::Date复用规范PgDate；容器验证1082元素，文本输出�
 ## 任务36：time数组
 
 PgArrayElement::Time直接持有已验证PgTime，文本显示及八字节网络序输出委派标量；shape/lower/两层NULL沿共享容器。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+增加Timestamp(PgTimestamp)元素1114，沿已验证shape/lower/typmod与两层NULL，文本委派Display、二进制委派八字节网络序标量codec。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

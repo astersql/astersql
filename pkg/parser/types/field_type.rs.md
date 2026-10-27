@@ -192,3 +192,7 @@ PostgreSQLArrayElement::Date持有元素1082/数组1182，Restore与FormatAsCast
 ## 任务36：time数组
 
 Time元素身份固定1083/数组1183，恢复TIME(p)[]并保留decimal。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+增加Timestamp元素1114/数组1115身份，TIMESTAMP(p)[]恢复及序列化保留precision。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

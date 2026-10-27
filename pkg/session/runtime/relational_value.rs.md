@@ -308,3 +308,7 @@ Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标�
 ## 任务36：time数组
 
 共享关系值消费者开放Time数组并委派同一数组cast。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+timestamp数组沿共享关系表达式求值消费者接入。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

@@ -243,3 +243,7 @@ prepared参数1182、typed NULL和重绑定沿既有field_type与DATE[]包装保
 ## 任务36：time数组
 
 声明1183参数、typed NULL和重绑定保持Time数组身份；沿既有参数替换消费者生成TIME[]。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+1115声明参数、typed NULL、占位替换及ARRAY参数重绑定保留timestamp身份。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

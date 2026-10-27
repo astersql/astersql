@@ -221,3 +221,7 @@ OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量cod
 ## 任务36：time数组
 
 注册1183文本与二进制Bind，逐元素复用PgTime；任何元素错误拒绝整个参数并沿Sync恢复。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+1115文本/二进制Bind逐元素委派PgTimestamp，冻结相对输入上下文；非法元素原子拒绝。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

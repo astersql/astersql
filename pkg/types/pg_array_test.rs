@@ -284,7 +284,7 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
         Err(Error::InvalidEncoding)
     );
-    for oid in [0, 1114, 1007, 3802] {
+    for oid in [0, 1184, 1007, 3802] {
         let err = PgArray::from_text_with(b"{}", oid, -1, b',', |_, _| {
             Ok::<_, std::convert::Infallible>(Int4(1))
         })
@@ -784,7 +784,7 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
     assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
     // Invalid values cannot reach output through the immutable carrier.
-    for oid in [1114, 1007, 2950] {
+    for oid in [1184, 1007, 2950] {
         let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
         assert_eq!(err, Error::UnsupportedElement);
         assert_eq!(err.sqlstate(), Some("0A000"));
@@ -1361,6 +1361,51 @@ fn pg05_array_time_canonical_shape_null_and_binary() {
             vec![1],
             vec![1],
             vec![Some(PgArrayElement::Text("12:34:56.123456".into()))]
+        ),
+        Err(PgArrayError::ElementTypeMismatch)
+    );
+}
+
+#[test]
+fn pg05_array_timestamp_canonical_shape_null_and_binary() {
+    use crate::pg_array::{PgArray, PgArrayElement, PgArrayError};
+    use crate::pg_temporal::PgTimestamp;
+    let value = PgArray::new(
+        1114,
+        3,
+        vec![2, 2],
+        vec![0, -2],
+        vec![
+            Some(PgArrayElement::Timestamp(
+                "0001-01-01 00:00:00 BC".parse().unwrap(),
+            )),
+            None,
+            Some(PgArrayElement::Timestamp(
+                "12000-01-01 00:00:00".parse().unwrap(),
+            )),
+            Some(PgArrayElement::Timestamp("infinity".parse().unwrap())),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        value.to_text(b',').unwrap(),
+        r#"[0:1][-2:-1]={{"0001-01-01 00:00:00 BC",NULL},{"12000-01-01 00:00:00",infinity}}"#
+    );
+    let bytes = value.to_binary().unwrap();
+    let decoded = PgArray::from_binary_with(&bytes, 1114, 3, |bytes, _| {
+        let value = PgTimestamp::from_binary(bytes)?;
+        *bytes = &[];
+        Ok::<_, crate::pg_temporal::PgTemporalError>(PgArrayElement::Timestamp(value))
+    })
+    .unwrap();
+    assert_eq!(decoded, value);
+    assert_eq!(
+        PgArray::new(
+            1114,
+            -1,
+            vec![1],
+            vec![1],
+            vec![Some(PgArrayElement::Text("2000-01-01".into()))]
         ),
         Err(PgArrayError::ElementTypeMismatch)
     );

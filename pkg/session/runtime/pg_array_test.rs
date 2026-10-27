@@ -1520,3 +1520,50 @@ fn pg05_array_time_sql_constructors_null_and_boundaries() {
     }
     assert!(session.execute("SELECT 1").is_ok());
 }
+
+#[test]
+fn pg05_array_timestamp_sql_constructors_null_and_boundaries() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={infinity,-infinity}'::timestamp[]",
+            Some("[-2:-1]={infinity,-infinity}"),
+        ),
+        (
+            "SELECT ARRAY['0001-01-01 00:00:00 BC'::timestamp,NULL::timestamp]",
+            Some(r#"{"0001-01-01 00:00:00 BC",NULL}"#),
+        ),
+        (
+            "SELECT ARRAY['12000-01-01 00:00:00'::timestamp]",
+            Some(r#"{"12000-01-01 00:00:00"}"#),
+        ),
+        (
+            "SELECT '[-2:-1]={2000-01-01 23:59:59.999999,NULL}'::timestamp(0)[]",
+            Some(r#"[-2:-1]={"2000-01-02 00:00:00",NULL}"#),
+        ),
+        (
+            "SELECT ARRAY['1999-12-31 23:59:59.999999',NULL]::timestamp(3)[]",
+            Some(r#"{"2000-01-01 00:00:00",NULL}"#),
+        ),
+        ("SELECT ARRAY[]::timestamp[]", Some("{}")),
+        ("SELECT ARRAY[NULL,NULL]::timestamp[]", Some("{NULL,NULL}")),
+        ("SELECT NULL::timestamp[]", None),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        assert_eq!(
+            results[0].next_row().unwrap().unwrap()[0],
+            expected.unwrap_or("<nil>"),
+            "{sql}"
+        );
+        results[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT '{2000-01-01 00:00:00,garbage}'::timestamp[]",
+        "SELECT NULL::int4[]::timestamp[]",
+        "SELECT NULL::timestamp[]::text[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+    }
+    assert!(session.execute("SELECT 1").is_ok());
+}

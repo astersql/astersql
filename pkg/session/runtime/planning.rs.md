@@ -275,3 +275,7 @@ prepared描述与参数推断识别Date数组1182，空集与全NULL不退化为
 ## 任务36：time数组
 
 已定型time数组推断1183，空集和首行NULL保持原声明身份。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+1115参数分析及TIMESTAMP[] cast推断保持本族身份。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

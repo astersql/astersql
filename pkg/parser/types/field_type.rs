@@ -51,6 +51,7 @@ pub enum PostgreSQLArrayElement {
     Bytea,
     Date,
     Time,
+    Timestamp,
 }
 impl PostgreSQLArrayElement {
     pub fn oid(self) -> u32 {
@@ -68,6 +69,7 @@ impl PostgreSQLArrayElement {
             Self::Bytea => 17,
             Self::Date => 1082,
             Self::Time => 1083,
+            Self::Timestamp => 1114,
         }
     }
     pub fn array_oid(self) -> u32 {
@@ -85,6 +87,7 @@ impl PostgreSQLArrayElement {
             Self::Bytea => 1001,
             Self::Date => 1182,
             Self::Time => 1183,
+            Self::Timestamp => 1115,
         }
     }
 }
@@ -625,14 +628,14 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
-        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time)) = self.postgresql_array_element {
+        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp)) = self.postgresql_array_element {
             if matches!(element, PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar) {
                 ctx.WriteKeyWord(if element == PostgreSQLArrayElement::Varchar { "VARCHAR" } else if self.flen >= 0 { "CHAR" } else { "BPCHAR" })?;
                 if self.flen >= 0 { ctx.WritePlain(&format!("({})", self.flen))?; }
                 return ctx.WritePlain("[]");
             }
-            if element == PostgreSQLArrayElement::Time {
-                ctx.WriteKeyWord("TIME")?;
+            if matches!(element, PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp) {
+                ctx.WriteKeyWord(if element == PostgreSQLArrayElement::Time { "TIME" } else { "TIMESTAMP" })?;
                 if self.decimal >= 0 { ctx.WritePlain(&format!("({})", self.decimal))?; }
                 return ctx.WritePlain("[]");
             }
@@ -715,7 +718,7 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
-        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time)) {
+        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp)) {
             return self.Restore(ctx);
         }
         match self.tp {

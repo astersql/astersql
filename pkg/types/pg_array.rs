@@ -169,6 +169,7 @@ pub fn bytea_text_output(bytes: &[u8]) -> String {
 pub enum PgArrayElement {
     Date(super::pg_temporal::PgDate),
     Time(super::pg_temporal::PgTime),
+    Timestamp(super::pg_temporal::PgTimestamp),
     Int2(i16),
     Bool(bool),
     Int4(i32),
@@ -201,7 +202,7 @@ impl PgArray {
     ) -> Result<Self, PgArrayError> {
         if !matches!(
             element_oid,
-            1083 | 1082 | 16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
+            1114 | 1083 | 1082 | 16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
         ) {
             return Err(PgArrayError::UnsupportedElement);
         }
@@ -210,6 +211,7 @@ impl PgArray {
             match (element_oid, element) {
                 (1082, PgArrayElement::Date(_)) => {}
                 (1083, PgArrayElement::Time(_)) => {}
+                (1114, PgArrayElement::Timestamp(_)) => {}
                 (700, PgArrayElement::Float4(_)) => {}
                 (701, PgArrayElement::Float8(_)) => {}
                 (1700, PgArrayElement::Numeric(_)) => {}
@@ -304,7 +306,7 @@ impl PgArray {
         }
         if !matches!(
             element_oid,
-            1083 | 1082 | 16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
+            1114 | 1083 | 1082 | 16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
         ) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
@@ -379,7 +381,7 @@ impl PgArray {
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
         let supported = matches!(
             element_oid,
-            1083 | 1082 | 16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
+            1114 | 1083 | 1082 | 16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
         );
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
@@ -427,7 +429,7 @@ impl PgArray {
             let length = match element {
                 None => 0,
                 Some(PgArrayElement::Date(_)) => 4,
-                Some(PgArrayElement::Time(_)) => 8,
+                Some(PgArrayElement::Time(_) | PgArrayElement::Timestamp(_)) => 8,
                 Some(PgArrayElement::Bool(_)) => 1,
                 Some(PgArrayElement::Int2(_)) => 2,
                 Some(PgArrayElement::Int4(_) | PgArrayElement::Float4(_)) => 4,
@@ -458,6 +460,10 @@ impl PgArray {
             match element {
                 None => output.extend_from_slice(&(-1i32).to_be_bytes()),
                 Some(PgArrayElement::Time(value)) => {
+                    output.extend_from_slice(&8i32.to_be_bytes());
+                    output.extend_from_slice(&value.to_binary());
+                }
+                Some(PgArrayElement::Timestamp(value)) => {
                     output.extend_from_slice(&8i32.to_be_bytes());
                     output.extend_from_slice(&value.to_binary());
                 }
@@ -552,6 +558,9 @@ impl PgArray {
             match elements.next().unwrap() {
                 None => output.push_str("NULL"),
                 Some(PgArrayElement::Time(value)) => {
+                    write_array_element_text(&value.to_string(), delimiter, output)
+                }
+                Some(PgArrayElement::Timestamp(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output)
                 }
                 Some(PgArrayElement::Date(value)) => {

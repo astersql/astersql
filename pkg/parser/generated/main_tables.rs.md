@@ -162,3 +162,7 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## 任务36：time数组
 
 由release astersql-parsergen generate生成PgTimeType数组语法表，禁止手改自动机。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+由release parsergen再生，包含PgTimestampType数组规则；交付运行parsergen check验证一致性。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。

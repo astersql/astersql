@@ -276,3 +276,7 @@ date[]显式cast接到共享数组内核，仅本族采样pg_date_context，其�
 ## 任务36：time数组
 
 共享查询表达式消费者开放Time数组，保留原标量路径。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## timestamp数组接线（任务37）
+
+timestamp数组沿共享查询消费者接入。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
