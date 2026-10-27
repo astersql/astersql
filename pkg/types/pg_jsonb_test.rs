@@ -196,3 +196,134 @@ fn pg05_jsonb_object_container_cross_product_and_identity() {
             .contains(input)
     );
 }
+
+#[test]
+fn pg05_jsonb_number_exact_precision_and_display_scale() {
+    for (input, expected) in [
+        ("18446744073709551617", "18446744073709551617"),
+        ("-18446744073709551617", "-18446744073709551617"),
+        (
+            "123456789012345678901234567890.123456789012345678901234567890",
+            "123456789012345678901234567890.123456789012345678901234567890",
+        ),
+        ("1.230e-5", "0.00001230"),
+        ("1.00", "1.00"),
+        ("1.230e2", "123.0"),
+        ("1.230e3", "1230"),
+        ("1.230E+4", "12300"),
+        ("0.00000000000000000000100", "0.00000000000000000000100"),
+        (
+            "100000000000000000000.000000000000000000001",
+            "100000000000000000000.000000000000000000001",
+        ),
+    ] {
+        canonical(input, expected);
+        canonical(&format!("[{input},null]"), &format!("[{expected}, null]"));
+        canonical(
+            &format!(r#"{{"n":{input}}}"#),
+            &format!(r#"{{"n": {expected}}}"#),
+        );
+    }
+    assert_ne!("1".parse::<PgJsonb>().unwrap(), "1.00".parse().unwrap());
+    assert_ne!(None::<PgJsonb>, Some("null".parse().unwrap()));
+    assert_eq!(PgJsonb::OID, 3802);
+}
+
+#[test]
+fn pg05_jsonb_number_negative_zero_preserves_scale() {
+    for (input, expected) in [
+        ("-0", "0"),
+        ("-0.00", "0.00"),
+        ("-0.000e2", "0.0"),
+        ("-0.00e-3", "0.00000"),
+        ("-0e10", "0"),
+        ("-0.000e3", "0"),
+    ] {
+        canonical(input, expected);
+    }
+}
+
+#[test]
+fn pg05_jsonb_number_numeric_domain_boundaries() {
+    let largest_integer = "9".repeat(131072);
+    let smallest_fraction = format!("0.{}1", "0".repeat(16382));
+    for input in [
+        largest_integer.clone(),
+        format!("-{largest_integer}"),
+        smallest_fraction.clone(),
+        format!("-{smallest_fraction}"),
+        format!("{largest_integer}.{fraction}", fraction = "9".repeat(16383)),
+        format!("0.{}", "0".repeat(16383)),
+    ] {
+        canonical(&input, &input);
+    }
+    canonical("1e131071", &format!("1{}", "0".repeat(131071)));
+    canonical("1e-16383", &smallest_fraction);
+    canonical("-0e-16383", &format!("0.{}", "0".repeat(16383)));
+    for input in [
+        "1e200000".to_owned(),
+        "1e131072".to_owned(),
+        "1e-16384".to_owned(),
+        "-1e200000".to_owned(),
+        "9".repeat(131073),
+        format!("0.{}1", "0".repeat(16383)),
+        "1e9223372036854775807".to_owned(),
+        "1e-9223372036854775808".to_owned(),
+        "1e999999999999999999999999999999".to_owned(),
+    ] {
+        for document in [
+            input.clone(),
+            format!("[{input}]"),
+            format!(r#"{{"n":{input}}}"#),
+        ] {
+            assert_eq!(document.parse::<PgJsonb>().unwrap_err().sqlstate(), "22003");
+            canonical("1.00", "1.00");
+        }
+    }
+}
+
+#[test]
+fn pg05_jsonb_number_invalid_tokens_and_recovery() {
+    for input in [
+        "NaN",
+        "nan",
+        "Infinity",
+        "-Infinity",
+        "+Infinity",
+        "Inf",
+        "-NaN",
+        "+1",
+        "01",
+        "-01",
+        ".1",
+        "1.",
+        "1e",
+        "1e+",
+        "1e-",
+        "1e1.0",
+        "--1",
+        "1_000",
+        "0x1",
+        "1 2",
+        "1.2.3",
+    ] {
+        for document in [
+            input.to_owned(),
+            format!("[{input}]"),
+            format!(r#"{{"n":{input}}}"#),
+        ] {
+            let error = document.parse::<PgJsonb>().unwrap_err();
+            assert_eq!(error.sqlstate(), "22P02", "{document}");
+            assert_eq!(error, crate::pg_jsonb::PgJsonbError::InvalidSyntax);
+            canonical("18446744073709551617", "18446744073709551617");
+        }
+    }
+    // Replaced object members must still validate every numeric value.
+    for (input, state) in [
+        (r#"{"n":1e200000,"n":1}"#, "22003"),
+        (r#"{"n":NaN,"n":1}"#, "22P02"),
+    ] {
+        assert_eq!(input.parse::<PgJsonb>().unwrap_err().sqlstate(), state);
+        canonical(r#"{"n":1.230e-5}"#, r#"{"n": 0.00001230}"#);
+    }
+}
