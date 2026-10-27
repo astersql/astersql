@@ -13,6 +13,10 @@ pub enum PgNumericError {
     OutOfRange,
     #[error("numeric special values are not supported yet")]
     Unsupported,
+    #[error("insufficient data left in numeric parameter")]
+    Truncated,
+    #[error("invalid binary numeric value")]
+    InvalidBinary,
 }
 impl PgNumericError {
     pub fn sqlstate(self) -> &'static str {
@@ -21,6 +25,8 @@ impl PgNumericError {
             Self::InvalidModifier => "22023",
             Self::OutOfRange => "22003",
             Self::Unsupported => "0A000",
+            Self::Truncated => "08P01",
+            Self::InvalidBinary => "22P03",
         }
     }
 }
@@ -43,6 +49,138 @@ pub struct PgNumeric {
     scale: usize,
 }
 impl PgNumeric {
+    /// PostgreSQL numeric_recv: base-10000 digits, with truncation to wire dscale.
+    /// Validate every digit even for special values before constructing the value.
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, PgNumericError> {
+        use PgNumericError::{InvalidBinary, Truncated};
+        let mut at = 0;
+        let mut word = || {
+            let pair = bytes.get(at..at + 2).ok_or(Truncated)?;
+            at += 2;
+            Ok::<_, PgNumericError>(u16::from_be_bytes(pair.try_into().unwrap()))
+        };
+        let count = word()? as usize;
+        let weight = word()? as i16 as i32;
+        let sign = word()?;
+        if !matches!(sign, 0 | 0x4000 | 0xc000 | 0xd000 | 0xf000) {
+            return Err(InvalidBinary);
+        }
+        let scale = word()? as usize;
+        if scale > 0x3fff {
+            return Err(InvalidBinary);
+        }
+        let mut digits = Vec::new();
+        for _ in 0..count {
+            let digit = word()?;
+            if digit >= 10000 {
+                return Err(InvalidBinary);
+            }
+            digits.push(digit);
+        }
+        if at != bytes.len() {
+            return Err(InvalidBinary);
+        }
+        if sign >= 0xc000 {
+            return match sign {
+                0xc000 => "NaN",
+                0xd000 => "Infinity",
+                _ => "-Infinity",
+            }
+            .parse();
+        }
+        // Allocation is bounded by int16 weight and the validated 14-bit scale.
+        // Hidden fractional digits are truncated, never rounded by numeric_recv.
+        let group = |power: i32| -> u16 {
+            usize::try_from(weight - power)
+                .ok()
+                .and_then(|i| digits.get(i))
+                .copied()
+                .unwrap_or(0)
+        };
+        let mut text = if sign == 0x4000 {
+            String::from("-")
+        } else {
+            String::new()
+        };
+        if weight < 0 {
+            text.push('0');
+        } else {
+            for power in (0..=weight).rev() {
+                use std::fmt::Write;
+                write!(text, "{:04}", group(power)).unwrap();
+            }
+        }
+        if scale > 0 {
+            text.push('.');
+            for i in 0..scale.div_ceil(4) {
+                use std::fmt::Write;
+                write!(text, "{:04}", group(-1 - i as i32)).unwrap();
+            }
+            text.truncate(text.len() - (4 - scale % 4) % 4);
+        }
+        text.parse()
+    }
+
+    /// Canonical numeric_send representation, retaining display scale and specials.
+    pub fn to_binary(&self) -> Vec<u8> {
+        let sign = match self.kind {
+            NumericKind::NaN => 0xc000u16,
+            NumericKind::Infinity => 0xd000,
+            NumericKind::NegativeInfinity => 0xf000,
+            NumericKind::Finite if self.negative => 0x4000,
+            NumericKind::Finite => 0,
+        };
+        if self.kind != NumericKind::Finite {
+            // PG18's short special header exposes dscale 32 for +/-Infinity.
+            let scale = if self.kind == NumericKind::NaN {
+                0u16
+            } else {
+                32
+            };
+            return [
+                0u16.to_be_bytes(),
+                0u16.to_be_bytes(),
+                sign.to_be_bytes(),
+                scale.to_be_bytes(),
+            ]
+            .concat();
+        }
+        let text = self.to_string();
+        let value = text.strip_prefix('-').unwrap_or(&text);
+        let (integer, fraction) = value.split_once('.').unwrap_or((value, ""));
+        let integer_groups = integer.len().div_ceil(4);
+        let mut padded = String::with_capacity(integer_groups * 4 + fraction.len().div_ceil(4) * 4);
+        padded.extend(std::iter::repeat_n('0', (4 - integer.len() % 4) % 4));
+        padded.push_str(integer);
+        padded.push_str(fraction);
+        padded.extend(std::iter::repeat_n('0', (4 - fraction.len() % 4) % 4));
+        let groups: Vec<u16> = padded
+            .as_bytes()
+            .chunks(4)
+            .map(|b| std::str::from_utf8(b).unwrap().parse().unwrap())
+            .collect();
+        let first = groups.iter().position(|&v| v != 0).unwrap_or(groups.len());
+        let end = groups
+            .iter()
+            .rposition(|&v| v != 0)
+            .map_or(first, |i| i + 1);
+        let digits = &groups[first..end];
+        let weight = if digits.is_empty() {
+            0
+        } else {
+            (integer_groups as i32 - first as i32 - 1) as i16
+        };
+        let mut out = Vec::with_capacity(8 + digits.len() * 2);
+        out.extend_from_slice(&(digits.len() as u16).to_be_bytes());
+        out.extend_from_slice(&weight.to_be_bytes());
+        out.extend_from_slice(&sign.to_be_bytes());
+        out.extend_from_slice(&(self.scale as u16).to_be_bytes());
+        for digit in digits {
+            out.extend_from_slice(&digit.to_be_bytes());
+        }
+        out
+    }
+
     /// Round ties away from zero before checking the signed SQL integer domain.
     pub fn to_signed(self, bits: u32) -> Result<i64, PgNumericError> {
         if self.kind != NumericKind::Finite || !matches!(bits, 16 | 32 | 64) {

@@ -184,3 +184,10 @@ Int8数组结果改走与Bind相同的array_text及标量codec，删除仅显式
 ## 任务29 bytea数组局部接线
 
 普通Bytea数组结果OID1001沿共享canonical text/binary输出，标量bytea hex输出转调types下层同一函数；statement/portal身份不随首行、NULL或格式改变。
+
+
+## numeric数组开放（任务30）
+
+numeric binary输出改为共享PgNumeric codec；OID1231进入规范数组输出，RowDescription保留numeric数组元素typmod。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

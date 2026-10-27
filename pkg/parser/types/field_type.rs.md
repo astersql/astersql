@@ -153,3 +153,10 @@ FieldType::Restore/RestoreAsCastType补INT8[]，防止声明绑定和typed NULL�
 ## 任务29 bytea数组局部接线
 
 PostgreSQLArrayElement增加Bytea，元素OID17/数组OID1001；Restore及FormatAsCastType保持BYTEA[]身份，不借MySQL JSON或Text身份。
+
+
+## numeric数组开放（任务30）
+
+Restore/FormatAsCastType保留NUMERIC(p,s)[]身份和元素typmod，使现有prepared SQL binder不退化为CHAR。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

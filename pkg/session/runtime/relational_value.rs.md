@@ -265,3 +265,10 @@ int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分�
 ## 任务29 bytea数组局部接线
 
 共享无会话表达式cast消费者注册Bytea数组，沿统一pg_array校验及转换，不退回MySQL文本cast。
+
+
+## numeric数组开放（任务30）
+
+普通关系表达式cast消费者同样委托共享numeric数组cast，不复制codec或typmod规则。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

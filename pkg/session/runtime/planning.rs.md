@@ -236,3 +236,10 @@ supplied参数OID白名单纳入1016；既有Int8数组cast约束推断不变，
 ## 任务29 bytea数组局部接线
 
 protocol_parameter_types的声明与显式cast约束注册Bytea数组1001，避免Parse退回text；只复用原推导路径。
+
+
+## numeric数组开放（任务30）
+
+OID1700/1231加入既有声明参数和array cast约束分派，继续使用原分析消费者。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

@@ -351,7 +351,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1000 | 1001 | 1005 | 1007 | 1009 | 1016 => (
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -581,11 +581,12 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1000 | 1001 | 1005 | 1007 | 1009 | 1016 => {
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
                 match oid {
+                    1231 => 1700,
                     1001 => 17,
                     1005 => 21,
                     1016 => 20,
@@ -595,6 +596,13 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                 },
                 -1,
                 |payload, _| -> Result<PgArrayElement> {
+                    if oid == 1231 {
+                        let scalar = binary_parameter(1700, Some(payload))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Numeric(
+                            std::str::from_utf8(&scalar.value).unwrap().parse().unwrap(),
+                        ));
+                    }
                     if oid == 1001 {
                         let scalar = binary_parameter(17, Some(payload))?;
                         *payload = &[];
@@ -646,6 +654,11 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                 value: text.into_bytes(),
                 ..BinaryParam::default()
             });
+        }
+        1700 => {
+            let numeric = astersql_types::pg_numeric::PgNumeric::from_binary(value)
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+            return parameter(1700, Some(numeric.to_string().as_bytes()));
         }
         17 => (252, value.to_vec()),
         3802 => {
@@ -1000,6 +1013,7 @@ impl Extended {
                         | 3802
                         | 1005
                         | 1001
+                        | 1231
                         | 1016
                         | 1000
                         | 1007
@@ -1631,6 +1645,7 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
     PgArray::from_text_with(
         bytes,
         match oid {
+            1231 => 1700,
             1001 => 17,
             1005 => 21,
             1016 => 20,
@@ -1641,7 +1656,12 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
         -1,
         b',',
         |text, _| {
-            if oid == 1001 {
+            if oid == 1231 {
+                let scalar = parameter(1700, Some(text.as_bytes()))?;
+                Ok(PgArrayElement::Numeric(
+                    std::str::from_utf8(&scalar.value).unwrap().parse().unwrap(),
+                ))
+            } else if oid == 1001 {
                 Ok(PgArrayElement::Bytea(
                     parameter(17, Some(text.as_bytes()))?.value,
                 ))

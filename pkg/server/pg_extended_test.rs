@@ -7812,7 +7812,7 @@ fn pg05_int4_array_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8108,7 +8108,7 @@ fn pg05_array_cast_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8336,7 +8336,7 @@ fn pg05_array_text_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8559,7 +8559,7 @@ fn pg05_array_bool_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8841,7 +8841,7 @@ fn pg05_array_int2_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9118,7 +9118,7 @@ fn pg05_array_int8_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9339,7 +9339,7 @@ fn pg05_array_bytea_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9377,5 +9377,30 @@ fn pg05_array_bytea_scalar_prerequisite() {
         (b"\xff", "22021"),
     ] {
         assert_eq!(parameter(17, Some(input)).unwrap_err().0, state);
+    }
+}
+
+#[test]
+fn pg05_array_numeric_scalar_binary_prerequisite() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    for (text, hex) in [
+        ("12.340", "0002000000000003000c0d48"),
+        ("NaN", "00000000c0000000"),
+        ("Infinity", "00000000d0000000"),
+        ("-Infinity", "00000000f0000000"),
+    ] {
+        let bytes: Vec<u8> = hex
+            .as_bytes()
+            .chunks(2)
+            .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(
+            parameter(1700, Some(text.as_bytes())).unwrap().value,
+            text.as_bytes()
+        );
+        assert_eq!(
+            binary_parameter(1700, Some(&bytes)).unwrap().value,
+            text.as_bytes()
+        );
     }
 }

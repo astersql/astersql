@@ -1257,15 +1257,13 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Bool
                                 | astersql_parser_types::PostgreSQLArrayElement::Text
                                 | astersql_parser_types::PostgreSQLArrayElement::Bytea
+                                | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {
                         super::pg_array::validate_cast(Expr, Tp)?;
-                        return super::pg_array::cast_value(
-                            Expr,
-                            row,
-                            Tp.PostgreSQLArrayElement().unwrap(),
-                            || self.relational_query_expression_value(Expr, row, group_rows),
-                        );
+                        return super::pg_array::cast_value(Expr, row, Tp, || {
+                            self.relational_query_expression_value(Expr, row, group_rows)
+                        });
                     }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                         return super::pg_jsonb::cast_value(

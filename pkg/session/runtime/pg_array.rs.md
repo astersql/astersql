@@ -37,3 +37,10 @@ Int2定型、共同整数类型选择、构造及文本转换复用pg_cast_int2�
 Bytea数组沿共享analyze/cast/value消费者，typed_array调用types::pg_array::bytea_text_input，保留任意字节、形状/下界和两层NULL。构造器先做标量codec再单独数组转义；不复制server bytea语法。跨族数组转换保持0A000。
 
 OID17参数构造ARRAY时仅识别既有binder生成的binary literal cast及typed NULL，复用binary_cast_literal_value/binary_runtime_bytes还原原字节；不按普通text的前缀外观识别字节，不开放任意binary表达式或跨族转换。
+
+
+## numeric数组开放（任务30）
+
+numeric元素分析与显式数组转换接入共享PgNumeric；逐元素apply_modifier后整体发布，保留下界、NULL和precision/scale，其他跨族转换继续0A000。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

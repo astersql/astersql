@@ -2441,6 +2441,7 @@
 - [ ] [`pkg/types/mydecimal.rs.md`](../pkg/types/mydecimal.rs.md)
 - [ ] [`pkg/types/overflow.rs.md`](../pkg/types/overflow.rs.md)
 - [x] [`pkg/types/pg_array.rs.md`](../pkg/types/pg_array.rs.md)
+- [x] [`pkg/types/pg_numeric.rs.md`](../pkg/types/pg_numeric.rs.md)
 - [x] [`pkg/types/pg_json.rs.md`](../pkg/types/pg_json.rs.md)
 - [x] [`pkg/types/pg_jsonb.rs.md`](../pkg/types/pg_jsonb.rs.md)
 - [x] [`pkg/types/pg_uuid.rs.md`](../pkg/types/pg_uuid.rs.md)

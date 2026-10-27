@@ -456,3 +456,32 @@ fn pg05_array_bytea_restore_identity() {
     assert_eq!(output, b"BYTEA[]");
     assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1001);
 }
+
+#[test]
+fn pg05_array_numeric_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Numeric);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"NUMERIC[]");
+    assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1231);
+}
+
+#[test]
+fn pg05_array_numeric_restore_modifier() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Numeric);
+    tp.SetFlen(2);
+    tp.SetDecimal(-2);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"NUMERIC(2,-2)[]");
+    let decoded: crate::FieldType =
+        serde_json::from_str(&serde_json::to_string(&tp).unwrap()).unwrap();
+    assert_eq!(decoded.GetFlen(), 2);
+    assert_eq!(decoded.GetDecimal(), -2);
+    assert_eq!(
+        decoded.PostgreSQLArrayElement(),
+        Some(crate::PostgreSQLArrayElement::Numeric)
+    );
+}

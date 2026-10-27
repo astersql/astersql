@@ -202,3 +202,10 @@ OID1000加入已有prepared参数声明与投影类型分派；直接参数沿�
 ## 任务29 bytea数组局部接线
 
 普通prepared声明参数白名单注册1001，FieldType保留Bytea元素身份，参数literal binder包装CAST(... AS BYTEA[])，含typed NULL及重复绑定。
+
+
+## numeric数组开放（任务30）
+
+OID1700/1231定型、typed NULL、prepared声明与绑定接入已有共享执行；参数字面量用NUMERIC/NUMERIC[] cast恢复身份。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

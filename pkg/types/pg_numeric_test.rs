@@ -141,3 +141,69 @@ fn signed_integer_rounding() {
         }
     }
 }
+
+#[test]
+fn pg05_array_numeric_binary_codec() {
+    for text in [
+        "0",
+        "0.000",
+        "-0.000",
+        "12.340",
+        "-99999.00010",
+        "0.0000001",
+        "NaN",
+        "Infinity",
+        "-Infinity",
+    ] {
+        let value = text.parse::<PgNumeric>().unwrap();
+        assert_eq!(PgNumeric::from_binary(&value.to_binary()).unwrap(), value);
+    }
+    for text in [
+        "9".repeat(131072),
+        format!("0.{}1", "0".repeat(16382)),
+        format!("{}.{}", "9".repeat(131072), "9".repeat(16383)),
+    ] {
+        let value = text.parse::<PgNumeric>().unwrap();
+        assert_eq!(PgNumeric::from_binary(&value.to_binary()).unwrap(), value);
+    }
+    let data = [1u16, 0, 0, 2, 1234]
+        .into_iter()
+        .flat_map(u16::to_be_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        PgNumeric::from_binary(&data).unwrap().to_string(),
+        "1234.00"
+    );
+    // Wire dscale truncates hidden digits instead of rounding (12.3499 -> 12.34).
+    let data = [2u16, 0, 0, 2, 12, 3499]
+        .into_iter()
+        .flat_map(u16::to_be_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(PgNumeric::from_binary(&data).unwrap().to_string(), "12.34");
+    for n in 0..data.len() {
+        assert_eq!(
+            PgNumeric::from_binary(&data[..n]).unwrap_err().sqlstate(),
+            "08P01"
+        );
+    }
+    for words in [
+        vec![0u16, 0, 1, 0],
+        vec![0, 0, 0, 16384],
+        vec![1, 0, 0, 0, 10000],
+    ] {
+        let bytes = words
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            PgNumeric::from_binary(&bytes).unwrap_err().sqlstate(),
+            "22P03"
+        );
+    }
+    let mut tail = data;
+    tail.push(0);
+    assert_eq!(
+        PgNumeric::from_binary(&tail).unwrap_err().sqlstate(),
+        "22P03"
+    );
+}

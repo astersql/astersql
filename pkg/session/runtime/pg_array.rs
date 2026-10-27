@@ -81,6 +81,10 @@ pub(super) fn element_type(
             _ => return Err(error("0A000", "ARRAY parameter type is not supported")),
         },
         ast::ExprKind::Cast {
+            FunctionType: ast::CastFunctionType::PostgreSQLNumeric,
+            ..
+        } => Some(Element::Numeric),
+        ast::ExprKind::Cast {
             FunctionType: ast::CastFunctionType::PostgreSQLInt2,
             ..
         } => Some(Element::Int2),
@@ -235,7 +239,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Bytea)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Bytea | Element::Numeric)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -315,7 +319,8 @@ pub(super) fn analyze(
                     | Element::Int8
                     | Element::Bool
                     | Element::Text
-                    | Element::Bytea),
+                    | Element::Bytea
+                    | Element::Numeric),
                 ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
@@ -581,6 +586,7 @@ fn value_as(
             | Element::Bool
             | Element::Text
             | Element::Bytea
+            | Element::Numeric
     ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
@@ -599,31 +605,58 @@ pub(super) fn int4_text(bytes: &[u8]) -> SessionResult<String> {
 }
 
 fn typed_array(bytes: &[u8], element: Element) -> SessionResult<astersql_types::pg_array::PgArray> {
+    typed_array_with_modifier(bytes, element, -1, -1)
+}
+fn typed_array_with_modifier(
+    bytes: &[u8],
+    element: Element,
+    precision: isize,
+    scale: isize,
+) -> SessionResult<astersql_types::pg_array::PgArray> {
     use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
-    PgArray::from_text_with(bytes, element.oid(), -1, b',', |text, _| match element {
-        Element::Int2 => astersql_expression::pg_cast_int2(Some(text))
-            .map(|v| PgArrayElement::Int2(v.unwrap()))
+    if element == Element::Numeric {
+        astersql_types::pg_numeric::PgNumeric::validate_modifier(precision, scale)
+            .map_err(|e| error(e.sqlstate(), e.to_string()))?;
+    }
+    let typmod = if element == Element::Numeric && precision >= 0 {
+        ((precision as i32) << 16 | (scale as i32 & 0x7ff)) + 4
+    } else {
+        -1
+    };
+    PgArray::from_text_with(
+        bytes,
+        element.oid(),
+        typmod,
+        b',',
+        |text, _| match element {
+            Element::Numeric => text
+                .parse::<astersql_types::pg_numeric::PgNumeric>()
+                .and_then(|v| v.apply_modifier(precision, scale))
+                .map(PgArrayElement::Numeric)
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Int2 => astersql_expression::pg_cast_int2(Some(text))
+                .map(|v| PgArrayElement::Int2(v.unwrap()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Int4 => astersql_expression::pg_cast_int4(Some(text))
+                .map(|v| PgArrayElement::Int4(v.unwrap()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Int8 => astersql_expression::pg_cast_int8(Some(text))
+                .map(|v| PgArrayElement::Int8(v.unwrap()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Bytea => astersql_types::pg_array::bytea_text_input(text.as_bytes())
+                .map(PgArrayElement::Bytea)
+                .map_err(|e| error(e.0, e.1)),
+            Element::Bool => astersql_expression::pg_boolean_cast(
+                Some(text),
+                astersql_expression::PgBooleanCast::TextToBool,
+            )
+            .map(|v| PgArrayElement::Bool(v.unwrap() == "1"))
             .map_err(|e| error(e.sqlstate(), e.to_string())),
-        Element::Int4 => astersql_expression::pg_cast_int4(Some(text))
-            .map(|v| PgArrayElement::Int4(v.unwrap()))
-            .map_err(|e| error(e.sqlstate(), e.to_string())),
-        Element::Int8 => astersql_expression::pg_cast_int8(Some(text))
-            .map(|v| PgArrayElement::Int8(v.unwrap()))
-            .map_err(|e| error(e.sqlstate(), e.to_string())),
-        Element::Bytea => astersql_types::pg_array::bytea_text_input(text.as_bytes())
-            .map(PgArrayElement::Bytea)
-            .map_err(|e| error(e.0, e.1)),
-        Element::Bool => astersql_expression::pg_boolean_cast(
-            Some(text),
-            astersql_expression::PgBooleanCast::TextToBool,
-        )
-        .map(|v| PgArrayElement::Bool(v.unwrap() == "1"))
-        .map_err(|e| error(e.sqlstate(), e.to_string())),
-        Element::Text => astersql_expression::pg_text_cast(Some(text), false, 25, -1, true)
-            .map(|v| PgArrayElement::Text(v.unwrap()))
-            .map_err(|e| error(e.sqlstate(), e.to_string())),
-        _ => unreachable!(),
-    })
+            Element::Text => astersql_expression::pg_text_cast(Some(text), false, 25, -1, true)
+                .map(|v| PgArrayElement::Text(v.unwrap()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+        },
+    )
     .map_err(|failure| match &failure {
         PgArrayTextError::Element(e) => e.clone(),
         _ => error(failure.sqlstate().unwrap_or("XX000"), failure.to_string()),
@@ -635,6 +668,13 @@ pub(super) fn validate_cast(
     expr: &ast::ExprNode,
     target: &astersql_parser_types::FieldType,
 ) -> SessionResult<()> {
+    if target.PostgreSQLArrayElement() == Some(Element::Numeric) {
+        astersql_types::pg_numeric::PgNumeric::validate_modifier(
+            target.GetFlen(),
+            target.GetDecimal(),
+        )
+        .map_err(|e| error(e.sqlstate(), e.to_string()))?;
+    }
     if !matches!(
         target.PostgreSQLArrayElement(),
         Some(
@@ -644,6 +684,7 @@ pub(super) fn validate_cast(
                 | Element::Bool
                 | Element::Text
                 | Element::Bytea
+                | Element::Numeric
         )
     ) {
         return Ok(());
@@ -658,7 +699,7 @@ pub(super) fn validate_cast(
                 || supported_array_element(child, target)
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
-                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2) || matches!(target, Element::Bytea | Element::Bool | Element::Int2) => source == target,
+                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric) => source == target,
                 Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
@@ -671,6 +712,12 @@ pub(super) fn validate_cast(
             ast::ExprKind::ParamMarker { .. } => true,
             _ => {
                 let source = element_type(expr, &HashMap::new()).ok().flatten();
+                if target == Element::Numeric {
+                    return matches!(
+                        source,
+                        Some(Element::Numeric | Element::Int2 | Element::Int4 | Element::Int8)
+                    ) || matches!(&expr.Kind,ast::ExprKind::Value(v) if matches!(v.Datum,ast::ValueDatum::String(_)));
+                }
                 if target == Element::Bytea {
                     return source == Some(Element::Bytea)
                         || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
@@ -689,7 +736,7 @@ pub(super) fn validate_cast(
     }
     if matches!(
         target.PostgreSQLArrayElement(),
-        Some(Element::Text | Element::Bytea | Element::Bool | Element::Int2)
+        Some(Element::Text | Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric)
     ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
         return Err(error("0A000", "array cast source is not supported"));
@@ -704,16 +751,29 @@ pub(super) fn validate_cast(
 pub(super) fn cast_value(
     expr: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
-    target: Element,
+    target_type: &astersql_parser_types::FieldType,
     value: impl FnOnce() -> SessionResult<Option<String>>,
 ) -> SessionResult<Option<String>> {
     use astersql_types::pg_array::{PgArray, PgArrayElement};
+    let target = target_type.PostgreSQLArrayElement().unwrap();
     let mut expr = expr;
     while let ast::ExprKind::Parentheses(inner) = &expr.Kind {
         expr = inner;
     }
     if matches!(expr.Kind, ast::ExprKind::Array { .. }) {
-        return value_as(expr, row, target);
+        let value = value_as(expr, row, target)?;
+        return value
+            .map(|s| {
+                typed_array_with_modifier(
+                    s.as_bytes(),
+                    target,
+                    target_type.GetFlen(),
+                    target_type.GetDecimal(),
+                )?
+                .to_text(b',')
+                .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))
+            })
+            .transpose();
     }
     let Some(text) = value()? else {
         return Ok(None);
@@ -725,15 +785,24 @@ pub(super) fn cast_value(
     if source != target
         && (matches!(
             source,
-            Element::Text | Element::Bytea | Element::Bool | Element::Int2
+            Element::Text | Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric
         ) || matches!(
             target,
-            Element::Text | Element::Bytea | Element::Bool | Element::Int2
+            Element::Text | Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric
         ))
     {
         return Err(error("0A000", "array cast source is not supported"));
     }
-    let source = typed_array(text.as_bytes(), source)?;
+    let source = if target == Element::Numeric && source == target {
+        typed_array_with_modifier(
+            text.as_bytes(),
+            source,
+            target_type.GetFlen(),
+            target_type.GetDecimal(),
+        )?
+    } else {
+        typed_array(text.as_bytes(), source)?
+    };
     // Collect the entire conversion before constructing/publishing a result.
     let elements = source
         .elements()

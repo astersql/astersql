@@ -573,7 +573,7 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
-    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016) {
+    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231) {
         return match value {
             Value::Null => Ok(None),
             Value::Text(text) => typed_array_result(text.as_bytes(), oid)
@@ -822,7 +822,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
-        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
+        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231 | 1028 => binary_array(text, oid)?,
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -980,68 +980,9 @@ fn flatten_array(value: &ArrayTextValue, output: &mut Vec<Option<String>>) {
 
 /// Encode PostgreSQL's base-10000 binary numeric representation.
 fn binary_numeric(text: &str) -> io::Result<Vec<u8>> {
-    let (negative, value) = match text.strip_prefix('-') {
-        Some(value) => (true, value),
-        None => (false, text.strip_prefix('+').unwrap_or(text)),
-    };
-    let (integer, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if (integer.is_empty() && fraction.is_empty())
-        || !integer
-            .chars()
-            .chain(fraction.chars())
-            .all(|character| character.is_ascii_digit())
-    {
-        return Err(invalid("invalid binary numeric value"));
-    }
-    let scale = i16::try_from(fraction.len()).map_err(|_| invalid("numeric scale out of range"))?;
-    let padded_integer = format!(
-        "{:0>width$}",
-        if integer.is_empty() { "0" } else { integer },
-        width = ((integer.len().max(1) + 3) / 4) * 4
-    );
-    let mut digits = padded_integer
-        .as_bytes()
-        .chunks(4)
-        .map(|chunk| std::str::from_utf8(chunk).unwrap().parse::<u16>().unwrap())
-        .collect::<Vec<_>>();
-    let integer_groups = digits.len();
-    if !fraction.is_empty() {
-        let padded_fraction = format!("{fraction:0<width$}", width = (fraction.len() + 3) / 4 * 4);
-        digits.extend(
-            padded_fraction
-                .as_bytes()
-                .chunks(4)
-                .map(|chunk| std::str::from_utf8(chunk).unwrap().parse::<u16>().unwrap()),
-        );
-    }
-    let mut weight =
-        i16::try_from(integer_groups).map_err(|_| invalid("numeric weight out of range"))? - 1;
-    while digits.first() == Some(&0) {
-        digits.remove(0);
-        weight -= 1;
-    }
-    while digits.last() == Some(&0) {
-        digits.pop();
-    }
-    let count =
-        i16::try_from(digits.len()).map_err(|_| invalid("numeric digit count out of range"))?;
-    let mut output = count.to_be_bytes().to_vec();
-    output.extend_from_slice(&weight.to_be_bytes());
-    output.extend_from_slice(
-        &(if digits.is_empty() {
-            0u16
-        } else if negative {
-            0x4000u16
-        } else {
-            0u16
-        })
-        .to_be_bytes(),
-    );
-    output.extend_from_slice(&scale.to_be_bytes());
-    for digit in digits {
-        output.extend_from_slice(&digit.to_be_bytes());
-    }
-    Ok(output)
+    text.parse::<astersql_types::pg_numeric::PgNumeric>()
+        .map(|value| value.to_binary())
+        .map_err(|e| invalid(&e.to_string()))
 }
 
 // Ordinary array results and Bind share the canonical element codecs.
@@ -1054,7 +995,7 @@ fn typed_array_result(
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016) {
+    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231) {
         return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()
@@ -1275,12 +1216,14 @@ pub(crate) fn encode_formats_interval(
                             }
                     })
                     .unwrap_or(-1)
-            } else if *oid == 1700 {
+            } else if matches!(*oid, 1700 | 1231) {
                 result
                     .native_types
                     .get(index)
                     .filter(|tp| {
-                        matches!(tp.code, 0 | 246)
+                        (matches!(tp.code, 0 | 246)
+                            || tp.postgresql_array_element
+                                == Some(astersql_session::runtime::PostgreSQLArrayElement::Numeric))
                             && (1..=1000).contains(&tp.length)
                             && (-1000..=1000).contains(&tp.decimal)
                     })

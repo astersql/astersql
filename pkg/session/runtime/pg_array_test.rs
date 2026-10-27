@@ -1002,3 +1002,65 @@ fn pg05_array_bytea_scalar_parameter_constructor() {
         session.close_protocol_statement(id).unwrap();
     }
 }
+
+#[test]
+fn pg05_array_numeric_runtime_typmod_constructor_and_errors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={1.25,NULL}'::numeric(3,1)[]",
+            "[-2:-1]={1.3,NULL}",
+        ),
+        ("SELECT '{1250,-1250}'::numeric(2,-2)[]", "{1300,-1300}"),
+        ("SELECT ARRAY[1.25,NULL]::numeric(3,1)[]", "{1.3,NULL}"),
+        (
+            "SELECT ARRAY['NaN'::numeric,'Infinity'::numeric,NULL]",
+            "{NaN,Infinity,NULL}",
+        ),
+    ] {
+        let (id, _, fields) = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[])
+            .unwrap();
+        assert_eq!(
+            fields[0].column.FieldType.PostgreSQLArrayElement(),
+            Some(Element::Numeric)
+        );
+        let mut result = session.execute_protocol_statement(id, &[]).unwrap();
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+        session.close_protocol_statement(id).unwrap();
+    }
+    for sql in [
+        "SELECT '{1,bad}'::numeric[]",
+        "SELECT '{1,Infinity}'::numeric(3,1)[]",
+        "SELECT '{1,99.95}'::numeric(3,1)[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+        let mut result = session.execute("SELECT 1").unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1".to_owned()]);
+        result[0].close().unwrap();
+    }
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ARRAY[?,NULL] AS v", &[1700])
+        .unwrap();
+    for (argument, expected) in [
+        (
+            ConcretePreparedArgument::Text("12.340".into()),
+            "{12.340,NULL}",
+        ),
+        (ConcretePreparedArgument::Null, "{NULL,NULL}"),
+    ] {
+        let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()]
+        );
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+}

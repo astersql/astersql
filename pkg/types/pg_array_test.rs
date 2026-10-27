@@ -284,7 +284,7 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
         Err(Error::InvalidEncoding)
     );
-    for oid in [0, 1700, 1007, 3802] {
+    for oid in [0, 701, 1007, 3802] {
         let err = PgArray::from_text_with(b"{}", oid, -1, b',', |_, _| {
             Ok::<_, std::convert::Infallible>(Int4(1))
         })
@@ -784,7 +784,7 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
     assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
     // Invalid values cannot reach output through the immutable carrier.
-    for oid in [1700, 1007, 2950] {
+    for oid in [701, 1007, 2950] {
         let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
         assert_eq!(err, Error::UnsupportedElement);
         assert_eq!(err.sqlstate(), Some("0A000"));
@@ -1089,4 +1089,34 @@ fn pg05_array_bytea_extracted_scalar_codec() {
     ] {
         assert_eq!(input(text).unwrap_err().0, state);
     }
+}
+
+#[test]
+fn pg05_array_numeric_canonical_shape_typmod_null() {
+    use super::pg_array::{PgArray, PgArrayElement};
+    use super::pg_numeric::PgNumeric;
+    let value = PgArray::from_text_with(
+        b"[-2:-1]={12.340,NULL}",
+        1700,
+        ((5 << 16) | 3) + 4,
+        b',',
+        |s, _| s.parse::<PgNumeric>().map(PgArrayElement::Numeric),
+    )
+    .unwrap();
+    assert_eq!(value.element_typmod(), ((5 << 16) | 3) + 4);
+    assert_eq!(value.shape(), [2]);
+    assert_eq!(value.lower_bounds(), [-2]);
+    assert_eq!(value.to_text(b',').unwrap(), "[-2:-1]={12.340,NULL}");
+    let result = PgArray::from_binary_with(
+        &value.to_binary().unwrap(),
+        1700,
+        value.element_typmod(),
+        |b, _| {
+            let value = PgNumeric::from_binary(b)?;
+            *b = &[];
+            Ok::<_, super::pg_numeric::PgNumericError>(PgArrayElement::Numeric(value))
+        },
+    )
+    .unwrap();
+    assert_eq!(result, value);
 }

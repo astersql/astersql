@@ -95,3 +95,10 @@ from_binary_with元素支持门禁纳入OID20；复用已有Int8(i64)规范载�
 ## 任务29 bytea数组局部接线
 
 增加Bytea(Vec<u8>)，OID17与任意原始字节保真；构造及text/binary输入门禁注册17，输出复用统一bytea hex与raw binary。bytea_text_input/bytea_text_output从server原有标量codec最小提取，错误分类和hex/escape规则保持，session和server共用入口，数组仅处理自己的转义层。独立pg_array_test.rs验证shape/lower/typmod、两层NULL、全字节及逐字节输出。
+
+
+## numeric数组开放（任务30）
+
+新增PgArrayElement::Numeric(PgNumeric)和1700容器注册。文本/二进制输出均委托规范标量codec，shape、下界、元素typmod与两层NULL沿既有容器不变量保留。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

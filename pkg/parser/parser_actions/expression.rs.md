@@ -221,3 +221,10 @@ PgArrayType从既有TypeShort注册Int2，支持int2[]/smallint[]及多维拼写
 ## 任务29 bytea数组局部接线
 
 PgArrayType把已有binary字节标量类型连到Bytea数组元素，PgCastType识别bytea类型名以服务bytea[]语法。未增加其他族、隐式转换或标量执行内核。
+
+
+## numeric数组开放（任务30）
+
+numeric(p,s)[]及多维类型解析复用既有numeric声明，保存元素精度和signed scale；不增加新语法生成器。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。

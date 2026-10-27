@@ -182,3 +182,10 @@ OID1005文本/二进制Bind逐元素委派parameter(21)/binary_parameter(21)；�
 ## 任务29 bytea数组局部接线
 
 普通Parse/Bind白名单注册1001；array_text逐元素复用parameter(17)，binary数组逐元素复用binary_parameter(17)，全部成功后才发布。标量parameter(17)改调下层同一提取codec，原hex/escape与诊断保留。
+
+
+## numeric数组开放（任务30）
+
+普通标量Bind OID1700调用共享numeric binary接收；OID1231数组text/binary分派逐元素调用同一标量入口。
+
+当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
