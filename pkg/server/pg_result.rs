@@ -572,6 +572,15 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
+    if oid == 114 {
+        return match value {
+            Value::Null => Ok(None),
+            Value::Text(text) => astersql_types::pg_json::PgJson::from_bytes(text.as_bytes())
+                .map(|json| Some(json.as_bytes().to_vec()))
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            _ => Err(invalid("JSON result requires its original text carrier")),
+        };
+    }
     let text = match value {
         Value::Null => return Ok(None),
         Value::Text(s) if oid == 700 || oid == 701 => {
@@ -785,7 +794,9 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .map_err(|_| invalid("invalid float8"))?
             .to_be_bytes()
             .to_vec(),
-        19 | 25 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
+        // PostgreSQL json_send returns the same validated original text, with
+        // no jsonb version byte or MySQL BinaryJSON type code.
+        114 | 19 | 25 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
         1082 => text

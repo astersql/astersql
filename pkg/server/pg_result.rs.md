@@ -128,4 +128,10 @@ UUID内部类型描述为OID2950、typlen16、typmod=-1，简单查询文本出�
 
 ## JSON显式转换与类型交接
 
-TypePgJson在简单查询描述为114/-1；typmod沿未声明值-1，复用既有文本行输出。二进制codec由后续任务负责。
+TypePgJson在简单查询描述为114/-1；typmod沿未声明值-1。两格式原文输出与校验见下节。
+
+## JSON结果原文与稳定描述（任务9）
+
+`value_text`对OID114只接受SQL NULL或原文Text载体，复用`PgJson::from_bytes`验证完整文档及编码，保留空白、重复键、Unicode转义及精确数字的词法。非法内部载荷、数值/bytes外观不冒充规范json。`value_binary`对114直接输出同一原文字节，不添加jsonb版本前缀。NULL长度-1、JSON null长度4、字符串"null"长度6。
+
+`pg_type`既有TypePgJson映射114/-1及typmod=-1不变，描述不依赖行值。独立`pg05_json_output_*`断言覆盖20组原文、首行/全NULL和零行的两种结果格式、非法载荷/缺原始身份的发送前拒绝，以及真实TCP statement/portal Describe、两portal混合格式、重绑定、重复Execute与Close。完整TCP运行证据及环境限制记录于本次编号任务，不将测试注册或编译当通过。

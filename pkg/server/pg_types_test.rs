@@ -740,3 +740,186 @@ fn pg05_json_sql_wire_metadata_null_errors_and_recovery() {
     send(&mut socket, b'X', b"");
     service.close();
 }
+
+#[test]
+fn pg05_json_output_codecs_metadata_and_null() {
+    use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
+    let mut result = QueryResult {
+        columns: vec![ColumnInfo {
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            charset: 45,
+            column_length: 0,
+            column_type: 253,
+            flags: 0,
+            decimals: 0,
+            default_value: None,
+        }],
+        native_types: vec![NativeType {
+            code: astersql_parser_mysql::r#type::TypePgJson,
+            flags: 0,
+            length: -1,
+            decimal: -1,
+            postgresql_text_oid: None,
+            postgresql_array_element: None,
+            postgresql_record_fields: None,
+        }],
+        ..QueryResult::default()
+    };
+    for text in [
+        "null",
+        r#""null""#,
+        "{}",
+        "[]",
+        "true",
+        "false",
+        "42",
+        "-0",
+        r#" { "b":1, "a":2,"b":3 } "#,
+        "1e1000000",
+        "9007199254740993",
+        "18446744073709551616",
+        "1.230e+02",
+        "0.1234567890123456789012345678901234567890",
+        "\t[true,false,null]\n",
+        r#""中""#,
+        r#""\u4e2d""#,
+        r#""\u0000""#,
+        r#""\uD800""#,
+        r#"[null,{"x":[true,"中",1]}]"#,
+    ] {
+        let json = astersql_types::pg_json::PgJson::from_bytes(text.as_bytes()).unwrap();
+        assert_eq!(json.as_bytes(), text.as_bytes());
+        let text = text.to_owned();
+        result.rows = vec![
+            vec![Value::Null],
+            vec![Value::Text(text.clone())],
+            vec![Value::Null],
+        ];
+        for format in [0i16, 1] {
+            let messages =
+                crate::pg_result::encode_formats(&result, "SELECT", &[format as usize]).unwrap();
+            let mut description = b"\0\x01v\0".to_vec();
+            description.extend_from_slice(&[0; 6]);
+            description.extend_from_slice(&114u32.to_be_bytes());
+            description.extend_from_slice(&(-1i16).to_be_bytes());
+            description.extend_from_slice(&(-1i32).to_be_bytes());
+            description.extend_from_slice(&format.to_be_bytes());
+            assert_eq!(messages[0], (b'T', description.clone()));
+            assert_eq!(messages[1], (b'D', row(&[None])));
+            let payload = text.as_bytes();
+            let expected = [
+                1i16.to_be_bytes().as_slice(),
+                &(payload.len() as i32).to_be_bytes(),
+                payload,
+            ]
+            .concat();
+            assert_eq!(messages[2], (b'D', expected));
+            assert_eq!(messages[3], (b'D', row(&[None])));
+            assert_eq!(messages[4], (b'C', b"SELECT 3\0".to_vec()));
+            let saved = result.rows.clone();
+            for rows in [vec![], vec![vec![Value::Null]; 2]] {
+                result.rows = rows;
+                let empty = crate::pg_result::encode_formats(&result, "SELECT", &[format as usize])
+                    .unwrap();
+                assert_eq!(empty[0], (b'T', description.clone()));
+            }
+            result.rows = saved;
+        }
+    }
+    // MySQL JSON cannot supply the PostgreSQL original-text identity, even
+    // for NULL or empty sets. Ordinary text remains its own type.
+    result.native_types[0].code = 245;
+    for rows in [vec![], vec![vec![Value::Null]]] {
+        result.rows = rows;
+        for format in [0, 1] {
+            assert!(crate::pg_result::encode_formats(&result, "SELECT", &[format]).is_err());
+        }
+    }
+    result.native_types[0].code = 253;
+    result.rows = vec![vec![Value::Text("null".into())]];
+    assert_eq!(
+        oids(&crate::pg_result::encode(&result, "SELECT").unwrap()[0].1),
+        vec![25]
+    );
+    // The native type is required even when the visible MySQL column is text.
+    result.native_types.clear();
+    assert!(crate::pg_result::encode(&result, "SELECT").is_err());
+}
+
+#[test]
+fn pg05_json_output_invalid_carrier_writes_no_messages() {
+    use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
+    let mut result = QueryResult {
+        columns: vec![ColumnInfo {
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            charset: 45,
+            column_length: 0,
+            column_type: 253,
+            flags: 0,
+            decimals: 0,
+            default_value: None,
+        }],
+        native_types: vec![NativeType {
+            code: astersql_parser_mysql::r#type::TypePgJson,
+            flags: 0,
+            length: -1,
+            decimal: -1,
+            postgresql_text_oid: None,
+            postgresql_array_element: None,
+            postgresql_record_fields: None,
+        }],
+        ..QueryResult::default()
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    for invalid in [
+        Value::Text("bad".into()),
+        Value::Text(String::new()),
+        Value::Text("{} []".into()),
+        Value::Text("[1,]".into()),
+        Value::Text("\x01{}".into()),
+        Value::Text("\0".into()),
+        Value::Bytes(b"null".to_vec()),
+        Value::Signed(0),
+        Value::Unsigned(0),
+        Value::Float(1.0),
+    ] {
+        // A valid earlier row must not leak before a later invalid payload.
+        result.rows = vec![vec![Value::Text("null".into())], vec![invalid]];
+        for format in [0, 1] {
+            assert_eq!(
+                crate::pg_result::encode_formats(&result, "SELECT", &[format as usize])
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+        assert!(
+            crate::pg_result::write_result(&mut server, &result, "SELECT", Default::default())
+                .is_err()
+        );
+        let mut byte = [0];
+        assert!(matches!(
+            client.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+    }
+    result.rows = vec![vec![Value::Null]];
+    result.native_types.clear();
+    assert!(
+        crate::pg_result::write_result(&mut server, &result, "SELECT", Default::default()).is_err()
+    );
+    assert!(client.read(&mut [0]).is_err());
+}
