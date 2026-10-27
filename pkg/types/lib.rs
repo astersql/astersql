@@ -123,3 +123,7 @@ mod pg_uuid_test;
 pub mod pg_json;
 #[cfg(test)]
 mod pg_json_test;
+
+pub mod pg_jsonb;
+#[cfg(test)]
+mod pg_jsonb_test;
