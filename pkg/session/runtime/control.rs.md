@@ -179,3 +179,8 @@ PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collati
 ## text 数组逐族接入（任务25）
 
 prepared参数白名单和字段定型沿既有1007路径增加1009→Element::Text；typed NULL与重绑定保留数组身份，执行literal包装为TEXT[]。pg_array_test中的pg05_array_text测试覆盖共享协议入口及值/NULL。
+
+
+## bool 数组逐族接入（任务26）
+
+OID1000加入已有prepared参数声明与投影类型分派；直接参数沿既有literal binder包裹CAST(... AS BOOL[])，NULL和非NULL均保留1000身份。

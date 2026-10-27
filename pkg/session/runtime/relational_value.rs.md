@@ -249,3 +249,8 @@ int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分�
 ## text 数组逐族接入（任务25）
 
 行表达式Cast分派增加Element::Text，复用pg_array的规范容器与已有text标量契约，不另建求值器。跨text数组与整数数组的转换仍显式0A000。
+
+
+## bool 数组逐族接入（任务26）
+
+行表达式Cast消费者与query同步注册Bool，沿同一pg_array内核求值；不复制数组或标量解释器。

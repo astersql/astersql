@@ -1832,6 +1832,7 @@ impl ConcreteSession {
                         | 3802
                         | 2950
                         | 1007
+                        | 1000
                         | 1009
                 )
             });
@@ -1885,7 +1886,7 @@ impl ConcreteSession {
                             .and_then(|index| supplied.get(index));
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
-                            | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1009),
+                            | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1000 | 1009),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
@@ -1917,8 +1918,10 @@ impl ConcreteSession {
                             } else {
                                 astersql_parser_mysql::r#type::TypeShort
                             });
-                            if matches!(*oid, 1007 | 1009) {
-                                tp = super::pg_array::field_type(if *oid == 1009 {
+                            if matches!(*oid, 1007 | 1000 | 1009) {
+                                tp = super::pg_array::field_type(if *oid == 1000 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Bool
+                                } else if *oid == 1009 {
                                     astersql_parser_types::PostgreSQLArrayElement::Text
                                 } else {
                                     astersql_parser_types::PostgreSQLArrayElement::Int4
@@ -1993,6 +1996,7 @@ impl ConcreteSession {
                                 | 3802
                                 | 2950
                                 | 1007
+                                | 1000
                                 | 1009
                         ) {
                             *oid = *supplied;
@@ -2110,6 +2114,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&1000) {
+                    return Ok(format!("CAST({literal} AS BOOL[])"));
+                }
                 if constructor_oids.get(index) == Some(&1009) {
                     return Ok(format!("CAST({literal} AS TEXT[])"));
                 }

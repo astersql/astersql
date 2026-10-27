@@ -1253,6 +1253,7 @@ impl ConcreteSession {
                         Some(
                             astersql_parser_types::PostgreSQLArrayElement::Int4
                                 | astersql_parser_types::PostgreSQLArrayElement::Int8
+                                | astersql_parser_types::PostgreSQLArrayElement::Bool
                                 | astersql_parser_types::PostgreSQLArrayElement::Text
                         )
                     ) {

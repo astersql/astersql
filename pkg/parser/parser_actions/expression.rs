@@ -1428,7 +1428,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             let element = match source.PostgreSQLArrayElement() {
-                Some(element @ (parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Text)) => element,
+                Some(element @ (parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text)) => element,
+                None if source.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0 => parser_types::PostgreSQLArrayElement::Bool,
                 None if source.PostgreSQLTextOid() == Some(25) => parser_types::PostgreSQLArrayElement::Text,
                 None if source.GetType() == parser_mysql::r#type::TypeLong => parser_types::PostgreSQLArrayElement::Int4,
                 None if source.GetType() == parser_mysql::r#type::TypeLonglong => parser_types::PostgreSQLArrayElement::Int8,

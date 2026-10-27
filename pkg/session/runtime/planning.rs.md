@@ -213,3 +213,8 @@ PG显式OID701与700一同进入现有参数类型约束，避免准备阶段退
 ## text 数组逐族接入（任务25）
 
 protocol_parameter_types在显式text[] cast和声明1009处保留1009，不能退回标量25或unknown；不扩大其他数组族。共享pg05_array_text_declared_parameter_identity及TCP/libpq元数据断言覆盖当前消费者。
+
+
+## bool 数组逐族接入（任务26）
+
+现有PG数组参数白名单与显式Cast上下文增加Bool/1000，OID0和省略OID由既有约束遍历推断；不增加另一套规划器。

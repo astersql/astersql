@@ -130,3 +130,8 @@ Int4 数组的 Restore/RestoreAsCastType 输出 INT4[]，保留数组身份而�
 ## text 数组逐族接入（任务25）
 
 Restore/RestoreAsCastType按独立PostgreSQLArrayElement输出INT4[]或TEXT[]，避免text[]被还原成普通CHAR。同目录pg05_array_text_restore_identity验证1009及TEXT[]。
+
+
+## bool 数组逐族接入（任务26）
+
+Restore/RestoreAsCastType为独立PostgreSQLArrayElement::Bool输出BOOL[]，身份OID16/数组1000沿原有serde与元数据保留。

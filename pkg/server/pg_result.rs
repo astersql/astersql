@@ -573,7 +573,7 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
-    if matches!(oid, 1007 | 1009 | 1016) {
+    if matches!(oid, 1000 | 1007 | 1009 | 1016) {
         return match value {
             Value::Null => Ok(None),
             Value::Text(text) => typed_array_result(text.as_bytes(), oid)
@@ -1049,7 +1049,7 @@ fn typed_array_result(
     bytes: &[u8],
     oid: u32,
 ) -> Result<astersql_types::pg_array::PgArray, (&'static str, String)> {
-    if matches!(oid, 1007 | 1009) {
+    if matches!(oid, 1000 | 1007 | 1009) {
         return crate::pg_extended::array_text(bytes, oid);
     }
     use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
@@ -1067,7 +1067,7 @@ fn typed_array_result(
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if matches!(oid, 1007 | 1009 | 1016) {
+    if matches!(oid, 1000 | 1007 | 1009 | 1016) {
         return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()

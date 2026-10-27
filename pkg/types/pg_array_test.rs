@@ -284,7 +284,7 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
         Err(Error::InvalidEncoding)
     );
-    for oid in [0, 16, 1007, 3802] {
+    for oid in [0, 1700, 1007, 3802] {
         let err = PgArray::from_text_with(b"{}", oid, -1, b',', |_, _| {
             Ok::<_, std::convert::Infallible>(Int4(1))
         })
@@ -784,7 +784,7 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
     assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
     // Invalid values cannot reach output through the immutable carrier.
-    for oid in [16, 1007, 2950] {
+    for oid in [1700, 1007, 2950] {
         let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
         assert_eq!(err, Error::UnsupportedElement);
         assert_eq!(err.sqlstate(), Some("0A000"));
@@ -855,6 +855,49 @@ fn pg05_array_cast_int8_exact_width_and_identity() {
     );
     assert_eq!(
         PgArray::new(20, -1, vec![1], vec![1], vec![Some(Int4(7))]),
+        Err(Error::ElementTypeMismatch)
+    );
+}
+
+#[test]
+fn pg05_array_bool_canonical_identity_shape_null_and_bytes() {
+    use crate::pg_array::PgArrayElement::Bool;
+    let array = PgArray::new(
+        16,
+        -1,
+        vec![2, 2],
+        vec![0, -2],
+        vec![Some(Bool(true)), None, Some(Bool(false)), Some(Bool(true))],
+    )
+    .unwrap();
+    assert_eq!(
+        array.to_text(b',').unwrap(),
+        "[0:1][-2:-1]={{t,NULL},{f,t}}"
+    );
+    let mut binary: Vec<u8> = [2i32, 1, 16, 2, 0, 2, -2, 1]
+        .into_iter()
+        .flat_map(i32::to_be_bytes)
+        .collect();
+    binary.push(1);
+    binary.extend_from_slice(&(-1i32).to_be_bytes());
+    for byte in [0, 1] {
+        binary.extend_from_slice(&1i32.to_be_bytes());
+        binary.push(byte);
+    }
+    assert_eq!(array.to_binary().unwrap(), binary);
+    let decoded = PgArray::from_binary_with(&binary, 16, -1, |payload, _| -> Result<_, ()> {
+        let (&byte, rest) = payload.split_first().ok_or(())?;
+        *payload = rest;
+        Ok(Bool(byte != 0))
+    })
+    .unwrap();
+    assert_eq!(decoded, array);
+    assert_eq!(
+        PgArray::new(23, -1, vec![1], vec![1], vec![Some(Bool(true))]),
+        Err(Error::ElementTypeMismatch)
+    );
+    assert_eq!(
+        PgArray::new(16, -1, vec![1], vec![1], vec![Some(Int4(1))]),
         Err(Error::ElementTypeMismatch)
     );
 }

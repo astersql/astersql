@@ -161,3 +161,8 @@ OID1016转换结果通过规范PgArray与pg_cast_int8解析后输出文本或bin
 ## text 数组逐族接入（任务25）
 
 普通text[]结果OID1009使用与Bind相同的规范PgArray解析及to_text/to_binary，保留显式下界、Unicode、空串和NULL字样引用；不再走目录专用字符串数组编码器。结果元数据仍1009/-1/-1。
+
+
+## bool 数组逐族接入（任务26）
+
+OID1000结果与int4/text数组使用同一规范PgArray，元素Bool编码为text t/f或binary00/01，避免旧目录字符串数组路径丢失下界；RowDescription保持1000/-1/-1。

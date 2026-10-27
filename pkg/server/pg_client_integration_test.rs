@@ -6445,3 +6445,163 @@ fn pg05_array_text_libpq_four_directions() {
         assert_eq!(summary[key], true);
     }
 }
+
+#[test]
+fn pg05_array_bool_libpq_four_directions() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_addr = server.listener_addr().unwrap();
+    let database = format!("pg05_array_{}_{}", std::process::id(), pg.port());
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg05-array-bool-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(&evidence).unwrap();
+    println!("PG05_ARRAY_EVIDENCE_DIR={}", evidence.display());
+    let cleanup = Cleanup(|| {
+        server.close();
+        let dropped = native.execute(&format!("DROP DATABASE {database}")).is_ok();
+        let record = serde_json::json!({"database_dropped":dropped,
+            "postgres_port_closed":TcpStream::connect(pg).is_err(),
+            "mysql_port_closed":TcpStream::connect(mysql_addr).is_err()});
+        let _ = std::fs::write(evidence.join("rust-cleanup.json"), record.to_string());
+    });
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    let mut mysql = TcpStream::connect(mysql_addr).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    mysql_query(&mut mysql, &format!("USE {database}"));
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE json_isolation (id INT PRIMARY KEY, v JSON, b VARCHAR(64))",
+    );
+    mysql_query(
+        &mut mysql,
+        r#"INSERT INTO json_isolation VALUES (1, 'null', '{"b":1,"a":2}'), (2, '"null"', 'null'), (3, NULL, NULL)"#,
+    );
+    let checkpoint = |mysql: &mut TcpStream, phase: &str| {
+        let rows = mysql_query(mysql, "SELECT v, b FROM json_isolation ORDER BY id");
+        assert_eq!(
+            rows,
+            vec![
+                vec![Some(b"null".to_vec()), Some(br#"{"b":1,"a":2}"#.to_vec())],
+                vec![Some(br#""null""#.to_vec()), Some(b"null".to_vec())],
+                vec![None, None]
+            ]
+        );
+        let mut request = vec![3];
+        request.extend_from_slice(b"SELECT v, b FROM json_isolation ORDER BY id");
+        mysql_packet(mysql, 0, &request);
+        assert_eq!(mysql_read(mysql), vec![2]);
+        let columns = [mysql_read(mysql), mysql_read(mysql)];
+        for (column, expected_type) in columns.iter().zip([245, 253]) {
+            let mut at = 0;
+            for _ in 0..6 {
+                let len = usize::from(column[at]);
+                assert!(len < 251);
+                at += len + 1;
+            }
+            assert_eq!(column[at], 12);
+            assert_eq!(column[at + 7], expected_type); // MySQL JSON and ordinary VARCHAR.
+        }
+        assert_eq!(mysql_read(mysql)[0], 0xfe);
+        let raw_rows = [mysql_read(mysql), mysql_read(mysql), mysql_read(mysql)];
+        assert_eq!(mysql_read(mysql)[0], 0xfe);
+        std::fs::write(
+            evidence.join(format!("mysql-{phase}.json")),
+            serde_json::json!({"rows":rows,"columns":columns,"raw_rows":raw_rows}).to_string(),
+        )
+        .unwrap();
+        (rows, columns, raw_rows)
+    };
+    let baseline = checkpoint(&mut mysql, "before");
+    struct Client(std::process::Child);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            // EOF releases the Python checkpoint; its finally closes libpq and reference.
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Client(
+        Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg05_array_bool_libpq.py"
+            ))
+            .arg(pg.port().to_string())
+            .arg(&database)
+            .arg(&evidence)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let mut middle = false;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG05_ARRAY_MID" {
+            assert_eq!(checkpoint(&mut mysql, "during"), baseline);
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    assert_eq!(checkpoint(&mut mysql, "after"), baseline);
+    mysql_packet(&mut mysql, 0, &[1]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(TcpStream::connect(pg).is_err());
+    assert!(TcpStream::connect(mysql_addr).is_err());
+    let cleanup_record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("rust-cleanup.json")).unwrap())
+            .unwrap();
+    for key in [
+        "database_dropped",
+        "postgres_port_closed",
+        "mysql_port_closed",
+    ] {
+        assert_eq!(cleanup_record[key], true);
+    }
+    assert!(status.success(), "array differential client failed");
+    assert!(middle, "missing concurrent MySQL checkpoint");
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+            .unwrap();
+    assert_eq!(summary["reference_version_num"], 180006);
+    assert_eq!(summary["mode"], "differential");
+    assert_eq!(summary["passed"], true);
+    assert_eq!(summary["cases"], 870);
+    assert_eq!(summary["scalar_cases"], 518);
+    assert_eq!(summary["tcp_cases"], 340);
+    assert_eq!(summary["raw_clients_closed"], true);
+    assert_eq!(summary["mismatches"], serde_json::json!([]));
+    for key in [
+        "reference_port_closed",
+        "clients_closed",
+        "reference_directory_removed",
+    ] {
+        assert_eq!(summary[key], true);
+    }
+}

@@ -205,3 +205,8 @@ PgArrayType沿现有语法动作支持显式int8[]/bigint[]（含多维后缀）
 ## text 数组逐族接入（任务25）
 
 PgArrayType仅新增OID25的text标量身份→Text数组映射；不把varchar/bpchar或任意MySQL字符串当作text[]。已有Int4/Int8路径不变，独立pg05_array_text_parser_identity核对AST。
+
+
+## bool 数组逐族接入（任务26）
+
+PgArrayType从标量IsBooleanFlag识别bool/boolean并保留Bool数组族，重复[]不改变1000身份；不修改MySQL语法。

@@ -84,6 +84,11 @@ pub(super) fn element_type(
             FunctionType: ast::CastFunctionType::PostgreSQLInt8,
             ..
         } => Some(Element::Int8),
+        ast::ExprKind::Cast { Tp, .. }
+            if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
+        {
+            Some(Element::Bool)
+        }
         ast::ExprKind::Parentheses(inner) => element_type(inner, parameters)?,
         ast::ExprKind::Unary { Op, V } if Op == "+" || Op == "-" => element_type(V, parameters)?,
         ast::ExprKind::Array { .. } => {
@@ -194,7 +199,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int4 | Element::Int8 | Element::Text)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int4 | Element::Int8 | Element::Bool | Element::Text)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -268,8 +273,9 @@ pub(super) fn analyze(
                 ..
             }) = node.as_any().downcast_ref::<ast::ExprNode>()
             {
-                if let Some(element @ (Element::Int4 | Element::Int8 | Element::Text)) =
-                    Tp.PostgreSQLArrayElement()
+                if let Some(
+                    element @ (Element::Int4 | Element::Int8 | Element::Bool | Element::Text),
+                ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
                     Expr.accept(&mut positions);
@@ -465,11 +471,19 @@ fn value_as(
                         .unwrap()
                         .to_string(),
                     Element::Numeric => value,
-                    Element::Bool => match value.to_ascii_lowercase().as_str() {
-                        "1" | "true" | "t" => "t".to_owned(),
-                        "0" | "false" | "f" => "f".to_owned(),
-                        _ => return Err(error("22P02", "invalid input syntax for type boolean")),
-                    },
+                    Element::Bool => {
+                        let value = astersql_expression::pg_boolean_cast(
+                            Some(&value),
+                            astersql_expression::PgBooleanCast::TextToBool,
+                        )
+                        .map_err(|e| error(e.sqlstate(), e.to_string()))?
+                        .unwrap();
+                        if value == "1" {
+                            "t".to_owned()
+                        } else {
+                            "f".to_owned()
+                        }
+                    }
                     Element::Text => {
                         if value.is_empty()
                             || value.eq_ignore_ascii_case("NULL")
@@ -492,7 +506,10 @@ fn value_as(
         Ok((format!("{{{}}}", values.join(",")), shape))
     }
     let (value, _) = render(expr, row, element)?;
-    if matches!(element, Element::Int4 | Element::Int8 | Element::Text) {
+    if matches!(
+        element,
+        Element::Int4 | Element::Int8 | Element::Bool | Element::Text
+    ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
             .map(Some)
@@ -518,6 +535,12 @@ fn typed_array(bytes: &[u8], element: Element) -> SessionResult<astersql_types::
         Element::Int8 => astersql_expression::pg_cast_int8(Some(text))
             .map(|v| PgArrayElement::Int8(v.unwrap()))
             .map_err(|e| error(e.sqlstate(), e.to_string())),
+        Element::Bool => astersql_expression::pg_boolean_cast(
+            Some(text),
+            astersql_expression::PgBooleanCast::TextToBool,
+        )
+        .map(|v| PgArrayElement::Bool(v.unwrap() == "1"))
+        .map_err(|e| error(e.sqlstate(), e.to_string())),
         Element::Text => astersql_expression::pg_text_cast(Some(text), false, 25, -1, true)
             .map(|v| PgArrayElement::Text(v.unwrap()))
             .map_err(|e| error(e.sqlstate(), e.to_string())),
@@ -536,7 +559,7 @@ pub(super) fn validate_cast(
 ) -> SessionResult<()> {
     if !matches!(
         target.PostgreSQLArrayElement(),
-        Some(Element::Int4 | Element::Int8 | Element::Text)
+        Some(Element::Int4 | Element::Int8 | Element::Bool | Element::Text)
     ) {
         return Ok(());
     }
@@ -549,7 +572,11 @@ pub(super) fn validate_cast(
                 matches!(&child.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::Null))
                 || supported_array_element(child, target)
             }),
-            ast::ExprKind::Cast { Tp, .. } => matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int4 | Element::Int8 | Element::Text)) || Tp.PostgreSQLTextOid() == Some(25),
+            ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
+                Some(source) if source == Element::Bool || target == Element::Bool => source == target,
+                Some(Element::Int4 | Element::Int8 | Element::Text) => true,
+                _ => Tp.PostgreSQLTextOid() == Some(25),
+            },
             _ => false,
         }
     }
@@ -558,16 +585,21 @@ pub(super) fn validate_cast(
             ast::ExprKind::Array { .. } => supported(expr, target),
             ast::ExprKind::ParamMarker { .. } => true,
             _ => {
-                matches!(
-                    element_type(expr, &HashMap::new()).ok().flatten(),
-                    Some(Element::Int4 | Element::Int8 | Element::Text)
-                ) || (target == Element::Text
-                    && matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_))))
+                let source = element_type(expr, &HashMap::new()).ok().flatten();
+                if target == Element::Bool {
+                    return source == Some(Element::Bool)
+                        || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
+                }
+                matches!(source, Some(Element::Int4 | Element::Int8 | Element::Text))
+                    || (target == Element::Text
+                        && matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_))))
             }
         }
     }
-    if target.PostgreSQLArrayElement() == Some(Element::Text)
-        && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| e != Element::Text))
+    if matches!(
+        target.PostgreSQLArrayElement(),
+        Some(Element::Text | Element::Bool)
+    ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
         return Err(error("0A000", "array cast source is not supported"));
     }
@@ -599,7 +631,10 @@ pub(super) fn cast_value(
         ast::ExprKind::Cast { Tp, .. } => Tp.PostgreSQLArrayElement().unwrap_or(target),
         _ => target,
     };
-    if source != target && (source == Element::Text || target == Element::Text) {
+    if source != target
+        && (matches!(source, Element::Text | Element::Bool)
+            || matches!(target, Element::Text | Element::Bool))
+    {
         return Err(error("0A000", "array cast source is not supported"));
     }
     let source = typed_array(text.as_bytes(), source)?;

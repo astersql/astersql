@@ -159,3 +159,8 @@ Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。p
 ## text 数组逐族接入（任务25）
 
 普通Parse新增1009，text数组Bind逐元素委派parameter(25)，binary数组Bind逐元素委派binary_parameter(25)，复用既有UTF8/NUL诊断。规范PgArray保留shape/lower和两层NULL，完全成功后才返回BinaryParam。int4_array_text保留原接口并委派array_text；未开放其他族仍0A000。
+
+
+## bool 数组逐族接入（任务26）
+
+普通Bind开放数组OID1000，text元素委派parameter(16)，binary元素将完整元素载荷委派binary_parameter(16)校验值与长度，成功后标记已消费。作为闭环必需局部纠错，通用标量OID16的binary入口接受任一单字节并规范化非零为01，空载荷08P01、多字节22P03；目录专用入口未改。TCP和真实libpq覆盖声明/推断/零OID、格式四组合、NULL、恢复和清理。

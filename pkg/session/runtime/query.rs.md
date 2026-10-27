@@ -219,3 +219,8 @@ int4[] cast 在通用标量 cast 前进入 pg_array 的规范值路径；分析�
 ## text 数组逐族接入（任务25）
 
 PostgreSQL直接查询的Cast分派增加Element::Text，沿pg_array::validate_cast/cast_value求值，避免字符串cast吞掉shape/lower/元素NULL；共享pg_array_test独立覆盖。
+
+
+## bool 数组逐族接入（任务26）
+
+Cast分派注册Element::Bool并复用pg_array::validate_cast/cast_value，同一共享执行消费者保持bool数组身份、shape/lower和NULL。

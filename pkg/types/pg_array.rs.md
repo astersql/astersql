@@ -2,7 +2,7 @@
 
 ## 定位与接口
 
-`PgArray::new(element_oid, element_typmod, shape, lower_bounds, elements)` 是规范矩形数组的唯一构造入口。私有字段与只读切片保持构造不变量；shape/lower使用signed i32，逐元素值按最后一轴变化最快的行主序保存，不重排。维数属于值，不属于元素OID。内部容器支持OID23/`PgArrayElement::Int4(i32)`和OID25/`Text(String)`，构造检查OID与实际元素变体匹配并拒绝text中的NUL；元素不可为嵌套数组、JSON或目录字符串。这里的text载体仅为内部codec闭环，不开放SQL/wire族。未开放族包括空数组及全NULL数组均返回UnsupportedElement/0A000。
+`PgArray::new(element_oid, element_typmod, shape, lower_bounds, elements)` 是规范矩形数组的唯一构造入口。私有字段与只读切片保持构造不变量；shape/lower使用signed i32，逐元素值按最后一轴变化最快的行主序保存，不重排。维数属于值，不属于元素OID。内部容器支持OID16/`PgArrayElement::Bool(bool)`、OID20/`Int8(i64)`、OID23/`Int4(i32)`和OID25/`Text(String)`，构造检查OID与实际元素变体匹配并拒绝text中的NUL；元素不可为嵌套数组、JSON或目录字符串。这里的text载体仅为内部codec闭环，不开放SQL/wire族。未开放族包括空数组及全NULL数组均返回UnsupportedElement/0A000。
 
 元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
 
@@ -74,3 +74,8 @@ Ready按根AGENTS与testing-flow选取。只修改Rust和说明不自动触发ba
 ## 2026-10-27 数组显式转换（任务23）
 
 新增规范Int8(i64)/元素OID20，仅供明确数组转换目标与结果编码；严格元素身份、8字节网络序、shape/lower/NULL不变。未开放binary输入族20，协议Bind白名单也保持关闭。
+
+
+## bool 数组逐族接入（任务26）
+
+新增PgArrayElement::Bool(bool)与元素OID16的严格身份校验。文本输出t/f、binary输出单字节00/01；接收codec由from_text_with/from_binary_with回调委派，不在容器复制标量解析。shape/lower/typmod、两层NULL、空数组规范化沿原内核。

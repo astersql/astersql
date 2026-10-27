@@ -536,3 +536,100 @@ fn pg05_array_text_shared_casts_and_constructors() {
         result[0].close().unwrap();
     }
 }
+
+#[test]
+fn pg05_array_bool_declared_parameter_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, count, fields) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ? AS v", &[1000])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.PostgreSQLArrayElement(),
+        Some(Element::Bool)
+    );
+    for (input, expected) in [
+        (
+            Some("[0:1][-2:-1]={{t,NULL},{f,t}}"),
+            Some("[0:1][-2:-1]={{t,NULL},{f,t}}"),
+        ),
+        (Some("{}"), Some("{}")),
+        (None, None),
+    ] {
+        let argument = input
+            .map(|s| ConcretePreparedArgument::Text(s.to_owned()))
+            .unwrap_or(ConcretePreparedArgument::Null);
+        let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Bool)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.unwrap_or("<nil>").to_owned()]
+        );
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_bool_shared_casts_and_constructors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY[true,false,NULL]::boolean[] AS v",
+            "{t,f,NULL}",
+        ),
+        (
+            "SELECT '[-2:-1]={yes,NULL}'::boolean[] AS v",
+            "[-2:-1]={t,NULL}",
+        ),
+        ("SELECT ARRAY[]::boolean[] AS v", "{}"),
+        ("SELECT NULL::boolean[] AS v", "<nil>"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Bool)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+    }
+}
+
+#[test]
+fn pg05_array_bool_unopened_cross_family_casts_even_for_null() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT NULL::boolean[]::int4[]",
+        "SELECT (NULL::int4[])::boolean[]",
+        "SELECT ARRAY[true]::int8[]",
+    ] {
+        let failure = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[])
+            .unwrap_err();
+        assert_eq!(
+            failure.pg_array_error().map(|e| e.state),
+            Some("0A000"),
+            "{sql}: {failure}"
+        );
+    }
+}
