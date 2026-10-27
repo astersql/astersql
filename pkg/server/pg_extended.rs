@@ -404,6 +404,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_vec(),
         ),
         25 | 1043 | 1042 => (253, value.to_vec()),
+        2950 => (
+            253,
+            text.parse::<astersql_types::pg_uuid::PgUuid>()
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .to_string()
+                .into_bytes(),
+        ),
         1700 => {
             let numeric = text
                 .parse::<astersql_types::pg_numeric::PgNumeric>()
@@ -561,6 +568,18 @@ fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             let timestamp = astersql_types::pg_temporal::PgTimestamp::from_binary(value)
                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
             return parameter(1114, Some(timestamp.to_string().as_bytes()));
+        }
+        2950 => {
+            // uuid_recv reads exactly 16 bytes, then Bind rejects leftovers.
+            // Preserve textual byte order; UUIDs are not host-endian integers.
+            if value.len() < 16 {
+                return Err(error("08P01", "insufficient data left in UUID parameter"));
+            }
+            let bytes: [u8; 16] = value.try_into().map_err(|_| invalid())?;
+            let uuid = astersql_types::pg_uuid::PgUuid::from_bytes(bytes);
+            // The prepared statement's OID context supplies UUID identity through
+            // the existing text argument bridge, including for typed NULLs.
+            return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
         17 => (252, value.to_vec()),
         25 | 1042 | 1043 => return parameter(oid, Some(value)),
@@ -895,6 +914,7 @@ impl Extended {
                         | 1184
                         | 1186
                         | 1700
+                        | 2950
                 )
             {
                 return Err(error("0A000", "unsupported text parameter OID"));

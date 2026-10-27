@@ -6380,3 +6380,194 @@ fn pg_scalar_27() {
         "pg_scalar_27: 5 value/NULL roundtrip cases (10 executions), zero-row and statement/portal metadata, 16 Bind rejection/Sync/ROLLBACK/no-write cases, 3 MySQL checkpoints"
     );
 }
+
+#[test]
+fn pg05_uuid_input_text_codec() {
+    use crate::pg_extended::parameter;
+    let canonical = b"00112233-4455-6677-8899-aabbccddeeff";
+    for input in [
+        canonical.as_slice(),
+        b"00112233445566778899AABBCCDDEEFF",
+        b"{00112233445566778899AABBCCDDEEFF}",
+        b"0011-2233-4455-6677-8899-aabb-ccdd-eeff",
+    ] {
+        let value = parameter(2950, Some(input)).unwrap();
+        assert!(!value.is_null);
+        assert_eq!(value.tp, 253);
+        assert_eq!(value.value, canonical);
+    }
+    for input in [
+        b"".as_slice(),
+        b"00112233445566778899aabbccddeef",
+        b"00112233445566778899aabbccddeeff0",
+        b"00112233-4455-6677-8899-aabbccddeefg",
+        b"00112233-4455-6677-8899-aabbccddeeff-",
+        b"{00112233445566778899aabbccddeeff",
+        b"00112233445566778899aabbccddeeff}",
+        b"urn:uuid:00112233-4455-6677-8899-aabbccddeeff",
+        b" 00112233-4455-6677-8899-aabbccddeeff",
+        b"00112233-4455-6677-8899-aabbccddeeff ",
+        b"0-0112233445566778899aabbccddeeff",
+    ] {
+        assert_eq!(
+            parameter(2950, Some(input)).unwrap_err().0,
+            "22P02",
+            "{input:?}"
+        );
+    }
+    for input in [
+        b"\xff".as_slice(),
+        b"00112233\0-4455-6677-8899-aabbccddeeff",
+    ] {
+        assert_eq!(parameter(2950, Some(input)).unwrap_err().0, "22021");
+    }
+    assert!(parameter(2950, None).unwrap().is_null);
+}
+
+#[test]
+fn pg05_uuid_input_parse_bind_execute_and_recovery() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    // Explicit OID, cast inference and an OID-zero declaration use the real engine.
+    for (name, sql, oids) in [
+        ("declared", "SELECT $1 AS v", vec![2950]),
+        ("inferred", "SELECT $1::uuid AS v", vec![]),
+        ("zero", "SELECT $1::uuid AS v", vec![0]),
+    ] {
+        parse(&mut socket, name, sql, &oids);
+        assert_eq!(read(&mut socket), (b'1', vec![]), "{name}");
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &2950u32.to_be_bytes()].concat()
+            )
+        );
+        let description = read(&mut socket);
+        assert_eq!(description.0, b'T');
+        let mut expected_description = 1i16.to_be_bytes().to_vec();
+        expected_description.extend_from_slice(b"v\0");
+        expected_description.extend_from_slice(&0u32.to_be_bytes());
+        expected_description.extend_from_slice(&0i16.to_be_bytes());
+        expected_description.extend_from_slice(&2950u32.to_be_bytes());
+        expected_description.extend_from_slice(&16i16.to_be_bytes());
+        expected_description.extend_from_slice(&(-1i32).to_be_bytes());
+        expected_description.extend_from_slice(&0i16.to_be_bytes());
+        assert_eq!(description.1, expected_description);
+        let bits = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        for (format, bytes, expected) in [
+            (
+                0,
+                Some(b"{00112233445566778899AABBCCDDEEFF}".as_slice()),
+                Some("00112233-4455-6677-8899-aabbccddeeff"),
+            ),
+            (
+                1,
+                Some(bits.as_slice()),
+                Some("00112233-4455-6677-8899-aabbccddeeff"),
+            ),
+            (
+                1,
+                Some([0u8; 16].as_slice()),
+                Some("00000000-0000-0000-0000-000000000000"),
+            ),
+            (
+                1,
+                Some([255u8; 16].as_slice()),
+                Some("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+            ),
+            (
+                1,
+                Some([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128].as_slice()),
+                Some("01000000-0000-0000-0000-000000000080"),
+            ),
+            (0, None, None),
+            (1, None, None),
+        ] {
+            bind_formats(&mut socket, name, &[format], &[bytes]);
+            assert_eq!(read(&mut socket), (b'2', vec![]), "{name}/{format}");
+            send(&mut socket, b'D', b"P\0");
+            assert_eq!(read(&mut socket), description);
+            execute(&mut socket, "", 0);
+            assert_eq!(
+                read(&mut socket),
+                (b'D', row(&[expected])),
+                "{name}/{format}"
+            );
+            assert_eq!(read(&mut socket).0, b'C');
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        }
+    }
+    for (format, bytes, state) in [
+        (1, b"".as_slice(), "08P01"),
+        (1, &[0; 15], "08P01"),
+        (1, &[0; 17], "22P03"),
+        (0, b"bad", "22P02"),
+        (0, b"\xff", "22021"),
+        (0, b"\0", "22021"),
+    ] {
+        bind_formats(&mut socket, "declared", &[format], &[Some(bytes)]);
+        let response = read(&mut socket);
+        assert_eq!(response.0, b'E');
+        assert!(
+            response
+                .1
+                .windows(6)
+                .any(|w| w == [b"C", state.as_bytes()].concat()),
+            "{response:?}"
+        );
+        // Ignore Execute until Sync, then reuse the same statement successfully.
+        execute(&mut socket, "", 0);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        bind_formats(
+            &mut socket,
+            "declared",
+            &[0],
+            &[Some(b"00112233445566778899aabbccddeeff")],
+        );
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(
+            read(&mut socket),
+            (b'D', row(&[Some("00112233-4455-6677-8899-aabbccddeeff")]))
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    for name in ["declared", "inferred", "zero"] {
+        send(&mut socket, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

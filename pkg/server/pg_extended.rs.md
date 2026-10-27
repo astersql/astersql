@@ -130,3 +130,9 @@ OID 17 的文本 Bind 保留 hex 解码，并支持普通 UTF-8 字节、双反�
 ## bytea 真实客户端差分诊断
 
 PostgreSQL 18.6/libpq 实测要求非法 hex 字符及不完整字节对返回 `22023`；OID 17 文本 Bind 的 hex 分支保留这一诊断，escape 格式错误仍为 `22P02`，无效 UTF-8/NUL 文本仍为 `22021`。`pg_scalar_28` 独立双端差分与 `pg_scalar_25` 协议拒绝/恢复回归覆盖此局部修正。
+
+## UUID参数输入
+
+Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。parameter复用PgUuid严格词法解析，输入先检查UTF-8/NUL（22021），非法词法22P02；规范文本经BinaryParam的既有tp253载荷交给真实prepared参数桥接，UUID身份由2950上下文保留（含NULL），不拼SQL字符串回填。binary_parameter要求恰16字节，短载荷08P01、多余字节22P03，按文本从左到右的字节序调用PgUuid::from_bytes，不做GUID换序或version/variant筛选。
+
+独立测试pg_extended_test.rs::pg05_uuid_input_text_codec与pg05_uuid_input_parse_bind_execute_and_recovery覆盖词法、两种输入、显式/推断参数身份、NULL与2950/16/-1描述、原字节序、任意位模式、Bind诊断与Sync恢复。UUID二进制结果及参考端四方向差分属于后续任务。
