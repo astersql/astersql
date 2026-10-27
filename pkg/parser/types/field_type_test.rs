@@ -523,3 +523,21 @@ fn pg05_array_varchar_restore_identity() {
         assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1015);
     }
 }
+
+#[test]
+fn pg05_array_bpchar_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Bpchar);
+    for (length, expected) in [
+        (-1, "BPCHAR[]"),
+        (2, "CHAR(2)[]"),
+        (10485760, "CHAR(10485760)[]"),
+    ] {
+        tp.SetFlen(length);
+        let mut output = Vec::new();
+        tp.FormatAsCastType(&mut output, false).unwrap();
+        assert_eq!(output, expected.as_bytes());
+        assert_eq!(tp.PostgreSQLArrayElement().unwrap().oid(), 1042);
+        assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1014);
+    }
+}

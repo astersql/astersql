@@ -1294,6 +1294,7 @@ pub(super) fn relational_expression_value(
                         | astersql_parser_types::PostgreSQLArrayElement::Int2
                         | astersql_parser_types::PostgreSQLArrayElement::Bool
                         | astersql_parser_types::PostgreSQLArrayElement::Varchar
+                        | astersql_parser_types::PostgreSQLArrayElement::Bpchar
                         | astersql_parser_types::PostgreSQLArrayElement::Text
                         | astersql_parser_types::PostgreSQLArrayElement::Bytea
                         | astersql_parser_types::PostgreSQLArrayElement::Float4
@@ -2737,7 +2738,7 @@ pub(super) fn relational_expression_type(
                 .unwrap_or_default()
         }
         ast::ExprKind::Array { .. } => super::pg_array::array_type(expression, &HashMap::new())
-            .map(super::pg_array::field_type)
+            .map(|element| super::pg_array::constructor_field_type(expression, element))
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }

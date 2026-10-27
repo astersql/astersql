@@ -292,3 +292,9 @@ Float4数组进入共享cast_value；pg_float4_relational_value识别私有Float
 ## 2026-10-28 varchar数组局部接线
 
 现有共享关系表达式cast消费者分派Varchar数组到同一个pg_array实现。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。
+
+## 2026-10-28 bpchar数组局部接线
+
+本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。
+
+Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标量及typed NULL保留长度，未定型NULL、无长度或不同长度使typmod为-1；普通查询和prepared描述使用同一规则。

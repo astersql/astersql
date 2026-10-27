@@ -148,3 +148,7 @@
 ## float4数组声明
 
 由main.astergram的PgCastType : PgPostfixFloat [ ]生成，使既有REAL/FLOAT(p)标量声明也能进入同一数组元素身份分派；没有手改状态表。float4本族接受，其他尚未开放族仍由现有语义门禁拒绝。使用astersql-parsergen generate/check核对生成产物。
+
+## bpchar数组长度语法接线（任务34）
+
+main.astergram新增PgCastType : PgPostfixText [ ]，让现有CHAR/CHARACTER(n)标量声明进入同一数组动作。main_tables由astersql-parsergen generate再生，使用check核对；不手工改自动机。

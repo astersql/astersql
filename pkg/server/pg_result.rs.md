@@ -209,3 +209,7 @@ OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec�
 ## 2026-10-28 varchar数组局部接线
 
 普通结果1015使用规范数组text/binary输出和n+4 typmod；无行/NULL仍由NativeType保留类型。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。
+
+## 2026-10-28 bpchar数组局部接线
+
+本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。

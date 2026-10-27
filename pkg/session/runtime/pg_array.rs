@@ -44,6 +44,7 @@ fn element_name(element: Element) -> &'static str {
         Element::Bool => "boolean",
         Element::Text => "text",
         Element::Varchar => "character varying",
+        Element::Bpchar => "character",
         Element::Bytea => "bytea",
     }
 }
@@ -83,6 +84,7 @@ pub(super) fn element_type(
             701 => Some(Element::Float8),
             25 => Some(Element::Text),
             1043 => Some(Element::Varchar),
+            1042 => Some(Element::Bpchar),
             17 => Some(Element::Bytea),
             _ => return Err(error("0A000", "ARRAY parameter type is not supported")),
         },
@@ -131,6 +133,9 @@ pub(super) fn element_type(
         }
         ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(1043) => {
             Some(Element::Varchar)
+        }
+        ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(1042) => {
+            Some(Element::Bpchar)
         }
         ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(25) => Some(Element::Text),
         ast::ExprKind::Parentheses(inner) => element_type(inner, parameters)?,
@@ -240,6 +245,35 @@ pub(super) fn field_type(element: Element) -> astersql_parser_types::FieldType {
     result
 }
 
+/// A bpchar constructor keeps a modifier only when every leaf declares the same length.
+pub(super) fn constructor_field_type(
+    expr: &ast::ExprNode,
+    element: Element,
+) -> astersql_parser_types::FieldType {
+    fn length(expr: &ast::ExprNode) -> isize {
+        match &expr.Kind {
+            ast::ExprKind::Parentheses(inner) => length(inner),
+            ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(1042) => Tp.GetFlen(),
+            ast::ExprKind::Array { Elements, .. } => {
+                let Some(first) = Elements.first().map(length) else {
+                    return -1;
+                };
+                if Elements.iter().all(|expr| length(expr) == first) {
+                    first
+                } else {
+                    -1
+                }
+            }
+            _ => -1,
+        }
+    }
+    let mut tp = field_type(element);
+    if element == Element::Bpchar {
+        tp.SetFlen(length(expr));
+    }
+    tp
+}
+
 /// Resolve every constructor before Prepare/Execute can fall back to scalar text.
 /// Offsets refer to the canonical parser's SQL, after indexed-marker mapping.
 pub(super) fn analyze(
@@ -257,7 +291,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -338,6 +372,7 @@ pub(super) fn analyze(
                     | Element::Bool
                     | Element::Text
                     | Element::Varchar
+                    | Element::Bpchar
                     | Element::Bytea
                     | Element::Numeric
                     | Element::Float4
@@ -658,7 +693,7 @@ fn value_as(
                         let text = astersql_types::pg_array::bytea_text_output(&bytes);
                         format!("\"{}\"", text.replace('\\', "\\\\"))
                     }
-                    Element::Text | Element::Varchar => {
+                    Element::Text | Element::Varchar | Element::Bpchar => {
                         if value.is_empty()
                             || value.eq_ignore_ascii_case("NULL")
                             || value.chars().any(|c| {
@@ -688,6 +723,7 @@ fn value_as(
             | Element::Bool
             | Element::Text
             | Element::Varchar
+            | Element::Bpchar
             | Element::Bytea
             | Element::Numeric
             | Element::Float4
@@ -723,11 +759,11 @@ fn typed_array_with_modifier(
         astersql_types::pg_numeric::PgNumeric::validate_modifier(precision, scale)
             .map_err(|e| error(e.sqlstate(), e.to_string()))?;
     }
-    if element == Element::Varchar {
+    if matches!(element, Element::Varchar | Element::Bpchar) {
         astersql_expression::pg_varchar_length(precision)
             .map_err(|e| error(e.sqlstate(), e.to_string()))?;
     }
-    let typmod = if element == Element::Varchar && precision >= 0 {
+    let typmod = if matches!(element, Element::Varchar | Element::Bpchar) && precision >= 0 {
         precision as i32 + 4
     } else if element == Element::Numeric && precision >= 0 {
         ((precision as i32) << 16 | (scale as i32 & 0x7ff)) + 4
@@ -769,19 +805,21 @@ fn typed_array_with_modifier(
             )
             .map(|v| PgArrayElement::Bool(v.unwrap() == "1"))
             .map_err(|e| error(e.sqlstate(), e.to_string())),
-            Element::Text | Element::Varchar => astersql_expression::pg_text_cast(
-                Some(text),
-                false,
-                element.oid(),
-                if element == Element::Varchar {
-                    precision
-                } else {
-                    -1
-                },
-                true,
-            )
-            .map(|v| PgArrayElement::Text(v.unwrap()))
-            .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Text | Element::Varchar | Element::Bpchar => {
+                astersql_expression::pg_text_cast(
+                    Some(text),
+                    false,
+                    element.oid(),
+                    if matches!(element, Element::Varchar | Element::Bpchar) {
+                        precision
+                    } else {
+                        -1
+                    },
+                    true,
+                )
+                .map(|v| PgArrayElement::Text(v.unwrap()))
+                .map_err(|e| error(e.sqlstate(), e.to_string()))
+            }
         },
     )
     .map_err(|failure| match &failure {
@@ -795,7 +833,10 @@ pub(super) fn validate_cast(
     expr: &ast::ExprNode,
     target: &astersql_parser_types::FieldType,
 ) -> SessionResult<()> {
-    if target.PostgreSQLArrayElement() == Some(Element::Varchar) {
+    if matches!(
+        target.PostgreSQLArrayElement(),
+        Some(Element::Varchar | Element::Bpchar)
+    ) {
         astersql_expression::pg_varchar_length(target.GetFlen())
             .map_err(|e| error(e.sqlstate(), e.to_string()))?;
     }
@@ -825,6 +866,7 @@ pub(super) fn validate_cast(
                 | Element::Bool
                 | Element::Text
                 | Element::Varchar
+                | Element::Bpchar
                 | Element::Bytea
                 | Element::Numeric
                 | Element::Float4
@@ -844,7 +886,7 @@ pub(super) fn validate_cast(
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
                 Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8) => source == target,
-                Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text | Element::Varchar) => true,
+                Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text | Element::Varchar | Element::Bpchar) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
             _ => false,
@@ -882,8 +924,9 @@ pub(super) fn validate_cast(
                             | Element::Int8
                             | Element::Text
                             | Element::Varchar
+                            | Element::Bpchar
                     )
-                ) || (matches!(target, Element::Text | Element::Varchar)
+                ) || (matches!(target, Element::Text | Element::Varchar | Element::Bpchar)
                     && matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_))))
             }
         }
@@ -893,6 +936,7 @@ pub(super) fn validate_cast(
         Some(
             Element::Text
                 | Element::Varchar
+                | Element::Bpchar
                 | Element::Bytea
                 | Element::Bool
                 | Element::Int2
@@ -975,6 +1019,7 @@ pub(super) fn cast_value(
             source,
             Element::Text
                 | Element::Varchar
+                | Element::Bpchar
                 | Element::Bytea
                 | Element::Bool
                 | Element::Int2
@@ -985,6 +1030,7 @@ pub(super) fn cast_value(
             target,
             Element::Text
                 | Element::Varchar
+                | Element::Bpchar
                 | Element::Bytea
                 | Element::Bool
                 | Element::Int2
@@ -1021,7 +1067,11 @@ pub(super) fn cast_value(
             .and_then(|array| runtime_array(&array))
             .map(Some);
     }
-    let source = if matches!(target, Element::Numeric | Element::Varchar) && source == target {
+    let source = if matches!(
+        target,
+        Element::Numeric | Element::Varchar | Element::Bpchar
+    ) && source == target
+    {
         typed_array_with_modifier(
             text.as_bytes(),
             source,

@@ -1401,3 +1401,42 @@ fn pg05_array_varchar_sql_modifiers_constructors_and_null() {
     }
     assert!(session.execute("SELECT 1").is_ok());
 }
+
+#[test]
+fn pg05_array_bpchar_sql_modifiers_constructors_and_null() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY['','a','é','😀']::char(2)[]",
+            Some(r#"{"  ","a ","é ","😀 "}"#),
+        ),
+        ("SELECT '{\"\",abc}'::char[]", Some(r#"{" ",a}"#)),
+        ("SELECT '{a}'::char(3)[]::char(2)[]", Some(r#"{"a "}"#)),
+        (
+            "SELECT '[-2:-1]={é😀x,NULL}'::char(2)[]",
+            Some("[-2:-1]={é😀,NULL}"),
+        ),
+        (
+            "SELECT ARRAY[['é😀x',NULL],['a  ','éx']]::char(2)[]",
+            Some("{{é😀,NULL},{\"a \",é}}"),
+        ),
+        ("SELECT ARRAY[]::char(2)[]", Some("{}")),
+        ("SELECT ARRAY[NULL,NULL]::char(2)[]", Some("{NULL,NULL}")),
+        ("SELECT ARRAY['é'::bpchar,'😀'::bpchar]", Some("{é,😀}")),
+        ("SELECT NULL::char(2)[]", None),
+        ("SELECT '{abcdef}'::char(3)[]::char(2)[]", Some("{ab}")),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        let row = results[0].next_row().unwrap().unwrap();
+        assert_eq!(row[0], expected.unwrap_or("<nil>"), "{sql}");
+        results[0].close().unwrap();
+    }
+    for n in [0, -2, 10485761] {
+        for suffix in ["", " WHERE false"] {
+            let sql = format!("SELECT NULL::char({n})[]{suffix}");
+            assert!(session.execute(&sql).is_err(), "{sql}");
+        }
+    }
+    assert!(session.execute("SELECT 1").is_ok());
+}

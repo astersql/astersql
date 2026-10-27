@@ -336,7 +336,7 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
-        id if id.starts_with("pgcasttype_pgcasttype--") || id.starts_with("pgcasttype_pgpostfixfloat--") => Some(ExpressionRule::PgArrayType),
+        id if id.starts_with("pgcasttype_pgcasttype--") || id.starts_with("pgcasttype_pgpostfixfloat--") || id.starts_with("pgcasttype_pgpostfixtext--") => Some(ExpressionRule::PgArrayType),
         id if id.starts_with("pgcasttype_pginterval_pgintervalopt--") || id.starts_with("pgcasttype_pginterval_prec_empty--") => Some(ExpressionRule::PgIntervalType),
         id if id.starts_with("pgintervalliteralopt") => Some(ExpressionRule::PgIntervalLiteralOpt),
         id if id.starts_with("pgintervalopt") => Some(ExpressionRule::PgIntervalOpt),
@@ -1428,9 +1428,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             let element = match source.PostgreSQLArrayElement() {
-                Some(element @ (parser_types::PostgreSQLArrayElement::Int2 | parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text | parser_types::PostgreSQLArrayElement::Varchar | parser_types::PostgreSQLArrayElement::Bytea | parser_types::PostgreSQLArrayElement::Numeric | parser_types::PostgreSQLArrayElement::Float4 | parser_types::PostgreSQLArrayElement::Float8)) => element,
+                Some(element @ (parser_types::PostgreSQLArrayElement::Int2 | parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text | parser_types::PostgreSQLArrayElement::Varchar | parser_types::PostgreSQLArrayElement::Bpchar | parser_types::PostgreSQLArrayElement::Bytea | parser_types::PostgreSQLArrayElement::Numeric | parser_types::PostgreSQLArrayElement::Float4 | parser_types::PostgreSQLArrayElement::Float8)) => element,
                 None if source.GetType() == parser_mysql::r#type::TypeBlob && source.GetCharset() == "binary" => parser_types::PostgreSQLArrayElement::Bytea,
                 None if source.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0 => parser_types::PostgreSQLArrayElement::Bool,
+                None if source.PostgreSQLTextOid() == Some(1042) => parser_types::PostgreSQLArrayElement::Bpchar,
                 None if source.PostgreSQLTextOid() == Some(1043) => parser_types::PostgreSQLArrayElement::Varchar,
                 None if source.PostgreSQLTextOid() == Some(25) => parser_types::PostgreSQLArrayElement::Text,
                 None if source.GetType() == parser_mysql::r#type::TypeFloat => parser_types::PostgreSQLArrayElement::Float4,
@@ -1446,7 +1447,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             };
             let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypeVarString);
             tp.SetPostgreSQLArrayElement(element);
-            if matches!(element, parser_types::PostgreSQLArrayElement::Numeric | parser_types::PostgreSQLArrayElement::Varchar) {
+            if matches!(element, parser_types::PostgreSQLArrayElement::Numeric | parser_types::PostgreSQLArrayElement::Varchar | parser_types::PostgreSQLArrayElement::Bpchar) {
                 tp.SetFlen(source.GetFlen());
                 tp.SetDecimal(source.GetDecimal());
             }

@@ -262,3 +262,7 @@ PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast
 ## 2026-10-28 varchar数组局部接线
 
 现有关系查询cast消费者分派Varchar数组到pg_array，不经过通用字符串cast。独立测试见同目录既有测试文件及server的pg05_array_varchar前缀；真实18.6证据见`docs/postgresql-pg05-array-varchar-evidence.md`。
+
+## 2026-10-28 bpchar数组局部接线
+
+本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。

@@ -5787,3 +5787,34 @@ fn pg05_array_varchar_parser_identity() {
         );
     }
 }
+
+#[test]
+fn pg05_array_bpchar_parser_identity() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT CAST(NULL AS char(2)[])",
+        "SELECT $1::character(2)[]",
+        "SELECT $1::char[]",
+        "SELECT $1::bpchar[]",
+        "SELECT $1::char(2)[]",
+        "SELECT $1::char(10485760)[]",
+        "SELECT $1::bpchar[][]",
+        "SELECT ARRAY[]::bpchar[]",
+        "SELECT CAST(NULL AS bpchar[])",
+    ] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("expected cast")
+        };
+        assert_eq!(
+            Tp.PostgreSQLArrayElement(),
+            Some(parser_types::PostgreSQLArrayElement::Bpchar)
+        );
+    }
+}

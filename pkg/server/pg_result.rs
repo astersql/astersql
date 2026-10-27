@@ -527,7 +527,7 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     }
     if matches!(
         oid,
-        1000 | 1001 | 1005 | 1007 | 1009 | 1015 | 1016 | 1021 | 1022 | 1231
+        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1016 | 1021 | 1022 | 1231
     ) {
         return match value {
             Value::Null => Ok(None),
@@ -801,9 +801,8 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
-        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1015 | 1016 | 1021 | 1022 | 1231 | 1028 => {
-            binary_array(text, oid)?
-        }
+        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1016 | 1021 | 1022 | 1231
+        | 1028 => binary_array(text, oid)?,
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -978,7 +977,7 @@ fn typed_array_result(
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
     if matches!(
         oid,
-        1000 | 1001 | 1005 | 1007 | 1009 | 1015 | 1016 | 1021 | 1022 | 1231
+        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1016 | 1021 | 1022 | 1231
     ) {
         return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
@@ -993,6 +992,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1016 => 20,
         1009 => 25,
         1015 => 1043,
+        1014 => 1042,
         1000 => 16,
         1021 => 700,
         1022 => 701,
@@ -1170,7 +1170,7 @@ pub(crate) fn encode_formats_interval(
             body.extend_from_slice(&attribute.to_be_bytes());
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
-            let typmod = if matches!(*oid, 1042 | 1043 | 1015) {
+            let typmod = if matches!(*oid, 1042 | 1043 | 1014 | 1015) {
                 result
                     .native_types
                     .get(index)

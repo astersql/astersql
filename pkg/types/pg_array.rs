@@ -199,7 +199,7 @@ impl PgArray {
     ) -> Result<Self, PgArrayError> {
         if !matches!(
             element_oid,
-            16 | 17 | 20 | 21 | 23 | 25 | 1043 | 700 | 701 | 1700
+            16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
         ) {
             return Err(PgArrayError::UnsupportedElement);
         }
@@ -213,7 +213,7 @@ impl PgArray {
                 (21, PgArrayElement::Int2(_)) => {}
                 (16, PgArrayElement::Bool(_)) => {}
                 (23, PgArrayElement::Int4(_)) | (20, PgArrayElement::Int8(_)) => {}
-                (25 | 1043, PgArrayElement::Text(s)) => {
+                (25 | 1042 | 1043, PgArrayElement::Text(s)) => {
                     if s.contains('\0') {
                         return Err(PgArrayError::InvalidEncoding);
                     }
@@ -300,7 +300,7 @@ impl PgArray {
         }
         if !matches!(
             element_oid,
-            16 | 17 | 20 | 21 | 23 | 25 | 1043 | 700 | 701 | 1700
+            16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
         ) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
@@ -375,7 +375,7 @@ impl PgArray {
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
         let supported = matches!(
             element_oid,
-            16 | 17 | 20 | 21 | 23 | 25 | 1043 | 700 | 701 | 1700
+            16 | 17 | 20 | 21 | 23 | 25 | 1042 | 1043 | 700 | 701 | 1700
         );
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
