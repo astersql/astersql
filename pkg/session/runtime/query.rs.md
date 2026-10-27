@@ -230,3 +230,8 @@ Cast分派注册Element::Bool并复用pg_array::validate_cast/cast_value，同�
 Int2数组转换复用共享pg_array消费者。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast_value；不新建求值路径。

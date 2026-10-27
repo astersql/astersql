@@ -30,3 +30,10 @@ Int2定型、共同整数类型选择、构造及文本转换复用pg_cast_int2�
 ## 2026-10-27 int8数组边界构造
 
 一元带符号整数元素复用query::pg_integer_literal_type规则：i64::MIN的正数字面token为Uint64，须对完整负号表达式定型为Int8，避免只分析正token误拒合法边界。实际值仍沿既有i128精确一元运算和pg_cast_int8，不经f64。其他族、numeric数组或隐式转换矩阵未扩展。证据见 `docs/postgresql-pg05-array-int8-evidence.md`。
+
+
+## 任务29 bytea数组局部接线
+
+Bytea数组沿共享analyze/cast/value消费者，typed_array调用types::pg_array::bytea_text_input，保留任意字节、形状/下界和两层NULL。构造器先做标量codec再单独数组转义；不复制server bytea语法。跨族数组转换保持0A000。
+
+OID17参数构造ARRAY时仅识别既有binder生成的binary literal cast及typed NULL，复用binary_cast_literal_value/binary_runtime_bytes还原原字节；不按普通text的前缀外观识别字节，不开放任意binary表达式或跨族转换。

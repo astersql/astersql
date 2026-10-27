@@ -148,3 +148,8 @@ Int2元素身份21/1005，Restore/RestoreAsCastType保持INT2[]。
 FieldType::Restore/RestoreAsCastType补INT8[]，防止声明绑定和typed NULL在SQL还原时丢失数组身份。
 
 行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+PostgreSQLArrayElement增加Bytea，元素OID17/数组OID1001；Restore及FormatAsCastType保持BYTEA[]身份，不借MySQL JSON或Text身份。

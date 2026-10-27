@@ -9125,3 +9125,257 @@ fn pg05_array_int8_wire_four_formats_metadata_and_recovery() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg05_array_bytea_wire_four_formats_metadata_and_recovery() {
+    fn words(values: &[i32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_be_bytes()).collect()
+    }
+    fn description(format: i16) -> (u8, Vec<u8>) {
+        (
+            b'T',
+            [
+                1i16.to_be_bytes().as_slice(),
+                b"v\0",
+                &[0; 6],
+                &1001u32.to_be_bytes(),
+                &(-1i16).to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &format.to_be_bytes(),
+            ]
+            .concat(),
+        )
+    }
+    fn bind_value(
+        socket: &mut TcpStream,
+        statement: &str,
+        input: i16,
+        output: i16,
+        value: Option<&[u8]>,
+    ) {
+        let mut body = [
+            b"\0".as_slice(),
+            statement.as_bytes(),
+            b"\0",
+            &1i16.to_be_bytes(),
+            &input.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat();
+        body.extend_from_slice(&value.map_or(-1, |v| v.len() as i32).to_be_bytes());
+        if let Some(v) = value {
+            body.extend_from_slice(v);
+        }
+        body.extend_from_slice(&1i16.to_be_bytes());
+        body.extend_from_slice(&output.to_be_bytes());
+        send(socket, b'B', &body);
+    }
+    fn data(value: Option<&[u8]>) -> (u8, Vec<u8>) {
+        let mut body = 1i16.to_be_bytes().to_vec();
+        body.extend_from_slice(&value.map_or(-1, |v| v.len() as i32).to_be_bytes());
+        if let Some(v) = value {
+            body.extend_from_slice(v);
+        }
+        (b'D', body)
+    }
+    fn sync(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct CloseOnDrop<'a>(&'a PgService);
+    impl Drop for CloseOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _close = CloseOnDrop(&service);
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for (statement, sql, oids) in [
+        ("declared", "SELECT $1 AS v", vec![1001]),
+        ("inferred", "SELECT $1::bytea[] AS v", vec![0]),
+        ("cast", "SELECT CAST($1 AS bytea[]) AS v", vec![]),
+        ("empty", "SELECT $1::bytea[] AS v WHERE false", vec![]),
+        (
+            "first_null",
+            "SELECT NULL::bytea[] AS v UNION ALL SELECT $1::bytea[] AS v",
+            vec![1001],
+        ),
+    ] {
+        parse(&mut socket, statement, sql, &oids);
+        assert_eq!(read(&mut socket), (b'1', vec![]));
+        send(
+            &mut socket,
+            b'D',
+            &[b"S", statement.as_bytes(), b"\0"].concat(),
+        );
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &1001u32.to_be_bytes()].concat()
+            )
+        );
+        assert_eq!(read(&mut socket), description(0));
+        let cases = [
+            (
+                Some(r#"{"\\x00ff","\\x",NULL}"#),
+                Some([words(&[1, 1, 17, 3, 1, 2]), vec![0, 255], words(&[0, -1])].concat()),
+            ),
+            (
+                Some(r#"[0:1][-2:-1]={{"\\x00ff",NULL},{"\\x","\\xc328"}}"#),
+                Some(
+                    [
+                        words(&[2, 1, 17, 2, 0, 2, -2, 2]),
+                        vec![0, 255],
+                        words(&[-1, 0, 2]),
+                        vec![195, 40],
+                    ]
+                    .concat(),
+                ),
+            ),
+            (Some("{}"), Some(words(&[0, 0, 17]))),
+            (Some("{NULL}"), Some(words(&[1, 1, 17, 1, 1, -1]))),
+            (Some("{NULL,NULL}"), Some(words(&[1, 1, 17, 2, 1, -1, -1]))),
+            (None, None),
+        ];
+        for (text, binary) in cases {
+            for input in [0, 1] {
+                for output in [0, 1] {
+                    let payload = if input == 0 {
+                        text.map(str::as_bytes)
+                    } else {
+                        binary.as_deref()
+                    };
+                    bind_value(&mut socket, statement, input, output, payload);
+                    assert_eq!(
+                        read(&mut socket),
+                        (b'2', vec![]),
+                        "{statement} input={input} output={output} {text:?}"
+                    );
+                    send(&mut socket, b'D', b"P\0");
+                    assert_eq!(read(&mut socket), description(output));
+                    execute(&mut socket, "", 0);
+                    if statement == "first_null" {
+                        assert_eq!(read(&mut socket), data(None));
+                    }
+                    if statement != "empty" {
+                        let expected = if output == 0 {
+                            text.map(str::as_bytes)
+                        } else {
+                            binary.as_deref()
+                        };
+                        assert_eq!(
+                            read(&mut socket),
+                            data(expected),
+                            "{statement} input={input} output={output} {text:?}"
+                        );
+                    }
+                    assert_eq!(read(&mut socket).0, b'C');
+                    sync(&mut socket);
+                }
+            }
+        }
+    }
+    for (sql, text) in [
+        ("SELECT ARRAY[]::bytea[] AS v", Some("{}")),
+        ("SELECT ARRAY[NULL,NULL]::bytea[] AS v", Some("{NULL,NULL}")),
+        ("SELECT NULL::bytea[] AS v", None),
+        (
+            "SELECT '{abc,NULL}'::bytea[] AS v",
+            Some(r#"{"\\x616263",NULL}"#),
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0], description(0), "{sql}: {result:?}");
+        assert_eq!(result[1], data(text.map(str::as_bytes)), "{sql}");
+    }
+    for (format, payload, state) in [
+        (0, b"{{1,2},{3}}".to_vec(), "22P02"),
+        (0, b"[0:2]={1,2}".to_vec(), "22P02"),
+        (0, b"{1,}".to_vec(), "22P02"),
+        (0, b"{\xff}".to_vec(), "22021"),
+        (1, words(&[0, 0, 23]), "42804"),
+        (1, words(&[-1, 0, 16]), "22P03"),
+        (1, words(&[0, 2, 16]), "22P03"),
+        (1, vec![0], "08P01"),
+        (1, words(&[1, 0, 17, 1, 1, -2]), "22P03"),
+        (1, words(&[0, 0, 17, 0]), "22P03"),
+    ] {
+        bind_value(&mut socket, "declared", format, 1, Some(&payload));
+        assert_state(&read(&mut socket), state);
+        execute(&mut socket, "", 0);
+        sync(&mut socket);
+        bind_value(&mut socket, "declared", 0, 0, Some(br#"{"\\x31",NULL}"#));
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), data(Some(br#"{"\\x31",NULL}"#)));
+        assert_eq!(read(&mut socket).0, b'C');
+        sync(&mut socket);
+    }
+    parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
+    assert_state(&read(&mut socket), "42P18");
+    sync(&mut socket);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1231]);
+    assert_state(&read(&mut socket), "0A000");
+    sync(&mut socket);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}
+
+#[test]
+fn pg05_array_bytea_scalar_prerequisite() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    for bytes in [
+        vec![],
+        vec![0, 255, 195, 40, 92],
+        (0..=255).collect::<Vec<u8>>(),
+    ] {
+        let text = format!(
+            "\\x{}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        assert_eq!(parameter(17, Some(text.as_bytes())).unwrap().value, bytes);
+        assert_eq!(binary_parameter(17, Some(&bytes)).unwrap().value, bytes);
+    }
+    assert_eq!(
+        parameter(17, Some(br"\000\377\\")).unwrap().value,
+        [0, 255, 92]
+    );
+    assert!(parameter(17, None).unwrap().is_null);
+    assert!(binary_parameter(17, None).unwrap().is_null);
+    for (input, state) in [
+        (br"\x0".as_slice(), "22023"),
+        (br"\xgg", "22023"),
+        (br"\400", "22P02"),
+        (br"\q", "22P02"),
+        (b"a\0b", "22021"),
+        (b"\xff", "22021"),
+    ] {
+        assert_eq!(parameter(17, Some(input)).unwrap_err().0, state);
+    }
+}

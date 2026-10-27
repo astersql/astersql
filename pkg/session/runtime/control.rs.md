@@ -197,3 +197,8 @@ OID1000加入已有prepared参数声明与投影类型分派；直接参数沿�
 现有prepared参数声明、字段身份和参数literal binder注册1016；通过INT8[]显式目标持续保留数组身份与typed NULL。只补现有入口，不新增求值器或子系统。
 
 行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+普通prepared声明参数白名单注册1001，FieldType保留Bytea元素身份，参数literal binder包装CAST(... AS BYTEA[])，含typed NULL及重复绑定。

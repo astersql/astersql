@@ -573,7 +573,7 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
-    if matches!(oid, 1000 | 1005 | 1007 | 1009 | 1016) {
+    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016) {
         return match value {
             Value::Null => Ok(None),
             Value::Text(text) => typed_array_result(text.as_bytes(), oid)
@@ -822,7 +822,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
-        22 | 30 | 1000 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
+        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -1054,7 +1054,7 @@ fn typed_array_result(
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if matches!(oid, 1000 | 1005 | 1007 | 1009 | 1016) {
+    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016) {
         return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()
@@ -1148,12 +1148,7 @@ pub(crate) fn bytea_escape(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn bytea(bytes: &[u8]) -> Vec<u8> {
-    let mut result = String::from("\\x");
-    for byte in bytes {
-        use std::fmt::Write;
-        write!(&mut result, "{byte:02x}").unwrap();
-    }
-    result.into_bytes()
+    astersql_types::pg_array::bytea_text_output(bytes).into_bytes()
 }
 
 /// Encode a complete result before writing any metadata so unsupported values

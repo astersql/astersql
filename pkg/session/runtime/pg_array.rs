@@ -41,6 +41,7 @@ fn element_name(element: Element) -> &'static str {
         Element::Numeric => "numeric",
         Element::Bool => "boolean",
         Element::Text => "text",
+        Element::Bytea => "bytea",
     }
 }
 
@@ -76,6 +77,7 @@ pub(super) fn element_type(
             16 => Some(Element::Bool),
             1700 => Some(Element::Numeric),
             25 => Some(Element::Text),
+            17 => Some(Element::Bytea),
             _ => return Err(error("0A000", "ARRAY parameter type is not supported")),
         },
         ast::ExprKind::Cast {
@@ -90,6 +92,20 @@ pub(super) fn element_type(
             FunctionType: ast::CastFunctionType::PostgreSQLInt8,
             ..
         } => Some(Element::Int8),
+        // The existing OID17 binder emits a binary literal cast. Retain that
+        // typed identity for ARRAY elements, including the all-NULL rebind.
+        ast::ExprKind::Cast { Expr, Tp, .. }
+            if Tp.GetCharset() == "binary"
+                && matches!(
+                    Tp.GetType(),
+                    astersql_parser_mysql::r#type::TypeString
+                        | astersql_parser_mysql::r#type::TypeVarString
+                )
+                && (super::relational_value::binary_cast_literal_value(Expr, Tp).is_some()
+                    || matches!(&Expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::Null))) =>
+        {
+            Some(Element::Bytea)
+        }
         ast::ExprKind::Cast { Tp, .. }
             if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
         {
@@ -219,7 +235,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Bytea)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -298,7 +314,8 @@ pub(super) fn analyze(
                     | Element::Int4
                     | Element::Int8
                     | Element::Bool
-                    | Element::Text),
+                    | Element::Text
+                    | Element::Bytea),
                 ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
@@ -512,6 +529,28 @@ fn value_as(
                             "f".to_owned()
                         }
                     }
+                    Element::Bytea => {
+                        let mut source = child;
+                        while let ast::ExprKind::Parentheses(inner) = &source.Kind {
+                            source = inner;
+                        }
+                        let binary = match &source.Kind {
+                            ast::ExprKind::Cast { Expr, Tp, .. } => {
+                                super::relational_value::binary_cast_literal_value(Expr, Tp)
+                                    .and_then(|value| {
+                                        super::row_codec::binary_runtime_bytes(&value)
+                                    })
+                            }
+                            _ => None,
+                        };
+                        let bytes = match binary {
+                            Some(bytes) => bytes,
+                            None => astersql_types::pg_array::bytea_text_input(value.as_bytes())
+                                .map_err(|e| error(e.0, e.1))?,
+                        };
+                        let text = astersql_types::pg_array::bytea_text_output(&bytes);
+                        format!("\"{}\"", text.replace('\\', "\\\\"))
+                    }
                     Element::Text => {
                         if value.is_empty()
                             || value.eq_ignore_ascii_case("NULL")
@@ -536,7 +575,12 @@ fn value_as(
     let (value, _) = render(expr, row, element)?;
     if matches!(
         element,
-        Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text
+        Element::Int2
+            | Element::Int4
+            | Element::Int8
+            | Element::Bool
+            | Element::Text
+            | Element::Bytea
     ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
@@ -566,6 +610,9 @@ fn typed_array(bytes: &[u8], element: Element) -> SessionResult<astersql_types::
         Element::Int8 => astersql_expression::pg_cast_int8(Some(text))
             .map(|v| PgArrayElement::Int8(v.unwrap()))
             .map_err(|e| error(e.sqlstate(), e.to_string())),
+        Element::Bytea => astersql_types::pg_array::bytea_text_input(text.as_bytes())
+            .map(PgArrayElement::Bytea)
+            .map_err(|e| error(e.0, e.1)),
         Element::Bool => astersql_expression::pg_boolean_cast(
             Some(text),
             astersql_expression::PgBooleanCast::TextToBool,
@@ -590,7 +637,14 @@ pub(super) fn validate_cast(
 ) -> SessionResult<()> {
     if !matches!(
         target.PostgreSQLArrayElement(),
-        Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text)
+        Some(
+            Element::Int2
+                | Element::Int4
+                | Element::Int8
+                | Element::Bool
+                | Element::Text
+                | Element::Bytea
+        )
     ) {
         return Ok(());
     }
@@ -604,7 +658,7 @@ pub(super) fn validate_cast(
                 || supported_array_element(child, target)
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
-                Some(source) if matches!(source, Element::Bool | Element::Int2) || matches!(target, Element::Bool | Element::Int2) => source == target,
+                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2) || matches!(target, Element::Bytea | Element::Bool | Element::Int2) => source == target,
                 Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
@@ -617,6 +671,10 @@ pub(super) fn validate_cast(
             ast::ExprKind::ParamMarker { .. } => true,
             _ => {
                 let source = element_type(expr, &HashMap::new()).ok().flatten();
+                if target == Element::Bytea {
+                    return source == Some(Element::Bytea)
+                        || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
+                }
                 if target == Element::Bool {
                     return source == Some(Element::Bool)
                         || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
@@ -631,7 +689,7 @@ pub(super) fn validate_cast(
     }
     if matches!(
         target.PostgreSQLArrayElement(),
-        Some(Element::Text | Element::Bool | Element::Int2)
+        Some(Element::Text | Element::Bytea | Element::Bool | Element::Int2)
     ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
         return Err(error("0A000", "array cast source is not supported"));
@@ -665,8 +723,13 @@ pub(super) fn cast_value(
         _ => target,
     };
     if source != target
-        && (matches!(source, Element::Text | Element::Bool | Element::Int2)
-            || matches!(target, Element::Text | Element::Bool | Element::Int2))
+        && (matches!(
+            source,
+            Element::Text | Element::Bytea | Element::Bool | Element::Int2
+        ) || matches!(
+            target,
+            Element::Text | Element::Bytea | Element::Bool | Element::Int2
+        ))
     {
         return Err(error("0A000", "array cast source is not supported"));
     }

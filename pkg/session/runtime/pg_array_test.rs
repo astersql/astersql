@@ -851,3 +851,154 @@ fn pg05_array_int8_shared_casts_and_constructors() {
         result[0].close().unwrap();
     }
 }
+
+#[test]
+fn pg05_array_bytea_declared_parameter_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, count, fields) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ? AS v", &[1001])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.PostgreSQLArrayElement(),
+        Some(Element::Bytea)
+    );
+    for (input, expected) in [
+        (
+            Some(r#"[0:1][-2:-1]={{"\\x00ff",NULL},{"\\x","\\xc328"}}"#),
+            Some(r#"[0:1][-2:-1]={{"\\x00ff",NULL},{"\\x","\\xc328"}}"#),
+        ),
+        (Some("{}"), Some("{}")),
+        (None, None),
+    ] {
+        let argument = input
+            .map(|s| ConcretePreparedArgument::Text(s.to_owned()))
+            .unwrap_or(ConcretePreparedArgument::Null);
+        let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Bytea)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.unwrap_or("<nil>").to_owned()]
+        );
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_bytea_shared_casts_and_constructors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY['abc','',NULL]::bytea[] AS v",
+            r#"{"\\x616263","\\x",NULL}"#,
+        ),
+        (
+            "SELECT ARRAY[['a',NULL],['b','']]::bytea[] AS v",
+            r#"{{"\\x61",NULL},{"\\x62","\\x"}}"#,
+        ),
+        (
+            "SELECT '[-2:-1]={abc,NULL}'::bytea[] AS v",
+            r#"[-2:-1]={"\\x616263",NULL}"#,
+        ),
+        ("SELECT ARRAY[]::bytea[] AS v", "{}"),
+        (
+            "SELECT ARRAY['__astersql_binary_hex__:00ff']::bytea[] AS v",
+            r#"{"\\x5f5f617374657273716c5f62696e6172795f6865785f5f3a30306666"}"#,
+        ),
+        ("SELECT NULL::bytea[] AS v", "<nil>"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Bytea)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+    }
+    // The other shared evaluator must delegate the same cast, not MySQL text.
+    let node = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseOneStmt("SELECT ARRAY['abc',NULL]::bytea[]", "", "")
+        .unwrap();
+    let select = node.as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+    assert_eq!(
+        super::relational_value::relational_expression_value(
+            select.Fields.Fields[0].Expr.as_ref().unwrap(),
+            &HashMap::new()
+        )
+        .unwrap(),
+        Some(r#"{"\\x616263",NULL}"#.into())
+    );
+    for sql in [
+        "SELECT ARRAY[1]::bytea[]",
+        "SELECT ARRAY[true]::bytea[]",
+        "SELECT '{}'::int4[]::bytea[]",
+        "SELECT '{}'::bytea[]::text[]",
+    ] {
+        let err = session.execute(sql).err().expect(sql);
+        assert!(
+            err.to_string()
+                .contains("array cast source is not supported"),
+            "{sql}: {err}"
+        );
+    }
+}
+
+#[test]
+fn pg05_array_bytea_scalar_parameter_constructor() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in ["SELECT ARRAY[?,NULL] AS v", "SELECT ARRAY[(?),NULL] AS v"] {
+        let (id, _, fields) = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[17])
+            .unwrap();
+        assert_eq!(
+            fields[0].column.FieldType.PostgreSQLArrayElement(),
+            Some(Element::Bytea)
+        );
+        for (argument, expected) in [
+            (
+                ConcretePreparedArgument::Bytes(vec![0, 255, 195, 40, 92]),
+                r#"{"\\x00ffc3285c",NULL}"#,
+            ),
+            (ConcretePreparedArgument::Bytes(vec![]), r#"{"\\x",NULL}"#),
+            (ConcretePreparedArgument::Null, "{NULL,NULL}"),
+        ] {
+            let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+            assert_eq!(
+                result[0].next_row().unwrap().unwrap(),
+                vec![expected.to_owned()]
+            );
+            assert_eq!(
+                result[0].result_fields()[0]
+                    .as_ref()
+                    .unwrap()
+                    .column
+                    .FieldType
+                    .PostgreSQLArrayElement(),
+                Some(Element::Bytea)
+            );
+            result[0].close().unwrap();
+        }
+        session.close_protocol_statement(id).unwrap();
+    }
+}

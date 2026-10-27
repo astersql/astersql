@@ -100,6 +100,70 @@ impl<E> PgArrayBinaryError<E> {
     }
 }
 
+/// Shared bytea scalar codec, extracted from the protocol parameter path.
+/// Array escaping is handled by the container before this function is called.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{1}")]
+pub struct PgByteaError(pub &'static str, pub &'static str);
+
+pub fn bytea_text_input(value: &[u8]) -> Result<Vec<u8>, PgByteaError> {
+    let text = std::str::from_utf8(value)
+        .map_err(|_| PgByteaError("22021", "text parameter is not UTF-8"))?;
+    if text.contains('\0') {
+        return Err(PgByteaError("22021", "text parameter contains NUL"));
+    }
+    let invalid = || PgByteaError("22P02", "invalid text parameter value");
+    let mut bytes = Vec::new();
+    if let Some(hex) = text.strip_prefix("\\x") {
+        let invalid_hex = || PgByteaError("22023", "invalid hexadecimal bytea input");
+        let mut digits = hex.bytes();
+        while let Some(high) = digits.next() {
+            // PostgreSQL permits whitespace only between complete bytes.
+            if matches!(high, b' ' | b'\t' | b'\n' | b'\r') {
+                continue;
+            }
+            let high = (high as char).to_digit(16).ok_or_else(invalid_hex)?;
+            let low = digits.next().ok_or_else(invalid_hex)?;
+            let low = (low as char).to_digit(16).ok_or_else(invalid_hex)?;
+            bytes.push((high * 16 + low) as u8);
+        }
+    } else {
+        let mut input = value.iter().copied();
+        while let Some(byte) = input.next() {
+            if byte != b'\\' {
+                bytes.push(byte);
+                continue;
+            }
+            let first = input.next().ok_or_else(invalid)?;
+            if first == b'\\' {
+                bytes.push(b'\\');
+                continue;
+            }
+            // Exactly three octal digits must fit in one byte (000–377).
+            let second = input.next().ok_or_else(invalid)?;
+            let third = input.next().ok_or_else(invalid)?;
+            if !(b'0'..=b'3').contains(&first)
+                || !(b'0'..=b'7').contains(&second)
+                || !(b'0'..=b'7').contains(&third)
+            {
+                return Err(invalid());
+            }
+            bytes.push((first - b'0') * 64 + (second - b'0') * 8 + (third - b'0'));
+        }
+    }
+    Ok(bytes)
+}
+
+/// Canonical hexadecimal bytea output, before any enclosing array escaping.
+pub fn bytea_text_output(bytes: &[u8]) -> String {
+    let mut result = String::from("\\x");
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(&mut result, "{byte:02x}").unwrap();
+    }
+    result
+}
+
 /// Scalar values only: dimensions belong to PgArray, never nested arrays.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PgArrayElement {
@@ -108,6 +172,7 @@ pub enum PgArrayElement {
     Int4(i32),
     Int8(i64),
     Text(String),
+    Bytea(Vec<u8>),
 }
 
 /// Immutable after validation. The last axis varies fastest in `elements`.
@@ -128,12 +193,13 @@ impl PgArray {
         lower_bounds: Vec<i32>,
         elements: Vec<Option<PgArrayElement>>,
     ) -> Result<Self, PgArrayError> {
-        if !matches!(element_oid, 16 | 20 | 21 | 23 | 25) {
+        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25) {
             return Err(PgArrayError::UnsupportedElement);
         }
         Self::validate_layout(&shape, &lower_bounds, elements.len())?;
         for element in elements.iter().flatten() {
             match (element_oid, element) {
+                (17, PgArrayElement::Bytea(_)) => {}
                 (21, PgArrayElement::Int2(_)) => {}
                 (16, PgArrayElement::Bool(_)) => {}
                 (23, PgArrayElement::Int4(_)) | (20, PgArrayElement::Int8(_)) => {}
@@ -222,7 +288,7 @@ impl PgArray {
         if bytes.contains(&0) {
             return Err(Error::Encoding);
         }
-        if !matches!(element_oid, 16 | 20 | 21 | 23 | 25) {
+        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
         // A catalog delimiter is one ASCII punctuation character. Other
@@ -294,7 +360,7 @@ impl PgArray {
             lower.push(binary_word(&mut bytes)?);
         }
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
-        let supported = matches!(element_oid, 16 | 20 | 21 | 23 | 25);
+        let supported = matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25);
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
         let mut elements = Vec::new();
@@ -345,6 +411,7 @@ impl PgArray {
                 Some(PgArrayElement::Int4(_)) => 4,
                 Some(PgArrayElement::Int8(_)) => 8,
                 Some(PgArrayElement::Text(value)) => value.len(),
+                Some(PgArrayElement::Bytea(value)) => value.len(),
             };
             i32::try_from(length).map_err(|_| PgArrayError::SizeOverflow)?;
             size = size
@@ -382,6 +449,10 @@ impl PgArray {
                 Some(PgArrayElement::Int8(value)) => {
                     output.extend_from_slice(&8i32.to_be_bytes());
                     output.extend_from_slice(&value.to_be_bytes());
+                }
+                Some(PgArrayElement::Bytea(value)) => {
+                    output.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                    output.extend_from_slice(value);
                 }
                 Some(PgArrayElement::Text(value)) => {
                     output.extend_from_slice(&(value.len() as i32).to_be_bytes());
@@ -445,6 +516,9 @@ impl PgArray {
                 }
                 Some(PgArrayElement::Int8(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output);
+                }
+                Some(PgArrayElement::Bytea(value)) => {
+                    write_array_element_text(&bytea_text_output(value), delimiter, output);
                 }
                 Some(PgArrayElement::Text(value)) => {
                     write_array_element_text(value, delimiter, output)

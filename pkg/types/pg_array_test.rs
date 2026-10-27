@@ -1001,3 +1001,92 @@ fn pg05_array_int8_canonical_shape_typmod_null_and_network_bytes() {
         Err(Error::ElementTypeMismatch)
     );
 }
+
+#[test]
+fn pg05_array_bytea_shape_typmod_null_and_raw_bytes() {
+    use crate::pg_array::{PgArrayElement::Bytea, bytea_text_input};
+    let values = vec![
+        Some(Bytea((0..=255).collect())),
+        None,
+        Some(Bytea(vec![])),
+        Some(Bytea(br"\x00".to_vec())),
+    ];
+    let array = PgArray::new(17, 7, vec![2, 2], vec![0, -2], values.clone()).unwrap();
+    assert_eq!(array.element_oid(), 17);
+    assert_eq!(array.element_typmod(), 7);
+    assert_eq!(array.shape(), [2, 2]);
+    assert_eq!(array.lower_bounds(), [0, -2]);
+    assert_eq!(array.elements(), values);
+    let text = array.to_text(b',').unwrap();
+    assert!(text.starts_with(r#"[0:1][-2:-1]={{"\\x000102"#));
+    assert!(text.ends_with(r#"ff",NULL},{"\\x","\\x5c783030"}}"#));
+    let decoded = PgArray::from_text_with(text.as_bytes(), 17, 7, b',', |s, _| {
+        bytea_text_input(s.as_bytes()).map(Bytea)
+    })
+    .unwrap();
+    assert_eq!(decoded, array);
+    let binary = array.to_binary().unwrap();
+    let mut expected: Vec<u8> = [2i32, 1, 17, 2, 0, 2, -2, 256]
+        .into_iter()
+        .flat_map(i32::to_be_bytes)
+        .collect();
+    expected.extend(0..=255);
+    expected.extend((-1i32).to_be_bytes());
+    expected.extend(0i32.to_be_bytes());
+    expected.extend(4i32.to_be_bytes());
+    expected.extend(br"\x00");
+    assert_eq!(binary, expected);
+    let decoded = PgArray::from_binary_with(&binary, 17, 7, |s, _| -> Result<_, ()> {
+        let value = Bytea(s.to_vec());
+        *s = &[];
+        Ok(value)
+    })
+    .unwrap();
+    assert_eq!(decoded, array);
+    assert_eq!(
+        PgArray::new(17, -1, vec![1], vec![1], vec![Some(Int4(1))]),
+        Err(Error::ElementTypeMismatch)
+    );
+    assert_eq!(
+        PgArray::new(25, -1, vec![1], vec![1], vec![Some(Bytea(vec![0]))]),
+        Err(Error::ElementTypeMismatch)
+    );
+    for values in [vec![], vec![None], vec![Some(Bytea(vec![]))]] {
+        let a = PgArray::new(17, -1, vec![values.len() as i32], vec![-1], values).unwrap();
+        assert_eq!(a.element_oid(), 17);
+        assert_eq!(
+            PgArray::from_text_with(a.to_text(b',').unwrap().as_bytes(), 17, -1, b',', |s, _| {
+                bytea_text_input(s.as_bytes()).map(Bytea)
+            })
+            .unwrap(),
+            a
+        );
+    }
+}
+
+#[test]
+fn pg05_array_bytea_extracted_scalar_codec() {
+    use crate::pg_array::{bytea_text_input as input, bytea_text_output as output};
+    for bytes in [
+        vec![],
+        vec![0, 255, 195, 40, 92],
+        (0..=255).collect::<Vec<u8>>(),
+    ] {
+        assert_eq!(input(output(&bytes).as_bytes()).unwrap(), bytes);
+    }
+    assert_eq!(input(br"\xDE ad").unwrap(), [222, 173]);
+    assert_eq!(input(br"\000\377\\").unwrap(), [0, 255, 92]);
+    for (text, state) in [
+        (br"\x0".as_slice(), "22023"),
+        (br"\xgg", "22023"),
+        (br"\xa b", "22023"),
+        (br"\400", "22P02"),
+        (br"\08", "22P02"),
+        (br"\q", "22P02"),
+        (b"\\", "22P02"),
+        (b"\0", "22021"),
+        (b"\xff", "22021"),
+    ] {
+        assert_eq!(input(text).unwrap_err().0, state);
+    }
+}

@@ -446,3 +446,13 @@ fn pg05_array_int8_restore_identity() {
     assert_eq!(output, b"INT8[]");
     assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1016);
 }
+
+#[test]
+fn pg05_array_bytea_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Bytea);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"BYTEA[]");
+    assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1001);
+}

@@ -177,3 +177,8 @@ OID1005文本/二进制Bind逐元素委派parameter(21)/binary_parameter(21)；�
 普通Parse和text/binary Bind注册1016。逐元素委派parameter(20)/binary_parameter(20)，保留i64精度与既有PgArray的形状/下界/两层NULL；OID20短载荷0–7字节08P01，超过8字节22P03，按真实18.6纠正共享入口诊断。
 
 行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+普通Parse/Bind白名单注册1001；array_text逐元素复用parameter(17)，binary数组逐元素复用binary_parameter(17)，全部成功后才发布。标量parameter(17)改调下层同一提取codec，原hex/escape与诊断保留。

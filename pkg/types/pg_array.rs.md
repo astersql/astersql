@@ -90,3 +90,8 @@ Ready按根AGENTS与testing-flow选取。只修改Rust和说明不自动触发ba
 ## 2026-10-27 int8数组输入注册
 
 from_binary_with元素支持门禁纳入OID20；复用已有Int8(i64)规范载体、维数/下界/typmod/NULL校验和8字节网络序输出。生产入口由server逐元素委派既有标量codec；无新增数组容器或标量子系统。行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`。
+
+
+## 任务29 bytea数组局部接线
+
+增加Bytea(Vec<u8>)，OID17与任意原始字节保真；构造及text/binary输入门禁注册17，输出复用统一bytea hex与raw binary。bytea_text_input/bytea_text_output从server原有标量codec最小提取，错误分类和hex/escape规则保持，session和server共用入口，数组仅处理自己的转义层。独立pg_array_test.rs验证shape/lower/typmod、两层NULL、全字节及逐字节输出。

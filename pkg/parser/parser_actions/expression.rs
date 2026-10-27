@@ -1428,7 +1428,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             let element = match source.PostgreSQLArrayElement() {
-                Some(element @ (parser_types::PostgreSQLArrayElement::Int2 | parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text)) => element,
+                Some(element @ (parser_types::PostgreSQLArrayElement::Int2 | parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text | parser_types::PostgreSQLArrayElement::Bytea)) => element,
+                None if source.GetType() == parser_mysql::r#type::TypeBlob && source.GetCharset() == "binary" => parser_types::PostgreSQLArrayElement::Bytea,
                 None if source.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0 => parser_types::PostgreSQLArrayElement::Bool,
                 None if source.PostgreSQLTextOid() == Some(25) => parser_types::PostgreSQLArrayElement::Text,
                 None if source.GetType() == parser_mysql::r#type::TypeShort => parser_types::PostgreSQLArrayElement::Int2,
@@ -1452,6 +1453,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 rhs[1].ident.as_str()
             };
             let mut tp = match spelling.to_ascii_lowercase().as_str() {
+                "bytea" => parser_mysql::r#type::TypeBlob,
                 "int2" | "smallint" => parser_mysql::r#type::TypeShort,
                 "int4" | "integer" | "int" => parser_mysql::r#type::TypeLong,
                 "int8" | "bigint" => parser_mysql::r#type::TypeLonglong,
@@ -1504,6 +1506,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 }
             }
             let mut field_type = parser_types::types::NewFieldType(tp);
+            if spelling.eq_ignore_ascii_case("bytea") {
+                field_type.SetCharset("binary".into());
+                field_type.SetCollate("binary".into());
+            }
             if tp == parser_mysql::r#type::TypeTiny {
                 field_type.AddFlag(parser_mysql::r#type::IsBooleanFlag);
             }

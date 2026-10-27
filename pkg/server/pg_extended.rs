@@ -351,7 +351,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1000 | 1005 | 1007 | 1009 | 1016 => (
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -440,47 +440,10 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             // prepared context retains OID1700 and inserts the numeric cast.
             (253, numeric.to_string().into_bytes())
         }
-        17 => {
-            let mut bytes = Vec::new();
-            if let Some(hex) = text.strip_prefix("\\x") {
-                let invalid_hex = || error("22023", "invalid hexadecimal bytea input");
-                let mut digits = hex.bytes();
-                while let Some(high) = digits.next() {
-                    // PostgreSQL permits whitespace only between complete bytes.
-                    if matches!(high, b' ' | b'\t' | b'\n' | b'\r') {
-                        continue;
-                    }
-                    let high = (high as char).to_digit(16).ok_or_else(invalid_hex)?;
-                    let low = digits.next().ok_or_else(invalid_hex)?;
-                    let low = (low as char).to_digit(16).ok_or_else(invalid_hex)?;
-                    bytes.push((high * 16 + low) as u8);
-                }
-            } else {
-                let mut input = value.iter().copied();
-                while let Some(byte) = input.next() {
-                    if byte != b'\\' {
-                        bytes.push(byte);
-                        continue;
-                    }
-                    let first = input.next().ok_or_else(invalid)?;
-                    if first == b'\\' {
-                        bytes.push(b'\\');
-                        continue;
-                    }
-                    // Exactly three octal digits must fit in one byte (000–377).
-                    let second = input.next().ok_or_else(invalid)?;
-                    let third = input.next().ok_or_else(invalid)?;
-                    if !(b'0'..=b'3').contains(&first)
-                        || !(b'0'..=b'7').contains(&second)
-                        || !(b'0'..=b'7').contains(&third)
-                    {
-                        return Err(invalid());
-                    }
-                    bytes.push((first - b'0') * 64 + (second - b'0') * 8 + (third - b'0'));
-                }
-            }
-            (252, bytes)
-        }
+        17 => (
+            252,
+            astersql_types::pg_array::bytea_text_input(value).map_err(|e| error(e.0, e.1))?,
+        ),
         1082 => (
             253,
             text.parse::<astersql_types::pg_temporal::PgDate>()
@@ -618,11 +581,12 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1000 | 1005 | 1007 | 1009 | 1016 => {
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
                 match oid {
+                    1001 => 17,
                     1005 => 21,
                     1016 => 20,
                     1000 => 16,
@@ -631,6 +595,11 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                 },
                 -1,
                 |payload, _| -> Result<PgArrayElement> {
+                    if oid == 1001 {
+                        let scalar = binary_parameter(17, Some(payload))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Bytea(scalar.value));
+                    }
                     if oid == 1016 {
                         let scalar = binary_parameter(20, Some(payload))?;
                         *payload = &[];
@@ -1030,6 +999,7 @@ impl Extended {
                         | 2950
                         | 3802
                         | 1005
+                        | 1001
                         | 1016
                         | 1000
                         | 1007
@@ -1661,6 +1631,7 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
     PgArray::from_text_with(
         bytes,
         match oid {
+            1001 => 17,
             1005 => 21,
             1016 => 20,
             1000 => 16,
@@ -1670,7 +1641,11 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
         -1,
         b',',
         |text, _| {
-            if oid == 1016 {
+            if oid == 1001 {
+                Ok(PgArrayElement::Bytea(
+                    parameter(17, Some(text.as_bytes()))?.value,
+                ))
+            } else if oid == 1016 {
                 let scalar = parameter(20, Some(text.as_bytes()))?;
                 Ok(PgArrayElement::Int8(i64::from_le_bytes(
                     scalar.value.try_into().unwrap(),

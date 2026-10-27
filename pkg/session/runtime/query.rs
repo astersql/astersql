@@ -1256,6 +1256,7 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Int2
                                 | astersql_parser_types::PostgreSQLArrayElement::Bool
                                 | astersql_parser_types::PostgreSQLArrayElement::Text
+                                | astersql_parser_types::PostgreSQLArrayElement::Bytea
                         )
                     ) {
                         super::pg_array::validate_cast(Expr, Tp)?;

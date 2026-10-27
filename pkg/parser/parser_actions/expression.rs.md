@@ -216,3 +216,8 @@ PgArrayType从标量IsBooleanFlag识别bool/boolean并保留Bool数组族，重�
 PgArrayType从既有TypeShort注册Int2，支持int2[]/smallint[]及多维拼写。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+PgArrayType把已有binary字节标量类型连到Bytea数组元素，PgCastType识别bytea类型名以服务bytea[]语法。未增加其他族、隐式转换或标量执行内核。

@@ -231,3 +231,8 @@ protocol_parameter_types在显式text[] cast和声明1009处保留1009，不能�
 supplied参数OID白名单纳入1016；既有Int8数组cast约束推断不变，使声明、推断与OID0路径收敛到同一类型。
 
 行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+protocol_parameter_types的声明与显式cast约束注册Bytea数组1001，避免Parse退回text；只复用原推导路径。

@@ -179,3 +179,8 @@ OID1005文本/二进制结果沿规范PgArray，保留形状、下界和两层NU
 Int8数组结果改走与Bind相同的array_text及标量codec，删除仅显式转换结果使用的重复int8解析；OID1016/-1/-1及8字节网络序沿既有出口。
 
 行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+普通Bytea数组结果OID1001沿共享canonical text/binary输出，标量bytea hex输出转调types下层同一函数；statement/portal身份不随首行、NULL或格式改变。

@@ -260,3 +260,8 @@ int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分�
 行求值Int2数组转换复用共享pg_array消费者。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 任务29 bytea数组局部接线
+
+共享无会话表达式cast消费者注册Bytea数组，沿统一pg_array校验及转换，不退回MySQL文本cast。

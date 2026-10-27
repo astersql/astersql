@@ -1833,6 +1833,7 @@ impl ConcreteSession {
                         | 2950
                         | 1007
                         | 1005
+                        | 1001
                         | 1016
                         | 1000
                         | 1009
@@ -1888,8 +1889,8 @@ impl ConcreteSession {
                             .and_then(|index| supplied.get(index));
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
-                            | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1016 | 1000
-                            | 1009),
+                            | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1001 | 1016
+                            | 1000 | 1009),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
@@ -1921,8 +1922,10 @@ impl ConcreteSession {
                             } else {
                                 astersql_parser_mysql::r#type::TypeShort
                             });
-                            if matches!(*oid, 1007 | 1005 | 1016 | 1000 | 1009) {
-                                tp = super::pg_array::field_type(if *oid == 1016 {
+                            if matches!(*oid, 1007 | 1005 | 1001 | 1016 | 1000 | 1009) {
+                                tp = super::pg_array::field_type(if *oid == 1001 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Bytea
+                                } else if *oid == 1016 {
                                     astersql_parser_types::PostgreSQLArrayElement::Int8
                                 } else if *oid == 1005 {
                                     astersql_parser_types::PostgreSQLArrayElement::Int2
@@ -2004,6 +2007,7 @@ impl ConcreteSession {
                                 | 2950
                                 | 1007
                                 | 1005
+                                | 1001
                                 | 1016
                                 | 1000
                                 | 1009
@@ -2123,6 +2127,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&1001) {
+                    return Ok(format!("CAST({literal} AS BYTEA[])"));
+                }
                 if constructor_oids.get(index) == Some(&1016) {
                     return Ok(format!("CAST({literal} AS INT8[])"));
                 }
