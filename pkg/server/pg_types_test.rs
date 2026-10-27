@@ -507,3 +507,158 @@ fn pg05_uuid_sql_wire_metadata_null_errors_and_recovery() {
     send(&mut socket, b'X', b"");
     service.close();
 }
+
+#[test]
+fn pg05_uuid_output_codecs_metadata_and_null() {
+    use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
+    let mut result = QueryResult {
+        columns: vec![ColumnInfo {
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            charset: 45,
+            column_length: 36,
+            column_type: 253,
+            flags: 0,
+            decimals: 0,
+            default_value: None,
+        }],
+        native_types: vec![NativeType {
+            code: astersql_parser_mysql::r#type::TypePgUuid,
+            flags: 0,
+            length: -1,
+            decimal: -1,
+            postgresql_text_oid: None,
+            postgresql_array_element: None,
+            postgresql_record_fields: None,
+        }],
+        ..QueryResult::default()
+    };
+    // Every byte value includes arbitrary version/variant combinations.
+    let mut samples = vec![
+        [0; 16],
+        [255; 16],
+        [
+            0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255,
+        ],
+        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128],
+    ];
+    samples.extend((0..=255).map(|byte| [byte; 16]));
+    for bytes in samples {
+        let text = astersql_types::pg_uuid::PgUuid::from_bytes(bytes).to_string();
+        result.rows = vec![
+            vec![Value::Null],
+            vec![Value::Text(text.clone())],
+            vec![Value::Null],
+        ];
+        for format in [0i16, 1] {
+            let messages =
+                crate::pg_result::encode_formats(&result, "SELECT", &[format as usize]).unwrap();
+            let mut description = b"\0\x01v\0".to_vec();
+            description.extend_from_slice(&[0; 6]);
+            description.extend_from_slice(&2950u32.to_be_bytes());
+            description.extend_from_slice(&16i16.to_be_bytes());
+            description.extend_from_slice(&(-1i32).to_be_bytes());
+            description.extend_from_slice(&format.to_be_bytes());
+            assert_eq!(messages[0], (b'T', description.clone()));
+            assert_eq!(messages[1], (b'D', row(&[None])));
+            let payload = if format == 0 {
+                text.as_bytes()
+            } else {
+                bytes.as_slice()
+            };
+            let expected = [
+                1i16.to_be_bytes().as_slice(),
+                &(payload.len() as i32).to_be_bytes(),
+                payload,
+            ]
+            .concat();
+            assert_eq!(messages[2], (b'D', expected));
+            assert_eq!(messages[3], (b'D', row(&[None])));
+            assert_eq!(messages[4], (b'C', b"SELECT 3\0".to_vec()));
+            let saved = result.rows.clone();
+            for rows in [vec![], vec![vec![Value::Null]; 2]] {
+                result.rows = rows;
+                let empty = crate::pg_result::encode_formats(&result, "SELECT", &[format as usize])
+                    .unwrap();
+                assert_eq!(empty[0], (b'T', description.clone()));
+            }
+            result.rows = saved;
+        }
+    }
+    // The native type is required even when the visible MySQL column is text.
+    result.native_types.clear();
+    assert!(crate::pg_result::encode(&result, "SELECT").is_err());
+}
+
+#[test]
+fn pg05_uuid_output_invalid_carrier_writes_no_messages() {
+    use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
+    let mut result = QueryResult {
+        columns: vec![ColumnInfo {
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            charset: 45,
+            column_length: 36,
+            column_type: 253,
+            flags: 0,
+            decimals: 0,
+            default_value: None,
+        }],
+        native_types: vec![NativeType {
+            code: astersql_parser_mysql::r#type::TypePgUuid,
+            flags: 0,
+            length: -1,
+            decimal: -1,
+            postgresql_text_oid: None,
+            postgresql_array_element: None,
+            postgresql_record_fields: None,
+        }],
+        ..QueryResult::default()
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    for invalid in [
+        Value::Text("bad".into()),
+        Value::Bytes(vec![0; 16]),
+        Value::Signed(0),
+    ] {
+        // A valid earlier row must not leak before a later invalid payload.
+        result.rows = vec![
+            vec![Value::Text("00112233-4455-6677-8899-aabbccddeeff".into())],
+            vec![invalid],
+        ];
+        for format in [0, 1] {
+            assert_eq!(
+                crate::pg_result::encode_formats(&result, "SELECT", &[format as usize])
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+        assert!(
+            crate::pg_result::write_result(&mut server, &result, "SELECT", Default::default())
+                .is_err()
+        );
+        let mut byte = [0];
+        assert!(matches!(
+            client.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+    }
+    result.rows = vec![vec![Value::Null]];
+    result.native_types.clear();
+    assert!(
+        crate::pg_result::write_result(&mut server, &result, "SELECT", Default::default()).is_err()
+    );
+    assert!(client.read(&mut [0]).is_err());
+}

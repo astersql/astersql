@@ -797,6 +797,11 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
             .to_binary()
             .to_vec(),
+        2950 => text
+            .parse::<astersql_types::pg_uuid::PgUuid>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .as_bytes()
+            .to_vec(),
         1186 => text
             .parse::<astersql_types::pg_temporal::PgInterval>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?

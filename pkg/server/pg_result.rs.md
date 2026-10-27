@@ -119,3 +119,9 @@ U64 来源 code=8 + UnsignedFlag 提升为无约束 numeric；其 MySQL 显示�
 ## UUID显式转换局部接线
 
 UUID内部类型描述为OID2950、typlen16、typmod=-1，简单查询文本出口使用PgUuid规范输出；不按首行或显示文本决定身份。
+
+## UUID结果二进制输出与稳定描述（任务4）
+
+`value_binary` 的 OID2950 分支复用 `PgUuid` 解析规范载体，以 `as_bytes()` 按文本字节顺序输出原16字节，不交换字节、不限制version/variant。文本出口仍为36字节小写规范UUID；NULL沿公共分支输出长度-1。`pg_type` 保持2950/16，typmod=-1；statement Describe格式0，portal按Bind选择格式，Execute不再发送描述。
+
+独立 `pg_types_test::pg05_uuid_output_*` 覆盖260组字节样本、首行/全NULL、零行、原生身份缺失及非法内部载荷的发送前原子拒绝。`pg_extended_test::pg05_uuid_output_portal_formats_rebinding_and_empty_rows` 使用真实共享会话与TCP，验证两portal混合格式、重绑定、空集、重复Execute及Close清理。共享整结果预编码不变，不新增状态或外部依赖。真实18.6客户端四方向差分由后续任务5验收，此处不宣称其通过。
