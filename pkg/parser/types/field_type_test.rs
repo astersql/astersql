@@ -407,3 +407,13 @@ fn pg05_int4_array_cast_restore_identity() {
         Some(crate::PostgreSQLArrayElement::Int4)
     );
 }
+
+#[test]
+fn pg05_array_text_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Text);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"TEXT[]");
+    assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1009);
+}

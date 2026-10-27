@@ -214,3 +214,8 @@ int4[] cast 在通用标量 cast 前进入 pg_array 的规范值路径；分析�
 ## 2026-10-27 数组显式转换（任务23）
 
 显式int8[]与int4[]共用pg_array::cast_value，传入真实目标元素身份；输出FieldType保留数组族，失败不发布部分结果。
+
+
+## text 数组逐族接入（任务25）
+
+PostgreSQL直接查询的Cast分派增加Element::Text，沿pg_array::validate_cast/cast_value求值，避免字符串cast吞掉shape/lower/元素NULL；共享pg_array_test独立覆盖。

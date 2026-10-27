@@ -462,3 +462,77 @@ fn pg05_array_cast_atomic_failure_and_rebinding() {
         );
     }
 }
+
+#[test]
+fn pg05_array_text_declared_parameter_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, count, fields) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ? AS v", &[1009])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.PostgreSQLArrayElement(),
+        Some(Element::Text)
+    );
+    for (input, expected) in [
+        (
+            Some("[0:1][-2:-1]={{a,NULL},{b,c}}"),
+            Some("[0:1][-2:-1]={{a,NULL},{b,c}}"),
+        ),
+        (Some("{}"), Some("{}")),
+        (None, None),
+    ] {
+        let argument = input
+            .map(|s| ConcretePreparedArgument::Text(s.to_owned()))
+            .unwrap_or(ConcretePreparedArgument::Null);
+        let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Text)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.unwrap_or("<nil>").to_owned()]
+        );
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_text_shared_casts_and_constructors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY['NULL','','é',NULL]::text[] AS v",
+            r#"{"NULL","",é,NULL}"#,
+        ),
+        ("SELECT '[-2:-1]={a,NULL}'::text[] AS v", "[-2:-1]={a,NULL}"),
+        ("SELECT ARRAY[]::text[] AS v", "{}"),
+        ("SELECT NULL::text[] AS v", "<nil>"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Text)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+    }
+}

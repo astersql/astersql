@@ -154,3 +154,8 @@ Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。p
 ## int4 数组共享求值与协议
 
 普通 Parse 开放声明1007；text Bind 委派规范 PgArray::from_text_with 与既有 int4 标量输入，binary Bind 委派 from_binary_with 并要求每个整数元素恰好消费4字节。BinaryParam 复用完整规范数组文本，参数1007上下文保留身份与 typed NULL。尚未开放的其他数组OID继续0A000。
+
+
+## text 数组逐族接入（任务25）
+
+普通Parse新增1009，text数组Bind逐元素委派parameter(25)，binary数组Bind逐元素委派binary_parameter(25)，复用既有UTF8/NUL诊断。规范PgArray保留shape/lower和两层NULL，完全成功后才返回BinaryParam。int4_array_text保留原接口并委派array_text；未开放其他族仍0A000。

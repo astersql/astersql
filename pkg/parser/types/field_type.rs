@@ -601,8 +601,8 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
-        if self.postgresql_array_element == Some(PostgreSQLArrayElement::Int4) {
-            return ctx.WriteKeyWord("INT4[]");
+        if let Some(element @ (PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Text)) = self.postgresql_array_element {
+            return ctx.WriteKeyWord(if element == PostgreSQLArrayElement::Text { "TEXT[]" } else { "INT4[]" });
         }
         if let Some(oid) = self.postgresql_text_oid {
             ctx.WriteKeyWord(match oid {
@@ -676,7 +676,7 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
-        if self.postgresql_text_oid.is_some() || self.postgresql_array_element == Some(PostgreSQLArrayElement::Int4) {
+        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Text)) {
             return self.Restore(ctx);
         }
         match self.tp {

@@ -174,3 +174,8 @@ PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collati
 ## int4 数组共享求值与协议
 
 1007 复用既有 typed 参数桥：Prepare 字段设置 Int4 数组身份，Execute 使用 CAST(参数字面量 AS INT4[])，使非空、空数组与 SQL NULL 的结果身份连续。
+
+
+## text 数组逐族接入（任务25）
+
+prepared参数白名单和字段定型沿既有1007路径增加1009→Element::Text；typed NULL与重绑定保留数组身份，执行literal包装为TEXT[]。pg_array_test中的pg05_array_text测试覆盖共享协议入口及值/NULL。

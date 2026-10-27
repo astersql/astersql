@@ -573,17 +573,15 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
-    if matches!(oid, 1007 | 1016) {
+    if matches!(oid, 1007 | 1009 | 1016) {
         return match value {
             Value::Null => Ok(None),
-            Value::Text(text) => integer_array_result(text.as_bytes(), oid)
+            Value::Text(text) => typed_array_result(text.as_bytes(), oid)
                 .map_err(|(_, message)| invalid(&message))?
                 .to_text(b',')
                 .map(|text| Some(text.into_bytes()))
                 .map_err(|error| invalid(&error.to_string())),
-            _ => Err(invalid(
-                "integer array result requires its canonical text carrier",
-            )),
+            _ => Err(invalid("array result requires its canonical text carrier")),
         };
     }
     if oid == 3802 {
@@ -1047,12 +1045,12 @@ fn binary_numeric(text: &str) -> io::Result<Vec<u8>> {
 }
 
 // OID1016 is opened only as an explicit conversion result, not Bind input.
-fn integer_array_result(
+fn typed_array_result(
     bytes: &[u8],
     oid: u32,
 ) -> Result<astersql_types::pg_array::PgArray, (&'static str, String)> {
-    if oid == 1007 {
-        return crate::pg_extended::int4_array_text(bytes);
+    if matches!(oid, 1007 | 1009) {
+        return crate::pg_extended::array_text(bytes, oid);
     }
     use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
     PgArray::from_text_with(bytes, 20, -1, b',', |text, _| {
@@ -1069,8 +1067,8 @@ fn integer_array_result(
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if matches!(oid, 1007 | 1016) {
-        return integer_array_result(text.as_bytes(), oid)
+    if matches!(oid, 1007 | 1009 | 1016) {
+        return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()
             .map_err(|error| invalid(&error.to_string()));

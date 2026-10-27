@@ -351,9 +351,9 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1007 => (
+        1007 | 1009 => (
             253,
-            int4_array_text(value)?
+            array_text(value, oid)?
                 .to_text(b',')
                 .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), &e.to_string()))?
                 .into_bytes(),
@@ -602,21 +602,32 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1007 => {
+        1007 | 1009 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
-            let array =
-                PgArray::from_binary_with(value, 23, -1, |payload, _| -> Result<PgArrayElement> {
+            let array = PgArray::from_binary_with(
+                value,
+                if oid == 1009 { 25 } else { 23 },
+                -1,
+                |payload, _| -> Result<PgArrayElement> {
+                    if oid == 1009 {
+                        let scalar = binary_parameter(25, Some(payload))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Text(
+                            String::from_utf8(scalar.value).unwrap(),
+                        ));
+                    }
                     let bytes = payload.get(..4).ok_or_else(|| {
                         error("08P01", "insufficient data left in integer array element")
                     })?;
                     let value = i32::from_be_bytes(bytes.try_into().unwrap());
                     *payload = &payload[4..];
                     Ok(PgArrayElement::Int4(value))
-                })
-                .map_err(|failure| match &failure {
-                    PgArrayBinaryError::Element(e) => e.clone(),
-                    _ => error(failure.sqlstate().unwrap_or("XX000"), &failure.to_string()),
-                })?;
+                },
+            )
+            .map_err(|failure| match &failure {
+                PgArrayBinaryError::Element(e) => e.clone(),
+                _ => error(failure.sqlstate().unwrap_or("XX000"), &failure.to_string()),
+            })?;
             let text = array
                 .to_text(b',')
                 .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), &e.to_string()))?;
@@ -978,6 +989,7 @@ impl Extended {
                         | 2950
                         | 3802
                         | 1007
+                        | 1009
                 )
             {
                 return Err(error("0A000", "unsupported text parameter OID"));
@@ -1597,12 +1609,31 @@ fn description_formats(
 /// Canonical int4 codec shared by ordinary Bind and result encoders.
 /// Text is the existing engine transport; it includes all dimensions and bounds.
 pub(crate) fn int4_array_text(bytes: &[u8]) -> Result<astersql_types::pg_array::PgArray> {
+    array_text(bytes, 1007)
+}
+
+pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_array::PgArray> {
     use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
-    PgArray::from_text_with(bytes, 23, -1, b',', |text, _| {
-        astersql_expression::pg_cast_int4(Some(text)).map(|v| PgArrayElement::Int4(v.unwrap()))
-    })
+    PgArray::from_text_with(
+        bytes,
+        if oid == 1009 { 25 } else { 23 },
+        -1,
+        b',',
+        |text, _| {
+            if oid == 1009 {
+                let scalar = parameter(25, Some(text.as_bytes()))?;
+                Ok(PgArrayElement::Text(
+                    String::from_utf8(scalar.value).unwrap(),
+                ))
+            } else {
+                astersql_expression::pg_cast_int4(Some(text))
+                    .map(|v| PgArrayElement::Int4(v.unwrap()))
+                    .map_err(|e| error(e.sqlstate(), &e.to_string()))
+            }
+        },
+    )
     .map_err(|failure| match &failure {
-        PgArrayTextError::Element(e) => error(e.sqlstate(), &e.to_string()),
+        PgArrayTextError::Element(e) => e.clone(),
         _ => error(failure.sqlstate().unwrap_or("XX000"), &failure.to_string()),
     })
 }

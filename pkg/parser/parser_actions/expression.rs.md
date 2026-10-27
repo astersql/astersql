@@ -200,3 +200,8 @@ PgCastType标识符入口新增PostgreSQL jsonb，沿既有方言与无修饰符
 ## 2026-10-27 数组显式转换（任务23）
 
 PgArrayType沿现有语法动作支持显式int8[]/bigint[]（含多维后缀），与int4[]共用独立数组身份；不改变grammar/生成表，不开放其他元素族。
+
+
+## text 数组逐族接入（任务25）
+
+PgArrayType仅新增OID25的text标量身份→Text数组映射；不把varchar/bpchar或任意MySQL字符串当作text[]。已有Int4/Int8路径不变，独立pg05_array_text_parser_identity核对AST。

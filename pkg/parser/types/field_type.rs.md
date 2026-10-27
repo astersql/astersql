@@ -125,3 +125,8 @@ RestoreAsCastType为TypePgJsonb写出JSONB；类型码沿serde/相等保留身�
 ## int4 数组共享求值与协议
 
 Int4 数组的 Restore/RestoreAsCastType 输出 INT4[]，保留数组身份而非退化为 CHAR；维数属于值，类型的重复 [] 不影响1007身份。
+
+
+## text 数组逐族接入（任务25）
+
+Restore/RestoreAsCastType按独立PostgreSQLArrayElement输出INT4[]或TEXT[]，避免text[]被还原成普通CHAR。同目录pg05_array_text_restore_identity验证1009及TEXT[]。

@@ -208,3 +208,8 @@ PG显式OID701与700一同进入现有参数类型约束，避免准备阶段退
 ## 2026-10-27 数组显式转换（任务23）
 
 仅为显式int8[]目标推断数组OID1016；未新增1016供给参数白名单。int4数组输入OID1007仍可显式转换到1016结果。
+
+
+## text 数组逐族接入（任务25）
+
+protocol_parameter_types在显式text[] cast和声明1009处保留1009，不能退回标量25或unknown；不扩大其他数组族。共享pg05_array_text_declared_parameter_identity及TCP/libpq元数据断言覆盖当前消费者。
