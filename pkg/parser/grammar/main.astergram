@@ -4380,3 +4380,4 @@ PgIntervalFields : "MINUTE" "TO" "SECOND" @action;
 PgCastType : PgCastType '[' ']' @action;
 PgCastType : PgPostfixFloat '[' ']' @action;
 PgCastType : PgPostfixText '[' ']' @action;
+PgCastType : PgPostfixDate '[' ']' @action;

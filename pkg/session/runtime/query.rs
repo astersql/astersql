@@ -1261,13 +1261,24 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Bytea
                                 | astersql_parser_types::PostgreSQLArrayElement::Float4
                                 | astersql_parser_types::PostgreSQLArrayElement::Float8
+                                | astersql_parser_types::PostgreSQLArrayElement::Date
                                 | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {
                         super::pg_array::validate_cast(Expr, Tp)?;
-                        return super::pg_array::cast_value(Expr, row, Tp, || {
-                            self.relational_query_expression_value(Expr, row, group_rows)
-                        });
+                        return super::pg_array::cast_value_with_context(
+                            Expr,
+                            row,
+                            Tp,
+                            if Tp.PostgreSQLArrayElement()
+                                == Some(astersql_parser_types::PostgreSQLArrayElement::Date)
+                            {
+                                Some(self.pg_date_context(None)?)
+                            } else {
+                                None
+                            },
+                            || self.relational_query_expression_value(Expr, row, group_rows),
+                        );
                     }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                         return super::pg_jsonb::cast_value(

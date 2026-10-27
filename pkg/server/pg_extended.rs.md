@@ -211,3 +211,8 @@ OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量cod
 ## 2026-10-28 bpchar数组局部接线
 
 本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。
+
+
+## date数组逐族接入（任务35）
+
+注册1182文本/二进制参数，逐元素委派已有PgDate标量codec，文本Bind在同一日期上下文解析；任一元素非法则整体失败。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。

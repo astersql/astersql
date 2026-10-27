@@ -93,13 +93,15 @@ impl ConcreteSession {
             fn enter_embedded(&mut self, input: &dyn std::any::Any) -> bool {
                 if let Some(expr) = input.downcast_ref::<ast::ExprNode>()
                     && let ast::ExprKind::Cast { Expr, Tp, .. } = &expr.Kind
-                    && matches!(
-                        Tp.GetType(),
-                        astersql_parser_mysql::r#type::TypeDate
-                            | astersql_parser_mysql::r#type::TypeDatetime
-                            | astersql_parser_mysql::r#type::TypePgInterval
-                            | astersql_parser_mysql::r#type::TypePgTimestampTz
-                    )
+                    && (Tp.PostgreSQLArrayElement()
+                        == Some(astersql_parser_types::PostgreSQLArrayElement::Date)
+                        || matches!(
+                            Tp.GetType(),
+                            astersql_parser_mysql::r#type::TypeDate
+                                | astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgInterval
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
+                        ))
                 {
                     let mut source = Expr.as_ref();
                     while let ast::ExprKind::Parentheses(inner) = &source.Kind {
@@ -108,6 +110,20 @@ impl ConcreteSession {
                     if let ast::ExprKind::Value(value) = &source.Kind
                         && let ast::ValueDatum::String(text) = &value.Datum
                     {
+                        if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Date)
+                        {
+                            match super::pg_array::canonical_date_text(
+                                text.as_bytes(),
+                                self.context,
+                            ) {
+                                Ok(value) => {
+                                    self.values.insert(expr.OriginTextPosition as usize, value);
+                                }
+                                Err(error) => self.error = Some(error),
+                            }
+                            return false;
+                        }
                         let value = if Tp.GetType()
                             == astersql_parser_mysql::r#type::TypePgTimestampTz
                         {
@@ -179,13 +195,15 @@ impl ConcreteSession {
                 if let Some(expr) = input.downcast_mut::<ast::ExprNode>()
                     && let Some(date) = self.0.get(&(expr.OriginTextPosition as usize))
                     && let ast::ExprKind::Cast { Expr, Tp, .. } = &mut expr.Kind
-                    && matches!(
-                        Tp.GetType(),
-                        astersql_parser_mysql::r#type::TypeDate
-                            | astersql_parser_mysql::r#type::TypeDatetime
-                            | astersql_parser_mysql::r#type::TypePgInterval
-                            | astersql_parser_mysql::r#type::TypePgTimestampTz
-                    )
+                    && (Tp.PostgreSQLArrayElement()
+                        == Some(astersql_parser_types::PostgreSQLArrayElement::Date)
+                        || matches!(
+                            Tp.GetType(),
+                            astersql_parser_mysql::r#type::TypeDate
+                                | astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgInterval
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
+                        ))
                 {
                     **Expr = ast::ExprNode::Value(date.clone());
                 }

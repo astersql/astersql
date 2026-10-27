@@ -266,3 +266,8 @@ PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast
 ## 2026-10-28 bpchar数组局部接线
 
 本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。
+
+
+## date数组逐族接入（任务35）
+
+date[]显式cast接到共享数组内核，仅本族采样pg_date_context，其他族保持原上下文路径。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。

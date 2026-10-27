@@ -265,3 +265,8 @@ Parse参数推断白名单注册1015，显式varchar[]类型提供数组参数�
 ## 2026-10-28 bpchar数组局部接线
 
 本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。
+
+
+## date数组逐族接入（任务35）
+
+prepared描述与参数推断识别Date数组1182，空集与全NULL不退化为text。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。

@@ -1440,3 +1440,39 @@ fn pg05_array_bpchar_sql_modifiers_constructors_and_null() {
     }
     assert!(session.execute("SELECT 1").is_ok());
 }
+
+#[test]
+fn pg05_array_date_sql_constructors_null_and_boundaries() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={\"4714-11-24 BC\",5874897-12-31}'::date[]",
+            Some("[-2:-1]={\"4714-11-24 BC\",5874897-12-31}"),
+        ),
+        (
+            "SELECT ARRAY['2000-01-01'::date,NULL::date]",
+            Some("{2000-01-01,NULL}"),
+        ),
+        (
+            "SELECT ARRAY[['infinity',NULL],['-infinity','2000-01-01']]::date[]",
+            Some("{{infinity,NULL},{-infinity,2000-01-01}}"),
+        ),
+        ("SELECT ARRAY[]::date[]", Some("{}")),
+        ("SELECT ARRAY[NULL,NULL]::date[]", Some("{NULL,NULL}")),
+        ("SELECT NULL::date[]", None),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        let row = results[0].next_row().unwrap().unwrap();
+        assert_eq!(row[0], expected.unwrap_or("<nil>"), "{sql}");
+        results[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT '{2000-01-01,2023-02-29}'::date[]",
+        "SELECT NULL::int4[]::date[]",
+        "SELECT NULL::date[]::text[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+    }
+    assert!(session.execute("SELECT 1").is_ok());
+}

@@ -35,6 +35,7 @@ fn error_at(state: &'static str, message: impl Into<String>, position: usize) ->
 }
 fn element_name(element: Element) -> &'static str {
     match element {
+        Element::Date => "date",
         Element::Int2 => "smallint",
         Element::Int4 => "integer",
         Element::Int8 => "bigint",
@@ -75,6 +76,7 @@ pub(super) fn element_type(
         ast::ExprKind::ParamMarker { Offset } => match parameters.get(Offset).copied().unwrap_or(0)
         {
             0 => None,
+            1082 => Some(Element::Date),
             21 => Some(Element::Int2),
             23 => Some(Element::Int4),
             20 => Some(Element::Int8),
@@ -136,6 +138,12 @@ pub(super) fn element_type(
         }
         ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(1042) => {
             Some(Element::Bpchar)
+        }
+        ast::ExprKind::Cast { Tp, .. }
+            if Tp.PostgreSQLArrayElement().is_none()
+                && Tp.GetType() == astersql_parser_mysql::r#type::TypeDate =>
+        {
+            Some(Element::Date)
         }
         ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(25) => Some(Element::Text),
         ast::ExprKind::Parentheses(inner) => element_type(inner, parameters)?,
@@ -291,7 +299,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -376,7 +384,8 @@ pub(super) fn analyze(
                     | Element::Bytea
                     | Element::Numeric
                     | Element::Float4
-                    | Element::Float8),
+                    | Element::Float8
+                    | Element::Date),
                 ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
@@ -515,12 +524,13 @@ pub(super) fn value(
     expr: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<Option<String>> {
-    value_as(expr, row, array_type(expr, &HashMap::new())?)
+    value_as(expr, row, array_type(expr, &HashMap::new())?, None)
 }
 fn value_as(
     expr: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
     element: Element,
+    context: Option<astersql_types::pg_temporal::PgDateContext>,
 ) -> SessionResult<Option<String>> {
     if matches!(element, Element::Float4 | Element::Float8) {
         use astersql_types::pg_array::{PgArray, PgArrayElement};
@@ -604,6 +614,7 @@ fn value_as(
         expr: &ast::ExprNode,
         row: &HashMap<String, Option<String>>,
         element: Element,
+        context: Option<astersql_types::pg_temporal::PgDateContext>,
     ) -> SessionResult<(String, Vec<usize>)> {
         let ast::ExprKind::Array { Elements, .. } = &expr.Kind else {
             unreachable!()
@@ -624,7 +635,7 @@ fn value_as(
         let mut child_shape: Option<Vec<usize>> = None;
         for child in Elements {
             if has_arrays {
-                let (value, shape) = render(child, row, element)?;
+                let (value, shape) = render(child, row, element, context)?;
                 if child_shape
                     .as_ref()
                     .is_some_and(|expected| expected != &shape)
@@ -638,7 +649,17 @@ fn value_as(
                 values.push(value);
                 continue;
             }
-            let value = super::relational_value::relational_expression_value(child, row)?;
+            // Parse has frozen scalar date casts. Keep their full calendar
+            // domain out of the shared MySQL temporal evaluator.
+            let source = if element == Element::Date
+                && let ast::ExprKind::Cast { Expr, Tp, .. } = &child.Kind
+                && Tp.GetType() == astersql_parser_mysql::r#type::TypeDate
+            {
+                Expr.as_ref()
+            } else {
+                child
+            };
+            let value = super::relational_value::relational_expression_value(source, row)?;
             values.push(match value {
                 None => "NULL".to_owned(),
                 Some(value) => match element {
@@ -656,6 +677,19 @@ fn value_as(
                         .to_string(),
                     Element::Float4 | Element::Float8 => {
                         unreachable!("floating-point arrays use canonical bit construction")
+                    }
+                    Element::Date => {
+                        let date = context
+                            .map_or_else(
+                                || value.parse::<astersql_types::pg_temporal::PgDate>(),
+                                |context| {
+                                    astersql_types::pg_temporal::PgDate::parse_with_context(
+                                        &value, context,
+                                    )
+                                },
+                            )
+                            .map_err(|e| error(e.sqlstate(), e.to_string()))?;
+                        format!("\"{date}\"")
                     }
                     Element::Numeric => value,
                     Element::Bool => {
@@ -714,7 +748,7 @@ fn value_as(
         }
         Ok((format!("{{{}}}", values.join(",")), shape))
     }
-    let (value, _) = render(expr, row, element)?;
+    let (value, _) = render(expr, row, element, context)?;
     if matches!(
         element,
         Element::Int2
@@ -728,6 +762,7 @@ fn value_as(
             | Element::Numeric
             | Element::Float4
             | Element::Float8
+            | Element::Date
     ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
@@ -781,6 +816,10 @@ fn typed_array_with_modifier(
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Float8 => astersql_expression::pg_cast_float8(Some(text))
                 .map(|v| PgArrayElement::Float8(v.unwrap().to_bits()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Date => text
+                .parse::<astersql_types::pg_temporal::PgDate>()
+                .map(PgArrayElement::Date)
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Numeric => text
                 .parse::<astersql_types::pg_numeric::PgNumeric>()
@@ -871,6 +910,7 @@ pub(super) fn validate_cast(
                 | Element::Numeric
                 | Element::Float4
                 | Element::Float8
+                | Element::Date
         )
     ) {
         return Ok(());
@@ -885,7 +925,7 @@ pub(super) fn validate_cast(
                 || supported_array_element(child, target)
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
-                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8) => source == target,
+                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date) => source == target,
                 Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text | Element::Varchar | Element::Bpchar) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
@@ -907,6 +947,10 @@ pub(super) fn validate_cast(
                         source,
                         Some(Element::Numeric | Element::Int2 | Element::Int4 | Element::Int8)
                     ) || matches!(&expr.Kind,ast::ExprKind::Value(v) if matches!(v.Datum,ast::ValueDatum::String(_)));
+                }
+                if target == Element::Date {
+                    return source == Some(Element::Date)
+                        || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
                 }
                 if target == Element::Bytea {
                     return source == Some(Element::Bytea)
@@ -943,6 +987,7 @@ pub(super) fn validate_cast(
                 | Element::Numeric
                 | Element::Float4
                 | Element::Float8
+                | Element::Date
         )
     ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
@@ -959,6 +1004,15 @@ pub(super) fn cast_value(
     expr: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
     target_type: &astersql_parser_types::FieldType,
+    value: impl FnOnce() -> SessionResult<Option<String>>,
+) -> SessionResult<Option<String>> {
+    cast_value_with_context(expr, row, target_type, None, value)
+}
+pub(super) fn cast_value_with_context(
+    expr: &ast::ExprNode,
+    row: &HashMap<String, Option<String>>,
+    target_type: &astersql_parser_types::FieldType,
+    context: Option<astersql_types::pg_temporal::PgDateContext>,
     value: impl FnOnce() -> SessionResult<Option<String>>,
 ) -> SessionResult<Option<String>> {
     use astersql_types::pg_array::{PgArray, PgArrayElement};
@@ -990,10 +1044,10 @@ pub(super) fn cast_value(
     if matches!(target, Element::Float4 | Element::Float8)
         && matches!(expr.Kind, ast::ExprKind::Array { .. })
     {
-        return value_as(expr, row, target);
+        return value_as(expr, row, target, context);
     }
     if matches!(expr.Kind, ast::ExprKind::Array { .. }) {
-        let value = value_as(expr, row, target)?;
+        let value = value_as(expr, row, target, context)?;
         return value
             .map(|s| {
                 typed_array_with_modifier(
@@ -1009,6 +1063,13 @@ pub(super) fn cast_value(
     }
     let Some(text) = value()? else {
         return Ok(None);
+    };
+    let text = if target == Element::Date
+        && let Some(context) = context
+    {
+        canonical_date_text(text.as_bytes(), context)?
+    } else {
+        text
     };
     let source = match &expr.Kind {
         ast::ExprKind::Cast { Tp, .. } => Tp.PostgreSQLArrayElement().unwrap_or(target),
@@ -1026,6 +1087,7 @@ pub(super) fn cast_value(
                 | Element::Numeric
                 | Element::Float4
                 | Element::Float8
+                | Element::Date
         ) || matches!(
             target,
             Element::Text
@@ -1037,6 +1099,7 @@ pub(super) fn cast_value(
                 | Element::Numeric
                 | Element::Float4
                 | Element::Float8
+                | Element::Date
         ))
     {
         return Err(error("0A000", "array cast source is not supported"));
@@ -1182,4 +1245,23 @@ impl ConcreteSession {
             }
         }
     }
+}
+
+/// Resolve each date element with the same immutable scalar input context.
+pub(super) fn canonical_date_text(
+    bytes: &[u8],
+    context: astersql_types::pg_temporal::PgDateContext,
+) -> SessionResult<String> {
+    use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
+    PgArray::from_text_with(bytes, 1082, -1, b',', |text, _| {
+        astersql_types::pg_temporal::PgDate::parse_with_context(text, context)
+            .map(PgArrayElement::Date)
+            .map_err(|e| error(e.sqlstate(), e.to_string()))
+    })
+    .map_err(|e| match e {
+        PgArrayTextError::Element(e) => e,
+        e => error(e.sqlstate().unwrap_or("XX000"), e.to_string()),
+    })?
+    .to_text(b',')
+    .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))
 }

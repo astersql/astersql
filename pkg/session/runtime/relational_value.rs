@@ -1299,6 +1299,7 @@ pub(super) fn relational_expression_value(
                         | astersql_parser_types::PostgreSQLArrayElement::Bytea
                         | astersql_parser_types::PostgreSQLArrayElement::Float4
                         | astersql_parser_types::PostgreSQLArrayElement::Float8
+                        | astersql_parser_types::PostgreSQLArrayElement::Date
                         | astersql_parser_types::PostgreSQLArrayElement::Numeric
                 )
             ) {

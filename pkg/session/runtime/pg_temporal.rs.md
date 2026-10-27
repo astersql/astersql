@@ -1,0 +1,12 @@
+# `pkg/session/runtime/pg_temporal.rs`
+
+本文件维护共享会话的PostgreSQL时间上下文。begin_pg_date_statement采样语句时间；pg_date_context结合事务时间、会话时区与DateStyle返回不可变PgDateContext。prepare_pg_date_constants在Parse冻结字面量；apply_pg_date_constants按原AST位置恢复，参数仍在Bind解析。
+
+pg_timestamptz_input与pg_timestamptz_relational_value连接既有时间戳codec和会话时区，沿用时区转换的间隙/重叠选择。IntervalSettings维护默认、session、local及事务快照，提交或回滚时清理local，并在回滚恢复原session值；pg_interval_style供协议和共享cast消费同一状态。
+
+本任务只扩展date数组常量冻结，不修改标量日历、时区算法或其他时间族。独立验证位于pg_array_test.rs与server的pg_extended_test.rs/pg_client_integration_test.rs。
+
+
+## date数组逐族接入（任务35）
+
+prepare_pg_date_constants/apply_pg_date_constants把既有Parse常量冻结扩展至date[]字面量，委派canonical_date_text与PgDate::parse_with_context，切换DateStyle不重解已准备字面量。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。

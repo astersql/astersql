@@ -250,3 +250,8 @@ PgArrayType从已有标量1043取得Varchar数组身份，复制字符长度而�
 ## 2026-10-28 bpchar数组局部接线
 
 本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。
+
+
+## date数组逐族接入（任务35）
+
+PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重复[]不改变元素身份。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。

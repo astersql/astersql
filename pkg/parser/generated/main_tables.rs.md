@@ -152,3 +152,8 @@
 ## bpchar数组长度语法接线（任务34）
 
 main.astergram新增PgCastType : PgPostfixText [ ]，让现有CHAR/CHARACTER(n)标量声明进入同一数组动作。main_tables由astersql-parsergen generate再生，使用check核对；不手工改自动机。
+
+
+## date数组逐族接入（任务35）
+
+main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再生；不手工修改自动机。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。

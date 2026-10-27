@@ -68,3 +68,8 @@ Float8分析、定型、构造与同族cast，和Float4共用矩形shape收集�
 本文件在既有数组消费者中注册Bpchar元素1042/数组1014身份，保留字符长度typmod、shape/lower及两层NULL。标量转换复用pg_text_cast，按字符截断并补U+0020，不复制标量实现。独立测试见对应测试文件的pg05_array_bpchar前缀；18.6差分及限制见`docs/postgresql-pg05-array-bpchar-evidence.md`。
 
 Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标量及typed NULL保留长度，未定型NULL、无长度或不同长度使typmod为-1；普通查询和prepared描述使用同一规则。
+
+
+## date数组逐族接入（任务35）
+
+Date分析、构造和同族显式转换调用PgDate；cast_value_with_context与canonical_date_text接收不可变标量日期上下文。构造器避免将BC/扩展年份经MySQL日期归一化，跨族cast仍0A000。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。
