@@ -573,6 +573,15 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
+    if oid == 3802 {
+        return match value {
+            Value::Null => Ok(None),
+            Value::Text(text) => astersql_types::pg_jsonb::PgJsonb::from_bytes(text.as_bytes())
+                .map(|json| Some(json.as_bytes().to_vec()))
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            _ => Err(invalid("JSONB result requires its canonical text carrier")),
+        };
+    }
     if oid == 114 {
         return match value {
             Value::Null => Ok(None),
@@ -798,6 +807,9 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // PostgreSQL json_send returns the same validated original text, with
         // no jsonb version byte or MySQL BinaryJSON type code.
         114 | 19 | 25 | 705 | 1042 | 1043 => text.as_bytes().to_vec(),
+        // jsonb_send uses version 1 followed by jsonb_out text, never the
+        // engine's internal JSON memory representation.
+        3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1005 | 1007 | 1009 | 1016 | 1028 | 1231 => binary_array(text, oid)?,
         1082 => text

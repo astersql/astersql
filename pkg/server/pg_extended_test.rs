@@ -7410,3 +7410,183 @@ fn pg05_jsonb_input_parse_bind_execute_and_recovery() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg05_jsonb_output_portal_formats_rebinding_and_empty_rows() {
+    fn output_row(value: Option<&str>, format: i16) -> Vec<u8> {
+        let payload = value.map(|v| {
+            let canonical = astersql_types::pg_jsonb::PgJsonb::from_bytes(v.as_bytes()).unwrap();
+            [
+                if format == 1 { b"\x01".as_slice() } else { b"" },
+                canonical.as_bytes(),
+            ]
+            .concat()
+        });
+        let mut body = 2i16.to_be_bytes().to_vec();
+        if let Some(payload) = payload {
+            body.extend_from_slice(&(payload.len() as i32).to_be_bytes());
+            body.extend_from_slice(&payload);
+        } else {
+            body.extend_from_slice(&(-1i32).to_be_bytes());
+        }
+        body.extend_from_slice(&(-1i32).to_be_bytes());
+        body
+    }
+    fn description(formats: &[i16]) -> Vec<u8> {
+        let mut body = (formats.len() as i16).to_be_bytes().to_vec();
+        for (name, format) in ["v", "n"].into_iter().zip(formats) {
+            body.extend_from_slice(name.as_bytes());
+            body.push(0);
+            body.extend_from_slice(&[0; 6]);
+            body.extend_from_slice(&3802u32.to_be_bytes());
+            body.extend_from_slice(&(-1i16).to_be_bytes());
+            body.extend_from_slice(&(-1i32).to_be_bytes());
+            body.extend_from_slice(&format.to_be_bytes());
+        }
+        body
+    }
+    fn bind_output(
+        socket: &mut TcpStream,
+        portal: &str,
+        statement: &str,
+        value: Option<&str>,
+        formats: &[i16],
+    ) {
+        let mut body = [
+            portal.as_bytes(),
+            b"\0",
+            statement.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat();
+        if let Some(value) = value {
+            body.extend_from_slice(&(value.len() as i32).to_be_bytes());
+            body.extend_from_slice(value.as_bytes());
+        } else {
+            body.extend_from_slice(&(-1i32).to_be_bytes());
+        }
+        body.extend_from_slice(&(formats.len() as i16).to_be_bytes());
+        for format in formats {
+            body.extend_from_slice(&format.to_be_bytes());
+        }
+        send(socket, b'B', &body);
+        assert_eq!(read(socket), (b'2', vec![]));
+        send(socket, b'D', &[b"P", portal.as_bytes(), b"\0"].concat());
+        assert_eq!(read(socket), (b'T', description(formats)));
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let text = r#" { "b":1, "a":2,"b":3, "x":"\u4e2d" } "#;
+    for (statement, prefix, suffix, row_count) in [
+        ("values", "", "", 1),
+        ("empty", "", " WHERE false", 0),
+        (
+            "first_null",
+            "SELECT NULL::jsonb AS v, NULL::jsonb AS n UNION ALL ",
+            "",
+            2,
+        ),
+    ] {
+        parse(
+            &mut socket,
+            statement,
+            &format!("{prefix}SELECT $1::jsonb AS v, NULL::jsonb AS n{suffix}"),
+            if row_count == 2 { &[3802] } else { &[] },
+        );
+        assert_eq!(read(&mut socket), (b'1', vec![]));
+        send(
+            &mut socket,
+            b'D',
+            &[b"S", statement.as_bytes(), b"\0"].concat(),
+        );
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &3802u32.to_be_bytes()].concat()
+            )
+        );
+        assert_eq!(read(&mut socket), (b'T', description(&[0, 0])));
+        // Two live portals retain independent per-column result formats.
+        for (portal, formats) in [("a", [0, 1]), ("b", [1, 0])] {
+            bind_output(&mut socket, portal, statement, Some(text), &formats);
+        }
+        for portal in ["b", "a"] {
+            for execution in 0..2 {
+                execute(&mut socket, portal, 0);
+                if row_count > 0 && execution == 0 {
+                    if row_count == 2 {
+                        assert_eq!(read(&mut socket), (b'D', row(&[None, None])));
+                    }
+                    let expected = output_row(Some(text), if portal == "b" { 1 } else { 0 });
+                    assert_eq!(read(&mut socket), (b'D', expected));
+                }
+                assert_eq!(
+                    read(&mut socket),
+                    (b'C', format!("SELECT {row_count}\0").into_bytes())
+                );
+            }
+        }
+        // Unnamed portal rebinding changes formats and value/NULL, never identity.
+        for (formats, value) in [
+            ([1, 1], None),
+            ([0, 0], Some(text)),
+            ([1, 0], None),
+            ([1, 1], Some("null")),
+            ([0, 1], Some(r#""null""#)),
+        ] {
+            bind_output(&mut socket, "", statement, value, &formats);
+            execute(&mut socket, "", 0);
+            if row_count > 0 {
+                if row_count == 2 {
+                    assert_eq!(read(&mut socket), (b'D', row(&[None, None])));
+                }
+                assert_eq!(read(&mut socket), (b'D', output_row(value, formats[0])));
+            }
+            assert_eq!(read(&mut socket).0, b'C');
+        }
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        for portal in ["a", "b"] {
+            send(
+                &mut socket,
+                b'C',
+                &[b"P", portal.as_bytes(), b"\0"].concat(),
+            );
+            assert_eq!(read(&mut socket), (b'3', vec![]));
+        }
+        send(
+            &mut socket,
+            b'C',
+            &[b"S", statement.as_bytes(), b"\0"].concat(),
+        );
+        assert_eq!(read(&mut socket), (b'3', vec![]));
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}

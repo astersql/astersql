@@ -139,4 +139,11 @@ TypePgJson在简单查询描述为114/-1；typmod沿未声明值-1。两格式�
 
 ## 2026-10-27 JSONB显式转换接线
 
-TypePgJsonb描述为3802/-1/-1，简单查询输出共享执行器已规范化文本；本批不开放jsonb binary结果codec。
+TypePgJsonb描述为3802/-1/-1，简单查询输出共享执行器已规范化文本；结果两格式codec见任务15。
+
+
+## JSONB结果与空值描述（任务15）
+
+`value_text`对OID3802仅接受SQL NULL或Text载体，复用`PgJsonb::from_bytes`严格校验并输出规范JSON；对象键按UTF-8字节长度和内容排序，重复键保留最后值，精确numeric及输出scale沿既有规范值保留。非法JSON、超域数值、非法Unicode及非Text载体均在发送前拒绝。`value_binary`对3802输出单字节01加同一规范文本，不发送MySQL BinaryJSON布局。
+
+`pg_type`既有3802/-1及typmod=-1无需修改；SQL NULL沿公共DataRow长度-1，JSON null为text的四字节null或binary的01加null。独立`pg05_jsonb_output_*`测试覆盖规范值、精确数字、Unicode、首行/全NULL、空集、缺身份及非法内部值原子拒绝；真实共享会话TCP覆盖statement/portal Describe、两portal混合格式、重绑定、重复Execute与Close。任务16另行验收精确PostgreSQL18.6/libpq四方向差分，本任务测试不代替该证据。
