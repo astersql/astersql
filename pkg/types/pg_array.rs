@@ -326,6 +326,52 @@ impl PgArray {
         Self::new(element_oid, element_typmod, shape, lower, elements).map_err(Error::Array)
     }
 
+    /// Encode a complete binary array field, without an outer DataRow length.
+    pub fn to_binary(&self) -> Result<Vec<u8>, PgArrayError> {
+        // Construction and private immutable fields guarantee a supported
+        // family, matching scalar variants, and a valid rectangular layout.
+        // Check all output sizes before allocating or emitting any bytes.
+        let mut size = 12 + self.shape.len() * 8;
+        for element in &self.elements {
+            let length = match element {
+                None => 0,
+                Some(PgArrayElement::Int4(_)) => 4,
+                Some(PgArrayElement::Text(value)) => value.len(),
+            };
+            i32::try_from(length).map_err(|_| PgArrayError::SizeOverflow)?;
+            size = size
+                .checked_add(4)
+                .and_then(|size| size.checked_add(length))
+                .ok_or(PgArrayError::SizeOverflow)?;
+        }
+        // A field must fit PostgreSQL's MaxAllocSize, including its framing.
+        if size > 0x3fffffff {
+            return Err(PgArrayError::SizeOverflow);
+        }
+        let mut output = Vec::with_capacity(size);
+        output.extend_from_slice(&(self.shape.len() as i32).to_be_bytes());
+        output.extend_from_slice(&i32::from(self.has_nulls()).to_be_bytes());
+        output.extend_from_slice(&self.element_oid.to_be_bytes());
+        for (&length, &lower) in self.shape.iter().zip(&self.lower_bounds) {
+            output.extend_from_slice(&length.to_be_bytes());
+            output.extend_from_slice(&lower.to_be_bytes());
+        }
+        for element in &self.elements {
+            match element {
+                None => output.extend_from_slice(&(-1i32).to_be_bytes()),
+                Some(PgArrayElement::Int4(value)) => {
+                    output.extend_from_slice(&4i32.to_be_bytes());
+                    output.extend_from_slice(&value.to_be_bytes());
+                }
+                Some(PgArrayElement::Text(value)) => {
+                    output.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                    output.extend_from_slice(value.as_bytes());
+                }
+            }
+        }
+        Ok(output)
+    }
+
     /// Format the canonical value using the element family's text output.
     /// Emit all dimensions when any lower bound differs from one. SQL NULL
     /// remains outside this value; only NULL elements are written here.

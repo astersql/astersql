@@ -688,3 +688,118 @@ fn pg05_array_binary_input_text_delegation_and_unopened_families() {
         .unwrap_err();
     assert_eq!(err, B::Array(Error::ElementTypeMismatch));
 }
+
+#[test]
+fn pg05_array_binary_output_fixed_headers_shape_nulls_and_roundtrip() {
+    for (text, words) in [
+        ("{}", vec![0, 0, 23]),
+        ("{1,NULL}", vec![1, 1, 23, 2, 1, 4, 1, -1]),
+        ("{NULL}", vec![1, 1, 23, 1, 1, -1]),
+        ("{NULL,NULL}", vec![1, 1, 23, 2, 1, -1, -1]),
+        ("{1,2}", vec![1, 0, 23, 2, 1, 4, 1, 4, 2]),
+        (
+            "[0:1][-2:-1]={{-2147483648,NULL},{2,2147483647}}",
+            vec![2, 1, 23, 2, 0, 2, -2, 4, i32::MIN, -1, 4, 2, 4, i32::MAX],
+        ),
+        (
+            "[-2147483648:-2147483648]={1}",
+            vec![1, 0, 23, 1, i32::MIN, 4, 1],
+        ),
+        (
+            "[2147483646:2147483646]={1}",
+            vec![1, 0, 23, 1, i32::MAX - 1, 4, 1],
+        ),
+    ] {
+        let a = PgArray::from_text_with(text.as_bytes(), 23, 42, b',', |s, _| {
+            s.parse::<i32>().map(Int4)
+        })
+        .unwrap();
+        let bytes = a.to_binary().unwrap();
+        assert_eq!(bytes, binary_array_words(&words), "{text}");
+        let restored = binary_int4(&bytes).unwrap();
+        assert_eq!(restored, a);
+        assert_eq!(restored.to_text(b',').unwrap(), text);
+        assert_eq!(a.element_oid(), 23);
+        assert_eq!(a.element_typmod(), 42);
+    }
+    // Input flags do not determine output flags: actual NULL elements do.
+    for (words, expected_flags) in [
+        (vec![1, 0, 23, 1, 1, -1], 1),
+        (vec![1, 1, 23, 1, 1, 4, 9], 0),
+    ] {
+        let output = binary_int4(&binary_array_words(&words))
+            .unwrap()
+            .to_binary()
+            .unwrap();
+        assert_eq!(&output[4..8], &i32::to_be_bytes(expected_flags));
+    }
+}
+
+#[test]
+fn pg05_array_binary_output_text_bytes_lengths_and_no_alignment() {
+    use crate::pg_array::PgArrayElement::Text;
+    let text = r#"[0:6]={"NULL",NULL,"","a,b","a\\b","a\"b",中}"#;
+    let a = text_array(text.as_bytes(), b',').unwrap();
+    let mut expected = binary_array_words(&[1, 1, 25, 7, 0, 4]);
+    expected.extend(b"NULL");
+    expected.extend(binary_array_words(&[-1, 0, 3]));
+    expected.extend(b"a,b");
+    expected.extend(3i32.to_be_bytes());
+    expected.extend(b"a\\b");
+    expected.extend(3i32.to_be_bytes());
+    expected.extend(b"a\"b");
+    expected.extend(3i32.to_be_bytes());
+    expected.extend("中".as_bytes());
+    let output = a.to_binary().unwrap();
+    assert_eq!(output, expected);
+    let restored = PgArray::from_binary_with(&output, 25, -1, |bytes, _| {
+        let value = std::str::from_utf8(bytes)?.to_owned();
+        *bytes = &[];
+        Ok::<_, std::str::Utf8Error>(Text(value))
+    })
+    .unwrap();
+    assert_eq!(restored, a);
+    assert_eq!(restored.to_text(b',').unwrap(), text);
+}
+
+#[test]
+fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
+    use crate::pg_array::PgArrayElement::Text;
+    for oid in [23, 25] {
+        let empty = PgArray::new(oid, 17, vec![2, 0], vec![-2, 9], vec![]).unwrap();
+        assert_eq!(
+            empty.to_binary().unwrap(),
+            binary_array_words(&[0, 0, oid as i32])
+        );
+        assert_eq!(empty.element_typmod(), 17);
+        let sql_null: Option<PgArray> = None;
+        assert_ne!(Some(empty), sql_null);
+    }
+    let a = PgArray::new(23, 42, vec![1; 6], vec![-2; 6], vec![Some(Int4(8))]).unwrap();
+    let mut words = vec![6, 0, 23];
+    for _ in 0..6 {
+        words.extend([1, -2]);
+    }
+    words.extend([4, 8]);
+    assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
+    assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
+    // Invalid values cannot reach output through the immutable carrier.
+    for oid in [16, 1007, 2950] {
+        let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
+        assert_eq!(err, Error::UnsupportedElement);
+        assert_eq!(err.sqlstate(), Some("0A000"));
+    }
+    assert_eq!(
+        PgArray::new(23, -1, vec![1], vec![1], vec![Some(Text("x".into()))]),
+        Err(Error::ElementTypeMismatch)
+    );
+    assert_eq!(
+        PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
+        Err(Error::InvalidEncoding)
+    );
+    assert_eq!(
+        PgArray::new(23, -1, vec![2], vec![1], vec![None]),
+        Err(Error::ElementCountMismatch)
+    );
+    assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
+}

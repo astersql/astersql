@@ -2,9 +2,9 @@
 
 ## 定位与接口
 
-`PgArray::new(element_oid, element_typmod, shape, lower_bounds, elements)` 是规范矩形数组的唯一构造入口。私有字段与只读切片保持构造不变量；shape/lower使用signed i32，逐元素值按最后一轴变化最快的行主序保存，不重排。维数属于值，不属于元素OID。内部容器支持OID23/`PgArrayElement::Int4(i32)`和OID25/`Text(String)`，构造检查OID与实际元素变体匹配并拒绝text中的NUL；元素不可为嵌套数组、JSON或目录字符串。这里的text载体仅为文本codec闭环，不开放SQL/wire族。未开放族包括空数组及全NULL数组均返回UnsupportedElement/0A000。
+`PgArray::new(element_oid, element_typmod, shape, lower_bounds, elements)` 是规范矩形数组的唯一构造入口。私有字段与只读切片保持构造不变量；shape/lower使用signed i32，逐元素值按最后一轴变化最快的行主序保存，不重排。维数属于值，不属于元素OID。内部容器支持OID23/`PgArrayElement::Int4(i32)`和OID25/`Text(String)`，构造检查OID与实际元素变体匹配并拒绝text中的NUL；元素不可为嵌套数组、JSON或目录字符串。这里的text载体仅为内部codec闭环，不开放SQL/wire族。未开放族包括空数组及全NULL数组均返回UnsupportedElement/0A000。
 
-元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线或二进制输出codec；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
+元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
 
 ## 构造检查与错误
 
@@ -42,6 +42,14 @@ int4使用i32十进制输出，text保存原始UTF8；两族均应用同一引�
 
 当前PostgreSQL18.6/180006/UTF8实例通过libpq binary Bind核对39组原始输入、输出与SQLSTATE，包括截断头、元素内部短读08P01、元素未消费22P03、两类尾随垃圾22P03、flags=0含NULL、未知wire OID及多维非默认下界。4项独立`pg05_array_binary_input`测试覆盖这些容器行为，并增加六维、零维/零轴、typmod、合法空text/Unicode、未开放族门禁、标量错误保留、停止后续回调及恢复。失败不返回部分数组。时间O(输入字节数+元素接收)，空间O(已接收元素及载荷大小)，维度存储至多六轴；未做超大实际分配或性能基准。
 
+## 二进制输出
+
+`PgArray::to_binary()`返回完整数组字段载荷，不包含DataRow外层长度、varlena头或内存对齐填充。网络序头为Int32维数、Int32实际NULL标志、UInt32元素OID（不是数组OID）；随后保存每轴Int32维长和有符号下界，再按行主序写元素Int32长度及标量载荷。NULL元素仅写-1；非NULL空text写0；int4写长度4和i32网络序，text直接写UTF8字节及其字节长度，沿现有标量二进制规则。typmod不出现在数组wire头，仍保留在规范值中，不执行额外元素转换。
+
+空int4数组固定12字节0/0/23；`{1,NULL}`为1/1/23、2/1、4/00000001、-1。输入flags=0但实际含NULL，输出改为1；输入flags=1但没有NULL，输出改为0。私有不可变字段和唯一构造入口保证非法shape、元素身份、text NUL以及未开放族无法进入输出；缺codec的族包括空值和全NULL仍由构造入口拒绝0A000。输出先检查逐元素长度和总载荷大小，超限返回SizeOverflow/54000，再分配并写入，不暴露部分输出；未扩充载体或SQL/wire白名单。
+
+独立`pg05_array_binary_output`三项测试覆盖固定头及载荷、六维、下界极值、多维行主序、NULL flags规范化、空数组/SQL NULL/NULL元素、typmod保存、text空串/引用/转义/Unicode的字节长度与无对齐、构造门禁及错误后恢复，并使用真实文本/二进制解析器往返。当前PostgreSQL18.6/180006/aarch64/UTF8/array_nulls=on实例经libpq核对11组值×4种输入/输出格式共44组，断言参考结果OID1007/1009、格式、原始字节和成功状态；这只是参考端及内部容器codec证据，不代表本仓库SQL四方向已接通。新测试先以可编译占位入口取得3项行为失败，再以真实实现通过。时间O(元素数+输出字节数)，空间O(输出字节数)，先扫描长度再一次分配；超大真实分配、32位及性能基准未验证。
+
 ## 实现与验证边界
 
 构造耗时O(维数+元素数+text字节数)，没有元素拷贝；`has_nulls`按需O(元素数)扫描。大数组的实际内存占用与分配失败、32位目标和性能基准未验证。未来增加其他族时必须同步构造身份匹配与独立测试，不能仅增加OID白名单。
@@ -51,6 +59,7 @@ int4使用i32十进制输出，text保存原始UTF8；两族均应用同一引�
 从仓库根按编号任务的共享槽位规则动态原子领取槽位、设置绝对CARGO_TARGET_DIR后执行，默认features：
 
     cargo fmt --all
+    cargo test -p astersql-types --lib pg05_array_binary_output -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_binary_input -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_text_output -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_text_input -- --nocapture --test-threads=1
