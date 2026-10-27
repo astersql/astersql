@@ -51,3 +51,10 @@ numeric元素分析与显式数组转换接入共享PgNumeric；逐元素apply_m
 Float4身份/分析/定型接入既有ARRAY消费者。构造器逐叶调用已有pg_cast_float4或读取已经定型的私有标量字节，先收集全部元素再发布规范PgArray；保留shape/lower/元素NULL/外层NULL。只有私有Bytes AST或已带Float4[]身份的结果能读取内部字节载体，公开文本cast仍严格解析正常数组文本。跨族cast保持既有范围门禁。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+Float8分析、定型、构造与同族cast，和Float4共用矩形shape收集；元素按各族标量codec解析，原子发布；私有常量应用器扩展64位，跨族数组cast仍0A000。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

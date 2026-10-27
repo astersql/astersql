@@ -281,3 +281,10 @@ Float4数组进入共享cast_value；pg_float4_relational_value识别私有Float
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
 
 语义cast到不同表示时，pg_float4_cast_text_input仅按已定型Float4/Float4[]源身份把私有字节载体转为原有规范输入文本，保持既有text/整数/numeric/float8消费者行为；同族cast不经text丢位，公开字符串不能按前缀冒充typed值。
+
+
+## float8数组与binary64位型（任务32）
+
+同步另一真实执行消费者的Float8[]与标量位型桥；同族直接复制，语义text转换才规范化NaN，公开字符串不能伪造私有载体。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

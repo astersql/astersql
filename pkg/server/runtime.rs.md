@@ -141,3 +141,10 @@ session_protocol_error把PgJsonCastError映射为ConnError::PgJson，不丢失�
 prepared_argument只对内部标签0xf0/0xf1生成Float4Bits/Float4Array，不改变MySQL原始type4参数。结果复用既有protocol_value字节桥，无float4→f64提升；NativeType继续独立负责描述。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+私有Float8Bits/Float8Array标签映射到ConcretePreparedArgument，不影响MySQL TypeDouble参数。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

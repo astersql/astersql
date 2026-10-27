@@ -176,6 +176,7 @@ pub enum PgArrayElement {
     Numeric(super::pg_numeric::PgNumeric),
     /// Raw IEEE binary32 bits, including NaN sign, payload and signalling bit.
     Float4(u32),
+    Float8(u64),
 }
 
 /// Immutable after validation. The last axis varies fastest in `elements`.
@@ -196,13 +197,14 @@ impl PgArray {
         lower_bounds: Vec<i32>,
         elements: Vec<Option<PgArrayElement>>,
     ) -> Result<Self, PgArrayError> {
-        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 1700) {
+        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 701 | 1700) {
             return Err(PgArrayError::UnsupportedElement);
         }
         Self::validate_layout(&shape, &lower_bounds, elements.len())?;
         for element in elements.iter().flatten() {
             match (element_oid, element) {
                 (700, PgArrayElement::Float4(_)) => {}
+                (701, PgArrayElement::Float8(_)) => {}
                 (1700, PgArrayElement::Numeric(_)) => {}
                 (17, PgArrayElement::Bytea(_)) => {}
                 (21, PgArrayElement::Int2(_)) => {}
@@ -293,7 +295,7 @@ impl PgArray {
         if bytes.contains(&0) {
             return Err(Error::Encoding);
         }
-        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 1700) {
+        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 701 | 1700) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
         // A catalog delimiter is one ASCII punctuation character. Other
@@ -365,7 +367,7 @@ impl PgArray {
             lower.push(binary_word(&mut bytes)?);
         }
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
-        let supported = matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 1700);
+        let supported = matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 701 | 1700);
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
         let mut elements = Vec::new();
@@ -414,7 +416,7 @@ impl PgArray {
                 Some(PgArrayElement::Bool(_)) => 1,
                 Some(PgArrayElement::Int2(_)) => 2,
                 Some(PgArrayElement::Int4(_) | PgArrayElement::Float4(_)) => 4,
-                Some(PgArrayElement::Int8(_)) => 8,
+                Some(PgArrayElement::Int8(_) | PgArrayElement::Float8(_)) => 8,
                 Some(PgArrayElement::Text(value)) => value.len(),
                 Some(PgArrayElement::Bytea(value)) => value.len(),
                 Some(PgArrayElement::Numeric(value)) => value.to_binary().len(),
@@ -450,6 +452,10 @@ impl PgArray {
                 }
                 Some(PgArrayElement::Float4(bits)) => {
                     output.extend_from_slice(&4i32.to_be_bytes());
+                    output.extend_from_slice(&bits.to_be_bytes());
+                }
+                Some(PgArrayElement::Float8(bits)) => {
+                    output.extend_from_slice(&8i32.to_be_bytes());
                     output.extend_from_slice(&bits.to_be_bytes());
                 }
                 Some(PgArrayElement::Int4(value)) => {
@@ -528,6 +534,9 @@ impl PgArray {
                 }
                 Some(PgArrayElement::Float4(bits)) => {
                     write_array_element_text(&float4_text(*bits), delimiter, output);
+                }
+                Some(PgArrayElement::Float8(bits)) => {
+                    write_array_element_text(&float8_text(*bits), delimiter, output);
                 }
                 Some(PgArrayElement::Int4(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output);
@@ -900,6 +909,44 @@ impl PgArray {
             let bits = float4_binary_input(payload)?;
             *payload = &[];
             Ok(PgArrayElement::Float4(bits))
+        })
+    }
+}
+
+/// The scalar binary64 receive codec. Bit copies never evaluate a NaN.
+pub fn float8_binary_input(bytes: &[u8]) -> Result<u64, (&'static str, &'static str)> {
+    if bytes.len() < 8 {
+        return Err(("08P01", "insufficient data left in float8 parameter"));
+    }
+    let bytes: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| ("22P03", "invalid binary float8 parameter"))?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
+/// PostgreSQL text output; only this display conversion canonicalizes NaNs.
+pub fn float8_text(bits: u64) -> String {
+    let number = f64::from_bits(bits);
+    if number.is_nan() {
+        "NaN".into()
+    } else if number == f64::INFINITY {
+        "Infinity".into()
+    } else if number == f64::NEG_INFINITY {
+        "-Infinity".into()
+    } else {
+        float_text(number, false)
+    }
+}
+
+impl PgArray {
+    /// Scalar callbacks consume the bounded element completely; container diagnostics stay shared.
+    pub fn float8_from_binary(
+        bytes: &[u8],
+    ) -> Result<Self, PgArrayBinaryError<(&'static str, &'static str)>> {
+        Self::from_binary_with(bytes, 701, -1, |payload, _| {
+            let bits = float8_binary_input(payload)?;
+            *payload = &[];
+            Ok(PgArrayElement::Float8(bits))
         })
     }
 }

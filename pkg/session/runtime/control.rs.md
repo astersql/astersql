@@ -216,3 +216,10 @@ OID1700/1231定型、typed NULL、prepared声明与绑定接入已有共享执�
 OID1021在Prepare/typed NULL/参数推断及重绑定中保留身份；float4位型先绑定安全的CAST(NULL AS ...)占位符，再按绑定后的AST offset私有恢复原始ValueDatum。执行后无论成功失败恢复原状态，公开SQL没有内部特殊字符串入口。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+OID1022参数约束/typed NULL与私有Float8Bits/Float8Array AST绑定复用批次31生命周期；公开SQL仅安全CAST(NULL AS FLOAT8/ FLOAT8[])占位。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

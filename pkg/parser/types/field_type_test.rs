@@ -495,3 +495,13 @@ fn pg05_array_float4_restore_identity() {
     assert_eq!(output, b"FLOAT4[]");
     assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1021);
 }
+
+#[test]
+fn pg05_array_float8_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Float8);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"FLOAT8[]");
+    assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1022);
+}

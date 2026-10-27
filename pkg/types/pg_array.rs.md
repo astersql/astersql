@@ -109,3 +109,10 @@ from_binary_with元素支持门禁纳入OID20；复用已有Int8(i64)规范载�
 PgArrayElement::Float4(u32)是原始IEEE位型，Eq不执行NaN比较；规范容器新增OID700。float4_binary_input只复制4字节并分类长度错误；float4_from_binary复用容器边界/NULL/shape检查和该标量codec。float_text从server原样提取供两端复用，float4_text仅在文本出口规范NaN/Infinity。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+PgArrayElement::Float8(u64)规范载体、共享float8_binary_input及float8_text，8字节网络位型不计算NaN；长度不足08P01、超长22P03。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

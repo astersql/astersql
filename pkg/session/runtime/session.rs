@@ -734,6 +734,8 @@ pub enum ConcretePreparedArgument {
     Float(f64),
     Float4Bits(u32),
     Float4Array(Vec<u8>),
+    Float8Bits(u64),
+    Float8Array(Vec<u8>),
     Decimal(String),
     Text(String),
     Bytes(Vec<u8>),
@@ -752,7 +754,10 @@ impl ConcretePreparedArgument {
                     "non-finite prepared floating-point parameter",
                 ));
             }
-            Self::Float4Bits(_) | Self::Float4Array(_) => {
+            Self::Float4Bits(_)
+            | Self::Float4Array(_)
+            | Self::Float8Bits(_)
+            | Self::Float8Array(_) => {
                 return Err(SessionError::new(
                     "private PostgreSQL parameter requires typed binding",
                 ));

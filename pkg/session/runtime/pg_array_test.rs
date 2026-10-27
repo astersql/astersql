@@ -1201,3 +1201,167 @@ fn pg05_array_float4_scalar_cast_preserves_typed_bits() {
     result[0].close().unwrap();
     session.close_protocol_statement(id).unwrap();
 }
+
+#[test]
+fn pg05_array_float8_private_binding_and_public_text_isolation() {
+    use astersql_types::pg_array::{PgArray, PgArrayElement};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in ["SELECT ARRAY[?,NULL] AS v", "SELECT ARRAY[(?),NULL] AS v"] {
+        let (id, _, fields) = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[701])
+            .unwrap();
+        assert_eq!(
+            fields[0].column.FieldType.PostgreSQLArrayElement(),
+            Some(Element::Float8)
+        );
+        for bits in [
+            0,
+            0x8000000000000000,
+            1,
+            0x7ff812345678abcd,
+            0xfff012345678abcd,
+        ] {
+            let mut result = session
+                .execute_protocol_statement(id, &[ConcretePreparedArgument::Float8Bits(bits)])
+                .unwrap();
+            let row = result[0].next_row().unwrap().unwrap();
+            let bytes = super::row_codec::binary_runtime_bytes(&row[0]).unwrap();
+            let array = PgArray::float8_from_binary(&bytes).unwrap();
+            assert_eq!(array.elements(), [Some(PgArrayElement::Float8(bits)), None]);
+            result[0].close().unwrap();
+        }
+        session.close_protocol_statement(id).unwrap();
+    }
+    for sql in [
+        "SELECT '__astersql_binary_hex__:7fc12345'::float8",
+        "SELECT '__astersql_binary_hex__:00000000'::float8[]",
+        "SELECT '{1,bad}'::float8[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+    }
+    assert!(session.execute("SELECT NULL::float8[]::float8[]").is_ok());
+    assert!(session.state.borrow().pg_bound_float4_constants.is_empty());
+    assert!(session.execute("SELECT 1").is_ok());
+}
+
+#[test]
+fn pg05_array_float8_sql_constructors_and_failure_restore() {
+    use astersql_types::pg_array::PgArray;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={1.5,NULL}'::float8[]",
+            "[-2:-1]={1.5,NULL}",
+        ),
+        ("SELECT ARRAY[]::double precision[]", "{}"),
+        ("SELECT ARRAY[NULL,NULL]::float8[]", "{NULL,NULL}"),
+        (
+            "SELECT ARRAY[['-0'::float8,NULL],['NaN'::float8,'1.5'::float8]]",
+            "{{-0,NULL},{NaN,1.5}}",
+        ),
+        ("SELECT '{NaN,-0}'::float8[]::float8[]", "{NaN,-0}"),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        let row = results[0].next_row().unwrap().unwrap();
+        let bytes = super::row_codec::binary_runtime_bytes(&row[0]).unwrap();
+        assert_eq!(
+            PgArray::float8_from_binary(&bytes)
+                .unwrap()
+                .to_text(b',')
+                .unwrap(),
+            expected,
+            "{sql}"
+        );
+        results[0].close().unwrap();
+    }
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ? AS v", &[1022])
+        .unwrap();
+    assert!(
+        session
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Float8Array(vec![0])])
+            .is_err()
+    );
+    assert!(session.state.borrow().pg_bound_float4_constants.is_empty());
+    assert!(session.execute("SELECT 1").is_ok());
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_float8_scalar_cast_preserves_typed_bits() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, raw) in [
+        ("SELECT ?::float8 AS v", true),
+        ("SELECT ?::text AS v", false),
+        ("SELECT ?::float4 AS v", false),
+    ] {
+        let (id, _, _) = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[701])
+            .unwrap();
+        let mut result = session
+            .execute_protocol_statement(
+                id,
+                &[ConcretePreparedArgument::Float8Bits(0xfff012345678abcd)],
+            )
+            .unwrap();
+        let row = result[0].next_row().unwrap().unwrap();
+        if raw {
+            assert_eq!(
+                super::row_codec::binary_runtime_bytes(&row[0]).unwrap(),
+                0xfff012345678abcdu64.to_be_bytes()
+            );
+        } else {
+            assert_eq!(row[0], "NaN");
+        }
+        result[0].close().unwrap();
+        session.close_protocol_statement(id).unwrap();
+    }
+
+    use astersql_types::pg_array::{PgArray, PgArrayElement};
+    let array = PgArray::new(
+        701,
+        -1,
+        vec![2],
+        vec![-1],
+        vec![Some(PgArrayElement::Float8(0xfff012345678abcd)), None],
+    )
+    .unwrap();
+    let (id, _, _) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ?::text AS v", &[1022])
+        .unwrap();
+    let mut result = session
+        .execute_protocol_statement(
+            id,
+            &[ConcretePreparedArgument::Float8Array(
+                array.to_binary().unwrap(),
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        result[0].next_row().unwrap().unwrap(),
+        vec!["[-1:0]={NaN,NULL}".to_owned()]
+    );
+    result[0].close().unwrap();
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_float8_cross_family_is_explicitly_unsupported() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT '{1}'::float8[]::float4[]",
+        "SELECT '{1}'::float4[]::float8[]",
+        "SELECT '{1}'::int4[]::float8[]",
+    ] {
+        let error = session.execute(sql).err().unwrap();
+        assert_eq!(
+            error.pg_array_error().map(|e| e.state),
+            Some("0A000"),
+            "{sql}: {error}"
+        );
+    }
+}

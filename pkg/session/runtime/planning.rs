@@ -2810,6 +2810,7 @@ impl ConcreteSession {
                         | 1007
                         | 1005
                         | 1021
+                        | 1022
                         | 1231
                         | 1001
                         | 1016
@@ -2838,6 +2839,11 @@ impl ConcreteSession {
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Float4) =>
                         {
                             1021
+                        }
+                        _ if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Float8) =>
+                        {
+                            1022
                         }
                         _ if Tp.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Numeric) =>

@@ -198,3 +198,10 @@ numeric binary输出改为共享PgNumeric codec；OID1231进入规范数组输�
 OID700与1021的内部Value::Bytes载体直接按原始位型编码binary；text出口使用共享float4_text/PgArray::to_text，NaN文本规范为NaN但binary保留sign/payload/signalling。既有finite float_text算法提取到types供标量/数组共用，无算法复制。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec；身份、shape/lower/NULL不经文本往返丢失。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

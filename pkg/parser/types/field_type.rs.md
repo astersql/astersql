@@ -167,3 +167,10 @@ Restore/FormatAsCastType保留NUMERIC(p,s)[]身份和元素typmod，使现有pre
 PostgreSQLArrayElement::Float4保留元素OID700、数组OID1021，并在CAST/Restore/serde中保留FLOAT4[]身份。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+Float8元素OID701/数组1022，恢复FLOAT8[]，保留typed NULL的独立身份。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

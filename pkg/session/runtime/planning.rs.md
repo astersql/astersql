@@ -250,3 +250,10 @@ OID1700/1231加入既有声明参数和array cast约束分派，继续使用原�
 参数约束只新增OID1021和PostgreSQLArrayElement::Float4目标cast映射，继续调用原有resolver，未新增隐式转换矩阵。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+OID1022参数推导与显式数组cast约束，复用现有ARRAY消费者。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

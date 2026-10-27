@@ -1416,6 +1416,12 @@ fn prepared_argument(
         crate::pg_extended::PG_FLOAT4_ARRAY_PARAMETER => {
             ConcretePreparedArgument::Float4Array(parameter.value.clone())
         }
+        crate::pg_extended::PG_FLOAT8_PARAMETER => {
+            ConcretePreparedArgument::Float8Bits(u64::from_le_bytes(fixed(8)?.try_into().unwrap()))
+        }
+        crate::pg_extended::PG_FLOAT8_ARRAY_PARAMETER => {
+            ConcretePreparedArgument::Float8Array(parameter.value.clone())
+        }
         0x01 => {
             let value = fixed(1)?[0];
             if parameter.unsigned {

@@ -43,6 +43,7 @@ pub enum PostgreSQLArrayElement {
     Int8,
     Numeric,
     Float4,
+    Float8,
     Bool,
     Text,
     Bytea,
@@ -55,6 +56,7 @@ impl PostgreSQLArrayElement {
             Self::Int8 => 20,
             Self::Numeric => 1700,
             Self::Float4 => 700,
+            Self::Float8 => 701,
             Self::Bool => 16,
             Self::Text => 25,
             Self::Bytea => 17,
@@ -67,6 +69,7 @@ impl PostgreSQLArrayElement {
             Self::Int8 => 1016,
             Self::Numeric => 1231,
             Self::Float4 => 1021,
+            Self::Float8 => 1022,
             Self::Bool => 1000,
             Self::Text => 1009,
             Self::Bytea => 1001,
@@ -610,13 +613,13 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
-        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4)) = self.postgresql_array_element {
+        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8)) = self.postgresql_array_element {
             if element == PostgreSQLArrayElement::Numeric {
                 ctx.WriteKeyWord("NUMERIC")?;
                 if self.flen >= 0 { ctx.WritePlain(&format!("({},{})",self.flen,self.decimal))?; }
                 return ctx.WritePlain("[]");
             }
-            return ctx.WriteKeyWord(match element { PostgreSQLArrayElement::Float4 => "FLOAT4[]", PostgreSQLArrayElement::Bytea => "BYTEA[]", PostgreSQLArrayElement::Int8 => "INT8[]", PostgreSQLArrayElement::Int2 => "INT2[]", PostgreSQLArrayElement::Bool => "BOOL[]", PostgreSQLArrayElement::Text => "TEXT[]", _ => "INT4[]" });
+            return ctx.WriteKeyWord(match element { PostgreSQLArrayElement::Float4 => "FLOAT4[]", PostgreSQLArrayElement::Float8 => "FLOAT8[]", PostgreSQLArrayElement::Bytea => "BYTEA[]", PostgreSQLArrayElement::Int8 => "INT8[]", PostgreSQLArrayElement::Int2 => "INT2[]", PostgreSQLArrayElement::Bool => "BOOL[]", PostgreSQLArrayElement::Text => "TEXT[]", _ => "INT4[]" });
         }
         if let Some(oid) = self.postgresql_text_oid {
             ctx.WriteKeyWord(match oid {
@@ -690,7 +693,7 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
-        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4)) {
+        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8)) {
             return self.Restore(ctx);
         }
         match self.tp {

@@ -510,8 +510,25 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
                 .map(|s| Some(s.into_bytes()))
                 .map_err(|e| invalid(&e.to_string()));
         }
+        if oid == 701 {
+            let bits = astersql_types::pg_array::float8_binary_input(bytes)
+                .map_err(|(_, m)| invalid(m))?;
+            return Ok(Some(
+                astersql_types::pg_array::float8_text(bits).into_bytes(),
+            ));
+        }
+        if oid == 1022 {
+            return astersql_types::pg_array::PgArray::float8_from_binary(bytes)
+                .map_err(|e| invalid(&e.to_string()))?
+                .to_text(b',')
+                .map(|s| Some(s.into_bytes()))
+                .map_err(|e| invalid(&e.to_string()));
+        }
     }
-    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231) {
+    if matches!(
+        oid,
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231
+    ) {
         return match value {
             Value::Null => Ok(None),
             Value::Text(text) => typed_array_result(text.as_bytes(), oid)
@@ -733,6 +750,17 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
                 .map(Some)
                 .map_err(|e| invalid(&e.to_string()));
         }
+        if oid == 701 {
+            astersql_types::pg_array::float8_binary_input(bytes).map_err(|(_, m)| invalid(m))?;
+            return Ok(Some(bytes.clone()));
+        }
+        if oid == 1022 {
+            return astersql_types::pg_array::PgArray::float8_from_binary(bytes)
+                .map_err(|e| invalid(&e.to_string()))?
+                .to_binary()
+                .map(Some)
+                .map_err(|e| invalid(&e.to_string()));
+        }
     }
     if oid == 17 {
         return Ok(Some(match value {
@@ -773,7 +801,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
-        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231 | 1028 => {
+        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231 | 1028 => {
             binary_array(text, oid)?
         }
         1082 => text
@@ -948,7 +976,10 @@ fn typed_array_result(
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231) {
+    if matches!(
+        oid,
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231
+    ) {
         return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()
@@ -963,6 +994,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1009 => 25,
         1000 => 16,
         1021 => 700,
+        1022 => 701,
         1231 => 1700,
         _ => unreachable!(),
     };

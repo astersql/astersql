@@ -251,3 +251,10 @@ PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
 
 语义cast到不同表示时，pg_float4_cast_text_input仅按已定型Float4/Float4[]源身份把私有字节载体转为原有规范输入文本，保持既有text/整数/numeric/float8消费者行为；同族cast不经text丢位，公开字符串不能按前缀冒充typed值。
+
+
+## float8数组与binary64位型（任务32）
+
+共享查询消费者开放Float8[]，调用带源表达式的float8值桥，保留同族位型与语义text cast。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

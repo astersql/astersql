@@ -235,3 +235,10 @@ numeric(p,s)[]及多维类型解析复用既有numeric声明，保存元素精�
 PgArrayType只新增float4/real到既有数组身份分派，重复[]声明不改变值的维度；不开放float8数组。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+PgArrayType复用已有double precision/float8/float(p>24)标量声明，注册Float8数组身份；不改grammar或生成表。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

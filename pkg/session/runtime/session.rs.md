@@ -127,3 +127,10 @@ Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组�
 ConcretePreparedArgument新增Float4Bits(u32)/Float4Array(Vec<u8>)，普通sql_literal明确拒绝这两种私有参数；SessionState保存仅本次prepared绑定的pg_bound_float4_constants，沿既有连接隔离与执行后恢复生命周期。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+ConcretePreparedArgument补Float8Bits(u64)/Float8Array(Vec<u8>)；私有载体必须经typed binder，不生成可伪造的公开SQL文本。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

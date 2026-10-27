@@ -1258,6 +1258,7 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Text
                                 | astersql_parser_types::PostgreSQLArrayElement::Bytea
                                 | astersql_parser_types::PostgreSQLArrayElement::Float4
+                                | astersql_parser_types::PostgreSQLArrayElement::Float8
                                 | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {
@@ -1381,10 +1382,10 @@ impl ConcreteSession {
                     );
                 }
                 if *FunctionType == ast::CastFunctionType::PostgreSQLFloat8 {
-                    return pg_float8_relational_value(pg_float4_cast_text_input(
+                    return pg_float8_relational_value(
                         Expr,
                         self.relational_query_expression_value(Expr, row, group_rows)?,
-                    )?);
+                    );
                 }
                 if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
                     return pg_float4_relational_value(

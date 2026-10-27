@@ -7812,7 +7812,7 @@ fn pg05_int4_array_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8108,7 +8108,7 @@ fn pg05_array_cast_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8336,7 +8336,7 @@ fn pg05_array_text_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8559,7 +8559,7 @@ fn pg05_array_bool_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8841,7 +8841,7 @@ fn pg05_array_int2_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9118,7 +9118,7 @@ fn pg05_array_int8_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9339,7 +9339,7 @@ fn pg05_array_bytea_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1022]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[1015]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9489,6 +9489,106 @@ fn pg05_array_float4_scalar_nan_bits_prerequisite() {
                 [
                     1i16.to_be_bytes().as_slice(),
                     &4i32.to_be_bytes(),
+                    &bits.to_be_bytes()
+                ]
+                .concat()
+            )
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+}
+
+#[test]
+fn pg05_array_float8_scalar_length_prerequisite() {
+    for payload in [&b""[..], &b"\0"[..], &b"\0\0\0"[..]] {
+        assert_eq!(
+            crate::pg_extended::binary_parameter(701, Some(payload))
+                .unwrap_err()
+                .0,
+            "08P01"
+        );
+    }
+}
+
+#[test]
+fn pg05_array_float8_scalar_length_and_null_edges() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    for bytes in [vec![0; 9], vec![0; 16]] {
+        assert_eq!(binary_parameter(701, Some(&bytes)).unwrap_err().0, "22P03");
+    }
+    assert!(binary_parameter(701, None).unwrap().is_null);
+    assert!(parameter(701, None).unwrap().is_null);
+    assert_eq!(
+        u64::from_le_bytes(
+            parameter(701, Some(b"-0"))
+                .unwrap()
+                .value
+                .try_into()
+                .unwrap()
+        ),
+        0x8000000000000000
+    );
+}
+
+#[test]
+fn pg05_array_float8_scalar_nan_bits_prerequisite() {
+    use crate::pg_client_integration_test::start_client_server;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    parse(&mut socket, "bits", "SELECT $1 AS v", &[701]);
+    assert_eq!(read(&mut socket).0, b'1');
+    for bits in [
+        0x7ff8000000000000u64,
+        0x7ff812345678abcd,
+        0xfff812345678abcd,
+        0x7ff012345678abcd,
+    ] {
+        let body = [
+            b"\0bits\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &8i32.to_be_bytes(),
+            &bits.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+        ]
+        .concat();
+        send(&mut socket, b'B', &body);
+        assert_eq!(read(&mut socket).0, b'2');
+        execute(&mut socket, "", 0);
+        let actual = read(&mut socket);
+        println!("float8 binary input={bits:016x} output={actual:?}");
+        assert_eq!(
+            actual,
+            (
+                b'D',
+                [
+                    1i16.to_be_bytes().as_slice(),
+                    &8i32.to_be_bytes(),
                     &bits.to_be_bytes()
                 ]
                 .concat()

@@ -1428,11 +1428,12 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             let element = match source.PostgreSQLArrayElement() {
-                Some(element @ (parser_types::PostgreSQLArrayElement::Int2 | parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text | parser_types::PostgreSQLArrayElement::Bytea | parser_types::PostgreSQLArrayElement::Numeric | parser_types::PostgreSQLArrayElement::Float4)) => element,
+                Some(element @ (parser_types::PostgreSQLArrayElement::Int2 | parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8 | parser_types::PostgreSQLArrayElement::Bool | parser_types::PostgreSQLArrayElement::Text | parser_types::PostgreSQLArrayElement::Bytea | parser_types::PostgreSQLArrayElement::Numeric | parser_types::PostgreSQLArrayElement::Float4 | parser_types::PostgreSQLArrayElement::Float8)) => element,
                 None if source.GetType() == parser_mysql::r#type::TypeBlob && source.GetCharset() == "binary" => parser_types::PostgreSQLArrayElement::Bytea,
                 None if source.GetFlag() & parser_mysql::r#type::IsBooleanFlag != 0 => parser_types::PostgreSQLArrayElement::Bool,
                 None if source.PostgreSQLTextOid() == Some(25) => parser_types::PostgreSQLArrayElement::Text,
                 None if source.GetType() == parser_mysql::r#type::TypeFloat => parser_types::PostgreSQLArrayElement::Float4,
+                None if source.GetType() == parser_mysql::r#type::TypeDouble => parser_types::PostgreSQLArrayElement::Float8,
                 None if source.GetType() == parser_mysql::r#type::TypeNewDecimal => parser_types::PostgreSQLArrayElement::Numeric,
                 None if source.GetType() == parser_mysql::r#type::TypeShort => parser_types::PostgreSQLArrayElement::Int2,
                 None if source.GetType() == parser_mysql::r#type::TypeLong => parser_types::PostgreSQLArrayElement::Int4,

@@ -1296,6 +1296,7 @@ pub(super) fn relational_expression_value(
                         | astersql_parser_types::PostgreSQLArrayElement::Text
                         | astersql_parser_types::PostgreSQLArrayElement::Bytea
                         | astersql_parser_types::PostgreSQLArrayElement::Float4
+                        | astersql_parser_types::PostgreSQLArrayElement::Float8
                         | astersql_parser_types::PostgreSQLArrayElement::Numeric
                 )
             ) {
@@ -1340,10 +1341,7 @@ pub(super) fn relational_expression_value(
                 );
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat8 {
-                return pg_float8_relational_value(pg_float4_cast_text_input(
-                    Expr,
-                    relational_expression_value(Expr, row)?,
-                )?);
+                return pg_float8_relational_value(Expr, relational_expression_value(Expr, row)?);
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
                 return pg_float4_relational_value(Expr, relational_expression_value(Expr, row)?);
@@ -3801,7 +3799,40 @@ pub(super) fn pg_float4_relational_value(
         })
 }
 
-pub(super) fn pg_float8_relational_value(value: Option<String>) -> SessionResult<Option<String>> {
+/// Preserve private binary64 constants and same-type casts before semantic text conversion.
+pub(super) fn pg_float8_relational_value(
+    expression: &ast::ExprNode,
+    value: Option<String>,
+) -> SessionResult<Option<String>> {
+    if let ast::ExprKind::Value(v) = &expression.Kind
+        && let ast::ValueDatum::Float64(bits) = &v.Datum
+    {
+        if f64::from_bits(*bits).is_nan() {
+            return Ok(Some(super::pg_array::runtime_float4_bytes(
+                &bits.to_be_bytes(),
+            )));
+        }
+        return Ok(Some(f64::from_bits(*bits).to_string()));
+    }
+    let source = PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+    });
+    if source.GetType() == astersql_parser_mysql::r#type::TypeDouble
+        && let Some(bytes) = value
+            .as_deref()
+            .and_then(super::row_codec::binary_runtime_bytes)
+    {
+        astersql_types::pg_array::float8_binary_input(&bytes)
+            .map_err(|(_, m)| SessionError::new(m))?;
+        return Ok(value);
+    }
+    let value = pg_float4_cast_text_input(expression, value)?;
     astersql_expression::pg_cast_float8(value.as_deref())
         .map(|value| value.map(|number| number.to_string()))
         .map_err(|error| {
@@ -3943,6 +3974,24 @@ pub(super) fn pg_float4_cast_text_input(
         let bits = astersql_types::pg_array::float4_binary_input(&bytes)
             .map_err(|(_, m)| SessionError::new(m))?;
         return Ok(Some(astersql_types::pg_array::float4_text(bits)));
+    }
+    if (source.GetType() == astersql_parser_mysql::r#type::TypeDouble
+        || source.PostgreSQLArrayElement()
+            == Some(astersql_parser_types::PostgreSQLArrayElement::Float8))
+        && let Some(bytes) = value
+            .as_deref()
+            .and_then(super::row_codec::binary_runtime_bytes)
+    {
+        if source.PostgreSQLArrayElement().is_some() {
+            return astersql_types::pg_array::PgArray::float8_from_binary(&bytes)
+                .map_err(|e| SessionError::new(e.to_string()))?
+                .to_text(b',')
+                .map(Some)
+                .map_err(|e| SessionError::new(e.to_string()));
+        }
+        let bits = astersql_types::pg_array::float8_binary_input(&bytes)
+            .map_err(|(_, m)| SessionError::new(m))?;
+        return Ok(Some(astersql_types::pg_array::float8_text(bits)));
     }
     Ok(value)
 }

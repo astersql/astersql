@@ -1835,6 +1835,7 @@ impl ConcreteSession {
                         | 1005
                         | 1700
                         | 1021
+                        | 1022
                         | 1231
                         | 1001
                         | 1016
@@ -1893,7 +1894,7 @@ impl ConcreteSession {
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
                             | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1700 | 1021
-                            | 1231 | 1001 | 1016 | 1000 | 1009),
+                            | 1022 | 1231 | 1001 | 1016 | 1000 | 1009),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 1700 {
@@ -1927,9 +1928,13 @@ impl ConcreteSession {
                             } else {
                                 astersql_parser_mysql::r#type::TypeShort
                             });
-                            if matches!(*oid, 1007 | 1005 | 1021 | 1231 | 1001 | 1016 | 1000 | 1009)
-                            {
-                                tp = super::pg_array::field_type(if *oid == 1021 {
+                            if matches!(
+                                *oid,
+                                1007 | 1005 | 1021 | 1022 | 1231 | 1001 | 1016 | 1000 | 1009
+                            ) {
+                                tp = super::pg_array::field_type(if *oid == 1022 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Float8
+                                } else if *oid == 1021 {
                                     astersql_parser_types::PostgreSQLArrayElement::Float4
                                 } else if *oid == 1231 {
                                     astersql_parser_types::PostgreSQLArrayElement::Numeric
@@ -2019,6 +2024,7 @@ impl ConcreteSession {
                                 | 1005
                                 | 1700
                                 | 1021
+                                | 1022
                                 | 1231
                                 | 1001
                                 | 1016
@@ -2111,7 +2117,7 @@ impl ConcreteSession {
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                // Binary32 values bind through private AST constants at the
+                // Binary32/binary64 values bind through private AST constants at the
                 // resulting CAST offsets; their bits never become SQL text.
                 // Legacy Float callers retain their existing scalar behavior.
                 if constructor_oids.get(index) == Some(&1021) {
@@ -2139,14 +2145,25 @@ impl ConcreteSession {
                         )),
                     };
                 }
-                // OID701 was decoded and range-checked before execution.
-                // Keep its binary64 identity, NULL, -0 and special values
-                // through the existing typed SQL binder.
+                if constructor_oids.get(index) == Some(&1022) {
+                    return match argument {
+                        ConcretePreparedArgument::Null
+                        | ConcretePreparedArgument::Float8Array(_) => {
+                            Ok("CAST(NULL AS FLOAT8[])".to_owned())
+                        }
+                        _ => Err(SessionError::new(
+                            "float8 array requires canonical binary input",
+                        )),
+                    };
+                }
                 if constructor_oids.get(index) == Some(&701) {
                     return match argument {
-                        ConcretePreparedArgument::Null => Ok("CAST(NULL AS DOUBLE)".to_owned()),
+                        ConcretePreparedArgument::Null
+                        | ConcretePreparedArgument::Float8Bits(_) => {
+                            Ok("CAST(NULL AS FLOAT8)".to_owned())
+                        }
                         ConcretePreparedArgument::Float(number) => {
-                            Ok(format!("CAST('{}' AS DOUBLE)", number))
+                            Ok(format!("CAST('{}' AS FLOAT8)", number))
                         }
                         _ => Err(SessionError::new(
                             "float8 parameter requires a floating-point value",
@@ -2280,6 +2297,22 @@ impl ConcreteSession {
                     if let ast::ExprKind::Value(value) = &mut node.Kind {
                         value.Type.SetPostgreSQLArrayElement(
                             astersql_parser_types::PostgreSQLArrayElement::Float4,
+                        );
+                    }
+                    Some(node)
+                }
+                ConcretePreparedArgument::Float8Bits(bits) => {
+                    Some(ast::NewValueExpr(ast::ValueDatum::Float64(*bits), "", ""))
+                }
+                ConcretePreparedArgument::Float8Array(bytes) => {
+                    let mut node = ast::NewValueExpr(
+                        ast::ValueDatum::Bytes(bytes.clone()),
+                        "binary",
+                        "binary",
+                    );
+                    if let ast::ExprKind::Value(value) = &mut node.Kind {
+                        value.Type.SetPostgreSQLArrayElement(
+                            astersql_parser_types::PostgreSQLArrayElement::Float8,
                         );
                     }
                     Some(node)

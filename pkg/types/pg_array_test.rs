@@ -284,7 +284,7 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
         Err(Error::InvalidEncoding)
     );
-    for oid in [0, 701, 1007, 3802] {
+    for oid in [0, 1043, 1007, 3802] {
         let err = PgArray::from_text_with(b"{}", oid, -1, b',', |_, _| {
             Ok::<_, std::convert::Infallible>(Int4(1))
         })
@@ -784,7 +784,7 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
     assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
     // Invalid values cannot reach output through the immutable carrier.
-    for oid in [701, 1007, 2950] {
+    for oid in [1043, 1007, 2950] {
         let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
         assert_eq!(err, Error::UnsupportedElement);
         assert_eq!(err.sqlstate(), Some("0A000"));
@@ -1151,4 +1151,47 @@ fn pg05_array_float4_raw_bits_shape_typmod_and_null() {
     );
     assert_eq!(float4_binary_input(&[0; 3]).unwrap_err().0, "08P01");
     assert_eq!(float4_binary_input(&[0; 5]).unwrap_err().0, "22P03");
+}
+
+#[test]
+fn pg05_array_float8_raw_bits_shape_typmod_and_null() {
+    use crate::pg_array::{PgArray, PgArrayElement, float8_binary_input};
+    let bits = [
+        0,
+        0x8000000000000000,
+        1,
+        0x000fffffffffffff,
+        0x0010000000000000,
+        0x7fefffffffffffff,
+        0x7ff0000000000000,
+        0xfff0000000000000,
+        0x7ff8000000000000,
+        0x7ff812345678abcd,
+        0xfff812345678abcd,
+        0x7ff012345678abcd,
+        0xfff012345678abcd,
+    ];
+    let values = bits
+        .into_iter()
+        .map(|b| Some(PgArrayElement::Float8(b)))
+        .chain([None])
+        .collect();
+    let array = PgArray::new(701, -1, vec![14], vec![-7], values).unwrap();
+    assert_eq!(array.element_typmod(), -1);
+    let wire = array.to_binary().unwrap();
+    assert_eq!(PgArray::float8_from_binary(&wire).unwrap(), array);
+    for (i, bits) in bits.into_iter().enumerate() {
+        assert_eq!(
+            float8_binary_input(&wire[24 + i * 12..32 + i * 12]).unwrap(),
+            bits
+        );
+    }
+    assert!(
+        array
+            .to_text(b',')
+            .unwrap()
+            .starts_with("[-7:6]={0,-0,5e-324,")
+    );
+    assert_eq!(float8_binary_input(&[0; 3]).unwrap_err().0, "08P01");
+    assert_eq!(float8_binary_input(&[0; 9]).unwrap_err().0, "22P03");
 }

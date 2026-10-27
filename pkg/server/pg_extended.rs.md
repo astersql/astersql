@@ -196,3 +196,10 @@ OID1005文本/二进制Bind逐元素委派parameter(21)/binary_parameter(21)；�
 parameter/binary_parameter为OID700保存原始binary32字节，通过内部BinaryParam标签0xf0传递；OID1021通过0xf1携带已验证规范数组binary。float4_binary_input是共享标量接收codec，短于4字节08P01、超过4字节22P03。数组文本/二进制元素复用该标量路径，任一非法元素拒绝整值。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+## float8数组与binary64位型（任务32）
+
+OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量codec，私有Float8参数标签保留原位型。
+
+行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。

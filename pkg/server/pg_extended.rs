@@ -339,6 +339,8 @@ fn analysis_parameter_mapping(
 // Private BinaryParam tags; these are never accepted as PostgreSQL wire OIDs or MySQL types.
 pub(crate) const PG_FLOAT4_PARAMETER: u8 = 0xf0;
 pub(crate) const PG_FLOAT4_ARRAY_PARAMETER: u8 = 0xf1;
+pub(crate) const PG_FLOAT8_PARAMETER: u8 = 0xf2;
+pub(crate) const PG_FLOAT8_ARRAY_PARAMETER: u8 = 0xf3;
 
 pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let Some(value) = value else {
@@ -358,6 +360,16 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             ..BinaryParam::default()
         });
     }
+    if oid == 1022 {
+        let array = array_text(value, oid)?;
+        return Ok(BinaryParam {
+            tp: PG_FLOAT8_ARRAY_PARAMETER,
+            value: array
+                .to_binary()
+                .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), &e.to_string()))?,
+            ..BinaryParam::default()
+        });
+    }
     let text =
         std::str::from_utf8(value).map_err(|_| error("22021", "text parameter is not UTF-8"))?;
     if text.contains('\0') {
@@ -365,7 +377,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231 => (
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -417,7 +429,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_vec(),
         ),
         701 => (
-            5,
+            PG_FLOAT8_PARAMETER,
             astersql_expression::pg_cast_float8(Some(text))
                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?
                 .expect("non-null parameter")
@@ -551,12 +563,11 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                 .map_err(|(state, message)| error(state, message))?;
             (PG_FLOAT4_PARAMETER, bits.to_le_bytes().to_vec())
         }
-        701 => (
-            5,
-            f64::from_be_bytes(value.try_into().map_err(|_| invalid())?)
-                .to_le_bytes()
-                .to_vec(),
-        ),
+        701 => {
+            let bits = astersql_types::pg_array::float8_binary_input(value)
+                .map_err(|(state, message)| error(state, message))?;
+            (PG_FLOAT8_PARAMETER, bits.to_le_bytes().to_vec())
+        }
         1082 => {
             let date = astersql_types::pg_temporal::PgDate::from_binary(value)
                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
@@ -594,12 +605,13 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231 => {
+        1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1022 | 1231 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
                 match oid {
                     1021 => 700,
+                    1022 => 701,
                     1231 => 1700,
                     1001 => 17,
                     1005 => 21,
@@ -614,6 +626,13 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                         let scalar = binary_parameter(700, Some(payload))?;
                         *payload = &[];
                         return Ok(PgArrayElement::Float4(u32::from_le_bytes(
+                            scalar.value.try_into().unwrap(),
+                        )));
+                    }
+                    if oid == 1022 {
+                        let scalar = binary_parameter(701, Some(payload))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Float8(u64::from_le_bytes(
                             scalar.value.try_into().unwrap(),
                         )));
                     }
@@ -670,6 +689,15 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             if oid == 1021 {
                 return Ok(BinaryParam {
                     tp: PG_FLOAT4_ARRAY_PARAMETER,
+                    value: array
+                        .to_binary()
+                        .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), &e.to_string()))?,
+                    ..BinaryParam::default()
+                });
+            }
+            if oid == 1022 {
+                return Ok(BinaryParam {
+                    tp: PG_FLOAT8_ARRAY_PARAMETER,
                     value: array
                         .to_binary()
                         .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), &e.to_string()))?,
@@ -1044,6 +1072,7 @@ impl Extended {
                         | 1005
                         | 1001
                         | 1021
+                        | 1022
                         | 1231
                         | 1016
                         | 1000
@@ -1677,6 +1706,7 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
         bytes,
         match oid {
             1021 => 700,
+            1022 => 701,
             1231 => 1700,
             1001 => 17,
             1005 => 21,
@@ -1691,6 +1721,11 @@ pub(crate) fn array_text(bytes: &[u8], oid: u32) -> Result<astersql_types::pg_ar
             if oid == 1021 {
                 let scalar = parameter(700, Some(text.as_bytes()))?;
                 Ok(PgArrayElement::Float4(u32::from_le_bytes(
+                    scalar.value.try_into().unwrap(),
+                )))
+            } else if oid == 1022 {
+                let scalar = parameter(701, Some(text.as_bytes()))?;
+                Ok(PgArrayElement::Float8(u64::from_le_bytes(
                     scalar.value.try_into().unwrap(),
                 )))
             } else if oid == 1231 {
