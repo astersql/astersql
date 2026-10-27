@@ -945,3 +945,48 @@ fn pg_scalar_23_formal_bpchar_to_text() {
         }
     }
 }
+
+#[test]
+fn pg05_array_text_input_delegates_real_int4_scalar_codec() {
+    use types_dependency::pg_array::{PgArray, PgArrayElement::Int4, PgArrayTextError};
+    let parse = |bytes: &[u8]| {
+        PgArray::from_text_with(bytes, 23, -1, b',', |s, _| {
+            pg_cast_int4(Some(s)).map(|n| Int4(n.expect("non-null input")))
+        })
+    };
+    let a = parse(b"[0:1][-2:-1]={{1,2},{3,4}}").unwrap();
+    assert_eq!(a.element_oid(), 23);
+    assert_eq!(a.shape(), [2, 2]);
+    assert_eq!(a.lower_bounds(), [0, -2]);
+    assert_eq!(
+        a.elements(),
+        [Some(Int4(1)), Some(Int4(2)), Some(Int4(3)), Some(Int4(4))]
+    );
+    let a = parse(br#"{-0x8000_0000,0b10,2_147_483_647,NULL,null," +42 "}"#).unwrap();
+    assert_eq!(
+        a.elements(),
+        [
+            Some(Int4(i32::MIN)),
+            Some(Int4(2)),
+            Some(Int4(i32::MAX)),
+            None,
+            None,
+            Some(Int4(42))
+        ]
+    );
+    for (input, state) in [
+        ("{x}", "22P02"),
+        ("{2147483648}", "22003"),
+        ("{1,-2147483649,2}", "22003"),
+        ("{\"NULL\"}", "22P02"),
+        (r"{N\ULL}", "22P02"),
+        ("{\"\"}", "22P02"),
+    ] {
+        let PgArrayTextError::Element(error) = parse(input.as_bytes()).unwrap_err() else {
+            panic!("expected scalar input error for {input}")
+        };
+        assert_eq!(error.sqlstate(), state);
+        assert!(parse(b"{1,NULL}").is_ok());
+    }
+    assert_eq!(parse(b"{{x,2},{3}}").unwrap_err().sqlstate(), Some("22P02"));
+}

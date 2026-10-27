@@ -6,6 +6,10 @@
 pub enum PgArrayError {
     #[error("array element type is not supported")]
     UnsupportedElement,
+    #[error("array element does not match its declared type")]
+    ElementTypeMismatch,
+    #[error("array element contains NUL")]
+    InvalidEncoding,
     #[error("array dimensions exceed the supported limit")]
     TooManyDimensions,
     #[error("array size exceeds the supported limit")]
@@ -22,8 +26,38 @@ impl PgArrayError {
     pub fn sqlstate(self) -> Option<&'static str> {
         match self {
             Self::UnsupportedElement => Some("0A000"),
+            Self::InvalidEncoding => Some("22021"),
             Self::TooManyDimensions | Self::SizeOverflow | Self::BoundsOverflow => Some("54000"),
-            Self::DimensionMismatch | Self::ElementCountMismatch => None,
+            Self::DimensionMismatch | Self::ElementCountMismatch | Self::ElementTypeMismatch => {
+                None
+            }
+        }
+    }
+}
+
+/// Container failures are distinct from delegated scalar input errors.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PgArrayTextError<E> {
+    #[error("malformed array literal")]
+    Syntax,
+    #[error("array upper bound is less than its lower bound")]
+    Bounds,
+    #[error("array input is not valid UTF-8 text")]
+    Encoding,
+    #[error("{0}")]
+    Array(PgArrayError),
+    #[error("array element input failed")]
+    Element(E),
+}
+impl<E> PgArrayTextError<E> {
+    /// Element diagnostics retain the caller's scalar error and SQLSTATE.
+    pub fn sqlstate(&self) -> Option<&'static str> {
+        match self {
+            Self::Syntax => Some("22P02"),
+            Self::Bounds => Some("2202E"),
+            Self::Encoding => Some("22021"),
+            Self::Array(e) => e.sqlstate(),
+            Self::Element(_) => None,
         }
     }
 }
@@ -32,6 +66,7 @@ impl PgArrayError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PgArrayElement {
     Int4(i32),
+    Text(String),
 }
 
 /// Immutable after validation. The last axis varies fastest in `elements`.
@@ -52,9 +87,39 @@ impl PgArray {
         lower_bounds: Vec<i32>,
         elements: Vec<Option<PgArrayElement>>,
     ) -> Result<Self, PgArrayError> {
-        if element_oid != 23 {
+        if !matches!(element_oid, 23 | 25) {
             return Err(PgArrayError::UnsupportedElement);
         }
+        Self::validate_layout(&shape, &lower_bounds, elements.len())?;
+        for element in elements.iter().flatten() {
+            match (element_oid, element) {
+                (23, PgArrayElement::Int4(_)) => {}
+                (25, PgArrayElement::Text(s)) => {
+                    if s.contains('\0') {
+                        return Err(PgArrayError::InvalidEncoding);
+                    }
+                }
+                _ => return Err(PgArrayError::ElementTypeMismatch),
+            }
+        }
+        let (shape, lower_bounds) = if elements.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (shape, lower_bounds)
+        };
+        Ok(Self {
+            element_oid,
+            element_typmod,
+            shape,
+            lower_bounds,
+            elements,
+        })
+    }
+    fn validate_layout(
+        shape: &[i32],
+        lower_bounds: &[i32],
+        element_count: usize,
+    ) -> Result<(), PgArrayError> {
         if shape.len() > Self::MAX_DIMENSIONS {
             return Err(PgArrayError::TooManyDimensions);
         }
@@ -64,7 +129,7 @@ impl PgArray {
         // Match ArrayGetNItems' signed int32 product, including validation of
         // later axes even when an earlier axis has length zero.
         let mut count: i32 = if shape.is_empty() { 0 } else { 1 };
-        for &length in &shape {
+        for &length in shape {
             if length < 0 {
                 return Err(PgArrayError::SizeOverflow);
             }
@@ -80,28 +145,73 @@ impl PgArray {
         }
         std::alloc::Layout::array::<Option<PgArrayElement>>(count)
             .map_err(|_| PgArrayError::SizeOverflow)?;
-        for (&length, &lower) in shape.iter().zip(&lower_bounds) {
+        for (&length, &lower) in shape.iter().zip(lower_bounds) {
             // Check the exclusive endpoint, not just the last valid subscript.
             lower
                 .checked_add(length)
                 .ok_or(PgArrayError::BoundsOverflow)?;
         }
-        if count != elements.len() {
+        if count != element_count {
             return Err(PgArrayError::ElementCountMismatch);
         }
-        let (shape, lower_bounds) = if count == 0 {
-            (Vec::new(), Vec::new())
-        } else {
-            (shape, lower_bounds)
-        };
-        Ok(Self {
-            element_oid,
-            element_typmod,
-            shape,
-            lower_bounds,
-            elements,
-        })
+        Ok(())
     }
+
+    /// Parse a UTF-8 Bind payload with array_nulls=on, without SQL unescaping.
+    /// The callback receives unescaped, non-NULL elements and the element typmod.
+    /// All syntax, shape and bound checks finish before any scalar input call.
+    /// Scalar SQLSTATEs stay in Element(E), unchanged; callers supply their codec.
+    pub fn from_text_with<E>(
+        bytes: &[u8],
+        element_oid: u32,
+        element_typmod: i32,
+        delimiter: u8,
+        mut input: impl FnMut(&str, i32) -> Result<PgArrayElement, E>,
+    ) -> Result<Self, PgArrayTextError<E>> {
+        use PgArrayTextError as Error;
+        std::str::from_utf8(bytes).map_err(|_| Error::Encoding)?;
+        if bytes.contains(&0) {
+            return Err(Error::Encoding);
+        }
+        if !matches!(element_oid, 23 | 25) {
+            return Err(Error::Array(PgArrayError::UnsupportedElement));
+        }
+        // A catalog delimiter is one ASCII punctuation character. Other
+        // delimiter conventions are deliberately outside this UTF-8 codec.
+        if !delimiter.is_ascii_punctuation() || matches!(delimiter, b'{' | b'}' | b'"' | b'\\') {
+            return Err(Error::Array(PgArrayError::UnsupportedElement));
+        }
+        let mut parser = TextParser {
+            bytes,
+            pos: 0,
+            delimiter,
+            elements: Vec::new(),
+        };
+        let (declared_shape, lower) = parser.dimensions()?;
+        let shape = parser.array(0)?;
+        parser.space();
+        if parser.pos != bytes.len() || (!declared_shape.is_empty() && declared_shape != shape) {
+            return Err(Error::Syntax);
+        }
+        let lower = if lower.is_empty() {
+            vec![1; shape.len()]
+        } else {
+            lower
+        };
+        Self::validate_layout(&shape, &lower, parser.elements.len()).map_err(Error::Array)?;
+        let elements = parser
+            .elements
+            .into_iter()
+            .map(|value| {
+                value
+                    .map(|s| input(&s, element_typmod))
+                    .transpose()
+                    .map_err(Error::Element)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(element_oid, element_typmod, shape, lower, elements).map_err(Error::Array)
+    }
+
     pub fn element_oid(&self) -> u32 {
         self.element_oid
     }
@@ -120,4 +230,185 @@ impl PgArray {
     pub fn has_nulls(&self) -> bool {
         self.elements.iter().any(Option::is_none)
     }
+}
+
+// Token storage is local to one parse; no partially converted array escapes.
+struct TextParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    delimiter: u8,
+    elements: Vec<Option<String>>,
+}
+impl TextParser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+    fn space(&mut self) {
+        while self.peek().is_some_and(array_space) {
+            self.pos += 1;
+        }
+    }
+    fn take(&mut self, byte: u8) -> bool {
+        if self.peek() == Some(byte) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+    fn bound<E>(&mut self) -> Result<i32, PgArrayTextError<E>> {
+        let start = self.pos;
+        if matches!(self.peek(), Some(b'+' | b'-')) {
+            self.pos += 1;
+        }
+        let digits = self.pos;
+        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        if self.pos == digits {
+            return Err(PgArrayTextError::Syntax);
+        }
+        // UTF-8 was checked at entry; this substring consists only of ASCII.
+        std::str::from_utf8(&self.bytes[start..self.pos])
+            .unwrap()
+            .parse()
+            .map_err(|_| PgArrayTextError::Array(PgArrayError::BoundsOverflow))
+    }
+    fn dimensions<E>(&mut self) -> Result<(Vec<i32>, Vec<i32>), PgArrayTextError<E>> {
+        use PgArrayTextError as Error;
+        let mut shape = Vec::new();
+        let mut lower = Vec::new();
+        self.space();
+        while self.take(b'[') {
+            if shape.len() == PgArray::MAX_DIMENSIONS {
+                return Err(Error::Array(PgArrayError::TooManyDimensions));
+            }
+            let first = self.bound()?;
+            let (lo, hi) = if self.take(b':') {
+                (first, self.bound()?)
+            } else {
+                (1, first)
+            };
+            if !self.take(b']') {
+                return Err(Error::Syntax);
+            }
+            if hi < lo {
+                return Err(Error::Bounds);
+            }
+            if hi == i32::MAX {
+                return Err(Error::Array(PgArrayError::BoundsOverflow));
+            }
+            let length = hi
+                .checked_sub(lo)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(Error::Array(PgArrayError::SizeOverflow))?;
+            shape.push(length);
+            lower.push(lo);
+            self.space();
+        }
+        if !shape.is_empty() && !self.take(b'=') {
+            return Err(Error::Syntax);
+        }
+        self.space();
+        Ok((shape, lower))
+    }
+    fn array<E>(&mut self, depth: usize) -> Result<Vec<i32>, PgArrayTextError<E>> {
+        use PgArrayTextError as Error;
+        if depth == PgArray::MAX_DIMENSIONS {
+            return Err(Error::Array(PgArrayError::TooManyDimensions));
+        }
+        if !self.take(b'{') {
+            return Err(Error::Syntax);
+        }
+        self.space();
+        if self.take(b'}') {
+            return Ok(vec![0]);
+        }
+        let nested = self.peek() == Some(b'{');
+        let mut child_shape = None;
+        let mut count = 0i32;
+        loop {
+            self.space();
+            if nested {
+                let shape = self.array(depth + 1)?;
+                if child_shape.as_ref().is_some_and(|s| s != &shape) {
+                    return Err(Error::Syntax);
+                }
+                child_shape = Some(shape);
+            } else {
+                let value = self.element()?;
+                self.elements.push(value);
+            }
+            count = count
+                .checked_add(1)
+                .ok_or(Error::Array(PgArrayError::SizeOverflow))?;
+            self.space();
+            if self.take(b'}') {
+                break;
+            }
+            if !self.take(self.delimiter) {
+                return Err(Error::Syntax);
+            }
+        }
+        let mut shape = vec![count];
+        shape.extend(child_shape.unwrap_or_default());
+        Ok(shape)
+    }
+    fn element<E>(&mut self) -> Result<Option<String>, PgArrayTextError<E>> {
+        use PgArrayTextError as Error;
+        let quoted = self.take(b'"');
+        let mut escaped = false;
+        let mut output = Vec::new();
+        let mut significant = 0;
+        loop {
+            let b = self.peek().ok_or(Error::Syntax)?;
+            if b == b'\\' {
+                self.pos += 1;
+                output.push(self.peek().ok_or(Error::Syntax)?);
+                self.pos += 1;
+                significant = output.len();
+                escaped = true;
+            } else if quoted {
+                self.pos += 1;
+                if b == b'"' {
+                    self.space();
+                    if !self
+                        .peek()
+                        .is_some_and(|b| b == self.delimiter || b == b'}')
+                    {
+                        return Err(Error::Syntax);
+                    }
+                    break;
+                }
+                output.push(b);
+            } else if b == self.delimiter || b == b'}' {
+                if output.is_empty() {
+                    return Err(Error::Syntax);
+                }
+                output.truncate(significant);
+                break;
+            } else {
+                if matches!(b, b'{' | b'"') {
+                    return Err(Error::Syntax);
+                }
+                output.push(b);
+                self.pos += 1;
+                if !array_space(b) {
+                    significant = output.len();
+                }
+            }
+        }
+        if !quoted && !escaped && output.eq_ignore_ascii_case(b"NULL") {
+            Ok(None)
+        } else {
+            // Array escaping removes ASCII backslashes, never continuation bytes.
+            Ok(Some(
+                String::from_utf8(output).map_err(|_| Error::Encoding)?,
+            ))
+        }
+    }
+}
+
+fn array_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
