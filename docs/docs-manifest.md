@@ -2435,6 +2435,7 @@
 - [ ] [`pkg/types/json_path_expr.rs.md`](../pkg/types/json_path_expr.rs.md)
 - [ ] [`pkg/types/mydecimal.rs.md`](../pkg/types/mydecimal.rs.md)
 - [ ] [`pkg/types/overflow.rs.md`](../pkg/types/overflow.rs.md)
+- [x] [`pkg/types/pg_uuid.rs.md`](../pkg/types/pg_uuid.rs.md)
 - [ ] [`pkg/types/parser_driver/value_expr.rs.md`](../pkg/types/parser_driver/value_expr.rs.md)
 - [ ] [`pkg/types/set.rs.md`](../pkg/types/set.rs.md)
 - [ ] [`pkg/types/string.rs.md`](../pkg/types/string.rs.md)

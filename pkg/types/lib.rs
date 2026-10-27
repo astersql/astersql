@@ -115,3 +115,7 @@ pub mod pg_temporal;
 #[cfg(test)]
 #[path = "pg_temporal_test.rs"]
 mod pg_temporal_test;
+
+pub mod pg_uuid;
+#[cfg(test)]
+mod pg_uuid_test;
