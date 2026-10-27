@@ -5564,3 +5564,15 @@ fn pg05_int4_array_required_integer_context() {
         );
     }
 }
+
+#[test]
+fn pg05_array_cast_int8_explicit_targets() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT ARRAY[1,NULL]::int8[]",
+        "SELECT NULL::bigint[]",
+        "SELECT CAST('{}' AS int8[][])",
+    ] {
+        assert!(parser.ParseOneStmt(sql, "", "").is_ok(), "{sql}");
+    }
+}

@@ -284,7 +284,6 @@ fn pg05_int4_array_constructors_and_rejected_bridges() {
         "SELECT 1::integer[]",
         "SELECT true::integer[]",
         "SELECT ARRAY[true]::integer[]",
-        "SELECT ARRAY[2147483648]::integer[]",
         "SELECT '{}'::jsonb::integer[] WHERE false",
     ] {
         let failure = session
@@ -311,4 +310,155 @@ fn pg05_int4_array_constructors_and_rejected_bridges() {
         result[0].close().unwrap();
     }
     session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_cast_shape_identity_null_and_text() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, element, expected) in [
+        (
+            "SELECT '[0:1][-2:-1]={{-2147483648,NULL},{3,2147483647}}'::int4[]::int8[]",
+            Element::Int8,
+            "[0:1][-2:-1]={{-2147483648,NULL},{3,2147483647}}",
+        ),
+        (
+            "SELECT '[0:1]={1,NULL}'::int8[]::int4[]",
+            Element::Int4,
+            "[0:1]={1,NULL}",
+        ),
+        ("SELECT ARRAY[]::int8[]", Element::Int8, "{}"),
+        (
+            "SELECT ARRAY[NULL,NULL]::int8[]",
+            Element::Int8,
+            "{NULL,NULL}",
+        ),
+        ("SELECT NULL::int4[]::int8[]", Element::Int8, "<nil>"),
+        ("SELECT NULL::int8[]::int4[]", Element::Int4, "<nil>"),
+        (
+            "SELECT ARRAY[1,2147483648]::int8[]",
+            Element::Int8,
+            "{1,2147483648}",
+        ),
+        (
+            "SELECT '[-1:0]={-9223372036854775808,9223372036854775807}'::int8[]",
+            Element::Int8,
+            "[-1:0]={-9223372036854775808,9223372036854775807}",
+        ),
+    ] {
+        let mut result = session
+            .execute(sql)
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(element),
+            "{sql}"
+        );
+        assert_eq!(result[0].next_row().unwrap().unwrap(), [expected], "{sql}");
+        result[0].close().unwrap();
+        let nodes = parsed(sql);
+        let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        assert_eq!(
+            relational_expression_value(expr, &HashMap::new())
+                .unwrap()
+                .as_deref(),
+            (expected != "<nil>").then_some(expected)
+        );
+    }
+    for sql in [
+        "SELECT '[0:1]={1,NULL}'::text::int8[]::text",
+        "SELECT '[0:1]={1,NULL}'::int4[]::int8[]::text",
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLTextOid(),
+            Some(25)
+        );
+        assert_eq!(result[0].next_row().unwrap().unwrap(), ["[0:1]={1,NULL}"]);
+        result[0].close().unwrap();
+    }
+}
+
+#[test]
+fn pg05_array_cast_atomic_failure_and_rebinding() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, _, fields) = session
+        .prepare_protocol_statement_with_parameter_types(
+            "SELECT ?::text::int8[]::int4[] AS v",
+            &[25],
+        )
+        .unwrap();
+    assert_eq!(
+        fields[0].column.FieldType.PostgreSQLArrayElement(),
+        Some(Element::Int4)
+    );
+    for (input, state) in [
+        ("{1,2147483648}", "22003"),
+        ("{1,-2147483649}", "22003"),
+        ("{1,9223372036854775808}", "22003"),
+        ("{1,nope}", "22P02"),
+        ("{{1},{2,3}}", "22P02"),
+    ] {
+        let failure = session
+            .execute_protocol_statement(id, &[ConcretePreparedArgument::Text(input.into())])
+            .err()
+            .expect("cast must fail atomically");
+        assert_eq!(
+            failure.pg_array_error().unwrap().state,
+            state,
+            "{input}: {failure}"
+        );
+        let mut result = session
+            .execute_protocol_statement(
+                id,
+                &[ConcretePreparedArgument::Text("[0:1]={7,NULL}".into())],
+            )
+            .unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap(), ["[0:1]={7,NULL}"]);
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+    for sql in [
+        "SELECT ARRAY[2147483648]::integer[]",
+        "SELECT '{2147483648}'::int4[]::int8[]",
+    ] {
+        let failure = session
+            .execute(sql)
+            .err()
+            .expect("source/target range must be enforced");
+        assert_eq!(
+            failure.pg_array_error().unwrap().state,
+            "22003",
+            "{sql}: {failure}"
+        );
+    }
+    for sql in [
+        "SELECT 1::int8[]",
+        "SELECT ARRAY[true]::int8[]",
+        "SELECT '{}'::jsonb::int8[] WHERE false",
+    ] {
+        let failure = session
+            .prepare_protocol_statement_with_parameter_types(sql, &[])
+            .unwrap_err();
+        assert_eq!(
+            failure
+                .pg_array_error()
+                .map(|e| e.state)
+                .or_else(|| failure.pg_json_error().map(|e| e.sqlstate())),
+            Some("0A000"),
+            "{sql}: {failure}"
+        );
+    }
 }

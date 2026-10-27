@@ -210,3 +210,7 @@ PostgreSQL JSONB转换调用pg_jsonb::cast_value重新校验并规范化；已�
 ## int4 数组共享求值与协议
 
 int4[] cast 在通用标量 cast 前进入 pg_array 的规范值路径；分析时检查输入资格，行求值与常量求值均保留 shape/lower/元素NULL。
+
+## 2026-10-27 数组显式转换（任务23）
+
+显式int8[]与int4[]共用pg_array::cast_value，传入真实目标元素身份；输出FieldType保留数组族，失败不发布部分结果。

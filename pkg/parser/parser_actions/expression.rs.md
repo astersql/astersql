@@ -196,3 +196,7 @@ PgCastType标识符入口新增PostgreSQL jsonb，沿既有方言与无修饰符
 ## int4 数组共享求值与协议
 
 `PgArrayType` 拥有 PgCastType 的 [] 后缀动作，仅开放 int4/integer/int 及其重复 []；建立独立 PostgreSQLArrayElement::Int4，使用通用 Cast 节点，不把数组当作标量 PostgreSQLInt4 cast。其他元素族不在此开放。
+
+## 2026-10-27 数组显式转换（任务23）
+
+PgArrayType沿现有语法动作支持显式int8[]/bigint[]（含多维后缀），与int4[]共用独立数组身份；不改变grammar/生成表，不开放其他元素族。

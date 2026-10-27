@@ -2831,6 +2831,11 @@ impl ConcreteSession {
                         {
                             1007
                         }
+                        _ if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Int8) =>
+                        {
+                            1016
+                        }
                         _ if Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 => 16,
                         ast::CastFunctionType::PostgreSQLInt2 => 21,
                         ast::CastFunctionType::PostgreSQLInt4 => 23,

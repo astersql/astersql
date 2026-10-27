@@ -152,3 +152,7 @@ TypePgJsonb描述为3802/-1/-1，简单查询输出共享执行器已规范化�
 ## int4 数组共享求值与协议
 
 普通1007结果的 text/binary 输出均经规范 PgArray：text验证并规范化完整维度/下界文本，binary使用 to_binary 保存 shape/lower/元素NULL；不再进入目录数组固定下界/字符串拆分编码。RowDescription沿既有 NativeType 数组身份固定1007/-1/-1，SQL NULL保留外层-1。
+
+## 2026-10-27 数组显式转换（任务23）
+
+OID1016转换结果通过规范PgArray与pg_cast_int8解析后输出文本或binary，元素20/8字节、维度/下界/NULL保真；不增加1016 Bind解码或参数白名单。

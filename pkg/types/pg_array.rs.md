@@ -70,3 +70,7 @@ int4使用i32十进制输出，text保存原始UTF8；两族均应用同一引�
     git diff --check
 
 Ready按根AGENTS与testing-flow选取。只修改Rust和说明不自动触发bazel_prepare；完整触发清单见根AGENTS。此模块的行为测试不覆盖后续数组SQL/四方向codec、其他标量族、MySQL桥接、持久化或RealTiKV。
+
+## 2026-10-27 数组显式转换（任务23）
+
+新增规范Int8(i64)/元素OID20，仅供明确数组转换目标与结果编码；严格元素身份、8字节网络序、shape/lower/NULL不变。未开放binary输入族20，协议Bind白名单也保持关闭。

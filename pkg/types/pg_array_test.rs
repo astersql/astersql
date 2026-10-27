@@ -803,3 +803,58 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     );
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
 }
+
+#[test]
+fn pg05_array_cast_int8_carrier_null_and_empty() {
+    let value = PgArray::new(20, -1, vec![1], vec![-2], vec![None]).unwrap();
+    assert_eq!(value.element_oid(), 20);
+    assert_eq!(value.to_text(b',').unwrap(), "[-2:-2]={NULL}");
+    assert_eq!(
+        value.to_binary().unwrap(),
+        [1i32, 1, 20, 1, -2, -1]
+            .into_iter()
+            .flat_map(i32::to_be_bytes)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pg05_array_cast_int8_exact_width_and_identity() {
+    use crate::pg_array::PgArrayElement::Int8;
+    let value = PgArray::new(
+        20,
+        -1,
+        vec![2, 2],
+        vec![0, -2],
+        vec![
+            Some(Int8(i64::MIN)),
+            None,
+            Some(Int8(2147483648)),
+            Some(Int8(i64::MAX)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        value.to_text(b',').unwrap(),
+        "[0:1][-2:-1]={{-9223372036854775808,NULL},{2147483648,9223372036854775807}}"
+    );
+    let mut expected = [2i32, 1, 20, 2, 0, 2, -2, 8]
+        .into_iter()
+        .flat_map(i32::to_be_bytes)
+        .collect::<Vec<_>>();
+    expected.extend_from_slice(&i64::MIN.to_be_bytes());
+    expected.extend_from_slice(&(-1i32).to_be_bytes());
+    for n in [2147483648, i64::MAX] {
+        expected.extend_from_slice(&8i32.to_be_bytes());
+        expected.extend_from_slice(&n.to_be_bytes());
+    }
+    assert_eq!(value.to_binary().unwrap(), expected);
+    assert_eq!(
+        PgArray::new(23, -1, vec![1], vec![1], vec![Some(Int8(7))]),
+        Err(Error::ElementTypeMismatch)
+    );
+    assert_eq!(
+        PgArray::new(20, -1, vec![1], vec![1], vec![Some(Int4(7))]),
+        Err(Error::ElementTypeMismatch)
+    );
+}

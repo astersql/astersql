@@ -240,3 +240,7 @@ TypePgJsonb在共享表达式求值调用pg_jsonb::cast_value，并在结果定�
 ## int4 数组共享求值与协议
 
 int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分析保留目标 FieldType 的数组身份。规范数组通过完整文本载体与独立类型元数据交接，不转成 MySQL JSON。
+
+## 2026-10-27 数组显式转换（任务23）
+
+行/常量共享消费者与query同步接入明确int4/int8数组转换，传入目标元素族，保持与真实SQL消费者相同的错误与NULL行为。

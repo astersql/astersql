@@ -573,16 +573,16 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
-    if oid == 1007 {
+    if matches!(oid, 1007 | 1016) {
         return match value {
             Value::Null => Ok(None),
-            Value::Text(text) => crate::pg_extended::int4_array_text(text.as_bytes())
+            Value::Text(text) => integer_array_result(text.as_bytes(), oid)
                 .map_err(|(_, message)| invalid(&message))?
                 .to_text(b',')
                 .map(|text| Some(text.into_bytes()))
                 .map_err(|error| invalid(&error.to_string())),
             _ => Err(invalid(
-                "int4 array result requires its canonical text carrier",
+                "integer array result requires its canonical text carrier",
             )),
         };
     }
@@ -1046,10 +1046,31 @@ fn binary_numeric(text: &str) -> io::Result<Vec<u8>> {
     Ok(output)
 }
 
+// OID1016 is opened only as an explicit conversion result, not Bind input.
+fn integer_array_result(
+    bytes: &[u8],
+    oid: u32,
+) -> Result<astersql_types::pg_array::PgArray, (&'static str, String)> {
+    if oid == 1007 {
+        return crate::pg_extended::int4_array_text(bytes);
+    }
+    use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
+    PgArray::from_text_with(bytes, 20, -1, b',', |text, _| {
+        astersql_expression::pg_cast_int8(Some(text)).map(|v| PgArrayElement::Int8(v.unwrap()))
+    })
+    .map_err(|e| {
+        let state = match &e {
+            PgArrayTextError::Element(e) => e.sqlstate(),
+            _ => e.sqlstate().unwrap_or("XX000"),
+        };
+        (state, e.to_string())
+    })
+}
+
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if oid == 1007 {
-        return crate::pg_extended::int4_array_text(text.as_bytes())
+    if matches!(oid, 1007 | 1016) {
+        return integer_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()
             .map_err(|error| invalid(&error.to_string()));

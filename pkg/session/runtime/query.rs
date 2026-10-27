@@ -1248,13 +1248,20 @@ impl ConcreteSession {
                 ..
             } => {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-                    if Tp.PostgreSQLArrayElement()
-                        == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
-                    {
+                    if matches!(
+                        Tp.PostgreSQLArrayElement(),
+                        Some(
+                            astersql_parser_types::PostgreSQLArrayElement::Int4
+                                | astersql_parser_types::PostgreSQLArrayElement::Int8
+                        )
+                    ) {
                         super::pg_array::validate_cast(Expr, Tp)?;
-                        return super::pg_array::cast_value(Expr, row, || {
-                            self.relational_query_expression_value(Expr, row, group_rows)
-                        });
+                        return super::pg_array::cast_value(
+                            Expr,
+                            row,
+                            Tp.PostgreSQLArrayElement().unwrap(),
+                            || self.relational_query_expression_value(Expr, row, group_rows),
+                        );
                     }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                         return super::pg_jsonb::cast_value(

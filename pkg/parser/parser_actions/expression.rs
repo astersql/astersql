@@ -1427,14 +1427,17 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 yylex.AppendError(errors::New("PostgreSQL array type requires PostgreSQL dialect"));
                 return Err(1);
             }
-            if source.GetType() != parser_mysql::r#type::TypeLong
-                && source.PostgreSQLArrayElement() != Some(parser_types::PostgreSQLArrayElement::Int4)
-            {
-                yylex.AppendError(errors::New("unsupported PostgreSQL array element type"));
-                return Err(1);
-            }
+            let element = match source.PostgreSQLArrayElement() {
+                Some(element @ (parser_types::PostgreSQLArrayElement::Int4 | parser_types::PostgreSQLArrayElement::Int8)) => element,
+                None if source.GetType() == parser_mysql::r#type::TypeLong => parser_types::PostgreSQLArrayElement::Int4,
+                None if source.GetType() == parser_mysql::r#type::TypeLonglong => parser_types::PostgreSQLArrayElement::Int8,
+                _ => {
+                    yylex.AppendError(errors::New("unsupported PostgreSQL array element type"));
+                    return Err(1);
+                }
+            };
             let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypeVarString);
-            tp.SetPostgreSQLArrayElement(parser_types::PostgreSQLArrayElement::Int4);
+            tp.SetPostgreSQLArrayElement(element);
             tp.SetCharset("utf8mb4".into());
             tp.SetCollate("utf8mb4_bin".into());
             out.item = Some(Box::new(tp));

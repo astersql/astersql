@@ -1286,13 +1286,20 @@ pub(super) fn relational_expression_value(
             FunctionType,
             ..
         } => {
-            if Tp.PostgreSQLArrayElement()
-                == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
-            {
+            if matches!(
+                Tp.PostgreSQLArrayElement(),
+                Some(
+                    astersql_parser_types::PostgreSQLArrayElement::Int4
+                        | astersql_parser_types::PostgreSQLArrayElement::Int8
+                )
+            ) {
                 super::pg_array::validate_cast(Expr, Tp)?;
-                return super::pg_array::cast_value(Expr, row, || {
-                    relational_expression_value(Expr, row)
-                });
+                return super::pg_array::cast_value(
+                    Expr,
+                    row,
+                    Tp.PostgreSQLArrayElement().unwrap(),
+                    || relational_expression_value(Expr, row),
+                );
             }
             if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                 return super::pg_jsonb::cast_value(relational_expression_value(Expr, row)?);
