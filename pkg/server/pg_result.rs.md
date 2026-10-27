@@ -236,3 +236,7 @@ OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec�
 ## 任务39：interval数组必要接线
 
 Interval数组Describe为1187/-1并使用标量同规则编码fields/p；binary直接经元素codec保留三分量，text在Execute取IntervalStyle格式化元素。结果含本族时读取设置，其他族沿原出口。
+
+## UUID 数组接线（任务40）
+
+普通Uuid数组结果进入规范数组codec，输出2951/-1/-1及portal选择格式；binary头2950、元素16字节原序。

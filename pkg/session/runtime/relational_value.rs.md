@@ -321,3 +321,7 @@ timestamptz[]接入共享显式cast分派，沿现有表达式类型保留数组
 ## 任务39：interval数组必要接线
 
 Interval数组加入既有typed-array cast消费者门禁，使用同一规范数组转换，不新增通用隐式转换。
+
+## UUID 数组接线（任务40）
+
+关系表达式的Uuid数组cast接入共享数组消费者，与标量UUID路径分离。

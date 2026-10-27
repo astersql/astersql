@@ -205,3 +205,7 @@ Timestamptz枚举保留元素1184/数组1185，Restore输出TIMESTAMPTZ(p)[]并�
 ## 任务39：interval数组必要接线
 
 PostgreSQLArrayElement::Interval映射1186/1187；数组Restore复用标量INTERVAL fields/p恢复并追加[]，序列化和typed NULL保留元素身份与修饰符。
+
+## UUID 数组接线（任务40）
+
+PostgreSQLArrayElement::Uuid固定映射2950/2951；序列化、UUID[]及CAST恢复保留独立数组身份。

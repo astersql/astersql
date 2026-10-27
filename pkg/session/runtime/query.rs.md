@@ -289,3 +289,7 @@ timestamp数组沿共享查询消费者接入。 独立行为与18.6差分证据
 ## 任务39：interval数组必要接线
 
 SELECT的Interval数组cast接入cast_value_in_session，复用有效IntervalStyle和原数组转换/NULL路径；ARRAY构造沿已存在pg_array_value。
+
+## UUID 数组接线（任务40）
+
+查询cast消费者将Uuid数组交给共享pg_array验证/转换，保留下界与NULL。

@@ -91,3 +91,7 @@ timestamp数组构造/同族cast委派PgTimestamp及round_precision，保留上�
 ## 任务39：interval数组必要接线
 
 仅开放Interval数组：元素解析/构造复用PgInterval::parse_with_style、apply_typmod；fields/p编码为PG typmod，拒绝跨族转换。canonical_interval_text完整验证容器后逐元素规范化；会话消费者读取有效IntervalStyle，保持形状/下界/NULL。
+
+## UUID 数组接线（任务40）
+
+Uuid元素推断、ARRAY构造、显式cast和规范数组转换复用PgUuid标量解析；禁止跨族数组转换，非法元素原子拒绝。

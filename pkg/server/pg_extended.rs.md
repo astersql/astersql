@@ -234,3 +234,7 @@ OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量cod
 ## 任务39：interval数组必要接线
 
 1187声明/推断与text/binary Bind接入既有PgArray容器；1186元素调用PgInterval codec，text按Bind时IntervalStyle冻结。直接参数投影fields/p复用AST修饰符收集，在BindComplete前验证全部元素的typmod，拒绝任一非法元素不发布portal。
+
+## UUID 数组接线（任务40）
+
+Parse允许2951，Bind的text/binary数组分派使用PgUuid/既有2950 binary codec；整个容器验证后发布，维度/下界/元素NULL保留。

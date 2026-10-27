@@ -273,3 +273,7 @@ PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重�
 ## 任务39：interval数组必要接线
 
 现有PgArrayType动作识别TypePgInterval，注册Interval元素并继承GetFlen/GetDecimal的fields/p；复用既有数组语法，不增加解析表规则。
+
+## UUID 数组接线（任务40）
+
+数组类型动作复用既有TypePgUuid标量声明，注册Uuid元素；不新增语法规则或生成表。

@@ -127,3 +127,7 @@ Rust 版本只在无表常量 SELECT 专用路径中直接匹配这些函数，�
 ## 任务39：interval数组必要接线
 
 常量SELECT与UNION的Interval数组cast通过真实relational_query_expression_value消费，保持修饰符/NULL；已存在的ARRAY分析范围门禁保留。
+
+## UUID 数组接线（任务40）
+
+常量SELECT/UNION和ARRAY消费者识别Uuid数组身份，进入既有共享求值路径。

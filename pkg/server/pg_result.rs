@@ -538,6 +538,7 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             | 1115
             | 1185
             | 1187
+            | 2951
             | 1016
             | 1021
             | 1022
@@ -822,7 +823,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185
-        | 1187 | 1016 | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,
+        | 1187 | 2951 | 1016 | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -1008,6 +1009,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
             | 1115
             | 1185
             | 1187
+            | 2951
             | 1016
             | 1021
             | 1022
@@ -1028,6 +1030,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1115 => 1114,
         1185 => 1184,
         1187 => 1186,
+        2951 => 2950,
         1016 => 20,
         1009 => 25,
         1015 => 1043,

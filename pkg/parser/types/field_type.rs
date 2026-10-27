@@ -54,6 +54,7 @@ pub enum PostgreSQLArrayElement {
     Timestamp,
     Timestamptz,
     Interval,
+    Uuid,
 }
 impl PostgreSQLArrayElement {
     pub fn oid(self) -> u32 {
@@ -74,6 +75,7 @@ impl PostgreSQLArrayElement {
             Self::Timestamp => 1114,
             Self::Timestamptz => 1184,
             Self::Interval => 1186,
+            Self::Uuid => 2950,
         }
     }
     pub fn array_oid(self) -> u32 {
@@ -94,6 +96,7 @@ impl PostgreSQLArrayElement {
             Self::Timestamp => 1115,
             Self::Timestamptz => 1185,
             Self::Interval => 1187,
+            Self::Uuid => 2951,
         }
     }
 }
@@ -634,7 +637,7 @@ impl FieldType {
     /// Restore 把完整字段类型写入 RestoreCtx，顺序与 Go 一致。
     // Restore 按 AST Node 语义把完整字段类型写入 RestoreCtx；写入顺序与 Go 一致。
     pub fn Restore(&self, ctx: &mut format::RestoreCtx) -> std::io::Result<()> {
-        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp | PostgreSQLArrayElement::Timestamptz | PostgreSQLArrayElement::Interval)) = self.postgresql_array_element {
+        if let Some(element @ (PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp | PostgreSQLArrayElement::Timestamptz | PostgreSQLArrayElement::Interval | PostgreSQLArrayElement::Uuid)) = self.postgresql_array_element {
             if matches!(element, PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar) {
                 ctx.WriteKeyWord(if element == PostgreSQLArrayElement::Varchar { "VARCHAR" } else if self.flen >= 0 { "CHAR" } else { "BPCHAR" })?;
                 if self.flen >= 0 { ctx.WritePlain(&format!("({})", self.flen))?; }
@@ -657,7 +660,7 @@ impl FieldType {
                 if self.flen >= 0 { ctx.WritePlain(&format!("({},{})",self.flen,self.decimal))?; }
                 return ctx.WritePlain("[]");
             }
-            return ctx.WriteKeyWord(match element { PostgreSQLArrayElement::Date => "DATE[]", PostgreSQLArrayElement::Float4 => "FLOAT4[]", PostgreSQLArrayElement::Float8 => "FLOAT8[]", PostgreSQLArrayElement::Bytea => "BYTEA[]", PostgreSQLArrayElement::Int8 => "INT8[]", PostgreSQLArrayElement::Int2 => "INT2[]", PostgreSQLArrayElement::Bool => "BOOL[]", PostgreSQLArrayElement::Text => "TEXT[]", _ => "INT4[]" });
+            return ctx.WriteKeyWord(match element { PostgreSQLArrayElement::Uuid => "UUID[]", PostgreSQLArrayElement::Date => "DATE[]", PostgreSQLArrayElement::Float4 => "FLOAT4[]", PostgreSQLArrayElement::Float8 => "FLOAT8[]", PostgreSQLArrayElement::Bytea => "BYTEA[]", PostgreSQLArrayElement::Int8 => "INT8[]", PostgreSQLArrayElement::Int2 => "INT2[]", PostgreSQLArrayElement::Bool => "BOOL[]", PostgreSQLArrayElement::Text => "TEXT[]", _ => "INT4[]" });
         }
         if let Some(oid) = self.postgresql_text_oid {
             ctx.WriteKeyWord(match oid {
@@ -731,7 +734,7 @@ impl FieldType {
         ctx: &mut format::RestoreCtx,
         explicitCharset: bool,
     ) -> std::io::Result<()> {
-        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp | PostgreSQLArrayElement::Timestamptz | PostgreSQLArrayElement::Interval)) {
+        if self.postgresql_text_oid.is_some() || matches!(self.postgresql_array_element, Some(PostgreSQLArrayElement::Int8 | PostgreSQLArrayElement::Int2 | PostgreSQLArrayElement::Int4 | PostgreSQLArrayElement::Bool | PostgreSQLArrayElement::Text | PostgreSQLArrayElement::Varchar | PostgreSQLArrayElement::Bpchar | PostgreSQLArrayElement::Bytea | PostgreSQLArrayElement::Numeric | PostgreSQLArrayElement::Float4 | PostgreSQLArrayElement::Float8 | PostgreSQLArrayElement::Date | PostgreSQLArrayElement::Time | PostgreSQLArrayElement::Timestamp | PostgreSQLArrayElement::Timestamptz | PostgreSQLArrayElement::Interval | PostgreSQLArrayElement::Uuid)) {
             return self.Restore(ctx);
         }
         match self.tp {

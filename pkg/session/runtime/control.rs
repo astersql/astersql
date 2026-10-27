@@ -1843,6 +1843,7 @@ impl ConcreteSession {
                         | 1115
                         | 1185
                         | 1187
+                        | 2951
                         | 1016
                         | 1000
                         | 1009
@@ -1901,8 +1902,8 @@ impl ConcreteSession {
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
                             | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1700 | 1021
-                            | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1185 | 1187 | 1016
-                            | 1000 | 1009 | 1014 | 1015),
+                            | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1185 | 1187 | 2951
+                            | 1016 | 1000 | 1009 | 1014 | 1015),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 1700 {
@@ -1948,13 +1949,16 @@ impl ConcreteSession {
                                     | 1115
                                     | 1185
                                     | 1187
+                                    | 2951
                                     | 1016
                                     | 1000
                                     | 1009
                                     | 1014
                                     | 1015
                             ) {
-                                tp = super::pg_array::field_type(if *oid == 1187 {
+                                tp = super::pg_array::field_type(if *oid == 2951 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Uuid
+                                } else if *oid == 1187 {
                                     astersql_parser_types::PostgreSQLArrayElement::Interval
                                 } else if *oid == 1185 {
                                     astersql_parser_types::PostgreSQLArrayElement::Timestamptz
@@ -2069,6 +2073,7 @@ impl ConcreteSession {
                                 | 1115
                                 | 1185
                                 | 1187
+                                | 2951
                                 | 1016
                                 | 1000
                                 | 1009
@@ -2226,6 +2231,9 @@ impl ConcreteSession {
                 }
                 if constructor_oids.get(index) == Some(&1183) {
                     return Ok(format!("CAST({literal} AS TIME[])"));
+                }
+                if constructor_oids.get(index) == Some(&2951) {
+                    return Ok(format!("CAST({literal} AS UUID[])"));
                 }
                 if constructor_oids.get(index) == Some(&1187) {
                     return Ok(format!("CAST({literal} AS INTERVAL[])"));

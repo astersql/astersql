@@ -615,3 +615,17 @@ fn pg05_array_interval_restore_identity() {
         serde_json::from_str(&serde_json::to_string(&tp).unwrap()).unwrap();
     assert_eq!(decoded.PostgreSQLArrayElement(), Some(element));
 }
+
+#[test]
+fn pg05_array_uuid_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Uuid);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"UUID[]");
+    let element = tp.PostgreSQLArrayElement().unwrap();
+    assert_eq!((element.oid(), element.array_oid()), (2950, 2951));
+    let decoded: crate::FieldType =
+        serde_json::from_str(&serde_json::to_string(&tp).unwrap()).unwrap();
+    assert_eq!(decoded.PostgreSQLArrayElement(), Some(element));
+}

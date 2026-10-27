@@ -147,3 +147,7 @@ PgArrayElement::Time直接持有已验证PgTime，文本显示及八字节网络
 ## 任务39：interval数组必要接线
 
 Interval(PgInterval)是1186元素规范值，构造验证与其他族隔离；binary逐元素直接写16字节三分量，文本调用标量显示，形状/下界/typmod与两层NULL沿原通用容器保留。
+
+## UUID 数组接线（任务40）
+
+PgArrayElement::Uuid复用PgUuid，注册元素2950并验证载体身份；text规范显示，binary按原序16字节输出，沿通用shape/lower/typmod及元素NULL契约。

@@ -1267,6 +1267,7 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamp
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamptz
                                 | astersql_parser_types::PostgreSQLArrayElement::Interval
+                                | astersql_parser_types::PostgreSQLArrayElement::Uuid
                                 | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {

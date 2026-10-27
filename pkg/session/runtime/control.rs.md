@@ -256,3 +256,7 @@ prepared参数1182、typed NULL和重绑定沿既有field_type与DATE[]包装保
 ## 任务39：interval数组必要接线
 
 数组声明参数允许1187，通过pg_array::field_type保存Interval身份；预处理参数重绑定恢复INTERVAL[] cast，NULL参数仍保留同族身份。
+
+## UUID 数组接线（任务40）
+
+prepared声明2951参数和typed NULL映射到Uuid数组FieldType，现有绑定桥维持身份及重绑定。
