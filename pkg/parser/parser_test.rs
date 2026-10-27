@@ -5497,3 +5497,28 @@ fn pg05_json_sql_parser_identity_and_mysql_isolation() {
         );
     }
 }
+
+#[test]
+fn pg05_jsonb_sql_parser_identity_and_mysql_isolation() {
+    let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in ["SELECT NULL::jsonb", "SELECT CAST('null' AS jsonb)"] {
+        let (nodes, warnings) = pg.ParseSQL(sql, &[]).unwrap();
+        assert!(warnings.is_empty());
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("missing cast")
+        };
+        assert_eq!(Tp.GetType(), parser_mysql::r#type::TypePgJsonb);
+        assert_eq!(Tp.GetDecimal(), -1);
+        assert!(Tp.PostgreSQLTextOid().is_none());
+    }
+    assert!(pg.ParseSQL("SELECT NULL::jsonb(3)", &[]).is_err());
+    let mut mysql = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(mysql.ParseSQL("SELECT CAST('null' AS jsonb)", &[]).is_err());
+    assert!(mysql.ParseSQL("SELECT CAST('null' AS JSON)", &[]).is_ok());
+}

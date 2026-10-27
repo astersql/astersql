@@ -8,6 +8,11 @@
 
 独立测试pg_json_test.rs通过CreateAnalyzeSession覆盖原文、标量、嵌套cast、NULL/零行、声明参数、拒绝和恢复；parser独立测试覆盖双方言及Restore/serde，server/pg_types_test.rs使用ConcreteSessionDriver及真实TCP验证114/-1/-1、行字节、SQLSTATE及恢复。各crate使用pg05_json_sql测试前缀，执行Cargo前须领取仓库共享槽位。
 
-不实现jsonb、JSON运算、完整隐式转换矩阵、声明列存储，或完整协议入参/二进制结果codec；后两者由任务8/9负责，真实PG18.6四方向差分由任务10负责。
+jsonb规范转换由相邻pg_jsonb模块实现；本模块不提供JSON运算、完整隐式转换矩阵、声明列存储，或完整协议入参/二进制结果codec；后两者由任务8/9负责，真实PG18.6四方向差分由任务10负责。
 
 当前共享SQL lexer消费反斜杠，直接SQL测试对SQL字面量单独转义；包含Unicode转义的原始JSON另外经真实typed text参数绑定验证，不修改JSON原文断言。共享parser未注册bytea拼写；转换资格通过既有BINARY字段和声明OID17参数验证。标准字符串词法和bytea拼写属于其他族的既有缺口，不在本模块扩建。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+JSONB相关资格委托pg_jsonb::validate_cast，允许json↔jsonb；PgJsonCastError::Jsonb保持规范解析器SQLSTATE。

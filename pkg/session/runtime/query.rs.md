@@ -200,3 +200,8 @@ UUID cast在行求值前按来源/目标检查资格（含NULL和零行），共
 ## JSON显式转换与类型交接
 
 PostgreSQL JSON显式cast委托pg_json共享转换；行求值前校验转换资格，NULL/零行同样保持约束。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+PostgreSQL JSONB转换调用pg_jsonb::cast_value重新校验并规范化；已有行前资格验证沿pg_json转交JSONB规则。

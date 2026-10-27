@@ -88,3 +88,8 @@ Rust 的额外接线是 `initialize_standard_errors` 与 `lib.rs` 平台启动�
 ## JSON显式转换与类型交接
 
 TypePgJson展示为json，配合独立类型码保留身份。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+TypePgJsonb的类型名为jsonb，避免结果及恢复展示退化为json或text。

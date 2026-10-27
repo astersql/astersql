@@ -230,3 +230,8 @@ UUID cast复用pg_uuid严格转换；类型推导保留TypePgUuid，结果规范
 ## JSON显式转换与类型交接
 
 共享表达式求值复用pg_json::cast_value，结果类型直接保留TypePgJson及修饰信息。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+TypePgJsonb在共享表达式求值调用pg_jsonb::cast_value，并在结果定型原样保留字段身份，覆盖typed NULL和零行。

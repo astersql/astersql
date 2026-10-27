@@ -76,11 +76,7 @@ fn pg05_jsonb_object_unicode_errors_and_recovery() {
     ] {
         assert_eq!(
             input.parse::<PgJsonb>().unwrap_err().sqlstate(),
-            if input.contains("\\u0000") {
-                "22P05"
-            } else {
-                "22P02"
-            },
+            "22P05",
             "{input}"
         );
         canonical("null", "null");
@@ -140,10 +136,7 @@ fn pg05_jsonb_object_all_bmp_escapes_and_surrogate_boundaries() {
     for code in 0..=u16::MAX {
         let input = format!("\"\\u{code:04x}\"");
         if code == 0 || (0xd800..=0xdfff).contains(&code) {
-            assert_eq!(
-                input.parse::<PgJsonb>().unwrap_err().sqlstate(),
-                if code == 0 { "22P05" } else { "22P02" }
-            );
+            assert_eq!(input.parse::<PgJsonb>().unwrap_err().sqlstate(), "22P05");
         } else {
             let character = char::from_u32(u32::from(code)).unwrap();
             let expected = serde_json::to_string(&character.to_string()).unwrap();
@@ -325,5 +318,13 @@ fn pg05_jsonb_number_invalid_tokens_and_recovery() {
     ] {
         assert_eq!(input.parse::<PgJsonb>().unwrap_err().sqlstate(), state);
         canonical(r#"{"n":1.230e-5}"#, r#"{"n": 0.00001230}"#);
+    }
+}
+
+#[test]
+fn pg05_jsonb_sql_surrogate_conversion_state() {
+    for input in [r#""\ud800""#, r#""\udfff""#, r#"{"a":"\ud800","a":"ok"}"#] {
+        assert!(input.parse::<crate::pg_json::PgJson>().is_ok());
+        assert_eq!(input.parse::<PgJsonb>().unwrap_err().sqlstate(), "22P05");
     }
 }

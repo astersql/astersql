@@ -164,3 +164,8 @@ PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collati
 ## JSON显式转换与类型交接
 
 声明OID114以TypePgJson描述并在绑定时包裹JSON CAST，保留NULL身份；与text/bytea声明分离。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+声明OID3802的参数描述映射TypePgJsonb，绑定时沿既有SQL绑定器包裹JSONB CAST，NULL和重绑定均重新定型/校验；外部wire输入codec归后续任务。

@@ -43,3 +43,12 @@ fn pg05_json_sql_identity_is_independent() {
     assert_ne!(TypePgJson, TypePgUuid);
     assert_ne!(TypePgJson, TypeVarString);
 }
+
+#[test]
+fn pg05_jsonb_sql_identity_is_independent() {
+    // Server catalog-only identities reserve 230..=242.
+    assert!(!(230..=242).contains(&TypePgJsonb));
+    assert_ne!(TypePgJsonb, TypePgJson);
+    assert_ne!(TypePgJsonb, TypeJSON);
+    assert_ne!(TypePgJsonb, TypeVarString);
+}

@@ -83,3 +83,8 @@ Rust 保留了 Go 的全部类型编号、`TypeTiDBVectorFloat32`、第 0 至 24
 ## JSON显式转换与类型交接
 
 定义TypePgJson(0xe5)，保留PostgreSQL原文JSON独立身份，不复用MySQL TypeJSON(245)。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+TypePgJsonb(0xe0)为规范JSONB独立身份，与TypePgJson和MySQL TypeJSON分离。

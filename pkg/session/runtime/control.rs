@@ -1829,6 +1829,7 @@ impl ConcreteSession {
                         | 1184
                         | 1186
                         | 114
+                        | 3802
                         | 2950
                 )
             });
@@ -1882,13 +1883,15 @@ impl ConcreteSession {
                             .and_then(|index| supplied.get(index));
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
-                            | 1184 | 1186 | 114 | 2950),
+                            | 1184 | 1186 | 114 | 3802 | 2950),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
                                 astersql_parser_mysql::r#type::TypeBlob
                             } else if *oid == 1082 {
                                 astersql_parser_mysql::r#type::TypeDate
+                            } else if *oid == 3802 {
+                                astersql_parser_mysql::r#type::TypePgJsonb
                             } else if *oid == 114 {
                                 astersql_parser_mysql::r#type::TypePgJson
                             } else if *oid == 2950 {
@@ -1978,6 +1981,7 @@ impl ConcreteSession {
                                 | 1184
                                 | 1186
                                 | 114
+                                | 3802
                                 | 2950
                         ) {
                             *oid = *supplied;
@@ -2095,6 +2099,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&3802) {
+                    return Ok(format!("CAST({literal} AS JSONB)"));
+                }
                 if constructor_oids.get(index) == Some(&114) {
                     return Ok(format!("CAST({literal} AS JSON)"));
                 }

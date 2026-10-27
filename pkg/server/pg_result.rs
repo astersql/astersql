@@ -482,6 +482,7 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         astersql_parser_mysql::r#type::TypePgInterval => (1186, 16),
         astersql_parser_mysql::r#type::TypePgUuid => (2950, 16),
         astersql_parser_mysql::r#type::TypePgJson => (114, -1),
+        astersql_parser_mysql::r#type::TypePgJsonb => (3802, -1),
         7 | 12 => (1114, 8), // native wall-clock timestamp, no invented timezone
         10 | 14 => (1082, 4),
         11 => (1083, 8),

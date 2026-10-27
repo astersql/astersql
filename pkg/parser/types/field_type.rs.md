@@ -115,3 +115,8 @@ PG UUID使用独立内部类型码；Restore及RestoreAsCastType输出UUID，typ
 ## JSON显式转换与类型交接
 
 RestoreAsCastType对独立TypePgJson写出JSON，serde、相等及哈希沿现有类型码保留身份。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+RestoreAsCastType为TypePgJsonb写出JSONB；类型码沿serde/相等保留身份。

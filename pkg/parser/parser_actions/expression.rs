@@ -1437,6 +1437,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "timestamptz" => parser_mysql::r#type::TypePgTimestampTz,
                 "interval" => parser_mysql::r#type::TypePgInterval,
                 "uuid" => parser_mysql::r#type::TypePgUuid,
+                "jsonb" => parser_mysql::r#type::TypePgJsonb,
                 _ => {
                     yylex.AppendError(yylex.Errorf("unsupported PostgreSQL cast target", &[]));
                     return Err(1);

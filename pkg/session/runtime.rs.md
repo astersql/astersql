@@ -132,3 +132,8 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ## JSON显式转换与类型交接
 
 挂载pg_json转换和独立pg_json_test测试，公开结构化PgJsonCastError供协议边界传递。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+挂载pg_jsonb转换模块及独立pg_jsonb_test测试；复用PgJsonCastError传递结构化错误。

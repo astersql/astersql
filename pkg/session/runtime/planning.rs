@@ -2804,6 +2804,7 @@ impl ConcreteSession {
                         | 1184
                         | 1186
                         | 114
+                        | 3802
                         | 2950
                 ) {
                     *oid = *supplied;
@@ -2836,6 +2837,7 @@ impl ConcreteSession {
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime => 1114,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid => 2950,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson => 114,
+                        _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb => 3802,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval => 1186,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz => {
                             1184

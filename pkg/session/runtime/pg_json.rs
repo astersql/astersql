@@ -7,12 +7,14 @@ use astersql_types::pg_json::{PgJson, PgJsonError};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PgJsonCastError {
     Input(PgJsonError),
+    Jsonb(astersql_types::pg_jsonb::PgJsonbError),
     Unsupported,
 }
 impl std::fmt::Display for PgJsonCastError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Input(error) => error.fmt(f),
+            Self::Jsonb(error) => error.fmt(f),
             Self::Unsupported => f.write_str("unsupported PostgreSQL JSON cast"),
         }
     }
@@ -22,10 +24,11 @@ impl PgJsonCastError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::Input(error) => error.sqlstate(),
+            Self::Jsonb(error) => error.sqlstate(),
             Self::Unsupported => "0A000",
         }
     }
-    fn session_error(self) -> SessionError {
+    pub(super) fn session_error(self) -> SessionError {
         SessionError::with_source(self.to_string(), astersql_errors::SharedError::new(self))
     }
 }
@@ -33,6 +36,9 @@ impl PgJsonCastError {
 /// Check eligibility before evaluating rows, including typed NULL and empty scans.
 pub(super) fn validate_cast(source: &FieldType, target: &FieldType) -> SessionResult<()> {
     use astersql_parser_mysql::r#type::*;
+    if source.GetType() == TypePgJsonb || target.GetType() == TypePgJsonb {
+        return super::pg_jsonb::validate_cast(source, target);
+    }
     let source_json = source.GetType() == TypePgJson;
     let target_json = target.GetType() == TypePgJson;
     if !source_json && !target_json {

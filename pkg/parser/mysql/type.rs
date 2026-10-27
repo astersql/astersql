@@ -228,3 +228,5 @@ pub const TypePgInterval: u8 = 0xe3;
 pub const TypePgUuid: u8 = 0xe4;
 /// Internal PostgreSQL original JSON identity, independent of MySQL BinaryJSON.
 pub const TypePgJson: u8 = 0xe5;
+/// Internal PostgreSQL canonical JSONB identity, never MySQL BinaryJSON.
+pub const TypePgJsonb: u8 = 0xe0;

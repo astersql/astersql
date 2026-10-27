@@ -273,3 +273,25 @@ fn pg05_json_sql_type_restore_and_serde_identity() {
     assert_eq!(decoded, ft);
     assert_eq!(TypeStr(decoded.GetType()), "json");
 }
+
+#[test]
+fn pg05_jsonb_sql_type_restore_and_serde_identity() {
+    let ft = NewFieldType(mysql::TypePgJsonb);
+    assert_ne!(ft, NewFieldType(mysql::TypeJSON));
+    assert_ne!(ft, NewFieldType(mysql::TypeVarString));
+    assert_ne!(ft, NewFieldType(mysql::TypeString));
+    let mut out = Vec::new();
+    ft.FormatAsCastType(&mut out, false).unwrap();
+    assert_eq!(out, b"JSONB");
+    let mut restored = Vec::new();
+    ft.Restore(&mut format::NewRestoreCtx(
+        format::DefaultRestoreFlags,
+        &mut restored,
+    ))
+    .unwrap();
+    assert_eq!(restored, b"JSONB");
+    let encoded = serde_json::to_string(&ft).unwrap();
+    let decoded: FieldType = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, ft);
+    assert_eq!(TypeStr(decoded.GetType()), "jsonb");
+}

@@ -1248,6 +1248,11 @@ impl ConcreteSession {
                 ..
             } => {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
+                        return super::pg_jsonb::cast_value(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                        );
+                    }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson {
                         return super::pg_json::cast_value(
                             self.relational_query_expression_value(Expr, row, group_rows)?,

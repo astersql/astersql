@@ -186,3 +186,8 @@ PG现有cast类型名分支接受uuid，生成独立TypePgUuid、固定长度16�
 ## JSON显式转换与类型交接
 
 JSON的CAST目标按方言分别选择TypePgJson和原MySQL TypeJSON；新增后缀JSON规则复用同一动作，不改MySQL契约。
+
+
+## 2026-10-27 JSONB显式转换接线
+
+PgCastType标识符入口新增PostgreSQL jsonb，沿既有方言与无修饰符资格检查，不修改MySQL JSON语义。

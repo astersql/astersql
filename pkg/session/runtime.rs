@@ -85,6 +85,9 @@ mod pg_array_test;
 mod pg_json;
 #[cfg(test)]
 mod pg_json_test;
+mod pg_jsonb;
+#[cfg(test)]
+mod pg_jsonb_test;
 mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
