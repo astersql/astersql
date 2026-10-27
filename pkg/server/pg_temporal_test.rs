@@ -6788,7 +6788,7 @@ fn pg_temporal_iv_range_special() {
         ),
         (
             (i32::MIN, i32::MAX, i64::MAX),
-            "-178956970 years -8 mons +2147483647 days +2562047788:00:54.775807".to_owned(),
+            "-178956970 years -8 mons +2147483647 days 2562047788:00:54.775807".to_owned(),
         ),
         (
             (i32::MIN, i32::MIN, i64::MAX),

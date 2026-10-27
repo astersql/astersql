@@ -15,3 +15,7 @@ prepare_pg_date_constants/apply_pg_date_constants把既有Parse常量冻结扩�
 ## 2026-10-28 timestamptz数组（任务38）
 
 timestamptz数组字面量同标量在Parse调用pg_timestamptz_array_input冻结瞬时，Execute仍按活动TimeZone显示；错误保留标量来源。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+准备期Interval数组常量使用canonical_interval_text按当时IntervalStyle冻结分量，并沿既有常量替换机制保存；不把Execute时样式变化重新施加到原字面量。

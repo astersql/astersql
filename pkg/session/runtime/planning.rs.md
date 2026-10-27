@@ -284,3 +284,7 @@ prepared描述与参数推断识别Date数组1182，空集与全NULL不退化为
 ## 2026-10-28 timestamptz数组（任务38）
 
 1185绑定约束与cast目标推断沿现有数组元数据桥接，避免退化成text。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+1187加入既有参数规划白名单；Interval数组cast推断同一1187身份，沿原参数/结果元数据路径传播。

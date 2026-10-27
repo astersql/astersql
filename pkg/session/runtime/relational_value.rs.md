@@ -317,3 +317,7 @@ timestamp数组沿共享关系表达式求值消费者接入。 独立行为与1
 ## 2026-10-28 timestamptz数组（任务38）
 
 timestamptz[]接入共享显式cast分派，沿现有表达式类型保留数组身份。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+Interval数组加入既有typed-array cast消费者门禁，使用同一规范数组转换，不新增通用隐式转换。

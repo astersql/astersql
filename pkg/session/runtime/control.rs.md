@@ -252,3 +252,7 @@ prepared参数1182、typed NULL和重绑定沿既有field_type与DATE[]包装保
 ## 2026-10-28 timestamptz数组（任务38）
 
 1185注册声明参数、typed NULL及重绑定，使用TIMESTAMPTZ[]恢复类型身份。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+数组声明参数允许1187，通过pg_array::field_type保存Interval身份；预处理参数重绑定恢复INTERVAL[] cast，NULL参数仍保留同族身份。

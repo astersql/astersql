@@ -269,3 +269,7 @@ PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重�
 ## 2026-10-28 timestamptz数组（任务38）
 
 既有identifier目标timestamptz经PgCastType数组动作接入，无需新增语法规则或重生成解析表；数组保留标量p。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+现有PgArrayType动作识别TypePgInterval，注册Interval元素并继承GetFlen/GetDecimal的fields/p；复用既有数组语法，不增加解析表规则。

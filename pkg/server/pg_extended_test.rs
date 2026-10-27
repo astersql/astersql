@@ -10691,3 +10691,48 @@ fn pg05_array_timestamptz_registered_input() {
         value.value
     );
 }
+
+#[test]
+fn pg05_array_interval_scalar_codec_prerequisite() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    use astersql_types::pg_temporal::PgInterval;
+    for parts in [
+        (1, 0, 0),
+        (0, 30, 0),
+        (0, 1, 0),
+        (0, 0, 86_400_000_000),
+        (-1, 2, -11_045_123_456),
+        (i32::MAX, i32::MAX, i64::MAX),
+        (i32::MIN, i32::MIN, i64::MIN),
+    ] {
+        let v = PgInterval::from_components(parts.0, parts.1, parts.2);
+        let text = v.to_string();
+        assert_eq!(
+            parameter(1186, Some(text.as_bytes())).unwrap().value,
+            text.as_bytes()
+        );
+        assert_eq!(
+            binary_parameter(1186, Some(&v.to_binary())).unwrap().value,
+            text.as_bytes()
+        );
+    }
+}
+#[test]
+fn pg05_array_interval_registered_input() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    let text = br#"[-1:0]={"1 mon",NULL}"#;
+    let value = parameter(1187, Some(text)).unwrap();
+    assert_eq!(value.value, text);
+    let binary = [1i32, 1, 1186, 2, -1, 16]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .chain(0i64.to_be_bytes())
+        .chain(0i32.to_be_bytes())
+        .chain(1i32.to_be_bytes())
+        .chain((-1i32).to_be_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        binary_parameter(1187, Some(&binary)).unwrap().value,
+        value.value
+    );
+}

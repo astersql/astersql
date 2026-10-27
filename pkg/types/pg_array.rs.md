@@ -143,3 +143,7 @@ PgArrayElement::Time直接持有已验证PgTime，文本显示及八字节网络
 ## 2026-10-28 timestamptz数组（任务38）
 
 增加Timestamptz(PgTimestampTz)规范元素，1184身份验证、文本与八字节网络序输出沿共享容器保留shape/lower/typmod和元素NULL。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+Interval(PgInterval)是1186元素规范值，构造验证与其他族隔离；binary逐元素直接写16字节三分量，文本调用标量显示，形状/下界/typmod与两层NULL沿原通用容器保留。

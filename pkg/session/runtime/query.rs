@@ -1266,10 +1266,23 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Time
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamp
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamptz
+                                | astersql_parser_types::PostgreSQLArrayElement::Interval
                                 | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {
                         super::pg_array::validate_cast(Expr, Tp)?;
+                        if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Interval)
+                        {
+                            return super::pg_array::cast_value_in_session(
+                                Expr,
+                                row,
+                                Tp,
+                                None,
+                                Some(self),
+                                || self.relational_query_expression_value(Expr, row, group_rows),
+                            );
+                        }
                         if Tp.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamptz)
                         {

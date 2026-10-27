@@ -1128,7 +1128,9 @@ impl fmt::Display for PgInterval {
                     if negative && n > 0 { "+" } else { "" },
                     if n == 1 { "" } else { "s" }
                 ));
-                negative |= n < 0;
+                // PostgreSQL signs the next field from the preceding emitted field,
+                // rather than retaining every earlier negative component.
+                negative = n < 0;
             }
         }
         if self.time_microseconds != 0 || parts.is_empty() {
@@ -1394,7 +1396,8 @@ impl PgInterval {
 
                 let signed = mixed || (m != 0 && (d != 0 || t != 0));
                 let mut parts = Vec::new();
-                if m != 0 {
+                // Mixed signs retain all SQL-standard groups, including zero years/months.
+                if m != 0 || mixed {
                     parts.push(format!(
                         "{}{}-{}",
                         if m < 0 {

@@ -537,6 +537,7 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             | 1183
             | 1115
             | 1185
+            | 1187
             | 1016
             | 1021
             | 1022
@@ -821,7 +822,7 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185
-        | 1016 | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,
+        | 1187 | 1016 | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -1006,6 +1007,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
             | 1183
             | 1115
             | 1185
+            | 1187
             | 1016
             | 1021
             | 1022
@@ -1025,6 +1027,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1183 => 1083,
         1115 => 1114,
         1185 => 1184,
+        1187 => 1186,
         1016 => 20,
         1009 => 25,
         1015 => 1043,
@@ -1221,7 +1224,7 @@ pub(crate) fn encode_formats_interval(
                     .map(|tp| tp.decimal as i32)
                     .filter(|precision| (0..=6).contains(precision))
                     .unwrap_or(-1)
-            } else if *oid == 1186 {
+            } else if matches!(*oid, 1186 | 1187) {
                 result
                     .native_types
                     .get(index)
@@ -1310,6 +1313,23 @@ pub(crate) fn encode_formats_interval(
                     } else {
                         value_binary(value, *oid)?
                     }
+                } else if *oid == 1187 {
+                    value_text(value, *oid)?
+                        .map(|text| {
+                            use astersql_types::pg_array::{PgArray, PgArrayElement};
+                            let array = PgArray::from_text_with(&text, 25, -1, b',', |text, _| {
+                                text.parse::<astersql_types::pg_temporal::PgInterval>()
+                                    .map(|v| {
+                                        PgArrayElement::Text(v.format_with_style(interval_style))
+                                    })
+                            })
+                            .map_err(|_| invalid("invalid interval array result"))?;
+                            array
+                                .to_text(b',')
+                                .map(String::into_bytes)
+                                .map_err(|e| invalid(&e.to_string()))
+                        })
+                        .transpose()?
                 } else if *oid == 1186 {
                     value_text(value, *oid)?
                         .map(|text| {
@@ -1383,11 +1403,11 @@ pub(crate) fn interval_style(
     result: &QueryResult,
     context: &dyn crate::conn::TiDBContext,
 ) -> crate::conn::ConnResult<astersql_types::pg_temporal::PgIntervalStyle> {
-    if result
-        .native_types
-        .iter()
-        .any(|tp| tp.code == astersql_parser_mysql::r#type::TypePgInterval)
-    {
+    if result.native_types.iter().any(|tp| {
+        tp.code == astersql_parser_mysql::r#type::TypePgInterval
+            || tp.postgresql_array_element
+                == Some(astersql_session::runtime::PostgreSQLArrayElement::Interval)
+    }) {
         context.pg_interval_style(None)
     } else {
         Ok(Default::default())

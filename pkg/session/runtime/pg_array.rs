@@ -39,6 +39,7 @@ fn element_name(element: Element) -> &'static str {
         Element::Time => "time",
         Element::Timestamp => "timestamp",
         Element::Timestamptz => "timestamp with time zone",
+        Element::Interval => "interval",
         Element::Int2 => "smallint",
         Element::Int4 => "integer",
         Element::Int8 => "bigint",
@@ -83,6 +84,7 @@ pub(super) fn element_type(
             1083 => Some(Element::Time),
             1114 => Some(Element::Timestamp),
             1184 => Some(Element::Timestamptz),
+            1186 => Some(Element::Interval),
             21 => Some(Element::Int2),
             23 => Some(Element::Int4),
             20 => Some(Element::Int8),
@@ -168,6 +170,12 @@ pub(super) fn element_type(
                 && Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz =>
         {
             Some(Element::Timestamptz)
+        }
+        ast::ExprKind::Cast { Tp, .. }
+            if Tp.PostgreSQLArrayElement().is_none()
+                && Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval =>
+        {
+            Some(Element::Interval)
         }
         ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLTextOid() == Some(25) => Some(Element::Text),
         ast::ExprKind::Parentheses(inner) => element_type(inner, parameters)?,
@@ -323,7 +331,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Varchar | Element::Bpchar | Element::Bytea | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -412,7 +420,8 @@ pub(super) fn analyze(
                     | Element::Date
                     | Element::Time
                     | Element::Timestamp
-                    | Element::Timestamptz),
+                    | Element::Timestamptz
+                    | Element::Interval),
                 ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
@@ -682,7 +691,11 @@ fn value_as(
             // domain out of the shared MySQL temporal evaluator.
             let source = if matches!(
                 element,
-                Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz
+                Element::Date
+                    | Element::Time
+                    | Element::Timestamp
+                    | Element::Timestamptz
+                    | Element::Interval
             ) && let ast::ExprKind::Cast { Expr, Tp, .. } = &child.Kind
                 && matches!(
                     Tp.GetType(),
@@ -690,6 +703,7 @@ fn value_as(
                         | astersql_parser_mysql::r#type::TypeDuration
                         | astersql_parser_mysql::r#type::TypeDatetime
                         | astersql_parser_mysql::r#type::TypePgTimestampTz
+                        | astersql_parser_mysql::r#type::TypePgInterval
                 ) {
                 Expr.as_ref()
             } else {
@@ -713,6 +727,13 @@ fn value_as(
                         .to_string(),
                     Element::Float4 | Element::Float8 => {
                         unreachable!("floating-point arrays use canonical bit construction")
+                    }
+                    Element::Interval => {
+                        let (fields, precision) = if let ast::ExprKind::Cast { Tp, .. } = &child.Kind { (Tp.GetFlen(), Tp.GetDecimal()) } else { (-1, -1) };
+                        let style = session.map(|s| s.pg_interval_style(None)).unwrap_or_default();
+                        astersql_types::pg_temporal::PgInterval::parse_with_style(&value, style)
+                            .and_then(|v| v.apply_typmod(fields, precision))
+                            .map_err(|e| error(e.sqlstate(), e.to_string()))?.to_string()
                     }
                     Element::Timestamptz => {
                         let precision = if let ast::ExprKind::Cast { Tp, .. } = &child.Kind { Tp.GetDecimal() } else { -1 };
@@ -831,6 +852,7 @@ fn value_as(
             | Element::Time
             | Element::Timestamp
             | Element::Timestamptz
+            | Element::Interval
     ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
@@ -866,7 +888,14 @@ fn typed_array_with_modifier(
         astersql_expression::pg_varchar_length(precision)
             .map_err(|e| error(e.sqlstate(), e.to_string()))?;
     }
-    let typmod = if matches!(
+    let typmod = if element == Element::Interval && (precision >= 0 || scale >= 0) {
+        ((if precision < 0 {
+            0x7fff
+        } else {
+            precision as i32
+        }) << 16)
+            | if scale < 0 { 0xffff } else { scale as i32 }
+    } else if matches!(
         element,
         Element::Time | Element::Timestamp | Element::Timestamptz
     ) {
@@ -889,6 +918,11 @@ fn typed_array_with_modifier(
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Float8 => astersql_expression::pg_cast_float8(Some(text))
                 .map(|v| PgArrayElement::Float8(v.unwrap().to_bits()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
+            Element::Interval => text
+                .parse::<astersql_types::pg_temporal::PgInterval>()
+                .and_then(|v| v.apply_typmod(precision, scale))
+                .map(PgArrayElement::Interval)
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Timestamptz => text
                 .parse::<astersql_types::pg_temporal::PgTimestampTz>()
@@ -1001,6 +1035,7 @@ pub(super) fn validate_cast(
                 | Element::Time
                 | Element::Timestamp
                 | Element::Timestamptz
+                | Element::Interval
         )
     ) {
         return Ok(());
@@ -1015,7 +1050,7 @@ pub(super) fn validate_cast(
                 || supported_array_element(child, target)
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
-                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz) => source == target,
+                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4 | Element::Float8 | Element::Date | Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval) => source == target,
                 Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text | Element::Varchar | Element::Bpchar) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
@@ -1040,7 +1075,7 @@ pub(super) fn validate_cast(
                 }
                 if matches!(
                     target,
-                    Element::Time | Element::Timestamp | Element::Timestamptz
+                    Element::Time | Element::Timestamp | Element::Timestamptz | Element::Interval
                 ) {
                     return source == Some(target)
                         || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
@@ -1088,6 +1123,7 @@ pub(super) fn validate_cast(
                 | Element::Time
                 | Element::Timestamp
                 | Element::Timestamptz
+                | Element::Interval
         )
     ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
@@ -1175,7 +1211,16 @@ pub(super) fn cast_value_in_session(
     let Some(text) = value()? else {
         return Ok(None);
     };
-    let text = if target == Element::Timestamptz
+    let text = if target == Element::Interval
+        && let Some(session) = session
+    {
+        canonical_interval_text(
+            text.as_bytes(),
+            session.pg_interval_style(None),
+            target_type.GetFlen(),
+            target_type.GetDecimal(),
+        )?
+    } else if target == Element::Timestamptz
         && let Some(session) = session
     {
         session.pg_timestamptz_array_input(text.as_bytes(), target_type.GetDecimal())?
@@ -1206,6 +1251,7 @@ pub(super) fn cast_value_in_session(
                 | Element::Time
                 | Element::Timestamp
                 | Element::Timestamptz
+                | Element::Interval
         ) || matches!(
             target,
             Element::Text
@@ -1221,6 +1267,7 @@ pub(super) fn cast_value_in_session(
                 | Element::Time
                 | Element::Timestamp
                 | Element::Timestamptz
+                | Element::Interval
         ))
     {
         return Err(error("0A000", "array cast source is not supported"));
@@ -1256,6 +1303,7 @@ pub(super) fn cast_value_in_session(
         Element::Time
             | Element::Timestamp
             | Element::Timestamptz
+            | Element::Interval
             | Element::Numeric
             | Element::Varchar
             | Element::Bpchar
@@ -1449,4 +1497,26 @@ impl ConcreteSession {
             Ok(value)
         }
     }
+}
+
+/// Canonicalize the entire container with the already delivered scalar style/typmod codec.
+pub(super) fn canonical_interval_text(
+    bytes: &[u8],
+    style: astersql_types::pg_temporal::PgIntervalStyle,
+    fields: isize,
+    precision: isize,
+) -> SessionResult<String> {
+    use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
+    PgArray::from_text_with(bytes, 1186, -1, b',', |text, _| {
+        astersql_types::pg_temporal::PgInterval::parse_with_style(text, style)
+            .and_then(|v| v.apply_typmod(fields, precision))
+            .map(PgArrayElement::Interval)
+            .map_err(|e| error(e.sqlstate(), e.to_string()))
+    })
+    .map_err(|e| match e {
+        PgArrayTextError::Element(e) => e,
+        e => error(e.sqlstate().unwrap_or("XX000"), e.to_string()),
+    })?
+    .to_text(b',')
+    .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))
 }

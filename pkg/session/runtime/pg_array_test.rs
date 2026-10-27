@@ -1644,3 +1644,42 @@ fn pg05_array_timestamptz_session_timezone_and_constant_union() {
         results[0].close().unwrap();
     }
 }
+
+#[test]
+fn pg05_array_interval_runtime_constructors_typmod_null_and_atomic_errors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY['1 mon'::interval,'24 hours'::interval,NULL::interval]",
+            r#"{"1 mon",24:00:00,NULL}"#,
+        ),
+        (
+            "SELECT '[-2:-1]={1.2345 seconds,NULL}'::interval(3)[]",
+            "[-2:-1]={00:00:01.235,NULL}",
+        ),
+        (
+            "SELECT '{1 year 2 months}'::interval year[]",
+            r#"{"1 year"}"#,
+        ),
+        ("SELECT ARRAY[]::interval[]", "{}"),
+        ("SELECT ARRAY[NULL,NULL]::interval[]", "{NULL,NULL}"),
+        ("SELECT NULL::interval(3)[]", "<nil>"),
+        (
+            "SELECT '{infinity,-infinity}'::interval[]",
+            "{infinity,-infinity}",
+        ),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap()[0], expected, "{sql}");
+        result[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT '{1 month,garbage}'::interval[]",
+        "SELECT NULL::int4[]::interval[]",
+        "SELECT NULL::interval[]::text[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+        assert!(session.execute("SELECT 1").is_ok());
+    }
+}

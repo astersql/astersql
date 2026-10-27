@@ -5,3 +5,9 @@
 ## 任务36必要诊断纠错
 
 PgTime::from_str在既有numeric displacement分支前区分非数值date-shaped命名时区词。未知名字沿已有PgTemporalError::UnknownZone返回22023；普通词、无效数值后缀保持22007，offset越界22009，clock越界22008。复用已有chrono_tz名单排除已知名字，不引入命名时区或POSIX求值算法。独立标量回归与time数组18.6四方向差分见docs/postgresql-pg05-array-time-evidence.md。
+
+## 任务39：interval数组必要接线
+
+sql_standard格式化在独立分量符号混合时保留零年月组，即使months为0也输出+0-0，以匹配18.6。继续使用既有mixed/signed判定和三分量，不改变解析、binary或其他样式。独立pg_temporal_test.rs用18.6采集的正负零组合覆盖四样式。
+
+相邻18.6组合还要求postgres输出正号只继承前一个已输出字段的符号，不能累计早先所有负号；Display沿原negative状态更新为当前字段符号。独立正负零矩阵覆盖这一路径。

@@ -230,3 +230,7 @@ OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量cod
 ## 2026-10-28 timestamptz数组（任务38）
 
 1185普通参数及Parse注册，文本Bind逐元素委派现有context.pg_timestamptz_input，binary委派PgTimestampTz::from_binary而不重复施加时区偏移；错误沿共享容器保留SQLSTATE。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+1187声明/推断与text/binary Bind接入既有PgArray容器；1186元素调用PgInterval codec，text按Bind时IntervalStyle冻结。直接参数投影fields/p复用AST修饰符收集，在BindComplete前验证全部元素的typmod，拒绝任一非法元素不发布portal。

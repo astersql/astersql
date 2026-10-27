@@ -4062,16 +4062,24 @@ impl ConcreteSession {
                 }
                 ast::ExprKind::Array { .. }
                     if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                        && super::pg_array::array_type(expr, &HashMap::new())?
-                            == astersql_parser_types::PostgreSQLArrayElement::Timestamptz =>
+                        && matches!(
+                            super::pg_array::array_type(expr, &HashMap::new())?,
+                            astersql_parser_types::PostgreSQLArrayElement::Timestamptz
+                                | astersql_parser_types::PostgreSQLArrayElement::Interval
+                        ) =>
                 {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
                         .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
                 }
                 ast::ExprKind::Cast { Tp, .. }
                     if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                        && Tp.PostgreSQLArrayElement()
-                            == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamptz) =>
+                        && matches!(
+                            Tp.PostgreSQLArrayElement(),
+                            Some(
+                                astersql_parser_types::PostgreSQLArrayElement::Timestamptz
+                                    | astersql_parser_types::PostgreSQLArrayElement::Interval
+                            )
+                        ) =>
                 {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
                         .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())

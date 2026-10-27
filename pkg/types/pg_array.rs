@@ -171,6 +171,7 @@ pub enum PgArrayElement {
     Time(super::pg_temporal::PgTime),
     Timestamp(super::pg_temporal::PgTimestamp),
     Timestamptz(super::pg_temporal::PgTimestampTz),
+    Interval(super::pg_temporal::PgInterval),
     Int2(i16),
     Bool(bool),
     Int4(i32),
@@ -203,7 +204,8 @@ impl PgArray {
     ) -> Result<Self, PgArrayError> {
         if !matches!(
             element_oid,
-            1184 | 1114
+            1186 | 1184
+                | 1114
                 | 1083
                 | 1082
                 | 16
@@ -227,6 +229,7 @@ impl PgArray {
                 (1083, PgArrayElement::Time(_)) => {}
                 (1114, PgArrayElement::Timestamp(_)) => {}
                 (1184, PgArrayElement::Timestamptz(_)) => {}
+                (1186, PgArrayElement::Interval(_)) => {}
                 (700, PgArrayElement::Float4(_)) => {}
                 (701, PgArrayElement::Float8(_)) => {}
                 (1700, PgArrayElement::Numeric(_)) => {}
@@ -321,7 +324,8 @@ impl PgArray {
         }
         if !matches!(
             element_oid,
-            1184 | 1114
+            1186 | 1184
+                | 1114
                 | 1083
                 | 1082
                 | 16
@@ -409,7 +413,8 @@ impl PgArray {
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
         let supported = matches!(
             element_oid,
-            1184 | 1114
+            1186 | 1184
+                | 1114
                 | 1083
                 | 1082
                 | 16
@@ -470,6 +475,7 @@ impl PgArray {
             let length = match element {
                 None => 0,
                 Some(PgArrayElement::Date(_)) => 4,
+                Some(PgArrayElement::Interval(_)) => 16,
                 Some(
                     PgArrayElement::Time(_)
                     | PgArrayElement::Timestamp(_)
@@ -514,6 +520,10 @@ impl PgArray {
                 }
                 Some(PgArrayElement::Timestamptz(value)) => {
                     output.extend_from_slice(&8i32.to_be_bytes());
+                    output.extend_from_slice(&value.to_binary());
+                }
+                Some(PgArrayElement::Interval(value)) => {
+                    output.extend_from_slice(&16i32.to_be_bytes());
                     output.extend_from_slice(&value.to_binary());
                 }
                 Some(PgArrayElement::Date(value)) => {
@@ -610,6 +620,9 @@ impl PgArray {
                     write_array_element_text(&value.to_string(), delimiter, output)
                 }
                 Some(PgArrayElement::Timestamp(value)) => {
+                    write_array_element_text(&value.to_string(), delimiter, output)
+                }
+                Some(PgArrayElement::Interval(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output)
                 }
                 Some(PgArrayElement::Timestamptz(value)) => {

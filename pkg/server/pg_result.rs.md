@@ -232,3 +232,7 @@ OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec�
 ## 2026-10-28 timestamptz数组（任务38）
 
 1185结果保留precision描述，文本验证瞬时后保留会话显示偏移，binary通过规范数组标量codec输出UTC字节。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+Interval数组Describe为1187/-1并使用标量同规则编码fields/p；binary直接经元素codec保留三分量，text在Execute取IntervalStyle格式化元素。结果含本族时读取设置，其他族沿原出口。

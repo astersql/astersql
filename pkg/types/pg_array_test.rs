@@ -284,7 +284,7 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
         Err(Error::InvalidEncoding)
     );
-    for oid in [0, 1186, 1007, 3802] {
+    for oid in [0, 2950, 1007, 3802] {
         let err = PgArray::from_text_with(b"{}", oid, -1, b',', |_, _| {
             Ok::<_, std::convert::Infallible>(Int4(1))
         })
@@ -784,7 +784,7 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
     assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
     // Invalid values cannot reach output through the immutable carrier.
-    for oid in [1186, 1007, 2950] {
+    for oid in [3802, 1007, 2950] {
         let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
         assert_eq!(err, Error::UnsupportedElement);
         assert_eq!(err.sqlstate(), Some("0A000"));
@@ -1451,6 +1451,57 @@ fn pg05_array_timestamptz_canonical_shape_null_and_binary() {
             vec![1],
             vec![1],
             vec![Some(PgArrayElement::Text("2000-01-01".into()))]
+        ),
+        Err(PgArrayError::ElementTypeMismatch)
+    );
+}
+
+#[test]
+fn pg05_array_interval_components_shape_typmod_null_and_binary() {
+    use crate::pg_array::{PgArray, PgArrayElement, PgArrayError};
+    use crate::pg_temporal::{PgInterval, PgTemporalError};
+    for parts in [
+        (1, 0, 0),
+        (0, 30, 0),
+        (0, 1, 0),
+        (0, 0, 86_400_000_000),
+        (-1, 2, -11_045_123_456),
+        (i32::MAX, i32::MAX, i64::MAX),
+        (i32::MIN, i32::MIN, i64::MIN),
+        (i32::MIN, i32::MAX, i64::MIN),
+    ] {
+        let v = PgInterval::from_components(parts.0, parts.1, parts.2);
+        let array = PgArray::new(
+            1186,
+            (32767 << 16) | 3,
+            vec![2, 1],
+            vec![-2, 0],
+            vec![Some(PgArrayElement::Interval(v)), None],
+        )
+        .unwrap();
+        let bytes = array.to_binary().unwrap();
+        assert_eq!(&bytes[32..48], &v.to_binary());
+        let decoded =
+            PgArray::from_binary_with(&bytes, 1186, array.element_typmod(), |bytes, _| {
+                let v = PgInterval::from_binary(bytes)?;
+                *bytes = &[];
+                Ok::<_, PgTemporalError>(PgArrayElement::Interval(v))
+            })
+            .unwrap();
+        assert_eq!(decoded, array);
+        assert_eq!(
+            decoded.elements(),
+            &[Some(PgArrayElement::Interval(v)), None]
+        );
+        assert!(array.to_text(b',').unwrap().starts_with("[-2:-1][0:0]="));
+    }
+    assert_eq!(
+        PgArray::new(
+            1186,
+            -1,
+            vec![1],
+            vec![1],
+            vec![Some(PgArrayElement::Int4(1))]
         ),
         Err(PgArrayError::ElementTypeMismatch)
     );

@@ -2817,6 +2817,7 @@ impl ConcreteSession {
                         | 1183
                         | 1115
                         | 1185
+                        | 1187
                         | 1016
                         | 1000
                         | 1009
@@ -2900,6 +2901,11 @@ impl ConcreteSession {
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamp) =>
                         {
                             1115
+                        }
+                        _ if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Interval) =>
+                        {
+                            1187
                         }
                         _ if Tp.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamptz) =>

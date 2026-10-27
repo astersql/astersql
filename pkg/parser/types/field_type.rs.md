@@ -201,3 +201,7 @@ Time元素身份固定1083/数组1183，恢复TIME(p)[]并保留decimal。 独�
 ## 2026-10-28 timestamptz数组（任务38）
 
 Timestamptz枚举保留元素1184/数组1185，Restore输出TIMESTAMPTZ(p)[]并保留精度。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+PostgreSQLArrayElement::Interval映射1186/1187；数组Restore复用标量INTERVAL fields/p恢复并追加[]，序列化和typed NULL保留元素身份与修饰符。

@@ -98,6 +98,7 @@ impl ConcreteSession {
                         Some(
                             astersql_parser_types::PostgreSQLArrayElement::Date
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamptz
+                                | astersql_parser_types::PostgreSQLArrayElement::Interval
                         )
                     ) || matches!(
                         Tp.GetType(),
@@ -114,6 +115,22 @@ impl ConcreteSession {
                     if let ast::ExprKind::Value(value) = &source.Kind
                         && let ast::ValueDatum::String(text) = &value.Datum
                     {
+                        if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Interval)
+                        {
+                            match super::pg_array::canonical_interval_text(
+                                text.as_bytes(),
+                                self.session.pg_interval_style(None),
+                                Tp.GetFlen(),
+                                Tp.GetDecimal(),
+                            ) {
+                                Ok(value) => {
+                                    self.values.insert(expr.OriginTextPosition as usize, value);
+                                }
+                                Err(error) => self.error = Some(error),
+                            }
+                            return false;
+                        }
                         if Tp.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamptz)
                         {
@@ -218,6 +235,7 @@ impl ConcreteSession {
                         Some(
                             astersql_parser_types::PostgreSQLArrayElement::Date
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamptz
+                                | astersql_parser_types::PostgreSQLArrayElement::Interval
                         )
                     ) || matches!(
                         Tp.GetType(),

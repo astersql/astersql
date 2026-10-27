@@ -285,3 +285,7 @@ timestamp数组沿共享查询消费者接入。 独立行为与18.6差分证据
 ## 2026-10-28 timestamptz数组（任务38）
 
 数组求值向共享pg_array传递ConcreteSession；timestamptz[] cast完成上下文解析后按执行TimeZone逐元素显示。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。
+
+## 任务39：interval数组必要接线
+
+SELECT的Interval数组cast接入cast_value_in_session，复用有效IntervalStyle和原数组转换/NULL路径；ARRAY构造沿已存在pg_array_value。

@@ -227,7 +227,11 @@ fn interval_parameter_modifiers(sql: &str) -> Result<Vec<(usize, isize, isize)>>
                         expression = inner;
                     }
                     if let ExprKind::Cast { Expr, Tp, .. } = &expression.Kind
-                        && Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                        && (Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                            || Tp.PostgreSQLArrayElement()
+                                == Some(
+                                    astersql_session::runtime::PostgreSQLArrayElement::Interval,
+                                ))
                         && (Tp.GetFlen() != -1 || Tp.GetDecimal() != -1)
                     {
                         let mut source: &ExprNode = Expr;
@@ -377,8 +381,8 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1016
-        | 1021 | 1022 | 1231 => (
+        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1187
+        | 1016 | 1021 | 1022 | 1231 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -606,8 +610,8 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1016
-        | 1021 | 1022 | 1231 => {
+        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1187
+        | 1016 | 1021 | 1022 | 1231 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
@@ -621,6 +625,7 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                     1183 => 1083,
                     1115 => 1114,
                     1185 => 1184,
+                    1187 => 1186,
                     1016 => 20,
                     1000 => 16,
                     1009 => 25,
@@ -667,6 +672,12 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                             .map_err(|e| (e.sqlstate(), e.to_string()))?;
                         *payload = &[];
                         return Ok(PgArrayElement::Timestamp(value));
+                    }
+                    if oid == 1187 {
+                        let value = astersql_types::pg_temporal::PgInterval::from_binary(payload)
+                            .map_err(|e| (e.sqlstate(), e.to_string()))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Interval(value));
                     }
                     if oid == 1185 {
                         let value =
@@ -1118,6 +1129,7 @@ impl Extended {
                         | 1183
                         | 1115
                         | 1185
+                        | 1187
                         | 1016
                         | 1000
                         | 1007
@@ -1222,11 +1234,12 @@ impl Extended {
             }
             return Err(error("42P18", "could not determine data type of parameter"));
         }
-        let interval_modifiers = if catalog.is_none() && oids.contains(&1186) {
-            interval_parameter_modifiers(&original_sql)?
-        } else {
-            Vec::new()
-        };
+        let interval_modifiers =
+            if catalog.is_none() && oids.iter().any(|oid| matches!(oid, 1186 | 1187)) {
+                interval_parameter_modifiers(&original_sql)?
+            } else {
+                Vec::new()
+            };
         Ok(Statement {
             interval_modifiers,
             original_sql,
@@ -1443,6 +1456,32 @@ impl Extended {
                                 let canonical =
                                     context.pg_timestamptz_input(text).map_err(engine)?;
                                 parameter(*oid, Some(canonical.as_bytes()))?
+                            } else if *oid == 1187 && value.is_some() {
+                                use astersql_types::pg_array::{
+                                    PgArray, PgArrayElement, PgArrayTextError,
+                                };
+                                let style = context.pg_interval_style(None).map_err(engine)?;
+                                let array = PgArray::from_text_with(
+                                    value.unwrap(),
+                                    1186,
+                                    -1,
+                                    b',',
+                                    |text, _| {
+                                        astersql_types::pg_temporal::PgInterval::parse_with_style(
+                                            text, style,
+                                        )
+                                        .map(PgArrayElement::Interval)
+                                        .map_err(|e| error(e.sqlstate(), &e.to_string()))
+                                    },
+                                )
+                                .map_err(|e| match e {
+                                    PgArrayTextError::Element(e) => e,
+                                    e => error(e.sqlstate().unwrap_or("XX000"), &e.to_string()),
+                                })?;
+                                let canonical = array.to_text(b',').map_err(|e| {
+                                    error(e.sqlstate().unwrap_or("XX000"), &e.to_string())
+                                })?;
+                                parameter(*oid, Some(canonical.as_bytes()))?
                             } else if *oid == 1185 && value.is_some() {
                                 use astersql_types::pg_array::{
                                     PgArray, PgArrayElement, PgArrayTextError,
@@ -1506,6 +1545,23 @@ impl Extended {
                     }
                 }
                 for &(index, fields, precision) in &statement.interval_modifiers {
+                    if statement.oids.get(index) == Some(&1187)
+                        && let Some(argument) = args.get(index).filter(|arg| !arg.is_null)
+                    {
+                        array_text(&argument.value, 1187)?
+                            .elements()
+                            .iter()
+                            .flatten()
+                            .try_for_each(|v| {
+                                let astersql_types::pg_array::PgArrayElement::Interval(v) = v
+                                else {
+                                    unreachable!()
+                                };
+                                v.apply_typmod(fields, precision)
+                                    .map(|_| ())
+                                    .map_err(|e| error(e.sqlstate(), &e.to_string()))
+                            })?;
+                    }
                     if statement.oids.get(index) == Some(&1186)
                         && let Some(argument) = args.get(index).filter(|arg| !arg.is_null)
                     {
@@ -1801,6 +1857,7 @@ fn array_text_with_context(
             1183 => 1083,
             1115 => 1114,
             1185 => 1184,
+            1187 => 1186,
             1016 => 20,
             1000 => 16,
             1009 => 25,
@@ -1830,6 +1887,10 @@ fn array_text_with_context(
                 Ok(PgArrayElement::Bytea(
                     parameter(17, Some(text.as_bytes()))?.value,
                 ))
+            } else if oid == 1187 {
+                text.parse::<astersql_types::pg_temporal::PgInterval>()
+                    .map(PgArrayElement::Interval)
+                    .map_err(|e| (e.sqlstate(), e.to_string()))
             } else if oid == 1185 {
                 text.parse::<astersql_types::pg_temporal::PgTimestampTz>()
                     .map(PgArrayElement::Timestamptz)
