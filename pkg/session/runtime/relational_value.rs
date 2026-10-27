@@ -1295,6 +1295,7 @@ pub(super) fn relational_expression_value(
                         | astersql_parser_types::PostgreSQLArrayElement::Bool
                         | astersql_parser_types::PostgreSQLArrayElement::Text
                         | astersql_parser_types::PostgreSQLArrayElement::Bytea
+                        | astersql_parser_types::PostgreSQLArrayElement::Float4
                         | astersql_parser_types::PostgreSQLArrayElement::Numeric
                 )
             ) {
@@ -1339,13 +1340,19 @@ pub(super) fn relational_expression_value(
                 );
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat8 {
-                return pg_float8_relational_value(relational_expression_value(Expr, row)?);
+                return pg_float8_relational_value(pg_float4_cast_text_input(
+                    Expr,
+                    relational_expression_value(Expr, row)?,
+                )?);
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLFloat4 {
                 return pg_float4_relational_value(Expr, relational_expression_value(Expr, row)?);
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
-                return pg_numeric_relational_value(relational_expression_value(Expr, row)?, Tp);
+                return pg_numeric_relational_value(
+                    pg_float4_cast_text_input(Expr, relational_expression_value(Expr, row)?)?,
+                    Tp,
+                );
             }
             if matches!(
                 FunctionType,
@@ -3531,6 +3538,7 @@ pub(super) fn pg_integer_relational_value(
     value: Option<String>,
     target: ast::CastFunctionType,
 ) -> SessionResult<Option<String>> {
+    let value = pg_float4_cast_text_input(expression, value)?;
     use astersql_expression::{PgInt4Error, pg_cast_int2, pg_cast_int4, pg_cast_int8};
     fn supported(expr: &ast::ExprNode) -> bool {
         match &expr.Kind {
@@ -3736,6 +3744,16 @@ pub(super) fn pg_float4_relational_value(
     expression: &ast::ExprNode,
     value: Option<String>,
 ) -> SessionResult<Option<String>> {
+    if let ast::ExprKind::Value(v) = &expression.Kind
+        && let ast::ValueDatum::Float32(bits) = &v.Datum
+    {
+        if f32::from_bits(*bits).is_nan() {
+            return Ok(Some(super::pg_array::runtime_float4_bytes(
+                &bits.to_be_bytes(),
+            )));
+        }
+        return Ok(Some(f64::from(f32::from_bits(*bits)).to_string()));
+    }
     let source = PG_CAST_TABLE.with(|slot| {
         let table = slot.borrow();
         relational_expression_type(
@@ -3745,6 +3763,22 @@ pub(super) fn pg_float4_relational_value(
                 .unwrap_or(&astersql_meta_model::TableInfo::default()),
         )
     });
+    if source.GetType() == astersql_parser_mysql::r#type::TypeFloat
+        && let Some(bytes) = value
+            .as_deref()
+            .and_then(super::row_codec::binary_runtime_bytes)
+    {
+        astersql_types::pg_array::float4_binary_input(&bytes)
+            .map_err(|(s, m)| super::pg_array::PgArrayError {
+                state: s,
+                message: m.into(),
+                position: None,
+            })
+            .map_err(|e| {
+                SessionError::with_source(e.to_string(), astersql_errors::SharedError::new(e))
+            })?;
+        return Ok(value);
+    }
     let result = if matches!(
         source.GetType(),
         astersql_parser_mysql::r#type::TypeFloat | astersql_parser_mysql::r#type::TypeDouble
@@ -3799,6 +3833,7 @@ pub(super) fn pg_text_relational_cast(
     target: &astersql_parser_types::types::FieldType,
     explicit: bool,
 ) -> SessionResult<Option<String>> {
+    let value = pg_float4_cast_text_input(source, value)?;
     astersql_expression::pg_text_cast(
         value.as_deref(),
         PG_CAST_TABLE.with(|slot| {
@@ -3874,4 +3909,40 @@ pub(super) fn pg_timestamp_relational_value(
                 })
         })
         .transpose()
+}
+
+/// Decode private binary32 carriers only for an already typed source when a
+/// semantic cast requests text. Public text values cannot forge typed inputs.
+pub(super) fn pg_float4_cast_text_input(
+    expression: &ast::ExprNode,
+    value: Option<String>,
+) -> SessionResult<Option<String>> {
+    let source = PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+    });
+    if (source.GetType() == astersql_parser_mysql::r#type::TypeFloat
+        || source.PostgreSQLArrayElement()
+            == Some(astersql_parser_types::PostgreSQLArrayElement::Float4))
+        && let Some(bytes) = value
+            .as_deref()
+            .and_then(super::row_codec::binary_runtime_bytes)
+    {
+        if source.PostgreSQLArrayElement().is_some() {
+            return astersql_types::pg_array::PgArray::float4_from_binary(&bytes)
+                .map_err(|e| SessionError::new(e.to_string()))?
+                .to_text(b',')
+                .map(Some)
+                .map_err(|e| SessionError::new(e.to_string()));
+        }
+        let bits = astersql_types::pg_array::float4_binary_input(&bytes)
+            .map_err(|(_, m)| SessionError::new(m))?;
+        return Ok(Some(astersql_types::pg_array::float4_text(bits)));
+    }
+    Ok(value)
 }

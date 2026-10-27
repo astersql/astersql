@@ -492,88 +492,26 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         _ => return Err(invalid("unsupported engine result type")),
     })
 }
-// PostgreSQL excludes decimal spellings exactly on a binary rounding midpoint.
-// Compare powers of two/five after factoring small integer coefficients; no
-// arbitrary precision allocation is needed, even at the subnormal endpoints.
-fn float_midpoint(scientific: &str, n: f64, single: bool) -> bool {
-    if n == 0.0 {
-        return false;
-    }
-    let (mantissa, exponent) = scientific.trim_start_matches('-').split_once('e').unwrap();
-    let digits = mantissa.replace('.', "");
-    let decimal = exponent.parse::<i32>().unwrap() - (digits.len() as i32 - 1);
-    let coefficient = digits.parse::<u64>().unwrap();
-    let (bits, width, bias, mask) = if single {
-        ((n as f32).to_bits() as u64, 23, 127, 0xff)
-    } else {
-        (n.to_bits(), 52, 1023, 0x7ff)
-    };
-    let fraction = bits & ((1u64 << width) - 1);
-    let exponent = (bits >> width) & mask;
-    let significand = fraction + if exponent == 0 { 0 } else { 1u64 << width };
-    let binary = exponent.max(1) as i32 - bias - width - 2;
-    fn factors(mut coefficient: u64, mut two: i32, mut five: i32) -> (u64, i32, i32) {
-        while coefficient % 2 == 0 {
-            coefficient /= 2;
-            two += 1;
-        }
-        while coefficient % 5 == 0 {
-            coefficient /= 5;
-            five += 1;
-        }
-        (coefficient, two, five)
-    }
-    let decimal = factors(coefficient, decimal, decimal);
-    let lower = 4 * significand - 1 - u64::from(fraction != 0 || exponent <= 1);
-    decimal == factors(lower, binary, 0) || decimal == factors(4 * significand + 2, binary, 0)
-}
-
-fn float_text(n: f64, single: bool) -> String {
-    let n = if single { f64::from(n as f32) } else { n };
-    let mut scientific = if single {
-        format!("{:e}", n as f32)
-    } else {
-        format!("{n:e}")
-    };
-    if float_midpoint(&scientific, n, single) {
-        let digits = scientific
-            .split('e')
-            .next()
-            .unwrap()
-            .bytes()
-            .filter(u8::is_ascii_digit)
-            .count();
-        for precision in digits..=16 {
-            scientific = format!("{n:.precision$e}");
-            if !float_midpoint(&scientific, n, single) {
-                break;
-            }
-        }
-    }
-    let (mantissa, exponent) = scientific.split_once('e').unwrap();
-    let exponent: i32 = exponent.parse().unwrap();
-    if exponent < -4 || exponent >= if single { 6 } else { 15 } {
-        return format!("{mantissa}e{exponent:+03}");
-    }
-    let negative = mantissa.starts_with('-');
-    let digits = mantissa.trim_start_matches('-').replace('.', "");
-    let point = exponent + 1;
-    let plain = if point <= 0 {
-        format!("0.{}{digits}", "0".repeat((-point) as usize))
-    } else if point as usize >= digits.len() {
-        format!("{digits}{}", "0".repeat(point as usize - digits.len()))
-    } else {
-        format!(
-            "{}.{}",
-            &digits[..point as usize],
-            &digits[point as usize..]
-        )
-    };
-    if negative { format!("-{plain}") } else { plain }
-}
+use astersql_types::pg_array::float_text;
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
-    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231) {
+    if let Value::Bytes(bytes) = value {
+        if oid == 700 {
+            let bits = astersql_types::pg_array::float4_binary_input(bytes)
+                .map_err(|(_, m)| invalid(m))?;
+            return Ok(Some(
+                astersql_types::pg_array::float4_text(bits).into_bytes(),
+            ));
+        }
+        if oid == 1021 {
+            return astersql_types::pg_array::PgArray::float4_from_binary(bytes)
+                .map_err(|e| invalid(&e.to_string()))?
+                .to_text(b',')
+                .map(|s| Some(s.into_bytes()))
+                .map_err(|e| invalid(&e.to_string()));
+        }
+    }
+    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231) {
         return match value {
             Value::Null => Ok(None),
             Value::Text(text) => typed_array_result(text.as_bytes(), oid)
@@ -783,6 +721,19 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     if matches!(value, Value::Null) {
         return Ok(None);
     }
+    if let Value::Bytes(bytes) = value {
+        if oid == 700 {
+            astersql_types::pg_array::float4_binary_input(bytes).map_err(|(_, m)| invalid(m))?;
+            return Ok(Some(bytes.clone()));
+        }
+        if oid == 1021 {
+            return astersql_types::pg_array::PgArray::float4_from_binary(bytes)
+                .map_err(|e| invalid(&e.to_string()))?
+                .to_binary()
+                .map(Some)
+                .map_err(|e| invalid(&e.to_string()));
+        }
+    }
     if oid == 17 {
         return Ok(Some(match value {
             Value::Bytes(bytes) => bytes.clone(),
@@ -822,7 +773,9 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
-        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231 | 1028 => binary_array(text, oid)?,
+        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231 | 1028 => {
+            binary_array(text, oid)?
+        }
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -995,7 +948,7 @@ fn typed_array_result(
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
-    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1231) {
+    if matches!(oid, 1000 | 1001 | 1005 | 1007 | 1009 | 1016 | 1021 | 1231) {
         return typed_array_result(text.as_bytes(), oid)
             .map_err(|(_, message)| invalid(&message))?
             .to_binary()
@@ -1009,6 +962,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1016 => 20,
         1009 => 25,
         1000 => 16,
+        1021 => 700,
         1231 => 1700,
         _ => unreachable!(),
     };

@@ -485,3 +485,13 @@ fn pg05_array_numeric_restore_modifier() {
         Some(crate::PostgreSQLArrayElement::Numeric)
     );
 }
+
+#[test]
+fn pg05_array_float4_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Float4);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"FLOAT4[]");
+    assert_eq!(tp.PostgreSQLArrayElement().unwrap().array_oid(), 1021);
+}

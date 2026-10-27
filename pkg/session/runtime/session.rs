@@ -297,6 +297,7 @@ pub(super) struct SessionState {
     pub(super) pg_statement_time: f64,
     pub(super) pg_transaction_time: Option<f64>,
     pub(super) pg_bound_date_constants: HashMap<usize, String>,
+    pub(super) pg_bound_float4_constants: HashMap<usize, ast::ExprNode>,
     pub(super) max_connections: u64,
     pub(super) tx_read_only: bool,
     pub(super) global_tx_read_only: bool,
@@ -550,6 +551,7 @@ impl Default for SessionState {
             pg_statement_time: 0.0,
             pg_transaction_time: None,
             pg_bound_date_constants: HashMap::new(),
+            pg_bound_float4_constants: HashMap::new(),
             max_connections: 0,
             tx_read_only: false,
             global_tx_read_only: false,
@@ -730,6 +732,8 @@ pub enum ConcretePreparedArgument {
     Signed(i64),
     Unsigned(u64),
     Float(f64),
+    Float4Bits(u32),
+    Float4Array(Vec<u8>),
     Decimal(String),
     Text(String),
     Bytes(Vec<u8>),
@@ -746,6 +750,11 @@ impl ConcretePreparedArgument {
             Self::Float(_) => {
                 return Err(SessionError::new(
                     "non-finite prepared floating-point parameter",
+                ));
+            }
+            Self::Float4Bits(_) | Self::Float4Array(_) => {
+                return Err(SessionError::new(
+                    "private PostgreSQL parameter requires typed binding",
                 ));
             }
             Self::Decimal(value) => {

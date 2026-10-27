@@ -39,6 +39,7 @@ fn element_name(element: Element) -> &'static str {
         Element::Int4 => "integer",
         Element::Int8 => "bigint",
         Element::Numeric => "numeric",
+        Element::Float4 => "real",
         Element::Bool => "boolean",
         Element::Text => "text",
         Element::Bytea => "bytea",
@@ -76,10 +77,15 @@ pub(super) fn element_type(
             20 => Some(Element::Int8),
             16 => Some(Element::Bool),
             1700 => Some(Element::Numeric),
+            700 => Some(Element::Float4),
             25 => Some(Element::Text),
             17 => Some(Element::Bytea),
             _ => return Err(error("0A000", "ARRAY parameter type is not supported")),
         },
+        ast::ExprKind::Cast {
+            FunctionType: ast::CastFunctionType::PostgreSQLFloat4,
+            ..
+        } => Some(Element::Float4),
         ast::ExprKind::Cast {
             FunctionType: ast::CastFunctionType::PostgreSQLNumeric,
             ..
@@ -239,7 +245,7 @@ pub(super) fn analyze(
         .filter(|expr| {
             matches!(expr.Kind, ast::ExprKind::Array { .. })
                 || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
-                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Bytea | Element::Numeric)))
+                    if matches!(Tp.PostgreSQLArrayElement(), Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Bool | Element::Text | Element::Bytea | Element::Numeric | Element::Float4)))
         })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
@@ -320,7 +326,8 @@ pub(super) fn analyze(
                     | Element::Bool
                     | Element::Text
                     | Element::Bytea
-                    | Element::Numeric),
+                    | Element::Numeric
+                    | Element::Float4),
                 ) = Tp.PostgreSQLArrayElement()
                 {
                     let mut positions = ArrayPositions(std::collections::HashSet::new());
@@ -466,6 +473,68 @@ fn value_as(
     row: &HashMap<String, Option<String>>,
     element: Element,
 ) -> SessionResult<Option<String>> {
+    if element == Element::Float4 {
+        use astersql_types::pg_array::{PgArray, PgArrayElement};
+        fn collect(
+            expr: &ast::ExprNode,
+            row: &HashMap<String, Option<String>>,
+            values: &mut Vec<Option<PgArrayElement>>,
+        ) -> SessionResult<Vec<i32>> {
+            if let ast::ExprKind::Array { Elements, .. } = &expr.Kind {
+                let nested = Elements
+                    .iter()
+                    .any(|v| matches!(v.Kind, ast::ExprKind::Array { .. }));
+                let mut child_shape = None;
+                for child in Elements {
+                    if nested != matches!(child.Kind, ast::ExprKind::Array { .. }) {
+                        return Err(error(
+                            "2202E",
+                            "multidimensional arrays must have matching dimensions",
+                        ));
+                    }
+                    let shape = collect(child, row, values)?;
+                    if child_shape.as_ref().is_some_and(|s| s != &shape) {
+                        return Err(error(
+                            "2202E",
+                            "multidimensional arrays must have matching dimensions",
+                        ));
+                    }
+                    child_shape = Some(shape);
+                }
+                let mut shape = vec![
+                    i32::try_from(Elements.len()).map_err(|_| error("54000", "array too large"))?,
+                ];
+                if let Some(child) = child_shape {
+                    shape.extend(child);
+                }
+                return Ok(shape);
+            }
+            let value = super::relational_value::relational_expression_value(expr, row)?;
+            let value = value
+                .map(|text| {
+                    if element_type(expr, &HashMap::new())? == Some(Element::Float4) {
+                        if let Some(bytes) = super::row_codec::binary_runtime_bytes(&text) {
+                            return astersql_types::pg_array::float4_binary_input(&bytes)
+                                .map(PgArrayElement::Float4)
+                                .map_err(|(s, m)| error(s, m));
+                        }
+                    }
+                    astersql_expression::pg_cast_float4(Some(&text))
+                        .map(|v| PgArrayElement::Float4(v.unwrap().to_bits()))
+                        .map_err(|e| error(e.sqlstate(), e.to_string()))
+                })
+                .transpose()?;
+            values.push(value);
+            Ok(vec![])
+        }
+        let mut values = vec![];
+        let shape = collect(expr, row, &mut values)?;
+        let shape = if shape.contains(&0) { vec![] } else { shape };
+        let lower = vec![1; shape.len()];
+        let array = PgArray::new(700, -1, shape, lower, values)
+            .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))?;
+        return runtime_array(&array).map(Some);
+    }
     fn render(
         expr: &ast::ExprNode,
         row: &HashMap<String, Option<String>>,
@@ -520,6 +589,7 @@ fn value_as(
                         .map_err(|e| error(e.sqlstate(), e.to_string()))?
                         .unwrap()
                         .to_string(),
+                    Element::Float4 => unreachable!("float4 uses canonical bit construction"),
                     Element::Numeric => value,
                     Element::Bool => {
                         let value = astersql_expression::pg_boolean_cast(
@@ -587,6 +657,7 @@ fn value_as(
             | Element::Text
             | Element::Bytea
             | Element::Numeric
+            | Element::Float4
     ) {
         typed_array(value.as_bytes(), element)?
             .to_text(b',')
@@ -629,6 +700,9 @@ fn typed_array_with_modifier(
         typmod,
         b',',
         |text, _| match element {
+            Element::Float4 => astersql_expression::pg_cast_float4(Some(text))
+                .map(|v| PgArrayElement::Float4(v.unwrap().to_bits()))
+                .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Numeric => text
                 .parse::<astersql_types::pg_numeric::PgNumeric>()
                 .and_then(|v| v.apply_modifier(precision, scale))
@@ -675,6 +749,11 @@ pub(super) fn validate_cast(
         )
         .map_err(|e| error(e.sqlstate(), e.to_string()))?;
     }
+    if target.PostgreSQLArrayElement() == Some(Element::Float4)
+        && matches!(&expr.Kind, ast::ExprKind::Value(v) if v.Type.PostgreSQLArrayElement() == Some(Element::Float4) && matches!(v.Datum, ast::ValueDatum::Bytes(_)))
+    {
+        return Ok(());
+    }
     if !matches!(
         target.PostgreSQLArrayElement(),
         Some(
@@ -685,6 +764,7 @@ pub(super) fn validate_cast(
                 | Element::Text
                 | Element::Bytea
                 | Element::Numeric
+                | Element::Float4
         )
     ) {
         return Ok(());
@@ -699,7 +779,7 @@ pub(super) fn validate_cast(
                 || supported_array_element(child, target)
             }),
             ast::ExprKind::Cast { Tp, .. } => match Tp.PostgreSQLArrayElement() {
-                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric) => source == target,
+                Some(source) if matches!(source, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4) || matches!(target, Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric | Element::Float4) => source == target,
                 Some(Element::Int2 | Element::Int4 | Element::Int8 | Element::Text) => true,
                 _ => Tp.PostgreSQLTextOid() == Some(25),
             },
@@ -712,6 +792,10 @@ pub(super) fn validate_cast(
             ast::ExprKind::ParamMarker { .. } => true,
             _ => {
                 let source = element_type(expr, &HashMap::new()).ok().flatten();
+                if target == Element::Float4 {
+                    return source == Some(Element::Float4)
+                        || matches!(&expr.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::String(_)));
+                }
                 if target == Element::Numeric {
                     return matches!(
                         source,
@@ -736,7 +820,14 @@ pub(super) fn validate_cast(
     }
     if matches!(
         target.PostgreSQLArrayElement(),
-        Some(Element::Text | Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric)
+        Some(
+            Element::Text
+                | Element::Bytea
+                | Element::Bool
+                | Element::Int2
+                | Element::Numeric
+                | Element::Float4
+        )
     ) && matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some_and(|e| Some(e) != target.PostgreSQLArrayElement()))
     {
         return Err(error("0A000", "array cast source is not supported"));
@@ -756,9 +847,22 @@ pub(super) fn cast_value(
 ) -> SessionResult<Option<String>> {
     use astersql_types::pg_array::{PgArray, PgArrayElement};
     let target = target_type.PostgreSQLArrayElement().unwrap();
+    if target == Element::Float4 {
+        if let ast::ExprKind::Value(v) = &expr.Kind
+            && v.Type.PostgreSQLArrayElement() == Some(Element::Float4)
+            && let ast::ValueDatum::Bytes(bytes) = &v.Datum
+        {
+            return float4_binary(bytes)
+                .and_then(|array| runtime_array(&array))
+                .map(Some);
+        }
+    }
     let mut expr = expr;
     while let ast::ExprKind::Parentheses(inner) = &expr.Kind {
         expr = inner;
+    }
+    if target == Element::Float4 && matches!(expr.Kind, ast::ExprKind::Array { .. }) {
+        return value_as(expr, row, target);
     }
     if matches!(expr.Kind, ast::ExprKind::Array { .. }) {
         let value = value_as(expr, row, target)?;
@@ -785,13 +889,36 @@ pub(super) fn cast_value(
     if source != target
         && (matches!(
             source,
-            Element::Text | Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric
+            Element::Text
+                | Element::Bytea
+                | Element::Bool
+                | Element::Int2
+                | Element::Numeric
+                | Element::Float4
         ) || matches!(
             target,
-            Element::Text | Element::Bytea | Element::Bool | Element::Int2 | Element::Numeric
+            Element::Text
+                | Element::Bytea
+                | Element::Bool
+                | Element::Int2
+                | Element::Numeric
+                | Element::Float4
         ))
     {
         return Err(error("0A000", "array cast source is not supported"));
+    }
+    if target == Element::Float4 && source == target {
+        if matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement() == Some(Element::Float4))
+        {
+            if let Some(bytes) = super::row_codec::binary_runtime_bytes(&text) {
+                return float4_binary(&bytes)
+                    .and_then(|array| runtime_array(&array))
+                    .map(Some);
+            }
+        }
+        return typed_array(text.as_bytes(), target)
+            .and_then(|array| runtime_array(&array))
+            .map(Some);
     }
     let source = if target == Element::Numeric && source == target {
         typed_array_with_modifier(
@@ -830,4 +957,64 @@ pub(super) fn cast_value(
     .and_then(|value| value.to_text(b','))
     .map(Some)
     .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))
+}
+
+fn float4_binary(bytes: &[u8]) -> SessionResult<astersql_types::pg_array::PgArray> {
+    use astersql_types::pg_array::PgArrayBinaryError;
+    astersql_types::pg_array::PgArray::float4_from_binary(bytes).map_err(|e| match &e {
+        PgArrayBinaryError::Element((s, m)) => error(s, *m),
+        _ => error(e.sqlstate().unwrap_or("XX000"), e.to_string()),
+    })
+}
+
+fn runtime_array(array: &astersql_types::pg_array::PgArray) -> SessionResult<String> {
+    let bytes = array
+        .to_binary()
+        .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))?;
+    Ok(runtime_float4_bytes(&bytes))
+}
+
+pub(super) fn runtime_float4_bytes(bytes: &[u8]) -> String {
+    format!(
+        "{}{}",
+        super::row_codec::BINARY_RUNTIME_PREFIX,
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
+}
+
+impl ConcreteSession {
+    /// Restore only private prepared binary32 values at their original bound AST locations.
+    pub(super) fn apply_pg_float4_constants(&self, nodes: &mut [Box<dyn ast::Node>]) {
+        struct Apply<'a>(&'a HashMap<usize, ast::ExprNode>);
+        impl ast::InPlaceVisitor for Apply<'_> {
+            fn enter(&mut self, node: &mut dyn ast::Node) -> bool {
+                self.enter_embedded(node.as_any_mut())
+            }
+            fn leave(&mut self, _: &mut dyn ast::Node) -> bool {
+                true
+            }
+            fn enter_embedded(&mut self, node: &mut dyn std::any::Any) -> bool {
+                if let Some(node) = node.downcast_mut::<ast::ExprNode>()
+                    && let Some(value) = self.0.get(&(node.OriginTextPosition as usize))
+                    && let ast::ExprKind::Cast {
+                        Expr,
+                        Tp,
+                        FunctionType,
+                        ..
+                    } = &mut node.Kind
+                    && (*FunctionType == ast::CastFunctionType::PostgreSQLFloat4
+                        || Tp.PostgreSQLArrayElement() == Some(Element::Float4))
+                {
+                    **Expr = value.clone();
+                }
+                false
+            }
+        }
+        let state = self.state.borrow();
+        if !state.pg_bound_float4_constants.is_empty() {
+            for node in nodes {
+                node.accept_in_place(&mut Apply(&state.pg_bound_float4_constants));
+            }
+        }
+    }
 }

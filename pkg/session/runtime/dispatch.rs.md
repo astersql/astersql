@@ -133,3 +133,10 @@ Plan Replayer 扩展应优先补齐 `SessionPlanReplaySource` 的真实 stats/Ti
 SQL PREPARE 保存并使用连接方言，EXECUTE fallback 使用该记录的方言重解析，具名计划复用比较身份；协议缓存失效保留身份。
 
 EXECUTE 的 hint/binding 分析复用该记录的原始 AST，避免重新用默认解析器解析模板。
+
+
+## float4数组与原始binary32位型（任务31）
+
+正常parse与既有date常量恢复后调用apply_pg_float4_constants，再做真实ARRAY语义分析与共享执行；不绕开分析器或结果消费者。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

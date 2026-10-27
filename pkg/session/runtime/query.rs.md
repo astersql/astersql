@@ -242,3 +242,12 @@ PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast
 现有SQL聚合/查询cast消费者加入Numeric，并将目标FieldType传给共享数组cast，以保存元素typmod。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+共享查询执行消费者接受Float4规范数组身份，调用同一pg_array::cast_value，保持与relational_value消费者一致。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+语义cast到不同表示时，pg_float4_cast_text_input仅按已定型Float4/Float4[]源身份把私有字节载体转为原有规范输入文本，保持既有text/整数/numeric/float8消费者行为；同族cast不经text丢位，公开字符串不能按前缀冒充typed值。

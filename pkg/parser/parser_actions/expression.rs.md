@@ -228,3 +228,10 @@ PgArrayType把已有binary字节标量类型连到Bytea数组元素，PgCastType
 numeric(p,s)[]及多维类型解析复用既有numeric声明，保存元素精度和signed scale；不增加新语法生成器。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+PgArrayType只新增float4/real到既有数组身份分派，重复[]声明不改变值的维度；不开放float8数组。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

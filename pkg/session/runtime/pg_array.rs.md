@@ -44,3 +44,10 @@ OID17参数构造ARRAY时仅识别既有binder生成的binary literal cast及typ
 numeric元素分析与显式数组转换接入共享PgNumeric；逐元素apply_modifier后整体发布，保留下界、NULL和precision/scale，其他跨族转换继续0A000。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+Float4身份/分析/定型接入既有ARRAY消费者。构造器逐叶调用已有pg_cast_float4或读取已经定型的私有标量字节，先收集全部元素再发布规范PgArray；保留shape/lower/元素NULL/外层NULL。只有私有Bytes AST或已带Float4[]身份的结果能读取内部字节载体，公开文本cast仍严格解析正常数组文本。跨族cast保持既有范围门禁。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

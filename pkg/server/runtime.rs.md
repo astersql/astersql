@@ -134,3 +134,10 @@ Prepare、普通执行与结果元数据三个既有桥接点传递 PostgreSQLTe
 ## JSON显式转换与类型交接
 
 session_protocol_error把PgJsonCastError映射为ConnError::PgJson，不丢失来源错误身份。
+
+
+## float4数组与原始binary32位型（任务31）
+
+prepared_argument只对内部标签0xf0/0xf1生成Float4Bits/Float4Array，不改变MySQL原始type4参数。结果复用既有protocol_value字节桥，无float4→f64提升；NativeType继续独立负责描述。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

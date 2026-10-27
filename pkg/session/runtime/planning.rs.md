@@ -243,3 +243,10 @@ protocol_parameter_types的声明与显式cast约束注册Bytea数组1001，避�
 OID1700/1231加入既有声明参数和array cast约束分派，继续使用原分析消费者。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+参数约束只新增OID1021和PostgreSQLArrayElement::Float4目标cast映射，继续调用原有resolver，未新增隐式转换矩阵。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

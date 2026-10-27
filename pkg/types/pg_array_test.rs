@@ -1120,3 +1120,35 @@ fn pg05_array_numeric_canonical_shape_typmod_null() {
     .unwrap();
     assert_eq!(result, value);
 }
+
+#[test]
+fn pg05_array_float4_raw_bits_shape_typmod_and_null() {
+    use crate::pg_array::{PgArray, PgArrayElement, float4_binary_input};
+    let bits = [
+        0, 0x80000000, 1, 0x007fffff, 0x00800000, 0x7f7fffff, 0x7f800000, 0xff800000, 0x7fc00000,
+        0x7fc12345, 0xffc12345, 0x7fa12345, 0xffa12345,
+    ];
+    let values = bits
+        .into_iter()
+        .map(|b| Some(PgArrayElement::Float4(b)))
+        .chain([None])
+        .collect();
+    let array = PgArray::new(700, -1, vec![14], vec![-7], values).unwrap();
+    assert_eq!(array.element_typmod(), -1);
+    let wire = array.to_binary().unwrap();
+    assert_eq!(PgArray::float4_from_binary(&wire).unwrap(), array);
+    for (i, bits) in bits.into_iter().enumerate() {
+        assert_eq!(
+            float4_binary_input(&wire[24 + i * 8..28 + i * 8]).unwrap(),
+            bits
+        );
+    }
+    assert!(
+        array
+            .to_text(b',')
+            .unwrap()
+            .starts_with("[-7:6]={0,-0,1e-45,")
+    );
+    assert_eq!(float4_binary_input(&[0; 3]).unwrap_err().0, "08P01");
+    assert_eq!(float4_binary_input(&[0; 5]).unwrap_err().0, "22P03");
+}

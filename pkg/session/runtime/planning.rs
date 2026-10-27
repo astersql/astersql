@@ -2809,6 +2809,7 @@ impl ConcreteSession {
                         | 2950
                         | 1007
                         | 1005
+                        | 1021
                         | 1231
                         | 1001
                         | 1016
@@ -2833,6 +2834,11 @@ impl ConcreteSession {
                 } = &input.Kind
                 {
                     let oid = match FunctionType {
+                        _ if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Float4) =>
+                        {
+                            1021
+                        }
                         _ if Tp.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Numeric) =>
                         {

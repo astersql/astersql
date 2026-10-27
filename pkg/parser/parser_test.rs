@@ -5703,3 +5703,31 @@ fn pg05_array_numeric_parser_identity() {
         );
     }
 }
+
+#[test]
+fn pg05_array_float4_parser_identity() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT $1::float4[]",
+        "SELECT $1::real[]",
+        "SELECT $1::float(24)[]",
+        "SELECT $1::float4[][]",
+        "SELECT ARRAY[]::float4[]",
+        "SELECT CAST(NULL AS float4[])",
+    ] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("expected cast")
+        };
+        assert_eq!(
+            Tp.PostgreSQLArrayElement(),
+            Some(parser_types::PostgreSQLArrayElement::Float4)
+        );
+    }
+}

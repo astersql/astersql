@@ -143,3 +143,8 @@
 ## int4 数组共享求值与协议
 
 生成输入加入 PgCastType : PgCastType [ ] 规则，由 expression::PgArrayType 消费其稳定 RuleId；重复后缀不建立不同数组类型身份。表通过 astersql-parsergen generate 再生，未手工修改自动机。
+
+
+## float4数组声明
+
+由main.astergram的PgCastType : PgPostfixFloat [ ]生成，使既有REAL/FLOAT(p)标量声明也能进入同一数组元素身份分派；没有手改状态表。float4本族接受，其他尚未开放族仍由现有语义门禁拒绝。使用astersql-parsergen generate/check核对生成产物。

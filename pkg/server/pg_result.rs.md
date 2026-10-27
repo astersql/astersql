@@ -191,3 +191,10 @@ Int8数组结果改走与Bind相同的array_text及标量codec，删除仅显式
 numeric binary输出改为共享PgNumeric codec；OID1231进入规范数组输出，RowDescription保留numeric数组元素typmod。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+OID700与1021的内部Value::Bytes载体直接按原始位型编码binary；text出口使用共享float4_text/PgArray::to_text，NaN文本规范为NaN但binary保留sign/payload/signalling。既有finite float_text算法提取到types供标量/数组共用，无算法复制。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

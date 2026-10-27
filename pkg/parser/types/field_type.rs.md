@@ -160,3 +160,10 @@ PostgreSQLArrayElement增加Bytea，元素OID17/数组OID1001；Restore及Format
 Restore/FormatAsCastType保留NUMERIC(p,s)[]身份和元素typmod，使现有prepared SQL binder不退化为CHAR。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+PostgreSQLArrayElement::Float4保留元素OID700、数组OID1021，并在CAST/Restore/serde中保留FLOAT4[]身份。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

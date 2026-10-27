@@ -4378,3 +4378,4 @@ PgIntervalFields : "MINUTE" "TO" "SECOND" @action;
 
 // PostgreSQL array type identity; dimensions belong to the value.
 PgCastType : PgCastType '[' ']' @action;
+PgCastType : PgPostfixFloat '[' ']' @action;

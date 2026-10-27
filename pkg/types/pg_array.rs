@@ -174,6 +174,8 @@ pub enum PgArrayElement {
     Text(String),
     Bytea(Vec<u8>),
     Numeric(super::pg_numeric::PgNumeric),
+    /// Raw IEEE binary32 bits, including NaN sign, payload and signalling bit.
+    Float4(u32),
 }
 
 /// Immutable after validation. The last axis varies fastest in `elements`.
@@ -194,12 +196,13 @@ impl PgArray {
         lower_bounds: Vec<i32>,
         elements: Vec<Option<PgArrayElement>>,
     ) -> Result<Self, PgArrayError> {
-        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 1700) {
+        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 1700) {
             return Err(PgArrayError::UnsupportedElement);
         }
         Self::validate_layout(&shape, &lower_bounds, elements.len())?;
         for element in elements.iter().flatten() {
             match (element_oid, element) {
+                (700, PgArrayElement::Float4(_)) => {}
                 (1700, PgArrayElement::Numeric(_)) => {}
                 (17, PgArrayElement::Bytea(_)) => {}
                 (21, PgArrayElement::Int2(_)) => {}
@@ -290,7 +293,7 @@ impl PgArray {
         if bytes.contains(&0) {
             return Err(Error::Encoding);
         }
-        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 1700) {
+        if !matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 1700) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
         // A catalog delimiter is one ASCII punctuation character. Other
@@ -362,7 +365,7 @@ impl PgArray {
             lower.push(binary_word(&mut bytes)?);
         }
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
-        let supported = matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 1700);
+        let supported = matches!(element_oid, 16 | 17 | 20 | 21 | 23 | 25 | 700 | 1700);
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
         let mut elements = Vec::new();
@@ -410,7 +413,7 @@ impl PgArray {
                 None => 0,
                 Some(PgArrayElement::Bool(_)) => 1,
                 Some(PgArrayElement::Int2(_)) => 2,
-                Some(PgArrayElement::Int4(_)) => 4,
+                Some(PgArrayElement::Int4(_) | PgArrayElement::Float4(_)) => 4,
                 Some(PgArrayElement::Int8(_)) => 8,
                 Some(PgArrayElement::Text(value)) => value.len(),
                 Some(PgArrayElement::Bytea(value)) => value.len(),
@@ -444,6 +447,10 @@ impl PgArray {
                 Some(PgArrayElement::Int2(value)) => {
                     output.extend_from_slice(&2i32.to_be_bytes());
                     output.extend_from_slice(&value.to_be_bytes());
+                }
+                Some(PgArrayElement::Float4(bits)) => {
+                    output.extend_from_slice(&4i32.to_be_bytes());
+                    output.extend_from_slice(&bits.to_be_bytes());
                 }
                 Some(PgArrayElement::Int4(value)) => {
                     output.extend_from_slice(&4i32.to_be_bytes());
@@ -518,6 +525,9 @@ impl PgArray {
                 Some(PgArrayElement::Bool(value)) => output.push(if *value { 't' } else { 'f' }),
                 Some(PgArrayElement::Int2(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output);
+                }
+                Some(PgArrayElement::Float4(bits)) => {
+                    write_array_element_text(&float4_text(*bits), delimiter, output);
                 }
                 Some(PgArrayElement::Int4(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output);
@@ -773,4 +783,123 @@ fn binary_word<E>(bytes: &mut &[u8]) -> Result<i32, PgArrayBinaryError<E>> {
     let (word, rest) = bytes.split_at(4);
     *bytes = rest;
     Ok(i32::from_be_bytes(word.try_into().unwrap()))
+}
+
+// PostgreSQL excludes decimal spellings exactly on a binary rounding midpoint.
+// Compare powers of two/five after factoring small integer coefficients; no
+// arbitrary precision allocation is needed, even at the subnormal endpoints.
+fn float_midpoint(scientific: &str, n: f64, single: bool) -> bool {
+    if n == 0.0 {
+        return false;
+    }
+    let (mantissa, exponent) = scientific.trim_start_matches('-').split_once('e').unwrap();
+    let digits = mantissa.replace('.', "");
+    let decimal = exponent.parse::<i32>().unwrap() - (digits.len() as i32 - 1);
+    let coefficient = digits.parse::<u64>().unwrap();
+    let (bits, width, bias, mask) = if single {
+        ((n as f32).to_bits() as u64, 23, 127, 0xff)
+    } else {
+        (n.to_bits(), 52, 1023, 0x7ff)
+    };
+    let fraction = bits & ((1u64 << width) - 1);
+    let exponent = (bits >> width) & mask;
+    let significand = fraction + if exponent == 0 { 0 } else { 1u64 << width };
+    let binary = exponent.max(1) as i32 - bias - width - 2;
+    fn factors(mut coefficient: u64, mut two: i32, mut five: i32) -> (u64, i32, i32) {
+        while coefficient % 2 == 0 {
+            coefficient /= 2;
+            two += 1;
+        }
+        while coefficient % 5 == 0 {
+            coefficient /= 5;
+            five += 1;
+        }
+        (coefficient, two, five)
+    }
+    let decimal = factors(coefficient, decimal, decimal);
+    let lower = 4 * significand - 1 - u64::from(fraction != 0 || exponent <= 1);
+    decimal == factors(lower, binary, 0) || decimal == factors(4 * significand + 2, binary, 0)
+}
+
+/// Format a finite scalar; callers classify NaN and infinities before entering.
+pub fn float_text(n: f64, single: bool) -> String {
+    let n = if single { f64::from(n as f32) } else { n };
+    let mut scientific = if single {
+        format!("{:e}", n as f32)
+    } else {
+        format!("{n:e}")
+    };
+    if float_midpoint(&scientific, n, single) {
+        let digits = scientific
+            .split('e')
+            .next()
+            .unwrap()
+            .bytes()
+            .filter(u8::is_ascii_digit)
+            .count();
+        for precision in digits..=16 {
+            scientific = format!("{n:.precision$e}");
+            if !float_midpoint(&scientific, n, single) {
+                break;
+            }
+        }
+    }
+    let (mantissa, exponent) = scientific.split_once('e').unwrap();
+    let exponent: i32 = exponent.parse().unwrap();
+    if exponent < -4 || exponent >= if single { 6 } else { 15 } {
+        return format!("{mantissa}e{exponent:+03}");
+    }
+    let negative = mantissa.starts_with('-');
+    let digits = mantissa.trim_start_matches('-').replace('.', "");
+    let point = exponent + 1;
+    let plain = if point <= 0 {
+        format!("0.{}{digits}", "0".repeat((-point) as usize))
+    } else if point as usize >= digits.len() {
+        format!("{digits}{}", "0".repeat(point as usize - digits.len()))
+    } else {
+        format!(
+            "{}.{}",
+            &digits[..point as usize],
+            &digits[point as usize..]
+        )
+    };
+    if negative { format!("-{plain}") } else { plain }
+}
+
+/// The scalar binary32 receive codec. Bit copies never evaluate a NaN.
+pub fn float4_binary_input(bytes: &[u8]) -> Result<u32, (&'static str, &'static str)> {
+    if bytes.len() < 4 {
+        return Err(("08P01", "insufficient data left in float4 parameter"));
+    }
+    let bytes: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| ("22P03", "invalid binary float4 parameter"))?;
+    Ok(u32::from_be_bytes(bytes))
+}
+
+/// PostgreSQL text output; only this display conversion canonicalizes NaNs.
+pub fn float4_text(bits: u32) -> String {
+    let number = f32::from_bits(bits);
+    if number.is_nan() {
+        "NaN".into()
+    } else if number == f32::INFINITY {
+        "Infinity".into()
+    } else if number == f32::NEG_INFINITY {
+        "-Infinity".into()
+    } else {
+        float_text(f64::from(number), true)
+    }
+}
+
+impl PgArray {
+    /// Scalar callbacks consume the bounded element completely; container diagnostics stay shared.
+    pub fn float4_from_binary(
+        bytes: &[u8],
+    ) -> Result<Self, PgArrayBinaryError<(&'static str, &'static str)>> {
+        Self::from_binary_with(bytes, 700, -1, |payload, _| {
+            let bits = float4_binary_input(payload)?;
+            *payload = &[];
+            Ok(PgArrayElement::Float4(bits))
+        })
+    }
 }

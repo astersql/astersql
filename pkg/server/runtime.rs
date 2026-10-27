@@ -1410,6 +1410,12 @@ fn prepared_argument(
             .ok_or(ConnError::MalformedPacket("prepared parameter value"))
     };
     Ok(match parameter.tp {
+        crate::pg_extended::PG_FLOAT4_PARAMETER => {
+            ConcretePreparedArgument::Float4Bits(u32::from_le_bytes(fixed(4)?.try_into().unwrap()))
+        }
+        crate::pg_extended::PG_FLOAT4_ARRAY_PARAMETER => {
+            ConcretePreparedArgument::Float4Array(parameter.value.clone())
+        }
         0x01 => {
             let value = fixed(1)?[0];
             if parameter.unsigned {

@@ -120,3 +120,10 @@ Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组�
 ## PostgreSQL 转换的拆句门禁（2026-10-24）
 
 真实 listener 在派发 SQL 前的拆句校验使用 SplitSQLStatementsWithDialect；ConcreteTiDBContext 保存建立连接时的不可变身份，普通和流式请求均传入同一身份。原 SplitSQLStatements API 保持 MySQL 默认。此处仍先校验完整 SQL 再按原引号/注释边界拆分，不重写转换或参数。
+
+
+## float4数组与原始binary32位型（任务31）
+
+ConcretePreparedArgument新增Float4Bits(u32)/Float4Array(Vec<u8>)，普通sql_literal明确拒绝这两种私有参数；SessionState保存仅本次prepared绑定的pg_bound_float4_constants，沿既有连接隔离与执行后恢复生命周期。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

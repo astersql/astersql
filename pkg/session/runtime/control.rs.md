@@ -209,3 +209,10 @@ OID1000加入已有prepared参数声明与投影类型分派；直接参数沿�
 OID1700/1231定型、typed NULL、prepared声明与绑定接入已有共享执行；参数字面量用NUMERIC/NUMERIC[] cast恢复身份。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+OID1021在Prepare/typed NULL/参数推断及重绑定中保留身份；float4位型先绑定安全的CAST(NULL AS ...)占位符，再按绑定后的AST offset私有恢复原始ValueDatum。执行后无论成功失败恢复原状态，公开SQL没有内部特殊字符串入口。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。

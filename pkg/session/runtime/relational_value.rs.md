@@ -272,3 +272,12 @@ int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分�
 普通关系表达式cast消费者同样委托共享numeric数组cast，不复制codec或typmod规则。
 
 当前精确18.6差分与验证记录见 `docs/postgresql-pg05-array-numeric-evidence.md`；只承诺记录范围。
+
+
+## float4数组与原始binary32位型（任务31）
+
+Float4数组进入共享cast_value；pg_float4_relational_value识别私有Float32(u32)常量，NaN以原4字节载体传递，有限值沿既有标量显示路径。没有改变Datum或存储布局。
+
+验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+语义cast到不同表示时，pg_float4_cast_text_input仅按已定型Float4/Float4[]源身份把私有字节载体转为原有规范输入文本，保持既有text/整数/numeric/float8消费者行为；同族cast不经text丢位，公开字符串不能按前缀冒充typed值。
