@@ -118,3 +118,8 @@ Rust 版本只在无表常量 SELECT 专用路径中直接匹配这些函数，�
 ## 默认数值常量（任务12）
 
 无表 execute_constant_select 的 Value 快捷分支同样调用 pg_numeric_literal_value，避免直接 literal.text() 绕过 PG 指数规范化与域校验。
+
+
+## 2026-10-28 timestamptz数组常量消费者
+
+常量SELECT的本族ARRAY及SELECT/UNION的本族数组cast转交relational_query_expression_value，使输入解析和输出显示使用既有会话TimeZone。其他数组族保持原消费者。验证见docs/postgresql-pg05-array-timestamptz-evidence.md。

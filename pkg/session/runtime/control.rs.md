@@ -247,3 +247,8 @@ prepared参数1182、typed NULL和重绑定沿既有field_type与DATE[]包装保
 ## timestamp数组接线（任务37）
 
 1115声明参数、typed NULL、占位替换及ARRAY参数重绑定保留timestamp身份。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+1185注册声明参数、typed NULL及重绑定，使用TIMESTAMPTZ[]恢复类型身份。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

@@ -1302,6 +1302,7 @@ pub(super) fn relational_expression_value(
                         | astersql_parser_types::PostgreSQLArrayElement::Date
                         | astersql_parser_types::PostgreSQLArrayElement::Time
                         | astersql_parser_types::PostgreSQLArrayElement::Timestamp
+                        | astersql_parser_types::PostgreSQLArrayElement::Timestamptz
                         | astersql_parser_types::PostgreSQLArrayElement::Numeric
                 )
             ) {

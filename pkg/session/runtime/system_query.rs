@@ -4060,6 +4060,22 @@ impl ConcreteSession {
                 {
                     self.state.borrow().last_commit_ts.to_string()
                 }
+                ast::ExprKind::Array { .. }
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && super::pg_array::array_type(expr, &HashMap::new())?
+                            == astersql_parser_types::PostgreSQLArrayElement::Timestamptz =>
+                {
+                    self.relational_query_expression_value(expr, &HashMap::new(), None)?
+                        .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
+                }
+                ast::ExprKind::Cast { Tp, .. }
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamptz) =>
+                {
+                    self.relational_query_expression_value(expr, &HashMap::new(), None)?
+                        .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
+                }
                 // Constant UNION branches use this consumer instead of the
                 // ordinary SELECT evaluator. Keep PG temporal typmod coercion there too.
                 ast::ExprKind::Cast { Tp, .. }

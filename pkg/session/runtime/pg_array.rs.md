@@ -82,3 +82,8 @@ Date分析、构造和同族显式转换调用PgDate；cast_value_with_context�
 ## timestamp数组接线（任务37）
 
 timestamp数组构造/同族cast委派PgTimestamp及round_precision，保留上下文、下界和NULL；其他族转换仍明确拒绝。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+本族analyze/construct/cast复用PgTimestampTz及ConcreteSession::pg_timestamptz_input；pg_array_value/cast_value_in_session传递会话。输入原子解析并舍入，输出逐元素复用pg_timestamptz_relational_value，保持UTC瞬时与会话显示偏移独立。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

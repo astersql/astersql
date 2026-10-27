@@ -1567,3 +1567,80 @@ fn pg05_array_timestamp_sql_constructors_null_and_boundaries() {
     }
     assert!(session.execute("SELECT 1").is_ok());
 }
+
+#[test]
+fn pg05_array_timestamptz_sql_constructors_null_and_boundaries() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.execute("SET time_zone = 'UTC'").unwrap();
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={infinity,-infinity}'::timestamptz[]",
+            Some("[-2:-1]={infinity,-infinity}"),
+        ),
+        (
+            "SELECT ARRAY['0001-01-01 00:00:00+00 BC'::timestamptz,NULL::timestamptz]",
+            Some(r#"{"0001-01-01 00:00:00+00 BC",NULL}"#),
+        ),
+        (
+            "SELECT ARRAY['12000-01-01 00:00:00+00'::timestamptz]",
+            Some(r#"{"12000-01-01 00:00:00+00"}"#),
+        ),
+        (
+            "SELECT '[-2:-1]={2000-01-01 23:59:59.999999+00,NULL}'::timestamptz(0)[]",
+            Some(r#"[-2:-1]={"2000-01-02 00:00:00+00",NULL}"#),
+        ),
+        (
+            "SELECT ARRAY['1999-12-31 23:59:59.999999+00',NULL]::timestamptz(3)[]",
+            Some(r#"{"2000-01-01 00:00:00+00",NULL}"#),
+        ),
+        ("SELECT ARRAY[]::timestamptz[]", Some("{}")),
+        (
+            "SELECT ARRAY[NULL,NULL]::timestamptz[]",
+            Some("{NULL,NULL}"),
+        ),
+        ("SELECT NULL::timestamptz[]", None),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        assert_eq!(
+            results[0].next_row().unwrap().unwrap()[0],
+            expected.unwrap_or("<nil>"),
+            "{sql}"
+        );
+        results[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT '{2000-01-01 00:00:00+00,garbage}'::timestamptz[]",
+        "SELECT NULL::int4[]::timestamptz[]",
+        "SELECT NULL::timestamptz[]::text[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+    }
+    assert!(session.execute("SELECT 1").is_ok());
+}
+
+#[test]
+fn pg05_array_timestamptz_session_timezone_and_constant_union() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session
+        .execute("SET time_zone = 'America/New_York'")
+        .unwrap();
+    for sql in [
+        "SELECT ARRAY['2024-03-10 02:30:00'::timestamptz,NULL::timestamptz]",
+        "SELECT '{2024-03-10 02:30:00,NULL}'::timestamptz[]",
+        "SELECT '{2024-03-10 02:30:00,NULL}'::timestamptz[] UNION ALL SELECT '{2024-03-10 02:30:00,NULL}'::timestamptz[]",
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        let expected = r#"{"2024-03-10 03:30:00-04",NULL}"#;
+        assert_eq!(
+            results[0].next_row().unwrap().unwrap()[0],
+            expected,
+            "{sql}"
+        );
+        if sql.contains("UNION") {
+            assert_eq!(results[0].next_row().unwrap().unwrap()[0], expected);
+        }
+        results[0].close().unwrap();
+    }
+}

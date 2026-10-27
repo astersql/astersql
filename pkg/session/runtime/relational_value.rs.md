@@ -312,3 +312,8 @@ Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标�
 ## timestamp数组接线（任务37）
 
 timestamp数组沿共享关系表达式求值消费者接入。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+timestamptz[]接入共享显式cast分派，沿现有表达式类型保留数组身份。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

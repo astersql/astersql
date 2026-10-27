@@ -10,3 +10,8 @@ pg_timestamptz_input与pg_timestamptz_relational_value连接既有时间戳codec
 ## date数组逐族接入（任务35）
 
 prepare_pg_date_constants/apply_pg_date_constants把既有Parse常量冻结扩展至date[]字面量，委派canonical_date_text与PgDate::parse_with_context，切换DateStyle不重解已准备字面量。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+timestamptz数组字面量同标量在Parse调用pg_timestamptz_array_input冻结瞬时，Execute仍按活动TimeZone显示；错误保留标量来源。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

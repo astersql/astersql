@@ -280,3 +280,8 @@ date[]显式cast接到共享数组内核，仅本族采样pg_date_context，其�
 ## timestamp数组接线（任务37）
 
 timestamp数组沿共享查询消费者接入。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+数组求值向共享pg_array传递ConcreteSession；timestamptz[] cast完成上下文解析后按执行TimeZone逐元素显示。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

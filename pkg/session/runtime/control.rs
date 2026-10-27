@@ -1841,6 +1841,7 @@ impl ConcreteSession {
                         | 1182
                         | 1183
                         | 1115
+                        | 1185
                         | 1016
                         | 1000
                         | 1009
@@ -1899,8 +1900,8 @@ impl ConcreteSession {
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
                             | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1700 | 1021
-                            | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1016 | 1000 | 1009
-                            | 1014 | 1015),
+                            | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1185 | 1016 | 1000
+                            | 1009 | 1014 | 1015),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 1700 {
@@ -1944,13 +1945,16 @@ impl ConcreteSession {
                                     | 1182
                                     | 1183
                                     | 1115
+                                    | 1185
                                     | 1016
                                     | 1000
                                     | 1009
                                     | 1014
                                     | 1015
                             ) {
-                                tp = super::pg_array::field_type(if *oid == 1115 {
+                                tp = super::pg_array::field_type(if *oid == 1185 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Timestamptz
+                                } else if *oid == 1115 {
                                     astersql_parser_types::PostgreSQLArrayElement::Timestamp
                                 } else if *oid == 1183 {
                                     astersql_parser_types::PostgreSQLArrayElement::Time
@@ -2059,6 +2063,7 @@ impl ConcreteSession {
                                 | 1182
                                 | 1183
                                 | 1115
+                                | 1185
                                 | 1016
                                 | 1000
                                 | 1009
@@ -2216,6 +2221,9 @@ impl ConcreteSession {
                 }
                 if constructor_oids.get(index) == Some(&1183) {
                     return Ok(format!("CAST({literal} AS TIME[])"));
+                }
+                if constructor_oids.get(index) == Some(&1185) {
+                    return Ok(format!("CAST({literal} AS TIMESTAMPTZ[])"));
                 }
                 if constructor_oids.get(index) == Some(&1115) {
                     return Ok(format!("CAST({literal} AS TIMESTAMP[])"));

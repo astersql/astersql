@@ -196,3 +196,8 @@ Time元素身份固定1083/数组1183，恢复TIME(p)[]并保留decimal。 独�
 ## timestamp数组接线（任务37）
 
 增加Timestamp元素1114/数组1115身份，TIMESTAMP(p)[]恢复及序列化保留precision。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+Timestamptz枚举保留元素1184/数组1185，Restore输出TIMESTAMPTZ(p)[]并保留精度。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

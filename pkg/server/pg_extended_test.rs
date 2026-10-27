@@ -10652,3 +10652,42 @@ fn pg05_array_timestamp_registered_input() {
         value.value
     );
 }
+
+#[test]
+fn pg05_array_timestamptz_scalar_codec_prerequisite() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    for (text, micros) in [
+        ("2000-01-01 00:00:00+00", 0i64),
+        ("1999-12-31 23:59:59.999999+00", -1),
+        ("infinity", i64::MAX),
+        ("-infinity", i64::MIN),
+    ] {
+        assert_eq!(
+            parameter(1184, Some(text.as_bytes())).unwrap().value,
+            text.as_bytes()
+        );
+        assert_eq!(
+            binary_parameter(1184, Some(&micros.to_be_bytes()))
+                .unwrap()
+                .value,
+            text.as_bytes()
+        );
+    }
+}
+#[test]
+fn pg05_array_timestamptz_registered_input() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    let text = br#"[0:1]={"2000-01-01 00:00:00+00",NULL}"#;
+    let value = parameter(1185, Some(text)).unwrap();
+    assert_eq!(value.value, text);
+    let binary = [1i32, 1, 1184, 2, 0, 8]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .chain(0i64.to_be_bytes())
+        .chain((-1i32).to_be_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        binary_parameter(1185, Some(&binary)).unwrap().value,
+        value.value
+    );
+}

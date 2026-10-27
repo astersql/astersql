@@ -536,6 +536,7 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             | 1182
             | 1183
             | 1115
+            | 1185
             | 1016
             | 1021
             | 1022
@@ -543,6 +544,12 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     ) {
         return match value {
             Value::Null => Ok(None),
+            Value::Text(text) if oid == 1185 => {
+                // Validate through the instant codec, preserving the session's display offsets.
+                typed_array_result(text.as_bytes(), oid)
+                    .map_err(|(_, message)| invalid(&message))?;
+                Ok(Some(text.as_bytes().to_vec()))
+            }
             Value::Text(text) => typed_array_result(text.as_bytes(), oid)
                 .map_err(|(_, message)| invalid(&message))?
                 .to_text(b',')
@@ -813,8 +820,8 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
         1700 => binary_numeric(text)?,
-        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1016
-        | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,
+        22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185
+        | 1016 | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,
         1082 => text
             .parse::<astersql_types::pg_temporal::PgDate>()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
@@ -998,6 +1005,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
             | 1182
             | 1183
             | 1115
+            | 1185
             | 1016
             | 1021
             | 1022
@@ -1016,6 +1024,7 @@ fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
         1182 => 1082,
         1183 => 1083,
         1115 => 1114,
+        1185 => 1184,
         1016 => 20,
         1009 => 25,
         1015 => 1043,
@@ -1205,7 +1214,7 @@ pub(crate) fn encode_formats_interval(
                     .and_then(|tp| i32::try_from(tp.length).ok())
                     .and_then(|length| length.checked_add(4))
                     .unwrap_or(-1)
-            } else if matches!(*oid, 1083 | 1183 | 1115 | 1114 | 1184) {
+            } else if matches!(*oid, 1083 | 1183 | 1115 | 1185 | 1114 | 1184) {
                 result
                     .native_types
                     .get(index)

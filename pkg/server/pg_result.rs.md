@@ -227,3 +227,8 @@ OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec�
 ## timestamp数组接线（任务37）
 
 1115沿规范数组文本/二进制结果消费者输出，RowDescription保持-1 typlen及p=0..6 typmod。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+1185结果保留precision描述，文本验证瞬时后保留会话显示偏移，binary通过规范数组标量codec输出UTC字节。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

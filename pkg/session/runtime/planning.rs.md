@@ -279,3 +279,8 @@ prepared描述与参数推断识别Date数组1182，空集与全NULL不退化为
 ## timestamp数组接线（任务37）
 
 1115参数分析及TIMESTAMP[] cast推断保持本族身份。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+1185绑定约束与cast目标推断沿现有数组元数据桥接，避免退化成text。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

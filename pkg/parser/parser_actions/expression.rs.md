@@ -264,3 +264,8 @@ PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重�
 ## timestamp数组接线（任务37）
 
 将现有PgTimestampType接入PgArrayType动作；TIMESTAMP数组沿原标量类型提取decimal，不重写标量语法。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+既有identifier目标timestamptz经PgCastType数组动作接入，无需新增语法规则或重生成解析表；数组保留标量p。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

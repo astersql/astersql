@@ -377,8 +377,8 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     }
     let invalid = || error("22P02", "invalid text parameter value");
     let (tp, value) = match oid {
-        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1016 | 1021
-        | 1022 | 1231 => (
+        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1016
+        | 1021 | 1022 | 1231 => (
             253,
             array_text(value, oid)?
                 .to_text(b',')
@@ -606,8 +606,8 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             // the existing text argument bridge, including for typed NULLs.
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
-        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1016 | 1021
-        | 1022 | 1231 => {
+        1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185 | 1016
+        | 1021 | 1022 | 1231 => {
             use astersql_types::pg_array::{PgArray, PgArrayBinaryError, PgArrayElement};
             let array = PgArray::from_binary_with(
                 value,
@@ -620,6 +620,7 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                     1182 => 1082,
                     1183 => 1083,
                     1115 => 1114,
+                    1185 => 1184,
                     1016 => 20,
                     1000 => 16,
                     1009 => 25,
@@ -666,6 +667,13 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
                             .map_err(|e| (e.sqlstate(), e.to_string()))?;
                         *payload = &[];
                         return Ok(PgArrayElement::Timestamp(value));
+                    }
+                    if oid == 1185 {
+                        let value =
+                            astersql_types::pg_temporal::PgTimestampTz::from_binary(payload)
+                                .map_err(|e| (e.sqlstate(), e.to_string()))?;
+                        *payload = &[];
+                        return Ok(PgArrayElement::Timestamptz(value));
                     }
                     if oid == 1182 {
                         let date = astersql_types::pg_temporal::PgDate::from_binary(payload)
@@ -1109,6 +1117,7 @@ impl Extended {
                         | 1182
                         | 1183
                         | 1115
+                        | 1185
                         | 1016
                         | 1000
                         | 1007
@@ -1355,7 +1364,7 @@ impl Extended {
                     && statement
                         .oids
                         .iter()
-                        .any(|oid| matches!(oid, 1082 | 1182 | 1114 | 1115 | 1184))
+                        .any(|oid| matches!(oid, 1082 | 1182 | 1114 | 1115 | 1185 | 1184))
                 {
                     Some(context.pg_date_context(None).map_err(engine)?)
                 } else {
@@ -1434,7 +1443,33 @@ impl Extended {
                                 let canonical =
                                     context.pg_timestamptz_input(text).map_err(engine)?;
                                 parameter(*oid, Some(canonical.as_bytes()))?
-                            } else if matches!(*oid, 1182 | 1115) && value.is_some() {
+                            } else if *oid == 1185 && value.is_some() {
+                                use astersql_types::pg_array::{
+                                    PgArray, PgArrayElement, PgArrayTextError,
+                                };
+                                let array = PgArray::from_text_with(
+                                    value.unwrap(),
+                                    1184,
+                                    -1,
+                                    b',',
+                                    |text, _| {
+                                        let canonical =
+                                            context.pg_timestamptz_input(text).map_err(engine)?;
+                                        canonical
+                                            .parse::<astersql_types::pg_temporal::PgTimestampTz>()
+                                            .map(PgArrayElement::Timestamptz)
+                                            .map_err(|e| error(e.sqlstate(), &e.to_string()))
+                                    },
+                                )
+                                .map_err(|e| match e {
+                                    PgArrayTextError::Element(e) => e,
+                                    e => error(e.sqlstate().unwrap_or("XX000"), &e.to_string()),
+                                })?;
+                                let canonical = array.to_text(b',').map_err(|e| {
+                                    error(e.sqlstate().unwrap_or("XX000"), &e.to_string())
+                                })?;
+                                parameter(*oid, Some(canonical.as_bytes()))?
+                            } else if matches!(*oid, 1182 | 1115 | 1185) && value.is_some() {
                                 let canonical =
                                     array_text_with_context(value.unwrap(), *oid, date_context)?
                                         .to_text(b',')
@@ -1765,6 +1800,7 @@ fn array_text_with_context(
             1182 => 1082,
             1183 => 1083,
             1115 => 1114,
+            1185 => 1184,
             1016 => 20,
             1000 => 16,
             1009 => 25,
@@ -1794,6 +1830,10 @@ fn array_text_with_context(
                 Ok(PgArrayElement::Bytea(
                     parameter(17, Some(text.as_bytes()))?.value,
                 ))
+            } else if oid == 1185 {
+                text.parse::<astersql_types::pg_temporal::PgTimestampTz>()
+                    .map(PgArrayElement::Timestamptz)
+                    .map_err(|e| (e.sqlstate(), e.to_string()))
             } else if oid == 1115 {
                 context
                     .map_or_else(

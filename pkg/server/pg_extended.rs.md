@@ -225,3 +225,8 @@ OID1022 Parse白名单与text/binary Bind注册，元素调用已共享标量cod
 ## timestamp数组接线（任务37）
 
 1115文本/二进制Bind逐元素委派PgTimestamp，冻结相对输入上下文；非法元素原子拒绝。 独立行为与18.6差分证据见 `docs/postgresql-pg05-array-timestamp-evidence.md`。
+
+
+## 2026-10-28 timestamptz数组（任务38）
+
+1185普通参数及Parse注册，文本Bind逐元素委派现有context.pg_timestamptz_input，binary委派PgTimestampTz::from_binary而不重复施加时区偏移；错误沿共享容器保留SQLSTATE。 验证见 `docs/postgresql-pg05-array-timestamptz-evidence.md`；跨族转换、数组运算及持久化不在本任务范围。

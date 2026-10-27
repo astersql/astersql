@@ -1241,6 +1241,7 @@ impl ConcreteSession {
             ast::ExprKind::Parentheses(inner) => {
                 self.relational_query_expression_value(inner, row, group_rows)
             }
+            ast::ExprKind::Array { .. } => self.pg_array_value(expression, row),
             ast::ExprKind::Cast {
                 Expr,
                 Tp,
@@ -1264,10 +1265,24 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Date
                                 | astersql_parser_types::PostgreSQLArrayElement::Time
                                 | astersql_parser_types::PostgreSQLArrayElement::Timestamp
+                                | astersql_parser_types::PostgreSQLArrayElement::Timestamptz
                                 | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {
                         super::pg_array::validate_cast(Expr, Tp)?;
+                        if Tp.PostgreSQLArrayElement()
+                            == Some(astersql_parser_types::PostgreSQLArrayElement::Timestamptz)
+                        {
+                            let value = super::pg_array::cast_value_in_session(
+                                Expr,
+                                row,
+                                Tp,
+                                None,
+                                Some(self),
+                                || self.relational_query_expression_value(Expr, row, group_rows),
+                            )?;
+                            return self.pg_timestamptz_array_display(value);
+                        }
                         return super::pg_array::cast_value_with_context(
                             Expr,
                             row,
