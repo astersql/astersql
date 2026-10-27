@@ -96,7 +96,14 @@ pub(super) fn element_type(
             Some(Element::Bool)
         }
         ast::ExprKind::Parentheses(inner) => element_type(inner, parameters)?,
-        ast::ExprKind::Unary { Op, V } if Op == "+" || Op == "-" => element_type(V, parameters)?,
+        ast::ExprKind::Unary { Op, V } if Op == "+" || Op == "-" => {
+            // The positive token of i64::MIN is Uint64; use the scalar rule
+            // on the signed expression before looking at that token alone.
+            match super::query::pg_integer_literal_type(expr).map(|tp| tp.GetType()) {
+                Some(astersql_parser_mysql::r#type::TypeLonglong) => Some(Element::Int8),
+                _ => element_type(V, parameters)?,
+            }
+        }
         ast::ExprKind::Array { .. } => {
             return Err(error("42804", "multidimensional ARRAY type mismatch"));
         }

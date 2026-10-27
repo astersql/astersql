@@ -1044,25 +1044,12 @@ fn binary_numeric(text: &str) -> io::Result<Vec<u8>> {
     Ok(output)
 }
 
-// OID1016 is opened only as an explicit conversion result, not Bind input.
+// Ordinary array results and Bind share the canonical element codecs.
 fn typed_array_result(
     bytes: &[u8],
     oid: u32,
 ) -> Result<astersql_types::pg_array::PgArray, (&'static str, String)> {
-    if matches!(oid, 1000 | 1005 | 1007 | 1009) {
-        return crate::pg_extended::array_text(bytes, oid);
-    }
-    use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
-    PgArray::from_text_with(bytes, 20, -1, b',', |text, _| {
-        astersql_expression::pg_cast_int8(Some(text)).map(|v| PgArrayElement::Int8(v.unwrap()))
-    })
-    .map_err(|e| {
-        let state = match &e {
-            PgArrayTextError::Element(e) => e.sqlstate(),
-            _ => e.sqlstate().unwrap_or("XX000"),
-        };
-        (state, e.to_string())
-    })
+    crate::pg_extended::array_text(bytes, oid)
 }
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.

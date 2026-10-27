@@ -172,3 +172,10 @@ OID1000结果与int4/text数组使用同一规范PgArray，元素Bool编码为te
 OID1005文本/二进制结果沿规范PgArray，保留形状、下界和两层NULL。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 2026-10-27 int8数组局部接线
+
+Int8数组结果改走与Bind相同的array_text及标量codec，删除仅显式转换结果使用的重复int8解析；OID1016/-1/-1及8字节网络序沿既有出口。
+
+行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。

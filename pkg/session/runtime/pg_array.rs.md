@@ -25,3 +25,8 @@ Bool数组沿既有analyze/value_as/typed_array/validate_cast/cast_value注册�
 Int2定型、共同整数类型选择、构造及文本转换复用pg_cast_int2；跨数组族转换仍0A000。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 2026-10-27 int8数组边界构造
+
+一元带符号整数元素复用query::pg_integer_literal_type规则：i64::MIN的正数字面token为Uint64，须对完整负号表达式定型为Int8，避免只分析正token误拒合法边界。实际值仍沿既有i128精确一元运算和pg_cast_int8，不经f64。其他族、numeric数组或隐式转换矩阵未扩展。证据见 `docs/postgresql-pg05-array-int8-evidence.md`。

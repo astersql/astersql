@@ -774,3 +774,80 @@ fn pg05_array_int2_scalar_identity_and_common_integer_type() {
         session.close_protocol_statement(id).unwrap();
     }
 }
+
+#[test]
+fn pg05_array_int8_declared_parameter_identity() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    let (id, count, fields) = session
+        .prepare_protocol_statement_with_parameter_types("SELECT ? AS v", &[1016])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields[0].column.FieldType.PostgreSQLArrayElement(),
+        Some(Element::Int8)
+    );
+    for (input, expected) in [
+        (
+            Some("[0:1][-2:-1]={{-9223372036854775808,NULL},{0,9223372036854775807}}"),
+            Some("[0:1][-2:-1]={{-9223372036854775808,NULL},{0,9223372036854775807}}"),
+        ),
+        (Some("{}"), Some("{}")),
+        (None, None),
+    ] {
+        let argument = input
+            .map(|s| ConcretePreparedArgument::Text(s.to_owned()))
+            .unwrap_or(ConcretePreparedArgument::Null);
+        let mut result = session.execute_protocol_statement(id, &[argument]).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Int8)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.unwrap_or("<nil>").to_owned()]
+        );
+        result[0].close().unwrap();
+    }
+    session.close_protocol_statement(id).unwrap();
+}
+
+#[test]
+fn pg05_array_int8_shared_casts_and_constructors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY[-9223372036854775808,9223372036854775807,NULL]::int8[] AS v",
+            "{-9223372036854775808,9223372036854775807,NULL}",
+        ),
+        (
+            "SELECT '[-2:-1]={-9223372036854775808,NULL}'::int8[] AS v",
+            "[-2:-1]={-9223372036854775808,NULL}",
+        ),
+        ("SELECT ARRAY[]::int8[] AS v", "{}"),
+        ("SELECT NULL::int8[] AS v", "<nil>"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .PostgreSQLArrayElement(),
+            Some(Element::Int8)
+        );
+        assert_eq!(
+            result[0].next_row().unwrap().unwrap(),
+            vec![expected.to_owned()],
+            "{sql}"
+        );
+        result[0].close().unwrap();
+    }
+}

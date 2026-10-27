@@ -170,3 +170,10 @@ Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。p
 OID1005文本/二进制Bind逐元素委派parameter(21)/binary_parameter(21)；现有标量21分支区分短载荷08P01和多余22P03，不复制标量语义。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 2026-10-27 int8数组局部接线
+
+普通Parse和text/binary Bind注册1016。逐元素委派parameter(20)/binary_parameter(20)，保留i64精度与既有PgArray的形状/下界/两层NULL；OID20短载荷0–7字节08P01，超过8字节22P03，按真实18.6纠正共享入口诊断。
+
+行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。

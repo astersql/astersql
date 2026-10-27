@@ -85,3 +85,8 @@ Ready按根AGENTS与testing-flow选取。只修改Rust和说明不自动触发ba
 增加Int2(i16)规范元素；沿既有shape/lower/typmod/两层NULL容器校验，输出2字节网络序。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 2026-10-27 int8数组输入注册
+
+from_binary_with元素支持门禁纳入OID20；复用已有Int8(i64)规范载体、维数/下界/typmod/NULL校验和8字节网络序输出。生产入口由server逐元素委派既有标量codec；无新增数组容器或标量子系统。行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`。

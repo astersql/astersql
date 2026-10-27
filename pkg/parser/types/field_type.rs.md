@@ -141,3 +141,10 @@ Restore/RestoreAsCastType为独立PostgreSQLArrayElement::Bool输出BOOL[]，身
 Int2元素身份21/1005，Restore/RestoreAsCastType保持INT2[]。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 2026-10-27 int8数组局部接线
+
+FieldType::Restore/RestoreAsCastType补INT8[]，防止声明绑定和typed NULL在SQL还原时丢失数组身份。
+
+行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。

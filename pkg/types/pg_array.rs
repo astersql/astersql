@@ -294,7 +294,7 @@ impl PgArray {
             lower.push(binary_word(&mut bytes)?);
         }
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
-        let supported = matches!(element_oid, 16 | 21 | 23 | 25);
+        let supported = matches!(element_oid, 16 | 20 | 21 | 23 | 25);
         // No reservation from untrusted dimensions. Grow only after checking
         // each length/payload; a tiny message declaring huge arrays stays tiny.
         let mut elements = Vec::new();

@@ -224,3 +224,10 @@ protocol_parameter_types在显式text[] cast和声明1009处保留1009，不能�
 参数声明/上下文约束保留Int2数组OID1005。
 
 行为与验证见 `docs/postgresql-pg05-array-int2-evidence.md`；不开放完整跨族cast、存储或数组运算。
+
+
+## 2026-10-27 int8数组局部接线
+
+supplied参数OID白名单纳入1016；既有Int8数组cast约束推断不变，使声明、推断与OID0路径收敛到同一类型。
+
+行为与验证见 `docs/postgresql-pg05-array-int8-evidence.md`；不新增完整跨族cast、存储或数组运算。
