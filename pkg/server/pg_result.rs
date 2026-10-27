@@ -573,6 +573,19 @@ fn float_text(n: f64, single: bool) -> String {
 }
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
+    if oid == 1007 {
+        return match value {
+            Value::Null => Ok(None),
+            Value::Text(text) => crate::pg_extended::int4_array_text(text.as_bytes())
+                .map_err(|(_, message)| invalid(&message))?
+                .to_text(b',')
+                .map(|text| Some(text.into_bytes()))
+                .map_err(|error| invalid(&error.to_string())),
+            _ => Err(invalid(
+                "int4 array result requires its canonical text carrier",
+            )),
+        };
+    }
     if oid == 3802 {
         return match value {
             Value::Null => Ok(None),
@@ -1035,6 +1048,12 @@ fn binary_numeric(text: &str) -> io::Result<Vec<u8>> {
 
 /// Catalog and expression arrays use the same recursive PostgreSQL binary layout.
 fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
+    if oid == 1007 {
+        return crate::pg_extended::int4_array_text(text.as_bytes())
+            .map_err(|(_, message)| invalid(&message))?
+            .to_binary()
+            .map_err(|error| invalid(&error.to_string()));
+    }
     let vector = matches!(oid, 22 | 30);
     let element_oid: u32 = match oid {
         22 | 1005 => 21,

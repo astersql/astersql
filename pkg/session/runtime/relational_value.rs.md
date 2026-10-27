@@ -235,3 +235,8 @@ UUID cast复用pg_uuid严格转换；类型推导保留TypePgUuid，结果规范
 ## 2026-10-27 JSONB显式转换接线
 
 TypePgJsonb在共享表达式求值调用pg_jsonb::cast_value，并在结果定型原样保留字段身份，覆盖typed NULL和零行。
+
+
+## int4 数组共享求值与协议
+
+int4[] cast 在通用字符串转换前调用 pg_array::cast_value，类型分析保留目标 FieldType 的数组身份。规范数组通过完整文本载体与独立类型元数据交接，不转成 MySQL JSON。

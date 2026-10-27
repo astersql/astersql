@@ -2004,6 +2004,7 @@
 - [ ] [`pkg/session/runtime/normal_ddl_service.rs.md`](../pkg/session/runtime/normal_ddl_service.rs.md)
 - [ ] [`pkg/session/runtime/normal_ddl_submit.rs.md`](../pkg/session/runtime/normal_ddl_submit.rs.md)
 - [ ] [`pkg/session/runtime/paging.rs.md`](../pkg/session/runtime/paging.rs.md)
+- [x] [`pkg/session/runtime/pg_array.rs.md`](../pkg/session/runtime/pg_array.rs.md)
 - [ ] [`pkg/session/runtime/planning.rs.md`](../pkg/session/runtime/planning.rs.md)
 - [ ] [`pkg/session/runtime/query.rs.md`](../pkg/session/runtime/query.rs.md)
 - [ ] [`pkg/session/runtime/recovery.rs.md`](../pkg/session/runtime/recovery.rs.md)

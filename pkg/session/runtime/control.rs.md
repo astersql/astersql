@@ -169,3 +169,8 @@ PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collati
 ## 2026-10-27 JSONB显式转换接线
 
 声明OID3802的参数描述映射TypePgJsonb，绑定时沿既有SQL绑定器包裹JSONB CAST，NULL和重绑定均重新定型/校验；外部wire输入codec归后续任务。
+
+
+## int4 数组共享求值与协议
+
+1007 复用既有 typed 参数桥：Prepare 字段设置 Int4 数组身份，Execute 使用 CAST(参数字面量 AS INT4[])，使非空、空数组与 SQL NULL 的结果身份连续。

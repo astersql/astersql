@@ -149,3 +149,8 @@ Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。p
 普通Parse接受OID3802，声明、cast推断及OID0沿现有共享prepared上下文保留JSONB身份和typed NULL。text参数调用PgJsonb::from_bytes严格校验并规范化，再复用tp253文本桥接；binary参数先读取一字节版本，空载荷08P01，非01版本XX000，仅01无文档22P02，01后的文档复用text路径。未知版本诊断经精确PostgreSQL18.6（server_version_num=180006）独立临时数据库采集，00/02/ff均XX000。文档语法22P02、编码22021、转义u0000为22P05、数字超域22003按原阶段保留，不统一包装22P03；孤立代理项经共享解析器修正为参考22P02。SQL NULL在取版本前处理，不要求版本字节。
 
 独立pg05_jsonb_input测试覆盖两种输入的规范值、精确数字、Unicode和NULL；真实TCP覆盖声明/推断参数3802及结果3802/-1/-1、重绑定、Bind拒绝、Sync恢复、载荷声明截断和Close清理。二进制结果及四方向差分由后续任务承担，本任务不开放新的结果codec。conn_stmt无需修改，复用既有BinaryParam和OID定型。
+
+
+## int4 数组共享求值与协议
+
+普通 Parse 开放声明1007；text Bind 委派规范 PgArray::from_text_with 与既有 int4 标量输入，binary Bind 委派 from_binary_with 并要求每个整数元素恰好消费4字节。BinaryParam 复用完整规范数组文本，参数1007上下文保留身份与 typed NULL。尚未开放的其他数组OID继续0A000。

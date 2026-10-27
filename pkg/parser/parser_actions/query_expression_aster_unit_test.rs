@@ -336,3 +336,16 @@ fn pg_scalar_12_parser_preserves_numeric_spelling() {
         assert_eq!(value.Type.GetDecimal(), -1);
     }
 }
+
+#[test]
+fn pg05_int4_array_type_action_has_one_owner() {
+    let rules = RULE_IDS_BY_REDUCTION.iter().copied()
+        .filter(|rule| rule.as_str().starts_with("pgcasttype_pgcasttype--"))
+        .collect::<Vec<_>>();
+    assert_eq!(rules.len(), 1);
+    let rule = rules[0];
+    assert!(expression::owns(rule));
+    let owners = [ddl::owns(rule), dml::owns(rule), expression::owns(rule), query::owns(rule), security::owns(rule), admin::owns(rule), misc::owns(rule), mview::owns(rule)];
+    assert_eq!(owners.into_iter().filter(|owns| *owns).count(), 1);
+    assert!(super::has_semantic_action(rule));
+}

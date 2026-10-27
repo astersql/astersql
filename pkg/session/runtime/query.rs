@@ -1248,6 +1248,14 @@ impl ConcreteSession {
                 ..
             } => {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    if Tp.PostgreSQLArrayElement()
+                        == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
+                    {
+                        super::pg_array::validate_cast(Expr, Tp)?;
+                        return super::pg_array::cast_value(Expr, row, || {
+                            self.relational_query_expression_value(Expr, row, group_rows)
+                        });
+                    }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                         return super::pg_jsonb::cast_value(
                             self.relational_query_expression_value(Expr, row, group_rows)?,
@@ -2232,6 +2240,9 @@ impl ConcreteSession {
                     }
                 }
                 if let ast::ExprKind::Cast { Expr, Tp, .. } = &input.Kind {
+                    self.scalar_cast_error = super::pg_array::validate_cast(Expr, Tp)
+                        .err()
+                        .or(self.scalar_cast_error.take());
                     let source = pg_integer_literal_type(Expr)
                         .unwrap_or_else(|| relational_expression_type(Expr, self.table));
                     if !matches!(Expr.Kind, ast::ExprKind::ParamMarker { .. }) {

@@ -392,3 +392,18 @@ fn pg_scalar_21_text_identity_roundtrip() {
             .contains("PostgreSQLTextOid")
     );
 }
+
+#[test]
+fn pg05_int4_array_cast_restore_identity() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Int4);
+    let mut output = Vec::new();
+    tp.FormatAsCastType(&mut output, false).unwrap();
+    assert_eq!(output, b"INT4[]");
+    let decoded: crate::FieldType =
+        serde_json::from_str(&serde_json::to_string(&tp).unwrap()).unwrap();
+    assert_eq!(
+        decoded.PostgreSQLArrayElement(),
+        Some(crate::PostgreSQLArrayElement::Int4)
+    );
+}

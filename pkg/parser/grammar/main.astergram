@@ -4375,3 +4375,6 @@ PgIntervalFields : "DAY" "TO" "SECOND" @action;
 PgIntervalFields : "HOUR" "TO" "MINUTE" @action;
 PgIntervalFields : "HOUR" "TO" "SECOND" @action;
 PgIntervalFields : "MINUTE" "TO" "SECOND" @action;
+
+// PostgreSQL array type identity; dimensions belong to the value.
+PgCastType : PgCastType '[' ']' @action;

@@ -138,3 +138,8 @@
 ## JSON显式转换与类型交接
 
 从main.astergram增加PgPostfixJson后生成语法表；复用JSON CAST动作，允许PostgreSQL ::json。
+
+
+## int4 数组共享求值与协议
+
+生成输入加入 PgCastType : PgCastType [ ] 规则，由 expression::PgArrayType 消费其稳定 RuleId；重复后缀不建立不同数组类型身份。表通过 astersql-parsergen generate 再生，未手工修改自动机。

@@ -30,6 +30,7 @@ enum ExpressionRule {
     PgArrayNestedNext,
     PgArrayRow,
     PgCastType,
+    PgArrayType,
     PgIntervalType,
     PgIntervalOpt,
     PgIntervalLiteralOpt,
@@ -335,6 +336,7 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        id if id.starts_with("pgcasttype_pgcasttype--") => Some(ExpressionRule::PgArrayType),
         id if id.starts_with("pgcasttype_pginterval_pgintervalopt--") || id.starts_with("pgcasttype_pginterval_prec_empty--") => Some(ExpressionRule::PgIntervalType),
         id if id.starts_with("pgintervalliteralopt") => Some(ExpressionRule::PgIntervalLiteralOpt),
         id if id.starts_with("pgintervalopt") => Some(ExpressionRule::PgIntervalOpt),
@@ -1416,6 +1418,26 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 };
                 out.expr = Some(node);
             }
+        }
+        ExpressionRule::PgArrayType => {
+            let Some(source) = rhs[1].item.as_deref()
+                .and_then(|v| v.downcast_ref::<parser_types::types::FieldType>())
+            else { return Ok(false); };
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(errors::New("PostgreSQL array type requires PostgreSQL dialect"));
+                return Err(1);
+            }
+            if source.GetType() != parser_mysql::r#type::TypeLong
+                && source.PostgreSQLArrayElement() != Some(parser_types::PostgreSQLArrayElement::Int4)
+            {
+                yylex.AppendError(errors::New("unsupported PostgreSQL array element type"));
+                return Err(1);
+            }
+            let mut tp = parser_types::types::NewFieldType(parser_mysql::r#type::TypeVarString);
+            tp.SetPostgreSQLArrayElement(parser_types::PostgreSQLArrayElement::Int4);
+            tp.SetCharset("utf8mb4".into());
+            tp.SetCollate("utf8mb4_bin".into());
+            out.item = Some(Box::new(tp));
         }
         ExpressionRule::PgCastType | ExpressionRule::PgVarcharType => {
             let spelling = if rule == ExpressionRule::PgVarcharType {

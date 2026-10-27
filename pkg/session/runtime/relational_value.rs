@@ -1286,6 +1286,14 @@ pub(super) fn relational_expression_value(
             FunctionType,
             ..
         } => {
+            if Tp.PostgreSQLArrayElement()
+                == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
+            {
+                super::pg_array::validate_cast(Expr, Tp)?;
+                return super::pg_array::cast_value(Expr, row, || {
+                    relational_expression_value(Expr, row)
+                });
+            }
             if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                 return super::pg_jsonb::cast_value(relational_expression_value(Expr, row)?);
             }
@@ -2718,7 +2726,8 @@ pub(super) fn relational_expression_type(
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }
-            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
+            if Tp.PostgreSQLArrayElement().is_some()
+                || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval

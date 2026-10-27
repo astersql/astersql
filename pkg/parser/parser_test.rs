@@ -5522,3 +5522,45 @@ fn pg05_jsonb_sql_parser_identity_and_mysql_isolation() {
     assert!(mysql.ParseSQL("SELECT CAST('null' AS jsonb)", &[]).is_err());
     assert!(mysql.ParseSQL("SELECT CAST('null' AS JSON)", &[]).is_ok());
 }
+
+#[test]
+fn pg05_int4_array_required_integer_context() {
+    for sql in [
+        "SELECT $1::integer[] AS v",
+        "SELECT NULL::integer[] AS v",
+        "SELECT ARRAY[]::integer[] AS v",
+        "SELECT CAST($1 AS integer[]) AS v",
+        "SELECT $1::int4[][] AS v",
+        "SELECT $1::int[] AS v",
+    ] {
+        let parsed = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "");
+        assert!(
+            parsed.is_ok(),
+            "required int4 array context {sql}: {:?}",
+            parsed.err()
+        );
+        let stmt = parsed
+            .unwrap()
+            .into_any()
+            .downcast::<parser_ast::SelectStmt>()
+            .ok()
+            .unwrap();
+        let parser_ast::ExprKind::Cast {
+            Tp, FunctionType, ..
+        } = &stmt.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("real cast AST required")
+        };
+        assert_eq!(
+            Tp.PostgreSQLArrayElement(),
+            Some(parser_types::PostgreSQLArrayElement::Int4)
+        );
+        assert_eq!(*FunctionType, parser_ast::CastFunctionType::Cast);
+        assert!(
+            parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+                .ParseOneStmt(sql, "", "")
+                .is_err()
+        );
+    }
+}

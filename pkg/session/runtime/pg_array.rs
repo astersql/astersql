@@ -191,7 +191,11 @@ pub(super) fn analyze(
         .filter_map(|node| node.as_any().downcast_ref::<ast::SelectStmt>())
         .flat_map(|select| select.Fields.Fields.iter())
         .filter_map(|field| field.Expr.as_ref())
-        .filter(|expr| matches!(expr.Kind, ast::ExprKind::Array { .. }))
+        .filter(|expr| {
+            matches!(expr.Kind, ast::ExprKind::Array { .. })
+                || matches!(&expr.Kind, ast::ExprKind::Cast { Tp, .. }
+                    if Tp.PostgreSQLArrayElement() == Some(Element::Int4))
+        })
         .collect::<Vec<_>>();
     struct ArrayPositions(std::collections::HashSet<usize>);
     impl ast::Visitor for ArrayPositions {
@@ -256,9 +260,39 @@ pub(super) fn analyze(
             )
         })
         .collect::<HashMap<_, _>>();
+    struct Contexts(HashMap<usize, Element>);
+    impl ast::Visitor for Contexts {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(ast::ExprNode {
+                Kind: ast::ExprKind::Cast { Expr, Tp, .. },
+                ..
+            }) = node.as_any().downcast_ref::<ast::ExprNode>()
+            {
+                if Tp.PostgreSQLArrayElement() == Some(Element::Int4) {
+                    let mut positions = ArrayPositions(std::collections::HashSet::new());
+                    Expr.accept(&mut positions);
+                    self.0.extend(
+                        positions
+                            .0
+                            .into_iter()
+                            .map(|offset| (offset, Element::Int4)),
+                    );
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut contexts = Contexts(HashMap::new());
+    for statement in statements {
+        statement.accept(&mut contexts);
+    }
     struct Arrays<'a> {
         allowed: &'a std::collections::HashSet<usize>,
         parameters: &'a HashMap<usize, u32>,
+        contexts: &'a HashMap<usize, Element>,
         supplied: bool,
         types: HashMap<usize, Element>,
         constraints: HashMap<usize, u32>,
@@ -293,7 +327,13 @@ pub(super) fn analyze(
                             }
                         }
                     }
-                    match array_type(expr, self.parameters) {
+                    match self
+                        .contexts
+                        .get(&(expr.OriginTextPosition as usize))
+                        .copied()
+                        .map(Ok)
+                        .unwrap_or_else(|| array_type(expr, self.parameters))
+                    {
                         Ok(element) => {
                             self.types.insert(expr.OriginTextPosition as usize, element);
                             struct ArrayParameters(Vec<usize>);
@@ -331,6 +371,7 @@ pub(super) fn analyze(
     let mut visitor = Arrays {
         allowed: &allowed,
         parameters: &parameters,
+        contexts: &contexts.0,
         supplied: supplied.is_some(),
         types: HashMap::new(),
         constraints: HashMap::new(),
@@ -368,7 +409,13 @@ pub(super) fn value(
     expr: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<Option<String>> {
-    let element = array_type(expr, &HashMap::new())?;
+    value_as(expr, row, array_type(expr, &HashMap::new())?)
+}
+fn value_as(
+    expr: &ast::ExprNode,
+    row: &HashMap<String, Option<String>>,
+    element: Element,
+) -> SessionResult<Option<String>> {
     fn render(
         expr: &ast::ExprNode,
         row: &HashMap<String, Option<String>>,
@@ -446,5 +493,78 @@ pub(super) fn value(
         }
         Ok((format!("{{{}}}", values.join(",")), shape))
     }
-    render(expr, row, element).map(|(value, _)| Some(value))
+    let (value, _) = render(expr, row, element)?;
+    if element == Element::Int4 {
+        int4_text(value.as_bytes()).map(Some)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+/// Lossless text bridge for the shared runtime; identity stays in FieldType.
+pub(super) fn int4_text(bytes: &[u8]) -> SessionResult<String> {
+    use astersql_types::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
+    let value = PgArray::from_text_with(bytes, 23, -1, b',', |text, _| {
+        astersql_expression::pg_cast_int4(Some(text)).map(|v| PgArrayElement::Int4(v.unwrap()))
+    })
+    .map_err(|failure| {
+        let state = match &failure {
+            PgArrayTextError::Element(e) => e.sqlstate(),
+            _ => failure.sqlstate().unwrap_or("XX000"),
+        };
+        error(state, failure.to_string())
+    })?;
+    value
+        .to_text(b',')
+        .map_err(|e| error(e.sqlstate().unwrap_or("XX000"), e.to_string()))
+}
+
+/// Only int4 constructor/text/NULL inputs are opened here; other families remain gated.
+pub(super) fn validate_cast(
+    expr: &ast::ExprNode,
+    target: &astersql_parser_types::FieldType,
+) -> SessionResult<()> {
+    if target.PostgreSQLArrayElement() != Some(Element::Int4) {
+        return Ok(());
+    }
+    fn supported(expr: &ast::ExprNode) -> bool {
+        match &expr.Kind {
+            ast::ExprKind::Parentheses(inner) => supported(inner),
+            ast::ExprKind::Value(v) => matches!(v.Datum, ast::ValueDatum::Null | ast::ValueDatum::String(_)),
+            ast::ExprKind::ParamMarker { .. } => true,
+            ast::ExprKind::Array { Elements, .. } => Elements.iter().all(|child| {
+                matches!(&child.Kind, ast::ExprKind::Value(v) if matches!(v.Datum, ast::ValueDatum::Null))
+                || supported_array_element(child)
+            }),
+            ast::ExprKind::Cast { Tp, .. } => Tp.PostgreSQLArrayElement() == Some(Element::Int4) || Tp.PostgreSQLTextOid() == Some(25),
+            _ => false,
+        }
+    }
+    fn supported_array_element(expr: &ast::ExprNode) -> bool {
+        match &expr.Kind {
+            ast::ExprKind::Array { .. } => supported(expr),
+            ast::ExprKind::ParamMarker { .. } => true,
+            _ => element_type(expr, &HashMap::new()).ok().flatten() == Some(Element::Int4),
+        }
+    }
+    if supported(expr) {
+        Ok(())
+    } else {
+        Err(error("0A000", "array cast source is not supported"))
+    }
+}
+
+pub(super) fn cast_value(
+    expr: &ast::ExprNode,
+    row: &HashMap<String, Option<String>>,
+    value: impl FnOnce() -> SessionResult<Option<String>>,
+) -> SessionResult<Option<String>> {
+    let mut expr = expr;
+    while let ast::ExprKind::Parentheses(inner) = &expr.Kind {
+        expr = inner;
+    }
+    if matches!(expr.Kind, ast::ExprKind::Array { .. }) {
+        return value_as(expr, row, Element::Int4);
+    }
+    value()?.map(|text| int4_text(text.as_bytes())).transpose()
 }

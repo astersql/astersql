@@ -191,3 +191,8 @@ JSON的CAST目标按方言分别选择TypePgJson和原MySQL TypeJSON；新增后
 ## 2026-10-27 JSONB显式转换接线
 
 PgCastType标识符入口新增PostgreSQL jsonb，沿既有方言与无修饰符资格检查，不修改MySQL JSON语义。
+
+
+## int4 数组共享求值与协议
+
+`PgArrayType` 拥有 PgCastType 的 [] 后缀动作，仅开放 int4/integer/int 及其重复 []；建立独立 PostgreSQLArrayElement::Int4，使用通用 Cast 节点，不把数组当作标量 PostgreSQLInt4 cast。其他元素族不在此开放。

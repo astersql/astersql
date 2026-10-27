@@ -1831,6 +1831,7 @@ impl ConcreteSession {
                         | 114
                         | 3802
                         | 2950
+                        | 1007
                 )
             });
         let constructor_oids = array_oids
@@ -1883,7 +1884,7 @@ impl ConcreteSession {
                             .and_then(|index| supplied.get(index));
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
-                            | 1184 | 1186 | 114 | 3802 | 2950),
+                            | 1184 | 1186 | 114 | 3802 | 2950 | 1007),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 17 {
@@ -1915,6 +1916,11 @@ impl ConcreteSession {
                             } else {
                                 astersql_parser_mysql::r#type::TypeShort
                             });
+                            if *oid == 1007 {
+                                tp = super::pg_array::field_type(
+                                    astersql_parser_types::PostgreSQLArrayElement::Int4,
+                                );
+                            }
                             if *oid == 17 {
                                 tp.SetCharset("binary".into());
                                 tp.SetCollate("binary".into());
@@ -1983,6 +1989,7 @@ impl ConcreteSession {
                                 | 114
                                 | 3802
                                 | 2950
+                                | 1007
                         ) {
                             *oid = *supplied;
                         }
@@ -2099,6 +2106,9 @@ impl ConcreteSession {
                     };
                 }
                 let literal = argument.sql_literal()?;
+                if constructor_oids.get(index) == Some(&1007) {
+                    return Ok(format!("CAST({literal} AS INT4[])"));
+                }
                 if constructor_oids.get(index) == Some(&3802) {
                     return Ok(format!("CAST({literal} AS JSONB)"));
                 }

@@ -205,3 +205,8 @@ PostgreSQL JSON显式cast委托pg_json共享转换；行求值前校验转换资
 ## 2026-10-27 JSONB显式转换接线
 
 PostgreSQL JSONB转换调用pg_jsonb::cast_value重新校验并规范化；已有行前资格验证沿pg_json转交JSONB规则。
+
+
+## int4 数组共享求值与协议
+
+int4[] cast 在通用标量 cast 前进入 pg_array 的规范值路径；分析时检查输入资格，行求值与常量求值均保留 shape/lower/元素NULL。

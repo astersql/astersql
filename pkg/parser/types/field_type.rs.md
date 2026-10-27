@@ -120,3 +120,8 @@ RestoreAsCastType对独立TypePgJson写出JSON，serde、相等及哈希沿现�
 ## 2026-10-27 JSONB显式转换接线
 
 RestoreAsCastType为TypePgJsonb写出JSONB；类型码沿serde/相等保留身份。
+
+
+## int4 数组共享求值与协议
+
+Int4 数组的 Restore/RestoreAsCastType 输出 INT4[]，保留数组身份而非退化为 CHAR；维数属于值，类型的重复 [] 不影响1007身份。
