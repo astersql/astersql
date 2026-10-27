@@ -970,3 +970,41 @@ fn pg_interval_duplicate_field_overflow_precedes_syntax() {
         );
     }
 }
+
+#[test]
+fn pg05_array_time_scalar_named_zone_diagnostics() {
+    use super::pg_temporal::PgTime;
+    // PostgreSQL 18.6 ParseDateTime/DecodeTimeOnly distinguishes date-shaped
+    // zone names from ordinary words and malformed numeric displacements.
+    for (text, state) in [
+        ("not-a-time", "22023"),
+        ("not-an-hour", "22023"),
+        ("bad-clock", "22023"),
+        ("Missing/Zone", "22023"),
+        ("missing.zone", "22023"),
+        ("12:00:00 Missing/Zone", "22023"),
+        ("12:00:00 not-a-time", "22023"),
+        ("garbage", "22007"),
+        ("not_a_time", "22007"),
+        ("America/New_York", "22007"),
+        ("america/new_york", "22007"),
+        ("12:00:00 America/New_York", "22007"),
+        ("not-a-time 12:00:00", "22007"),
+        ("04:05 XM", "22007"),
+        ("04:05:06+xx", "22007"),
+        ("04:05:06+08:00junk", "22007"),
+        ("12:00:00-foo", "22007"),
+        ("12:00:00+16", "22009"),
+        ("12:00:00+08:60", "22009"),
+        ("25:00:00", "22008"),
+    ] {
+        assert_eq!(
+            text.parse::<PgTime>().unwrap_err().sqlstate(),
+            state,
+            "{text}"
+        );
+    }
+    for text in ["00:00:00", "24:00:00", "12:00:00+08", "12:00:00-08:00"] {
+        assert!(text.parse::<PgTime>().is_ok(), "{text}");
+    }
+}

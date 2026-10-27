@@ -271,3 +271,8 @@ PostgreSQL投影cast分派注册Bytea数组，复用pg_array::validate_cast/cast
 ## date数组逐族接入（任务35）
 
 date[]显式cast接到共享数组内核，仅本族采样pg_date_context，其他族保持原上下文路径。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+共享查询表达式消费者开放Time数组，保留原标量路径。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

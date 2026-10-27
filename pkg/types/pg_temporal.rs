@@ -396,6 +396,33 @@ impl std::str::FromStr for PgTime {
         if text.eq_ignore_ascii_case("allballs") {
             return Self::from_micros(0);
         }
+        // ParseDateTime classifies an alphabetic token followed by '-', '/'
+        // or '.' as a date-shaped named zone, before DecodeTimeOnly validates
+        // the clock. Do not send these names through numeric displacement
+        // validation: unknown names have 22023, ordinary words have 22007.
+        // This correction only classifies nonnumeric names; it does not add
+        // named-zone or POSIX-zone evaluation to time without time zone.
+        let named_zone_token = |word: &str| {
+            let letters = word.bytes().take_while(u8::is_ascii_alphabetic).count();
+            letters > 0
+                && matches!(word.as_bytes().get(letters), Some(b'-' | b'/' | b'.'))
+                && word
+                    .bytes()
+                    .all(|c| c.is_ascii_alphabetic() || b"-/._:".contains(&c))
+        };
+        let (clock, zone) = text.rsplit_once(char::is_whitespace).unwrap_or(("", text));
+        if named_zone_token(zone)
+            // A clock cannot contain another named-zone token. Besides keeping
+            // date-like prefixes as syntax errors, this bounds the validation
+            // call below even for arbitrarily many invalid input fields.
+            && !clock.split_whitespace().any(named_zone_token)
+            && !chrono_tz::TZ_VARIANTS
+                .iter()
+                .any(|tz| tz.name().eq_ignore_ascii_case(zone))
+            && (clock.is_empty() || clock.parse::<Self>().is_ok())
+        {
+            return Err(PgTemporalError::UnknownZone);
+        }
         // A numeric displacement is validated even though time without time
         // zone does not retain it. Never apply it to the wall-clock fields.
         if let Some(at) = text.find(['+', '-']).filter(|at| *at > 0) {

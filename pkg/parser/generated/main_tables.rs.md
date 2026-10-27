@@ -157,3 +157,8 @@ main.astergram新增PgCastType : PgPostfixText [ ]，让现有CHAR/CHARACTER(n)�
 ## date数组逐族接入（任务35）
 
 main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再生；不手工修改自动机。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+由release astersql-parsergen generate生成PgTimeType数组语法表，禁止手改自动机。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

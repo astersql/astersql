@@ -303,3 +303,8 @@ Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标�
 ## date数组逐族接入（任务35）
 
 既有数组显式转换消费者注册Date并委派validate_cast/cast_value，不改变MySQL日期求值。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+共享关系值消费者开放Time数组并委派同一数组cast。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

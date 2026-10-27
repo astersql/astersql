@@ -187,3 +187,8 @@ PostgreSQLArrayElement::Varchar独立1043/1015身份；Restore保留varchar字�
 ## date数组逐族接入（任务35）
 
 PostgreSQLArrayElement::Date持有元素1082/数组1182，Restore与FormatAsCastType恢复DATE[]，序列化保持独立身份。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+Time元素身份固定1083/数组1183，恢复TIME(p)[]并保留decimal。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

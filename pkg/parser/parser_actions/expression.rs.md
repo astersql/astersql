@@ -255,3 +255,8 @@ PgArrayType从已有标量1043取得Varchar数组身份，复制字符长度而�
 ## date数组逐族接入（任务35）
 
 PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重复[]不改变元素身份。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+将已有PgTimeType接入数组动作，继承标量decimal，不扩展其他时间族。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

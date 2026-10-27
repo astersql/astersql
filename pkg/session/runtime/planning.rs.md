@@ -270,3 +270,8 @@ Parse参数推断白名单注册1015，显式varchar[]类型提供数组参数�
 ## date数组逐族接入（任务35）
 
 prepared描述与参数推断识别Date数组1182，空集与全NULL不退化为text。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+已定型time数组推断1183，空集和首行NULL保持原声明身份。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

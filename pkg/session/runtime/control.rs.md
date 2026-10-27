@@ -238,3 +238,8 @@ Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标�
 ## date数组逐族接入（任务35）
 
 prepared参数1182、typed NULL和重绑定沿既有field_type与DATE[]包装保持Date身份，不引入新执行器。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+声明1183参数、typed NULL和重绑定保持Time数组身份；沿既有参数替换消费者生成TIME[]。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

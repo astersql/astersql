@@ -73,3 +73,8 @@ Bpchar构造器共同长度由constructor_field_type逐叶检查：同长度标�
 ## date数组逐族接入（任务35）
 
 Date分析、构造和同族显式转换调用PgDate；cast_value_with_context与canonical_date_text接收不可变标量日期上下文。构造器避免将BC/扩展年份经MySQL日期归一化，跨族cast仍0A000。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+注册Time分析、构造与同族cast，调用PgTime及round_precision保留24:00和p进位；跨族转换保持0A000。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

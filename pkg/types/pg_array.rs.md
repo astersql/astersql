@@ -129,3 +129,8 @@ PgArrayElement::Float8(u64)规范载体、共享float8_binary_input及float8_tex
 ## date数组逐族接入（任务35）
 
 PgArrayElement::Date复用规范PgDate；容器验证1082元素，文本输出沿共享引用规则，binary逐元素输出四字节PG日序。shape/lower/typmod/两层NULL沿现有容器保持。独立测试使用pg05_array_date前缀，真实18.6差分见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+PgArrayElement::Time直接持有已验证PgTime，文本显示及八字节网络序输出委派标量；shape/lower/两层NULL沿共享容器。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。

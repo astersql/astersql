@@ -1476,3 +1476,47 @@ fn pg05_array_date_sql_constructors_null_and_boundaries() {
     }
     assert!(session.execute("SELECT 1").is_ok());
 }
+
+#[test]
+fn pg05_array_time_sql_constructors_null_and_boundaries() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT '[-2:-1]={24:00:00,00:00:00.000001}'::time[]",
+            Some("[-2:-1]={24:00:00,00:00:00.000001}"),
+        ),
+        (
+            "SELECT ARRAY['12:34:56.123456'::time,NULL::time]",
+            Some("{12:34:56.123456,NULL}"),
+        ),
+        (
+            "SELECT ARRAY[['23:59:59.999999',NULL],['00:00:00','12:34:56.123456']]::time[]",
+            Some("{{23:59:59.999999,NULL},{00:00:00,12:34:56.123456}}"),
+        ),
+        (
+            "SELECT '[-2:-1]={23:59:59.999999,NULL}'::time(0)[]",
+            Some("[-2:-1]={24:00:00,NULL}"),
+        ),
+        (
+            "SELECT ARRAY['23:59:59.999999',NULL]::time(3)[]",
+            Some("{24:00:00,NULL}"),
+        ),
+        ("SELECT ARRAY[]::time[]", Some("{}")),
+        ("SELECT ARRAY[NULL,NULL]::time[]", Some("{NULL,NULL}")),
+        ("SELECT NULL::time[]", None),
+    ] {
+        let mut results = session.execute(sql).unwrap();
+        let row = results[0].next_row().unwrap().unwrap();
+        assert_eq!(row[0], expected.unwrap_or("<nil>"), "{sql}");
+        results[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT '{12:34:56.123456,25:00:00}'::time[]",
+        "SELECT NULL::int4[]::time[]",
+        "SELECT NULL::time[]::text[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+    }
+    assert!(session.execute("SELECT 1").is_ok());
+}

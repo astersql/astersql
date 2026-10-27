@@ -218,3 +218,8 @@ OID701/1022的已定型Bytes结果直接发binary，text结果调用共享codec�
 ## date数组逐族接入（任务35）
 
 1182文本/二进制结果复用规范PgArray及1082标量codec，OID/typlen/typmod为1182/-1/-1，BC空格沿共享容器引用。独立pg05_array_date测试及18.6差分证据见docs/postgresql-pg05-array-date-evidence.md。
+
+
+## 任务36：time数组
+
+注册1183文本/二进制结果，OID1183/typlen-1及time precision metadata保持；规范元素字节由共享PgArray输出。 独立pg05_array_time测试与18.6差分见docs/postgresql-pg05-array-time-evidence.md。
