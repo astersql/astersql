@@ -439,3 +439,252 @@ fn pg05_array_text_output_delimiter_and_recovery() {
         );
     }
 }
+
+// These network-order fixtures are also sent to the PostgreSQL 18.6 reference.
+fn binary_array_words(words: &[i32]) -> Vec<u8> {
+    words.iter().flat_map(|word| word.to_be_bytes()).collect()
+}
+
+fn binary_int4(bytes: &[u8]) -> Result<PgArray, crate::pg_array::PgArrayBinaryError<&'static str>> {
+    PgArray::from_binary_with(bytes, 23, 42, |bytes, typmod| {
+        assert_eq!(typmod, 42);
+        if bytes.len() < 4 {
+            return Err("08P01");
+        }
+        let (word, rest) = bytes.split_at(4);
+        *bytes = rest;
+        Ok(Int4(i32::from_be_bytes(word.try_into().unwrap())))
+    })
+}
+
+#[test]
+fn pg05_array_binary_input_shape_identity_nulls_and_empty() {
+    let payload = binary_array_words(&[2, 1, 23, 2, 0, 2, -2, 4, i32::MIN, -1, 4, 2, 4, i32::MAX]);
+    let a = binary_int4(&payload).unwrap();
+    assert_eq!(a.shape(), &[2, 2]);
+    assert_eq!(a.lower_bounds(), &[0, -2]);
+    assert_eq!(a.element_oid(), 23);
+    assert_eq!(a.element_typmod(), 42);
+    assert_eq!(
+        a.elements(),
+        &[
+            Some(Int4(i32::MIN)),
+            None,
+            Some(Int4(2)),
+            Some(Int4(i32::MAX))
+        ]
+    );
+    assert_eq!(
+        a.to_text(b',').unwrap(),
+        "[0:1][-2:-1]={{-2147483648,NULL},{2,2147483647}}"
+    );
+    for flags in [0, 1] {
+        let a = binary_int4(&binary_array_words(&[1, flags, 23, 1, i32::MIN, -1])).unwrap();
+        assert_eq!(a.elements(), &[None]);
+        assert_eq!(a.lower_bounds(), &[i32::MIN]);
+        assert!(a.has_nulls());
+        let a = binary_int4(&binary_array_words(&[1, flags, 23, 1, 1, 4, 9])).unwrap();
+        assert!(!a.has_nulls());
+    }
+    for words in [
+        vec![0, 0, 23],
+        vec![2, 1, 23, 2, -2, 0, 9],
+        vec![0, 0, 10000],
+        vec![0, 0, -1],
+    ] {
+        let empty = binary_int4(&binary_array_words(&words)).unwrap();
+        assert!(empty.shape().is_empty());
+        assert!(empty.lower_bounds().is_empty());
+        assert!(empty.elements().is_empty());
+        assert_eq!(empty.element_oid(), 23);
+        assert_eq!(empty.element_typmod(), 42);
+        let sql_null: Option<PgArray> = None;
+        assert_ne!(Some(empty), sql_null);
+    }
+    let mut words = vec![6, 0, 23];
+    for _ in 0..6 {
+        words.extend([1, -2]);
+    }
+    words.extend([4, 8]);
+    let a = binary_int4(&binary_array_words(&words)).unwrap();
+    assert_eq!(a.shape(), &[1; 6]);
+    assert_eq!(a.lower_bounds(), &[-2; 6]);
+    assert_eq!(a.elements(), &[Some(Int4(8))]);
+}
+
+#[test]
+fn pg05_array_binary_input_header_order_and_layout_limits() {
+    use crate::pg_array::PgArrayBinaryError as B;
+    let cases = [
+        (vec![-1], B::InvalidDimensions, "22P03"),
+        (vec![7], B::Array(Error::TooManyDimensions), "54000"),
+        (vec![0, -1], B::InvalidFlags, "22P03"),
+        (vec![0, 2], B::InvalidFlags, "22P03"),
+        (vec![0, 0, 25], B::ElementTypeMismatch, "42804"),
+        (vec![0, 0, 9999], B::ElementTypeMismatch, "42804"),
+        (vec![1, 0, 23, 134217727, 1], B::Truncated, "08P01"),
+        (
+            vec![1, 0, 23, -1, 1],
+            B::Array(Error::SizeOverflow),
+            "54000",
+        ),
+        (
+            vec![2, 0, 23, 50000, 1, 50000, 1],
+            B::Array(Error::SizeOverflow),
+            "54000",
+        ),
+        (
+            vec![1, 0, 23, 134217728, 1],
+            B::Array(Error::SizeOverflow),
+            "54000",
+        ),
+        (
+            vec![1, 0, 23, 1, i32::MAX],
+            B::Array(Error::BoundsOverflow),
+            "54000",
+        ),
+        (
+            vec![2, 0, 23, 0, 1, -1, 1],
+            B::Array(Error::SizeOverflow),
+            "54000",
+        ),
+        (
+            vec![2, 0, 23, 0, 1, 1, i32::MAX],
+            B::Array(Error::BoundsOverflow),
+            "54000",
+        ),
+    ];
+    for (words, error, state) in cases {
+        let actual = binary_int4(&binary_array_words(&words)).unwrap_err();
+        assert_eq!(actual, error, "{words:?}");
+        assert_eq!(actual.sqlstate(), Some(state));
+    }
+    let full = binary_array_words(&[1, 0, 23, 1, 1]);
+    for n in 0..full.len() {
+        let err = binary_int4(&full[..n]).unwrap_err();
+        assert_eq!(err, B::Truncated, "{n}");
+        assert_eq!(err.sqlstate(), Some("08P01"));
+    }
+}
+
+#[test]
+fn pg05_array_binary_input_element_lengths_consumption_and_recovery() {
+    use crate::pg_array::PgArrayBinaryError as B;
+    let header = binary_array_words(&[1, 0, 23, 1, 1]);
+    for n in 0..4 {
+        let mut bytes = header.clone();
+        bytes.extend(&4i32.to_be_bytes()[..n]);
+        assert_eq!(binary_int4(&bytes), Err(B::Truncated));
+    }
+    for length in [-2, i32::MIN, 1, 4, i32::MAX] {
+        let mut bytes = header.clone();
+        bytes.extend(length.to_be_bytes());
+        assert_eq!(binary_int4(&bytes), Err(B::InvalidLength));
+    }
+    for n in 0..4 {
+        let mut bytes = header.clone();
+        bytes.extend((n as i32).to_be_bytes());
+        bytes.extend(vec![0; n]);
+        assert_eq!(binary_int4(&bytes), Err(B::Element("08P01")));
+    }
+    let mut bytes = header;
+    bytes.extend(5i32.to_be_bytes());
+    bytes.extend([0; 5]);
+    assert_eq!(binary_int4(&bytes), Err(B::UnconsumedElement));
+    for words in [vec![0, 0, 23], vec![1, 0, 23, 1, 1, 4, 7]] {
+        let mut bytes = binary_array_words(&words);
+        bytes.push(0);
+        let error = binary_int4(&bytes).unwrap_err();
+        assert_eq!(error, B::TrailingData);
+        assert_eq!(error.sqlstate(), Some("22P03"));
+    }
+    // Scalar failure takes precedence over a later truncated element; no later callback runs.
+    let mut calls = 0;
+    let err =
+        PgArray::from_binary_with(&binary_array_words(&[1, 0, 23, 2, 1, 0]), 23, -1, |_, _| {
+            calls += 1;
+            Err("22003")
+        })
+        .unwrap_err();
+    assert_eq!(calls, 1);
+    assert_eq!(err, B::Element("22003"));
+    assert_eq!(err.sqlstate(), None);
+    assert_eq!(B::<()>::InvalidLength.sqlstate(), Some("22P03"));
+    assert_eq!(B::<()>::UnconsumedElement.sqlstate(), Some("22P03"));
+    assert_eq!(
+        binary_int4(&binary_array_words(&[1, 0, 23, 1, 1, 4, 7]))
+            .unwrap()
+            .elements(),
+        &[Some(Int4(7))]
+    );
+}
+
+#[test]
+fn pg05_array_binary_input_text_delegation_and_unopened_families() {
+    use crate::pg_array::{PgArrayBinaryError as B, PgArrayElement::Text};
+    let mut payload = binary_array_words(&[1, 0, 25, 3, -2, 0, -1, 3]);
+    payload.extend("中".as_bytes());
+    let mut calls = 0;
+    let a = PgArray::from_binary_with(&payload, 25, 17, |bytes, typmod| {
+        assert_eq!(typmod, 17);
+        calls += 1;
+        let s = std::str::from_utf8(bytes).map_err(|_| "22021")?.to_owned();
+        *bytes = &[];
+        Ok::<_, &'static str>(Text(s))
+    })
+    .unwrap();
+    assert_eq!(calls, 2);
+    assert_eq!(a.element_oid(), 25);
+    assert_eq!(a.element_typmod(), 17);
+    assert_eq!(a.lower_bounds(), &[-2]);
+    assert_eq!(
+        a.elements(),
+        &[Some(Text(String::new())), None, Some(Text("中".into()))]
+    );
+    for (bytes, expected) in [
+        (
+            binary_array_words(&[0, 0, 2950]),
+            B::Array(Error::UnsupportedElement),
+        ),
+        (binary_array_words(&[1, 2]), B::InvalidFlags),
+        (binary_array_words(&[0, 0, 23]), B::ElementTypeMismatch),
+    ] {
+        let err = PgArray::from_binary_with(&bytes, 2950, -1, |_, _| -> Result<_, ()> {
+            panic!("unopened codec")
+        })
+        .unwrap_err();
+        assert_eq!(err, expected);
+    }
+    for (words, expected) in [
+        (vec![1, 0, 2950, 1, 1], B::Truncated),
+        (vec![1, 0, 2950, 1, 1, -2], B::InvalidLength),
+        (vec![1, 0, 2950, 1, 1, 4, 9, 0], B::TrailingData),
+        (
+            vec![1, 0, 2950, 1, 1, -1],
+            B::Array(Error::UnsupportedElement),
+        ),
+        (
+            vec![1, 0, 2950, 1, 1, 0],
+            B::Array(Error::UnsupportedElement),
+        ),
+    ] {
+        let err = PgArray::from_binary_with(
+            &binary_array_words(&words),
+            2950,
+            -1,
+            |_, _| -> Result<_, ()> { panic!("unopened codec") },
+        )
+        .unwrap_err();
+        assert_eq!(err, expected);
+    }
+    assert_eq!(
+        B::<()>::Array(Error::UnsupportedElement).sqlstate(),
+        Some("0A000")
+    );
+    let err =
+        PgArray::from_binary_with(&binary_array_words(&[1, 0, 23, 1, 1, 0]), 23, -1, |_, _| {
+            Ok::<_, ()>(Text("wrong".into()))
+        })
+        .unwrap_err();
+    assert_eq!(err, B::Array(Error::ElementTypeMismatch));
+}

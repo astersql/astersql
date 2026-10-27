@@ -4,7 +4,7 @@
 
 `PgArray::new(element_oid, element_typmod, shape, lower_bounds, elements)` 是规范矩形数组的唯一构造入口。私有字段与只读切片保持构造不变量；shape/lower使用signed i32，逐元素值按最后一轴变化最快的行主序保存，不重排。维数属于值，不属于元素OID。内部容器支持OID23/`PgArrayElement::Int4(i32)`和OID25/`Text(String)`，构造检查OID与实际元素变体匹配并拒绝text中的NUL；元素不可为嵌套数组、JSON或目录字符串。这里的text载体仅为文本codec闭环，不开放SQL/wire族。未开放族包括空数组及全NULL数组均返回UnsupportedElement/0A000。
 
-元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线或二进制codec；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
+元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线或二进制输出codec；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
 
 ## 构造检查与错误
 
@@ -32,6 +32,16 @@ int4使用i32十进制输出，text保存原始UTF8；两族均应用同一引�
 
 独立`pg05_array_text_output`测试同时断言固定输出和真实解析器往返，覆盖多维、非默认及i32极值下界、六维、元素身份/typmod、空/外层NULL/元素NULL、引用转义、Unicode/ASCII空白、替代分隔符和恢复。当前PostgreSQL18.6/180006/UTF8/array_nulls=on参考实例核对27组输出原始UTF8字节。输出耗时与输出字节数成正比，递归最多6层；内存为输出字符串加单个整数的短暂十进制文本。这里不开放SQL/wire族，也不代替后续四格式组合验收。
 
+## 二进制输入
+
+`PgArray::from_binary_with(bytes, element_oid, element_typmod, input)`读取完整Bind字段的网络序Int32 ndim、flags、UInt32元素OID、每轴length/lower，以及行主序的元素长度/载荷。元素NULL仅length=-1；flags仅允许0/1，但flags=0仍接受NULL。期望OID与typmod来自调用者，未知wire OID不能覆盖期望身份；只有双方OID小于PostgreSQL FirstGenbkiObjectId=10000的内建类型错配才返回42804。空数组规范化继续保存期望元素OID/typmod。
+
+回调`input(&mut &[u8], typmod)`接收严格限界的非NULL元素载荷，并推进切片；零长元素仍调用标量接收器。剩余字节不为空返回UnconsumedElement/22P03，标量错误原样保留在Element(E)，由调用者提取标量SQLSTATE。NULL不调用回调。当前内部载体仅int4/text，其他合法族0A000；尚未接通SQL、typed NULL、通用参数或结果，也未开放新族。调用者必须提供真实的标量binary接收器，不得把此容器接口当作完整wire支持。
+
+解析按参考阶段顺序检查：负ndim与非法flags为22P03，7维为54000；头、维度或元素长度Int32读取不足为08P01；元素长度小于-1或大于剩余数据为22P03。负维长、乘积/分配限制及exclusive下界终点溢出沿共享layout_count返回54000。全部维度先验证，再进入元素循环；不按声明元素数量reserve，不为短消息声明的巨大shape分配元素存储。每项长度/载荷检查后才委托并保存元素，遇到失败立即退出，不调用后续接收器。完整字段尾随字节返回22P03，包含零维数组后的垃圾。
+
+当前PostgreSQL18.6/180006/UTF8实例通过libpq binary Bind核对39组原始输入、输出与SQLSTATE，包括截断头、元素内部短读08P01、元素未消费22P03、两类尾随垃圾22P03、flags=0含NULL、未知wire OID及多维非默认下界。4项独立`pg05_array_binary_input`测试覆盖这些容器行为，并增加六维、零维/零轴、typmod、合法空text/Unicode、未开放族门禁、标量错误保留、停止后续回调及恢复。失败不返回部分数组。时间O(输入字节数+元素接收)，空间O(已接收元素及载荷大小)，维度存储至多六轴；未做超大实际分配或性能基准。
+
 ## 实现与验证边界
 
 构造耗时O(维数+元素数+text字节数)，没有元素拷贝；`has_nulls`按需O(元素数)扫描。大数组的实际内存占用与分配失败、32位目标和性能基准未验证。未来增加其他族时必须同步构造身份匹配与独立测试，不能仅增加OID白名单。
@@ -41,6 +51,7 @@ int4使用i32十进制输出，text保存原始UTF8；两族均应用同一引�
 从仓库根按编号任务的共享槽位规则动态原子领取槽位、设置绝对CARGO_TARGET_DIR后执行，默认features：
 
     cargo fmt --all
+    cargo test -p astersql-types --lib pg05_array_binary_input -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_text_output -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_text_input -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_ -- --nocapture --test-threads=1

@@ -62,6 +62,44 @@ impl<E> PgArrayTextError<E> {
     }
 }
 
+/// Binary container errors preserve the receive function's scalar diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PgArrayBinaryError<E> {
+    #[error("insufficient data left in message")]
+    Truncated,
+    #[error("invalid number of array dimensions")]
+    InvalidDimensions,
+    #[error("invalid array flags")]
+    InvalidFlags,
+    #[error("binary array element type does not match the expected type")]
+    ElementTypeMismatch,
+    #[error("invalid binary array element length")]
+    InvalidLength,
+    #[error("improper binary format in array element")]
+    UnconsumedElement,
+    #[error("trailing data after binary array")]
+    TrailingData,
+    #[error("{0}")]
+    Array(PgArrayError),
+    #[error("array element input failed")]
+    Element(E),
+}
+impl<E> PgArrayBinaryError<E> {
+    pub fn sqlstate(&self) -> Option<&'static str> {
+        match self {
+            Self::Truncated => Some("08P01"),
+            Self::ElementTypeMismatch => Some("42804"),
+            Self::InvalidDimensions
+            | Self::InvalidFlags
+            | Self::InvalidLength
+            | Self::UnconsumedElement
+            | Self::TrailingData => Some("22P03"),
+            Self::Array(error) => error.sqlstate(),
+            Self::Element(_) => None,
+        }
+    }
+}
+
 /// Scalar values only: dimensions belong to PgArray, never nested arrays.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PgArrayElement {
@@ -120,6 +158,15 @@ impl PgArray {
         lower_bounds: &[i32],
         element_count: usize,
     ) -> Result<(), PgArrayError> {
+        let count = Self::layout_count(shape, lower_bounds)?;
+        if count != element_count {
+            return Err(PgArrayError::ElementCountMismatch);
+        }
+        Ok(())
+    }
+
+    // Shared text/binary validation, without requiring or allocating elements.
+    fn layout_count(shape: &[i32], lower_bounds: &[i32]) -> Result<usize, PgArrayError> {
         if shape.len() > Self::MAX_DIMENSIONS {
             return Err(PgArrayError::TooManyDimensions);
         }
@@ -151,10 +198,7 @@ impl PgArray {
                 .checked_add(length)
                 .ok_or(PgArrayError::BoundsOverflow)?;
         }
-        if count != element_count {
-            return Err(PgArrayError::ElementCountMismatch);
-        }
-        Ok(())
+        Ok(count)
     }
 
     /// Parse a UTF-8 Bind payload with array_nulls=on, without SQL unescaping.
@@ -209,6 +253,76 @@ impl PgArray {
                     .map_err(Error::Element)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        Self::new(element_oid, element_typmod, shape, lower, elements).map_err(Error::Array)
+    }
+
+    /// Decode a complete binary Bind payload; the scalar callback advances its
+    /// bounded slice and receives the element typmod. NULL bypasses scalar input.
+    pub fn from_binary_with<E>(
+        bytes: &[u8],
+        element_oid: u32,
+        element_typmod: i32,
+        mut input: impl FnMut(&mut &[u8], i32) -> Result<PgArrayElement, E>,
+    ) -> Result<Self, PgArrayBinaryError<E>> {
+        use PgArrayBinaryError as Error;
+        let mut bytes = bytes;
+        let ndim = binary_word(&mut bytes)?;
+        if ndim < 0 {
+            return Err(Error::InvalidDimensions);
+        }
+        if ndim as usize > Self::MAX_DIMENSIONS {
+            return Err(Error::Array(PgArrayError::TooManyDimensions));
+        }
+        if !matches!(binary_word(&mut bytes)?, 0 | 1) {
+            return Err(Error::InvalidFlags);
+        }
+        let wire_oid = binary_word(&mut bytes)? as u32;
+        // PostgreSQL only treats mismatching built-in OIDs as trustworthy.
+        // User-assigned wire OIDs do not override the caller's expected family.
+        if wire_oid != element_oid && wire_oid < 10000 && element_oid < 10000 {
+            return Err(Error::ElementTypeMismatch);
+        }
+        let mut shape = Vec::new();
+        let mut lower = Vec::new();
+        for _ in 0..ndim {
+            shape.push(binary_word(&mut bytes)?);
+            lower.push(binary_word(&mut bytes)?);
+        }
+        let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
+        let supported = matches!(element_oid, 23 | 25);
+        // No reservation from untrusted dimensions. Grow only after checking
+        // each length/payload; a tiny message declaring huge arrays stays tiny.
+        let mut elements = Vec::new();
+        for _ in 0..count {
+            let length = binary_word(&mut bytes)?;
+            let element = if length == -1 {
+                None
+            } else {
+                if length < -1 || length as usize > bytes.len() {
+                    return Err(Error::InvalidLength);
+                }
+                let (mut payload, rest) = bytes.split_at(length as usize);
+                bytes = rest;
+                if !supported {
+                    continue;
+                }
+                let value = input(&mut payload, element_typmod).map_err(Error::Element)?;
+                if !payload.is_empty() {
+                    return Err(Error::UnconsumedElement);
+                }
+                Some(value)
+            };
+            if supported {
+                elements.push(element);
+            }
+        }
+        if !bytes.is_empty() {
+            return Err(Error::TrailingData);
+        }
+        // Unsupported families still undergo all container framing checks.
+        if !supported {
+            return Err(Error::Array(PgArrayError::UnsupportedElement));
+        }
         Self::new(element_oid, element_typmod, shape, lower, elements).map_err(Error::Array)
     }
 
@@ -491,4 +605,14 @@ fn write_array_element_text(value: &str, delimiter: u8, output: &mut String) {
     if quote {
         output.push('"');
     }
+}
+
+// Read only within this container/element boundary, never across a Bind field.
+fn binary_word<E>(bytes: &mut &[u8]) -> Result<i32, PgArrayBinaryError<E>> {
+    if bytes.len() < 4 {
+        return Err(PgArrayBinaryError::Truncated);
+    }
+    let (word, rest) = bytes.split_at(4);
+    *bytes = rest;
+    Ok(i32::from_be_bytes(word.try_into().unwrap()))
 }
