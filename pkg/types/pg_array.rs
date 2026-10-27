@@ -178,7 +178,7 @@ impl PgArray {
         }
         // A catalog delimiter is one ASCII punctuation character. Other
         // delimiter conventions are deliberately outside this UTF-8 codec.
-        if !delimiter.is_ascii_punctuation() || matches!(delimiter, b'{' | b'}' | b'"' | b'\\') {
+        if !array_delimiter(delimiter) {
             return Err(Error::Array(PgArrayError::UnsupportedElement));
         }
         let mut parser = TextParser {
@@ -210,6 +210,61 @@ impl PgArray {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(element_oid, element_typmod, shape, lower, elements).map_err(Error::Array)
+    }
+
+    /// Format the canonical value using the element family's text output.
+    /// Emit all dimensions when any lower bound differs from one. SQL NULL
+    /// remains outside this value; only NULL elements are written here.
+    pub fn to_text(&self, delimiter: u8) -> Result<String, PgArrayError> {
+        use std::fmt::Write;
+
+        if !array_delimiter(delimiter) {
+            return Err(PgArrayError::UnsupportedElement);
+        }
+        if self.elements.is_empty() {
+            return Ok("{}".into());
+        }
+        let mut output = String::new();
+        if self.lower_bounds.iter().any(|&lower| lower != 1) {
+            for (&lower, &length) in self.lower_bounds.iter().zip(&self.shape) {
+                // Construction checked the exclusive endpoint for overflow.
+                write!(output, "[{lower}:{}]", lower + length - 1).unwrap();
+            }
+            output.push('=');
+        }
+        self.write_text_axis(0, &mut self.elements.iter(), delimiter, &mut output);
+        Ok(output)
+    }
+
+    fn write_text_axis(
+        &self,
+        axis: usize,
+        elements: &mut std::slice::Iter<'_, Option<PgArrayElement>>,
+        delimiter: u8,
+        output: &mut String,
+    ) {
+        output.push('{');
+        for index in 0..self.shape[axis] {
+            if index != 0 {
+                output.push(char::from(delimiter));
+            }
+            if axis + 1 < self.shape.len() {
+                self.write_text_axis(axis + 1, elements, delimiter, output);
+                continue;
+            }
+            // Private immutable fields guarantee the shape consumes exactly
+            // the validated row-major elements, and recursion is at most six.
+            match elements.next().unwrap() {
+                None => output.push_str("NULL"),
+                Some(PgArrayElement::Int4(value)) => {
+                    write_array_element_text(&value.to_string(), delimiter, output);
+                }
+                Some(PgArrayElement::Text(value)) => {
+                    write_array_element_text(value, delimiter, output)
+                }
+            }
+        }
+        output.push('}');
     }
 
     pub fn element_oid(&self) -> u32 {
@@ -411,4 +466,29 @@ impl TextParser<'_> {
 
 fn array_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+fn array_delimiter(b: u8) -> bool {
+    b.is_ascii_punctuation() && !matches!(b, b'{' | b'}' | b'"' | b'\\')
+}
+
+// Quote the scalar output, including integers when a supplied delimiter is '-'.
+fn write_array_element_text(value: &str, delimiter: u8, output: &mut String) {
+    let quote = value.is_empty()
+        || value.eq_ignore_ascii_case("NULL")
+        || value
+            .bytes()
+            .any(|b| b == delimiter || matches!(b, b'{' | b'}' | b'"' | b'\\') || array_space(b));
+    if quote {
+        output.push('"');
+    }
+    for ch in value.chars() {
+        if matches!(ch, '"' | '\\') {
+            output.push('\\');
+        }
+        output.push(ch);
+    }
+    if quote {
+        output.push('"');
+    }
 }

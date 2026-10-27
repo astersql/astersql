@@ -311,3 +311,131 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         Some("22P02")
     );
 }
+
+#[test]
+fn pg05_array_text_output_shape_lower_row_major_and_int4() {
+    for (input, expected) in [
+        (
+            "{+001,-0,2147483647,-2147483648,NULL}",
+            "{1,0,2147483647,-2147483648,NULL}",
+        ),
+        ("[0:1][-2:-1]={{1,2},{3,4}}", "[0:1][-2:-1]={{1,2},{3,4}}"),
+        ("[1:2][0:1]={{1,2},{3,4}}", "[1:2][0:1]={{1,2},{3,4}}"),
+        (
+            "[-2147483648:-2147483648]={1}",
+            "[-2147483648:-2147483648]={1}",
+        ),
+        ("[2147483646:2147483646]={1}", "[2147483646:2147483646]={1}"),
+        ("{{{{{{1,NULL}}}}}}", "{{{{{{1,NULL}}}}}}"),
+    ] {
+        let parse = |s: &str| {
+            PgArray::from_text_with(s.as_bytes(), 23, 42, b',', |s, _| {
+                s.parse::<i32>().map(Int4)
+            })
+            .unwrap()
+        };
+        let value = parse(input);
+        let output = value.to_text(b',').unwrap();
+        assert_eq!(output, expected);
+        assert_eq!(parse(&output), value);
+        assert_eq!(value.element_oid(), 23);
+        assert_eq!(value.element_typmod(), 42);
+    }
+}
+
+#[test]
+fn pg05_array_text_output_quotes_escapes_and_whitespace() {
+    use crate::pg_array::PgArrayElement::Text;
+    let cases = [
+        ("", r#""""#),
+        ("NULL", r#""NULL""#),
+        ("null", r#""null""#),
+        ("NuLl", r#""NuLl""#),
+        ("NULLx", "NULLx"),
+        ("中", "中"),
+        ("a,b", r#""a,b""#),
+        ("{x}", r#""{x}""#),
+        ("[x]", "[x]"),
+        ("a\\b", r#""a\\b""#),
+        ("a\"b", r#""a\"b""#),
+        (" x ", r#"" x ""#),
+        ("a b", r#""a b""#),
+        ("\t", "\"\t\""),
+        ("\n", "\"\n\""),
+        ("\r", "\"\r\""),
+        ("\u{000b}", "\"\u{000b}\""),
+        ("\u{000c}", "\"\u{000c}\""),
+        ("\u{00a0}", "\u{00a0}"),
+    ];
+    for (text, quoted) in cases {
+        let value = PgArray::new(
+            25,
+            -1,
+            vec![2],
+            vec![1],
+            vec![Some(Text(text.into())), None],
+        )
+        .unwrap();
+        let output = value.to_text(b',').unwrap();
+        assert_eq!(output, format!("{{{quoted},NULL}}"), "{text:?}");
+        assert_eq!(text_array(output.as_bytes(), b',').unwrap(), value);
+    }
+}
+
+#[test]
+fn pg05_array_text_output_empty_and_two_null_layers() {
+    let sql_null: Option<PgArray> = None;
+    assert!(sql_null.is_none());
+    for oid in [23, 25] {
+        let empty = PgArray::new(oid, 42, vec![2, 0], vec![-2, 9], vec![]).unwrap();
+        assert_eq!(empty.to_text(b',').unwrap(), "{}");
+        assert_eq!(empty.element_oid(), oid);
+        assert_eq!(empty.element_typmod(), 42);
+        let nulls = PgArray::new(oid, 42, vec![2], vec![0], vec![None, None]).unwrap();
+        assert_eq!(nulls.to_text(b',').unwrap(), "[0:1]={NULL,NULL}");
+        assert_ne!(Some(empty), sql_null);
+    }
+    assert_eq!(
+        PgArray::new(23, -1, vec![1], vec![1], vec![None])
+            .unwrap()
+            .to_text(b',')
+            .unwrap(),
+        "{NULL}"
+    );
+}
+
+#[test]
+fn pg05_array_text_output_delimiter_and_recovery() {
+    let integers = PgArray::new(
+        23,
+        -1,
+        vec![2],
+        vec![1],
+        vec![Some(Int4(-1)), Some(Int4(2))],
+    )
+    .unwrap();
+    let output = integers.to_text(b'-').unwrap();
+    assert_eq!(output, r#"{"-1"-2}"#);
+    let restored = PgArray::from_text_with(output.as_bytes(), 23, -1, b'-', |s, _| {
+        s.parse::<i32>().map(Int4)
+    })
+    .unwrap();
+    assert_eq!(restored, integers);
+    let a = text_array(br#"{{a,b;"x;y"};{NULL;"NULL"}}"#, b';').unwrap();
+    let output = a.to_text(b';').unwrap();
+    assert_eq!(output, r#"{{a,b;"x;y"};{NULL;"NULL"}}"#);
+    assert_eq!(text_array(output.as_bytes(), b';').unwrap(), a);
+    for delimiter in [0, b' ', b'"', b'{', b'}', b'\\', 0xff] {
+        let error = a.to_text(delimiter).unwrap_err();
+        assert_eq!(error, Error::UnsupportedElement);
+        assert_eq!(error.sqlstate(), Some("0A000"));
+        assert_eq!(a.to_text(b';').unwrap(), output);
+        assert_eq!(
+            text_array(b"{}", b',')
+                .unwrap()
+                .to_text(delimiter)
+                .unwrap_err(),
+            error
+        );
+    }
+}

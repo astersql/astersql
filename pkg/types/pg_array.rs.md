@@ -4,7 +4,7 @@
 
 `PgArray::new(element_oid, element_typmod, shape, lower_bounds, elements)` 是规范矩形数组的唯一构造入口。私有字段与只读切片保持构造不变量；shape/lower使用signed i32，逐元素值按最后一轴变化最快的行主序保存，不重排。维数属于值，不属于元素OID。内部容器支持OID23/`PgArrayElement::Int4(i32)`和OID25/`Text(String)`，构造检查OID与实际元素变体匹配并拒绝text中的NUL；元素不可为嵌套数组、JSON或目录字符串。这里的text载体仅为文本codec闭环，不开放SQL/wire族。未开放族包括空数组及全NULL数组均返回UnsupportedElement/0A000。
 
-元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线或输出与二进制codec；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
+元素typmod原样保存，容器不执行元素精度或转换规则。元素NULL为`Option<PgArrayElement>`，数组SQL NULL为外层`Option<PgArray>`，NULL的类型身份由外层定型消费者保存。零元素规范化为零维、零下界，保留元素OID/typmod；它与SQL NULL及单个NULL元素不同。模块不实现SQL定型、typed NULL描述、参数/结果接线或二进制codec；后续批次必须实际接线，不能用此规范值测试冒称四方向通过。
 
 ## 构造检查与错误
 
@@ -24,6 +24,14 @@
 
 解析耗时O(输入字节数+元素输入)，临时存储O(输入字节数+元素数)，递归深度上限6。先存词法元素再委托，以确保形状错误优先；不按声明尺寸提前分配。调用方不得用此内部codec的验证代替后续SQL、参数、结果四方向差分。
 
+## 文本输出
+
+`PgArray::to_text(delimiter)`从规范值按行主序输出花括号，逐层使用相同元素分隔符。只要任一下界不是1，就输出全部维度的`[lower:upper]`前缀；上下界来自已验证的私有布局。空数组固定`{}`，元素NULL为未引用`NULL`，外层SQL NULL继续由消费者处理，不变为空数组。
+
+int4使用i32十进制输出，text保存原始UTF8；两族均应用同一引用规则。空串、大小写不敏感的NULL字样、元素分隔符、花括号、双引号、反斜线以及六种ASCII空白需要双引号，内部引号和反斜线加一层反斜线；非ASCII空白与方括号本身不触发引用。delimiter资格与输入共用校验，非法约定即使空数组也返回UnsupportedElement/0A000，不产生部分结果，后续正常调用可恢复。后续扩充元素族必须补充真实标量输出，不能仅登记OID。
+
+独立`pg05_array_text_output`测试同时断言固定输出和真实解析器往返，覆盖多维、非默认及i32极值下界、六维、元素身份/typmod、空/外层NULL/元素NULL、引用转义、Unicode/ASCII空白、替代分隔符和恢复。当前PostgreSQL18.6/180006/UTF8/array_nulls=on参考实例核对27组输出原始UTF8字节。输出耗时与输出字节数成正比，递归最多6层；内存为输出字符串加单个整数的短暂十进制文本。这里不开放SQL/wire族，也不代替后续四格式组合验收。
+
 ## 实现与验证边界
 
 构造耗时O(维数+元素数+text字节数)，没有元素拷贝；`has_nulls`按需O(元素数)扫描。大数组的实际内存占用与分配失败、32位目标和性能基准未验证。未来增加其他族时必须同步构造身份匹配与独立测试，不能仅增加OID白名单。
@@ -33,6 +41,7 @@
 从仓库根按编号任务的共享槽位规则动态原子领取槽位、设置绝对CARGO_TARGET_DIR后执行，默认features：
 
     cargo fmt --all
+    cargo test -p astersql-types --lib pg05_array_text_output -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_text_input -- --nocapture --test-threads=1
     cargo test -p astersql-types --lib pg05_array_ -- --nocapture --test-threads=1
     cargo test -p astersql-expression --lib pg05_array_text_input -- --nocapture --test-threads=1
