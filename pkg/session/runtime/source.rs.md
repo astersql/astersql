@@ -124,3 +124,7 @@ JOIN/集合/排序/分组与结果向量由当前函数拥有，无共享锁。G
 
 
 2026-10-24 PG整数转换：关系 SELECT 投影增加上下文时通过 SessionError::with_source 和 into_shared 保留原始 typed error，使 int4/int8 的 22003/22P02 身份可传递到协议层。
+
+## JSON显式转换错误交接
+
+SELECT投影及INSERT SELECT的求值错误若携带PgJsonCastError则直接传递，不用包含完整AST和值的调试上下文重写消息；保留SQLSTATE并避免回显JSON输入。由pg_json_test.rs的真实typed text参数非法输入及恢复断言覆盖SELECT通路。

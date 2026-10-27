@@ -226,3 +226,7 @@ pg_text_relational_cast 从现有 PgCastTable 与 AST 取得源类型，调用�
 ## UUID显式转换局部接线
 
 UUID cast复用pg_uuid严格转换；类型推导保留TypePgUuid，结果规范文本不代替类型身份。
+
+## JSON显式转换与类型交接
+
+共享表达式求值复用pg_json::cast_value，结果类型直接保留TypePgJson及修饰信息。

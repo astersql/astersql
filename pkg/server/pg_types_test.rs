@@ -662,3 +662,81 @@ fn pg05_uuid_output_invalid_carrier_writes_no_messages() {
     );
     assert!(client.read(&mut [0]).is_err());
 }
+
+#[test]
+fn pg05_json_sql_wire_metadata_null_errors_and_recovery() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (sql, expected) in [
+        (
+            r#"SELECT ' {"a":1.00,"a":1e9999} '::text::json"#,
+            Some(r#" {"a":1.00,"a":1e9999} "#),
+        ),
+        ("SELECT NULL::json", None),
+        ("SELECT NULL::json WHERE false", None),
+    ] {
+        let messages = query(&mut socket, sql);
+        let description = &messages
+            .iter()
+            .find(|m| m.0 == b'T')
+            .expect("RowDescription")
+            .1;
+        assert_eq!(oids(description), [114]);
+        let at = 2 + description[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&description[at + 10..at + 12], &(-1i16).to_be_bytes());
+        assert_eq!(&description[at + 12..at + 16], &(-1i32).to_be_bytes());
+        if sql.contains("WHERE") {
+            assert!(!messages.iter().any(|m| m.0 == b'D'));
+        } else {
+            assert_eq!(
+                messages.iter().find(|m| m.0 == b'D').unwrap().1,
+                row(&[expected])
+            );
+        }
+    }
+    for (sql, state) in [
+        ("SELECT 'bad'::json", "22P02"),
+        ("SELECT NULL::int4::json WHERE false", "0A000"),
+    ] {
+        let messages = query(&mut socket, sql);
+        let error = &messages
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("ErrorResponse")
+            .1;
+        assert!(
+            error
+                .windows(6)
+                .any(|w| w == [b"C", state.as_bytes()].concat())
+        );
+        assert!(
+            query(&mut socket, "SELECT NULL::json::text")
+                .iter()
+                .any(|m| m.0 == b'D')
+        );
+    }
+    send(&mut socket, b'X', b"");
+    service.close();
+}

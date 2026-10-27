@@ -136,3 +136,7 @@ NativeType 传递可选 postgresql_text_oid，独立于 MySQL code/flags/length/
 ## UUID显式转换局部接线
 
 新增ConnError::PgUuid保存UUID转换错误身份，Display不回显用户输入；NativeType继续通过code携带独立UUID类型。
+
+## JSON显式转换与类型交接
+
+新增PgJson结构化错误用于转换错误与SQLSTATE桥接。

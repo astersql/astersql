@@ -1248,6 +1248,11 @@ impl ConcreteSession {
                 ..
             } => {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson {
+                        return super::pg_json::cast_value(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                        );
+                    }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid {
                         return super::pg_uuid::cast_value(
                             self.relational_query_expression_value(Expr, row, group_rows)?,
@@ -2197,7 +2202,7 @@ impl ConcreteSession {
             numeric_error: Option<astersql_types::pg_numeric::PgNumericError>,
             text_error: Option<astersql_expression::PgTextError>,
             temporal_error: Option<astersql_types::pg_temporal::PgTemporalError>,
-            uuid_error: Option<SessionError>,
+            scalar_cast_error: Option<SessionError>,
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
@@ -2225,9 +2230,10 @@ impl ConcreteSession {
                     let source = pg_integer_literal_type(Expr)
                         .unwrap_or_else(|| relational_expression_type(Expr, self.table));
                     if !matches!(Expr.Kind, ast::ExprKind::ParamMarker { .. }) {
-                        self.uuid_error = super::pg_uuid::validate_cast(&source, Tp)
+                        self.scalar_cast_error = super::pg_json::validate_cast(&source, Tp)
+                            .and_then(|()| super::pg_uuid::validate_cast(&source, Tp))
                             .err()
-                            .or(self.uuid_error.take());
+                            .or(self.scalar_cast_error.take());
                     }
                     // Native TIMESTAMP text has already lost its storage and
                     // source-zone provenance. Check the catalog type before
@@ -2279,12 +2285,12 @@ impl ConcreteSession {
             numeric_error: None,
             text_error: None,
             temporal_error: None,
-            uuid_error: None,
+            scalar_cast_error: None,
         };
         for expr in expressions {
             let _ = expr.Accept(&mut visitor);
         }
-        if let Some(error) = visitor.uuid_error {
+        if let Some(error) = visitor.scalar_cast_error {
             return Err(error);
         }
         if let Some(error) = visitor.temporal_error {

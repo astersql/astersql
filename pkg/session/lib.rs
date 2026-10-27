@@ -61,6 +61,13 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_json_error(&self) -> Option<runtime::PgJsonCastError> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<runtime::PgJsonCastError>()
+            .copied()
+    }
+
     pub fn pg_uuid_error(&self) -> Option<runtime::PgUuidCastError> {
         self.source
             .as_ref()?

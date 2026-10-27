@@ -1945,6 +1945,7 @@
 ## pkg/session
 
 - [x] [`pkg/session/runtime/pg_uuid.rs.md`](../pkg/session/runtime/pg_uuid.rs.md)
+- [x] [`pkg/session/runtime/pg_json.rs.md`](../pkg/session/runtime/pg_json.rs.md)
 
 - [ ] [`pkg/session/advisory_locks.rs.md`](../pkg/session/advisory_locks.rs.md)
 - [ ] [`pkg/session/bootstrap.rs.md`](../pkg/session/bootstrap.rs.md)

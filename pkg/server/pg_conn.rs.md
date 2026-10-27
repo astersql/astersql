@@ -119,3 +119,7 @@ SQLSTATE映射使用PgFloat8Error自身22P02/22003，不匹配错误消息或输
 ## UUID显式转换局部接线
 
 PgUuidCastError保留22P02非法输入及0A000未开放转换SQLSTATE，并沿原查询恢复流程处理。
+
+## JSON显式转换与类型交接
+
+PgJson错误直接使用自身SQLSTATE（22P02、22021、0A000）。

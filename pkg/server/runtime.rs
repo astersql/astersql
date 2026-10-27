@@ -1288,6 +1288,9 @@ fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
     if let Some(float4) = error.pg_float4_error() {
         return ConnError::PgFloat4(float4);
     }
+    if let Some(json) = error.pg_json_error() {
+        return ConnError::PgJson(json);
+    }
     if let Some(uuid) = error.pg_uuid_error() {
         return ConnError::PgUuid(uuid);
     }

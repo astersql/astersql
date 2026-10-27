@@ -82,6 +82,9 @@ pub(crate) use relational_scan::scan_mlog_record_commit_ts;
 mod pg_array;
 #[cfg(test)]
 mod pg_array_test;
+mod pg_json;
+#[cfg(test)]
+mod pg_json_test;
 mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
@@ -93,6 +96,7 @@ mod pg_uuid;
 mod pg_uuid_test;
 pub use astersql_parser_types::{PostgreSQLArrayElement, PostgreSQLRecordField};
 pub use pg_array::PgArrayError;
+pub use pg_json::PgJsonCastError;
 pub use pg_uuid::PgUuidCastError;
 mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};

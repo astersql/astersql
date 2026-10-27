@@ -196,3 +196,7 @@ PostgreSQL既有参数绑定使用binary CAST承载OID17。对该CAST内的HexLi
 ## UUID显式转换局部接线
 
 UUID cast在行求值前按来源/目标检查资格（含NULL和零行），共享求值调用pg_uuid规范转换；不依字符串外观推导身份。
+
+## JSON显式转换与类型交接
+
+PostgreSQL JSON显式cast委托pg_json共享转换；行求值前校验转换资格，NULL/零行同样保持约束。

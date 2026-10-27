@@ -111,3 +111,7 @@ RustCodeGraph 的文件级结果给出 162 个引用文件，但本次对 `NewFi
 ## UUID显式转换局部接线
 
 PG UUID使用独立内部类型码；Restore及RestoreAsCastType输出UUID，typed NULL不退化为text。
+
+## JSON显式转换与类型交接
+
+RestoreAsCastType对独立TypePgJson写出JSON，serde、相等及哈希沿现有类型码保留身份。

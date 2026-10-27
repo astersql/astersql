@@ -79,3 +79,7 @@ Rust 保留了 Go 的全部类型编号、`TypeTiDBVectorFloat32`、第 0 至 24
 ## UUID显式转换局部接线
 
 新增 `TypePgUuid=0xe4` 作为PG UUID内部身份，不能作为MySQL协议类型码发送。
+
+## JSON显式转换与类型交接
+
+定义TypePgJson(0xe5)，保留PostgreSQL原文JSON独立身份，不复用MySQL TypeJSON(245)。

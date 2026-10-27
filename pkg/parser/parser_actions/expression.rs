@@ -989,6 +989,8 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "casttype_char_optfieldlen_optbinary--e53ea511cb69d16d" => {
             Some(ExpressionRule::CastTypeAlt02)
         }
+        "pgpostfixjson_json--8945b7ae6ad62ad0" => Some(ExpressionRule::CastTypeAlt10),
+        "simpleexpr_simpleexpr_pgtypecast_pgpostfixjson_p--1e08dc106cfd18b5" => Some(ExpressionRule::PgPostfixCast),
         "pgpostfixdate_date--d2c79744ae38b0c4" => Some(ExpressionRule::CastTypeAlt03),
         "simpleexpr_simpleexpr_pgtypecast_pgpostfixdate_p--6dd8899613fa15bf" => {
             Some(ExpressionRule::PgPostfixCast)
@@ -3251,9 +3253,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             out.item = Some(Box::new(field_type));
         }
         ExpressionRule::CastTypeAlt10 => {
-            let mut field_type = parser_types::types::NewFieldType(parser_mysql::r#type::TypeJSON);
-            field_type
-                .AddFlag(parser_mysql::r#type::BinaryFlag | parser_mysql::r#type::ParseToJSONFlag);
+            let tp = if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                parser_mysql::r#type::TypePgJson
+            } else {
+                parser_mysql::r#type::TypeJSON
+            };
+            let mut field_type = parser_types::types::NewFieldType(tp);
+            if tp == parser_mysql::r#type::TypeJSON {
+                field_type.AddFlag(parser_mysql::r#type::BinaryFlag | parser_mysql::r#type::ParseToJSONFlag);
+            }
             field_type.SetCharset(parser_mysql::charset::DefaultCharset.to_owned());
             field_type.SetCollate(parser_mysql::charset::DefaultCollationName.to_owned());
             out.item = Some(Box::new(field_type));

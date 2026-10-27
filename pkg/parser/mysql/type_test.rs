@@ -36,3 +36,10 @@ fn test_flags() {
     assert!(HasTimestampFlag(TimestampFlag));
     assert!(HasOnUpdateNowFlag(OnUpdateNowFlag));
 }
+
+#[test]
+fn pg05_json_sql_identity_is_independent() {
+    assert_ne!(TypePgJson, TypeJSON);
+    assert_ne!(TypePgJson, TypePgUuid);
+    assert_ne!(TypePgJson, TypeVarString);
+}

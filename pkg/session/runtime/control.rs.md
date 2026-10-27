@@ -160,3 +160,7 @@ PostgreSQL Prepare 的直接参数投影对 OID 17 使用 binary charset/collati
 ## UUID显式转换局部接线
 
 显式声明2950参数沿原标量参数入口保留UUID身份，绑定为真实UUID cast；已定型text/bytea仍携带原来源类型，不按外观推断。
+
+## JSON显式转换与类型交接
+
+声明OID114以TypePgJson描述并在绑定时包裹JSON CAST，保留NULL身份；与text/bytea声明分离。

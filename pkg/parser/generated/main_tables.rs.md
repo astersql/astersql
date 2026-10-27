@@ -134,3 +134,7 @@
 ## 2026-10-26 文本族身份边界（任务21）
 
 由 main.astergram 的三个最小文本类型产生式重生成：无长度 VARCHAR 的 CAST 与后缀 CHAR；语义动作由 parser_actions/expression.rs 注册，MySQL 方言仍拒绝新增 PG CAST 目标。
+
+## JSON显式转换与类型交接
+
+从main.astergram增加PgPostfixJson后生成语法表；复用JSON CAST动作，允许PostgreSQL ::json。

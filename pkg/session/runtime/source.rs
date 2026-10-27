@@ -1861,7 +1861,9 @@ impl ConcreteSession {
                     let value = self
                         .relational_query_expression_value(expression, &input, None)
                         .map_err(|error| {
-                            if error.to_string() == "Subquery returns more than 1 row" {
+                            if error.pg_json_error().is_some()
+                                || error.to_string() == "Subquery returns more than 1 row"
+                            {
                                 error
                             } else {
                                 SessionError::new(format!(
@@ -2223,7 +2225,9 @@ impl ConcreteSession {
                         aggregate_query.then_some(group.as_slice()),
                     )
                     .map_err(|error| {
-                        if error.to_string() == "Subquery returns more than 1 row" {
+                        if error.pg_json_error().is_some()
+                            || error.to_string() == "Subquery returns more than 1 row"
+                        {
                             error
                         } else {
                             let message = format!(

@@ -182,3 +182,7 @@ PostgreSQL 文本 CAST 保留 text/varchar/bpchar 的独立 OID；无长度 varc
 ## UUID显式转换局部接线
 
 PG现有cast类型名分支接受uuid，生成独立TypePgUuid、固定长度16、typmod=-1；不开放UUID类型修饰符或MySQL方言资格。
+
+## JSON显式转换与类型交接
+
+JSON的CAST目标按方言分别选择TypePgJson和原MySQL TypeJSON；新增后缀JSON规则复用同一动作，不改MySQL契约。

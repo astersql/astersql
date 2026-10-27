@@ -226,3 +226,5 @@ pub const TypePgTimestampTz: u8 = 0xe2;
 pub const TypePgInterval: u8 = 0xe3;
 /// Internal PostgreSQL UUID identity, distinct from text and bytea.
 pub const TypePgUuid: u8 = 0xe4;
+/// Internal PostgreSQL original JSON identity, independent of MySQL BinaryJSON.
+pub const TypePgJson: u8 = 0xe5;

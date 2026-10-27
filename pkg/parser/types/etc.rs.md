@@ -84,3 +84,7 @@ Rust 的额外接线是 `initialize_standard_errors` 与 `lib.rs` 平台启动�
 修改 DECIMAL 编码参数时，应在 `FieldType::StorageLength` 的独立测试中覆盖 word 边界、余数边界、precision/scale 组合，不能只改查表。新增标准类型错误时，应在错误静态量旁定义、按 Go 声明顺序加入 `initialize_standard_errors`，并在 `etc_test.rs` 的子进程注册测试和错误码断言中同步覆盖。
 
 测试必须继续放在独立文件：直接的名称/别名/初始化测试放入 `pkg/parser/types/etc_test.rs`；跨 `FieldType` 显示和存储长度的行为放入 `field_type_test.rs` 或现有 `migration_aster_unit_test.rs`。兼容风险主要是 SQL 显示文本与错误码身份；性能风险主要来自热路径中新增长字符串分配或扩大懒加载表，但当前查询为常数规模 HashMap 读取。
+
+## JSON显式转换与类型交接
+
+TypePgJson展示为json，配合独立类型码保留身份。

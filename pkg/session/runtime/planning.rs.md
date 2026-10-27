@@ -190,3 +190,7 @@ PG显式OID701与700一同进入现有参数类型约束，避免准备阶段退
 ## UUID显式转换局部接线
 
 明确UUID cast约束可推导未知参数为2950；已经声明的text/bytea参数身份不被cast覆盖。
+
+## JSON显式转换与类型交接
+
+仅在明确json cast上下文将OID0推导为114，已声明text/bytea/json不因外观改型。

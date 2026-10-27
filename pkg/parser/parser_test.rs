@@ -5452,3 +5452,48 @@ fn pg05_uuid_sql_parser_identity_and_dialect() {
     }
     assert!(pg.ParseSQL("SELECT NULL::uuid(3)", &[]).is_err());
 }
+
+#[test]
+fn pg05_json_sql_parser_identity_and_mysql_isolation() {
+    for (dialect, expected) in [
+        (
+            parser_ast::SqlDialect::PostgreSQL,
+            parser_mysql::r#type::TypePgJson,
+        ),
+        (
+            parser_ast::SqlDialect::MySQL,
+            parser_mysql::r#type::TypeJSON,
+        ),
+    ] {
+        let mut parser = crate::Parser::with_dialect(dialect);
+        for sql in ["SELECT CAST(NULL AS JSON)", "SELECT CAST('null' AS JSON)"] {
+            let (nodes, _) = parser.ParseSQL(sql, &[]).unwrap();
+            let select = nodes[0]
+                .as_any()
+                .downcast_ref::<parser_ast::SelectStmt>()
+                .unwrap();
+            let parser_ast::ExprKind::Cast { Tp, .. } =
+                &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+            else {
+                panic!("missing cast")
+            };
+            assert_eq!(Tp.GetType(), expected);
+            assert_eq!(
+                Tp.GetDecimal(),
+                if dialect == parser_ast::SqlDialect::PostgreSQL {
+                    -1
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                Tp.GetFlag() & parser_mysql::r#type::ParseToJSONFlag != 0,
+                dialect == parser_ast::SqlDialect::MySQL
+            );
+        }
+        assert_eq!(
+            parser.ParseSQL("SELECT NULL::json", &[]).is_ok(),
+            dialect == parser_ast::SqlDialect::PostgreSQL
+        );
+    }
+}

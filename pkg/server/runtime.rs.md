@@ -130,3 +130,7 @@ Prepare、普通执行与结果元数据三个既有桥接点传递 PostgreSQLTe
 ## UUID显式转换局部接线
 
 将会话PgUuidCastError原样桥接到ConnError::PgUuid，保留22P02/0A000诊断。
+
+## JSON显式转换与类型交接
+
+session_protocol_error把PgJsonCastError映射为ConnError::PgJson，不丢失来源错误身份。
