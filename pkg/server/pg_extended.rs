@@ -404,6 +404,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .to_vec(),
         ),
         25 | 1043 | 1042 => (253, value.to_vec()),
+        114 => (
+            253,
+            astersql_types::pg_json::PgJson::from_bytes(value)
+                .map_err(|e| error(e.sqlstate(), &e.to_string()))?
+                .as_bytes()
+                .to_vec(),
+        ),
         2950 => (
             253,
             text.parse::<astersql_types::pg_uuid::PgUuid>()
@@ -504,7 +511,7 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     })
 }
 /// Convert PG network order to the shared engine's existing parameter encoding.
-fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
+pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
     let Some(value) = value else {
         return parameter(oid, None);
     };
@@ -582,7 +589,9 @@ fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             return parameter(2950, Some(uuid.to_string().as_bytes()));
         }
         17 => (252, value.to_vec()),
-        25 | 1042 | 1043 => return parameter(oid, Some(value)),
+        // json_recv consumes the same JSON text as json_in, with no version byte.
+        // The prepared OID context supplies JSON identity through the text bridge.
+        114 | 25 | 1042 | 1043 => return parameter(oid, Some(value)),
         _ => return Err(error("0A000", "unsupported binary parameter OID")),
     };
     Ok(BinaryParam {
@@ -904,6 +913,7 @@ impl Extended {
                         | 21
                         | 23
                         | 25
+                        | 114
                         | 700
                         | 701
                         | 1042

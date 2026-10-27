@@ -6740,3 +6740,252 @@ fn pg05_uuid_output_portal_formats_rebinding_and_empty_rows() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg05_json_input_text_binary_codec() {
+    pg05_json_input_codec(crate::pg_extended::parameter);
+    pg05_json_input_codec(crate::pg_extended::binary_parameter);
+}
+
+fn pg05_json_input_codec(
+    parameter: fn(
+        u32,
+        Option<&[u8]>,
+    ) -> Result<crate::conn_stmt::BinaryParam, (&'static str, String)>,
+) {
+    for input in [
+        r#" { "b":1, "a":2,"b":3 } "#,
+        "\t[null, true, false, {\"x\": []}]\n",
+        "1.230e+02",
+        "9007199254740993",
+        "18446744073709551616",
+        "1e1000000",
+        "0.1234567890123456789012345678901234567890",
+        "42",
+        "true",
+        "false",
+        r#""x""#,
+        "[]",
+        "{}",
+        "null",
+        r#""null""#,
+        r#""中""#,
+        r#""\u4e2d""#,
+        r#""\u0000""#,
+        r#""\uD800""#,
+    ] {
+        let value = parameter(114, Some(input.as_bytes())).unwrap();
+        assert!(!value.is_null);
+        assert_eq!(value.tp, 253);
+        assert_eq!(value.value, input.as_bytes());
+    }
+    for input in [
+        b"".as_slice(),
+        b" \t\n",
+        b"{} []",
+        b"[1,]",
+        b"\"x",
+        b"/*x*/{}",
+        b"01",
+        b"+1",
+        b"NaN",
+        b"Infinity",
+        b"\"\\uZZZZ\"",
+        b"\"\n\"",
+        b"\x01{}",
+    ] {
+        assert_eq!(
+            parameter(114, Some(input)).unwrap_err().0,
+            "22P02",
+            "{input:?}"
+        );
+    }
+    for input in [b"\xff".as_slice(), b"\"\0\""] {
+        assert_eq!(parameter(114, Some(input)).unwrap_err().0, "22021");
+    }
+    assert!(parameter(114, None).unwrap().is_null);
+}
+
+#[test]
+fn pg05_json_input_parse_bind_execute_and_recovery() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (name, sql, oids) in [
+        ("json_declared", "SELECT $1 AS v", vec![114]),
+        ("json_inferred", "SELECT $1::json AS v", vec![]),
+        ("json_zero", "SELECT $1::json AS v", vec![0]),
+    ] {
+        parse(&mut socket, name, sql, &oids);
+        assert_eq!(read(&mut socket), (b'1', vec![]), "{name}");
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [1i16.to_be_bytes().as_slice(), &114u32.to_be_bytes()].concat()
+            )
+        );
+        let description = read(&mut socket);
+        let expected = [
+            1i16.to_be_bytes().as_slice(),
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &114u32.to_be_bytes(),
+            &(-1i16).to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat();
+        assert_eq!(description, (b'T', expected));
+        for format in [0, 1] {
+            for input in [
+                None,
+                Some("null"),
+                Some(r#""null""#),
+                Some(r#" { "b":1, "a":2,"b":3 } "#),
+                Some("1e1000000"),
+                Some("9007199254740993"),
+                Some("18446744073709551616"),
+                Some("1.230e+02"),
+                Some("0.1234567890123456789012345678901234567890"),
+                Some("\t[true,false,null]\n"),
+                Some(r#""x""#),
+                Some("42"),
+                Some(r#""中""#),
+                Some(r#""\u4e2d""#),
+                Some(r#""\u0000""#),
+                Some(r#""\uD800""#),
+            ] {
+                bind_formats(&mut socket, name, &[format], &[input.map(str::as_bytes)]);
+                assert_eq!(
+                    read(&mut socket),
+                    (b'2', vec![]),
+                    "{name}/{format}/{input:?}"
+                );
+                send(&mut socket, b'D', b"P\0");
+                assert_eq!(read(&mut socket), description);
+                execute(&mut socket, "", 0);
+                assert_eq!(
+                    read(&mut socket),
+                    (b'D', row(&[input])),
+                    "{name}/{format}/{input:?}"
+                );
+                assert_eq!(read(&mut socket).0, b'C');
+                send(&mut socket, b'S', &[]);
+                assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+            }
+        }
+    }
+    for format in [0, 1] {
+        for (input, state) in [
+            (b"".as_slice(), "22P02"),
+            (b" \t\n", "22P02"),
+            (b"{} []", "22P02"),
+            (b"[1,]", "22P02"),
+            (b"\x01{}", "22P02"),
+            (b"\"\\uZZZZ\"", "22P02"),
+            (b"\"\n\"", "22P02"),
+            (b"\xff", "22021"),
+            (b"\0", "22021"),
+        ] {
+            bind_formats(&mut socket, "json_declared", &[format], &[Some(input)]);
+            assert_state(&read(&mut socket), state);
+            execute(&mut socket, "", 0);
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+            bind_formats(&mut socket, "json_declared", &[format], &[Some(b"null")]);
+            assert_eq!(read(&mut socket).0, b'2');
+            execute(&mut socket, "", 0);
+            assert_eq!(read(&mut socket), (b'D', row(&[Some("null")])));
+            assert_eq!(read(&mut socket).0, b'C');
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket).0, b'Z');
+        }
+    }
+    for name in ["json_declared", "json_inferred", "json_zero"] {
+        send(&mut socket, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}
+
+#[test]
+fn pg05_json_input_shared_prepared_identity_and_rebinding() {
+    use astersql_session::runtime::{
+        ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession,
+    };
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg =
+        ConcreteSession::new_with_dialect(domain, astersql_expression::ast::SqlDialect::PostgreSQL);
+    for (sql, oid) in [("SELECT ? AS v", 114), ("SELECT ?::json AS v", 0)] {
+        assert_eq!(pg.protocol_parameter_types(sql, &[oid]).unwrap(), [114]);
+        let (id, _, fields) = pg
+            .prepare_protocol_statement_with_parameter_types(sql, &[oid])
+            .unwrap();
+        assert_eq!(
+            fields[0].column.FieldType.GetType(),
+            astersql_parser_mysql::r#type::TypePgJson
+        );
+        for decode in [
+            crate::pg_extended::parameter,
+            crate::pg_extended::binary_parameter,
+        ] {
+            for input in [
+                None,
+                Some("null"),
+                Some(r#""null""#),
+                Some(r#" { "b":1, "a":2,"b":3 } "#),
+                Some("1e1000000"),
+                Some(r#""\uD800""#),
+            ] {
+                let value = decode(114, input.map(str::as_bytes)).unwrap();
+                let argument = if value.is_null {
+                    ConcretePreparedArgument::Null
+                } else {
+                    assert_eq!(value.tp, 253);
+                    ConcretePreparedArgument::Text(String::from_utf8(value.value).unwrap())
+                };
+                let mut rows = pg.execute_protocol_statement(id, &[argument]).unwrap();
+                assert_eq!(
+                    rows[0].result_fields()[0]
+                        .as_ref()
+                        .unwrap()
+                        .column
+                        .FieldType
+                        .GetType(),
+                    astersql_parser_mysql::r#type::TypePgJson
+                );
+                assert_eq!(
+                    rows[0].next_row().unwrap().unwrap(),
+                    [input.unwrap_or("<nil>")]
+                );
+            }
+        }
+        pg.close_protocol_statement(id).unwrap();
+    }
+}

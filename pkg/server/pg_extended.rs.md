@@ -136,3 +136,9 @@ PostgreSQL 18.6/libpq 实测要求非法 hex 字符及不完整字节对返回 `
 Parse支持OID2950，未声明/0参数沿现有共享AST cast上下文推断。parameter复用PgUuid严格词法解析，输入先检查UTF-8/NUL（22021），非法词法22P02；规范文本经BinaryParam的既有tp253载荷交给真实prepared参数桥接，UUID身份由2950上下文保留（含NULL），不拼SQL字符串回填。binary_parameter要求恰16字节，短载荷08P01、多余字节22P03，按文本从左到右的字节序调用PgUuid::from_bytes，不做GUID换序或version/variant筛选。
 
 独立测试pg_extended_test.rs::pg05_uuid_input_text_codec与pg05_uuid_input_parse_bind_execute_and_recovery覆盖词法、两种输入、显式/推断参数身份、NULL与2950/16/-1描述、原字节序、任意位模式、Bind诊断与Sync恢复。UUID二进制结果及参考端四方向差分属于后续任务。
+
+## JSON参数输入（任务8）
+
+普通Parse接受OID114；显式OID或明确json cast推断保留身份。文本与binary Bind共用PgJson严格词法校验和既有tp253 BinaryParam载荷；binary是原始JSON文本，没有jsonb版本前缀。共享prepared OID上下文负责JSON身份与typed NULL，不拼SQL字符串，不使用MySQL BinaryJSON，不重序列化。空白、成员顺序/重复、大数、数字拼写及Unicode转义原样保留，SQL NULL与JSON null独立。非法JSON及01前缀返回22P02，非法UTF-8/原始NUL返回22021；错误沿既有Bind失败/Sync恢复路径处理。
+
+独立pg_extended_test.rs的pg05_json_input_text_binary_codec覆盖两种解码器原文及诊断；pg05_json_input_parse_bind_execute_and_recovery使用真实CreateAnalyzeSession/ConcreteSessionDriver与TCP，覆盖声明114、cast推断、OID0、114/-1/-1描述、NULL、重绑定、Bind拒绝与Sync恢复及Close。pg05_json_input_shared_prepared_identity_and_rebinding补充真实共享session的定型、NULL与重绑定断言。binary_parameter的crate可见性仅用于同目录独立codec测试；BinaryParam结构及共享执行桥接均无需修改。二进制结果与参考端四方向差分属于后续任务。
