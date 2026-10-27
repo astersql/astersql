@@ -1742,3 +1742,34 @@ fn pg05_array_json_runtime_identity_null_and_atomic_errors() {
         assert!(session.execute("SELECT 1").is_ok());
     }
 }
+
+#[test]
+fn pg05_array_jsonb_runtime_identity_null_and_atomic_errors() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT ARRAY['null'::jsonb,NULL::jsonb]",
+            r#"{"null",NULL}"#,
+        ),
+        (
+            "SELECT '[-2:-1]={1.2300,NULL}'::jsonb[]",
+            "[-2:-1]={1.2300,NULL}",
+        ),
+        ("SELECT ARRAY[]::jsonb[]", "{}"),
+        ("SELECT ARRAY[NULL,NULL]::jsonb[]", "{NULL,NULL}"),
+        ("SELECT NULL::jsonb[]", "<nil>"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap()[0], expected, "{sql}");
+        result[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT '{null,bad}'::jsonb[]",
+        "SELECT NULL::int4[]::jsonb[]",
+        "SELECT NULL::jsonb[]::text[]",
+    ] {
+        assert!(session.execute(sql).is_err(), "{sql}");
+        assert!(session.execute("SELECT 1").is_ok());
+    }
+}

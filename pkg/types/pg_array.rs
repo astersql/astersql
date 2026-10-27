@@ -174,6 +174,7 @@ pub enum PgArrayElement {
     Interval(super::pg_temporal::PgInterval),
     Uuid(super::pg_uuid::PgUuid),
     Json(super::pg_json::PgJson),
+    Jsonb(super::pg_jsonb::PgJsonb),
     Int2(i16),
     Bool(bool),
     Int4(i32),
@@ -206,7 +207,8 @@ impl PgArray {
     ) -> Result<Self, PgArrayError> {
         if !matches!(
             element_oid,
-            114 | 2950
+            3802 | 114
+                | 2950
                 | 1186
                 | 1184
                 | 1114
@@ -236,6 +238,7 @@ impl PgArray {
                 (1186, PgArrayElement::Interval(_)) => {}
                 (2950, PgArrayElement::Uuid(_)) => {}
                 (114, PgArrayElement::Json(_)) => {}
+                (3802, PgArrayElement::Jsonb(_)) => {}
                 (700, PgArrayElement::Float4(_)) => {}
                 (701, PgArrayElement::Float8(_)) => {}
                 (1700, PgArrayElement::Numeric(_)) => {}
@@ -330,7 +333,8 @@ impl PgArray {
         }
         if !matches!(
             element_oid,
-            114 | 2950
+            3802 | 114
+                | 2950
                 | 1186
                 | 1184
                 | 1114
@@ -421,7 +425,8 @@ impl PgArray {
         let count = Self::layout_count(&shape, &lower).map_err(Error::Array)?;
         let supported = matches!(
             element_oid,
-            114 | 2950
+            3802 | 114
+                | 2950
                 | 1186
                 | 1184
                 | 1114
@@ -496,6 +501,7 @@ impl PgArray {
                 Some(PgArrayElement::Int4(_) | PgArrayElement::Float4(_)) => 4,
                 Some(PgArrayElement::Int8(_) | PgArrayElement::Float8(_)) => 8,
                 Some(PgArrayElement::Json(value)) => value.as_bytes().len(),
+                Some(PgArrayElement::Jsonb(value)) => 1 + value.as_bytes().len(),
                 Some(PgArrayElement::Text(value)) => value.len(),
                 Some(PgArrayElement::Bytea(value)) => value.len(),
                 Some(PgArrayElement::Numeric(value)) => value.to_binary().len(),
@@ -532,6 +538,11 @@ impl PgArray {
                 Some(PgArrayElement::Timestamptz(value)) => {
                     output.extend_from_slice(&8i32.to_be_bytes());
                     output.extend_from_slice(&value.to_binary());
+                }
+                Some(PgArrayElement::Jsonb(value)) => {
+                    output.extend_from_slice(&((1 + value.as_bytes().len()) as i32).to_be_bytes());
+                    output.push(1);
+                    output.extend_from_slice(value.as_bytes());
                 }
                 Some(PgArrayElement::Json(value)) => {
                     output.extend_from_slice(&(value.as_bytes().len() as i32).to_be_bytes());
@@ -640,6 +651,9 @@ impl PgArray {
                 }
                 Some(PgArrayElement::Timestamp(value)) => {
                     write_array_element_text(&value.to_string(), delimiter, output)
+                }
+                Some(PgArrayElement::Jsonb(value)) => {
+                    write_array_element_text(value.as_str(), delimiter, output)
                 }
                 Some(PgArrayElement::Json(value)) => {
                     write_array_element_text(value.as_str(), delimiter, output)

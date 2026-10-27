@@ -7812,7 +7812,7 @@ fn pg05_int4_array_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8108,7 +8108,7 @@ fn pg05_array_cast_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8336,7 +8336,7 @@ fn pg05_array_text_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8559,7 +8559,7 @@ fn pg05_array_bool_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -8841,7 +8841,7 @@ fn pg05_array_int2_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9118,7 +9118,7 @@ fn pg05_array_int8_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9339,7 +9339,7 @@ fn pg05_array_bytea_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -9826,7 +9826,7 @@ fn pg05_array_varchar_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10077,7 +10077,7 @@ fn pg05_array_bpchar_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10326,7 +10326,7 @@ fn pg05_array_date_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10606,7 +10606,7 @@ fn pg05_array_time_wire_four_formats_metadata_and_recovery() {
     parse(&mut socket, "unknown", "SELECT $1 AS v", &[0]);
     assert_state(&read(&mut socket), "42P18");
     sync(&mut socket);
-    parse(&mut socket, "unopened", "SELECT $1 AS v", &[3807]);
+    parse(&mut socket, "unopened", "SELECT $1 AS v", &[9999]);
     assert_state(&read(&mut socket), "0A000");
     sync(&mut socket);
     send(&mut socket, b'X', &[]);
@@ -10797,4 +10797,31 @@ fn pg05_array_json_registered_input() {
         .collect::<Vec<_>>();
     assert_eq!(binary_parameter(199, Some(&binary)).unwrap().value, text);
     assert_eq!(parameter(199, Some(b"{null,bad}")).unwrap_err().0, "22P02");
+}
+
+#[test]
+fn pg05_array_jsonb_registered_input() {
+    use crate::pg_extended::{binary_parameter, parameter};
+    let input = br#" { "zz":1, "a":1.2300, "zz":2 } "#;
+    let canonical = br#"{"a": 1.2300, "zz": 2}"#;
+    assert_eq!(parameter(3802, Some(input)).unwrap().value, canonical);
+    let scalar = [b"\x01".as_slice(), input].concat();
+    assert_eq!(
+        binary_parameter(3802, Some(&scalar)).unwrap().value,
+        canonical
+    );
+    let text = br#"[-1:1]={"{\"a\": 1.2300, \"zz\": 2}","null",NULL}"#;
+    assert_eq!(parameter(3807, Some(text)).unwrap().value, text);
+    let binary = [1i32, 1, 3802, 3, -1, scalar.len() as i32]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .chain(scalar.iter().copied())
+        .chain(5i32.to_be_bytes())
+        .chain(*b"\x01null")
+        .chain((-1i32).to_be_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(binary_parameter(3807, Some(&binary)).unwrap().value, text);
+    assert_eq!(parameter(3807, Some(b"{null,bad}")).unwrap_err().0, "22P02");
+    assert!(parameter(3807, None).unwrap().is_null);
+    assert!(binary_parameter(3807, None).unwrap().is_null);
 }

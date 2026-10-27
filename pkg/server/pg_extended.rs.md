@@ -243,3 +243,8 @@ Parse允许2951，Bind的text/binary数组分派使用PgUuid/既有2950 binary c
 ## PostgreSQL json 数组（任务41）
 
 注册元素114/数组199，复用PgJson保留原文；此文件承担规范载体、类型身份或既有消费者分派的局部接线，不扩展标量算法。独立pg05_array_json测试及18.6四方向差分见docs/postgresql-pg05-array-json-evidence.md。
+
+
+## PostgreSQL jsonb 数组（任务42）
+
+Parse支持3807；text/binary数组输入复用3802标量codec与通用容器校验，逐元素版本检查及错误分类沿标量。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。

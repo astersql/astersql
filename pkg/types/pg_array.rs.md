@@ -156,3 +156,8 @@ PgArrayElement::Uuid复用PgUuid，注册元素2950并验证载体身份；text�
 ## PostgreSQL json 数组（任务41）
 
 注册元素114/数组199，复用PgJson保留原文；此文件承担规范载体、类型身份或既有消费者分派的局部接线，不扩展标量算法。独立pg05_array_json测试及18.6四方向差分见docs/postgresql-pg05-array-json-evidence.md。
+
+
+## PostgreSQL jsonb 数组（任务42）
+
+PgArrayElement::Jsonb复用PgJsonb规范值；3802构造验证、text规范显示与binary逐元素01版本字节，保留shape/lower/typmod与元素NULL。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。

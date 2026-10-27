@@ -90,7 +90,7 @@ fn pg05_array_value_dimension_size_and_signed_bounds_limits() {
 
 #[test]
 fn pg05_array_value_unopened_families_rejected_even_when_empty_or_null() {
-    for oid in [0, 1007, 3802, u32::MAX] {
+    for oid in [0, 1007, 9999, u32::MAX] {
         for (shape, lower, elements) in [
             (vec![], vec![], vec![]),
             (vec![1], vec![1], vec![None]),
@@ -284,7 +284,7 @@ fn pg05_array_text_input_carrier_identity_and_unopened_paths() {
         PgArray::new(25, -1, vec![1], vec![1], vec![Some(Text("x\0y".into()))]),
         Err(Error::InvalidEncoding)
     );
-    for oid in [0, 3802, 1007, 9999] {
+    for oid in [0, 9999, 1007, u32::MAX] {
         let err = PgArray::from_text_with(b"{}", oid, -1, b',', |_, _| {
             Ok::<_, std::convert::Infallible>(Int4(1))
         })
@@ -643,34 +643,34 @@ fn pg05_array_binary_input_text_delegation_and_unopened_families() {
     );
     for (bytes, expected) in [
         (
-            binary_array_words(&[0, 0, 3802]),
+            binary_array_words(&[0, 0, 9999]),
             B::Array(Error::UnsupportedElement),
         ),
         (binary_array_words(&[1, 2]), B::InvalidFlags),
         (binary_array_words(&[0, 0, 23]), B::ElementTypeMismatch),
     ] {
-        let err = PgArray::from_binary_with(&bytes, 3802, -1, |_, _| -> Result<_, ()> {
+        let err = PgArray::from_binary_with(&bytes, 9999, -1, |_, _| -> Result<_, ()> {
             panic!("unopened codec")
         })
         .unwrap_err();
         assert_eq!(err, expected);
     }
     for (words, expected) in [
-        (vec![1, 0, 3802, 1, 1], B::Truncated),
-        (vec![1, 0, 3802, 1, 1, -2], B::InvalidLength),
-        (vec![1, 0, 3802, 1, 1, 4, 9, 0], B::TrailingData),
+        (vec![1, 0, 9999, 1, 1], B::Truncated),
+        (vec![1, 0, 9999, 1, 1, -2], B::InvalidLength),
+        (vec![1, 0, 9999, 1, 1, 4, 9, 0], B::TrailingData),
         (
-            vec![1, 0, 3802, 1, 1, -1],
+            vec![1, 0, 9999, 1, 1, -1],
             B::Array(Error::UnsupportedElement),
         ),
         (
-            vec![1, 0, 3802, 1, 1, 0],
+            vec![1, 0, 9999, 1, 1, 0],
             B::Array(Error::UnsupportedElement),
         ),
     ] {
         let err = PgArray::from_binary_with(
             &binary_array_words(&words),
-            3802,
+            9999,
             -1,
             |_, _| -> Result<_, ()> { panic!("unopened codec") },
         )
@@ -784,7 +784,7 @@ fn pg05_array_binary_output_empty_six_dimensions_and_rejected_values() {
     assert_eq!(a.to_binary().unwrap(), binary_array_words(&words));
     assert_eq!(binary_int4(&a.to_binary().unwrap()).unwrap(), a);
     // Invalid values cannot reach output through the immutable carrier.
-    for oid in [3802, 1007, 9999] {
+    for oid in [9999, 1007, u32::MAX] {
         let err = PgArray::new(oid, -1, vec![], vec![], vec![]).unwrap_err();
         assert_eq!(err, Error::UnsupportedElement);
         assert_eq!(err.sqlstate(), Some("0A000"));
@@ -1597,6 +1597,64 @@ fn pg05_array_json_shape_typmod_null_and_original_bytes() {
     assert_eq!(
         PgArray::new(
             114,
+            -1,
+            vec![1],
+            vec![1],
+            vec![Some(PgArrayElement::Text("null".into()))]
+        ),
+        Err(PgArrayError::ElementTypeMismatch)
+    );
+}
+
+#[test]
+fn pg05_array_jsonb_shape_typmod_null_and_canonical_bytes() {
+    use crate::pg_array::{PgArray, PgArrayElement, PgArrayError};
+    use crate::pg_jsonb::PgJsonb;
+    for raw in [
+        r#" { "k":1, "k":2, "n":1.2300 } "#,
+        "null",
+        r#""NULL""#,
+        r#""\u0061""#,
+        r#""\ud83d\ude00""#,
+    ] {
+        let value = PgJsonb::from_bytes(raw.as_bytes()).unwrap();
+        let array = PgArray::new(
+            3802,
+            -1,
+            vec![2, 1],
+            vec![-2, 0],
+            vec![Some(PgArrayElement::Jsonb(value)), None],
+        )
+        .unwrap();
+        let canonical = PgJsonb::from_bytes(raw.as_bytes()).unwrap();
+        let binary = array.to_binary().unwrap();
+        assert_eq!(binary[32], 1);
+        assert_eq!(
+            &binary[33..33 + canonical.as_bytes().len()],
+            canonical.as_bytes()
+        );
+        assert_eq!(&binary[8..12], &3802i32.to_be_bytes());
+        let decoded = PgArray::from_binary_with(&binary, 3802, -1, |payload, _| {
+            let v = PgJsonb::from_bytes(&payload[1..])?;
+            *payload = &[];
+            Ok::<_, crate::pg_jsonb::PgJsonbError>(PgArrayElement::Jsonb(v))
+        })
+        .unwrap();
+        assert_eq!(decoded, array);
+        let text = array.to_text(b',').unwrap();
+        assert!(text.starts_with("[-2:-1][0:0]="));
+        assert_eq!(
+            PgArray::from_text_with(text.as_bytes(), 3802, -1, b',', |s, _| PgJsonb::from_bytes(
+                s.as_bytes()
+            )
+            .map(PgArrayElement::Jsonb))
+            .unwrap(),
+            array
+        );
+    }
+    assert_eq!(
+        PgArray::new(
+            3802,
             -1,
             vec![1],
             vec![1],

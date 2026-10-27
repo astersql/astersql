@@ -1269,6 +1269,7 @@ impl ConcreteSession {
                                 | astersql_parser_types::PostgreSQLArrayElement::Interval
                                 | astersql_parser_types::PostgreSQLArrayElement::Uuid
                                 | astersql_parser_types::PostgreSQLArrayElement::Json
+                                | astersql_parser_types::PostgreSQLArrayElement::Jsonb
                                 | astersql_parser_types::PostgreSQLArrayElement::Numeric
                         )
                     ) {

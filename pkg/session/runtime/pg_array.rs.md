@@ -100,3 +100,8 @@ Uuid元素推断、ARRAY构造、显式cast和规范数组转换复用PgUuid标�
 ## PostgreSQL json 数组（任务41）
 
 注册元素114/数组199，复用PgJson保留原文；此文件承担规范载体、类型身份或既有消费者分派的局部接线，不扩展标量算法。独立pg05_array_json测试及18.6四方向差分见docs/postgresql-pg05-array-json-evidence.md。
+
+
+## PostgreSQL jsonb 数组（任务42）
+
+接通Jsonb元素推断、ARRAY构造、同族cast及typed_array，委托既有PgJsonb严格数值/Unicode校验；不同族暂缺转换保持0A000。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。

@@ -1845,6 +1845,7 @@ impl ConcreteSession {
                         | 1187
                         | 2951
                         | 199
+                        | 3807
                         | 1016
                         | 1000
                         | 1009
@@ -1904,7 +1905,7 @@ impl ConcreteSession {
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
                             | 1184 | 1186 | 114 | 3802 | 2950 | 1007 | 1005 | 1700 | 1021
                             | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1185 | 1187 | 2951
-                            | 199 | 1016 | 1000 | 1009 | 1014 | 1015),
+                            | 199 | 3807 | 1016 | 1000 | 1009 | 1014 | 1015),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 1700 {
@@ -1952,13 +1953,16 @@ impl ConcreteSession {
                                     | 1187
                                     | 2951
                                     | 199
+                                    | 3807
                                     | 1016
                                     | 1000
                                     | 1009
                                     | 1014
                                     | 1015
                             ) {
-                                tp = super::pg_array::field_type(if *oid == 199 {
+                                tp = super::pg_array::field_type(if *oid == 3807 {
+                                    astersql_parser_types::PostgreSQLArrayElement::Jsonb
+                                } else if *oid == 199 {
                                     astersql_parser_types::PostgreSQLArrayElement::Json
                                 } else if *oid == 2951 {
                                     astersql_parser_types::PostgreSQLArrayElement::Uuid
@@ -2079,6 +2083,7 @@ impl ConcreteSession {
                                 | 1187
                                 | 2951
                                 | 199
+                                | 3807
                                 | 1016
                                 | 1000
                                 | 1009
@@ -2236,6 +2241,9 @@ impl ConcreteSession {
                 }
                 if constructor_oids.get(index) == Some(&1183) {
                     return Ok(format!("CAST({literal} AS TIME[])"));
+                }
+                if constructor_oids.get(index) == Some(&3807) {
+                    return Ok(format!("CAST({literal} AS JSONB[])"));
                 }
                 if constructor_oids.get(index) == Some(&199) {
                     return Ok(format!("CAST({literal} AS JSON[])"));

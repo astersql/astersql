@@ -6012,3 +6012,35 @@ fn pg05_array_json_parser_identity() {
             .is_err()
     );
 }
+
+#[test]
+fn pg05_array_jsonb_parser_identity() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT $1::jsonb[]",
+        "SELECT $1::jsonb[][]",
+        "SELECT ARRAY[]::jsonb[]",
+        "SELECT CAST(NULL AS jsonb[])",
+    ] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::Cast { Tp, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("expected cast")
+        };
+        assert_eq!(
+            Tp.PostgreSQLArrayElement(),
+            Some(parser_types::PostgreSQLArrayElement::Jsonb)
+        );
+    }
+    let mut mysql = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(
+        mysql
+            .ParseOneStmt("SELECT CAST(NULL AS JSONB[])", "", "")
+            .is_err()
+    );
+}
