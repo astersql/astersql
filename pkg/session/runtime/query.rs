@@ -1586,6 +1586,9 @@ impl ConcreteSession {
                     if pg_date_source(Expr) {
                         return pg_date_to_timestamp_value(value, Tp.GetDecimal());
                     }
+                    if pg_timestamptz_source(Expr) {
+                        return self.pg_timestamptz_to_timestamp_value(value, Tp.GetDecimal());
+                    }
                     return pg_timestamp_relational_value(
                         value,
                         Tp.GetDecimal(),

@@ -261,6 +261,25 @@ impl ConcreteSession {
 }
 
 impl ConcreteSession {
+    /// Resolve the instant in this session before dropping its zone. Parse the
+    /// canonical ISO wall clock to enforce timestamp's range, then round the
+    /// target precision (which can carry across midnight or overflow).
+    pub(super) fn pg_timestamptz_to_timestamp_value(
+        &self,
+        value: Option<String>,
+        precision: isize,
+    ) -> SessionResult<Option<String>> {
+        self.pg_timestamptz_relational_value(value, -1)?
+            .map(|local| {
+                local
+                    .parse::<astersql_types::pg_temporal::PgTimestamp>()
+                    .and_then(|wall| wall.round_precision(precision))
+                    .map(|wall| wall.to_string())
+                    .map_err(temporal_error)
+            })
+            .transpose()
+    }
+
     /// Extract the calendar date after resolving the instant in this session.
     /// The display is canonical ISO, so DateStyle cannot reinterpret it. Keep
     /// infinities and BC eras, including local dates outside timestamp's range.
