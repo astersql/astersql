@@ -2779,6 +2779,7 @@ pub(super) fn relational_expression_type(
                 Tp.GetType(),
                 astersql_parser_mysql::r#type::TypeDate
                     | astersql_parser_mysql::r#type::TypeDuration
+                    | astersql_parser_mysql::r#type::TypeDatetime
             ) || Tp.PostgreSQLArrayElement().is_some()
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson
