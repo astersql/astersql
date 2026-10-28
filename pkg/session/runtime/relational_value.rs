@@ -3885,6 +3885,18 @@ pub(super) fn pg_float8_relational_value(
         return Ok(value);
     }
     let value = pg_float4_cast_text_input(expression, value)?;
+    // Widen the binary32 value, rather than interpreting its shortest decimal
+    // rendering as a new binary64 value.
+    if source.GetType() == astersql_parser_mysql::r#type::TypeFloat {
+        return astersql_expression::pg_cast_float4(value.as_deref())
+            .map(|value| value.map(|number| f64::from(number).to_string()))
+            .map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            });
+    }
     astersql_expression::pg_cast_float8(value.as_deref())
         .map(|value| value.map(|number| number.to_string()))
         .map_err(|error| {

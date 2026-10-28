@@ -2491,11 +2491,15 @@ impl ConcreteSession {
                                 | astersql_parser_mysql::r#type::TypeDouble
                         )
                     })
-                    && relational_expression_type(expression, &table).GetType()
+                    && (relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeNewDecimal
+                        || (column_info.unwrap().GetType()
+                            == astersql_parser_mysql::r#type::TypeDouble
+                            && relational_expression_type(expression, &table).GetType()
+                                == astersql_parser_mysql::r#type::TypeFloat))
                 {
-                    // Numeric assignment rounds and checks the PG floating target
-                    // before shared storage conversion can apply MySQL coercion.
+                    // Apply PG numeric rounding or exact float4 widening before
+                    // shared storage conversion can apply MySQL coercion.
                     let value = self.relational_query_expression_value(expression, &row, None)?;
                     if column_info.unwrap().GetType() == astersql_parser_mysql::r#type::TypeFloat {
                         pg_float4_relational_value(expression, value)?
@@ -3786,11 +3790,15 @@ impl ConcreteSession {
                                 | astersql_parser_mysql::r#type::TypeDouble
                         )
                     })
-                    && relational_expression_type(expression, &table).GetType()
+                    && (relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeNewDecimal
+                        || (column_info.unwrap().GetType()
+                            == astersql_parser_mysql::r#type::TypeDouble
+                            && relational_expression_type(expression, &table).GetType()
+                                == astersql_parser_mysql::r#type::TypeFloat))
                 {
-                    // Numeric assignment rounds and checks the PG floating target
-                    // before shared storage conversion can apply MySQL coercion.
+                    // Apply PG numeric rounding or exact float4 widening before
+                    // shared storage conversion can apply MySQL coercion.
                     let value = self.relational_query_expression_value(expression, &row, None)?;
                     if column_info.unwrap().GetType() == astersql_parser_mysql::r#type::TypeFloat {
                         pg_float4_relational_value(expression, value)?

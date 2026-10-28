@@ -1102,6 +1102,7 @@ impl ConcreteSession {
             && Args.len() == 1
         {
             let value = self.relational_query_expression_value(&Args[0], row, group_rows)?;
+            let value = pg_float8_relational_value(&Args[0], value)?;
             return astersql_expression::pg_cast_float8(value.as_deref())
                 .map(|value| value.map(|value| value.abs().to_string()))
                 .map_err(|error| {
