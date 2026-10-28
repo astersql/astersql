@@ -2428,6 +2428,27 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // Boolean operators require implicit bool eligibility before
+                // evaluating either operand, including short-circuited NULLs.
+                let rejects_int4 = |operand: &ast::ExprNode| {
+                    let source = relational_expression_type(operand, self.table);
+                    source.GetType() == astersql_parser_mysql::r#type::TypeLong
+                        && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+                };
+                let invalid = match &input.Kind {
+                    ast::ExprKind::Binary { Op, L, R }
+                        if Op.eq_ignore_ascii_case("and") || Op.eq_ignore_ascii_case("or") =>
+                    {
+                        rejects_int4(L) || rejects_int4(R)
+                    }
+                    ast::ExprKind::Unary { Op, V } if Op.eq_ignore_ascii_case("not") => {
+                        rejects_int4(V)
+                    }
+                    _ => false,
+                };
+                if invalid {
+                    self.boolean_error = Some(astersql_expression::PgBoolError::TypeMismatch);
+                }
                 if let ast::ExprKind::Function {
                     FnName,
                     Args,

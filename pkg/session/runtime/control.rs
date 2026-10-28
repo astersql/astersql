@@ -1861,6 +1861,24 @@ impl ConcreteSession {
             .collect::<Vec<_>>();
         let statement = &statements[0];
         self.validate_pg_boolean_statement(statement.as_ref())?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL && supplied.contains(&23) {
+            // Check int4 source eligibility before Bind. Typed NULLs preserve
+            // the declared parameter identity without inspecting any value.
+            let arguments = supplied
+                .iter()
+                .map(|oid| {
+                    if *oid == 23 {
+                        "CAST(NULL AS INT4)".to_owned()
+                    } else {
+                        "?".to_owned()
+                    }
+                })
+                .collect::<Vec<_>>();
+            let typed_sql = bind_parameter_markers(sql, &arguments)?;
+            for typed in parse_in_dialect(&typed_sql, self.sql_dialect())? {
+                self.validate_pg_boolean_statement(typed.as_ref())?;
+            }
+        }
         let mut fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
             && !insert.Returning.is_empty()
@@ -2839,6 +2857,21 @@ impl ConcreteSession {
                 })
                 .collect()
         };
+        if let Some(select) = &statement.Select {
+            let fields = self.relational_query_node_result_fields(select.as_ref(), &[])?;
+            for (field, column) in fields.iter().zip(&columns) {
+                let Some(column) = column else { continue };
+                let source = &field.column.FieldType;
+                if column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+                    && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+                    && source.GetType() == astersql_parser_mysql::r#type::TypeLong
+                {
+                    return Err(pg_bool_session_error(
+                        astersql_expression::PgBoolError::TypeMismatch,
+                    ));
+                }
+            }
+        }
         for values in &statement.Lists {
             for (value, column) in values.iter().zip(&columns) {
                 let Some(column) = column else {
@@ -2867,17 +2900,44 @@ impl ConcreteSession {
             self.validate_pg_integer_select_inputs(select)?;
         } else if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() {
             self.validate_pg_boolean_insert(insert)?;
+        } else if let Some(update) = statement.as_any().downcast_ref::<ast::UpdateStmt>() {
+            let select = ast::SelectStmt {
+                From: update.TableRefs.clone(),
+                ..Default::default()
+            };
+            let sources = self.relational_select_source_fields(&select)?;
+            for assignment in &update.List {
+                let Some(target) = sources
+                    .iter()
+                    .find(|field| field.column.Name.L == assignment.Column.Name.L)
+                else {
+                    continue;
+                };
+                let source =
+                    self.relational_query_expression_type_from_sources(&assignment.Expr, &sources);
+                // int4 and bool share an integer carrier, but PG only permits
+                // this conversion through an explicit cast, including NULL.
+                if target.column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag
+                    != 0
+                    && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+                    && source.GetType() == astersql_parser_mysql::r#type::TypeLong
+                {
+                    return Err(pg_bool_session_error(
+                        astersql_expression::PgBoolError::TypeMismatch,
+                    ));
+                }
+            }
         }
         Ok(())
     }
 
     /// 执行面向会话 KV 表的 INSERT AST。
     pub(super) fn execute_insert(&self, statement: &ast::InsertStmt) -> SessionResult<()> {
+        self.validate_pg_boolean_insert(statement)?;
         if statement.Select.is_some() {
             return self.execute_insert_select(statement);
         }
         let plan = crate::dml_runtime::PlanInsert(statement)?;
-        self.validate_pg_boolean_insert(statement)?;
         if plan.Table != SESSION_KV_TABLE {
             return self.execute_relational_insert(statement, plan, false, None);
         }
@@ -2944,6 +3004,7 @@ impl ConcreteSession {
 
     /// 执行面向会话 KV 表的 UPDATE AST。
     pub(super) fn execute_update(&self, statement: &ast::UpdateStmt) -> SessionResult<()> {
+        self.validate_pg_boolean_statement(statement)?;
         if let Some(sql) = self.mysql_stats_system_update_sql(statement) {
             if self.mysql_stats_histograms_sets_version_zero(statement) {
                 self.domain.invalidate_histogram_stats_versions();
