@@ -726,13 +726,19 @@ impl PgTimestampTz {
         // Reject unknown zone names before requesting session context.
         // Otherwise the wall-clock fallback would misclassify them as
         // datetime syntax errors (or accept them in the session zone).
-        if let Some((_, zone)) = body[clock_at + 1..].rsplit_once(' ') {
+        if let Some((clock, zone)) = body[clock_at + 1..].rsplit_once(' ') {
             if zone.starts_with(|ch: char| ch.is_ascii_alphabetic())
                 && !zone.eq_ignore_ascii_case("UTC")
                 && !zone.eq_ignore_ascii_case("GMT")
                 && zone.parse::<chrono_tz::Tz>().is_err()
             {
-                return Err(PgTemporalError::UnknownZone);
+                // A numeric displacement followed by another word is trailing
+                // input, not a standalone unrecognized zone name.
+                return Err(if clock.contains(['+', '-']) {
+                    PgTemporalError::Syntax
+                } else {
+                    PgTemporalError::UnknownZone
+                });
             }
         }
         let zone_at = body[clock_at + 1..]
