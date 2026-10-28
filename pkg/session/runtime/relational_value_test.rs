@@ -1176,3 +1176,23 @@ fn pg06_task_079_interval_time_components() {
         assert!(pg_interval_to_time_value(Some(input.into()), -1).is_err());
     }
 }
+
+#[test]
+fn pg06_task_085_unknown_null_set_identity() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    use astersql_parser_mysql::r#type::{TypeLong, TypeNull};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        ("SELECT NULL UNION SELECT 1::int4", TypeLong),
+        ("SELECT (NULL) UNION SELECT 1::int4", TypeLong),
+        ("SELECT NULL::int4 UNION SELECT NULL", TypeLong),
+        ("SELECT NULL UNION SELECT NULL", TypeNull),
+    ] {
+        let fields = pg.describe_result_fields(sql).unwrap();
+        assert_eq!(fields.len(), 1, "{sql}");
+        assert_eq!(fields[0].column.FieldType.GetType(), expected, "{sql}");
+        assert!(fields[0].column_origin.is_none(), "{sql}");
+    }
+}

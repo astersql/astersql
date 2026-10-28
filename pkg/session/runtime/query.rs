@@ -3940,13 +3940,37 @@ impl ConcreteSession {
             .selects
             .first()
             .ok_or_else(|| SessionError::new("set operation is empty"))?;
-        self.relational_query_node_result_fields_with_ctes(first.as_ref(), output_columns, &ctes)
-            .map(|mut fields| {
-                for field in &mut fields {
-                    field.column_origin = None;
+        let mut fields = self.relational_query_node_result_fields_with_ctes(
+            first.as_ref(),
+            output_columns,
+            &ctes,
+        )?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // A bare NULL is still unknown here: let a typed set-operation
+            // input supply its identity before the wire layer defaults it to
+            // text. Explicitly cast NULLs already have a type and must keep it.
+            for select in list.selects.iter().skip(1) {
+                if fields.iter().all(|field| {
+                    field.column.FieldType.GetType() != astersql_parser_mysql::r#type::TypeNull
+                }) {
+                    break;
                 }
-                fields
-            })
+                let inputs = self.relational_query_node_result_fields_with_ctes(
+                    select.as_ref(),
+                    &[],
+                    &ctes,
+                )?;
+                for (field, input) in fields.iter_mut().zip(inputs) {
+                    if field.column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeNull {
+                        field.column.FieldType = input.column.FieldType;
+                    }
+                }
+            }
+        }
+        for field in &mut fields {
+            field.column_origin = None;
+        }
+        Ok(fields)
     }
 
     pub(super) fn execute_relational_query_record_set(
