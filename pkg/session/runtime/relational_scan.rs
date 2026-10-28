@@ -1051,6 +1051,7 @@ pub(super) fn decode_relational_row_value(
     let mut storage_fields = fields.clone();
     if table.PostgreSQLNumericText
         || table.PostgreSQLFloatText
+        || table.PostgreSQLDateText
         || table.ExactName
         || table
             .Columns
@@ -1061,6 +1062,8 @@ pub(super) fn decode_relational_row_value(
             if column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
                 || (table.ExactName
                     && column.GetType() == astersql_parser_mysql::r#type::TypeDatetime)
+                || (table.PostgreSQLDateText
+                    && column.GetType() == astersql_parser_mysql::r#type::TypeDate)
                 || (table.PostgreSQLNumericText
                     && column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal)
                 || (table.PostgreSQLFloatText

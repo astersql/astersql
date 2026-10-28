@@ -644,6 +644,26 @@ pub(super) fn encode_relational_row_with_format(
                     .map(|number| astersql_types::datum::NewStringDatum(number.to_string()))
                     .unwrap_or_default()
             }
+        } else if table.PostgreSQLDateText
+            && column.GetType() == astersql_parser_mysql::r#type::TypeDate
+        {
+            // Timestamp-to-date assignments must preserve the PG calendar domain
+            // and infinities using the same string carrier as PG wall clocks.
+            row.get(&column.Name.L)
+                .cloned()
+                .flatten()
+                .map(|text| {
+                    text.parse::<astersql_types::pg_temporal::PgDate>()
+                        .map(|date| astersql_types::datum::NewStringDatum(date.to_string()))
+                        .map_err(|error| {
+                            SessionError::with_source(
+                                error.to_string(),
+                                astersql_errors::SharedError::new(error),
+                            )
+                        })
+                })
+                .transpose()?
+                .unwrap_or_default()
         } else if table.ExactName && column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
         {
             // PG wall clocks, including infinities and years outside MySQL's

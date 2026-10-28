@@ -324,6 +324,28 @@ fn test_ttl_default_job_interval() {
 
 #[test]
 fn table_metadata_json_matches_go_field_names_and_embedding() {
+    // New PG date storage must survive catalog reloads without changing old tables.
+    let old_table: TableInfo =
+        serde_json::from_value(serde_json::json!({"exact_name": true})).unwrap();
+    assert!(!old_table.PostgreSQLDateText);
+    assert!(
+        serde_json::to_value(&old_table)
+            .unwrap()
+            .get("postgresql_date_text")
+            .is_none()
+    );
+    let pg_date_table = TableInfo {
+        PostgreSQLDateText: true,
+        ..old_table
+    };
+    let encoded = serde_json::to_value(&pg_date_table).unwrap();
+    assert_eq!(encoded["postgresql_date_text"], true);
+    assert!(
+        serde_json::from_value::<TableInfo>(encoded)
+            .unwrap()
+            .PostgreSQLDateText
+    );
+
     let table_name = serde_json::to_value(TableNameInfo {
         ID: 7,
         Name: ast::NewCIStr("t"),

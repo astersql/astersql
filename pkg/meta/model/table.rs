@@ -89,6 +89,10 @@ pub struct TableInfo {
     /// Older tables keep their original binary float representation.
     #[serde(rename = "postgresql_float_text", skip_serializing_if = "std::ops::Not::not")]
     pub PostgreSQLFloatText: bool,
+    /// PG dates preserve the full calendar domain in string Datum storage.
+    /// Absent on older tables, whose packed MySQL date rows stay readable.
+    #[serde(rename = "postgresql_date_text", skip_serializing_if = "std::ops::Not::not")]
+    pub PostgreSQLDateText: bool,
     /// 默认字符集。
     #[serde(rename = "charset")]
     pub Charset: String,

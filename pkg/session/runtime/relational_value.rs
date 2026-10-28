@@ -4099,6 +4099,45 @@ pub(super) fn pg_date_source(expression: &ast::ExprNode) -> bool {
     })
 }
 
+/// Timestamp identity is fixed by the AST/catalog, including typed NULL.
+pub(super) fn pg_timestamp_source(expression: &ast::ExprNode) -> bool {
+    PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+        .GetType()
+            == astersql_parser_mysql::r#type::TypeDatetime
+    })
+}
+
+/// Drop the wall-clock time using floor division before the PG epoch. A timestamp
+/// without time zone has no instant to shift using the session or host timezone.
+pub(super) fn pg_timestamp_to_date_value(value: Option<String>) -> SessionResult<Option<String>> {
+    use astersql_types::pg_temporal::{PgDate, PgTimestamp};
+    value
+        .map(|text| {
+            let result = text.parse::<PgTimestamp>().and_then(|timestamp| {
+                let days = match timestamp.micros() {
+                    i64::MIN => i32::MIN,
+                    i64::MAX => i32::MAX,
+                    micros => micros.div_euclid(86_400_000_000) as i32,
+                };
+                PgDate::from_binary(&days.to_be_bytes())
+            });
+            result.map(|date| date.to_string()).map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            })
+        })
+        .transpose()
+}
+
 /// A typed DATE becomes a wall-clock midnight, independent of session timezone.
 /// Check the narrower timestamp domain after widening the date epoch count.
 pub(super) fn pg_date_to_timestamp_value(

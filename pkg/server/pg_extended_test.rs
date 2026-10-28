@@ -27786,3 +27786,312 @@ fn pg06_task_072() {
         before
     );
 }
+
+#[test]
+fn pg06_task_073() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    // Old PG catalogs have no date storage marker. Keep their packed rows readable.
+    let mut legacy = astersql_meta_model::TableInfo {
+        Name: astersql_parser_ast::NewCIStr("pg06_073_legacy"),
+        ExactName: true,
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    assert!(!legacy.PostgreSQLDateText);
+    for (index, (name, tp)) in [
+        ("id", astersql_parser_mysql::r#type::TypeLong),
+        ("v", astersql_parser_mysql::r#type::TypeDate),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut column = astersql_meta_model::ColumnInfo {
+            ID: index as i64 + 1,
+            Name: astersql_parser_ast::NewCIStr(name),
+            Offset: index as isize,
+            State: astersql_meta_model::StatePublic,
+            ..Default::default()
+        };
+        column.FieldType.SetType(tp);
+        legacy.Columns.push(column);
+    }
+    domain.ddl_create_table("test", legacy, false).unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+
+    fn metadata(m: &(u8, Vec<u8>), format: i16, modifier: i32) {
+        assert_eq!(m.0, b'T', "{m:?}");
+        assert_eq!(
+            &m.1[m.1.len() - 12..],
+            [
+                1082u32.to_be_bytes().as_slice(),
+                &4i16.to_be_bytes(),
+                &modifier.to_be_bytes(),
+                &format.to_be_bytes()
+            ]
+            .concat()
+        );
+    }
+    fn recover(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    let cases = [
+        (Some("2000-01-01 00:00:00"), Some("2000-01-01")),
+        (Some("1999-12-31 23:59:59.999999"), Some("1999-12-31")),
+        (Some("2024-02-29 23:59:59.999999"), Some("2024-02-29")),
+        (Some("4713-11-24 23:59:59.999999 BC"), Some("4713-11-24 BC")),
+        (Some("294276-12-31 23:59:59.999999"), Some("294276-12-31")),
+        (Some("infinity"), Some("infinity")),
+        (Some("-infinity"), Some("-infinity")),
+        (None, None),
+    ];
+    for zone in ["UTC", "+08:00"] {
+        assert_eq!(
+            query(&mut socket, &format!("SET time_zone = '{zone}'"))[0].0,
+            b'C'
+        );
+        for (value, expected) in cases {
+            let literal = value.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+            let m = query(
+                &mut socket,
+                &format!("SELECT ({literal}::timestamp)::date AS v"),
+            );
+            assert_eq!(m[0].0, b'T', "zone={zone} value={value:?}: {m:?}");
+            metadata(&m[0], 0, -1);
+            assert_eq!(m[1], (b'D', row(&[expected])), "{zone} {value:?}");
+        }
+    }
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+    parse(&mut socket, "explicit", "SELECT $1::date AS v", &[1114]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sexplicit\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [1i16.to_be_bytes().as_slice(), &1114u32.to_be_bytes()].concat()
+        )
+    );
+    metadata(&read(&mut socket), 0, -1);
+    for fmt in [0i16, 1] {
+        for (value, expected) in cases {
+            let mut body = [
+                b"\0explicit\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat();
+            if let Some(v) = value {
+                body.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                body.extend_from_slice(v.as_bytes());
+            } else {
+                body.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            body.extend_from_slice(&1i16.to_be_bytes());
+            body.extend_from_slice(&fmt.to_be_bytes());
+            send(&mut socket, b'B', &body);
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            send(&mut socket, b'D', b"P\0");
+            metadata(&read(&mut socket), fmt, -1);
+            execute(&mut socket, "", 0);
+            let expected = expected.map(|v| {
+                if fmt == 0 {
+                    v.as_bytes().to_vec()
+                } else {
+                    v.parse::<astersql_types::pg_temporal::PgDate>()
+                        .unwrap()
+                        .to_binary()
+                        .to_vec()
+                }
+            });
+            let mut data = 1i16.to_be_bytes().to_vec();
+            if let Some(v) = expected {
+                data.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                data.extend(v);
+            } else {
+                data.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            assert_eq!(read(&mut socket), (b'D', data));
+            assert_eq!(read(&mut socket).0, b'C');
+            recover(&mut socket);
+        }
+    }
+    for (value, state) in [
+        (b"garbage".as_slice(), "22007"),
+        (b"2023-02-29 00:00:00".as_slice(), "22008"),
+    ] {
+        bind_formats(&mut socket, "explicit", &[0], &[Some(value)]);
+        assert_state(&read(&mut socket), state);
+        recover(&mut socket);
+    }
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg06_073 (id INT PRIMARY KEY, v date)"
+        )[0]
+        .0,
+        b'C'
+    );
+    for sql in [
+        "INSERT INTO public.pg06_073 VALUES (1,'2024-02-29 00:00:00'::timestamp)",
+        "INSERT INTO public.pg06_073 SELECT 2,NULL::timestamp",
+        "UPDATE public.pg06_073 SET v='2000-01-01 00:00:00'::timestamp WHERE id=1",
+    ] {
+        let m = query(&mut socket, sql);
+        assert_eq!(m[0].0, b'C', "{sql}: {m:?}");
+    }
+    let original = query(&mut socket, "SELECT v FROM public.pg06_073 ORDER BY id");
+    metadata(&original[0], 0, -1);
+    assert_eq!(original[1], (b'D', row(&[Some("2000-01-01")])));
+    assert_eq!(original[2], (b'D', row(&[None])));
+    for sql in [
+        "UPDATE public.pg06_073 SET v='garbage'::timestamp WHERE id=1",
+        "INSERT INTO public.pg06_073 VALUES (3,'garbage'::timestamp)",
+    ] {
+        let m = query(&mut socket, sql);
+        assert_state(&m[0], "22007");
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+        recover(&mut socket);
+        assert_eq!(
+            query(&mut socket, "SELECT v FROM public.pg06_073 ORDER BY id"),
+            original
+        );
+    }
+    for (value, expected) in cases {
+        let literal = value.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+        let m = query(
+            &mut socket,
+            &format!("UPDATE public.pg06_073 SET v={literal}::timestamp WHERE id=1"),
+        );
+        assert_eq!(m[0].0, b'C', "{value:?}: {m:?}");
+        let m = query(&mut socket, "SELECT v FROM public.pg06_073 WHERE id=1");
+        metadata(&m[0], 0, -1);
+        assert_eq!(m[1], (b'D', row(&[expected])));
+    }
+    for date in [Some(0i64), None] {
+        let bytes = date.map(i64::to_be_bytes);
+        bind_formats(
+            &mut socket,
+            "explicit",
+            &[1],
+            &[bytes.as_ref().map(|v| v.as_slice())],
+        );
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        execute(&mut socket, "", 0);
+        assert_eq!(
+            read(&mut socket),
+            (b'D', row(&[date.map(|_| "2000-01-01")]))
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        recover(&mut socket);
+    }
+    let m = query(&mut socket, "SELECT (NULL::timestamp)::date AS v LIMIT 0");
+    metadata(&m[0], 0, -1);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg06_073_source (id INT PRIMARY KEY,d timestamp)"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "INSERT INTO public.pg06_073_source VALUES (1,'2024-02-29 00:00:00')"
+        )[0]
+        .0,
+        b'C'
+    );
+    let m = query(
+        &mut socket,
+        "SELECT d::date AS v FROM public.pg06_073_source",
+    );
+    metadata(&m[0], 0, -1);
+    assert_eq!(m[1], (b'D', row(&[Some("2024-02-29")])));
+    assert_eq!(
+        query(&mut socket, "DROP TABLE public.pg06_073_source")[0].0,
+        b'C'
+    );
+    for sql in [
+        "INSERT INTO public.pg06_073_legacy VALUES (1,'2024-02-29 23:59:59'::timestamp)",
+        "UPDATE public.pg06_073_legacy SET v='2000-01-01 00:00:00'::timestamp WHERE id=1",
+    ] {
+        let m = query(&mut socket, sql);
+        assert_eq!(m[0].0, b'C', "{sql}: {m:?}");
+    }
+    let m = query(&mut socket, "SELECT v FROM public.pg06_073_legacy");
+    metadata(&m[0], 0, -1);
+    assert_eq!(m[1], (b'D', row(&[Some("2000-01-01")])));
+    assert_eq!(
+        query(&mut socket, "DROP TABLE public.pg06_073_legacy")[0].0,
+        b'C'
+    );
+    // Source typmod rounding occurs before the date cast, including midnight carry.
+    for (input, expected) in [
+        ("2000-01-01 23:59:59.999500", "2000-01-02"),
+        ("1999-12-31 23:59:59.999500", "1999-12-31"),
+    ] {
+        let m = query(
+            &mut socket,
+            &format!("SELECT ('{input}'::timestamp(3))::date AS v"),
+        );
+        metadata(&m[0], 0, -1);
+        assert_eq!(m[1], (b'D', row(&[Some(expected)])));
+    }
+    // DATE promotes to timestamp in a common type; the assignment-only reverse
+    // direction must not silently discard the time during implicit inference.
+    let m = query(
+        &mut socket,
+        "SELECT coalesce(NULL::date,'2024-02-29 23:59:59'::timestamp) AS v",
+    );
+    assert_eq!(
+        &m[0].1[m[0].1.len() - 12..],
+        [
+            1114u32.to_be_bytes().as_slice(),
+            &8i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(m[1], (b'D', row(&[Some("2024-02-29 23:59:59")])));
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg06_073")[0].0, b'C');
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+}
