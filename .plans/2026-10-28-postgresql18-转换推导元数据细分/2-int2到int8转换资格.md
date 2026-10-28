@@ -2,7 +2,7 @@
 
 批次：【批次 2】 依赖批次 1（共享源码与验证资源串行交接）
 
-状态：未开始
+状态：已完成，待回归
 
 目的：只处理int2→int8有向对：前向E/A/I均允许；E为显式转换，A为目标列赋值，I为表达式隐式转换。数值舍入、溢出22003及NULL沿目标族，不能通过text串接。
 
@@ -63,10 +63,10 @@
 
 ## Progress
 
-- [ ] 核对依赖及生产差异依据。
-- [ ] 取得行为失败或既有正确行为的当前证据。
-- [ ] 完成实现、聚焦验证和Ready检查。
-- [ ] 完成交接、资源清理及适用提交。
+- [x] 核对依赖及生产差异依据。
+- [x] 取得行为失败或既有正确行为的当前证据。
+- [x] 完成实现、聚焦验证和Ready检查。
+- [x] 完成交接、资源清理及适用提交。
 
 ## Surprises & Discoveries
 
@@ -78,8 +78,27 @@
 
 ## Outcomes & Retrospective
 
-尚未实施，没有功能通过结论。实施者在此记录新证据、实际修改和剩余范围外事项。
+现有int2→int8实现通过新增真实TCP聚焦测试，无需生产修复；18.6固定参考差分待回归。
 
 ## 重试与恢复
 
 测试使用唯一临时表及系统分配端口；成功、失败及中断均关闭连接/listener、删除自己夹具，待子进程结束才释放槽位。可重复运行；保留缓存，不重置其他任务变更。
+
+## 执行记录（2026-10-28）
+
+批次1提交a5443dbc27已交付局部接口与TCP证据，状态为已完成，待18.6回归；可复用indexed_parameter_contract与prepare_statement_with_parameter_types。无doc.go，已读根/server协议、PLANS.md、执行及rustcodegraph技能。新增pg06_task_002，覆盖E/A/I、源边界、int8端点、舍入前置源转换、typed NULL、参数OID21与目标OID20/8/-1/格式0、Bind错误阶段与Sync恢复，同Server MySQL前后CAST。int2全域包含于int8，转换本身无目标溢出输入；非法值以源int2参数边界检查。当前无生产变更。固定18.6参考未配置，安装参考仅18.4，不冒充18.6证据。
+
+
+既有正确行为证据：新增测试首次即通过，没有人为制造失败，无生产修改。测试pg_extended_test::pg06_task_002实际执行1个，1 passed、0 failed、438 filtered out，退出0。包括int8上下端点混合算术得到精确整数，显式及参数结果OID20、typlen8、typmod-1，文本格式0；源参数描述仍为OID21。Bind非法整数22P02、两侧越界22003，错误后直接Sync得到Ready，无部分结果；未发送Execute，无执行副作用。无结果DML描述不适用。与同Server MySQL前后CAST结果一致。
+
+动态原子领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。持有shell记录PID及任务标识，所有Cargo子进程结束后EXIT trap用unlink/rmdir释放自己的owner与锁，保留缓存。确切验证命令（仓库根目录，Cargo均继承上述绝对路径）：
+
+- cargo fmt --all：退出0，测试前运行；日志/tmp/pg06-002-fmt.log。
+- env -u LDFLAGS cargo test --locked -p astersql-server --lib pg06_task_002 -- --nocapture：退出0，有效测试1；日志/tmp/pg06-002-initial.log。
+- make lint：退出0；日志/tmp/pg06-002-lint.log。
+- git diff --check：退出0。
+- /opt/homebrew/opt/postgresql@18/bin/postgres --version：退出0，18.4 (Homebrew)。仅版本检测，未声称18.4参考实测。
+
+WIP使用最小聚焦TCP用例，Ready执行任务规定的fmt、聚焦测试、make lint及diff检查；verify-profile技能缺失，不声称使用该技能。无Go/Bazel修改，未触发bazel_prepare，未运行bazel_lint_changed；无RealTiKV测试或外部依赖变更。唯一代码变更为已注册独立测试文件pkg/server/pg_extended_test.rs中的pg06_task_002，版权头已存在并保留。plan.md始终只读。
+
+验证限制：PG18_REFERENCE_DSN未配置，本机postgres仅18.4，未运行固定18.6参考差分；遵循任务规则保留本文件并标记已完成，待回归。不把其他版本或源码推定为18.6通过。未验证二进制结果格式、全量Rust/双协议回归及性能基准。正确性/兼容性/性能无生产行为变更风险；新增测试使用临时TCP端口、独立测试存储及RAII关闭Server。下一步在固定18.6参考端采集同输入的值、错误阶段及元数据，再完成回归并删除本文件。
