@@ -17,6 +17,151 @@
 
 use super::*;
 
+// Unknown is a property of a literal expression, never of its rendered value.
+// A nested set node has already resolved its output and is not unknown again.
+pub(super) fn pg_union_unknown_inputs(node: &dyn ast::Node, fields: &mut [ConcreteResultField]) {
+    fn unknown(expr: &ast::ExprNode) -> bool {
+        match &expr.Kind {
+            ast::ExprKind::Value(value) => matches!(
+                value.Datum,
+                ast::ValueDatum::Null | ast::ValueDatum::String(_)
+            ),
+            ast::ExprKind::Parentheses(inner) => unknown(inner),
+            _ => false,
+        }
+    }
+    if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+        for (field, projection) in fields.iter_mut().zip(&select.Fields.Fields) {
+            if projection.Expr.as_ref().is_some_and(unknown) {
+                field.column.FieldType =
+                    astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNull);
+            }
+        }
+    }
+}
+
+fn pg_union_error(message: &str, state: &'static str) -> SessionError {
+    SessionError::with_source(
+        message,
+        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+            state,
+            message: message.into(),
+            position: None,
+        }),
+    )
+}
+
+pub(super) fn pg_union_common_type(
+    left: &astersql_parser_types::FieldType,
+    right: &astersql_parser_types::FieldType,
+) -> SessionResult<astersql_parser_types::FieldType> {
+    use astersql_parser_mysql::r#type::*;
+    let text = || {
+        let mut tp = astersql_parser_types::NewFieldType(TypeVarString);
+        tp.SetPostgreSQLTextOid(25);
+        tp
+    };
+    let unknown = |tp: &astersql_parser_types::FieldType| tp.GetType() == TypeNull;
+    if unknown(left) && unknown(right) {
+        return Ok(text());
+    }
+    if unknown(left) {
+        return Ok(right.clone());
+    }
+    if unknown(right) {
+        return Ok(left.clone());
+    }
+    use astersql_parser_types::PostgreSQLArrayElement as E;
+    let numeric = |tp: &astersql_parser_types::FieldType| {
+        if let Some(element) = tp.PostgreSQLArrayElement() {
+            return [E::Int2, E::Int4, E::Int8, E::Numeric, E::Float4, E::Float8]
+                .iter()
+                .position(|e| *e == element);
+        }
+        if tp.GetFlag() & IsBooleanFlag != 0 {
+            return None;
+        }
+        [
+            TypeShort,
+            TypeLong,
+            TypeLonglong,
+            TypeNewDecimal,
+            TypeFloat,
+            TypeDouble,
+        ]
+        .iter()
+        .position(|code| *code == tp.GetType())
+    };
+    let string = |tp: &astersql_parser_types::FieldType| {
+        tp.PostgreSQLTextOid().is_some()
+            || matches!(
+                tp.PostgreSQLArrayElement(),
+                Some(E::Text | E::Varchar | E::Bpchar)
+            )
+    };
+    let datetime = |tp: &astersql_parser_types::FieldType| {
+        if let Some(element) = tp.PostgreSQLArrayElement() {
+            return [E::Date, E::Timestamp, E::Timestamptz]
+                .iter()
+                .position(|e| *e == element);
+        }
+        [TypeDate, TypeDatetime, TypePgTimestampTz]
+            .iter()
+            .position(|code| *code == tp.GetType())
+    };
+    let category = |tp: &astersql_parser_types::FieldType| {
+        if tp.PostgreSQLArrayElement().is_some() {
+            1
+        } else if numeric(tp).is_some() {
+            2
+        } else if string(tp) {
+            3
+        } else if tp.GetFlag() & IsBooleanFlag != 0 {
+            4
+        } else if datetime(tp).is_some() || tp.GetType() == TypeDuration {
+            5
+        } else if tp.GetType() == TypePgInterval {
+            6
+        } else {
+            7
+        } // The currently supported bytea/UUID/JSON types are category U.
+    };
+    if category(left) != category(right) {
+        return Err(pg_union_error("UNION types cannot be matched", "42804"));
+    }
+    // Literal and CAST boolean carriers use different MySQL codes but have
+    // the same PostgreSQL identity; flags distinguish them from integers.
+    let both_boolean = left.GetFlag() & IsBooleanFlag != 0 && right.GetFlag() & IsBooleanFlag != 0;
+    let same = (left.GetType() == right.GetType() || both_boolean)
+        && left.PostgreSQLTextOid() == right.PostgreSQLTextOid()
+        && left.PostgreSQLArrayElement() == right.PostgreSQLArrayElement()
+        && (left.GetFlag() & IsBooleanFlag) == (right.GetFlag() & IsBooleanFlag);
+    let mut result = if same {
+        left.clone()
+    } else if let (Some(l), Some(r)) = (numeric(left), numeric(right)) {
+        // Forward numeric casts are implicit; reverse casts are assignment only.
+        if l < r { right.clone() } else { left.clone() }
+    } else if let (Some(l), Some(r)) = (datetime(left), datetime(right)) {
+        if l < r { right.clone() } else { left.clone() }
+    } else if string(left) && string(right) {
+        // Both directions are implicit, so the left candidate remains.
+        // A preferred type only stops an existing candidate search; it does
+        // not replace a candidate that can accept the later input.
+        left.clone()
+    } else {
+        return Err(pg_union_error(
+            "UNION could not convert type to candidate type",
+            "42846",
+        ));
+    };
+    // Retain a typmod only if both inputs have the same type and modifier.
+    if !same || left.GetFlen() != right.GetFlen() || left.GetDecimal() != right.GetDecimal() {
+        result.SetFlen(-1);
+        result.SetDecimal(-1);
+    }
+    Ok(result)
+}
+
 fn projection_original_text(text: &str) -> String {
     let mut remaining = text;
     let mut output = String::with_capacity(text.len());
@@ -3946,24 +4091,37 @@ impl ConcreteSession {
             &ctes,
         )?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-            // A bare NULL is still unknown here: let a typed set-operation
-            // input supply its identity before the wire layer defaults it to
-            // text. Explicitly cast NULLs already have a type and must keep it.
-            for select in list.selects.iter().skip(1) {
-                if fields.iter().all(|field| {
-                    field.column.FieldType.GetType() != astersql_parser_mysql::r#type::TypeNull
-                }) {
-                    break;
-                }
-                let inputs = self.relational_query_node_result_fields_with_ctes(
+            pg_union_unknown_inputs(first.as_ref(), &mut fields);
+            // Each pair becomes a typed input for the next pair. In particular,
+            // (unknown UNION unknown) is text before a later numeric input.
+            for (pair, select) in list.selects.iter().skip(1).enumerate() {
+                let mut inputs = self.relational_query_node_result_fields_with_ctes(
                     select.as_ref(),
                     &[],
                     &ctes,
                 )?;
-                for (field, input) in fields.iter_mut().zip(inputs) {
-                    if field.column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeNull {
-                        field.column.FieldType = input.column.FieldType;
+                pg_union_unknown_inputs(select.as_ref(), &mut inputs);
+                if fields.len() != inputs.len() {
+                    return Err(pg_union_error(
+                        "each UNION query must have the same number of columns",
+                        "42601",
+                    ));
+                }
+                for (column, (field, input)) in fields.iter_mut().zip(inputs).enumerate() {
+                    field.column.FieldType =
+                        pg_union_common_type(&field.column.FieldType, &input.column.FieldType)?;
+                    if pair == 0 {
+                        self.pg_union_validate_unknown(
+                            first.as_ref(),
+                            column,
+                            &field.column.FieldType,
+                        )?;
                     }
+                    self.pg_union_validate_unknown(
+                        select.as_ref(),
+                        column,
+                        &field.column.FieldType,
+                    )?;
                 }
             }
         }
@@ -3971,6 +4129,80 @@ impl ConcreteSession {
             field.column_origin = None;
         }
         Ok(fields)
+    }
+
+    fn pg_union_validate_unknown(
+        &self,
+        node: &dyn ast::Node,
+        column: usize,
+        target: &astersql_parser_types::FieldType,
+    ) -> SessionResult<()> {
+        let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() else {
+            return Ok(());
+        };
+        let Some(mut expr) = select
+            .Fields
+            .Fields
+            .get(column)
+            .and_then(|field| field.Expr.as_ref())
+        else {
+            return Ok(());
+        };
+        while let ast::ExprKind::Parentheses(inner) = &expr.Kind {
+            expr = inner;
+        }
+        if let ast::ExprKind::Value(value) = &expr.Kind
+            && let ast::ValueDatum::String(text) = &value.Datum
+        {
+            // Coercing an unknown literal invokes the target input function
+            // during analysis, before ParseComplete can be sent.
+            let source =
+                astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNull);
+            self.pg_union_cast_value(Some(text.clone()), &source, target)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn pg_union_cast_value(
+        &self,
+        value: Option<String>,
+        source: &astersql_parser_types::FieldType,
+        target: &astersql_parser_types::FieldType,
+    ) -> SessionResult<Option<String>> {
+        if value.is_none() || source == target {
+            return Ok(value);
+        }
+        use astersql_parser_mysql::r#type::*;
+        fn cast(expr: ast::ExprNode, tp: &astersql_parser_types::FieldType) -> ast::ExprNode {
+            let mut result = ast::ExprNode::NullValue();
+            let function = if tp.PostgreSQLArrayElement().is_some() {
+                ast::CastFunctionType::Cast
+            } else {
+                match tp.GetType() {
+                    TypeShort => ast::CastFunctionType::PostgreSQLInt2,
+                    TypeLong => ast::CastFunctionType::PostgreSQLInt4,
+                    TypeLonglong if tp.GetFlag() & IsBooleanFlag == 0 => {
+                        ast::CastFunctionType::PostgreSQLInt8
+                    }
+                    TypeNewDecimal => ast::CastFunctionType::PostgreSQLNumeric,
+                    TypeFloat => ast::CastFunctionType::PostgreSQLFloat4,
+                    TypeDouble => ast::CastFunctionType::PostgreSQLFloat8,
+                    _ => ast::CastFunctionType::Cast,
+                }
+            };
+            result.Kind = ast::ExprKind::Cast {
+                Expr: Box::new(expr),
+                Tp: tp.clone(),
+                FunctionType: function,
+                ExplicitCharSet: false,
+            };
+            result
+        }
+        let mut expr = ast::NewValueExpr(value, "utf8mb4", "utf8mb4_bin");
+        if source.GetType() != TypeNull {
+            expr = cast(expr, source);
+        }
+        self.relational_query_expression_value(&cast(expr, target), &HashMap::new(), None)
     }
 
     pub(super) fn execute_relational_query_record_set(

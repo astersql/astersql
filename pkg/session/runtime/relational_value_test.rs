@@ -1181,14 +1181,14 @@ fn pg06_task_079_interval_time_components() {
 fn pg06_task_085_unknown_null_set_identity() {
     use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
     use astersql_parser_ast::SqlDialect;
-    use astersql_parser_mysql::r#type::{TypeLong, TypeNull};
+    use astersql_parser_mysql::r#type::{TypeLong, TypeVarString};
     let (domain, _) = CreateAnalyzeSession().unwrap();
     let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
     for (sql, expected) in [
         ("SELECT NULL UNION SELECT 1::int4", TypeLong),
         ("SELECT (NULL) UNION SELECT 1::int4", TypeLong),
         ("SELECT NULL::int4 UNION SELECT NULL", TypeLong),
-        ("SELECT NULL UNION SELECT NULL", TypeNull),
+        ("SELECT NULL UNION SELECT NULL", TypeVarString),
     ] {
         let fields = pg.describe_result_fields(sql).unwrap();
         assert_eq!(fields.len(), 1, "{sql}");

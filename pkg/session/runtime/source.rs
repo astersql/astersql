@@ -1187,17 +1187,61 @@ impl ConcreteSession {
         let first = branches
             .next()
             .ok_or_else(|| SessionError::new("INSERT SELECT set operation is empty"))?;
+        let pg = self.sql_dialect() == ast::SqlDialect::PostgreSQL;
+        // Resolve the entire tree before evaluating any branch.
+        if pg {
+            self.relational_query_node_result_fields(list, &[])?;
+        }
+        let mut left_fields = if pg {
+            let mut fields = self.relational_query_node_result_fields(first.as_ref(), &[])?;
+            super::query::pg_union_unknown_inputs(first.as_ref(), &mut fields);
+            fields
+        } else {
+            Vec::new()
+        };
         let mut result = self.execute_insert_select_node_with_outer(first.as_ref(), outer)?;
         let columns = result.columns.clone();
         let mut values = self.insert_select_row_values(&result);
         for (index, branch) in branches.enumerate() {
+            let mut right_fields = if pg {
+                let mut fields = self.relational_query_node_result_fields(branch.as_ref(), &[])?;
+                super::query::pg_union_unknown_inputs(branch.as_ref(), &mut fields);
+                fields
+            } else {
+                Vec::new()
+            };
             let branch = self.execute_insert_select_node_with_outer(branch.as_ref(), outer)?;
             if branch.columns.len() != columns.len() {
                 return Err(SessionError::new(
                     "INSERT SELECT set-operation column counts differ",
                 ));
             }
-            let right = self.insert_select_row_values(&branch);
+            let mut right = self.insert_select_row_values(&branch);
+            if pg {
+                for (column, (left_field, right_field)) in
+                    left_fields.iter_mut().zip(&mut right_fields).enumerate()
+                {
+                    let target = super::query::pg_union_common_type(
+                        &left_field.column.FieldType,
+                        &right_field.column.FieldType,
+                    )?;
+                    for row in &mut values {
+                        row[column] = self.pg_union_cast_value(
+                            row[column].take(),
+                            &left_field.column.FieldType,
+                            &target,
+                        )?;
+                    }
+                    for row in &mut right {
+                        row[column] = self.pg_union_cast_value(
+                            row[column].take(),
+                            &right_field.column.FieldType,
+                            &target,
+                        )?;
+                    }
+                    left_field.column.FieldType = target;
+                }
+            }
             let operator = list
                 .operators
                 .get(index + 1)

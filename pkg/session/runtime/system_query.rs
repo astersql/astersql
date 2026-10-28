@@ -4146,6 +4146,11 @@ impl ConcreteSession {
         &self,
         statement: &ast::SetOprStmt,
     ) -> SessionResult<ConcreteRecordSet> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // Reuse the relational AST executor for nested UNION pairs and
+            // their coercions; the MySQL constant path retains its behavior.
+            return self.execute_relational_query_record_set(statement);
+        }
         let mut columns = None;
         let mut rows = Vec::new();
         for (index, node) in statement.select_list.selects.iter().enumerate() {
