@@ -2457,6 +2457,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypePgInterval
                                             | astersql_parser_mysql::r#type::TypePgUuid
                                             | astersql_parser_mysql::r#type::TypePgJson
+                                            | astersql_parser_mysql::r#type::TypePgJsonb
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -2484,6 +2485,7 @@ impl ConcreteSession {
                             | astersql_parser_mysql::r#type::TypePgInterval
                             | astersql_parser_mysql::r#type::TypePgUuid
                             | astersql_parser_mysql::r#type::TypePgJson
+                            | astersql_parser_mysql::r#type::TypePgJsonb
                     ) {
                         self.relational_query_expression_value(expression, &row, None)?
                     } else {
@@ -3805,6 +3807,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypePgInterval
                                             | astersql_parser_mysql::r#type::TypePgUuid
                                             | astersql_parser_mysql::r#type::TypePgJson
+                                            | astersql_parser_mysql::r#type::TypePgJsonb
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag

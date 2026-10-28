@@ -15,7 +15,8 @@ pub(super) fn validate_cast(source: &FieldType, target: &FieldType) -> SessionRe
     if (target_jsonb
         && (source_jsonb || source.GetType() == TypePgJson || text || source.GetType() == TypeNull))
         || (source_jsonb
-            && (target.GetType() == TypePgJson || target.PostgreSQLTextOid() == Some(25)))
+            && (target.GetType() == TypePgJson
+                || matches!(target.PostgreSQLTextOid(), Some(25 | 1042 | 1043))))
     {
         Ok(())
     } else {
