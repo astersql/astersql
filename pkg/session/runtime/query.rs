@@ -3745,11 +3745,14 @@ impl ConcreteSession {
                         }
                         let mut expression = ast::NewValueExpr(value, "utf8mb4", "utf8mb4_bin");
                         if let Some(field) = source_fields.get(index) {
-                            // Retain float4 identity so integer assignment uses
+                            // Retain float identity so integer assignment uses
                             // source-specific rounding instead of text input.
                             if field.column.FieldType.PostgreSQLTextOid() == Some(1042)
-                                || field.column.GetType()
-                                    == astersql_parser_mysql::r#type::TypeFloat
+                                || matches!(
+                                    field.column.GetType(),
+                                    astersql_parser_mysql::r#type::TypeFloat
+                                        | astersql_parser_mysql::r#type::TypeDouble
+                                )
                             {
                                 if let ast::ExprKind::Value(value) = &mut expression.Kind {
                                     value.Type = field.column.FieldType.clone();
