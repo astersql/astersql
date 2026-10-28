@@ -2687,6 +2687,14 @@ impl ConcreteSession {
                 ) {
                     return astersql_parser_types::NewFieldType(TypeFloat);
                 }
+                // int2 widens exactly to float8 in mixed PG arithmetic.
+                use astersql_parser_mysql::r#type::TypeDouble;
+                if matches!(
+                    (left.GetType(), right.GetType()),
+                    (TypeShort, TypeDouble) | (TypeDouble, TypeShort)
+                ) {
+                    return astersql_parser_types::NewFieldType(TypeDouble);
+                }
             }
             match &expression.Kind {
                 ast::ExprKind::Cast { Tp, .. }

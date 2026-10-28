@@ -2,7 +2,7 @@
 
 批次：【批次 5】 依赖批次 4（共享源码与验证资源串行交接）
 
-状态：未开始
+状态：已完成，待回归
 
 目的：只处理int2→float8有向对：前向E/A/I均允许；E为显式转换，A为目标列赋值，I为表达式隐式转换。数值舍入、溢出22003及NULL沿目标族，不能通过text串接。
 
@@ -63,10 +63,10 @@
 
 ## Progress
 
-- [ ] 核对依赖及生产差异依据。
-- [ ] 取得行为失败或既有正确行为的当前证据。
-- [ ] 完成实现、聚焦验证和Ready检查。
-- [ ] 完成交接、资源清理及适用提交。
+- [x] 核对依赖及生产差异依据。
+- [x] 取得行为失败或既有正确行为的当前证据。
+- [x] 完成实现、聚焦验证和Ready检查。
+- [x] 完成交接、资源清理及适用提交。
 
 ## Surprises & Discoveries
 
@@ -78,8 +78,29 @@
 
 ## Outcomes & Retrospective
 
-尚未实施，没有功能通过结论。实施者在此记录新证据、实际修改和剩余范围外事项。
+本地TDD闭环和Ready检查通过；固定PostgreSQL18.6参考差分缺证，按用户允许的环境例外保留文件待回归。
 
 ## 重试与恢复
 
 测试使用唯一临时表及系统分配端口；成功、失败及中断均关闭连接/listener、删除自己夹具，待子进程结束才释放槽位。可重复运行；保留缓存，不重置其他任务变更。
+
+## 执行记录（2026-10-28）
+
+批次4提交835caa5ac0已完成本地行为与Ready验证，18.6参考环境缺证独立待回归；局部接口可消费。已阅读根/server规则、PLANS.md、执行/RustCodeGraph技能和路线图第3章转换及准备描述契约。RustCodeGraph索引存在，node仅返回签名，直接读取query.rs核查当前int2/float4局部分支。新增pg06_task_005复用已注册TCP夹具，覆盖E/A/I、上下界和NULL、源参数OID21、结果701/8/-1及文本格式0、非法源Bind错误22003/22P02、Sync恢复、失败赋值无副作用、同Server MySQL前后CAST隔离。int2全域均能由float8精确表示，目标舍入/溢出边界不可达，不通过text或反向转换制造输入。
+
+PG18_REFERENCE_DSN未配置；postgres --version为18.4 (Homebrew)，不能替代固定18.6参考；保留参考待回归。verify-profile技能缺失；本轮按WIP聚焦、Ready的fmt/test/lint/diff清单执行。不改Go/Bazel/依赖，不触发bazel_prepare。
+
+首次行为验证：槽位1，cargo fmt --all退出0；指定cargo test命令退出101，实际1 failed，OID实际20/预期701。日志/tmp/pg06-005-test.log（复验前归档initial）。生产修改仅query.rs::relational_query_expression_type_from_sources的PG加减乘int2/float8双向操作数组合返回TypeDouble；依据第3章前向I资格及701/8/-1结果身份，复用已有求值，不改变MySQL或其他类型对。版权头已存在并保留。make lint退出0，日志/tmp/pg06-005-lint.log。
+
+最终验证：相同命令、相同输入实际1 passed、0 failed、441 filtered out，退出0；初次1 failed退出101，明确OID20/701失败。通过测试涵盖E/A/I、边界与NULL、参数OID21/结果701/8/-1、Describe statement/portal稳定、文本格式0、Bind源越界22003/非法22P02、无部分行与无赋值副作用、Sync后SELECT 1::int4恢复及同Server MySQL整数CAST隔离。DROP成功、RAII服务关闭。
+
+确切命令（仓库根目录）：
+- cargo fmt --all：初次和修复后均退出0，日志/tmp/pg06-005-fmt.log。
+- env -u LDFLAGS cargo test --locked -p astersql-server --lib pg06_task_005 -- --nocapture：初次101（1 failed，日志/tmp/pg06-005-initial.log），修复后0（1 passed，日志/tmp/pg06-005-test.log）。
+- make lint：退出0，日志/tmp/pg06-005-lint.log。
+- git diff --check：退出0。
+- /opt/homebrew/opt/postgresql@18/bin/postgres --version：退出0，仅18.4 (Homebrew)，没有拿它替代18.6实测。
+
+两阶段均原子动态领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；owner含任务、会话及shell PID。全部Cargo与测试子进程退出后EXIT trap unlink自己的owner并rmdir锁，缓存保留。WIP用于红/绿TCP，Ready执行fmt、聚焦测试、make lint、diff自审；未声称调用不存在的verify-profile技能。未改Go/Bazel，不触发bazel_prepare，不运行bazel_lint_changed。plan.md保持只读。
+
+变更仅query.rs局部分支、pg_extended_test.rs独立测试和本任务记录，使用git-commit技能单独提交，不push。正确性风险为未覆盖的复杂表达式组合；兼容性基本MySQL隔离已通过，固定18.6参考、binary结果和全量双协议未验证；性能只增加一个PG类型对判断，无基准。下一步在固定18.6端重放相同SQL/参数并采集描述、值及错误阶段差分；无关环境缺证故保留本任务为已完成，待回归，不删除。
