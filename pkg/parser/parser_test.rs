@@ -4997,6 +4997,7 @@ fn pg_scalar_21_text_cast_identity() {
         ("character varying", 1043, -1),
         ("char varying", 1043, -1),
         ("bpchar", 1042, -1),
+        ("bpchar(3)", 1042, 3),
         ("char", 1042, 1),
     ] {
         for sql in [
@@ -5039,6 +5040,7 @@ fn pg_scalar_21_text_cast_identity() {
         "SELECT NULL::varchar",
         "SELECT CAST(NULL AS varchar)",
         "SELECT NULL::bpchar",
+        "SELECT NULL::bpchar(3)",
     ] {
         assert!(
             crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL)

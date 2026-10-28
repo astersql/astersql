@@ -1497,8 +1497,11 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 return Err(1);
             }
             // Timestamptz uses one SQL fractional-second precision, independently
-            // of the parameter's OID. Other identifier targets have no modifier.
-            if matches!(rhs_len, 4 | 5) && tp != parser_mysql::r#type::TypePgTimestampTz {
+            // of the parameter's OID. BPCHAR also accepts a character length.
+            if matches!(rhs_len, 4 | 5)
+                && tp != parser_mysql::r#type::TypePgTimestampTz
+                && !(spelling.eq_ignore_ascii_case("bpchar") && rhs_len == 4)
+            {
                 yylex.AppendError(errors::New("unsupported PostgreSQL type modifier"));
                 return Err(1);
             }
@@ -1580,7 +1583,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     } else {
                         -1
                     };
-                let length = if rhs_len == 2 {
+                let length = if spelling.eq_ignore_ascii_case("bpchar") && rhs_len == 4 {
+                    rhs[3].item.as_deref().and_then(semantic_numeric_isize).unwrap_or(0)
+                } else if rhs_len == 2 {
                     rhs[2]
                         .item
                         .as_deref()
