@@ -1262,14 +1262,20 @@ impl Extended {
             }
             return Err(error("0A000", "engine parameter count mismatch"));
         }
-        // Inference comes from parsed engine expressions, in occurrence
-        // order. Fold those constraints into PostgreSQL parameter order;
-        // the first direct cast fixes an unspecified source type.
-        for ((index, occurrence), oid) in analysis_mapping
+        let mut constraints = analysis_mapping
             .iter()
             .zip(&analysis_occurrences)
             .zip(&metadata.parameter_cast_oids)
-        {
+            .collect::<Vec<_>>();
+        // PostgreSQL transforms explicit expressions before coercing DML
+        // targets. Establish cast source identities first, then require every
+        // direct assignment of the same indexed parameter to agree.
+        constraints.sort_by_key(|((_, occurrence), _)| {
+            parameter_contract
+                .get(**occurrence)
+                .is_some_and(|(_, _, assignment)| *assignment)
+        });
+        for ((index, occurrence), oid) in constraints {
             if oids[*index] == 0 {
                 oids[*index] = *oid;
             } else if *oid != 0
