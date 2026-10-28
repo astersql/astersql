@@ -2446,6 +2446,8 @@ impl ConcreteSession {
                                 && (relational_expression_type(expression, &table)
                                     .PostgreSQLTextOid()
                                     == Some(1042)
+                                    || relational_expression_type(expression, &table).GetType()
+                                        == astersql_parser_mysql::r#type::TypeNewDecimal
                                     || super::relational_value::pg_bytea_text_pair(
                                         &relational_expression_type(expression, &table),
                                         &column.FieldType,
@@ -2453,6 +2455,8 @@ impl ConcreteSession {
                     })
                 {
                     // Stored text columns use the shared nonbinary BLOB type.
+                    // Numeric output must retain its PG scale and special values,
+                    // including UPDATE expressions unsupported by the MySQL evaluator.
                     let mut target = column_info.unwrap().FieldType.clone();
                     if target.PostgreSQLTextOid().is_none() {
                         target.SetPostgreSQLTextOid(25);
@@ -3762,12 +3766,16 @@ impl ConcreteSession {
                                 && (relational_expression_type(expression, &table)
                                     .PostgreSQLTextOid()
                                     == Some(1042)
+                                    || relational_expression_type(expression, &table).GetType()
+                                        == astersql_parser_mysql::r#type::TypeNewDecimal
                                     || super::relational_value::pg_bytea_text_pair(
                                         &relational_expression_type(expression, &table),
                                         &column.FieldType,
                                     )))
                     }) {
                     // Stored text columns use the shared nonbinary BLOB type.
+                    // Numeric output must retain its PG scale and special values,
+                    // including UPDATE expressions unsupported by the MySQL evaluator.
                     let mut target = column_info.unwrap().FieldType.clone();
                     if target.PostgreSQLTextOid().is_none() {
                         target.SetPostgreSQLTextOid(25);
