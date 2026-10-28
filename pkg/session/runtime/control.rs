@@ -1783,7 +1783,7 @@ impl ConcreteSession {
                 }
             }
             if execution && self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-                self.pg_intersect_execution_fields(statement.as_ref(), &mut fields)?;
+                self.pg_setop_execution_fields(statement.as_ref(), &mut fields)?;
             }
             Ok(fields)
         } else {
