@@ -2604,8 +2604,12 @@ impl ConcreteSession {
                     )
                     .GetType()
                         != astersql_parser_mysql::r#type::TypeNewDecimal
-                        && !(*function_type == ast::CastFunctionType::PostgreSQLInt2
-                            && source.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal)
+                        && !(matches!(
+                            function_type,
+                            ast::CastFunctionType::PostgreSQLInt2
+                                | ast::CastFunctionType::PostgreSQLInt4
+                        ) && source.GetType()
+                            == astersql_parser_mysql::r#type::TypeNewDecimal)
                         && source.GetType() != astersql_parser_mysql::r#type::TypeNull
                         && !matches!(
                             source.EvalType(),
