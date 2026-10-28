@@ -22330,3 +22330,235 @@ fn pg06_task_050() {
         before
     );
 }
+
+#[test]
+fn pg06_task_051() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    // Build a real interval catalog/storage fixture through the domain API;
+    // Parse/Bind/Execute and conversion checks still use the TCP service.
+    let columns = [
+        ("id", astersql_parser_mysql::r#type::TypeLong),
+        ("v", astersql_parser_mysql::r#type::TypePgInterval),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (name, tp))| {
+        let mut column = astersql_meta_model::ColumnInfo {
+            ID: index as i64 + 1,
+            Name: astersql_parser_ast::NewCIStr(name),
+            Offset: index as isize,
+            State: astersql_meta_model::StatePublic,
+            ..Default::default()
+        };
+        column.FieldType.SetType(tp);
+        column
+    })
+    .collect();
+    domain
+        .ddl_create_table(
+            "test",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("pg06_051"),
+                Columns: columns,
+                State: astersql_meta_model::StatePublic,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+
+    fn metadata(m: &(u8, Vec<u8>), format: i16) {
+        assert_eq!(m.0, b'T', "{m:?}");
+        assert_eq!(
+            &m.1[m.1.len() - 12..],
+            [
+                1186u32.to_be_bytes().as_slice(),
+                &(16i16).to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &format.to_be_bytes()
+            ]
+            .concat()
+        );
+    }
+    fn recover(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    let cases = [
+        (Some("1 day"), Some("1 day")),
+        (Some("2147483647 days"), Some("2147483647 days")),
+        (Some("-1 day"), Some("-1 days")),
+        (Some("1.1234567 seconds"), Some("00:00:01.123457")),
+        (None, None),
+    ];
+    for (value, expected) in cases {
+        let literal = value
+            .map(|v| format!("'{}'", v.replace('\\', "\\\\")))
+            .unwrap_or("NULL".into());
+        let m = query(
+            &mut socket,
+            &format!("SELECT ({literal}::text)::interval AS v"),
+        );
+        metadata(&m[0], 0);
+        assert_eq!(m[1], (b'D', row(&[expected])));
+    }
+    parse(
+        &mut socket,
+        "explicit",
+        "SELECT ($1::text)::interval AS v",
+        &[25],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sexplicit\0");
+    assert_eq!(read(&mut socket), (b't', vec![0, 1, 0, 0, 0, 25]));
+    metadata(&read(&mut socket), 0);
+    for fmt in [0i16, 1] {
+        for (value, expected) in cases {
+            let mut body = [
+                b"\0explicit\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &fmt.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat();
+            if let Some(value) = value {
+                body.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                body.extend_from_slice(value.as_bytes());
+            } else {
+                body.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            body.extend_from_slice(&1i16.to_be_bytes());
+            body.extend_from_slice(&fmt.to_be_bytes());
+            send(&mut socket, b'B', &body);
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            send(&mut socket, b'D', b"P\0");
+            metadata(&read(&mut socket), fmt);
+            execute(&mut socket, "", 0);
+            let expected = expected.map(|v| {
+                if fmt == 0 {
+                    v.as_bytes().to_vec()
+                } else {
+                    let (micros, days): (i64, i32) = match v {
+                        "1 day" => (0, 1),
+                        "2147483647 days" => (0, i32::MAX),
+                        "-1 days" => (0, -1),
+                        "00:00:01.123457" => (1123457, 0),
+                        _ => unreachable!(),
+                    };
+                    [
+                        micros.to_be_bytes().as_slice(),
+                        &days.to_be_bytes(),
+                        &0i32.to_be_bytes(),
+                    ]
+                    .concat()
+                }
+            });
+            let mut data = 1i16.to_be_bytes().to_vec();
+            if let Some(v) = expected {
+                data.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                data.extend(v);
+            } else {
+                data.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            assert_eq!(read(&mut socket), (b'D', data));
+            assert_eq!(read(&mut socket).0, b'C');
+            recover(&mut socket);
+        }
+    }
+    for (value, state) in [
+        ("1 day suffix", "22007"),
+        ("1 day garbage", "22007"),
+        ("", "22007"),
+        ("2147483648 days", "22015"),
+    ] {
+        bind_formats(&mut socket, "explicit", &[0], &[Some(value.as_bytes())]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        execute(&mut socket, "", 0);
+        assert_state(&read(&mut socket), state);
+        recover(&mut socket);
+    }
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg06_051_src (id INT PRIMARY KEY,v text)"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "INSERT INTO public.pg06_051_src VALUES (1,'1 day'::text)"
+        )[0]
+        .0,
+        b'C'
+    );
+    let from_column = query(&mut socket, "SELECT v::interval FROM public.pg06_051_src");
+    metadata(&from_column[0], 0);
+    assert_eq!(from_column[1], (b'D', row(&[Some("1 day")])));
+    assert_eq!(
+        query(&mut socket, "DROP TABLE public.pg06_051_src")[0].0,
+        b'C'
+    );
+    for sql in [
+        "INSERT INTO public.pg06_051 VALUES (1,'1 day'::text)",
+        "UPDATE public.pg06_051 SET v=NULL::text",
+        "INSERT INTO public.pg06_051 SELECT 1,'1 day'::text",
+        "SELECT coalesce(NULL::interval,'1 day'::text)",
+        "SELECT coalesce(NULL::interval,NULL::text) LIMIT 0",
+        "SELECT coalesce((NULL::interval),NULL::text) LIMIT 0",
+    ] {
+        parse(&mut socket, "bad", sql, &[]);
+        let response = read(&mut socket);
+        assert_eq!(response.0, b'E', "Parse must reject {sql}: {response:?}");
+        assert_state(&response, "42804");
+        recover(&mut socket);
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg06_051")
+            .iter()
+            .map(|m| m.0)
+            .collect::<Vec<_>>(),
+        b"TCZ"
+    );
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg06_051")[0].0, b'C');
+    let m = query(&mut socket, "SELECT (NULL::text)::interval AS v LIMIT 0");
+    metadata(&m[0], 0);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+}

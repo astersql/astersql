@@ -2869,6 +2869,7 @@ impl ConcreteSession {
                     || super::relational_value::pg_text_bool_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_date_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_time_pair(source, &column.FieldType)
+                    || super::relational_value::pg_text_interval_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_timestamptz_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_timestamp_pair(source, &column.FieldType)
                 {
@@ -2905,6 +2906,7 @@ impl ConcreteSession {
                     || super::relational_value::pg_text_bool_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_date_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_time_pair(&source, &column.FieldType)
+                    || super::relational_value::pg_text_interval_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_timestamptz_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_timestamp_pair(&source, &column.FieldType)
                 {
@@ -2968,6 +2970,10 @@ impl ConcreteSession {
                     || super::relational_value::pg_text_bool_pair(&source, &target.column.FieldType)
                     || super::relational_value::pg_text_date_pair(&source, &target.column.FieldType)
                     || super::relational_value::pg_text_time_pair(&source, &target.column.FieldType)
+                    || super::relational_value::pg_text_interval_pair(
+                        &source,
+                        &target.column.FieldType,
+                    )
                     || super::relational_value::pg_text_timestamptz_pair(
                         &source,
                         &target.column.FieldType,

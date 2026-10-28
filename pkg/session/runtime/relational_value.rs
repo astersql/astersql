@@ -4238,3 +4238,13 @@ pub(super) fn pg_text_timestamptz_pair(
         && target.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text uses the interval input function only for explicit casts.
+pub(super) fn pg_text_interval_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+        && target.PostgreSQLArrayElement().is_none()
+}

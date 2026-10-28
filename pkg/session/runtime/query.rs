@@ -2577,6 +2577,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypeDatetime
                                             | astersql_parser_mysql::r#type::TypeTimestamp
                                             | astersql_parser_mysql::r#type::TypePgTimestampTz
+                                            | astersql_parser_mysql::r#type::TypePgInterval
                                     ) =>
                                 {
                                     Tp.clone()
@@ -2591,6 +2592,7 @@ impl ConcreteSession {
                                 || super::relational_value::pg_text_date_pair(&source, &target)
                                 || super::relational_value::pg_text_time_pair(&source, &target)
                                 || super::relational_value::pg_text_timestamp_pair(&source, &target)
+                                || super::relational_value::pg_text_interval_pair(&source, &target)
                                 || super::relational_value::pg_text_timestamptz_pair(
                                     &source, &target,
                                 )
