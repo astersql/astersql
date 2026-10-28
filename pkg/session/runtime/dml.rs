@@ -2457,11 +2457,15 @@ impl ConcreteSession {
                                 | astersql_parser_mysql::r#type::TypeLonglong
                         ) && !astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
                     })
-                    && relational_expression_type(expression, &table).GetType()
+                    && (relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeNewDecimal
+                        || (column_info.unwrap().GetType()
+                            == astersql_parser_mysql::r#type::TypeShort
+                            && relational_expression_type(expression, &table).GetType()
+                                == astersql_parser_mysql::r#type::TypeFloat))
                 {
-                    // PG numeric assignment rounds before checking the target range,
-                    // using the same exact decimal conversion as an explicit cast.
+                    // PG numeric and float4-to-int2 assignment use the explicit
+                    // cast's source-specific rounding and target range check.
                     pg_integer_relational_value(
                         expression,
                         self.relational_query_expression_value(expression, &row, None)?,
@@ -3734,11 +3738,15 @@ impl ConcreteSession {
                                 | astersql_parser_mysql::r#type::TypeLonglong
                         ) && !astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
                     })
-                    && relational_expression_type(expression, &table).GetType()
+                    && (relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeNewDecimal
+                        || (column_info.unwrap().GetType()
+                            == astersql_parser_mysql::r#type::TypeShort
+                            && relational_expression_type(expression, &table).GetType()
+                                == astersql_parser_mysql::r#type::TypeFloat))
                 {
-                    // PG numeric assignment rounds before checking the target range,
-                    // using the same exact decimal conversion as an explicit cast.
+                    // PG numeric and float4-to-int2 assignment use the explicit
+                    // cast's source-specific rounding and target range check.
                     pg_integer_relational_value(
                         expression,
                         self.relational_query_expression_value(expression, &row, None)?,
