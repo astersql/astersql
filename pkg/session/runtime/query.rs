@@ -2567,6 +2567,7 @@ impl ConcreteSession {
                                 || super::relational_value::pg_text_int4_pair(&source, &target)
                                 || super::relational_value::pg_text_numeric_pair(&source, &target)
                                 || super::relational_value::pg_text_float8_pair(&source, &target)
+                                || super::relational_value::pg_text_bool_pair(&source, &target)
                         })
                     })
                 {

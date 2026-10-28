@@ -4180,3 +4180,14 @@ pub(super) fn pg_text_float8_pair(
         && target.GetType() == astersql_parser_mysql::r#type::TypeDouble
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text uses the boolean input function only for explicit casts. Keep
+/// assignment and common-type inference from admitting the I/O conversion.
+pub(super) fn pg_text_bool_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+        && target.PostgreSQLArrayElement().is_none()
+}
