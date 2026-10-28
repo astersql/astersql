@@ -2459,6 +2459,11 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypePgJson
                                             | astersql_parser_mysql::r#type::TypePgJsonb
                                     )
+                                    || relational_expression_type(expression, &table)
+                                        .PostgreSQLArrayElement()
+                                        == Some(
+                                            astersql_parser_types::PostgreSQLArrayElement::Int4,
+                                        )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
                                         != 0
@@ -2476,17 +2481,20 @@ impl ConcreteSession {
                         target.SetPostgreSQLTextOid(25);
                         target.SetFlen(-1);
                     }
-                    let value = if matches!(
-                        relational_expression_type(expression, &table).GetType(),
-                        astersql_parser_mysql::r#type::TypeDate
-                            | astersql_parser_mysql::r#type::TypeDuration
-                            | astersql_parser_mysql::r#type::TypeDatetime
-                            | astersql_parser_mysql::r#type::TypePgTimestampTz
-                            | astersql_parser_mysql::r#type::TypePgInterval
-                            | astersql_parser_mysql::r#type::TypePgUuid
-                            | astersql_parser_mysql::r#type::TypePgJson
-                            | astersql_parser_mysql::r#type::TypePgJsonb
-                    ) {
+                    let value = if relational_expression_type(expression, &table)
+                        .PostgreSQLArrayElement()
+                        == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
+                        || matches!(
+                            relational_expression_type(expression, &table).GetType(),
+                            astersql_parser_mysql::r#type::TypeDate
+                                | astersql_parser_mysql::r#type::TypeDuration
+                                | astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
+                                | astersql_parser_mysql::r#type::TypePgInterval
+                                | astersql_parser_mysql::r#type::TypePgUuid
+                                | astersql_parser_mysql::r#type::TypePgJson
+                                | astersql_parser_mysql::r#type::TypePgJsonb
+                        ) {
                         self.relational_query_expression_value(expression, &row, None)?
                     } else {
                         relational_expression_value(expression, &row)?
@@ -3809,6 +3817,11 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypePgJson
                                             | astersql_parser_mysql::r#type::TypePgJsonb
                                     )
+                                    || relational_expression_type(expression, &table)
+                                        .PostgreSQLArrayElement()
+                                        == Some(
+                                            astersql_parser_types::PostgreSQLArrayElement::Int4,
+                                        )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
                                         != 0

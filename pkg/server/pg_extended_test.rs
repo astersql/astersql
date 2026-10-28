@@ -26504,3 +26504,238 @@ fn pg06_task_068() {
         before
     );
 }
+
+#[test]
+fn pg06_task_069() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+
+    fn metadata(m: &(u8, Vec<u8>), format: i16) {
+        assert_eq!(m.0, b'T', "{m:?}");
+        assert_eq!(
+            &m.1[m.1.len() - 12..],
+            [
+                25u32.to_be_bytes().as_slice(),
+                &(-1i16).to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &format.to_be_bytes()
+            ]
+            .concat()
+        );
+    }
+    fn recover(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+
+    let cases = [
+        (Some("{ 1, NULL, 2 }"), Some("{1,NULL,2}")),
+        (
+            Some("{-2147483648,2147483647}"),
+            Some("{-2147483648,2147483647}"),
+        ),
+        (Some("{}"), Some("{}")),
+        (Some("[0:2]={1,NULL,2}"), Some("[0:2]={1,NULL,2}")),
+        (
+            Some("[0:1][-2:-1]={{1,2},{3,NULL}}"),
+            Some("[0:1][-2:-1]={{1,2},{3,NULL}}"),
+        ),
+        (None, None),
+    ];
+    for (value, expected) in cases {
+        let literal = value.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+        let m = query(
+            &mut socket,
+            &format!("SELECT ({literal}::int4[])::text AS v"),
+        );
+        metadata(&m[0], 0);
+        assert_eq!(m[1], (b'D', row(&[expected])), "value={value:?}");
+    }
+    parse(&mut socket, "explicit", "SELECT $1::text AS v", &[1007]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sexplicit\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [1i16.to_be_bytes().as_slice(), &1007u32.to_be_bytes()].concat()
+        )
+    );
+    metadata(&read(&mut socket), 0);
+    for fmt in [0i16, 1] {
+        for (value, expected) in cases {
+            let bytes = value.map(|v| v.as_bytes().to_vec());
+            let mut body = [
+                b"\0explicit\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat();
+            if let Some(v) = bytes {
+                body.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                body.extend(v);
+            } else {
+                body.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            body.extend_from_slice(&1i16.to_be_bytes());
+            body.extend_from_slice(&fmt.to_be_bytes());
+            send(&mut socket, b'B', &body);
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            send(&mut socket, b'D', b"P\0");
+            metadata(&read(&mut socket), fmt);
+            execute(&mut socket, "", 0);
+            assert_eq!(read(&mut socket), (b'D', row(&[expected])));
+            assert_eq!(read(&mut socket).0, b'C');
+            recover(&mut socket);
+        }
+    }
+    // Binary array input preserves dimensions/lower bounds before text output.
+    let mut binary = Vec::new();
+    for word in [2i32, 1, 23, 2, 0, 2, -2, 4, 1, 4, 2, 4, 3, -1] {
+        binary.extend_from_slice(&word.to_be_bytes());
+    }
+    for value in [Some(binary.as_slice()), None] {
+        bind_formats(&mut socket, "explicit", &[1], &[value]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        send(&mut socket, b'D', b"P\0");
+        metadata(&read(&mut socket), 0);
+        execute(&mut socket, "", 0);
+        assert_eq!(
+            read(&mut socket),
+            (b'D', row(&[value.map(|_| "[0:1][-2:-1]={{1,2},{3,NULL}}")]))
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        recover(&mut socket);
+    }
+    for value in [b"garbage".as_slice(), b"{1,}".as_slice()] {
+        bind_formats(&mut socket, "explicit", &[0], &[Some(value)]);
+        assert_state(&read(&mut socket), "22P02");
+        recover(&mut socket);
+    }
+    for (sql, expected, oid, modifier) in [
+        (
+            "SELECT ('[0:2]={1,NULL,2}'::int4[])::text AS v",
+            "[0:2]={1,NULL,2}",
+            25u32,
+            -1i32,
+        ),
+        (
+            "SELECT ('{1,2,3}'::int4[])::varchar(4) AS v",
+            "{1,2",
+            1043u32,
+            8i32,
+        ),
+        (
+            "SELECT ('{1}'::int4[])::char(6) AS v",
+            "{1}   ",
+            1042u32,
+            10i32,
+        ),
+    ] {
+        let m = query(&mut socket, sql);
+        assert_eq!(m[0].0, b'T', "{sql}: {m:?}");
+        assert_eq!(
+            &m[0].1[m[0].1.len() - 12..],
+            [
+                oid.to_be_bytes().as_slice(),
+                &(-1i16).to_be_bytes(),
+                &modifier.to_be_bytes(),
+                &0i16.to_be_bytes()
+            ]
+            .concat()
+        );
+        assert_eq!(m[1], (b'D', row(&[Some(expected)])), "{sql}");
+    }
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg06_069 (id INT PRIMARY KEY,v text)"
+        )[0]
+        .0,
+        b'C'
+    );
+    for sql in [
+        "INSERT INTO public.pg06_069 VALUES (1,'{ 1,NULL,2 }'::int4[])",
+        "UPDATE public.pg06_069 SET v='{3,4}'::int4[]",
+        "INSERT INTO public.pg06_069 SELECT 2,'{ 1,NULL,2 }'::int4[]",
+        "INSERT INTO public.pg06_069 VALUES (3,NULL::int4[])",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert_eq!(messages[0].0, b'C', "{sql}: {messages:?}");
+    }
+    let m = query(&mut socket, "SELECT v FROM public.pg06_069 ORDER BY id");
+    metadata(&m[0], 0);
+    assert_eq!(m[1], (b'D', row(&[Some("{3,4}")])));
+    assert_eq!(m[2], (b'D', row(&[Some("{1,NULL,2}")])));
+    assert_eq!(m[3], (b'D', row(&[None])));
+    // Invalid source input must leave both existing rows and new IDs untouched.
+    for sql in [
+        "UPDATE public.pg06_069 SET v='garbage'::int4[] WHERE id=1",
+        "INSERT INTO public.pg06_069 VALUES (4,'garbage'::int4[])",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert_state(&messages[0], "22P02");
+        assert_eq!(messages.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+        recover(&mut socket);
+        let after = query(&mut socket, "SELECT v FROM public.pg06_069 ORDER BY id");
+        assert_eq!(after, m);
+    }
+    // Assignment and explicit casts must share int4[] output for every edge.
+    for (value, expected) in cases {
+        let literal = value.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+        let sql = format!("UPDATE public.pg06_069 SET v={literal}::int4[] WHERE id=1");
+        assert_eq!(query(&mut socket, &sql)[0].0, b'C', "{sql}");
+        let m = query(&mut socket, "SELECT v FROM public.pg06_069 WHERE id=1");
+        metadata(&m[0], 0);
+        assert_eq!(m[1], (b'D', row(&[expected])), "assignment={value:?}");
+    }
+    for sql in [
+        "SELECT coalesce('{ 1,NULL,2 }'::int4[],'{1}'::text)",
+        "SELECT coalesce(NULL::int4[],NULL::text) LIMIT 0",
+        "SELECT coalesce(NULL::text,NULL::int4[]) LIMIT 0",
+    ] {
+        parse(&mut socket, "bad", sql, &[]);
+        assert_state(&read(&mut socket), "42804");
+        recover(&mut socket);
+    }
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg06_069")[0].0, b'C');
+    let m = query(&mut socket, "SELECT (NULL::int4[])::text AS v LIMIT 0");
+    metadata(&m[0], 0);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+}
