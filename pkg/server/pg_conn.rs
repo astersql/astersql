@@ -903,7 +903,9 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
                 "42725"
             } else if message.starts_with("[kv:1062]") || message.starts_with("Duplicate entry ") {
                 "23505"
-            } else if message == "PostgreSQL int2not requires a smallint argument" {
+            } else if message == "PostgreSQL int2not requires a smallint argument"
+                || message == "PostgreSQL int8not requires a bigint argument"
+            {
                 "42883"
             } else if message.starts_with("Unknown column ") {
                 "42703"

@@ -1070,6 +1070,33 @@ impl ConcreteSession {
                 })
                 .unwrap_or(Ok(None));
         }
+        // Fixed int8 signature provides the widening context without routing
+        // the value through SQL text coercion or the MySQL function registry.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Args,
+                Schema,
+                ..
+            } = &expression.Kind
+            && FnName.L == "int8not"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && Args.len() == 1
+        {
+            return self
+                .relational_query_expression_value(&Args[0], row, group_rows)?
+                .map(|value| {
+                    astersql_expression::pg_cast_int8(Some(&value))
+                        .map(|value| value.map(|value| (!value).to_string()))
+                        .map_err(|error| {
+                            SessionError::with_source(
+                                error.to_string(),
+                                astersql_errors::SharedError::new(error),
+                            )
+                        })
+                })
+                .unwrap_or(Ok(None));
+        }
         match &expression.Kind {
             ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 super::pg_record::value_with(expression, &|field| {
@@ -2024,6 +2051,26 @@ impl ConcreteSession {
     }
 
     pub(crate) fn relational_select_requires_full_query(&self, select: &ast::SelectStmt) -> bool {
+        fn has_int8not(expression: &ast::ExprNode) -> bool {
+            struct Calls(bool);
+            impl ast::ExprNodeVisitor for Calls {
+                fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                    if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
+                        && FnName.L == "int8not"
+                        && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    {
+                        self.0 = true;
+                    }
+                    (input.clone(), self.0)
+                }
+                fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                    (input.clone(), true)
+                }
+            }
+            let mut calls = Calls(false);
+            let _ = expression.Accept(&mut calls);
+            calls.0
+        }
         let mut sources = Vec::new();
         if let Some(from) = select.From.as_ref() {
             if let Some(left) = from.TableRefs.Left.as_deref() {
@@ -2057,12 +2104,16 @@ impl ConcreteSession {
         let scalar_count = is_scalar_count_non_null_constant(select);
         select.With.is_some()
             || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                && (select.Where.as_ref().is_some_and(expression_contains_cast)
-                    || select
-                        .Fields
-                        .Fields
-                        .iter()
-                        .any(|field| field.Expr.as_ref().is_some_and(expression_contains_cast))))
+                && (select
+                    .Where
+                    .as_ref()
+                    .is_some_and(|expr| expression_contains_cast(expr) || has_int8not(expr))
+                    || select.Fields.Fields.iter().any(|field| {
+                        field
+                            .Expr
+                            .as_ref()
+                            .is_some_and(|expr| expression_contains_cast(expr) || has_int8not(expr))
+                    })))
             || has_derived_source
             || select
                 .From
@@ -2325,6 +2376,30 @@ impl ConcreteSession {
                 {
                     self.scalar_cast_error = Some(SessionError::new(
                         "PostgreSQL int2not requires a smallint argument",
+                    ));
+                }
+                // int8not accepts the existing implicit integer widening paths;
+                // a typed NULL still has to satisfy the signature.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "int8not"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (Args.len() != 1
+                        || (!matches!(Args[0].Kind, ast::ExprKind::ParamMarker { .. })
+                            && !matches!(
+                                relational_expression_type(&Args[0], self.table).GetType(),
+                                astersql_parser_mysql::r#type::TypeShort
+                                    | astersql_parser_mysql::r#type::TypeLong
+                                    | astersql_parser_mysql::r#type::TypeLonglong
+                                    | astersql_parser_mysql::r#type::TypeNull
+                            )))
+                {
+                    self.scalar_cast_error = Some(SessionError::new(
+                        "PostgreSQL int8not requires a bigint argument",
                     ));
                 }
                 if let ast::ExprKind::Cast {
@@ -2706,6 +2781,14 @@ impl ConcreteSession {
             {
                 return astersql_parser_types::NewFieldType(
                     astersql_parser_mysql::r#type::TypeShort,
+                );
+            }
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
+                && FnName.L == "int8not"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeLonglong,
                 );
             }
             // Preserve the existing PG integer promotion for int2 -> int4.

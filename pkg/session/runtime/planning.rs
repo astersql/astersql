@@ -2834,9 +2834,24 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
             return Ok(oids);
         }
-        struct Constraints(Vec<(usize, u32)>);
+        struct Constraints(Vec<(usize, u32)>, Vec<usize>);
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // Keep a supplied source identity when checking the one fixed
+                // bigint signature; never infer it from a later Bind value.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Schema,
+                    Args,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "int8not"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && Args.len() == 1
+                    && let ast::ExprKind::ParamMarker { Offset } = Args[0].Kind
+                {
+                    self.1.push(Offset);
+                }
                 if let ast::ExprKind::Cast {
                     Expr,
                     FunctionType,
@@ -2990,7 +3005,7 @@ impl ConcreteSession {
                 *oid = inferred;
             }
         }
-        let mut constraints = Constraints(Vec::new());
+        let mut constraints = Constraints(Vec::new(), Vec::new());
         for statement in &statements {
             // SELECT retains its explicit-cast policy. INSERT RETURNING also
             // admits direct VALUES markers constrained by the target schema.
@@ -3050,6 +3065,17 @@ impl ConcreteSession {
                 if oids[index] == 0 {
                     oids[index] = oid;
                 }
+            }
+        }
+        for offset in constraints.1 {
+            if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
+                let source = supplied.get(index).copied().unwrap_or(0);
+                if !matches!(source, 0 | 21 | 23 | 20) {
+                    return Err(SessionError::new(
+                        "PostgreSQL int8not requires a bigint argument",
+                    ));
+                }
+                oids[index] = if source == 0 { 20 } else { source };
             }
         }
         Ok(oids)
