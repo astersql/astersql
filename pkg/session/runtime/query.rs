@@ -2593,6 +2593,7 @@ impl ConcreteSession {
                                 || super::relational_value::pg_text_time_pair(&source, &target)
                                 || super::relational_value::pg_text_timestamp_pair(&source, &target)
                                 || super::relational_value::pg_text_uuid_pair(&source, &target)
+                                || super::relational_value::pg_text_json_pair(&source, &target)
                                 || super::relational_value::pg_text_interval_pair(&source, &target)
                                 || super::relational_value::pg_text_timestamptz_pair(
                                     &source, &target,
