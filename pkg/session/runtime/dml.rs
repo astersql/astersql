@@ -2389,6 +2389,19 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDatetime
+                {
+                    // The timestamp is a wall clock; resolve its instant using
+                    // this session's timezone before storage or typmod rounding.
+                    self.pg_timestamptz_relational_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
                         matches!(
                             column.GetType(),
                             astersql_parser_mysql::r#type::TypeDatetime
@@ -3817,6 +3830,19 @@ impl ConcreteSession {
                         )
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDatetime
+                {
+                    // The timestamp is a wall clock; resolve its instant using
+                    // this session's timezone before storage or typmod rounding.
+                    self.pg_timestamptz_relational_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         matches!(
                             column.GetType(),

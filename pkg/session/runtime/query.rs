@@ -1393,6 +1393,16 @@ impl ConcreteSession {
                             } else {
                                 Ok(wall)
                             }
+                        } else if self
+                            .relational_query_expression_type_from_sources(expression, &[])
+                            .GetType()
+                            == astersql_parser_mysql::r#type::TypePgTimestampTz
+                            && self
+                                .relational_query_expression_type_from_sources(argument, &[])
+                                .GetType()
+                                == astersql_parser_mysql::r#type::TypeDatetime
+                        {
+                            self.pg_timestamptz_relational_value(value, -1)
                         } else {
                             Ok(value)
                         };
@@ -3193,10 +3203,14 @@ impl ConcreteSession {
                 use astersql_parser_mysql::r#type::{
                     TypeDate, TypeDatetime, TypeNull, TypePgTimestampTz,
                 };
-                if types
+                if types.iter().all(|tp| {
+                    matches!(
+                        tp.GetType(),
+                        TypeDate | TypeDatetime | TypePgTimestampTz | TypeNull
+                    )
+                }) && types
                     .iter()
-                    .all(|tp| matches!(tp.GetType(), TypeDate | TypePgTimestampTz | TypeNull))
-                    && types.iter().any(|tp| tp.GetType() == TypeDate)
+                    .any(|tp| matches!(tp.GetType(), TypeDate | TypeDatetime))
                     && types.iter().any(|tp| tp.GetType() == TypePgTimestampTz)
                 {
                     return astersql_parser_types::NewFieldType(TypePgTimestampTz);
