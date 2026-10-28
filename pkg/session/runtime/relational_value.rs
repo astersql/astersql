@@ -4265,6 +4265,9 @@ pub(super) fn pg_text_json_pair(
     target: &astersql_parser_types::FieldType,
 ) -> bool {
     source.PostgreSQLTextOid() == Some(25)
-        && target.GetType() == astersql_parser_mysql::r#type::TypePgJson
+        && matches!(
+            target.GetType(),
+            astersql_parser_mysql::r#type::TypePgJson | astersql_parser_mysql::r#type::TypePgJsonb
+        )
         && target.PostgreSQLArrayElement().is_none()
 }
