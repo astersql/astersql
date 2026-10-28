@@ -2608,6 +2608,7 @@ impl ConcreteSession {
                             function_type,
                             ast::CastFunctionType::PostgreSQLInt2
                                 | ast::CastFunctionType::PostgreSQLInt4
+                                | ast::CastFunctionType::PostgreSQLInt8
                         ) && source.GetType()
                             == astersql_parser_mysql::r#type::TypeNewDecimal)
                         && source.GetType() != astersql_parser_mysql::r#type::TypeNull

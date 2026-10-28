@@ -2454,6 +2454,7 @@ impl ConcreteSession {
                             column.GetType(),
                             astersql_parser_mysql::r#type::TypeShort
                                 | astersql_parser_mysql::r#type::TypeLong
+                                | astersql_parser_mysql::r#type::TypeLonglong
                         ) && !astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
                     })
                     && relational_expression_type(expression, &table).GetType()
@@ -2464,12 +2465,14 @@ impl ConcreteSession {
                     pg_integer_relational_value(
                         expression,
                         self.relational_query_expression_value(expression, &row, None)?,
-                        if column_info.unwrap().GetType()
-                            == astersql_parser_mysql::r#type::TypeShort
-                        {
-                            ast::CastFunctionType::PostgreSQLInt2
-                        } else {
-                            ast::CastFunctionType::PostgreSQLInt4
+                        match column_info.unwrap().GetType() {
+                            astersql_parser_mysql::r#type::TypeShort => {
+                                ast::CastFunctionType::PostgreSQLInt2
+                            }
+                            astersql_parser_mysql::r#type::TypeLong => {
+                                ast::CastFunctionType::PostgreSQLInt4
+                            }
+                            _ => ast::CastFunctionType::PostgreSQLInt8,
                         },
                     )?
                 } else if pg_integer_narrowing_assignment {
@@ -3709,6 +3712,7 @@ impl ConcreteSession {
                             column.GetType(),
                             astersql_parser_mysql::r#type::TypeShort
                                 | astersql_parser_mysql::r#type::TypeLong
+                                | astersql_parser_mysql::r#type::TypeLonglong
                         ) && !astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
                     })
                     && relational_expression_type(expression, &table).GetType()
@@ -3719,12 +3723,14 @@ impl ConcreteSession {
                     pg_integer_relational_value(
                         expression,
                         self.relational_query_expression_value(expression, &row, None)?,
-                        if column_info.unwrap().GetType()
-                            == astersql_parser_mysql::r#type::TypeShort
-                        {
-                            ast::CastFunctionType::PostgreSQLInt2
-                        } else {
-                            ast::CastFunctionType::PostgreSQLInt4
+                        match column_info.unwrap().GetType() {
+                            astersql_parser_mysql::r#type::TypeShort => {
+                                ast::CastFunctionType::PostgreSQLInt2
+                            }
+                            astersql_parser_mysql::r#type::TypeLong => {
+                                ast::CastFunctionType::PostgreSQLInt4
+                            }
+                            _ => ast::CastFunctionType::PostgreSQLInt8,
                         },
                     )?
                 } else if pg_integer_narrowing_assignment {
