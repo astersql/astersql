@@ -2389,6 +2389,18 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDuration
+                {
+                    pg_time_to_interval_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetFlen(),
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDuration
                     })
                     && relational_expression_type(expression, &table).GetType()
@@ -3883,6 +3895,18 @@ impl ConcreteSession {
                         )
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDuration
+                {
+                    pg_time_to_interval_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetFlen(),
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDuration
                     })

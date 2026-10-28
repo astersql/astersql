@@ -2674,6 +2674,24 @@ impl ConcreteSession {
                         "COALESCE types cannot be matched with text",
                     ));
                 }
+                // time -> interval is implicit, but their different type categories
+                // cannot form a common COALESCE type (including typed NULL).
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && FnName.L == "coalesce"
+                    && Args.iter().any(|arg| {
+                        relational_expression_type(arg, self.table).GetType()
+                            == astersql_parser_mysql::r#type::TypeDuration
+                    })
+                    && Args.iter().any(|arg| {
+                        relational_expression_type(arg, self.table).GetType()
+                            == astersql_parser_mysql::r#type::TypePgInterval
+                    })
+                {
+                    self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
+                        "42804",
+                        "COALESCE types interval and time cannot be matched",
+                    ));
+                }
                 // timestamp and timestamptz -> time are assignment-only, including typed NULL.
                 if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
                     && FnName.L == "coalesce"
@@ -3973,6 +3991,7 @@ impl ConcreteSession {
                                     field.column.GetType(),
                                     astersql_parser_mysql::r#type::TypeFloat
                                         | astersql_parser_mysql::r#type::TypeDouble
+                                        | astersql_parser_mysql::r#type::TypeDuration
                                         | astersql_parser_mysql::r#type::TypeDatetime
                                         | astersql_parser_mysql::r#type::TypePgTimestampTz
                                         | astersql_parser_mysql::r#type::TypePgInterval

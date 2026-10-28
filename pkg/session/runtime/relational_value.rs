@@ -4084,6 +4084,31 @@ pub(super) fn pg_time_relational_value(
         .transpose()
 }
 
+/// A time has no calendar or timezone component. Keep 24:00 in the interval's
+/// time component rather than carrying it into days, then apply target typmod.
+pub(super) fn pg_time_to_interval_value(
+    value: Option<String>,
+    fields: isize,
+    precision: isize,
+) -> SessionResult<Option<String>> {
+    use astersql_types::pg_temporal::{PgInterval, PgTime};
+    value
+        .map(|text| {
+            text.parse::<PgTime>()
+                .and_then(|time| {
+                    PgInterval::from_components(0, 0, time.micros()).apply_typmod(fields, precision)
+                })
+                .map(|interval| interval.to_string())
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+        })
+        .transpose()
+}
+
 /// Resolve DATE identity from the AST and active catalog before reading a value.
 pub(super) fn pg_date_source(expression: &ast::ExprNode) -> bool {
     PG_CAST_TABLE.with(|slot| {

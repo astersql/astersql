@@ -344,6 +344,20 @@ pub(super) fn runtime_value_to_datum(
     let Some(value) = value else {
         return Ok(astersql_types::datum::Datum::default());
     };
+    // PG interval assignments use the existing string Datum carrier. The MySQL
+    // converter has no interval type, and folding days/months would lose identity.
+    if column.GetType() == astersql_parser_mysql::r#type::TypePgInterval {
+        return value
+            .parse::<astersql_types::pg_temporal::PgInterval>()
+            .and_then(|value| value.apply_typmod(column.GetFlen(), column.GetDecimal()))
+            .map(|value| astersql_types::datum::NewStringDatum(value.to_string()))
+            .map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            });
+    }
     // PG instants retain their UTC identity in the existing string row carrier.
     // The MySQL Datum converter has no TypePgTimestampTz case.
     if column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz {

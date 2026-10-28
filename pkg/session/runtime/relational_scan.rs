@@ -1053,15 +1053,21 @@ pub(super) fn decode_relational_row_value(
         || table.PostgreSQLFloatText
         || table.PostgreSQLDateText
         || table.ExactName
-        || table
-            .Columns
-            .iter()
-            .any(|column| column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz)
+        || table.Columns.iter().any(|column| {
+            matches!(
+                column.GetType(),
+                astersql_parser_mysql::r#type::TypePgTimestampTz
+                    | astersql_parser_mysql::r#type::TypePgInterval
+            )
+        })
     {
         for column in &table.Columns {
-            if column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
-                || (table.ExactName
-                    && column.GetType() == astersql_parser_mysql::r#type::TypeDatetime)
+            if matches!(
+                column.GetType(),
+                astersql_parser_mysql::r#type::TypePgTimestampTz
+                    | astersql_parser_mysql::r#type::TypePgInterval
+            ) || (table.ExactName
+                && column.GetType() == astersql_parser_mysql::r#type::TypeDatetime)
                 || (table.PostgreSQLDateText
                     && column.GetType() == astersql_parser_mysql::r#type::TypeDate)
                 || (table.PostgreSQLNumericText

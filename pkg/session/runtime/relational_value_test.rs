@@ -1116,3 +1116,38 @@ fn pg06_timestamp_time_epoch_remainder() {
         assert!(pg_timestamp_to_time_value(Some(invalid.into()), -1).is_err());
     }
 }
+
+#[test]
+fn pg06_task_078_time_interval_components_and_typmod() {
+    use super::pg_time_to_interval_value;
+    use astersql_types::pg_temporal::PgInterval;
+    for (text, micros) in [
+        ("00:00:00", 0),
+        ("12:34:56.123456", 45_296_123_456),
+        ("24:00:00", 86_400_000_000),
+    ] {
+        let converted = pg_time_to_interval_value(Some(text.into()), -1, -1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            converted.parse::<PgInterval>().unwrap().components(),
+            (0, 0, micros)
+        );
+    }
+    assert_eq!(pg_time_to_interval_value(None, -1, 3).unwrap(), None);
+    assert_eq!(
+        pg_time_to_interval_value(Some("23:59:59.999999".into()), -1, 3)
+            .unwrap()
+            .as_deref(),
+        Some("24:00:00")
+    );
+    assert_eq!(
+        pg_time_to_interval_value(Some("12:34:56.123456".into()), 1024 | 2048, -1)
+            .unwrap()
+            .as_deref(),
+        Some("12:34:00")
+    );
+    for invalid in ["25:00:00", "infinity", "garbage"] {
+        assert!(pg_time_to_interval_value(Some(invalid.into()), -1, -1).is_err());
+    }
+}

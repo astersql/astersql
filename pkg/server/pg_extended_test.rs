@@ -29547,3 +29547,278 @@ fn pg06_task_077() {
         before
     );
 }
+#[test]
+fn pg06_task_078() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    // Build a real interval catalog/storage fixture through the domain API;
+    // Parse/Bind/Execute and conversion checks still use the TCP service.
+    let columns = [
+        ("id", astersql_parser_mysql::r#type::TypeLong),
+        ("v", astersql_parser_mysql::r#type::TypePgInterval),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (name, tp))| {
+        let mut column = astersql_meta_model::ColumnInfo {
+            ID: index as i64 + 1,
+            Name: astersql_parser_ast::NewCIStr(name),
+            Offset: index as isize,
+            State: astersql_meta_model::StatePublic,
+            ..Default::default()
+        };
+        column.FieldType.SetType(tp);
+        if tp == astersql_parser_mysql::r#type::TypePgInterval {
+            column.FieldType.SetFlen(0x7fff);
+            column.FieldType.SetDecimal(3);
+        }
+        column
+    })
+    .collect();
+    domain
+        .ddl_create_table(
+            "test",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("pg06_078"),
+                Columns: columns,
+                State: astersql_meta_model::StatePublic,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+
+    fn metadata(m: &(u8, Vec<u8>), format: i16, modifier: i32) {
+        assert_eq!(m.0, b'T', "{m:?}");
+        assert_eq!(
+            &m.1[m.1.len() - 12..],
+            [
+                1186u32.to_be_bytes().as_slice(),
+                &16i16.to_be_bytes(),
+                &modifier.to_be_bytes(),
+                &format.to_be_bytes()
+            ]
+            .concat()
+        );
+    }
+    fn recover(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+
+    assert_eq!(
+        query(&mut socket, "INSERT INTO public.pg06_078 VALUES (1,NULL)")[0].0,
+        b'C'
+    );
+    let differential = || {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg06_time_interval_libpq.py"
+            ))
+            .arg(
+                cleanup
+                    .0
+                    .postgres_listener_addr()
+                    .unwrap()
+                    .port()
+                    .to_string(),
+            )
+            .output()
+            .unwrap();
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    differential();
+    assert_eq!(
+        query(&mut socket, "INSERT INTO public.pg06_078 VALUES (1,NULL)")[0].0,
+        b'C'
+    );
+    parse(&mut socket, "explicit", "SELECT $1::interval AS v", &[1083]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sexplicit\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [1i16.to_be_bytes().as_slice(), &1083u32.to_be_bytes()].concat()
+        )
+    );
+    metadata(&read(&mut socket), 0, -1);
+    recover(&mut socket);
+    for zone in ["UTC", "+08:00", "America/New_York"] {
+        assert_eq!(
+            query(&mut socket, &format!("SET time_zone = '{zone}'"))[0].0,
+            b'C'
+        );
+        for (input, expected) in [
+            (Some("00:00:00"), Some("00:00:00")),
+            (Some("12:34:56.123456"), Some("12:34:56.123456")),
+            (Some("23:59:59.999999"), Some("23:59:59.999999")),
+            (Some("24:00:00"), Some("24:00:00")),
+            (None, None),
+        ] {
+            let literal = input.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+            let m = query(
+                &mut socket,
+                &format!("SELECT ({literal}::time)::interval AS v"),
+            );
+            metadata(&m[0], 0, -1);
+            assert_eq!(m[1], (b'D', row(&[expected])), "{zone} {input:?}");
+            for fmt in [0i16, 1] {
+                let mut body = [
+                    b"\0explicit\0".as_slice(),
+                    &1i16.to_be_bytes(),
+                    &0i16.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                ]
+                .concat();
+                if let Some(v) = input {
+                    body.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                    body.extend_from_slice(v.as_bytes());
+                } else {
+                    body.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                body.extend_from_slice(&1i16.to_be_bytes());
+                body.extend_from_slice(&fmt.to_be_bytes());
+                send(&mut socket, b'B', &body);
+                assert_eq!(read(&mut socket), (b'2', vec![]));
+                send(&mut socket, b'D', b"P\0");
+                metadata(&read(&mut socket), fmt, -1);
+                execute(&mut socket, "", 0);
+                let mut data = 1i16.to_be_bytes().to_vec();
+                if let Some(v) = expected {
+                    let bytes = if fmt == 0 {
+                        v.as_bytes().to_vec()
+                    } else {
+                        v.parse::<astersql_types::pg_temporal::PgInterval>()
+                            .unwrap()
+                            .to_binary()
+                            .to_vec()
+                    };
+                    data.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    data.extend(bytes);
+                } else {
+                    data.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                assert_eq!(read(&mut socket), (b'D', data));
+                assert_eq!(read(&mut socket).0, b'C');
+                recover(&mut socket);
+            }
+            for sql in [
+                format!("UPDATE public.pg06_078 SET v={literal}::time WHERE id=1"),
+                format!("INSERT INTO public.pg06_078 SELECT 2,{literal}::time"),
+            ] {
+                let m = query(&mut socket, &sql);
+                assert_eq!(m[0].0, b'C', "{sql}: {m:?}");
+            }
+            let m = query(&mut socket, "SELECT v FROM public.pg06_078 ORDER BY id");
+            metadata(&m[0], 0, 32767 * 65536 + 3);
+            let rounded = expected.map(|v| {
+                v.parse::<astersql_types::pg_temporal::PgInterval>()
+                    .unwrap()
+                    .apply_typmod(-1, 3)
+                    .unwrap()
+                    .to_string()
+            });
+            for i in [1, 2] {
+                assert_eq!(m[i], (b'D', row(&[rounded.as_deref()])));
+            }
+            assert_eq!(
+                query(&mut socket, "DELETE FROM public.pg06_078 WHERE id=2")[0].0,
+                b'C'
+            );
+        }
+    }
+    let m = query(
+        &mut socket,
+        "SELECT ('23:59:59.999999'::time(3))::interval AS v",
+    );
+    metadata(&m[0], 0, -1);
+    assert_eq!(m[1], (b'D', row(&[Some("24:00:00")])));
+    let m = query(&mut socket, "SELECT (NULL::time)::interval AS v LIMIT 0");
+    metadata(&m[0], 0, -1);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    let original = query(&mut socket, "SELECT v FROM public.pg06_078");
+    for (input, state) in [
+        ("garbage", "22007"),
+        ("25:00:00", "22008"),
+        ("infinity", "22007"),
+        ("-infinity", "22007"),
+    ] {
+        bind_formats(&mut socket, "explicit", &[0], &[Some(input.as_bytes())]);
+        assert_state(&read(&mut socket), state);
+        recover(&mut socket);
+        for sql in [
+            format!("SELECT ('{input}'::time)::interval"),
+            format!("UPDATE public.pg06_078 SET v='{input}'::time WHERE id=1"),
+            format!("INSERT INTO public.pg06_078 VALUES (3,'{input}'::time)"),
+        ] {
+            let m = query(&mut socket, &sql);
+            assert_state(&m[0], state);
+            assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+            recover(&mut socket);
+            assert_eq!(
+                query(&mut socket, "SELECT v FROM public.pg06_078"),
+                original
+            );
+        }
+    }
+    for raw in [-1i64, 86_400_000_001] {
+        bind_formats(&mut socket, "explicit", &[1], &[Some(&raw.to_be_bytes())]);
+        assert_state(&read(&mut socket), "22008");
+        recover(&mut socket);
+    }
+    // pg_cast marks this pair implicit, but common types still reject different categories.
+    parse(
+        &mut socket,
+        "common",
+        "SELECT coalesce(NULL::interval,NULL::time)",
+        &[],
+    );
+    assert_state(&read(&mut socket), "42804");
+    recover(&mut socket);
+    // Release failed-statement fixture locks before the second client writes.
+    assert_eq!(query(&mut socket, "ROLLBACK")[0].0, b'C');
+    differential();
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg06_078")[0].0, b'C');
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+}
