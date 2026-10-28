@@ -2864,6 +2864,7 @@ impl ConcreteSession {
                 let source = &field.column.FieldType;
                 if super::relational_value::pg_text_bytea_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_int4_pair(source, &column.FieldType)
+                    || super::relational_value::pg_text_numeric_pair(source, &column.FieldType)
                 {
                     return Err(super::relational_value::pg_bytea_input_error(
                         "42804",
@@ -2893,6 +2894,7 @@ impl ConcreteSession {
                 let source = relational_expression_type(value, &table);
                 if super::relational_value::pg_text_bytea_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_int4_pair(&source, &column.FieldType)
+                    || super::relational_value::pg_text_numeric_pair(&source, &column.FieldType)
                 {
                     return Err(super::relational_value::pg_bytea_input_error(
                         "42804",
@@ -2943,6 +2945,10 @@ impl ConcreteSession {
                     self.relational_query_expression_type_from_sources(&assignment.Expr, &sources);
                 if super::relational_value::pg_text_bytea_pair(&source, &target.column.FieldType)
                     || super::relational_value::pg_text_int4_pair(&source, &target.column.FieldType)
+                    || super::relational_value::pg_text_numeric_pair(
+                        &source,
+                        &target.column.FieldType,
+                    )
                 {
                     return Err(super::relational_value::pg_bytea_input_error(
                         "42804",

@@ -2565,6 +2565,7 @@ impl ConcreteSession {
                             let target = relational_expression_type(other, self.table);
                             super::relational_value::pg_text_bytea_pair(&source, &target)
                                 || super::relational_value::pg_text_int4_pair(&source, &target)
+                                || super::relational_value::pg_text_numeric_pair(&source, &target)
                         })
                     })
                 {

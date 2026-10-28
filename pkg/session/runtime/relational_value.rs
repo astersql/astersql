@@ -4158,3 +4158,14 @@ pub(super) fn pg_text_int4_pair(
         && target.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text reaches numeric only through explicit input conversion. Unknown
+/// literals retain contextual typing and numeric arrays have their own contract.
+pub(super) fn pg_text_numeric_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
+        && target.PostgreSQLArrayElement().is_none()
+}
