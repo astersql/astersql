@@ -160,6 +160,30 @@ fn pg_dialect_26_assignment_occurrence_constraints() {
             .unwrap(),
         vec![23, 25]
     );
+    // Target-column inference is independent of a RETURNING projection and
+    // preserves marker occurrence order for the protocol's indexed mapping.
+    for (sql, expected) in [
+        (
+            "INSERT INTO parameter26_constraints(id,v) VALUES((?),?)",
+            vec![23, 25],
+        ),
+        (
+            "INSERT INTO parameter26_constraints(v,id) VALUES(?,?)",
+            vec![25, 23],
+        ),
+        ("UPDATE parameter26_constraints SET id=(?)", vec![23]),
+    ] {
+        assert_eq!(
+            session.protocol_parameter_types(sql, &[]).unwrap(),
+            expected,
+            "{sql}"
+        );
+        assert_eq!(
+            native.protocol_parameter_types(sql, &[]).unwrap(),
+            vec![0; expected.len()],
+            "MySQL must retain its own parameter inference"
+        );
+    }
     native
         .execute("DROP TABLE test.parameter26_constraints")
         .unwrap();

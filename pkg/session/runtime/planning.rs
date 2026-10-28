@@ -2779,7 +2779,7 @@ impl astersql_executor::select::StatementContextRuntime for ConcreteSession {
 }
 
 impl ConcreteSession {
-    /// Infer direct integer casts and DML RETURNING target-column constraints.
+    /// Infer direct casts and DML target-column parameter constraints.
     /// Offsets refer to the unchanged engine SQL, including repeated markers.
     pub fn protocol_integer_parameter_types(&self, sql: &str) -> SessionResult<Vec<u32>> {
         self.protocol_parameter_types(sql, &[])
@@ -3029,8 +3029,8 @@ impl ConcreteSession {
         }
         let mut constraints = Constraints(Vec::new(), Vec::new(), Vec::new());
         for statement in &statements {
-            // SELECT retains its explicit-cast policy. INSERT RETURNING also
-            // admits direct VALUES markers constrained by the target schema.
+            // SELECT retains its explicit-cast policy. DML direct markers
+            // are constrained by the target schema, even without RETURNING.
             if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
                 for field in &select.Fields.Fields {
                     if let Some(expression) = &field.Expr {
@@ -3043,9 +3043,7 @@ impl ConcreteSession {
                 for item in select.GroupBy.iter().chain(&select.OrderBy) {
                     let _ = item.Expr.Accept(&mut constraints);
                 }
-            } else if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
-                && !insert.Returning.is_empty()
-            {
+            } else if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() {
                 constraints
                     .0
                     .extend(self.insert_parameter_constraints(insert)?);
@@ -3058,7 +3056,6 @@ impl ConcreteSession {
                     let _ = expression.Accept(&mut constraints);
                 }
             } else if let Some(update) = statement.as_any().downcast_ref::<ast::UpdateStmt>()
-                && !update.Returning.is_empty()
                 && update.From.is_none()
             {
                 constraints
