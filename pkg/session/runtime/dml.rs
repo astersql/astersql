@@ -2443,9 +2443,13 @@ impl ConcreteSession {
                             || ((column.FieldType.PostgreSQLTextOid() == Some(25)
                                 || (column.GetType() == astersql_parser_mysql::r#type::TypeBlob
                                     && column.GetCharset() != "binary"))
-                                && relational_expression_type(expression, &table)
+                                && (relational_expression_type(expression, &table)
                                     .PostgreSQLTextOid()
-                                    == Some(1042))
+                                    == Some(1042)
+                                    || super::relational_value::pg_bytea_text_pair(
+                                        &relational_expression_type(expression, &table),
+                                        &column.FieldType,
+                                    )))
                     })
                 {
                     // Stored text columns use the shared nonbinary BLOB type.
@@ -3755,9 +3759,13 @@ impl ConcreteSession {
                             || ((column.FieldType.PostgreSQLTextOid() == Some(25)
                                 || (column.GetType() == astersql_parser_mysql::r#type::TypeBlob
                                     && column.GetCharset() != "binary"))
-                                && relational_expression_type(expression, &table)
+                                && (relational_expression_type(expression, &table)
                                     .PostgreSQLTextOid()
-                                    == Some(1042))
+                                    == Some(1042)
+                                    || super::relational_value::pg_bytea_text_pair(
+                                        &relational_expression_type(expression, &table),
+                                        &column.FieldType,
+                                    )))
                     }) {
                     // Stored text columns use the shared nonbinary BLOB type.
                     let mut target = column_info.unwrap().FieldType.clone();

@@ -2585,6 +2585,7 @@ impl ConcreteSession {
                                 _ => relational_expression_type(other, self.table),
                             };
                             super::relational_value::pg_text_bytea_pair(&source, &target)
+                                || super::relational_value::pg_bytea_text_pair(&source, &target)
                                 || super::relational_value::pg_text_int4_pair(&source, &target)
                                 || super::relational_value::pg_text_numeric_pair(&source, &target)
                                 || super::relational_value::pg_text_float8_pair(&source, &target)
@@ -3826,6 +3827,19 @@ impl ConcreteSession {
                     .enumerate()
                     .map(|(index, column)| {
                         let value = row.get(column).cloned().unwrap_or(None);
+                        if let Some(field) = source_fields.get(index)
+                            && field.column.GetType() == astersql_parser_mysql::r#type::TypeBlob
+                            && field.column.GetCharset() == "binary"
+                            && field.column.FieldType.PostgreSQLArrayElement().is_none()
+                        {
+                            // Preserve bytea identity across SELECT materialization so
+                            // character assignment calls bytea output, including NULL.
+                            let mut expression = ast::NewValueExpr(value, "binary", "binary");
+                            if let ast::ExprKind::Value(value) = &mut expression.Kind {
+                                value.Type = field.column.FieldType.clone();
+                            }
+                            return expression;
+                        }
                         if let Some(bytes) = value.as_deref().and_then(binary_runtime_bytes) {
                             return ast::ExprNode::HexValue(bytes, "binary", "binary");
                         }

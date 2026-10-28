@@ -3977,15 +3977,29 @@ pub(super) fn pg_text_relational_cast(
     target: &astersql_parser_types::types::FieldType,
     explicit: bool,
 ) -> SessionResult<Option<String>> {
-    let value = pg_float4_cast_text_input(source, value)?;
+    let source_type = PG_CAST_TABLE.with(|slot| {
+        let empty = astersql_meta_model::TableInfo::default();
+        relational_expression_type(source, slot.borrow().as_ref().unwrap_or(&empty))
+    });
+    // bytea uses its output function before the target character constraints.
+    // Never decode arbitrary octets as UTF-8 or expose the private hex carrier.
+    let value = if pg_bytea_text_pair(&source_type, target) {
+        value
+            .map(|text| {
+                let bytes = match super::row_codec::binary_runtime_bytes(&text) {
+                    Some(bytes) => bytes,
+                    None => astersql_types::pg_array::bytea_text_input(text.as_bytes())
+                        .map_err(|e| pg_bytea_input_error(e.0, e.1))?,
+                };
+                Ok(astersql_types::pg_array::bytea_text_output(&bytes))
+            })
+            .transpose()?
+    } else {
+        pg_float4_cast_text_input(source, value)?
+    };
     astersql_expression::pg_text_cast(
         value.as_deref(),
-        PG_CAST_TABLE.with(|slot| {
-            let table = slot.borrow();
-            let empty = astersql_meta_model::TableInfo::default();
-            relational_expression_type(source, table.as_ref().unwrap_or(&empty)).PostgreSQLTextOid()
-                == Some(1042)
-        }),
+        source_type.PostgreSQLTextOid() == Some(1042),
         target.PostgreSQLTextOid().unwrap(),
         target.GetFlen(),
         explicit,
@@ -4281,4 +4295,22 @@ pub(super) fn pg_text_int4_array_pair(
         && source.PostgreSQLArrayElement().is_none()
         && target.PostgreSQLArrayElement()
             == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
+}
+
+/// PostgreSQL I/O coercion to character types is explicit or assignment-only.
+/// Binary arrays have their own output carrier and must not enter bytea input.
+pub(super) fn pg_bytea_text_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    matches!(
+        source.GetType(),
+        astersql_parser_mysql::r#type::TypeBlob
+            | astersql_parser_mysql::r#type::TypeString
+            | astersql_parser_mysql::r#type::TypeVarString
+    ) && source.GetCharset() == "binary"
+        && source.PostgreSQLArrayElement().is_none()
+        && (target.PostgreSQLTextOid().is_some()
+            || (target.GetType() == astersql_parser_mysql::r#type::TypeBlob
+                && target.GetCharset() != "binary"))
 }
