@@ -2972,13 +2972,14 @@ impl ConcreteSession {
                     return pg_returning_expression_type(expression, source_fields)
                         .expect("integer operands have a PG arithmetic result type");
                 }
-                // int2/int4 implicitly widen to numeric; arithmetic drops operand typmods.
-                use astersql_parser_mysql::r#type::TypeNewDecimal;
+                // Integers implicitly widen to numeric; arithmetic drops operand typmods.
+                use astersql_parser_mysql::r#type::{TypeLonglong, TypeNewDecimal};
                 let left = self.relational_query_expression_type_from_sources(L, source_fields);
                 let right = self.relational_query_expression_type_from_sources(R, source_fields);
                 if matches!(
                     (left.GetType(), right.GetType()),
-                    (TypeShort | TypeLong, TypeNewDecimal) | (TypeNewDecimal, TypeShort | TypeLong)
+                    (TypeShort | TypeLong | TypeLonglong, TypeNewDecimal)
+                        | (TypeNewDecimal, TypeShort | TypeLong | TypeLonglong)
                 ) {
                     return astersql_parser_types::NewFieldType(TypeNewDecimal);
                 }
