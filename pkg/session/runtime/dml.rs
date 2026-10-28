@@ -2375,15 +2375,18 @@ impl ConcreteSession {
             let mut row = HashMap::new();
             for (column, expression) in row_columns.iter().zip(expressions) {
                 let column_info = table.Columns.iter().find(|info| info.Name.L == *column);
-                let pg_int2_assignment = self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                let pg_integer_narrowing_assignment = self.sql_dialect()
+                    == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
-                        column.GetType() == astersql_parser_mysql::r#type::TypeShort
-                    })
-                    && matches!(
-                        relational_expression_type(expression, &table).GetType(),
-                        astersql_parser_mysql::r#type::TypeLong
-                            | astersql_parser_mysql::r#type::TypeLonglong
-                    );
+                        use astersql_parser_mysql::r#type::{TypeLong, TypeLonglong, TypeShort};
+                        matches!(
+                            (
+                                relational_expression_type(expression, &table).GetType(),
+                                column.GetType()
+                            ),
+                            (TypeLong | TypeLonglong, TypeShort) | (TypeLonglong, TypeLong)
+                        )
+                    });
                 let mut value = if matches!(
                     &expression.Kind,
                     ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
@@ -2445,7 +2448,7 @@ impl ConcreteSession {
                         &column_info.unwrap().FieldType,
                         false,
                     )?
-                } else if pg_int2_assignment {
+                } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.
                     self.relational_query_expression_value(expression, &row, None)?
@@ -2624,10 +2627,17 @@ impl ConcreteSession {
                         }
                     }
                 }
-                // PG int4/int8 -> int2 assignment is permitted, but must report
-                // target overflow before any row is stored (including UPDATE).
-                if pg_int2_assignment {
-                    astersql_expression::pg_cast_int2(value.as_deref()).map_err(|error| {
+                // PG integer narrowing assignments report target overflow before
+                // storing a row; shared MySQL conversion must not clamp the source.
+                if pg_integer_narrowing_assignment {
+                    let check = if column_info.unwrap().GetType()
+                        == astersql_parser_mysql::r#type::TypeShort
+                    {
+                        astersql_expression::pg_cast_int2(value.as_deref()).map(|_| ())
+                    } else {
+                        astersql_expression::pg_cast_int4(value.as_deref()).map(|_| ())
+                    };
+                    check.map_err(|error| {
                         SessionError::with_source(
                             error.to_string(),
                             astersql_errors::SharedError::new(error),
@@ -3646,15 +3656,18 @@ impl ConcreteSession {
                     continue;
                 };
                 let column_info = table.Columns.iter().find(|info| info.Name.L == *column);
-                let pg_int2_assignment = self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                let pg_integer_narrowing_assignment = self.sql_dialect()
+                    == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
-                        column.GetType() == astersql_parser_mysql::r#type::TypeShort
-                    })
-                    && matches!(
-                        relational_expression_type(expression, &table).GetType(),
-                        astersql_parser_mysql::r#type::TypeLong
-                            | astersql_parser_mysql::r#type::TypeLonglong
-                    );
+                        use astersql_parser_mysql::r#type::{TypeLong, TypeLonglong, TypeShort};
+                        matches!(
+                            (
+                                relational_expression_type(expression, &table).GetType(),
+                                column.GetType()
+                            ),
+                            (TypeLong | TypeLonglong, TypeShort) | (TypeLonglong, TypeLong)
+                        )
+                    });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
@@ -3666,7 +3679,7 @@ impl ConcreteSession {
                         &column_info.unwrap().FieldType,
                         false,
                     )?
-                } else if pg_int2_assignment {
+                } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.
                     self.relational_query_expression_value(expression, &row, None)?
@@ -3701,10 +3714,17 @@ impl ConcreteSession {
                         .map_err(|error| SessionError::new(error.to_string()))?;
                     value = Some(vector.String());
                 }
-                // PG int4/int8 -> int2 assignment is permitted, but must report
-                // target overflow before any row is stored (including UPDATE).
-                if pg_int2_assignment {
-                    astersql_expression::pg_cast_int2(value.as_deref()).map_err(|error| {
+                // PG integer narrowing assignments report target overflow before
+                // storing a row; shared MySQL conversion must not clamp the source.
+                if pg_integer_narrowing_assignment {
+                    let check = if column_info.unwrap().GetType()
+                        == astersql_parser_mysql::r#type::TypeShort
+                    {
+                        astersql_expression::pg_cast_int2(value.as_deref()).map(|_| ())
+                    } else {
+                        astersql_expression::pg_cast_int4(value.as_deref()).map(|_| ())
+                    };
+                    check.map_err(|error| {
                         SessionError::with_source(
                             error.to_string(),
                             astersql_errors::SharedError::new(error),

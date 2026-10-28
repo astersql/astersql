@@ -1091,7 +1091,7 @@ impl ConcreteSession {
                     )
                 });
         }
-        // A single fixed PG signature supplies a narrowing-sensitive context.
+        // Fixed integer signatures supply narrowing-sensitive PG contexts.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
                 FnName,
@@ -1099,21 +1099,26 @@ impl ConcreteSession {
                 Schema,
                 ..
             } = &expression.Kind
-            && FnName.L == "int2not"
+            && matches!(FnName.L.as_str(), "int2not" | "int4not")
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && Args.len() == 1
         {
             return self
                 .relational_query_expression_value(&Args[0], row, group_rows)?
                 .map(|value| {
-                    astersql_expression::pg_cast_int2(Some(&value))
-                        .map(|value| value.map(|value| (!value).to_string()))
-                        .map_err(|error| {
-                            SessionError::with_source(
-                                error.to_string(),
-                                astersql_errors::SharedError::new(error),
-                            )
-                        })
+                    let result = if FnName.L == "int2not" {
+                        astersql_expression::pg_cast_int2(Some(&value))
+                            .map(|value| value.map(|value| (!value).to_string()))
+                    } else {
+                        astersql_expression::pg_cast_int4(Some(&value))
+                            .map(|value| value.map(|value| (!value).to_string()))
+                    };
+                    result.map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })
                 })
                 .unwrap_or(Ok(None));
         }
@@ -2103,7 +2108,10 @@ impl ConcreteSession {
             impl ast::ExprNodeVisitor for Calls {
                 fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
-                        && matches!(FnName.L.as_str(), "int8not" | "float4abs" | "float8abs")
+                        && matches!(
+                            FnName.L.as_str(),
+                            "int4not" | "int8not" | "float4abs" | "float8abs"
+                        )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
                         self.0 = true;
@@ -2487,6 +2495,28 @@ impl ConcreteSession {
                 {
                     self.scalar_cast_error = Some(SessionError::new(
                         "PostgreSQL int2not requires a smallint argument",
+                    ));
+                }
+                // Fixed int4 signatures permit integer widening, never int8
+                // narrowing. Check the source type even for a typed NULL.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "int4not"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (Args.len() != 1
+                        || !matches!(
+                            relational_expression_type(&Args[0], self.table).GetType(),
+                            astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeLong
+                                | astersql_parser_mysql::r#type::TypeNull
+                        ))
+                {
+                    self.scalar_cast_error = Some(SessionError::new(
+                        "PostgreSQL int4not requires an integer argument",
                     ));
                 }
                 // int8not accepts the existing implicit integer widening paths;
@@ -2885,6 +2915,14 @@ impl ConcreteSession {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             if let Some(tp) = pg_integer_literal_type(expression) {
                 return tp;
+            }
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
+                && FnName.L == "int4not"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeLong,
+                );
             }
             if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
                 && FnName.L == "int2not"
