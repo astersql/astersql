@@ -4114,6 +4114,21 @@ pub(super) fn pg_timestamp_source(expression: &ast::ExprNode) -> bool {
     })
 }
 
+/// Resolve instantaneous source identity before inspecting its value or NULL.
+pub(super) fn pg_timestamptz_source(expression: &ast::ExprNode) -> bool {
+    PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+        .GetType()
+            == astersql_parser_mysql::r#type::TypePgTimestampTz
+    })
+}
+
 /// Drop the wall-clock time using floor division before the PG epoch. A timestamp
 /// without time zone has no instant to shift using the session or host timezone.
 pub(super) fn pg_timestamp_to_date_value(value: Option<String>) -> SessionResult<Option<String>> {

@@ -2392,6 +2392,16 @@ impl ConcreteSession {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDate
                     })
                     && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgTimestampTz
+                {
+                    self.pg_timestamptz_to_date_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDate
+                    })
+                    && relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeDatetime
                 {
                     pg_timestamp_to_date_value(
@@ -3840,6 +3850,16 @@ impl ConcreteSession {
                         )
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDate
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgTimestampTz
+                {
+                    self.pg_timestamptz_to_date_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDate
                     })

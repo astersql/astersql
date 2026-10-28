@@ -1524,6 +1524,11 @@ impl ConcreteSession {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDate
                 {
+                    if pg_timestamptz_source(Expr) {
+                        return self.pg_timestamptz_to_date_value(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                        );
+                    }
                     if pg_timestamp_source(Expr) {
                         return pg_timestamp_to_date_value(
                             self.relational_query_expression_value(Expr, row, group_rows)?,

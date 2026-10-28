@@ -261,6 +261,31 @@ impl ConcreteSession {
 }
 
 impl ConcreteSession {
+    /// Extract the calendar date after resolving the instant in this session.
+    /// The display is canonical ISO, so DateStyle cannot reinterpret it. Keep
+    /// infinities and BC eras, including local dates outside timestamp's range.
+    pub(super) fn pg_timestamptz_to_date_value(
+        &self,
+        value: Option<String>,
+    ) -> SessionResult<Option<String>> {
+        self.pg_timestamptz_relational_value(value, -1)?
+            .map(|local| {
+                let date = if let Some((date, _)) = local.split_once(' ') {
+                    if local.ends_with(" BC") {
+                        format!("{date} BC")
+                    } else {
+                        date.to_owned()
+                    }
+                } else {
+                    local
+                };
+                date.parse::<PgDate>()
+                    .map(|date| date.to_string())
+                    .map_err(temporal_error)
+            })
+            .transpose()
+    }
+
     /// Convert the typed instantaneous value to the active session's display.
     pub(super) fn pg_timestamptz_relational_value(
         &self,
