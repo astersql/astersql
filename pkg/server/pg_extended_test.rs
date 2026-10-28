@@ -10936,6 +10936,39 @@ fn pg06_task_001() {
 }
 
 #[test]
+fn pg06_task_001_reference() {
+    use crate::pg_client_integration_test::start_client_server;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let status = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg06_int2_int4_reference.py"
+        ))
+        .arg(
+            cleanup
+                .0
+                .postgres_listener_addr()
+                .unwrap()
+                .port()
+                .to_string(),
+        )
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "int2 -> int4 real TCP differential failed"
+    );
+}
+
+#[test]
 fn pg06_task_002() {
     use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
