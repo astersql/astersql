@@ -82,6 +82,12 @@ pub(super) fn typed_literal_to_runtime_value_with_warning(
             return Ok((text, false));
         }
     };
+    // INSERT SELECT materializes its analyzed source as a literal; preserve
+    // JSONB's input domain instead of invoking the MySQL Datum converter.
+    if column.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
+        return super::pg_jsonb::cast_value(datum_to_runtime_value(&datum, None)?)
+            .map(|value| (value, false));
+    }
     if is_binary_string_column(column) {
         let mut bytes = datum.GetBytes();
         if column.GetType() == astersql_parser_mysql::r#type::TypeString && column.GetFlen() >= 0 {
@@ -344,6 +350,15 @@ pub(super) fn runtime_value_to_datum(
     let Some(value) = value else {
         return Ok(astersql_types::datum::Datum::default());
     };
+    // Keep canonical PG JSONB text in the existing string carrier. MySQL's
+    // BinaryJSON/Datum conversion has a different numeric and Unicode domain.
+    if column.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
+        return super::pg_jsonb::cast_value(Some(value.clone())).map(|value| {
+            value
+                .map(astersql_types::datum::NewStringDatum)
+                .unwrap_or_default()
+        });
+    }
     // PG interval assignments use the existing string Datum carrier. The MySQL
     // converter has no interval type, and folding days/months would lose identity.
     if column.GetType() == astersql_parser_mysql::r#type::TypePgInterval {

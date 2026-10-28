@@ -1862,15 +1862,19 @@ impl ConcreteSession {
         let statement = &statements[0];
         self.validate_pg_boolean_statement(statement.as_ref())?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && supplied.iter().any(|oid| matches!(oid, 16 | 23))
+            && supplied
+                .iter()
+                .any(|oid| matches!(oid, 16 | 23 | 114 | 3802))
         {
-            // Check int4/bool source eligibility before Bind. Typed NULLs preserve
+            // Check bool/int4 and JSON source eligibility before Bind. Typed NULLs preserve
             // the declared parameter identity without inspecting any value.
             let arguments = supplied
                 .iter()
                 .map(|oid| match *oid {
                     16 => "CAST(NULL AS BOOLEAN)".to_owned(),
                     23 => "CAST(NULL AS INT4)".to_owned(),
+                    114 => "CAST(NULL AS JSON)".to_owned(),
+                    3802 => "CAST(NULL AS JSONB)".to_owned(),
                     _ => "?".to_owned(),
                 })
                 .collect::<Vec<_>>();

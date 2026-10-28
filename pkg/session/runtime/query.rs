@@ -2680,6 +2680,24 @@ impl ConcreteSession {
                         "COALESCE types cannot be matched with text",
                     ));
                 }
+                // json -> jsonb is assignment-only. Even typed NULL cannot
+                // satisfy COALESCE's implicit coercion requirement.
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && FnName.L == "coalesce"
+                    && Args.iter().any(|arg| {
+                        relational_expression_type(arg, self.table).GetType()
+                            == astersql_parser_mysql::r#type::TypePgJson
+                    })
+                    && Args.iter().any(|arg| {
+                        relational_expression_type(arg, self.table).GetType()
+                            == astersql_parser_mysql::r#type::TypePgJsonb
+                    })
+                {
+                    self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
+                        "42846",
+                        "COALESCE could not convert type json to jsonb implicitly",
+                    ));
+                }
                 // time -> interval is implicit, but their different type categories
                 // cannot form a common COALESCE type (including typed NULL).
                 if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
