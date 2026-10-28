@@ -2508,6 +2508,53 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // Only a bare literal retains unknown provenance. Parentheses
+                // preserve it, while an explicit text cast fixes the source type
+                // and cannot use the numeric operator's unknown input path.
+                fn literal(expr: &ast::ExprNode) -> Option<&ast::ValueExpr> {
+                    match &expr.Kind {
+                        ast::ExprKind::Parentheses(inner) => literal(inner),
+                        ast::ExprKind::Value(value) => Some(value),
+                        _ => None,
+                    }
+                }
+                if let ast::ExprKind::Binary { Op, L, R } = &input.Kind
+                    && matches!(Op.as_str(), "+" | "-" | "*" | "/" | "%")
+                    && [L.as_ref(), R.as_ref()].iter().any(|operand| {
+                        literal(operand).is_none()
+                            && relational_expression_type(operand, self.table)
+                                .PostgreSQLTextOid()
+                                .is_some()
+                    })
+                {
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        "PostgreSQL arithmetic operator does not accept typed text",
+                        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                            state: "42883",
+                            message: "operator does not exist for typed text operands".into(),
+                            position: None,
+                        }),
+                    ));
+                }
+                // Unknown string input is converted during analysis, including
+                // empty result sets. Reuse the strict PG input converter so a
+                // numeric prefix never makes an invalid literal acceptable.
+                if let ast::ExprKind::Cast {
+                    Expr,
+                    FunctionType: ast::CastFunctionType::PostgreSQLInt4,
+                    ..
+                } = &input.Kind
+                    && let Some(value) = literal(Expr)
+                    && let ast::ValueDatum::String(text) = &value.Datum
+                {
+                    self.scalar_cast_error = pg_integer_relational_value(
+                        Expr,
+                        Some(text.clone()),
+                        ast::CastFunctionType::PostgreSQLInt4,
+                    )
+                    .err()
+                    .or(self.scalar_cast_error.take());
+                }
                 // Boolean operators require implicit bool eligibility before
                 // evaluating either operand, including short-circuited NULLs.
                 let rejects_int4 = |operand: &ast::ExprNode| {
