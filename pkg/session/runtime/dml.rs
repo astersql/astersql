@@ -2453,6 +2453,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypeDate
                                             | astersql_parser_mysql::r#type::TypeDuration
                                             | astersql_parser_mysql::r#type::TypeDatetime
+                                            | astersql_parser_mysql::r#type::TypePgTimestampTz
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -2481,6 +2482,7 @@ impl ConcreteSession {
                             astersql_parser_mysql::r#type::TypeDate
                                 | astersql_parser_mysql::r#type::TypeDuration
                                 | astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
                         ) {
                             self.relational_query_expression_value(expression, &row, None)?
                         } else {
@@ -3793,6 +3795,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypeDate
                                             | astersql_parser_mysql::r#type::TypeDuration
                                             | astersql_parser_mysql::r#type::TypeDatetime
+                                            | astersql_parser_mysql::r#type::TypePgTimestampTz
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
