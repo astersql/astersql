@@ -972,3 +972,63 @@ fn pg_interval_components_session_identity() {
         );
     }
 }
+
+#[test]
+fn pg06_task_039_coalesce_bpchar_to_text() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        ("SELECT coalesce(NULL::text,'中文ab  '::bpchar)", "中文ab"),
+        ("SELECT coalesce(NULL::text,' a　 '::bpchar)", " a　"),
+        ("SELECT coalesce(NULL::text,'  '::bpchar)", ""),
+        ("SELECT coalesce(NULL::text,'abc\t'::bpchar)", "abc\t"),
+        ("SELECT coalesce(NULL::text,'a  '::text)", "a  "),
+        ("SELECT coalesce(NULL::bpchar,'a  '::bpchar)", "a  "),
+        ("SELECT coalesce('first'::text,'unused  '::bpchar)", "first"),
+    ] {
+        assert_eq!(
+            pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+            vec![expected],
+            "{sql}"
+        );
+    }
+    let mysql = ConcreteSession::new_with_dialect(domain, SqlDialect::MySQL);
+    assert_eq!(
+        mysql.execute("SELECT coalesce(NULL,'a  ')").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["a  "]
+    );
+}
+
+#[test]
+fn pg06_task_039_bpchar_text_assignment() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg06_039_assignment (id INT PRIMARY KEY, v text, src char(8))")
+        .unwrap();
+    pg.execute("INSERT INTO pg06_039_assignment VALUES (1,'中文ab  '::bpchar,'abc  ')")
+        .unwrap();
+    assert_eq!(
+        pg.execute("SELECT v FROM pg06_039_assignment").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["中文ab"]
+    );
+    pg.execute("UPDATE pg06_039_assignment SET v=src WHERE id=1")
+        .unwrap();
+    assert_eq!(
+        pg.execute("SELECT v FROM pg06_039_assignment").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["abc"]
+    );
+    pg.execute("DROP TABLE pg06_039_assignment").unwrap();
+}

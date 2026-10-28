@@ -2440,13 +2440,25 @@ impl ConcreteSession {
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
+                            || ((column.FieldType.PostgreSQLTextOid() == Some(25)
+                                || (column.GetType() == astersql_parser_mysql::r#type::TypeBlob
+                                    && column.GetCharset() != "binary"))
+                                && relational_expression_type(expression, &table)
+                                    .PostgreSQLTextOid()
+                                    == Some(1042))
                     })
                 {
+                    // Stored text columns use the shared nonbinary BLOB type.
+                    let mut target = column_info.unwrap().FieldType.clone();
+                    if target.PostgreSQLTextOid().is_none() {
+                        target.SetPostgreSQLTextOid(25);
+                        target.SetFlen(-1);
+                    }
                     pg_text_relational_cast(
                         expression,
                         &row,
                         relational_expression_value(expression, &row)?,
-                        &column_info.unwrap().FieldType,
+                        &target,
                         false,
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
@@ -3740,12 +3752,24 @@ impl ConcreteSession {
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
+                            || ((column.FieldType.PostgreSQLTextOid() == Some(25)
+                                || (column.GetType() == astersql_parser_mysql::r#type::TypeBlob
+                                    && column.GetCharset() != "binary"))
+                                && relational_expression_type(expression, &table)
+                                    .PostgreSQLTextOid()
+                                    == Some(1042))
                     }) {
+                    // Stored text columns use the shared nonbinary BLOB type.
+                    let mut target = column_info.unwrap().FieldType.clone();
+                    if target.PostgreSQLTextOid().is_none() {
+                        target.SetPostgreSQLTextOid(25);
+                        target.SetFlen(-1);
+                    }
                     pg_text_relational_cast(
                         expression,
                         &row,
                         self.relational_query_expression_value(expression, &row, None)?,
-                        &column_info.unwrap().FieldType,
+                        &target,
                         false,
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL

@@ -19845,3 +19845,219 @@ fn pg06_task_038() {
     );
     assert_eq!(query(&mut socket, "DROP TABLE public.pg06_038")[0].0, b'C');
 }
+
+#[test]
+fn pg06_task_039() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    fn metadata(m: &(u8, Vec<u8>), format: i16) {
+        assert_eq!(m.0, b'T', "{m:?}");
+        assert_eq!(
+            &m.1[m.1.len() - 12..],
+            [
+                25u32.to_be_bytes().as_slice(),
+                &(-1i16).to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &format.to_be_bytes()
+            ]
+            .concat()
+        );
+    }
+    fn recover(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg06_039 (id INT PRIMARY KEY,v text,src char(32))"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "INSERT INTO public.pg06_039 VALUES (1,'ok',NULL)"
+        )[0]
+        .0,
+        b'C'
+    );
+    // PostgreSQL 18.6 counts Unicode characters, including combining marks.
+    let cases = [
+        (Some("中文ab"), Some("中文ab")),
+        (Some("中文a  "), Some("中文a")),
+        (Some("  "), Some("")),
+        (Some(""), Some("")),
+        (Some("e\u{301}é😀"), Some("e\u{301}é😀")),
+        (Some("abc\t"), Some("abc\t")),
+        (Some(" a　 "), Some(" a　")),
+        (None, None),
+    ];
+    for (source, expected) in cases {
+        let literal = source.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+        let m = query(
+            &mut socket,
+            &format!("SELECT ({literal}::bpchar)::text AS v"),
+        );
+        metadata(&m[0], 0);
+        assert_eq!(m[1], (b'D', row(&[expected])));
+        assert_eq!(
+            query(
+                &mut socket,
+                &format!("INSERT INTO public.pg06_039 VALUES (2,{literal}::bpchar,NULL)")
+            )[0]
+            .0,
+            b'C'
+        );
+        let inserted = query(&mut socket, "SELECT v FROM public.pg06_039 WHERE id=2");
+        metadata(&inserted[0], 0);
+        assert_eq!(inserted[1], (b'D', row(&[expected])));
+        assert_eq!(
+            query(&mut socket, "DELETE FROM public.pg06_039 WHERE id=2")[0].0,
+            b'C'
+        );
+    }
+    // Implicit bpchar to text strips ASCII trailing spaces and selects text identity.
+    let implicit = query(
+        &mut socket,
+        "SELECT coalesce(NULL::text,'中文ab  '::bpchar) AS v",
+    );
+    metadata(&implicit[0], 0);
+    assert_eq!(implicit[1], (b'D', row(&[Some("中文ab")])));
+    parse(
+        &mut socket,
+        "explicit",
+        "SELECT ($1::bpchar)::text AS v",
+        &[1042],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sexplicit\0");
+    assert_eq!(read(&mut socket), (b't', vec![0, 1, 0, 0, 4, 18]));
+    metadata(&read(&mut socket), 0);
+    for fmt in [0i16, 1] {
+        for (value, expected) in cases {
+            let mut body = [
+                b"\0explicit\0".as_slice(),
+                &1i16.to_be_bytes(),
+                &fmt.to_be_bytes(),
+                &1i16.to_be_bytes(),
+            ]
+            .concat();
+            if let Some(v) = value {
+                body.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                body.extend_from_slice(v.as_bytes());
+            } else {
+                body.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            body.extend_from_slice(&1i16.to_be_bytes());
+            body.extend_from_slice(&fmt.to_be_bytes());
+            send(&mut socket, b'B', &body);
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            send(&mut socket, b'D', b"P\0");
+            metadata(&read(&mut socket), fmt);
+            execute(&mut socket, "", 0);
+            assert_eq!(read(&mut socket), (b'D', row(&[expected])));
+            assert_eq!(read(&mut socket).0, b'C');
+            recover(&mut socket);
+        }
+    }
+    parse(
+        &mut socket,
+        "assignment",
+        "UPDATE public.pg06_039 SET v=src WHERE id=1",
+        &[],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sassignment\0");
+    assert_eq!(read(&mut socket), (b't', vec![0, 0]));
+    assert_eq!(read(&mut socket), (b'n', vec![]));
+    for (value, expected) in cases {
+        assert_eq!(
+            query(&mut socket, "UPDATE public.pg06_039 SET v='ok' WHERE id=1")[0].0,
+            b'C'
+        );
+        let literal = value.map(|v| format!("'{v}'")).unwrap_or("NULL".into());
+        assert_eq!(
+            query(
+                &mut socket,
+                &format!("UPDATE public.pg06_039 SET src={literal}::bpchar WHERE id=1")
+            )[0]
+            .0,
+            b'C'
+        );
+        bind(&mut socket, "", "assignment", &[]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        send(&mut socket, b'D', b"P\0");
+        assert_eq!(read(&mut socket), (b'n', vec![]));
+        execute(&mut socket, "", 0);
+        let result = read(&mut socket);
+        assert_eq!(result.0, b'C', "{result:?}");
+        recover(&mut socket);
+        let m = query(&mut socket, "SELECT v FROM public.pg06_039 WHERE id=1");
+        metadata(&m[0], 0);
+        assert_eq!(m[1], (b'D', row(&[expected])));
+    }
+    for fmt in [0, 1] {
+        for input in [b"\xff".as_slice(), b"a\0b", b"\xc3"] {
+            bind_formats(&mut socket, "explicit", &[fmt], &[Some(input)]);
+            assert_state(&read(&mut socket), "22021");
+            recover(&mut socket);
+        }
+    }
+    // A same-type bpchar cast still counts characters before converting to text.
+    let m = query(
+        &mut socket,
+        "SELECT ('中文ab'::bpchar(3))::bpchar(2)::text AS v",
+    );
+    metadata(&m[0], 0);
+    assert_eq!(m[1], (b'D', row(&[Some("中文")])));
+    // Text has no length modifier: rejection occurs at Parse, before any result.
+    parse(
+        &mut socket,
+        "invalid",
+        "SELECT ($1::bpchar)::text(3)",
+        &[1042],
+    );
+    assert_state(&read(&mut socket), "42601");
+    recover(&mut socket);
+    let m = query(&mut socket, "SELECT (NULL::bpchar)::text AS v LIMIT 0");
+    metadata(&m[0], 0);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg06_039")[0].0, b'C');
+}
