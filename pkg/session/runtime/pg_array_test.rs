@@ -1773,3 +1773,22 @@ fn pg05_array_jsonb_runtime_identity_null_and_atomic_errors() {
         assert!(session.execute("SELECT 1").is_ok());
     }
 }
+
+#[test]
+fn pg06_task_092_unknown_integer_analysis() {
+    for (sql, state) in [
+        ("SELECT ARRAY[1::int4,'x']", "22P02"),
+        ("SELECT ARRAY[NULL::int2,'32768']", "22003"),
+        ("SELECT ARRAY[NULL::int8,'9223372036854775808']", "22003"),
+        ("SELECT ARRAY[1::int4,('bad')]", "22P02"),
+    ] {
+        let failure = pg_array::analyze(sql, &parsed(sql), Some(&[])).unwrap_err();
+        assert_eq!(failure.pg_array_error().unwrap().state, state, "{sql}");
+    }
+    for sql in ["SELECT ARRAY['01',2::int4,NULL]", "SELECT ARRAY[NULL,NULL]"] {
+        assert!(
+            pg_array::analyze(sql, &parsed(sql), Some(&[])).is_ok(),
+            "{sql}"
+        );
+    }
+}

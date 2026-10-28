@@ -298,7 +298,34 @@ pub(super) fn array_type(
             }
         };
     }
-    Ok(result.unwrap_or(Element::Text))
+    let result = result.unwrap_or(Element::Text);
+    // Unknown string literals are coerced during analysis, before ParseComplete.
+    // Typed expressions and parameters retain their own conversion contracts.
+    fn validate_unknown_integer(expr: &ast::ExprNode, target: Element) -> SessionResult<()> {
+        match &expr.Kind {
+            ast::ExprKind::Array { Elements, .. } => {
+                for value in Elements {
+                    validate_unknown_integer(value, target)?;
+                }
+            }
+            ast::ExprKind::Parentheses(inner) => validate_unknown_integer(inner, target)?,
+            ast::ExprKind::Value(value) => {
+                if let ast::ValueDatum::String(text) = &value.Datum {
+                    let checked = match target {
+                        Element::Int2 => astersql_expression::pg_cast_int2(Some(text)).map(|_| ()),
+                        Element::Int4 => astersql_expression::pg_cast_int4(Some(text)).map(|_| ()),
+                        Element::Int8 => astersql_expression::pg_cast_int8(Some(text)).map(|_| ()),
+                        _ => return Ok(()),
+                    };
+                    checked.map_err(|e| error(e.sqlstate(), e.to_string()))?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    validate_unknown_integer(expr, result)?;
+    Ok(result)
 }
 pub(super) fn field_type(element: Element) -> astersql_parser_types::FieldType {
     let mut result =
