@@ -2834,7 +2834,7 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
             return Ok(oids);
         }
-        struct Constraints(Vec<(usize, u32)>, Vec<usize>);
+        struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<usize>);
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
                 // Keep a supplied source identity when checking the one fixed
@@ -2851,6 +2851,21 @@ impl ConcreteSession {
                     && let ast::ExprKind::ParamMarker { Offset } = Args[0].Kind
                 {
                     self.1.push(Offset);
+                }
+                // Preserve the protocol source type for float4abs(real), whose
+                // numeric input is implicitly narrowed only when evaluated.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Schema,
+                    Args,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "float4abs"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && Args.len() == 1
+                    && let ast::ExprKind::ParamMarker { Offset } = Args[0].Kind
+                {
+                    self.2.push(Offset);
                 }
                 if let ast::ExprKind::Cast {
                     Expr,
@@ -3005,7 +3020,7 @@ impl ConcreteSession {
                 *oid = inferred;
             }
         }
-        let mut constraints = Constraints(Vec::new(), Vec::new());
+        let mut constraints = Constraints(Vec::new(), Vec::new(), Vec::new());
         for statement in &statements {
             // SELECT retains its explicit-cast policy. INSERT RETURNING also
             // admits direct VALUES markers constrained by the target schema.
@@ -3076,6 +3091,23 @@ impl ConcreteSession {
                     ));
                 }
                 oids[index] = if source == 0 { 20 } else { source };
+            }
+        }
+        for offset in constraints.2 {
+            if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
+                let source = supplied.get(index).copied().unwrap_or(0);
+                if !matches!(source, 0 | 21 | 23 | 20 | 1700 | 700) {
+                    return Err(SessionError::with_source(
+                        "PostgreSQL float4abs requires a real argument",
+                        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                            state: "42883",
+                            message: "function float4abs does not exist for this argument type"
+                                .into(),
+                            position: None,
+                        }),
+                    ));
+                }
+                oids[index] = if source == 0 { 700 } else { source };
             }
         }
         Ok(oids)

@@ -2475,6 +2475,19 @@ impl ConcreteSession {
                             _ => ast::CastFunctionType::PostgreSQLInt8,
                         },
                     )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeFloat
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeNewDecimal
+                {
+                    // Numeric -> real assignment uses PG binary32 rounding and
+                    // range checks before the shared storage conversion.
+                    pg_float4_relational_value(
+                        expression,
+                        self.relational_query_expression_value(expression, &row, None)?,
+                    )?
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.
@@ -3732,6 +3745,19 @@ impl ConcreteSession {
                             }
                             _ => ast::CastFunctionType::PostgreSQLInt8,
                         },
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeFloat
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeNewDecimal
+                {
+                    // Numeric -> real assignment uses PG binary32 rounding and
+                    // range checks before the shared storage conversion.
+                    pg_float4_relational_value(
+                        expression,
+                        self.relational_query_expression_value(expression, &row, None)?,
                     )?
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
