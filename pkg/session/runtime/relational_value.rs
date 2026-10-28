@@ -3846,6 +3846,9 @@ pub(super) fn pg_float4_relational_value(
             })?;
         return Ok(value);
     }
+    // Bound/stored float8 NaNs can use the private binary runtime representation.
+    // Decode that source before narrowing, just as the float8 cast path does.
+    let value = pg_float4_cast_text_input(expression, value)?;
     let result = if matches!(
         source.GetType(),
         astersql_parser_mysql::r#type::TypeFloat | astersql_parser_mysql::r#type::TypeDouble
