@@ -1044,6 +1044,31 @@ impl ConcreteSession {
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
+        // float4abs(real) supplies a fixed implicit int4 -> float4 context.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Args,
+                Schema,
+                ..
+            } = &expression.Kind
+            && FnName.L == "float4abs"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && Args.len() == 1
+        {
+            let value = pg_float4_cast_text_input(
+                &Args[0],
+                self.relational_query_expression_value(&Args[0], row, group_rows)?,
+            )?;
+            return astersql_expression::pg_cast_float4(value.as_deref())
+                .map(|value| value.map(|value| f64::from(value.abs()).to_string()))
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                });
+        }
         // A single fixed PG signature supplies a narrowing-sensitive context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -2051,12 +2076,12 @@ impl ConcreteSession {
     }
 
     pub(crate) fn relational_select_requires_full_query(&self, select: &ast::SelectStmt) -> bool {
-        fn has_int8not(expression: &ast::ExprNode) -> bool {
+        fn has_pg_numeric_signature(expression: &ast::ExprNode) -> bool {
             struct Calls(bool);
             impl ast::ExprNodeVisitor for Calls {
                 fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
-                        && FnName.L == "int8not"
+                        && matches!(FnName.L.as_str(), "int8not" | "float4abs")
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
                         self.0 = true;
@@ -2104,16 +2129,13 @@ impl ConcreteSession {
         let scalar_count = is_scalar_count_non_null_constant(select);
         select.With.is_some()
             || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
-                && (select
-                    .Where
-                    .as_ref()
-                    .is_some_and(|expr| expression_contains_cast(expr) || has_int8not(expr))
-                    || select.Fields.Fields.iter().any(|field| {
-                        field
-                            .Expr
-                            .as_ref()
-                            .is_some_and(|expr| expression_contains_cast(expr) || has_int8not(expr))
-                    })))
+                && (select.Where.as_ref().is_some_and(|expr| {
+                    expression_contains_cast(expr) || has_pg_numeric_signature(expr)
+                }) || select.Fields.Fields.iter().any(|field| {
+                    field.Expr.as_ref().is_some_and(|expr| {
+                        expression_contains_cast(expr) || has_pg_numeric_signature(expr)
+                    })
+                })))
             || has_derived_source
             || select
                 .From
@@ -2357,6 +2379,39 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // Only implicit numeric sources satisfy float4abs(real).
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "float4abs"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (Args.len() != 1
+                        || relational_expression_type(&Args[0], self.table).GetFlag()
+                            & astersql_parser_mysql::r#type::IsBooleanFlag
+                            != 0
+                        || !matches!(
+                            relational_expression_type(&Args[0], self.table).GetType(),
+                            astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeLong
+                                | astersql_parser_mysql::r#type::TypeLonglong
+                                | astersql_parser_mysql::r#type::TypeNewDecimal
+                                | astersql_parser_mysql::r#type::TypeFloat
+                                | astersql_parser_mysql::r#type::TypeNull
+                        ))
+                {
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        "PostgreSQL float4abs requires a real argument",
+                        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                            state: "42883",
+                            message: "function float4abs does not exist for this argument type"
+                                .into(),
+                            position: None,
+                        }),
+                    ));
+                }
                 // int2not has exactly one smallint signature. Do not apply an
                 // assignment cast here: int4 -> int2 is never implicit, even NULL.
                 if let ast::ExprKind::Function {
@@ -2789,6 +2844,14 @@ impl ConcreteSession {
             {
                 return astersql_parser_types::NewFieldType(
                     astersql_parser_mysql::r#type::TypeLonglong,
+                );
+            }
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
+                && FnName.L == "float4abs"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeFloat,
                 );
             }
             // Preserve the existing PG integer promotion for int2 -> int4.
