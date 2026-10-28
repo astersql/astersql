@@ -88,6 +88,12 @@ pub(super) fn typed_literal_to_runtime_value_with_warning(
         return super::pg_jsonb::cast_value(datum_to_runtime_value(&datum, None)?)
             .map(|value| (value, false));
     }
+    // A jsonb assignment has already produced canonical text; JSON storage
+    // validates that text without passing through MySQL's JSON value model.
+    if column.GetType() == astersql_parser_mysql::r#type::TypePgJson {
+        return super::pg_json::cast_value(datum_to_runtime_value(&datum, None)?)
+            .map(|value| (value, false));
+    }
     if is_binary_string_column(column) {
         let mut bytes = datum.GetBytes();
         if column.GetType() == astersql_parser_mysql::r#type::TypeString && column.GetFlen() >= 0 {
@@ -354,6 +360,14 @@ pub(super) fn runtime_value_to_datum(
     // BinaryJSON/Datum conversion has a different numeric and Unicode domain.
     if column.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
         return super::pg_jsonb::cast_value(Some(value.clone())).map(|value| {
+            value
+                .map(astersql_types::datum::NewStringDatum)
+                .unwrap_or_default()
+        });
+    }
+    // JSON keeps the source output text, including the canonical jsonb output.
+    if column.GetType() == astersql_parser_mysql::r#type::TypePgJson {
+        return super::pg_json::cast_value(Some(value.clone())).map(|value| {
             value
                 .map(astersql_types::datum::NewStringDatum)
                 .unwrap_or_default()

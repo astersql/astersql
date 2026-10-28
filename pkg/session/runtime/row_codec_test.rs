@@ -500,3 +500,70 @@ fn pg06_task_080_jsonb_row_formats() {
         }
     }
 }
+
+#[test]
+fn pg06_task_081_json_row_formats() {
+    use astersql_meta_model::{ColumnInfo, SchemaState, TableInfo};
+    use std::collections::HashMap;
+    let mut column = ColumnInfo::default();
+    column.ID = 1;
+    column.Name = astersql_parser_ast::NewCIStr("v");
+    column.State = SchemaState::Public;
+    column.SetType(astersql_parser_mysql::r#type::TypePgJson);
+    column.SetDecimal(-1);
+    column.SetFlen(-1);
+    let table = TableInfo {
+        ID: 9871,
+        ExactName: false,
+        Columns: vec![column],
+        ..Default::default()
+    };
+    for input in ["garbage", "{", "null trailing"] {
+        let value = input.to_owned();
+        assert!(
+            super::row_codec::runtime_value_to_datum(
+                Some(&value),
+                &table.Columns[0],
+                astersql_types::Flags::default()
+            )
+            .is_err()
+        );
+    }
+    for new_format in [false, true] {
+        for (input, expected) in [
+            (
+                Some(r#" {"aa":1,"b":2,"aa":3.00} "#),
+                Some(r#" {"aa":1,"b":2,"aa":3.00} "#),
+            ),
+            (Some("null"), Some("null")),
+            (None, None),
+        ] {
+            let row = HashMap::from([
+                ("v".to_owned(), input.map(str::to_owned)),
+                ("_tidb_rowid".to_owned(), Some("1".to_owned())),
+            ]);
+            let (_, bytes) = super::row_codec::encode_relational_row_with_format(
+                &table,
+                &row,
+                astersql_types::Flags::default(),
+                new_format,
+            )
+            .unwrap();
+            let fields = table
+                .Columns
+                .iter()
+                .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                .collect();
+            let handle = astersql_tablecodec::kv::IntHandle(1);
+            let (_, decoded) = super::relational_scan::decode_relational_row_value(
+                &table, &fields, &handle, &bytes,
+            )
+            .unwrap();
+            assert_eq!(
+                decoded.get("v").cloned().flatten(),
+                expected.map(str::to_owned),
+                "format={new_format}"
+            );
+        }
+    }
+}

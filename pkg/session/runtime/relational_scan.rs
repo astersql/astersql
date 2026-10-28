@@ -1058,6 +1058,7 @@ pub(super) fn decode_relational_row_value(
                 column.GetType(),
                 astersql_parser_mysql::r#type::TypePgTimestampTz
                     | astersql_parser_mysql::r#type::TypePgInterval
+                    | astersql_parser_mysql::r#type::TypePgJson
                     | astersql_parser_mysql::r#type::TypePgJsonb
             )
         })
@@ -1067,6 +1068,7 @@ pub(super) fn decode_relational_row_value(
                 column.GetType(),
                 astersql_parser_mysql::r#type::TypePgTimestampTz
                     | astersql_parser_mysql::r#type::TypePgInterval
+                    | astersql_parser_mysql::r#type::TypePgJson
                     | astersql_parser_mysql::r#type::TypePgJsonb
             ) || (table.ExactName
                 && column.GetType() == astersql_parser_mysql::r#type::TypeDatetime)

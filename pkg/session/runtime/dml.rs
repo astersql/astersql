@@ -2389,6 +2389,18 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypePgJson
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgJsonb
+                {
+                    // JSONB's source output is canonical even when the generic
+                    // DML evaluator would otherwise retain the literal spelling.
+                    super::pg_jsonb::cast_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                     })
                     && relational_expression_type(expression, &table).GetType()
@@ -3918,6 +3930,18 @@ impl ConcreteSession {
                         )
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypePgJson
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgJsonb
+                {
+                    // JSONB's source output is canonical even when the generic
+                    // DML evaluator would otherwise retain the literal spelling.
+                    super::pg_jsonb::cast_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                     })
