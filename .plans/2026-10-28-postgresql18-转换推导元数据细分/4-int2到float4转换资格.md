@@ -2,7 +2,7 @@
 
 批次：【批次 4】 依赖批次 3（共享源码与验证资源串行交接）
 
-状态：未开始
+状态：已完成，待回归
 
 目的：只处理int2→float4有向对：前向E/A/I均允许；E为显式转换，A为目标列赋值，I为表达式隐式转换。数值舍入、溢出22003及NULL沿目标族，不能通过text串接。
 
@@ -63,14 +63,14 @@
 
 ## Progress
 
-- [ ] 核对依赖及生产差异依据。
-- [ ] 取得行为失败或既有正确行为的当前证据。
-- [ ] 完成实现、聚焦验证和Ready检查。
-- [ ] 完成交接、资源清理及适用提交。
+- [x] 核对依赖及生产差异依据。
+- [x] 取得行为失败或既有正确行为的当前证据。
+- [x] 完成实现、聚焦验证和Ready检查。
+- [x] 完成交接、资源清理及适用提交。
 
 ## Surprises & Discoveries
 
-规划时未运行测试；预期缺口须由实施前测试确认。
+独立TCP测试证实混合int2/float4算术被描述为int8（OID20）；局部PG类型推导修复后同一命令通过。int2源域完全可由float4精确表示，目标舍入/溢出边界对本方向不适用。
 
 ## Decision Log
 
@@ -78,8 +78,34 @@
 
 ## Outcomes & Retrospective
 
-尚未实施，没有功能通过结论。实施者在此记录新证据、实际修改和剩余范围外事项。
+本地行为闭环及Ready检查通过；固定PostgreSQL18.6参考差分缺证，保留任务供回归。
 
 ## 重试与恢复
 
 测试使用唯一临时表及系统分配端口；成功、失败及中断均关闭连接/listener、删除自己夹具，待子进程结束才释放槽位。可重复运行；保留缓存，不重置其他任务变更。
+
+## 执行记录（2026-10-28）
+
+批次3提交92175b985b已交付局部接口并通过TCP测试，可消费indexed_parameter_contract和prepare_statement_with_parameter_types；18.6参考差分的环境缺证独立保留。已读根/server规则、PLANS.md、执行/RustCodeGraph技能及路线图第3章对应契约；三个目标包无doc.go，verify-profile技能不存在。RustCodeGraph已核对query.rs::relational_query_expression_type_from_sources：PG混合int2/numeric已有定型分支，int2/float4尚待TCP证实。新增pg06_task_004覆盖E/A/I、源域上下界、NULL、参数OID21和结果700/4/-1、文本格式0、Bind错误及Sync恢复、同Server MySQL前后隔离。int2完整域[-32768,32767]均能精确表示为float4，因此目标溢出/舍入临界不在该有向转换的可达输入域内；不借反向转换或text串接制造伪边界。源边界外32768/-32769在Bind验22003，非法源值验22P02。
+
+PG18_REFERENCE_DSN未配置；本机postgres仅18.4 (Homebrew)，不能代替18.6参考。先取得本地行为证据，最后保留参考差分待回归。
+
+首次聚焦验证：动态槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；cargo fmt --all完成后，同一计划命令实际运行pg06_task_004 1个测试，退出101，OID断言实际20/预期700（日志/tmp/pg06-004-initial.log）。生产修改仅query.rs::relational_query_expression_type_from_sources的PG分支，为int2与float4混合加减乘返回TypeFloat；依据路线图第3章前向I资格及float4结果700/4/-1契约，复用既有值转换，不开放其他类型对。两方版权头已存在并保留。相同命令和输入将复验。
+
+最终验收：pg06_task_004实际运行1个测试，1 passed、0 failed、440 filtered out，退出0；日志/tmp/pg06-004-final.log。显式E覆盖1、-32768、32767及typed NULL；A覆盖INSERT后的32767读回、UPDATE后的-32768和NULL；I覆盖int2与float4小数双侧加法、减法、乘法、两端值及NULL。简单查询和扩展两种Describe均核对结果700/4/-1及格式0；显式和隐式准备语句的ParameterDescription均固定源OID21，重绑定上下界与NULL不改变结果描述。无结果INSERT明确NoData，结果字段不适用。非法源值在Bind即返回22003/22P02且无DataRow，Sync后SELECT 1::int4恢复，id=2计数始终0；同Server MySQL前后CAST(32767 AS SIGNED)结果一致。临时表DROP成功，Cleanup关闭服务。
+
+TDD证据：首次新增测试编译成功，实际运行1个失败（退出101，OID20/700）；8行PG类型身份修复后相同命令/输入1个通过（退出0）；补强扩展隐式描述及失败INSERT无副作用后最终同一命令1个通过（退出0）。生产修改只涉及本任务int2/float4加减乘的结果身份，MySQL路径及依赖均不变；版权头保留。
+
+确切验证命令（仓库根目录）：
+
+- cargo fmt --all：三阶段均完成，最终退出0；日志/tmp/pg06-004-fmt.log、/tmp/pg06-004-fmt-green.log、/tmp/pg06-004-fmt-final.log。
+- env -u LDFLAGS cargo test --locked -p astersql-server --lib pg06_task_004 -- --nocapture：首次101（1 failed），修复后0（1 passed），补强后0（1 passed）；日志分别/tmp/pg06-004-initial.log、/tmp/pg06-004-green.log、/tmp/pg06-004-final.log。
+- make lint：退出0；日志/tmp/pg06-004-lint.log；后续仅追加Rust测试断言，未改变Go检查输入。
+- git diff --check：退出0；最终自审无越界变动。
+- /opt/homebrew/opt/postgresql@18/bin/postgres --version：退出0，仅18.4 (Homebrew)，只检测版本，没有作为18.6参考实测。
+
+三次Cargo阶段均动态原子领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1，owner记录任务、会话及持有shell PID；全部Cargo与测试子进程退出后以EXIT trap unlink自己的owner并rmdir自己的锁，已核对锁目录为空，缓存保留。最初含rm -f的清理命令被工具规则拒绝（未执行），改为unlink后正常运行。
+
+WIP用聚焦TCP回归证明缺口与修复；Ready使用fmt、同一聚焦测试、make lint及diff自审交付；.agents/skills/tidb-verify-profile缺失，不宣称调用该技能。未改Go/Bazel/依赖，不触发bazel_prepare，未运行bazel_lint_changed、Go单测或RealTiKV；本任务Rust默认features，未调用Go failpoint工具。变更文件为query.rs、pg_extended_test.rs和本任务文件；总plan.md保持只读。依git-commit技能只提交这三个文件，不push。
+
+正确性及兼容性风险：PG混合算术只新增本有向对的结果身份，已有转换器复用，MySQL基本整数CAST隔离已通过；固定18.6参考差分、二进制结果格式、全量双协议测试未验证。性能只增加PG算术节点一次局部类型对判断，未做基准。PG18_REFERENCE_DSN未配置、固定18.6构建缺失属于无关环境缺证，故状态为已完成，待回归，保留任务文件。下一步在固定18.6参考端重放相同SQL与参数，采集值、NULL、OID/typlen/typmod/格式及错误阶段完成差分后再删除任务文件。
