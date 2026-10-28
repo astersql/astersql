@@ -2451,6 +2451,7 @@ impl ConcreteSession {
                                         astersql_parser_mysql::r#type::TypeNewDecimal
                                             | astersql_parser_mysql::r#type::TypeDouble
                                             | astersql_parser_mysql::r#type::TypeDate
+                                            | astersql_parser_mysql::r#type::TypeDuration
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -2472,11 +2473,13 @@ impl ConcreteSession {
                     pg_text_relational_cast(
                         expression,
                         &row,
-                        // Date output requires evaluating the source cast first, including
-                        // strict input validation and the connection's date context.
-                        if relational_expression_type(expression, &table).GetType()
-                            == astersql_parser_mysql::r#type::TypeDate
-                        {
+                        // Temporal output requires evaluating the source cast first,
+                        // including strict input validation and precision rounding.
+                        if matches!(
+                            relational_expression_type(expression, &table).GetType(),
+                            astersql_parser_mysql::r#type::TypeDate
+                                | astersql_parser_mysql::r#type::TypeDuration
+                        ) {
                             self.relational_query_expression_value(expression, &row, None)?
                         } else {
                             relational_expression_value(expression, &row)?
@@ -3786,6 +3789,7 @@ impl ConcreteSession {
                                         astersql_parser_mysql::r#type::TypeNewDecimal
                                             | astersql_parser_mysql::r#type::TypeDouble
                                             | astersql_parser_mysql::r#type::TypeDate
+                                            | astersql_parser_mysql::r#type::TypeDuration
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
