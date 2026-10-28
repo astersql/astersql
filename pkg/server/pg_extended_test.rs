@@ -11261,10 +11261,18 @@ fn pg06_task_003() {
         assert_eq!(m[1], (b'D', row(&[Some(expected)])));
     }
     // int2 fits unconstrained numeric; numeric(2,0) adds a real target boundary.
+    // Read a typed source column so PG constant folding cannot move overflow to Bind.
+    for sql in [
+        "CREATE TABLE public.pg06_003_source (id INT PRIMARY KEY, v SMALLINT)",
+        "INSERT INTO public.pg06_003_source VALUES (100,100),(-100,-100)",
+    ] {
+        let m = query(&mut socket, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+    }
     parse(
         &mut socket,
         "limited",
-        "INSERT INTO public.pg06_003 VALUES (2,$1::numeric(2,0))",
+        "INSERT INTO public.pg06_003 SELECT 2,v::numeric(2,0) FROM public.pg06_003_source WHERE id=$1",
         &[21],
     );
     assert_eq!(read(&mut socket), (b'1', vec![]));
@@ -11308,6 +11316,11 @@ fn pg06_task_003() {
     assert_eq!(
         mysql_query(&mut mysql, "SELECT CAST(32767 AS SIGNED)"),
         before
+    );
+    assert!(
+        !query(&mut socket, "DROP TABLE public.pg06_003_source")
+            .iter()
+            .any(|m| m.0 == b'E')
     );
     assert!(
         !query(&mut socket, "DROP TABLE public.pg06_003")
