@@ -4169,3 +4169,14 @@ pub(super) fn pg_text_numeric_pair(
         && target.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text uses the float8 input function only for explicit casts. Keep
+/// assignment and common-type inference from admitting the I/O conversion.
+pub(super) fn pg_text_float8_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetType() == astersql_parser_mysql::r#type::TypeDouble
+        && target.PostgreSQLArrayElement().is_none()
+}

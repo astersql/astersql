@@ -2865,6 +2865,7 @@ impl ConcreteSession {
                 if super::relational_value::pg_text_bytea_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_int4_pair(source, &column.FieldType)
                     || super::relational_value::pg_text_numeric_pair(source, &column.FieldType)
+                    || super::relational_value::pg_text_float8_pair(source, &column.FieldType)
                 {
                     return Err(super::relational_value::pg_bytea_input_error(
                         "42804",
@@ -2895,6 +2896,7 @@ impl ConcreteSession {
                 if super::relational_value::pg_text_bytea_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_int4_pair(&source, &column.FieldType)
                     || super::relational_value::pg_text_numeric_pair(&source, &column.FieldType)
+                    || super::relational_value::pg_text_float8_pair(&source, &column.FieldType)
                 {
                     return Err(super::relational_value::pg_bytea_input_error(
                         "42804",
@@ -2946,6 +2948,10 @@ impl ConcreteSession {
                 if super::relational_value::pg_text_bytea_pair(&source, &target.column.FieldType)
                     || super::relational_value::pg_text_int4_pair(&source, &target.column.FieldType)
                     || super::relational_value::pg_text_numeric_pair(
+                        &source,
+                        &target.column.FieldType,
+                    )
+                    || super::relational_value::pg_text_float8_pair(
                         &source,
                         &target.column.FieldType,
                     )
