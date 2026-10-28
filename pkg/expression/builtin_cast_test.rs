@@ -990,3 +990,38 @@ fn pg05_array_text_input_delegates_real_int4_scalar_codec() {
     }
     assert_eq!(parse(b"{{x,2},{3}}").unwrap_err().sqlstate(), Some("22P02"));
 }
+
+#[test]
+fn pg06_task_083_bytea_boolean_eligibility_precedes_null() {
+    use crate::{BuildContext, Expression as FormalExpression, mysql, types};
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+            crate::ast::SqlDialect::PostgreSQL,
+        )]),
+    ))]);
+    let mut boolean = *types::NewFieldType(mysql::TypeTiny);
+    boolean.AddFlag(mysql::IsBooleanFlag);
+    let mut bytea = *types::NewFieldType(mysql::TypeBlob);
+    bytea.SetCharset("binary".to_owned());
+    for (source_type, target, value) in [
+        (&bytea, &boolean, types::NewBytesDatum(b"true".to_vec())),
+        (&boolean, &bytea, types::NewIntDatum(1)),
+    ] {
+        assert_eq!(
+            pg_boolean_cast_kind(source_type, target),
+            Err(PgBoolError::InvalidCast)
+        );
+        for datum in [value, types::Datum::default()] {
+            let source: Box<dyn FormalExpression> =
+                Box::new(crate::Constant::with_type(datum, source_type.clone()));
+            let expression = crate::formal_registry::BuildCastFunction(&pg, &source, target);
+            assert!(
+                expression
+                    .Eval(pg.GetEvalCtx(), crate::chunk::Row::default())
+                    .is_err()
+            );
+        }
+    }
+    assert_eq!(PgBoolError::InvalidCast.sqlstate(), "42846");
+    assert_eq!(PgBoolError::Unsupported.sqlstate(), "0A000");
+}

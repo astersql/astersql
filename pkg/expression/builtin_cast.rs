@@ -1873,6 +1873,8 @@ pub enum PgBoolError {
     InvalidSyntax,
     #[error("argument or assignment requires type boolean")]
     TypeMismatch,
+    #[error("cannot cast between bytea and boolean")]
+    InvalidCast,
     #[error("unsupported explicit boolean conversion")]
     Unsupported,
     #[error("invalid internal boolean value")]
@@ -1883,6 +1885,7 @@ impl PgBoolError {
         match self {
             Self::InvalidSyntax => "22P02",
             Self::TypeMismatch => "42804",
+            Self::InvalidCast => "42846",
             Self::Unsupported => "0A000",
             Self::InvalidValue => "XX000",
         }
@@ -1908,6 +1911,16 @@ pub fn pg_boolean_cast_kind(
     let target_bool = mysql::HasIsBooleanFlag(target.GetFlag());
     if !source_bool && !target_bool {
         return Ok(None);
+    }
+    // bytea shares the string evaluation carrier, but has no boolean cast.
+    // Check declared identity before strict NULL propagation or text dispatch.
+    let bytea = |tp: &crate::types::FieldType| {
+        tp.GetType() == mysql::TypeBlob
+            && tp.GetCharset() == "binary"
+            && tp.PostgreSQLArrayElement().is_none()
+    };
+    if (target_bool && bytea(source)) || (source_bool && bytea(target)) {
+        return Err(PgBoolError::InvalidCast);
     }
     if target_bool {
         return Ok(Some(
