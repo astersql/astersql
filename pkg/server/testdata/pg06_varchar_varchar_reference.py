@@ -175,7 +175,7 @@ try:
             result=record('Bind',value.hex(),[flush_read()]);assert result['tags']=='E' and result['errors']==['22021'],result
             sync();query('SELECT 1::int4',('1',23))
     result=query('SELECT (NULL::varchar)::varchar(3) AS v LIMIT 0');assert result['tags']=='TCZ' and result['metadata']==[[1043,-1,7,0]],result
-    
+
     print(json.dumps(dict(passed=True,server_version=server_version(conn),libpq=lib_version(),observations=len(records))))
 finally:
     if raw:raw.close()
