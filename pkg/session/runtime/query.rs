@@ -2591,9 +2591,9 @@ impl ConcreteSession {
                 if let ast::ExprKind::Cast {
                     Expr,
                     FunctionType:
-                        ast::CastFunctionType::PostgreSQLInt2
+                        function_type @ (ast::CastFunctionType::PostgreSQLInt2
                         | ast::CastFunctionType::PostgreSQLInt4
-                        | ast::CastFunctionType::PostgreSQLInt8,
+                        | ast::CastFunctionType::PostgreSQLInt8),
                     ..
                 } = &input.Kind
                 {
@@ -2604,6 +2604,8 @@ impl ConcreteSession {
                     )
                     .GetType()
                         != astersql_parser_mysql::r#type::TypeNewDecimal
+                        && !(*function_type == ast::CastFunctionType::PostgreSQLInt2
+                            && source.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal)
                         && source.GetType() != astersql_parser_mysql::r#type::TypeNull
                         && !matches!(
                             source.EvalType(),

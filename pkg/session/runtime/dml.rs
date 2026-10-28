@@ -2448,6 +2448,21 @@ impl ConcreteSession {
                         &column_info.unwrap().FieldType,
                         false,
                     )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeShort
+                            && !astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeNewDecimal
+                {
+                    // PG numeric assignment rounds before checking the int2 range,
+                    // using the same exact decimal conversion as an explicit cast.
+                    pg_integer_relational_value(
+                        expression,
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        ast::CastFunctionType::PostgreSQLInt2,
+                    )?
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.
@@ -3678,6 +3693,21 @@ impl ConcreteSession {
                         self.relational_query_expression_value(expression, &row, None)?,
                         &column_info.unwrap().FieldType,
                         false,
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeShort
+                            && !astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeNewDecimal
+                {
+                    // PG numeric assignment rounds before checking the int2 range,
+                    // using the same exact decimal conversion as an explicit cast.
+                    pg_integer_relational_value(
+                        expression,
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        ast::CastFunctionType::PostgreSQLInt2,
                     )?
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their

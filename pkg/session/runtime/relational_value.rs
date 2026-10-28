@@ -3564,9 +3564,16 @@ pub(super) fn pg_integer_relational_value(
             _ => true, // Column types are checked before relational SELECT evaluation.
         }
     }
-    if relational_expression_type(expression, &astersql_meta_model::TableInfo::default()).GetType()
-        == astersql_parser_mysql::r#type::TypeNewDecimal
-    {
+    let source = PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+    });
+    if source.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
         let bits = match target {
             ast::CastFunctionType::PostgreSQLInt2 => 16,
             ast::CastFunctionType::PostgreSQLInt4 => 32,
@@ -3586,15 +3593,6 @@ pub(super) fn pg_integer_relational_value(
             })
             .transpose();
     }
-    let source = PG_CAST_TABLE.with(|slot| {
-        let table = slot.borrow();
-        relational_expression_type(
-            expression,
-            table
-                .as_ref()
-                .unwrap_or(&astersql_meta_model::TableInfo::default()),
-        )
-    });
     if matches!(
         source.GetType(),
         astersql_parser_mysql::r#type::TypeFloat | astersql_parser_mysql::r#type::TypeDouble

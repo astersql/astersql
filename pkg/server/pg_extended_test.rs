@@ -13949,3 +13949,268 @@ fn pg06_task_015() {
             .any(|m| m.0 == b'E')
     );
 }
+
+#[test]
+fn pg06_task_016() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(32767 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"32767".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for sql in [
+        "CREATE TABLE public.pg06_016 (id INT PRIMARY KEY, v int2)",
+        "INSERT INTO public.pg06_016 VALUES (1,32766.5::numeric)",
+    ] {
+        let m = query(&mut socket, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg06_016 WHERE id=1")[1],
+        (b'D', row(&[Some("32767")]))
+    );
+    assert!(
+        !query(
+            &mut socket,
+            "UPDATE public.pg06_016 SET v=(-32767.5)::numeric WHERE id=1"
+        )
+        .iter()
+        .any(|m| m.0 == b'E')
+    );
+    for sql in [
+        "CREATE TABLE public.pg06_016_source (id INT PRIMARY KEY, n numeric)",
+        "INSERT INTO public.pg06_016_source VALUES (1,(-32767.5)::numeric)",
+        "INSERT INTO public.pg06_016 SELECT 3,n FROM public.pg06_016_source",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+    }
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg06_016 WHERE id=3")[1],
+        (b'D', row(&[Some("-32768")]))
+    );
+    for (sql, value) in [
+        ("SELECT n::int2 FROM public.pg06_016_source", Some("-32768")),
+        ("SELECT (1::numeric)::int2 AS v", Some("1")),
+        ("SELECT (1.49::numeric)::int2 AS v", Some("1")),
+        ("SELECT (1.5::numeric)::int2 AS v", Some("2")),
+        ("SELECT ((-1.5)::numeric)::int2 AS v", Some("-2")),
+        ("SELECT (32767.499::numeric)::int2 AS v", Some("32767")),
+        ("SELECT ((-32768.499)::numeric)::int2 AS v", Some("-32768")),
+        ("SELECT ((-32768)::numeric)::int2 AS v", Some("-32768")),
+        ("SELECT (32767::numeric)::int2 AS v", Some("32767")),
+        ("SELECT NULL::numeric::int2 AS v", None),
+        ("SELECT v FROM public.pg06_016 WHERE id=1", Some("-32768")),
+        ("SELECT int2not(1::int2) AS v", Some("-2")),
+        ("SELECT int2not((1::numeric)::int2) AS v", Some("-2")),
+        ("SELECT int2not(NULL::int2) AS v", None),
+    ] {
+        let m = query(&mut socket, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        scalar_types(&m[0], &[21]);
+        assert_eq!(&m[0].1[m[0].1.len() - 2..], &0i16.to_be_bytes());
+        assert_eq!(m.iter().filter(|m| m.0 == b'D').count(), 1);
+        assert_eq!(m[1], (b'D', row(&[value])), "{sql}");
+    }
+    parse(&mut socket, "narrow", "SELECT $1::int2 AS v", &[1700]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Snarrow\0");
+    assert_eq!(read(&mut socket), (b't', vec![0, 1, 0, 0, 6, 164]));
+    let description = read(&mut socket);
+    scalar_types(&description, &[21]);
+    for (value, expected) in [
+        (Some("1.5"), Some("2")),
+        (Some("-1.5"), Some("-2")),
+        (Some("-32768.499"), Some("-32768")),
+        (Some("32767.499"), Some("32767")),
+        (None, None),
+    ] {
+        bind(&mut socket, "", "narrow", &[value]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        send(&mut socket, b'D', b"P\0");
+        assert_eq!(read(&mut socket), description);
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[expected])));
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+    }
+    fn state(message: &(u8, Vec<u8>), expected: &str) {
+        assert_eq!(message.0, b'E', "{message:?}");
+        let field = format!("C{expected}\0");
+        assert!(
+            message
+                .1
+                .windows(field.len())
+                .any(|v| v == field.as_bytes()),
+            "{message:?}"
+        );
+    }
+    for sql in [
+        "SELECT int2not(1::numeric)",
+        "SELECT int2not(NULL::numeric)",
+    ] {
+        parse(&mut socket, "reject", sql, &[]);
+        state(&read(&mut socket), "42883");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    parse(
+        &mut socket,
+        "reject_parameter",
+        "SELECT int2not($1)",
+        &[1700],
+    );
+    state(&read(&mut socket), "42883");
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+    assert_eq!(
+        query(&mut socket, "SELECT 1::int4")[1],
+        (b'D', row(&[Some("1")]))
+    );
+    // Bind validates numeric; narrowing range errors occur later at Execute.
+    for value in ["32768", "-32769", "32767.5", "-32768.5"] {
+        bind(&mut socket, "", "narrow", &[Some(value)]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        execute(&mut socket, "", 0);
+        state(&read(&mut socket), "22003");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    for value in ["32768", "-32769", "32767.5", "-32768.5"] {
+        for sql in [
+            format!("SELECT ({value}::numeric)::int2"),
+            format!("UPDATE public.pg06_016 SET v={value}::numeric WHERE id=1"),
+            format!("INSERT INTO public.pg06_016 VALUES (2,{value}::numeric)"),
+        ] {
+            let m = query(&mut socket, &sql);
+            state(&m[0], "22003");
+            assert!(!m.iter().any(|m| m.0 == b'D'));
+            assert_eq!(
+                query(&mut socket, "SELECT 1::int4")[1],
+                (b'D', row(&[Some("1")]))
+            );
+            assert_eq!(
+                query(&mut socket, "SELECT v FROM public.pg06_016 WHERE id=1")[1],
+                (b'D', row(&[Some("-32768")]))
+            );
+            assert_eq!(
+                query(
+                    &mut socket,
+                    "SELECT count(*) FROM public.pg06_016 WHERE id=2"
+                )[1],
+                (b'D', row(&[Some("0")]))
+            );
+        }
+    }
+    for invalid in ["invalid"] {
+        bind(&mut socket, "", "narrow", &[Some(invalid)]);
+        state(&read(&mut socket), "22P02");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    parse(
+        &mut socket,
+        "assign",
+        "UPDATE public.pg06_016 SET v=$1 WHERE id=1",
+        &[1700],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sassign\0");
+    assert_eq!(read(&mut socket), (b't', vec![0, 1, 0, 0, 6, 164]));
+    // UPDATE has no result columns: OID/typlen/typmod/format are inapplicable.
+    assert_eq!(read(&mut socket), (b'n', vec![]));
+    for (value, expected) in [
+        (Some("1.5"), Some("2")),
+        (Some("-1.5"), Some("-2")),
+        (Some("32767.499"), Some("32767")),
+        (Some("-32768.499"), Some("-32768")),
+        (None, None),
+    ] {
+        bind(&mut socket, "", "assign", &[value]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        execute(&mut socket, "", 0);
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT v FROM public.pg06_016 WHERE id=1")[1],
+            (b'D', row(&[expected]))
+        );
+    }
+    for value in ["32768", "-32769"] {
+        bind(&mut socket, "", "assign", &[Some(value)]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        execute(&mut socket, "", 0);
+        state(&read(&mut socket), "22003");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+        assert_eq!(
+            query(&mut socket, "SELECT v FROM public.pg06_016 WHERE id=1")[1],
+            (b'D', row(&[None]))
+        );
+    }
+    assert!(
+        !query(
+            &mut socket,
+            "UPDATE public.pg06_016 SET v=NULL::numeric WHERE id=1"
+        )
+        .iter()
+        .any(|m| m.0 == b'E')
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT v FROM public.pg06_016 WHERE id=1")[1],
+        (b'D', row(&[None]))
+    );
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(32767 AS SIGNED)"),
+        before
+    );
+    assert!(
+        !query(
+            &mut socket,
+            "DROP TABLE public.pg06_016, public.pg06_016_source"
+        )
+        .iter()
+        .any(|m| m.0 == b'E')
+    );
+}
