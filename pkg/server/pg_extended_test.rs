@@ -11394,7 +11394,8 @@ fn pg06_task_004() {
         ("SELECT ((-32768)::int2)::float4 AS v", Some("-32768")),
         ("SELECT (32767::int2)::float4 AS v", Some("32767")),
         ("SELECT NULL::int2::float4 AS v", None),
-        // Mixed arithmetic requires implicit int2-to-float4 conversion.
+        // Mixed arithmetic resolves to float8 in PostgreSQL 18.6.
+        // Use float4abs(real) below to prove implicit int2-to-float4 eligibility.
         ("SELECT (1::int2) + (0.5::float4) AS v", Some("1.5")),
         ("SELECT (0.5::float4) + (1::int2) AS v", Some("1.5")),
         ("SELECT (1::int2) - (0.5::float4) AS v", Some("0.5")),
@@ -11406,11 +11407,22 @@ fn pg06_task_004() {
         ("SELECT (32767::int2) + (0.5::float4) AS v", Some("32767.5")),
         ("SELECT (NULL::int2) + (0.5::float4) AS v", None),
         ("SELECT v FROM public.pg06_004 WHERE id=1", None),
+        (
+            "SELECT pg_catalog.float4abs((-32768)::int2) AS v",
+            Some("32768"),
+        ),
+        ("SELECT float4abs(32767::int2) AS v", Some("32767")),
+        ("SELECT float4abs(NULL::int2) AS v", None),
     ] {
         let m = query(&mut socket, sql);
         assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
         let description = m.iter().find(|m| m.0 == b'T').unwrap();
-        scalar_types(description, &[700]);
+        let oid = if [" + ", " - ", " * "].iter().any(|op| sql.contains(op)) {
+            701
+        } else {
+            700
+        };
+        scalar_types(description, &[oid]);
         assert_eq!(
             &description.1[description.1.len() - 2..],
             &0i16.to_be_bytes()
@@ -11446,7 +11458,7 @@ fn pg06_task_004() {
     parse(
         &mut socket,
         "implicit",
-        "SELECT ($1::int2) + (0.5::float4) AS v",
+        "SELECT float4abs($1::int2) AS v",
         &[21],
     );
     assert_eq!(read(&mut socket), (b'1', vec![]));
@@ -11459,8 +11471,8 @@ fn pg06_task_004() {
         &0i16.to_be_bytes()
     );
     for (input, expected) in [
-        (Some("-32768"), Some("-32767.5")),
-        (Some("32767"), Some("32767.5")),
+        (Some("-32768"), Some("32768")),
+        (Some("32767"), Some("32767")),
         (None, None),
     ] {
         bind(&mut socket, "", "implicit", &[input]);

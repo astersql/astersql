@@ -3674,13 +3674,15 @@ impl ConcreteSession {
                 ) {
                     return astersql_parser_types::NewFieldType(TypeNewDecimal);
                 }
-                // int2 widens exactly to float4 in mixed PG arithmetic.
+                // Mixed int2/float4 arithmetic selects a float8 overload in PG.
                 use astersql_parser_mysql::r#type::TypeFloat;
                 if matches!(
                     (left.GetType(), right.GetType()),
                     (TypeShort, TypeFloat) | (TypeFloat, TypeShort)
                 ) {
-                    return astersql_parser_types::NewFieldType(TypeFloat);
+                    return astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeDouble,
+                    );
                 }
                 // int2 widens exactly to float8 in mixed PG arithmetic.
                 use astersql_parser_mysql::r#type::TypeDouble;
