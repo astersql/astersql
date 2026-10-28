@@ -270,3 +270,7 @@ prepared声明2951参数和typed NULL映射到Uuid数组FieldType，现有绑定
 ## PostgreSQL jsonb 数组（任务42）
 
 声明3807参数及typed NULL定型，绑定时沿既有SQL_LITERAL与CAST AS JSONB[]保留本族身份。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+## Task 42: typed text to bytea
+
+INSERT VALUES, INSERT SELECT and UPDATE preparation reject typed text assignment to bytea with 42804. Only explicit casts enter the bytea input function; source text identity is preserved.

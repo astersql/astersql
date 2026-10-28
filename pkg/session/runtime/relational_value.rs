@@ -1338,6 +1338,13 @@ pub(super) fn relational_expression_value(
             ) {
                 return result;
             }
+            let source = PG_CAST_TABLE.with(|slot| {
+                let empty = astersql_meta_model::TableInfo::default();
+                relational_expression_type(Expr, slot.borrow().as_ref().unwrap_or(&empty))
+            });
+            if pg_text_bytea_pair(&source, Tp) {
+                return pg_text_bytea_cast(relational_expression_value(Expr, row)?);
+            }
             if let Some(value) = binary_cast_literal_value(Expr, Tp) {
                 return Ok(Some(value));
             }
@@ -2780,6 +2787,7 @@ pub(super) fn relational_expression_type(
                         Tp.GetType(),
                         astersql_parser_mysql::r#type::TypeString
                             | astersql_parser_mysql::r#type::TypeVarString
+                            | astersql_parser_mysql::r#type::TypeBlob
                     ))
                 || Tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 =>
         {
@@ -4099,4 +4107,42 @@ pub(super) fn pg_float4_cast_text_input(
         return Ok(Some(astersql_types::pg_array::float8_text(bits)));
     }
     Ok(value)
+}
+
+/// Explicit typed text input reuses bytea's strict input function. The carrier
+/// marker preserves arbitrary octets until the protocol codec consumes them.
+pub(super) fn pg_text_bytea_cast(value: Option<String>) -> SessionResult<Option<String>> {
+    value
+        .map(|text| {
+            astersql_types::pg_array::bytea_text_input(text.as_bytes())
+                .map(|bytes| {
+                    format!(
+                        "__astersql_binary_hex__:{}",
+                        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    )
+                })
+                .map_err(|e| pg_bytea_input_error(e.0, e.1))
+        })
+        .transpose()
+}
+
+pub(super) fn pg_bytea_input_error(state: &'static str, message: &str) -> SessionError {
+    SessionError::with_source(
+        message,
+        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+            state,
+            message: message.into(),
+            position: None,
+        }),
+    )
+}
+
+pub(super) fn pg_text_bytea_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetType() == astersql_parser_mysql::r#type::TypeBlob
+        && target.GetCharset() == "binary"
+        && target.PostgreSQLArrayElement().is_none()
 }

@@ -303,3 +303,7 @@ SELECT的Interval数组cast接入cast_value_in_session，复用有效IntervalSty
 ## PostgreSQL jsonb 数组（任务42）
 
 SELECT分析把Jsonb数组交给共享pg_array消费者，保留结果身份。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+## Task 42: typed text to bytea
+
+Typed text→bytea evaluation uses the shared strict scalar input helper. COALESCE analysis rejects typed text/bytea mixing with 42804 before row evaluation, including typed NULL and zero rows.

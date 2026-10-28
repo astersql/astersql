@@ -2862,6 +2862,12 @@ impl ConcreteSession {
             for (field, column) in fields.iter().zip(&columns) {
                 let Some(column) = column else { continue };
                 let source = &field.column.FieldType;
+                if super::relational_value::pg_text_bytea_pair(source, &column.FieldType) {
+                    return Err(super::relational_value::pg_bytea_input_error(
+                        "42804",
+                        "column is bytea but expression is text",
+                    ));
+                }
                 if (column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
                     && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
                     && source.GetType() == astersql_parser_mysql::r#type::TypeLong)
@@ -2883,6 +2889,12 @@ impl ConcreteSession {
                     continue;
                 };
                 let source = relational_expression_type(value, &table);
+                if super::relational_value::pg_text_bytea_pair(&source, &column.FieldType) {
+                    return Err(super::relational_value::pg_bytea_input_error(
+                        "42804",
+                        "column is bytea but expression is text",
+                    ));
+                }
                 if (column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
                     && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
                     && source.EvalType() == astersql_parser_types::eval_type::ETInt
@@ -2925,6 +2937,12 @@ impl ConcreteSession {
                 };
                 let source =
                     self.relational_query_expression_type_from_sources(&assignment.Expr, &sources);
+                if super::relational_value::pg_text_bytea_pair(&source, &target.column.FieldType) {
+                    return Err(super::relational_value::pg_bytea_input_error(
+                        "42804",
+                        "column is bytea but expression is text",
+                    ));
+                }
                 // int4 and bool share an integer carrier, but PG only permits
                 // this conversion through an explicit cast, including NULL.
                 if (target.column.FieldType.GetFlag()

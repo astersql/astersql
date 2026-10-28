@@ -1464,6 +1464,16 @@ impl ConcreteSession {
                     }
                 }
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && super::relational_value::pg_text_bytea_pair(
+                        &self.relational_query_expression_type_from_sources(Expr, &[]),
+                        Tp,
+                    )
+                {
+                    return super::relational_value::pg_text_bytea_cast(
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                    );
+                }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && let Some(value) =
                         super::relational_value::binary_cast_literal_value(Expr, Tp)
                 {
@@ -2545,6 +2555,23 @@ impl ConcreteSession {
                                 .into(),
                             position: None,
                         }),
+                    ));
+                }
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && FnName.L == "coalesce"
+                    && Args.iter().any(|arg| {
+                        let source = relational_expression_type(arg, self.table);
+                        Args.iter().any(|other| {
+                            super::relational_value::pg_text_bytea_pair(
+                                &source,
+                                &relational_expression_type(other, self.table),
+                            )
+                        })
+                    })
+                {
+                    self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
+                        "42804",
+                        "COALESCE types bytea and text cannot be matched",
                     ));
                 }
                 // int2not has exactly one smallint signature. Do not apply an

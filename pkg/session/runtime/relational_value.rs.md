@@ -335,3 +335,7 @@ Interval数组加入既有typed-array cast消费者门禁，使用同一规范�
 ## PostgreSQL jsonb 数组（任务42）
 
 表达式求值沿共享Jsonb数组消费者，避免回落普通字符串cast。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+## Task 42: typed text to bytea
+
+Explicit typed text→bytea preserves TypeBlob/binary result identity. pg_text_bytea_cast calls the existing strict bytea_text_input codec and stores the established binary hex carrier; SQL NULL stays NULL and malformed complete input retains its codec SQLSTATE.
