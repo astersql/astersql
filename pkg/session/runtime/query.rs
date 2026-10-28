@@ -1069,6 +1069,28 @@ impl ConcreteSession {
                     )
                 });
         }
+        // float8abs(double precision) supplies a fixed implicit int4 -> float8 context.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Args,
+                Schema,
+                ..
+            } = &expression.Kind
+            && FnName.L == "float8abs"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && Args.len() == 1
+        {
+            let value = self.relational_query_expression_value(&Args[0], row, group_rows)?;
+            return astersql_expression::pg_cast_float8(value.as_deref())
+                .map(|value| value.map(|value| value.abs().to_string()))
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                });
+        }
         // A single fixed PG signature supplies a narrowing-sensitive context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -2081,7 +2103,7 @@ impl ConcreteSession {
             impl ast::ExprNodeVisitor for Calls {
                 fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
-                        && matches!(FnName.L.as_str(), "int8not" | "float4abs")
+                        && matches!(FnName.L.as_str(), "int8not" | "float4abs" | "float8abs")
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
                         self.0 = true;
@@ -2407,6 +2429,40 @@ impl ConcreteSession {
                         astersql_errors::SharedError::new(super::pg_array::PgArrayError {
                             state: "42883",
                             message: "function float4abs does not exist for this argument type"
+                                .into(),
+                            position: None,
+                        }),
+                    ));
+                }
+                // Only implicit numeric sources satisfy float8abs(double precision).
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "float8abs"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (Args.len() != 1
+                        || relational_expression_type(&Args[0], self.table).GetFlag()
+                            & astersql_parser_mysql::r#type::IsBooleanFlag
+                            != 0
+                        || !matches!(
+                            relational_expression_type(&Args[0], self.table).GetType(),
+                            astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeLong
+                                | astersql_parser_mysql::r#type::TypeLonglong
+                                | astersql_parser_mysql::r#type::TypeNewDecimal
+                                | astersql_parser_mysql::r#type::TypeFloat
+                                | astersql_parser_mysql::r#type::TypeDouble
+                                | astersql_parser_mysql::r#type::TypeNull
+                        ))
+                {
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        "PostgreSQL float8abs requires a double precision argument",
+                        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                            state: "42883",
+                            message: "function float8abs does not exist for this argument type"
                                 .into(),
                             position: None,
                         }),
@@ -2852,6 +2908,14 @@ impl ConcreteSession {
             {
                 return astersql_parser_types::NewFieldType(
                     astersql_parser_mysql::r#type::TypeFloat,
+                );
+            }
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
+                && FnName.L == "float8abs"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDouble,
                 );
             }
             // Preserve the existing PG integer promotion for int2 -> int4.
