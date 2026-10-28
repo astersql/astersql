@@ -1540,19 +1540,9 @@ impl ConcreteSession {
                             .GetType()
                             == astersql_parser_mysql::r#type::TypePgInterval
                     {
-                        let formatted = self
-                            .relational_query_expression_value(Expr, row, group_rows)?
-                            .map(|text| {
-                                text.parse::<astersql_types::pg_temporal::PgInterval>()
-                                    .map(|v| v.format_with_style(self.pg_interval_style(None)))
-                                    .map_err(|e| {
-                                        SessionError::with_source(
-                                            e.to_string(),
-                                            astersql_errors::SharedError::new(e),
-                                        )
-                                    })
-                            })
-                            .transpose()?;
+                        let formatted = self.pg_interval_output(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                        )?;
                         return pg_text_relational_cast(Expr, row, formatted, Tp, true);
                     }
                     return pg_text_relational_cast(
@@ -3845,8 +3835,8 @@ impl ConcreteSession {
                         }
                         let mut expression = ast::NewValueExpr(value, "utf8mb4", "utf8mb4_bin");
                         if let Some(field) = source_fields.get(index) {
-                            // Retain source identity for float rounding and boolean
-                            // output when assigning materialized SELECT values.
+                            // Retain source identity for float rounding, boolean and
+                            // interval output when assigning materialized SELECT values.
                             if field.column.FieldType.PostgreSQLTextOid() == Some(1042)
                                 || field.column.GetFlag()
                                     & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -3855,6 +3845,7 @@ impl ConcreteSession {
                                     field.column.GetType(),
                                     astersql_parser_mysql::r#type::TypeFloat
                                         | astersql_parser_mysql::r#type::TypeDouble
+                                        | astersql_parser_mysql::r#type::TypePgInterval
                                 )
                             {
                                 if let ast::ExprKind::Value(value) = &mut expression.Kind {

@@ -2454,6 +2454,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypeDuration
                                             | astersql_parser_mysql::r#type::TypeDatetime
                                             | astersql_parser_mysql::r#type::TypePgTimestampTz
+                                            | astersql_parser_mysql::r#type::TypePgInterval
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -2472,25 +2473,26 @@ impl ConcreteSession {
                         target.SetPostgreSQLTextOid(25);
                         target.SetFlen(-1);
                     }
-                    pg_text_relational_cast(
-                        expression,
-                        &row,
-                        // Temporal output requires evaluating the source cast first,
-                        // including strict input validation and precision rounding.
-                        if matches!(
-                            relational_expression_type(expression, &table).GetType(),
-                            astersql_parser_mysql::r#type::TypeDate
-                                | astersql_parser_mysql::r#type::TypeDuration
-                                | astersql_parser_mysql::r#type::TypeDatetime
-                                | astersql_parser_mysql::r#type::TypePgTimestampTz
-                        ) {
-                            self.relational_query_expression_value(expression, &row, None)?
-                        } else {
-                            relational_expression_value(expression, &row)?
-                        },
-                        &target,
-                        false,
-                    )?
+                    let value = if matches!(
+                        relational_expression_type(expression, &table).GetType(),
+                        astersql_parser_mysql::r#type::TypeDate
+                            | astersql_parser_mysql::r#type::TypeDuration
+                            | astersql_parser_mysql::r#type::TypeDatetime
+                            | astersql_parser_mysql::r#type::TypePgTimestampTz
+                            | astersql_parser_mysql::r#type::TypePgInterval
+                    ) {
+                        self.relational_query_expression_value(expression, &row, None)?
+                    } else {
+                        relational_expression_value(expression, &row)?
+                    };
+                    let value = if relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgInterval
+                    {
+                        self.pg_interval_output(value)?
+                    } else {
+                        value
+                    };
+                    pg_text_relational_cast(expression, &row, value, &target, false)?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         matches!(
@@ -3796,6 +3798,7 @@ impl ConcreteSession {
                                             | astersql_parser_mysql::r#type::TypeDuration
                                             | astersql_parser_mysql::r#type::TypeDatetime
                                             | astersql_parser_mysql::r#type::TypePgTimestampTz
+                                            | astersql_parser_mysql::r#type::TypePgInterval
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -3813,13 +3816,15 @@ impl ConcreteSession {
                         target.SetPostgreSQLTextOid(25);
                         target.SetFlen(-1);
                     }
-                    pg_text_relational_cast(
-                        expression,
-                        &row,
-                        self.relational_query_expression_value(expression, &row, None)?,
-                        &target,
-                        false,
-                    )?
+                    let value = self.relational_query_expression_value(expression, &row, None)?;
+                    let value = if relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgInterval
+                    {
+                        self.pg_interval_output(value)?
+                    } else {
+                        value
+                    };
+                    pg_text_relational_cast(expression, &row, value, &target, false)?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && table.PostgreSQLNumericText
                     && column_info.is_some_and(|c| {

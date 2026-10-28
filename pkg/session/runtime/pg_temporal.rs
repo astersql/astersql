@@ -391,6 +391,20 @@ impl IntervalSettings {
     }
 }
 impl ConcreteSession {
+    /// Character coercion uses interval_out with the current session style.
+    pub(super) fn pg_interval_output(
+        &self,
+        value: Option<String>,
+    ) -> SessionResult<Option<String>> {
+        value
+            .map(|text| {
+                text.parse::<astersql_types::pg_temporal::PgInterval>()
+                    .map(|value| value.format_with_style(self.pg_interval_style(None)))
+                    .map_err(temporal_error)
+            })
+            .transpose()
+    }
+
     pub fn pg_interval_style(
         &self,
         setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
