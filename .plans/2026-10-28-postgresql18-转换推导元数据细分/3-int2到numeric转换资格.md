@@ -2,7 +2,7 @@
 
 批次：【批次 3】 依赖批次 2（共享源码与验证资源串行交接）
 
-状态：未开始
+状态：已完成，待回归
 
 目的：只处理int2→numeric有向对：前向E/A/I均允许；E为显式转换，A为目标列赋值，I为表达式隐式转换。数值舍入、溢出22003及NULL沿目标族，不能通过text串接。
 
@@ -63,14 +63,14 @@
 
 ## Progress
 
-- [ ] 核对依赖及生产差异依据。
-- [ ] 取得行为失败或既有正确行为的当前证据。
-- [ ] 完成实现、聚焦验证和Ready检查。
-- [ ] 完成交接、资源清理及适用提交。
+- [x] 核对依赖及生产差异依据。
+- [x] 取得行为失败或既有正确行为的当前证据。
+- [x] 完成实现、聚焦验证和Ready检查。
+- [x] 完成交接、资源清理及适用提交。
 
 ## Surprises & Discoveries
 
-规划时未运行测试；预期缺口须由实施前测试确认。
+新增TCP测试证实PG混合int2/numeric算术结果误标为int8；生产修复后同一聚焦命令通过。
 
 ## Decision Log
 
@@ -78,8 +78,32 @@
 
 ## Outcomes & Retrospective
 
-尚未实施，没有功能通过结论。实施者在此记录新证据、实际修改和剩余范围外事项。
+完成本方向局部元数据修复及真实TCP验收；固定PostgreSQL18.6参考差分缺证，保留任务待回归。实施者在此记录新证据、实际修改和剩余范围外事项。
 
 ## 重试与恢复
 
 测试使用唯一临时表及系统分配端口；成功、失败及中断均关闭连接/listener、删除自己夹具，待子进程结束才释放槽位。可重复运行；保留缓存，不重置其他任务变更。
+
+## 执行记录（2026-10-28）
+
+批次2提交c048ea7fd2本地验收完成，可消费indexed_parameter_contract及prepare_statement_with_parameter_types；批次1/2的18.6参考差分仍待回归，不阻止已交付接口使用。已读根/server协议、PLANS.md、执行和RustCodeGraph技能、路线图两项契约；目标三包无doc.go，verify-profile技能缺失。新增独立TCP测试pg06_task_003，先确认现有行为，无生产修改。参考环境PG18_REFERENCE_DSN未配置，安装postgres版本仅18.4，不能代替18.6参考。
+
+首次测试编译成功，实际运行1个pg06_task_003，退出101，结果OID实际20、预期1700。RustCodeGraph定位relational_expression_type的通用二元算术默认int8；显式numeric cast已有目标类型，PG SELECT混合int2/numeric加减乘缺目标身份。生产差异仅query.rs::relational_query_expression_type_from_sources的PG分支，遇到int2与numeric的加减乘返回不带源typmod的numeric身份；来源为路线图第3章前向I资格及结果OID/typmod契约，不开放其他类型对，不修改MySQL路径。头部两方版权已保留。
+
+最终证据：pg_extended_test::pg06_task_003实际运行1个，1 passed、0 failed、439 filtered out，退出0。E覆盖1、源上下界、typed NULL；A验证INSERT后32767、UPDATE后-32768及NULL；I验证int2与numeric小数的双侧加法、减法、乘法及NULL；检查numeric OID1700、typlen-1、无约束typmod-1和文本格式0，扩展Parse保留源参数OID21，两种Describe核对结果类型。目标numeric(2,-2)正负1249/1250验证舍入临界及对应typmod；numeric(2,0)两侧99/-99成功、100/-100在Execute返回22003。错误后没有DataRow，Sync后明确SELECT 1::int4恢复，失败INSERT的id=2计数始终0。源参数32768/-32769在Bind返回22003，invalid返回22P02，均Sync恢复。无结果DML描述字段不适用。同Server MySQL前后CAST结果一致。
+
+TDD：首次新增测试可编译且实际运行1个，退出101，断言结果OID实际20/预期1700；最小修复后同一命令和原输入退出0；追加操作数顺序、减乘、INSERT读回和受限numeric元数据断言后最终同命令仍退出0。未人为制造失败。
+
+动态原子领取槽位1，所有三次构建验证阶段使用CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；owner记录任务、会话及shell PID。Cargo及测试子进程退出后，每阶段EXIT trap以unlink自己的owner并rmdir自己的slot-1.lock释放，保留缓存，未触碰其他锁。
+
+确切验证命令（仓库根目录；Cargo均继承上述绝对路径）：
+
+- cargo fmt --all：每阶段测试前执行，退出0；日志/tmp/pg06-003-fmt.log。
+- env -u LDFLAGS cargo test --locked -p astersql-server --lib pg06_task_003 -- --nocapture：首次101（1 failed，日志/tmp/pg06-003-initial.log），修复后0（1 passed，日志/tmp/pg06-003-green.log），最终补强断言后0（1 passed，日志/tmp/pg06-003-green-final.log）。
+- make lint：退出0；生产修复后再次执行退出0，日志/tmp/pg06-003-lint-final.log。最终测试断言补强未影响Go检查输入。
+- git diff --check：退出0。
+- /opt/homebrew/opt/postgresql@18/bin/postgres --version：退出0，仅18.4 (Homebrew)，只检测版本，未将其充作参考实测。
+
+WIP使用最小聚焦TCP测试；Ready运行fmt、聚焦测试、make lint和diff自审。verify-profile技能缺失，未声称使用该技能。无Go/Bazel/依赖变动，不触发bazel_prepare，未运行bazel_lint_changed、Go单测或RealTiKV。生产修改仅query.rs局部PG类型推导，测试在已注册pg_extended_test.rs，保留两方版权；任务文件记录进度，plan.md始终只读。使用git-commit技能只提交本任务三个文件。
+
+正确性/兼容性风险：局部PG类型推导增加int2/numeric加减乘结果身份，MySQL分支不变并通过基本CAST隔离验收；未验证固定18.6差分、扩展二进制结果格式、全量双协议/Rust测试与性能基准。性能增加该PG算术节点的局部操作数类型检查，未量化。PG18_REFERENCE_DSN未配置，18.6参考缺证属于独立环境限制，因此标记已完成，待回归并保留本文件，下一步在固定18.6参考端运行相同输入，采集值、错误阶段、OID/typlen/typmod/格式后完成回归再删除任务文件。
