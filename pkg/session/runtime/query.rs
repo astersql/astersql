@@ -2579,6 +2579,9 @@ impl ConcreteSession {
                     && FnName.L == "int4not"
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     && (Args.len() != 1
+                        || relational_expression_type(&Args[0], self.table).GetFlag()
+                            & astersql_parser_mysql::r#type::IsBooleanFlag
+                            != 0
                         || !matches!(
                             relational_expression_type(&Args[0], self.table).GetType(),
                             astersql_parser_mysql::r#type::TypeShort

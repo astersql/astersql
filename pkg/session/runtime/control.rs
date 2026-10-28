@@ -1861,17 +1861,17 @@ impl ConcreteSession {
             .collect::<Vec<_>>();
         let statement = &statements[0];
         self.validate_pg_boolean_statement(statement.as_ref())?;
-        if self.sql_dialect() == ast::SqlDialect::PostgreSQL && supplied.contains(&23) {
-            // Check int4 source eligibility before Bind. Typed NULLs preserve
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && supplied.iter().any(|oid| matches!(oid, 16 | 23))
+        {
+            // Check int4/bool source eligibility before Bind. Typed NULLs preserve
             // the declared parameter identity without inspecting any value.
             let arguments = supplied
                 .iter()
-                .map(|oid| {
-                    if *oid == 23 {
-                        "CAST(NULL AS INT4)".to_owned()
-                    } else {
-                        "?".to_owned()
-                    }
+                .map(|oid| match *oid {
+                    16 => "CAST(NULL AS BOOLEAN)".to_owned(),
+                    23 => "CAST(NULL AS INT4)".to_owned(),
+                    _ => "?".to_owned(),
                 })
                 .collect::<Vec<_>>();
             let typed_sql = bind_parameter_markers(sql, &arguments)?;
@@ -2862,9 +2862,14 @@ impl ConcreteSession {
             for (field, column) in fields.iter().zip(&columns) {
                 let Some(column) = column else { continue };
                 let source = &field.column.FieldType;
-                if column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+                if (column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
                     && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
-                    && source.GetType() == astersql_parser_mysql::r#type::TypeLong
+                    && source.GetType() == astersql_parser_mysql::r#type::TypeLong)
+                    || (column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeLong
+                        && column.FieldType.GetFlag()
+                            & astersql_parser_mysql::r#type::IsBooleanFlag
+                            == 0
+                        && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0)
                 {
                     return Err(pg_bool_session_error(
                         astersql_expression::PgBoolError::TypeMismatch,
@@ -2878,10 +2883,15 @@ impl ConcreteSession {
                     continue;
                 };
                 let source = relational_expression_type(value, &table);
-                if column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+                if (column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
                     && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
                     && source.EvalType() == astersql_parser_types::eval_type::ETInt
-                    && source.GetType() != astersql_parser_mysql::r#type::TypeNull
+                    && source.GetType() != astersql_parser_mysql::r#type::TypeNull)
+                    || (column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeLong
+                        && column.FieldType.GetFlag()
+                            & astersql_parser_mysql::r#type::IsBooleanFlag
+                            == 0
+                        && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0)
                 {
                     return Err(pg_bool_session_error(
                         astersql_expression::PgBoolError::TypeMismatch,
@@ -2917,10 +2927,17 @@ impl ConcreteSession {
                     self.relational_query_expression_type_from_sources(&assignment.Expr, &sources);
                 // int4 and bool share an integer carrier, but PG only permits
                 // this conversion through an explicit cast, including NULL.
-                if target.column.FieldType.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag
+                if (target.column.FieldType.GetFlag()
+                    & astersql_parser_mysql::r#type::IsBooleanFlag
                     != 0
                     && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
-                    && source.GetType() == astersql_parser_mysql::r#type::TypeLong
+                    && source.GetType() == astersql_parser_mysql::r#type::TypeLong)
+                    || (target.column.FieldType.GetType()
+                        == astersql_parser_mysql::r#type::TypeLong
+                        && target.column.FieldType.GetFlag()
+                            & astersql_parser_mysql::r#type::IsBooleanFlag
+                            == 0
+                        && source.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0)
                 {
                     return Err(pg_bool_session_error(
                         astersql_expression::PgBoolError::TypeMismatch,
