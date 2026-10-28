@@ -1032,3 +1032,40 @@ fn pg06_task_039_bpchar_text_assignment() {
     );
     pg.execute("DROP TABLE pg06_039_assignment").unwrap();
 }
+
+#[test]
+fn pg06_task_040_coalesce_bpchar_to_varchar() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        (
+            "SELECT coalesce(NULL::varchar,'中文ab  '::bpchar)",
+            "中文ab",
+        ),
+        ("SELECT coalesce(NULL::varchar,' a　 '::bpchar)", " a　"),
+        ("SELECT coalesce(NULL::varchar,'  '::bpchar)", ""),
+        ("SELECT coalesce(NULL::varchar,'abc\t'::bpchar)", "abc\t"),
+        ("SELECT coalesce(NULL::varchar,'a  '::varchar)", "a  "),
+        ("SELECT coalesce(NULL::bpchar,'a  '::bpchar)", "a  "),
+        (
+            "SELECT coalesce('first'::varchar,'unused  '::bpchar)",
+            "first",
+        ),
+    ] {
+        assert_eq!(
+            pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+            vec![expected],
+            "{sql}"
+        );
+    }
+    let mysql = ConcreteSession::new_with_dialect(domain, SqlDialect::MySQL);
+    assert_eq!(
+        mysql.execute("SELECT coalesce(NULL,'a  ')").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        vec!["a  "]
+    );
+}

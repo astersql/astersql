@@ -1481,13 +1481,13 @@ pub(super) fn relational_expression_value(
                 "coalesce" => {
                     for argument in Args {
                         if let Some(value) = relational_expression_value(argument, row)? {
-                            // Selecting a text result requires bpchar's semantic
+                            // Selecting a text or varchar result requires bpchar's semantic
                             // conversion even though both runtime values are strings.
                             let target = PG_CAST_TABLE.with(|slot| {
                                 let table = slot.borrow();
                                 let table = table.as_ref()?;
                                 let target = relational_expression_type(expression, table);
-                                (target.PostgreSQLTextOid() == Some(25)
+                                (matches!(target.PostgreSQLTextOid(), Some(25 | 1043))
                                     && relational_expression_type(argument, table)
                                         .PostgreSQLTextOid()
                                         == Some(1042))
