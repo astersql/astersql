@@ -2477,17 +2477,23 @@ impl ConcreteSession {
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
-                        column.GetType() == astersql_parser_mysql::r#type::TypeFloat
+                        matches!(
+                            column.GetType(),
+                            astersql_parser_mysql::r#type::TypeFloat
+                                | astersql_parser_mysql::r#type::TypeDouble
+                        )
                     })
                     && relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeNewDecimal
                 {
-                    // Numeric -> real assignment uses PG binary32 rounding and
-                    // range checks before the shared storage conversion.
-                    pg_float4_relational_value(
-                        expression,
-                        self.relational_query_expression_value(expression, &row, None)?,
-                    )?
+                    // Numeric assignment rounds and checks the PG floating target
+                    // before shared storage conversion can apply MySQL coercion.
+                    let value = self.relational_query_expression_value(expression, &row, None)?;
+                    if column_info.unwrap().GetType() == astersql_parser_mysql::r#type::TypeFloat {
+                        pg_float4_relational_value(expression, value)?
+                    } else {
+                        pg_float8_relational_value(expression, value)?
+                    }
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.
@@ -3748,17 +3754,23 @@ impl ConcreteSession {
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
-                        column.GetType() == astersql_parser_mysql::r#type::TypeFloat
+                        matches!(
+                            column.GetType(),
+                            astersql_parser_mysql::r#type::TypeFloat
+                                | astersql_parser_mysql::r#type::TypeDouble
+                        )
                     })
                     && relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeNewDecimal
                 {
-                    // Numeric -> real assignment uses PG binary32 rounding and
-                    // range checks before the shared storage conversion.
-                    pg_float4_relational_value(
-                        expression,
-                        self.relational_query_expression_value(expression, &row, None)?,
-                    )?
+                    // Numeric assignment rounds and checks the PG floating target
+                    // before shared storage conversion can apply MySQL coercion.
+                    let value = self.relational_query_expression_value(expression, &row, None)?;
+                    if column_info.unwrap().GetType() == astersql_parser_mysql::r#type::TypeFloat {
+                        pg_float4_relational_value(expression, value)?
+                    } else {
+                        pg_float8_relational_value(expression, value)?
+                    }
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.

@@ -2453,19 +2453,20 @@ impl ConcreteSession {
                     && FnName.L == "float8abs"
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     && (Args.len() != 1
-                        || relational_expression_type(&Args[0], self.table).GetFlag()
-                            & astersql_parser_mysql::r#type::IsBooleanFlag
-                            != 0
-                        || !matches!(
-                            relational_expression_type(&Args[0], self.table).GetType(),
-                            astersql_parser_mysql::r#type::TypeShort
-                                | astersql_parser_mysql::r#type::TypeLong
-                                | astersql_parser_mysql::r#type::TypeLonglong
-                                | astersql_parser_mysql::r#type::TypeNewDecimal
-                                | astersql_parser_mysql::r#type::TypeFloat
-                                | astersql_parser_mysql::r#type::TypeDouble
-                                | astersql_parser_mysql::r#type::TypeNull
-                        ))
+                        || (!matches!(Args[0].Kind, ast::ExprKind::ParamMarker { .. })
+                            && (relational_expression_type(&Args[0], self.table).GetFlag()
+                                & astersql_parser_mysql::r#type::IsBooleanFlag
+                                != 0
+                                || !matches!(
+                                    relational_expression_type(&Args[0], self.table).GetType(),
+                                    astersql_parser_mysql::r#type::TypeShort
+                                        | astersql_parser_mysql::r#type::TypeLong
+                                        | astersql_parser_mysql::r#type::TypeLonglong
+                                        | astersql_parser_mysql::r#type::TypeNewDecimal
+                                        | astersql_parser_mysql::r#type::TypeFloat
+                                        | astersql_parser_mysql::r#type::TypeDouble
+                                        | astersql_parser_mysql::r#type::TypeNull
+                                ))))
                 {
                     self.scalar_cast_error = Some(SessionError::with_source(
                         "PostgreSQL float8abs requires a double precision argument",

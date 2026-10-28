@@ -15011,3 +15011,231 @@ fn pg06_task_019() {
         .any(|m| m.0 == b'E')
     );
 }
+
+#[test]
+fn pg06_task_020() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(9223372036854775807 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"9223372036854775807".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE TABLE public.pg06_020 (id INT PRIMARY KEY, v float8)",
+        "INSERT INTO public.pg06_020 VALUES (1,9007199254740993::numeric)",
+        "INSERT INTO public.pg06_020 VALUES (4,1.5::numeric)",
+        "CREATE TABLE public.pg06_020_source (id INT PRIMARY KEY, n numeric)",
+        "INSERT INTO public.pg06_020_source VALUES (1,9007199254740993::numeric)",
+        "INSERT INTO public.pg06_020 SELECT 3,n FROM public.pg06_020_source",
+    ] {
+        let m = query(&mut socket, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+    }
+    for (sql, expected) in [
+        ("SELECT (1::numeric)::float8 AS v", Some("1")),
+        ("SELECT v FROM public.pg06_020 WHERE id=4", Some("1.5")),
+        (
+            "SELECT (9007199254740993::numeric)::float8 AS v",
+            Some("9.007199254740992e+15"),
+        ),
+        (
+            "SELECT (9007199254740995::numeric)::float8 AS v",
+            Some("9.007199254740996e+15"),
+        ),
+        (
+            "SELECT (1.7976931348623157e308::numeric)::float8 AS v",
+            Some("1.7976931348623157e+308"),
+        ),
+        (
+            "SELECT ((-1.7976931348623157e308)::numeric)::float8 AS v",
+            Some("-1.7976931348623157e+308"),
+        ),
+        ("SELECT (5e-324::numeric)::float8 AS v", Some("5e-324")),
+        ("SELECT NULL::numeric::float8 AS v", None),
+        ("SELECT float8abs((-1.5)::numeric) AS v", Some("1.5")),
+        ("SELECT float8abs(NULL::numeric) AS v", None),
+        (
+            "SELECT n::float8 FROM public.pg06_020_source",
+            Some("9.007199254740992e+15"),
+        ),
+        (
+            "SELECT v FROM public.pg06_020 WHERE id=1",
+            Some("9.007199254740992e+15"),
+        ),
+        (
+            "SELECT v FROM public.pg06_020 WHERE id=3",
+            Some("9.007199254740992e+15"),
+        ),
+    ] {
+        let m = query(&mut socket, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        scalar_types(&m[0], &[701]);
+        assert_eq!(&m[0].1[m[0].1.len() - 2..], &0i16.to_be_bytes());
+        assert_eq!(m.iter().filter(|m| m.0 == b'D').count(), 1);
+        assert_eq!(m[1], (b'D', row(&[expected])), "{sql}");
+    }
+    for (name, sql) in [
+        ("explicit", "SELECT $1::float8 AS v"),
+        ("implicit", "SELECT float8abs($1) AS v"),
+        ("assign", "UPDATE public.pg06_020 SET v=$1 WHERE id=1"),
+    ] {
+        parse(&mut socket, name, sql, &[1700]);
+        assert_eq!(read(&mut socket), (b'1', vec![]));
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket), (b't', vec![0, 1, 0, 0, 6, 164]));
+        let description = read(&mut socket);
+        if name == "assign" {
+            // UPDATE has no fields; result OID/size/modifier/format are inapplicable.
+            assert_eq!(description, (b'n', vec![]));
+        } else {
+            scalar_types(&description, &[701]);
+            assert_eq!(
+                &description.1[description.1.len() - 2..],
+                &0i16.to_be_bytes()
+            );
+        }
+        for (input, expected) in [
+            (Some("1.5"), Some("1.5")),
+            (Some("9007199254740993"), Some("9.007199254740992e+15")),
+            (Some("9007199254740995"), Some("9.007199254740996e+15")),
+            (
+                Some("1.7976931348623157e308"),
+                Some("1.7976931348623157e+308"),
+            ),
+            (Some("5e-324"), Some("5e-324")),
+            (None, None),
+        ] {
+            bind(&mut socket, "", name, &[input]);
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            send(&mut socket, b'D', b"P\0");
+            assert_eq!(read(&mut socket), description);
+            execute(&mut socket, "", 0);
+            if name != "assign" {
+                assert_eq!(read(&mut socket), (b'D', row(&[expected])));
+            }
+            assert_eq!(read(&mut socket).0, b'C');
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+            if name == "assign" {
+                assert_eq!(
+                    query(&mut socket, "SELECT v FROM public.pg06_020 WHERE id=1")[1],
+                    (b'D', row(&[expected]))
+                );
+            }
+        }
+        for input in [
+            "1.7976931348623159e308",
+            "-1.7976931348623159e308",
+            "1e-324",
+            "-1e-324",
+        ] {
+            bind(&mut socket, "", name, &[Some(input)]);
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            execute(&mut socket, "", 0);
+            assert_state(&read(&mut socket), "22003");
+            send(&mut socket, b'S', &[]);
+            assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+            assert_eq!(
+                query(&mut socket, "SELECT 1::int4")[1],
+                (b'D', row(&[Some("1")]))
+            );
+            assert_eq!(
+                query(&mut socket, "SELECT v FROM public.pg06_020 WHERE id=1")[1],
+                (
+                    b'D',
+                    row(&[if name == "assign" {
+                        None
+                    } else {
+                        Some("9.007199254740992e+15")
+                    }])
+                )
+            );
+        }
+        bind(&mut socket, "", name, &[Some("invalid")]);
+        assert_state(&read(&mut socket), "22P02");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    // Deferring a marker to protocol type checking must still reject sources
+    // without implicit eligibility, even when a later Bind could carry NULL.
+    for oid in [25, 16] {
+        parse(&mut socket, "reject", "SELECT float8abs($1)", &[oid]);
+        assert_state(&read(&mut socket), "42883");
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    for value in [
+        "1.7976931348623159e308",
+        "-1.7976931348623159e308",
+        "1e-324",
+        "-1e-324",
+    ] {
+        for sql in [
+            format!("SELECT ({value}::numeric)::float8"),
+            format!("SELECT float8abs({value}::numeric)"),
+            format!("UPDATE public.pg06_020 SET v={value}::numeric WHERE id=1"),
+            format!("INSERT INTO public.pg06_020 VALUES (2,{value}::numeric)"),
+        ] {
+            let m = query(&mut socket, &sql);
+            assert_state(&m[0], "22003");
+            assert!(!m.iter().any(|m| m.0 == b'D'));
+            assert_eq!(
+                query(&mut socket, "SELECT 1::int4")[1],
+                (b'D', row(&[Some("1")]))
+            );
+            assert_eq!(
+                query(&mut socket, "SELECT v FROM public.pg06_020 WHERE id=1")[1],
+                (b'D', row(&[None]))
+            );
+            assert_eq!(
+                query(
+                    &mut socket,
+                    "SELECT count(*) FROM public.pg06_020 WHERE id=2"
+                )[1],
+                (b'D', row(&[Some("0")]))
+            );
+        }
+    }
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(9223372036854775807 AS SIGNED)"),
+        before
+    );
+    assert!(
+        !query(
+            &mut socket,
+            "DROP TABLE public.pg06_020, public.pg06_020_source"
+        )
+        .iter()
+        .any(|m| m.0 == b'E')
+    );
+}

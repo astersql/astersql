@@ -2834,7 +2834,7 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
             return Ok(oids);
         }
-        struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<usize>);
+        struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<(usize, u32)>);
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
                 // Keep a supplied source identity when checking the one fixed
@@ -2852,20 +2852,21 @@ impl ConcreteSession {
                 {
                     self.1.push(Offset);
                 }
-                // Preserve the protocol source type for float4abs(real), whose
-                // numeric input is implicitly narrowed only when evaluated.
+                // Preserve source identity for the fixed floating signatures;
+                // numeric inputs convert only when evaluated.
                 if let ast::ExprKind::Function {
                     FnName,
                     Schema,
                     Args,
                     ..
                 } = &input.Kind
-                    && FnName.L == "float4abs"
+                    && matches!(FnName.L.as_str(), "float4abs" | "float8abs")
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     && Args.len() == 1
                     && let ast::ExprKind::ParamMarker { Offset } = Args[0].Kind
                 {
-                    self.2.push(Offset);
+                    self.2
+                        .push((Offset, if FnName.L == "float4abs" { 700 } else { 701 }));
                 }
                 if let ast::ExprKind::Cast {
                     Expr,
@@ -3093,21 +3094,29 @@ impl ConcreteSession {
                 oids[index] = if source == 0 { 20 } else { source };
             }
         }
-        for offset in constraints.2 {
+        for (offset, target) in constraints.2 {
             if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
                 let source = supplied.get(index).copied().unwrap_or(0);
-                if !matches!(source, 0 | 21 | 23 | 20 | 1700 | 700) {
+                if !matches!(source, 0 | 21 | 23 | 20 | 1700 | 700)
+                    && !(target == 701 && source == 701)
+                {
+                    let name = if target == 700 {
+                        "float4abs"
+                    } else {
+                        "float8abs"
+                    };
                     return Err(SessionError::with_source(
-                        "PostgreSQL float4abs requires a real argument",
+                        format!("PostgreSQL {name} requires an implicitly convertible argument"),
                         astersql_errors::SharedError::new(super::pg_array::PgArrayError {
                             state: "42883",
-                            message: "function float4abs does not exist for this argument type"
-                                .into(),
+                            message: format!(
+                                "function {name} does not exist for this argument type"
+                            ),
                             position: None,
                         }),
                     ));
                 }
-                oids[index] = if source == 0 { 700 } else { source };
+                oids[index] = if source == 0 { target } else { source };
             }
         }
         Ok(oids)

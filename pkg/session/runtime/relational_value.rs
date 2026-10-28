@@ -3722,6 +3722,14 @@ pub(super) fn pg_numeric_literal_value(
                 ast::ValueDatum::Decimal(text) => Some(text.clone()),
                 _ => None,
             },
+            // An unconstrained PG numeric cast preserves a decimal literal's
+            // exact spelling through unary signs until the target cast checks it.
+            ast::ExprKind::Cast {
+                Expr,
+                FunctionType: ast::CastFunctionType::PostgreSQLNumeric,
+                Tp,
+                ..
+            } if Tp.GetFlen() == -1 && Tp.GetDecimal() == -1 => spelling(Expr),
             ast::ExprKind::Parentheses(inner) => spelling(inner),
             ast::ExprKind::Unary { Op, V } if Op == "+" => spelling(V),
             ast::ExprKind::Unary { Op, V } if Op == "-" => spelling(V).map(|text| {
