@@ -323,3 +323,58 @@ fn pg06_date_timestamp_row_formats() {
         }
     }
 }
+
+#[test]
+fn pg06_date_timestamptz_row_formats() {
+    use astersql_meta_model::{ColumnInfo, SchemaState, TableInfo};
+    use std::collections::HashMap;
+    let mut column = ColumnInfo::default();
+    column.ID = 1;
+    column.Name = astersql_parser_ast::NewCIStr("v");
+    column.State = SchemaState::Public;
+    column.SetType(astersql_parser_mysql::r#type::TypePgTimestampTz);
+    column.SetDecimal(-1);
+    let table = TableInfo {
+        ID: 9871,
+        ExactName: false,
+        Columns: vec![column],
+        ..Default::default()
+    };
+    for new_format in [false, true] {
+        for input in [
+            Some("2000-01-01 00:00:00+00"),
+            Some("4713-11-24 00:00:00+00 BC"),
+            Some("294276-12-31 00:00:00+00"),
+            Some("infinity"),
+            Some("-infinity"),
+            None,
+        ] {
+            let row = HashMap::from([
+                ("v".to_owned(), input.map(str::to_owned)),
+                ("_tidb_rowid".to_owned(), Some("1".to_owned())),
+            ]);
+            let (_, bytes) = super::row_codec::encode_relational_row_with_format(
+                &table,
+                &row,
+                astersql_types::Flags::default(),
+                new_format,
+            )
+            .unwrap();
+            let fields = table
+                .Columns
+                .iter()
+                .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                .collect();
+            let handle = astersql_tablecodec::kv::IntHandle(1);
+            let (_, decoded) = super::relational_scan::decode_relational_row_value(
+                &table, &fields, &handle, &bytes,
+            )
+            .unwrap();
+            assert_eq!(
+                decoded.get("v").cloned().flatten(),
+                input.map(str::to_owned),
+                "format={new_format}"
+            );
+        }
+    }
+}

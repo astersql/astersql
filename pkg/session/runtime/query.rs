@@ -1371,17 +1371,28 @@ impl ConcreteSession {
             ast::ExprKind::Function { FnName, Args, .. }
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && FnName.L == "coalesce"
-                    && self
-                        .relational_query_expression_type_from_sources(expression, &[])
-                        .GetType()
-                        == astersql_parser_mysql::r#type::TypeDatetime =>
+                    && matches!(
+                        self.relational_query_expression_type_from_sources(expression, &[])
+                            .GetType(),
+                        astersql_parser_mysql::r#type::TypeDatetime
+                            | astersql_parser_mysql::r#type::TypePgTimestampTz
+                    ) =>
             {
                 for argument in Args {
                     let value =
                         self.relational_query_expression_value(argument, row, group_rows)?;
                     if value.is_some() {
                         return if pg_date_source(argument) {
-                            pg_date_to_timestamp_value(value, -1)
+                            let wall = pg_date_to_timestamp_value(value, -1)?;
+                            if self
+                                .relational_query_expression_type_from_sources(expression, &[])
+                                .GetType()
+                                == astersql_parser_mysql::r#type::TypePgTimestampTz
+                            {
+                                self.pg_timestamptz_relational_value(wall, -1)
+                            } else {
+                                Ok(wall)
+                            }
                         } else {
                             Ok(value)
                         };
@@ -1540,10 +1551,13 @@ impl ConcreteSession {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz
                 {
-                    return self.pg_timestamptz_relational_value(
-                        self.relational_query_expression_value(Expr, row, group_rows)?,
-                        Tp.GetDecimal(),
-                    );
+                    let value = self.relational_query_expression_value(Expr, row, group_rows)?;
+                    let value = if pg_date_source(Expr) {
+                        pg_date_to_timestamp_value(value, -1)?
+                    } else {
+                        value
+                    };
+                    return self.pg_timestamptz_relational_value(value, Tp.GetDecimal());
                 }
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime
@@ -3176,7 +3190,17 @@ impl ConcreteSession {
                         self.relational_query_expression_type_from_sources(arg, source_fields)
                     })
                     .collect::<Vec<_>>();
-                use astersql_parser_mysql::r#type::{TypeDate, TypeDatetime, TypeNull};
+                use astersql_parser_mysql::r#type::{
+                    TypeDate, TypeDatetime, TypeNull, TypePgTimestampTz,
+                };
+                if types
+                    .iter()
+                    .all(|tp| matches!(tp.GetType(), TypeDate | TypePgTimestampTz | TypeNull))
+                    && types.iter().any(|tp| tp.GetType() == TypeDate)
+                    && types.iter().any(|tp| tp.GetType() == TypePgTimestampTz)
+                {
+                    return astersql_parser_types::NewFieldType(TypePgTimestampTz);
+                }
                 if types
                     .iter()
                     .all(|tp| matches!(tp.GetType(), TypeDate | TypeDatetime | TypeNull))
@@ -5051,6 +5075,27 @@ impl ConcreteSession {
         } else {
             projected
         };
+        let mut projected = projected;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // Storage carries UTC instants; format declared timestamptz columns
+            // using this reader's session TimeZone, including SELECT *.
+            for row in &mut projected {
+                for (value, field) in row.iter_mut().zip(&result_fields) {
+                    if value != SHOW_NULL_CELL
+                        && let Some(field) = field
+                        && field.column.GetType()
+                            == astersql_parser_mysql::r#type::TypePgTimestampTz
+                    {
+                        *value = self
+                            .pg_timestamptz_relational_value(
+                                Some(value.clone()),
+                                field.column.GetDecimal(),
+                            )?
+                            .unwrap();
+                    }
+                }
+            }
+        }
         Ok(Some(ConcreteRecordSet::new_with_fields(
             columns,
             projected,

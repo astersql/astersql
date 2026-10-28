@@ -344,6 +344,20 @@ pub(super) fn runtime_value_to_datum(
     let Some(value) = value else {
         return Ok(astersql_types::datum::Datum::default());
     };
+    // PG instants retain their UTC identity in the existing string row carrier.
+    // The MySQL Datum converter has no TypePgTimestampTz case.
+    if column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz {
+        return value
+            .parse::<astersql_types::pg_temporal::PgTimestampTz>()
+            .and_then(|value| value.round_precision(column.GetDecimal()))
+            .map(|value| astersql_types::datum::NewStringDatum(value.to_string()))
+            .map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            });
+    }
     if matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043)) {
         return pg_varchar_relational_value(Some(value.clone()), &column.FieldType, false).map(
             |value| {

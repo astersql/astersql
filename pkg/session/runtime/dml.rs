@@ -2389,15 +2389,25 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
-                        column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
+                        matches!(
+                            column.GetType(),
+                            astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
+                        )
                     })
                     && relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeDate
                 {
-                    pg_date_to_timestamp_value(
+                    let column = column_info.unwrap();
+                    let wall = pg_date_to_timestamp_value(
                         self.relational_query_expression_value(expression, &row, None)?,
-                        column_info.unwrap().GetDecimal(),
-                    )?
+                        column.GetDecimal(),
+                    )?;
+                    if column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz {
+                        self.pg_timestamptz_relational_value(wall, column.GetDecimal())?
+                    } else {
+                        wall
+                    }
                 } else if matches!(
                     &expression.Kind,
                     ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
@@ -3808,15 +3818,25 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
-                        column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
+                        matches!(
+                            column.GetType(),
+                            astersql_parser_mysql::r#type::TypeDatetime
+                                | astersql_parser_mysql::r#type::TypePgTimestampTz
+                        )
                     })
                     && relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypeDate
                 {
-                    pg_date_to_timestamp_value(
+                    let column = column_info.unwrap();
+                    let wall = pg_date_to_timestamp_value(
                         self.relational_query_expression_value(expression, &row, None)?,
-                        column_info.unwrap().GetDecimal(),
-                    )?
+                        column.GetDecimal(),
+                    )?;
+                    if column.GetType() == astersql_parser_mysql::r#type::TypePgTimestampTz {
+                        self.pg_timestamptz_relational_value(wall, column.GetDecimal())?
+                    } else {
+                        wall
+                    }
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
