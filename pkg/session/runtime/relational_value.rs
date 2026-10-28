@@ -3683,8 +3683,8 @@ pub(super) fn pg_boolean_relational_value(
     }
 }
 
-/// PG float4_numeric uses FLT_DIG (six significant digits), independent of
-/// float output settings. Preserve the source identity before applying typmod.
+/// PG float4_numeric/float8_numeric use FLT_DIG/DBL_DIG (6/15 significant
+/// digits), independent of float output settings. Apply typmod afterward.
 pub(super) fn pg_numeric_source_value(
     expression: &ast::ExprNode,
     value: Option<String>,
@@ -3707,6 +3707,23 @@ pub(super) fn pg_numeric_source_value(
             .map(|v| {
                 if v.is_finite() {
                     let text = format!("{v:.5e}");
+                    let (mantissa, exponent) = text.split_once('e').unwrap();
+                    format!(
+                        "{}e{exponent}",
+                        mantissa.trim_end_matches('0').trim_end_matches('.')
+                    )
+                } else {
+                    v.to_string()
+                }
+            })
+    } else if source.GetType() == astersql_parser_mysql::r#type::TypeDouble {
+        astersql_expression::pg_cast_float8(value.as_deref())
+            .map_err(|e| {
+                SessionError::with_source(e.to_string(), astersql_errors::SharedError::new(e))
+            })?
+            .map(|v| {
+                if v.is_finite() {
+                    let text = format!("{v:.14e}");
                     let (mantissa, exponent) = text.split_once('e').unwrap();
                     format!(
                         "{}e{exponent}",
