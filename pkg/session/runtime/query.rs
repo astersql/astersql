@@ -1044,6 +1044,26 @@ impl ConcreteSession {
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
+        // One fixed numeric signature provides a bounded implicit-cast context.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Args,
+                Schema,
+                ..
+            } = &expression.Kind
+            && FnName.L == "numeric_abs"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && Args.len() == 1
+        {
+            let target =
+                astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNewDecimal);
+            return pg_numeric_relational_value(
+                self.relational_query_expression_value(&Args[0], row, group_rows)?
+                    .map(|v| v.strip_prefix('-').unwrap_or(&v).to_owned()),
+                &target,
+            );
+        }
         // float4abs(real) supplies a fixed implicit int4 -> float4 context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -1545,11 +1565,9 @@ impl ConcreteSession {
                     );
                 }
                 if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
-                    return pg_numeric_relational_value(
-                        pg_float4_cast_text_input(
-                            Expr,
-                            self.relational_query_expression_value(Expr, row, group_rows)?,
-                        )?,
+                    return pg_numeric_source_value(
+                        Expr,
+                        self.relational_query_expression_value(Expr, row, group_rows)?,
                         Tp,
                     );
                 }
@@ -2110,7 +2128,7 @@ impl ConcreteSession {
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
                         && matches!(
                             FnName.L.as_str(),
-                            "int4not" | "int8not" | "float4abs" | "float8abs"
+                            "int4not" | "int8not" | "float4abs" | "float8abs" | "numeric_abs"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
@@ -2409,6 +2427,35 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "numeric_abs"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (Args.len() != 1
+                        || (!matches!(Args[0].Kind, ast::ExprKind::ParamMarker { .. })
+                            && !matches!(
+                                relational_expression_type(&Args[0], self.table).GetType(),
+                                astersql_parser_mysql::r#type::TypeShort
+                                    | astersql_parser_mysql::r#type::TypeLong
+                                    | astersql_parser_mysql::r#type::TypeLonglong
+                                    | astersql_parser_mysql::r#type::TypeNewDecimal
+                                    | astersql_parser_mysql::r#type::TypeNull
+                            )))
+                {
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        "PostgreSQL numeric_abs requires a numeric argument",
+                        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                            state: "42883",
+                            message: "function numeric_abs does not exist for this argument type"
+                                .into(),
+                            position: None,
+                        }),
+                    ));
+                }
                 // Only implicit numeric sources satisfy float4abs(real).
                 if let ast::ExprKind::Function {
                     FnName,
@@ -2947,6 +2994,14 @@ impl ConcreteSession {
             {
                 return astersql_parser_types::NewFieldType(
                     astersql_parser_mysql::r#type::TypeLonglong,
+                );
+            }
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
+                && FnName.L == "numeric_abs"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeNewDecimal,
                 );
             }
             if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind

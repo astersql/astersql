@@ -2432,7 +2432,8 @@ impl ConcreteSession {
                         column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
                     })
                 {
-                    pg_numeric_relational_value(
+                    pg_numeric_source_value(
+                        expression,
                         relational_expression_value(expression, &row)?,
                         &column_info.unwrap().FieldType,
                     )?
@@ -3731,6 +3732,17 @@ impl ConcreteSession {
                         self.relational_query_expression_value(expression, &row, None)?,
                         &column_info.unwrap().FieldType,
                         false,
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && table.PostgreSQLNumericText
+                    && column_info.is_some_and(|c| {
+                        c.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
+                    })
+                {
+                    pg_numeric_source_value(
+                        expression,
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        &column_info.unwrap().FieldType,
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {

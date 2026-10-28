@@ -2860,13 +2860,19 @@ impl ConcreteSession {
                     Args,
                     ..
                 } = &input.Kind
-                    && matches!(FnName.L.as_str(), "float4abs" | "float8abs")
+                    && matches!(FnName.L.as_str(), "float4abs" | "float8abs" | "numeric_abs")
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     && Args.len() == 1
                     && let ast::ExprKind::ParamMarker { Offset } = Args[0].Kind
                 {
-                    self.2
-                        .push((Offset, if FnName.L == "float4abs" { 700 } else { 701 }));
+                    self.2.push((
+                        Offset,
+                        match FnName.L.as_str() {
+                            "float4abs" => 700,
+                            "numeric_abs" => 1700,
+                            _ => 701,
+                        },
+                    ));
                 }
                 if let ast::ExprKind::Cast {
                     Expr,
@@ -3097,10 +3103,13 @@ impl ConcreteSession {
         for (offset, target) in constraints.2 {
             if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
                 let source = supplied.get(index).copied().unwrap_or(0);
-                if !matches!(source, 0 | 21 | 23 | 20 | 1700 | 700)
-                    && !(target == 701 && source == 701)
+                if !(matches!(source, 0 | 21 | 23 | 20 | 1700)
+                    || (target != 1700 && source == 700)
+                    || (target == 701 && source == 701))
                 {
-                    let name = if target == 700 {
+                    let name = if target == 1700 {
+                        "numeric_abs"
+                    } else if target == 700 {
                         "float4abs"
                     } else {
                         "float8abs"

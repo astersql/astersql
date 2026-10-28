@@ -1357,10 +1357,7 @@ pub(super) fn relational_expression_value(
                 return pg_float4_relational_value(Expr, relational_expression_value(Expr, row)?);
             }
             if *FunctionType == ast::CastFunctionType::PostgreSQLNumeric {
-                return pg_numeric_relational_value(
-                    pg_float4_cast_text_input(Expr, relational_expression_value(Expr, row)?)?,
-                    Tp,
-                );
+                return pg_numeric_source_value(Expr, relational_expression_value(Expr, row)?, Tp);
             }
             if matches!(
                 FunctionType,
@@ -3684,6 +3681,45 @@ pub(super) fn pg_boolean_relational_value(
         Ok(None) => None,
         Err(error) => Some(Err(pg_bool_session_error(error))),
     }
+}
+
+/// PG float4_numeric uses FLT_DIG (six significant digits), independent of
+/// float output settings. Preserve the source identity before applying typmod.
+pub(super) fn pg_numeric_source_value(
+    expression: &ast::ExprNode,
+    value: Option<String>,
+    target: &astersql_parser_types::types::FieldType,
+) -> SessionResult<Option<String>> {
+    let source = PG_CAST_TABLE.with(|slot| {
+        relational_expression_type(
+            expression,
+            slot.borrow()
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+    });
+    let value = pg_float4_cast_text_input(expression, value)?;
+    let value = if source.GetType() == astersql_parser_mysql::r#type::TypeFloat {
+        astersql_expression::pg_cast_float4(value.as_deref())
+            .map_err(|e| {
+                SessionError::with_source(e.to_string(), astersql_errors::SharedError::new(e))
+            })?
+            .map(|v| {
+                if v.is_finite() {
+                    let text = format!("{v:.5e}");
+                    let (mantissa, exponent) = text.split_once('e').unwrap();
+                    format!(
+                        "{}e{exponent}",
+                        mantissa.trim_end_matches('0').trim_end_matches('.')
+                    )
+                } else {
+                    v.to_string()
+                }
+            })
+    } else {
+        value
+    };
+    pg_numeric_relational_value(value, target)
 }
 
 /// PG numeric validation is shared by constant, row and parameter consumers.
