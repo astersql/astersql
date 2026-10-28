@@ -356,3 +356,38 @@ fn interval_precision_prepared_constants_and_parameters() {
     );
     session.close_protocol_statement(id).unwrap();
 }
+
+#[test]
+fn pg06_task_077_kernel() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.execute("SET time_zone = '+08:00'").unwrap();
+    for (input, precision, expected) in [
+        (Some("1999-12-31 23:30:00+00"), -1, Some("07:30:00")),
+        (
+            Some("294276-12-31 23:59:59.999999+00"),
+            -1,
+            Some("07:59:59.999999"),
+        ),
+        (Some("2000-01-01 15:59:59.999500+00"), 3, Some("24:00:00")),
+        (Some("infinity"), -1, None),
+        (Some("-infinity"), -1, None),
+        (None, -1, None),
+    ] {
+        assert_eq!(
+            session
+                .pg_timestamptz_to_time_value(input.map(str::to_owned), precision)
+                .unwrap()
+                .as_deref(),
+            expected,
+            "{input:?} precision={precision}"
+        );
+    }
+    for input in ["garbage", "2023-02-29 00:00:00+00"] {
+        assert!(
+            session
+                .pg_timestamptz_to_time_value(Some(input.into()), -1)
+                .is_err()
+        );
+    }
+}

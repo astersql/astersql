@@ -261,6 +261,29 @@ impl ConcreteSession {
 }
 
 impl ConcreteSession {
+    /// Extract time only after resolving the instant in the session timezone.
+    /// Avoid timestamp's narrower date range: the local date may cross its edge.
+    pub(super) fn pg_timestamptz_to_time_value(
+        &self,
+        value: Option<String>,
+        precision: isize,
+    ) -> SessionResult<Option<String>> {
+        let Some(local) = self.pg_timestamptz_relational_value(value, -1)? else {
+            return Ok(None);
+        };
+        if matches!(local.as_str(), "infinity" | "-infinity") {
+            return Ok(None);
+        }
+        let time = local
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| temporal_error(astersql_types::pg_temporal::PgTemporalError::Syntax))?;
+        let time = time.split(['+', '-']).next().unwrap_or(time);
+        time.parse::<astersql_types::pg_temporal::PgTime>()
+            .map(|time| Some(time.round_precision(precision).to_string()))
+            .map_err(temporal_error)
+    }
+
     /// Resolve the instant in this session before dropping its zone. Parse the
     /// canonical ISO wall clock to enforce timestamp's range, then round the
     /// target precision (which can carry across midnight or overflow).
