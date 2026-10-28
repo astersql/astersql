@@ -4153,6 +4153,26 @@ pub(super) fn pg_timestamp_to_date_value(value: Option<String>) -> SessionResult
         .transpose()
 }
 
+/// Extract the wall-clock time with a nonnegative remainder before the PG epoch.
+/// Infinite timestamps have no time of day and PostgreSQL returns SQL NULL.
+pub(super) fn pg_timestamp_to_time_value(
+    value: Option<String>,
+    precision: isize,
+) -> SessionResult<Option<String>> {
+    use astersql_types::pg_temporal::{PgTime, PgTimestamp};
+    let Some(text) = value else { return Ok(None) };
+    let result = text.parse::<PgTimestamp>().and_then(|timestamp| {
+        if matches!(timestamp.micros(), i64::MIN | i64::MAX) {
+            return Ok(None);
+        }
+        PgTime::from_micros(timestamp.micros().rem_euclid(PgTime::END_OF_DAY))
+            .map(|time| Some(time.round_precision(precision).to_string()))
+    });
+    result.map_err(|error| {
+        SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
+    })
+}
+
 /// A typed DATE becomes a wall-clock midnight, independent of session timezone.
 /// Check the narrower timestamp domain after widening the date epoch count.
 pub(super) fn pg_date_to_timestamp_value(

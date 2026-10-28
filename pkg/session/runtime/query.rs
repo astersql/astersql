@@ -1542,6 +1542,12 @@ impl ConcreteSession {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration
                 {
+                    if pg_timestamp_source(Expr) {
+                        return pg_timestamp_to_time_value(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                            Tp.GetDecimal(),
+                        );
+                    }
                     return pg_time_relational_value(
                         self.relational_query_expression_value(Expr, row, group_rows)?,
                         Tp.GetDecimal(),
@@ -2660,6 +2666,23 @@ impl ConcreteSession {
                     self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
                         "42804",
                         "COALESCE types cannot be matched with text",
+                    ));
+                }
+                // timestamp -> time is assignment-only, including typed NULL.
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && FnName.L == "coalesce"
+                    && Args.iter().any(|arg| {
+                        relational_expression_type(arg, self.table).GetType()
+                            == astersql_parser_mysql::r#type::TypeDatetime
+                    })
+                    && Args.iter().any(|arg| {
+                        relational_expression_type(arg, self.table).GetType()
+                            == astersql_parser_mysql::r#type::TypeDuration
+                    })
+                {
+                    self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
+                        "42846",
+                        "COALESCE could not convert between timestamp and time",
                     ));
                 }
                 // int2not has exactly one smallint signature. Do not apply an
@@ -3932,6 +3955,7 @@ impl ConcreteSession {
                         if let Some(field) = source_fields.get(index) {
                             // Retain source identity for float rounding, boolean and
                             // interval output when assigning materialized SELECT values.
+                            // Timestamp identity also owns extraction before time typmod rounding.
                             if field.column.FieldType.PostgreSQLTextOid() == Some(1042)
                                 || field.column.GetFlag()
                                     & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -3940,6 +3964,7 @@ impl ConcreteSession {
                                     field.column.GetType(),
                                     astersql_parser_mysql::r#type::TypeFloat
                                         | astersql_parser_mysql::r#type::TypeDouble
+                                        | astersql_parser_mysql::r#type::TypeDatetime
                                         | astersql_parser_mysql::r#type::TypePgInterval
                                 )
                             {

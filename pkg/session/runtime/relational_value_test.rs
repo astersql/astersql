@@ -1095,3 +1095,24 @@ fn pg06_date_timestamp_midnight_domain() {
         );
     }
 }
+
+#[test]
+fn pg06_timestamp_time_epoch_remainder() {
+    use super::pg_timestamp_to_time_value;
+    for (timestamp, precision, expected) in [
+        ("1999-12-31 23:59:59.999999", -1, Some("23:59:59.999999")),
+        ("1999-12-31 23:59:59.999999", 3, Some("24:00:00")),
+        ("2000-01-01 00:00:00", -1, Some("00:00:00")),
+        ("infinity", -1, None),
+        ("-infinity", 3, None),
+    ] {
+        assert_eq!(
+            pg_timestamp_to_time_value(Some(timestamp.into()), precision).unwrap(),
+            expected.map(str::to_owned),
+        );
+    }
+    assert_eq!(pg_timestamp_to_time_value(None, 3).unwrap(), None);
+    for invalid in ["garbage", "2023-02-29 00:00:00", "294277-01-01 00:00:00"] {
+        assert!(pg_timestamp_to_time_value(Some(invalid.into()), -1).is_err());
+    }
+}

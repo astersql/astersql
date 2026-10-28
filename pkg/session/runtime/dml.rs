@@ -2389,6 +2389,17 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDuration
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDatetime
+                {
+                    pg_timestamp_to_time_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
                     })
                     && relational_expression_type(expression, &table).GetType()
@@ -3861,6 +3872,17 @@ impl ConcreteSession {
                         )
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDuration
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDatetime
+                {
+                    pg_timestamp_to_time_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
                     })
