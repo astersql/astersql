@@ -44,7 +44,7 @@ pub(super) fn validate_cast(source: &FieldType, target: &FieldType) -> SessionRe
             && source.GetCharset() != "binary"
             && source.PostgreSQLTextOid().is_none());
     if (target_uuid && (source_uuid || text_source || source.GetType() == TypeNull))
-        || (source_uuid && target.PostgreSQLTextOid() == Some(25))
+        || (source_uuid && matches!(target.PostgreSQLTextOid(), Some(25 | 1042 | 1043)))
     {
         Ok(())
     } else {

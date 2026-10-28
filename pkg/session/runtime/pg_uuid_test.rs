@@ -30,6 +30,17 @@ fn pg05_uuid_sql_cast_roundtrip_and_identity() {
             .PostgreSQLTextOid(),
         Some(25)
     );
+    // UUID output feeds the existing target character constraints.
+    for (target, expected) in [
+        ("varchar(8)", "00112233"),
+        ("char(38)", "00112233-4455-6677-8899-aabbccddeeff  "),
+    ] {
+        let sql = format!("SELECT ('{INPUT}'::uuid)::{target}");
+        assert_eq!(
+            pg.execute(&sql).unwrap()[0].next_row().unwrap().unwrap(),
+            [expected]
+        );
+    }
     let sql = format!("SELECT '{INPUT}'::text");
     assert_eq!(
         pg.execute(&sql).unwrap()[0].next_row().unwrap().unwrap(),
