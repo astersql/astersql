@@ -2450,6 +2450,7 @@ impl ConcreteSession {
                                         relational_expression_type(expression, &table).GetType(),
                                         astersql_parser_mysql::r#type::TypeNewDecimal
                                             | astersql_parser_mysql::r#type::TypeDouble
+                                            | astersql_parser_mysql::r#type::TypeDate
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag
@@ -2471,7 +2472,15 @@ impl ConcreteSession {
                     pg_text_relational_cast(
                         expression,
                         &row,
-                        relational_expression_value(expression, &row)?,
+                        // Date output requires evaluating the source cast first, including
+                        // strict input validation and the connection's date context.
+                        if relational_expression_type(expression, &table).GetType()
+                            == astersql_parser_mysql::r#type::TypeDate
+                        {
+                            self.relational_query_expression_value(expression, &row, None)?
+                        } else {
+                            relational_expression_value(expression, &row)?
+                        },
                         &target,
                         false,
                     )?
@@ -3776,6 +3785,7 @@ impl ConcreteSession {
                                         relational_expression_type(expression, &table).GetType(),
                                         astersql_parser_mysql::r#type::TypeNewDecimal
                                             | astersql_parser_mysql::r#type::TypeDouble
+                                            | astersql_parser_mysql::r#type::TypeDate
                                     )
                                     || relational_expression_type(expression, &table).GetFlag()
                                         & astersql_parser_mysql::r#type::IsBooleanFlag

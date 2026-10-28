@@ -2775,7 +2775,8 @@ pub(super) fn relational_expression_type(
             .unwrap_or_default(),
         ast::ExprKind::Value(value) => value.Type.clone(),
         ast::ExprKind::Cast { Tp, .. }
-            if Tp.PostgreSQLArrayElement().is_some()
+            if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate
+                || Tp.PostgreSQLArrayElement().is_some()
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid
