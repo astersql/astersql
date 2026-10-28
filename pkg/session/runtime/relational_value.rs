@@ -4146,3 +4146,15 @@ pub(super) fn pg_text_bytea_pair(
         && target.GetCharset() == "binary"
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text reaches int4 through explicit input conversion only. Unknown
+/// literals and NULLs lack the text identity and remain contextually typable.
+pub(super) fn pg_text_int4_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetType() == astersql_parser_mysql::r#type::TypeLong
+        && target.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+        && target.PostgreSQLArrayElement().is_none()
+}

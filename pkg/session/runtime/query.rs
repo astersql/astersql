@@ -2562,16 +2562,15 @@ impl ConcreteSession {
                     && Args.iter().any(|arg| {
                         let source = relational_expression_type(arg, self.table);
                         Args.iter().any(|other| {
-                            super::relational_value::pg_text_bytea_pair(
-                                &source,
-                                &relational_expression_type(other, self.table),
-                            )
+                            let target = relational_expression_type(other, self.table);
+                            super::relational_value::pg_text_bytea_pair(&source, &target)
+                                || super::relational_value::pg_text_int4_pair(&source, &target)
                         })
                     })
                 {
                     self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
                         "42804",
-                        "COALESCE types bytea and text cannot be matched",
+                        "COALESCE types cannot be matched with text",
                     ));
                 }
                 // int2not has exactly one smallint signature. Do not apply an
