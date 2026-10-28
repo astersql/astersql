@@ -922,6 +922,7 @@ fn catalog_binary_parameter(
 struct Statement {
     original_sql: String,
     path: Vec<String>,
+    schema_version: Option<i64>,
     catalog: Option<crate::pg_catalog::CatalogQuery>,
     session_query: Option<crate::pg_session::SessionQuery>,
     metadata: PreparedMetadata,
@@ -1312,6 +1313,9 @@ impl Extended {
             interval_time_parameters,
             original_sql,
             path,
+            schema_version: context
+                .schema_snapshot()
+                .map(|schema| schema.SchemaMetaVersion()),
             session_query,
             catalog,
             metadata,
@@ -1342,7 +1346,12 @@ impl Extended {
             .session
             .effective_explicit_path(context.as_ref())
             .map_err(engine)?;
-        if statement.path == path {
+        // DDL can invalidate a fixed result even when name resolution is unchanged.
+        // Reuse the canonical catalog generation rather than deriving types from rows.
+        let schema_version = context
+            .schema_snapshot()
+            .map(|schema| schema.SchemaMetaVersion());
+        if statement.path == path && statement.schema_version == schema_version {
             return Ok(());
         }
         let original_sql = statement.original_sql.clone();
