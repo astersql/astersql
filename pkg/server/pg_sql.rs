@@ -245,6 +245,42 @@ pub(crate) fn adapt_with_context(sql: &str, context: &dyn TiDBContext) -> ParseR
     adapt_internal(sql, Some(context))
 }
 
+// PG omits ROW before each VALUES tuple. Reuse the row-list AST while
+// retaining an exact map back to original parameter byte offsets.
+fn values_row_insertions(tokens: &[Token]) -> Vec<usize> {
+    if !tokens.first().is_some_and(|token| token.word("values")) {
+        return Vec::new();
+    }
+    let mut insertions = Vec::new();
+    let mut depth = 0usize;
+    let mut row_start = true;
+    for token in tokens.iter().skip(1) {
+        if depth == 0 && row_start && token.symbol(b'(') {
+            insertions.push(token.start);
+            row_start = false;
+        }
+        if token.symbol(b'(') {
+            depth += 1;
+        } else if token.symbol(b')') {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 && token.symbol(b',') {
+            row_start = true;
+        } else if depth == 0 {
+            break;
+        }
+    }
+    insertions
+}
+
+pub(crate) fn values_parameter_source(sql: &str) -> ParseResult<(String, Vec<usize>)> {
+    let insertions = values_row_insertions(&tokens(sql)?);
+    let edits = insertions
+        .iter()
+        .map(|start| (*start, (*start, "ROW ".to_owned())))
+        .collect();
+    Ok((apply(sql, edits)?, insertions))
+}
+
 fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<String> {
     let tokens = tokens(sql)?;
     let Some(first) = tokens.first() else {
@@ -255,6 +291,9 @@ fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<S
         if let Kind::Identifier(name) = &token.kind {
             edits.insert(token.start, (token.end, quote(name)));
         }
+    }
+    for start in values_row_insertions(&tokens) {
+        edits.insert(start, (start, "ROW ".to_owned()));
     }
     if first.word("alter") && tokens.get(1).is_some_and(|token| token.word("table")) {
         adapt_alter(sql, &tokens, edits, context)

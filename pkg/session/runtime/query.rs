@@ -2424,7 +2424,9 @@ impl ConcreteSession {
                     .is_some_and(result_set_node_has_derived_source)
         });
         let scalar_count = is_scalar_count_non_null_constant(select);
-        select.With.is_some()
+        (self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && select.Kind == ast::SelectStmtKind::Values)
+            || select.With.is_some()
             || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
                 && (select.Where.as_ref().is_some_and(|expr| {
                     expression_contains_cast(expr) || has_pg_query_expression(expr)
@@ -2660,6 +2662,75 @@ impl ConcreteSession {
             target.SetDecimal(-1);
         }
         Ok(target)
+    }
+
+    fn pg_values_fields(
+        &self,
+        select: &ast::SelectStmt,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
+        if select.lock_info.is_some() || select.SelectIntoOpt.is_some() {
+            return Err(pg_union_error(
+                "VALUES locking or INTO is unsupported",
+                "0A000",
+            ));
+        }
+        let width = select.Lists.first().map_or(0, |row| row.Values.len());
+        if select.Lists.iter().any(|row| row.Values.len() != width) {
+            return Err(pg_union_error(
+                "VALUES lists must all be the same length",
+                "42601",
+            ));
+        }
+        (0..width)
+            .map(|column| {
+                let inputs = select
+                    .Lists
+                    .iter()
+                    .map(|row| self.pg_case_input_type(&row.Values[column], &[]))
+                    .collect::<Vec<_>>();
+                let mut known = inputs
+                    .iter()
+                    .filter(|tp| tp.GetType() != astersql_parser_mysql::r#type::TypeNull);
+                let unknown =
+                    astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNull);
+                let mut target = if let Some(first) = known.next() {
+                    let mut target = first.clone();
+                    for input in known {
+                        target = pg_union_common_type(&target, input)?;
+                    }
+                    target
+                } else {
+                    pg_union_common_type(&unknown, &unknown)?
+                };
+                if inputs.iter().any(|tp| tp != &target) {
+                    target.SetFlen(-1);
+                    target.SetDecimal(-1);
+                }
+                // Unknown string input functions run during analysis, before ParseComplete.
+                for row in &select.Lists {
+                    let mut expression = &row.Values[column];
+                    while let ast::ExprKind::Parentheses(inner) = &expression.Kind {
+                        expression = inner;
+                    }
+                    if let ast::ExprKind::Value(value) = &expression.Kind
+                        && let ast::ValueDatum::String(text) = &value.Datum
+                    {
+                        self.pg_union_cast_value(Some(text.clone()), &unknown, &target)?;
+                    }
+                }
+                Ok(ConcreteResultField {
+                    column: astersql_meta_model::ColumnInfo {
+                        FieldType: target,
+                        ..Default::default()
+                    },
+                    column_as_name: ast::NewCIStr(&format!("column{}", column + 1)),
+                    table_name: ast::CIStr::default(),
+                    table_as_name: ast::CIStr::default(),
+                    db_name: ast::CIStr::default(),
+                    column_origin: None,
+                })
+            })
+            .collect()
     }
 
     fn pg_case_input_type(
@@ -3946,6 +4017,11 @@ impl ConcreteSession {
     ) -> SessionResult<Vec<ConcreteResultField>> {
         let mut ctes = inherited.clone();
         if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                && select.Kind == ast::SelectStmtKind::Values
+            {
+                return self.pg_values_fields(select);
+            }
             if let Some(with) = &select.With {
                 let with = with.borrow();
                 if !with.IsRecursive {
@@ -4421,6 +4497,57 @@ impl ConcreteSession {
         &self,
         node: &dyn ast::Node,
     ) -> SessionResult<ConcreteRecordSet> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>()
+            && select.Kind == ast::SelectStmtKind::Values
+        {
+            let fields = self.pg_values_fields(select)?;
+            let mut rows = Vec::new();
+            for row in &select.Lists {
+                let values = row
+                    .Values
+                    .iter()
+                    .zip(&fields)
+                    .map(|(expr, field)| {
+                        let source = self.pg_case_input_type(expr, &[]);
+                        let value =
+                            self.relational_query_expression_value(expr, &HashMap::new(), None)?;
+                        self.pg_union_cast_value(value, &source, &field.column.FieldType)
+                    })
+                    .collect::<SessionResult<Vec<_>>>()?;
+                rows.push(values);
+            }
+            let columns = fields
+                .iter()
+                .map(|field| field.column_as_name.O.clone())
+                .collect::<Vec<_>>();
+            let order = resolve_select_order_by(&select.OrderBy, &select.Fields, &columns)?;
+            let selected = self.apply_insert_select_order_limit(
+                self.insert_select_rows_from_values(&columns, rows),
+                &order,
+                select.Limit.as_ref(),
+            )?;
+            let rows = selected
+                .rows
+                .iter()
+                .map(|row| {
+                    columns
+                        .iter()
+                        .map(|column| {
+                            row.get(column)
+                                .cloned()
+                                .flatten()
+                                .unwrap_or_else(|| SHOW_NULL_CELL.to_owned())
+                        })
+                        .collect()
+                })
+                .collect();
+            return Ok(ConcreteRecordSet::new_with_fields(
+                columns,
+                rows,
+                fields.into_iter().map(Some).collect(),
+            ));
+        }
         let selected = self.execute_insert_select_node(node)?;
         let mut fields = self.relational_query_node_result_fields(node, &selected.columns)?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {

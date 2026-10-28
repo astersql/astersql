@@ -30711,3 +30711,76 @@ fn pg06_task_090() {
     );
     assert_eq!(mysql_query(&mut mysql, "SELECT 1"), integer_before);
 }
+
+#[test]
+fn pg06_task_091() {
+    let source = "/* 字节偏移 */ VALUES ($2::text,$1::int4),($2::text,$1::int8)";
+    let expected = source
+        .match_indices('$')
+        .zip([1, 0, 1, 0])
+        .map(|((offset, _), index)| (index, offset, false))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        crate::pg_extended::indexed_parameter_contract(source).unwrap(),
+        expected
+    );
+
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let integer_before = mysql_query(&mut mysql, "SELECT 1");
+    assert_eq!(integer_before, vec![vec![Some(b"1".to_vec())]]);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg06_values_common_libpq.py"
+        ))
+        .arg(
+            cleanup
+                .0
+                .postgres_listener_addr()
+                .unwrap()
+                .port()
+                .to_string(),
+        )
+        .output()
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+    assert_eq!(mysql_query(&mut mysql, "SELECT 1"), integer_before);
+}

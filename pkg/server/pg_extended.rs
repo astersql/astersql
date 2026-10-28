@@ -194,8 +194,9 @@ pub(crate) fn indexed_parameter_contract(sql: &str) -> Result<Vec<(usize, usize,
             true
         }
     }
+    let (source_sql, row_insertions) = crate::pg_sql::values_parameter_source(sql)?;
     let (statements, _) = astersql_parser::Parser::with_dialect(SqlDialect::PostgreSQL)
-        .ParseSQL(sql, &[])
+        .ParseSQL(&source_sql, &[])
         .map_err(|_| error("42601", "invalid PostgreSQL parameter source"))?;
     let mut visitor = Parameters::default();
     for statement in statements {
@@ -205,7 +206,15 @@ pub(crate) fn indexed_parameter_contract(sql: &str) -> Result<Vec<(usize, usize,
     Ok(visitor
         .markers
         .into_iter()
-        .map(|(index, offset)| (index, offset, visitor.assignments.contains(&offset)))
+        .map(|(index, offset)| {
+            let added = row_insertions
+                .iter()
+                .enumerate()
+                .filter(|(n, start)| **start + n * 4 < offset)
+                .count()
+                * 4;
+            (index, offset - added, visitor.assignments.contains(&offset))
+        })
         .collect())
 }
 
