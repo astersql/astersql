@@ -2562,12 +2562,26 @@ impl ConcreteSession {
                     && Args.iter().any(|arg| {
                         let source = relational_expression_type(arg, self.table);
                         Args.iter().any(|other| {
-                            let target = relational_expression_type(other, self.table);
+                            // The shared MySQL expression typer does not retain date
+                            // casts. Preserve that identity for this PG-only input gate.
+                            let mut other = other;
+                            while let ast::ExprKind::Parentheses(inner) = &other.Kind {
+                                other = inner;
+                            }
+                            let target = match &other.Kind {
+                                ast::ExprKind::Cast { Tp, .. }
+                                    if Tp.GetType() == astersql_parser_mysql::r#type::TypeDate =>
+                                {
+                                    Tp.clone()
+                                }
+                                _ => relational_expression_type(other, self.table),
+                            };
                             super::relational_value::pg_text_bytea_pair(&source, &target)
                                 || super::relational_value::pg_text_int4_pair(&source, &target)
                                 || super::relational_value::pg_text_numeric_pair(&source, &target)
                                 || super::relational_value::pg_text_float8_pair(&source, &target)
                                 || super::relational_value::pg_text_bool_pair(&source, &target)
+                                || super::relational_value::pg_text_date_pair(&source, &target)
                         })
                     })
                 {

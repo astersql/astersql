@@ -4191,3 +4191,14 @@ pub(super) fn pg_text_bool_pair(
         && target.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text reaches the date input function through explicit casts only.
+/// Assignment and common-type inference must preserve the source text identity.
+pub(super) fn pg_text_date_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && target.GetType() == astersql_parser_mysql::r#type::TypeDate
+        && target.PostgreSQLArrayElement().is_none()
+}
