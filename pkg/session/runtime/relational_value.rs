@@ -3669,9 +3669,30 @@ thread_local! {
 }
 pub(super) struct PgCastTable(Option<astersql_meta_model::TableInfo>);
 impl PgCastTable {
+    // CASE evaluation consumes the same bound column identity as explicit casts.
+    pub(super) fn column_type(
+        expression: &ast::ExprNode,
+    ) -> Option<astersql_parser_types::FieldType> {
+        PG_CAST_TABLE.with(|slot| {
+            let table = slot.borrow();
+            table
+                .as_ref()
+                .map(|table| relational_expression_type(expression, table))
+        })
+    }
     pub(super) fn enter(fields: &[ConcreteResultField]) -> Self {
         let mut table = astersql_meta_model::TableInfo::default();
-        table.Columns = fields.iter().map(|f| f.column.clone()).collect();
+        table.Columns = fields
+            .iter()
+            .map(|field| {
+                let mut column = field.column.clone();
+                // Derived expressions are bound by their projected names.
+                if field.column_origin.is_none() {
+                    column.Name = field.column_as_name.clone();
+                }
+                column
+            })
+            .collect();
         Self::enter_table(&table)
     }
     pub(super) fn enter_table(table: &astersql_meta_model::TableInfo) -> Self {

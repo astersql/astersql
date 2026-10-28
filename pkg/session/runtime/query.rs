@@ -1495,19 +1495,39 @@ impl ConcreteSession {
                         ) == Some(true)
                     };
                     if matched {
-                        return self.relational_query_expression_value(
+                        let value = self.relational_query_expression_value(
                             &clause.Result,
                             row,
                             group_rows,
-                        );
+                        )?;
+                        return if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                            self.pg_union_cast_value(
+                                value,
+                                &self.pg_case_input_type(&clause.Result, &[]),
+                                &self.pg_case_result_type(expression, &[])?,
+                            )
+                        } else {
+                            Ok(value)
+                        };
                     }
                 }
-                ElseClause
+                let value = ElseClause
                     .as_ref()
-                    .map(|expression| {
-                        self.relational_query_expression_value(expression, row, group_rows)
-                    })
-                    .unwrap_or(Ok(None))
+                    .map(|expr| self.relational_query_expression_value(expr, row, group_rows))
+                    .unwrap_or(Ok(None))?;
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    let source = ElseClause
+                        .as_ref()
+                        .map(|expr| self.pg_case_input_type(expr, &[]))
+                        .unwrap_or_default();
+                    self.pg_union_cast_value(
+                        value,
+                        &source,
+                        &self.pg_case_result_type(expression, &[])?,
+                    )
+                } else {
+                    Ok(value)
+                }
             }
             ast::ExprKind::Parentheses(inner) => {
                 self.relational_query_expression_value(inner, row, group_rows)
@@ -2347,10 +2367,13 @@ impl ConcreteSession {
     }
 
     pub(crate) fn relational_select_requires_full_query(&self, select: &ast::SelectStmt) -> bool {
-        fn has_pg_numeric_signature(expression: &ast::ExprNode) -> bool {
+        fn has_pg_query_expression(expression: &ast::ExprNode) -> bool {
             struct Calls(bool);
             impl ast::ExprNodeVisitor for Calls {
                 fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                    if matches!(input.Kind, ast::ExprKind::Case { .. }) {
+                        self.0 = true;
+                    }
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
                         && matches!(
                             FnName.L.as_str(),
@@ -2404,10 +2427,10 @@ impl ConcreteSession {
         select.With.is_some()
             || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
                 && (select.Where.as_ref().is_some_and(|expr| {
-                    expression_contains_cast(expr) || has_pg_numeric_signature(expr)
+                    expression_contains_cast(expr) || has_pg_query_expression(expr)
                 }) || select.Fields.Fields.iter().any(|field| {
                     field.Expr.as_ref().is_some_and(|expr| {
-                        expression_contains_cast(expr) || has_pg_numeric_signature(expr)
+                        expression_contains_cast(expr) || has_pg_query_expression(expr)
                     })
                 })))
             || has_derived_source
@@ -2595,6 +2618,82 @@ impl ConcreteSession {
         Ok(None)
     }
 
+    // PostgreSQL considers ELSE before the WHEN results. Unknown literals do
+    // not become text until the entire CASE has been considered.
+    fn pg_case_result_type(
+        &self,
+        expression: &ast::ExprNode,
+        sources: &[ConcreteResultField],
+    ) -> SessionResult<astersql_parser_types::FieldType> {
+        let ast::ExprKind::Case {
+            WhenClauses,
+            ElseClause,
+            ..
+        } = &expression.Kind
+        else {
+            unreachable!("CASE result type requires CASE");
+        };
+        let inputs = ElseClause
+            .iter()
+            .map(|expr| expr.as_ref())
+            .chain(WhenClauses.iter().map(|clause| &clause.Result))
+            .map(|expr| self.pg_case_input_type(expr, sources))
+            .collect::<Vec<_>>();
+        let mut known = inputs
+            .iter()
+            .filter(|tp| tp.GetType() != astersql_parser_mysql::r#type::TypeNull);
+        let mut target = if let Some(first) = known.next() {
+            let mut target = first.clone();
+            for input in known {
+                target = pg_union_common_type(&target, input)?;
+            }
+            target
+        } else {
+            let unknown =
+                astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNull);
+            pg_union_common_type(&unknown, &unknown)?
+        };
+        // CASE preserves a modifier only when every result has that identity
+        // and modifier, including any implicit NULL ELSE.
+        if ElseClause.is_none() || inputs.iter().any(|tp| tp != &target) {
+            target.SetFlen(-1);
+            target.SetDecimal(-1);
+        }
+        Ok(target)
+    }
+
+    fn pg_case_input_type(
+        &self,
+        expression: &ast::ExprNode,
+        sources: &[ConcreteResultField],
+    ) -> astersql_parser_types::FieldType {
+        match &expression.Kind {
+            ast::ExprKind::Parentheses(inner) => self.pg_case_input_type(inner, sources),
+            ast::ExprKind::Column(column) if !sources.is_empty() => sources
+                .iter()
+                .find(|field| {
+                    (field.column_as_name.L == column.Name.L
+                        || field.column.Name.L == column.Name.L)
+                        && (column.Table.L.is_empty() || field.table_as_name.L == column.Table.L)
+                })
+                .map(|field| field.column.FieldType.clone())
+                .unwrap_or_default(),
+            ast::ExprKind::Column(_) if sources.is_empty() => PgCastTable::column_type(expression)
+                .unwrap_or_else(|| {
+                    self.relational_query_expression_type_from_sources(expression, sources)
+                }),
+            ast::ExprKind::Value(value)
+                if matches!(
+                    value.Datum,
+                    ast::ValueDatum::Null | ast::ValueDatum::String(_)
+                ) =>
+            {
+                astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNull)
+            }
+            _ => self.relational_query_expression_type_from_sources(expression, sources),
+        }
+    }
+
     /// Reject unsupported numeric source types before row evaluation, including
     /// empty scans: relational rows carry text and cannot recover source types.
     pub(super) fn validate_pg_integer_select_inputs(
@@ -2643,6 +2742,8 @@ impl ConcreteSession {
             }
         }
         struct Inputs<'a> {
+            session: &'a ConcreteSession,
+            sources: &'a [ConcreteResultField],
             table: &'a astersql_meta_model::TableInfo,
             unsupported: bool,
             boolean_error: Option<astersql_expression::PgBoolError>,
@@ -2661,6 +2762,39 @@ impl ConcreteSession {
                         ast::ExprKind::Parentheses(inner) => literal(inner),
                         ast::ExprKind::Value(value) => Some(value),
                         _ => None,
+                    }
+                }
+                if let ast::ExprKind::Case {
+                    WhenClauses,
+                    ElseClause,
+                    ..
+                } = &input.Kind
+                {
+                    let validation = self
+                        .session
+                        .pg_case_result_type(input, self.sources)
+                        .and_then(|target| {
+                            for expr in ElseClause
+                                .iter()
+                                .map(|expr| expr.as_ref())
+                                .chain(WhenClauses.iter().map(|clause| &clause.Result))
+                            {
+                                if let Some(value) = literal(expr)
+                                    && let ast::ValueDatum::String(text) = &value.Datum
+                                {
+                                    let source =
+                                        self.session.pg_case_input_type(expr, self.sources);
+                                    self.session.pg_union_cast_value(
+                                        Some(text.clone()),
+                                        &source,
+                                        &target,
+                                    )?;
+                                }
+                            }
+                            Ok(())
+                        });
+                    if let Err(error) = validation {
+                        self.scalar_cast_error = Some(error);
                     }
                 }
                 if let ast::ExprKind::Binary { Op, L, R } = &input.Kind
@@ -3081,6 +3215,8 @@ impl ConcreteSession {
             }
         }
         let mut visitor = Inputs {
+            session: self,
+            sources: &sources,
             table: &table,
             unsupported: false,
             boolean_error: None,
@@ -3375,6 +3511,11 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if matches!(expression.Kind, ast::ExprKind::Case { .. }) {
+                return self
+                    .pg_case_result_type(expression, source_fields)
+                    .unwrap_or_default();
+            }
             if let Some(tp) = pg_integer_literal_type(expression) {
                 return tp;
             }
