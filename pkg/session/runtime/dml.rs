@@ -2611,6 +2611,22 @@ impl ConcreteSession {
                         }
                     }
                 }
+                // PG int4 -> int2 assignment is permitted, but must report
+                // target overflow before any row is stored (including UPDATE).
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeShort
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeLong
+                {
+                    astersql_expression::pg_cast_int2(value.as_deref()).map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?;
+                }
                 row.insert(column.clone(), value);
             }
             for column in table
@@ -3664,6 +3680,22 @@ impl ConcreteSession {
                         .CheckDimsFitColumn(column_info.GetFlen() as i32)
                         .map_err(|error| SessionError::new(error.to_string()))?;
                     value = Some(vector.String());
+                }
+                // PG int4 -> int2 assignment is permitted, but must report
+                // target overflow before any row is stored (including UPDATE).
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeShort
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeLong
+                {
+                    astersql_expression::pg_cast_int2(value.as_deref()).map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?;
                 }
                 row.insert(column.clone(), value);
             }

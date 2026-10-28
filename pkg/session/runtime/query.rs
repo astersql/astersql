@@ -1044,6 +1044,32 @@ impl ConcreteSession {
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
+        // A single fixed PG signature supplies a narrowing-sensitive context.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Args,
+                Schema,
+                ..
+            } = &expression.Kind
+            && FnName.L == "int2not"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && Args.len() == 1
+        {
+            return self
+                .relational_query_expression_value(&Args[0], row, group_rows)?
+                .map(|value| {
+                    astersql_expression::pg_cast_int2(Some(&value))
+                        .map(|value| value.map(|value| (!value).to_string()))
+                        .map_err(|error| {
+                            SessionError::with_source(
+                                error.to_string(),
+                                astersql_errors::SharedError::new(error),
+                            )
+                        })
+                })
+                .unwrap_or(Ok(None));
+        }
         match &expression.Kind {
             ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 super::pg_record::value_with(expression, &|field| {
@@ -2280,6 +2306,27 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // int2not has exactly one smallint signature. Do not apply an
+                // assignment cast here: int4 -> int2 is never implicit, even NULL.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                    ..
+                } = &input.Kind
+                    && FnName.L == "int2not"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (Args.len() != 1
+                        || !matches!(
+                            relational_expression_type(&Args[0], self.table).GetType(),
+                            astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeNull
+                        ))
+                {
+                    self.scalar_cast_error = Some(SessionError::new(
+                        "PostgreSQL int2not requires a smallint argument",
+                    ));
+                }
                 if let ast::ExprKind::Cast {
                     Tp,
                     FunctionType: ast::CastFunctionType::PostgreSQLNumeric,
@@ -2652,6 +2699,14 @@ impl ConcreteSession {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             if let Some(tp) = pg_integer_literal_type(expression) {
                 return tp;
+            }
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
+                && FnName.L == "int2not"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeShort,
+                );
             }
             // Preserve the existing PG integer promotion for int2 -> int4.
             // The shared MySQL expression inference otherwise labels arithmetic int8.

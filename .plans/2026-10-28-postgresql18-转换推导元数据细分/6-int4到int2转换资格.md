@@ -2,7 +2,7 @@
 
 批次：【批次 6】 依赖批次 5（共享源码与验证资源串行交接）
 
-状态：未开始
+状态：已完成，待回归
 
 目的：只处理int4→int2有向对：反向仅E/A，I拒绝；E为显式转换，A为目标列赋值，I为表达式隐式转换。数值舍入、溢出22003及NULL沿目标族，不能通过text串接。
 
@@ -63,10 +63,10 @@
 
 ## Progress
 
-- [ ] 核对依赖及生产差异依据。
-- [ ] 取得行为失败或既有正确行为的当前证据。
-- [ ] 完成实现、聚焦验证和Ready检查。
-- [ ] 完成交接、资源清理及适用提交。
+- [x] 核对依赖及生产差异依据。
+- [x] 取得行为失败或既有正确行为的当前证据。
+- [x] 完成实现、聚焦验证和Ready检查。
+- [x] 完成交接、资源清理及适用提交。
 
 ## Surprises & Discoveries
 
@@ -78,8 +78,41 @@
 
 ## Outcomes & Retrospective
 
-尚未实施，没有功能通过结论。实施者在此记录新证据、实际修改和剩余范围外事项。
+本地TDD闭环及Ready检查通过；固定PostgreSQL18.6参考差分缺证，保留本文件待回归。早期阻塞已由下述最小局部接线解除。实施者在此记录新证据、实际修改和剩余范围外事项。
 
 ## 重试与恢复
 
 测试使用唯一临时表及系统分配端口；成功、失败及中断均关闭连接/listener、删除自己夹具，待子进程结束才释放槽位。可重复运行；保留缓存，不重置其他任务变更。
+
+## 执行记录（2026-10-28）
+
+依赖批次5已提交 cf80601c38，本地TCP及Ready检查通过、固定18.6参考待回归；本轮读取其交接记录，未把参考缺证当作已通过。已读取根/server规则、PLANS.md、do-task-plans及仓库RustCodeGraph技能；目标三个包doc.go均不存在。plan.md保持只读。
+
+阻塞在步骤1的最小接口核对：尚未定位可消费的“只接受int2参数”的表达式入口及其按源类型拒绝int4隐式收窄的分析接口。已有 `relational_query_expression_type_from_sources(&self, expression: &ast::ExprNode, source_fields: &[ConcreteResultField]) -> FieldType`（query.rs:2647）针对TypeShort/TypeLong混合加减乘执行整数提升，不能作为int4→int2的I拒绝证据。`indexed_parameter_contract`及`prepare_statement_with_parameter_types`已存在，但参数声明OID21会把输入定为int2，不能保留源int4身份来验收此项。显式CAST及目标列赋值分别属于E和A，也不能代替I。需要上游提供已有的int2专用表达式入口/签名及源int4分析路径，或明确授权一个最小局部入口；不扩建函数重载子系统，不用不存在函数的错误冒充类型拒绝。
+
+已运行检查（只读）：`git status --short`（0，干净）；`git log -5 --oneline`（0）；RustCodeGraph `status`（0）、`explore 'pg06_task_005 pg06_task_004 indexed_parameter_contract'`（0）、`node pg06_task_005`（0）；rg检查planning.rs/query.rs及PG族模块的隐式转换和函数入口，仓库Rust文件搜索int2send/int2inc/int2_sum/int2_accum没有定位对应入口。读取query.rs:2647处实际类型提升分支核对，不将搜索缺失视为运行期拒绝。`ls pkg/session/doc.go pkg/server/doc.go pkg/expression/doc.go`退出1，确认三个文件不存在；verify-profile目录亦不存在。
+
+未运行Cargo、未领取槽位；实际槽位及CARGO_TARGET_DIR均不适用。未新增pg06_task_006，行为测试有效数量0；fmt、聚焦测试、make lint、真实18.6参考、MySQL隔离均未执行，不宣称行为已完成。当前只修改本任务状态和阻塞交接记录，按用户规则不提交、不删除任务文件。恢复后先确认上述I入口，再完整执行本文件TDD与Ready流程。风险/限制：没有int4→int2行为验证结论；没有生产、测试、配置变更，兼容性和性能未评估。
+
+### 恢复执行
+
+收到继续执行指示后复核：原阻塞是尚需补足的局部实现，不是外部依赖。选用固定签名int2not(int2)->int2作为本方向唯一必要表达式上下文，直接接入query.rs既有类型/分析/求值入口，不建立通用重载系统。本机18.4的postgres.bki登记OID1895 int2not参数21/返回21，作为签名辅助核对，不替代18.6参考实测。
+
+新增pg06_task_006首轮编译成功并实际运行1个测试，0 passed/1 failed/442 filtered out；失败于int2not(1::int2)尚不支持（XX000），其前E/A成功断言已通过。日志/tmp/pg06-006-initial.log。生产修改依据：query.rs固定签名分析拒绝源int4（含NULL）对应本任务I拒绝契约；固定int2求值及OID21类型推导为该拒绝上下文的最小正向接线；pg_conn.rs将该唯一固定诊断映射42883，保留Parse阶段语义。没有改E/A转换器，沿用已有范围检查。所有原版权头保留。
+
+### 最终验证与交付
+
+第二轮有效运行1个测试（0 passed/1 failed/442 filtered out，退出101），发现UPDATE int4→int2赋值越界返回XX000而非22003，日志/tmp/pg06-006-assignment-failure.log。据此在dml.rs两个写入入口（INSERT/UPDATE）增加仅PG、目标TypeShort且源TypeLong的pg_cast_int2范围检查，将既有typed错误交给协议；这是本任务A资格及22003契约必需局部接线。没有修改MySQL或其他类型对。中间一次编译因错误辅助函数名退出101，没有计为行为证据，已改为既有SessionError::with_source模式。
+
+最终相同测试命令、相同输入：1 passed、0 failed、442 filtered out，退出0，日志/tmp/pg06-006-test.log。E显式值与边界、A的INSERT/UPDATE正常值及typed NULL、I的int2not正向及int4/NULL::int4于Parse拒绝42883均通过。参数OID23在Describe保留，目标结果OID21/typlen2/typmod-1及文本格式0、statement/portal描述一致；非法Bind22P02、目标上下越界22003、无部分行/无赋值副作用、Sync与SELECT 1::int4恢复、同Server MySQL CAST前后结果一致通过。int4值没有小数部分，本方向舍入临界不适用，不用text串接伪造输入。DROP成功，服务RAII关闭。
+
+确切验证命令（仓库根目录）：
+- `cargo fmt --all`：退出0（/tmp/pg06-006-fmt.log）。
+- `env -u LDFLAGS cargo test --locked -p astersql-server --lib pg06_task_006 -- --nocapture`：初次101（有效1 failed），第二次101（有效1 failed），最终0（有效1 passed）。
+- `make lint`：退出0（/tmp/pg06-006-lint.log）；其Go/dashboard检查在最终Rust范围检查新增前完成，内容仍覆盖最终交付，无Go/dashboard改动，无需重复。
+- `git diff --check`：退出0；提交前另检查暂存diff。
+- `/opt/homebrew/opt/postgresql@18/bin/postgres --version`：退出0，18.4 (Homebrew)。PG18_REFERENCE_DSN未配置，18.6实测缺证；未将18.4登记为参考通过。外部源码抓取尝试失败，与本地实现和验收无关。
+
+WIP用于行为红/绿迭代，Ready用于fmt、聚焦TCP、lint及diff自审；verify-profile技能不存在，没有宣称调用该技能。未改Go/Bazel/依赖，不触发bazel_prepare，不运行bazel_lint_changed。所有Cargo阶段原子动态领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；owner记录本任务/会话/PID，所有子进程退出后EXIT trap清理owner和锁，保留缓存。
+
+交付文件：query.rs（固定签名最小上下文）、dml.rs（本方向赋值越界）、pg_conn.rs（固定资格错误SQLSTATE）、pg_extended_test.rs（独立真实TCP测试）及本任务记录。仅提交本任务变更，不push，plan.md未修改。风险：固定签名接线不宣称通用函数重载支持；复杂表达式组合及binary结果未验证；基本MySQL隔离通过，完整双协议回归与18.6参考未验证；新增常数级类型/范围判断，未做性能基准。下一步在固定18.6参考端重放本测试SQL/参数并采集元数据、值、错误阶段与副作用。只因外部参考缺证标记已完成，待回归，保留本任务文件。
