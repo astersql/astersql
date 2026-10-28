@@ -4271,3 +4271,14 @@ pub(super) fn pg_text_json_pair(
         )
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text reaches int4[] input only through an explicit I/O cast.
+pub(super) fn pg_text_int4_array_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && source.PostgreSQLArrayElement().is_none()
+        && target.PostgreSQLArrayElement()
+            == Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
+}
