@@ -4084,6 +4084,51 @@ pub(super) fn pg_time_relational_value(
         .transpose()
 }
 
+/// Resolve DATE identity from the AST and active catalog before reading a value.
+pub(super) fn pg_date_source(expression: &ast::ExprNode) -> bool {
+    PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+        .GetType()
+            == astersql_parser_mysql::r#type::TypeDate
+    })
+}
+
+/// A typed DATE becomes a wall-clock midnight, independent of session timezone.
+/// Check the narrower timestamp domain after widening the date epoch count.
+pub(super) fn pg_date_to_timestamp_value(
+    value: Option<String>,
+    precision: isize,
+) -> SessionResult<Option<String>> {
+    use astersql_types::pg_temporal::{PgDate, PgTemporalError, PgTimestamp};
+    value
+        .map(|text| {
+            let result = text.parse::<PgDate>().and_then(|date| {
+                let days = i32::from_be_bytes(date.to_binary());
+                let micros = match days {
+                    i32::MIN => i64::MIN,
+                    i32::MAX => i64::MAX,
+                    _ => i64::from(days)
+                        .checked_mul(86_400_000_000)
+                        .ok_or(PgTemporalError::Range)?,
+                };
+                PgTimestamp::from_micros(micros)?.round_precision(precision)
+            });
+            result.map(|v| v.to_string()).map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            })
+        })
+        .transpose()
+}
+
 /// Timestamp typmod rounding uses signed PG epoch microseconds, not wall-clock seconds.
 pub(super) fn pg_timestamp_relational_value(
     value: Option<String>,

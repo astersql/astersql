@@ -630,6 +630,26 @@ pub(super) fn encode_relational_row_with_format(
                     .map(|number| astersql_types::datum::NewStringDatum(number.to_string()))
                     .unwrap_or_default()
             }
+        } else if table.ExactName && column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
+        {
+            // PG wall clocks, including infinities and years outside MySQL's
+            // calendar domain, retain their existing canonical string carrier.
+            row.get(&column.Name.L)
+                .cloned()
+                .flatten()
+                .map(|text| {
+                    text.parse::<astersql_types::pg_temporal::PgTimestamp>()
+                        .and_then(|v| v.round_precision(column.GetDecimal()))
+                        .map(|v| astersql_types::datum::NewStringDatum(v.to_string()))
+                        .map_err(|e| {
+                            SessionError::with_source(
+                                e.to_string(),
+                                astersql_errors::SharedError::new(e),
+                            )
+                        })
+                })
+                .transpose()?
+                .unwrap_or_default()
         } else if table.PostgreSQLNumericText
             && column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal
         {

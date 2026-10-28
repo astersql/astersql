@@ -1069,3 +1069,29 @@ fn pg06_task_040_coalesce_bpchar_to_varchar() {
         vec!["a  "]
     );
 }
+
+#[test]
+fn pg06_date_timestamp_midnight_domain() {
+    use super::pg_date_to_timestamp_value;
+    for (date, timestamp) in [
+        ("2000-01-01", "2000-01-01 00:00:00"),
+        ("4713-11-24 BC", "4713-11-24 00:00:00 BC"),
+        ("294276-12-31", "294276-12-31 00:00:00"),
+        ("infinity", "infinity"),
+        ("-infinity", "-infinity"),
+    ] {
+        for precision in [0, 3, 6] {
+            assert_eq!(
+                pg_date_to_timestamp_value(Some(date.into()), precision).unwrap(),
+                Some(timestamp.into())
+            );
+        }
+    }
+    assert_eq!(pg_date_to_timestamp_value(None, 3).unwrap(), None);
+    for invalid in ["294277-01-01", "5874897-12-31", "garbage", "2023-02-29"] {
+        assert!(
+            pg_date_to_timestamp_value(Some(invalid.into()), -1).is_err(),
+            "{invalid}"
+        );
+    }
+}

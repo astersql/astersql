@@ -1368,6 +1368,27 @@ impl ConcreteSession {
                 self.relational_query_expression_value(inner, row, group_rows)
             }
             ast::ExprKind::Array { .. } => self.pg_array_value(expression, row),
+            ast::ExprKind::Function { FnName, Args, .. }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && FnName.L == "coalesce"
+                    && self
+                        .relational_query_expression_type_from_sources(expression, &[])
+                        .GetType()
+                        == astersql_parser_mysql::r#type::TypeDatetime =>
+            {
+                for argument in Args {
+                    let value =
+                        self.relational_query_expression_value(argument, row, group_rows)?;
+                    if value.is_some() {
+                        return if pg_date_source(argument) {
+                            pg_date_to_timestamp_value(value, -1)
+                        } else {
+                            Ok(value)
+                        };
+                    }
+                }
+                Ok(None)
+            }
             ast::ExprKind::Cast {
                 Expr,
                 Tp,
@@ -1527,8 +1548,12 @@ impl ConcreteSession {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime
                 {
+                    let value = self.relational_query_expression_value(Expr, row, group_rows)?;
+                    if pg_date_source(Expr) {
+                        return pg_date_to_timestamp_value(value, Tp.GetDecimal());
+                    }
                     return pg_timestamp_relational_value(
-                        self.relational_query_expression_value(Expr, row, group_rows)?,
+                        value,
                         Tp.GetDecimal(),
                         self.pg_date_context(None)?,
                     );
@@ -3140,6 +3165,25 @@ impl ConcreteSession {
                     (TypeShort, TypeDouble) | (TypeDouble, TypeShort)
                 ) {
                     return astersql_parser_types::NewFieldType(TypeDouble);
+                }
+            }
+            if let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
+                && FnName.L == "coalesce"
+            {
+                let types = Args
+                    .iter()
+                    .map(|arg| {
+                        self.relational_query_expression_type_from_sources(arg, source_fields)
+                    })
+                    .collect::<Vec<_>>();
+                use astersql_parser_mysql::r#type::{TypeDate, TypeDatetime, TypeNull};
+                if types
+                    .iter()
+                    .all(|tp| matches!(tp.GetType(), TypeDate | TypeDatetime | TypeNull))
+                    && types.iter().any(|tp| tp.GetType() == TypeDate)
+                    && types.iter().any(|tp| tp.GetType() == TypeDatetime)
+                {
+                    return astersql_parser_types::NewFieldType(TypeDatetime);
                 }
             }
             match &expression.Kind {

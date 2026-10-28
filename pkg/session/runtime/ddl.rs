@@ -742,6 +742,12 @@ impl ConcreteSession {
                     );
                     column.SetFlen(length);
                 }
+                // PG TIMESTAMP is a wall clock; never catalog it as MySQL's
+                // timezone-dependent native TIMESTAMP storage identity.
+                if definition.Tp.GetType() == astersql_parser_mysql::r#type::TypeTimestamp {
+                    column.SetType(astersql_parser_mysql::r#type::TypeDatetime);
+                    column.SetDecimal(definition.Tp.GetDecimal());
+                }
                 if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
                     column.SetFlen(definition.Tp.GetFlen());
                     column.SetDecimal(definition.Tp.GetDecimal());

@@ -2387,7 +2387,18 @@ impl ConcreteSession {
                             (TypeLong | TypeLonglong, TypeShort) | (TypeLonglong, TypeLong)
                         )
                     });
-                let mut value = if matches!(
+                let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDate
+                {
+                    pg_date_to_timestamp_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if matches!(
                     &expression.Kind,
                     ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
                 ) {
@@ -3797,6 +3808,17 @@ impl ConcreteSession {
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDatetime
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypeDate
+                {
+                    pg_date_to_timestamp_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
                         matches!(column.FieldType.PostgreSQLTextOid(), Some(1042 | 1043))
                             || ((column.FieldType.PostgreSQLTextOid() == Some(25)
                                 || (column.GetType() == astersql_parser_mysql::r#type::TypeBlob
@@ -3829,7 +3851,8 @@ impl ConcreteSession {
                                         &relational_expression_type(expression, &table),
                                         &column.FieldType,
                                     )))
-                    }) {
+                    })
+                {
                     // Stored text columns use the shared nonbinary BLOB type.
                     // Numeric/float8 output must retain its PG formatting and special values,
                     // including UPDATE expressions unsupported by the MySQL evaluator.
