@@ -2467,12 +2467,14 @@ impl ConcreteSession {
                                 | astersql_parser_mysql::r#type::TypeLonglong
                         ) && relational_expression_type(expression, &table).GetType()
                             == astersql_parser_mysql::r#type::TypeFloat)
-                        || (column_info.unwrap().GetType()
-                            == astersql_parser_mysql::r#type::TypeShort
-                            && relational_expression_type(expression, &table).GetType()
-                                == astersql_parser_mysql::r#type::TypeDouble))
+                        || (matches!(
+                            column_info.unwrap().GetType(),
+                            astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeLong
+                        ) && relational_expression_type(expression, &table).GetType()
+                            == astersql_parser_mysql::r#type::TypeDouble))
                 {
-                    // PG numeric/float4-to-integer and float8-to-int2 assignments use the explicit
+                    // PG numeric/float4-to-integer and float8-to-int2/int4 assignments use the explicit
                     // cast's source-specific rounding and target range check.
                     pg_integer_relational_value(
                         expression,
@@ -3770,12 +3772,14 @@ impl ConcreteSession {
                                 | astersql_parser_mysql::r#type::TypeLonglong
                         ) && relational_expression_type(expression, &table).GetType()
                             == astersql_parser_mysql::r#type::TypeFloat)
-                        || (column_info.unwrap().GetType()
-                            == astersql_parser_mysql::r#type::TypeShort
-                            && relational_expression_type(expression, &table).GetType()
-                                == astersql_parser_mysql::r#type::TypeDouble))
+                        || (matches!(
+                            column_info.unwrap().GetType(),
+                            astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeLong
+                        ) && relational_expression_type(expression, &table).GetType()
+                            == astersql_parser_mysql::r#type::TypeDouble))
                 {
-                    // PG numeric/float4-to-integer and float8-to-int2 assignments use the explicit
+                    // PG numeric/float4-to-integer and float8-to-int2/int4 assignments use the explicit
                     // cast's source-specific rounding and target range check.
                     pg_integer_relational_value(
                         expression,
