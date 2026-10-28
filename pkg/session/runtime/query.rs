@@ -2653,6 +2653,23 @@ impl ConcreteSession {
             if let Some(tp) = pg_integer_literal_type(expression) {
                 return tp;
             }
+            // Preserve the existing PG integer promotion for int2 -> int4.
+            // The shared MySQL expression inference otherwise labels arithmetic int8.
+            if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
+                && matches!(Op.as_str(), "+" | "-" | "*")
+            {
+                use astersql_parser_mysql::r#type::{TypeLong, TypeShort};
+                if let (Ok(left), Ok(right)) = (
+                    pg_returning_expression_type(L, source_fields),
+                    pg_returning_expression_type(R, source_fields),
+                ) && matches!(
+                    (left.GetType(), right.GetType()),
+                    (TypeShort, TypeLong) | (TypeLong, TypeShort)
+                ) {
+                    return pg_returning_expression_type(expression, source_fields)
+                        .expect("integer operands have a PG arithmetic result type");
+                }
+            }
             match &expression.Kind {
                 ast::ExprKind::Cast { Tp, .. }
                     if matches!(

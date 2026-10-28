@@ -2,7 +2,7 @@
 
 批次：【批次 1】 无前置批次
 
-状态：未开始
+状态：已完成，待回归
 
 目的：只处理int2→int4有向对：前向E/A/I均允许；E为显式转换，A为目标列赋值，I为表达式隐式转换。数值舍入、溢出22003及NULL沿目标族，不能通过text串接。
 
@@ -63,10 +63,10 @@
 
 ## Progress
 
-- [ ] 核对依赖及生产差异依据。
-- [ ] 取得行为失败或既有正确行为的当前证据。
-- [ ] 完成实现、聚焦验证和Ready检查。
-- [ ] 完成交接、资源清理及适用提交。
+- [x] 核对依赖及生产差异依据。
+- [x] 取得行为失败或既有正确行为的当前证据。
+- [x] 完成实现、聚焦验证和Ready检查。
+- [x] 完成交接、资源清理及适用提交。
 
 ## Surprises & Discoveries
 
@@ -78,8 +78,30 @@
 
 ## Outcomes & Retrospective
 
-尚未实施，没有功能通过结论。实施者在此记录新证据、实际修改和剩余范围外事项。
+实现与本地聚焦验收完成，保留18.6参考差分待回归；具体证据见执行记录。
 
 ## 重试与恢复
 
 测试使用唯一临时表及系统分配端口；成功、失败及中断均关闭连接/listener、删除自己夹具，待子进程结束才释放槽位。可重复运行；保留缓存，不重置其他任务变更。
+
+## 执行记录（2026-10-28）
+
+已读取执行技能、根协议、server协议和PLANS.md，无前置批次。RustCodeGraph确认 pg_extended.rs::indexed_parameter_contract、runtime.rs::prepare_statement_with_parameter_types 可消费。verify-profile技能目录缺失，按任务规定的WIP聚焦检查与Ready交付命令执行，未声称调用该技能。
+
+生产修改及契约依据：pkg/session/runtime/query.rs::relational_query_expression_type_from_sources 在PG分支仅为int2/int4混合加减乘复用既有pg_returning_expression_type整数提升规则，修正普通SELECT中误用MySQL int8默认类型的问题。对应本任务I方向int2→int4转换资格及OID身份契约，不建立新类型系统、不改变其他类型对及MySQL分支。原有求值器、E显式和A赋值路径均可复用，无其他生产改动。文件已保留AsterSQL及PingCAP版权。
+
+新增并保留 pkg/server/pg_extended_test.rs::pg06_task_001：真实同Server TCP连接，检查E方向1、-32768、32767、typed NULL，numeric正负1.5先转int2的舍入，再转int4；A方向INSERT/UPDATE及最终列值；I方向int2/int4混合加法及NULL。检查值、OID23、typlen4、typmod-1和文本格式0；Prepare描述保留参数OID21，结果OID23；Bind边界输入成功，32768/-32769于Bind阶段返回22003、非法整数返回22P02，不发送Execute，因此无执行副作用/部分结果；每次错误后Sync返回Ready并明确SELECT 1::int4返回1。MySQL同Server前后CAST整数结果一致。无结果的DML描述字段不适用。
+
+TDD证据：恢复追加测试后、生产修复前，完全相同聚焦命令实际运行1个测试，退出101，混合加法OID断言实际20/预期23。修复后同命令退出0，1 passed、0 failed、437 filtered out。初次INT4 DDL别名0A000与数组下标42601仅属夹具/范围外语法证据，未把它们计作转换红灯；改用既有INT列身份和混合整数算术，没有扩建这些子系统。曾将其判断为阻塞；用户明确授权继续本方向最小接线后，已消除该阻塞。
+
+实际动态领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。所有Cargo命令均继承该变量。验证命令及结果：
+
+- cargo fmt --all：退出0；在测试前运行。
+- env -u LDFLAGS cargo test --locked -p astersql-server --lib pg06_task_001 -- --nocapture：修复前101（1个有效测试失败）；修复后0（1个有效测试通过）。
+- make lint：退出0；生产修改后再次执行亦退出0。
+- git diff --check：退出0。
+- /opt/homebrew/opt/postgresql@18/bin/postgres --version：退出0，PostgreSQL 18.4 (Homebrew)。
+
+日志：/tmp/pg06-001-red.log、/tmp/pg06-001-green.log、/tmp/pg06-001-fmt.log、/tmp/pg06-001-lint-final.log（本地临时证据，不入库）。Cargo及使用槽位产物的测试子进程全部结束后，释放自己的slot-1.lock，保留缓存。没有Go源码/import/测试或Bazel变动，不触发bazel_prepare。未运行禁止的bazel_lint_changed。
+
+交付结论：实现及聚焦验证完成，状态为已完成，待回归；按用户最新指示保留本文件供18.6参考采集，不修改plan.md。正确性风险仅限新增PG混合整数表达式类型分支；同Server MySQL回归已覆盖基本CAST，未执行完整双协议回归。性能仅增加目标PG表达式的局部类型检查，无性能基准。未验证PG18.6参考差分、扩展结果二进制格式、全部算术运算符及全量Rust套件；现有18.4不能代替18.6证据。下一步提供固定18.6参考后回归本任务输入与元数据，再删除本任务文件。
