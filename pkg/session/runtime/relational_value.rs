@@ -4213,3 +4213,18 @@ pub(super) fn pg_text_time_pair(
         && target.GetType() == astersql_parser_mysql::r#type::TypeDuration
         && target.PostgreSQLArrayElement().is_none()
 }
+
+/// Typed text reaches the timestamp input function through explicit casts only.
+/// Assignment and common-type inference must preserve the source text identity.
+pub(super) fn pg_text_timestamp_pair(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> bool {
+    source.PostgreSQLTextOid() == Some(25)
+        && matches!(
+            target.GetType(),
+            astersql_parser_mysql::r#type::TypeDatetime
+                | astersql_parser_mysql::r#type::TypeTimestamp
+        )
+        && target.PostgreSQLArrayElement().is_none()
+}

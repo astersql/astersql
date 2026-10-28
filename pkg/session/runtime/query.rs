@@ -2562,7 +2562,7 @@ impl ConcreteSession {
                     && Args.iter().any(|arg| {
                         let source = relational_expression_type(arg, self.table);
                         Args.iter().any(|other| {
-                            // The shared MySQL expression typer does not retain date/time
+                            // The shared MySQL expression typer does not retain temporal
                             // casts. Preserve that identity for this PG-only input gate.
                             let mut other = other;
                             while let ast::ExprKind::Parentheses(inner) = &other.Kind {
@@ -2574,6 +2574,8 @@ impl ConcreteSession {
                                         Tp.GetType(),
                                         astersql_parser_mysql::r#type::TypeDate
                                             | astersql_parser_mysql::r#type::TypeDuration
+                                            | astersql_parser_mysql::r#type::TypeDatetime
+                                            | astersql_parser_mysql::r#type::TypeTimestamp
                                     ) =>
                                 {
                                     Tp.clone()
@@ -2587,6 +2589,7 @@ impl ConcreteSession {
                                 || super::relational_value::pg_text_bool_pair(&source, &target)
                                 || super::relational_value::pg_text_date_pair(&source, &target)
                                 || super::relational_value::pg_text_time_pair(&source, &target)
+                                || super::relational_value::pg_text_timestamp_pair(&source, &target)
                         })
                     })
                 {
