@@ -3582,6 +3582,15 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // A null test has a fixed boolean result, independently of whether
+            // its parameter type came from Parse OIDs or an explicit cast.
+            if matches!(expression.Kind, ast::ExprKind::IsNull { .. }) {
+                let mut tp =
+                    astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeTiny);
+                tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                return tp;
+            }
+
             if matches!(expression.Kind, ast::ExprKind::Case { .. }) {
                 return self
                     .pg_case_result_type(expression, source_fields)
