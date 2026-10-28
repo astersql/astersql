@@ -3691,6 +3691,10 @@ pub(super) fn pg_boolean_relational_value(
     value: impl FnOnce() -> SessionResult<Option<String>>,
     enabled: bool,
 ) -> Option<SessionResult<Option<String>>> {
+    // Character targets apply their typmod after the boolean output function.
+    if target.PostgreSQLTextOid().is_some() {
+        return None;
+    }
     let kind = PG_CAST_TABLE.with(|slot| {
         let table = slot.borrow();
         if !enabled && table.is_none() {
@@ -3996,6 +4000,17 @@ pub(super) fn pg_text_relational_cast(
             .transpose()?
     } else {
         pg_float4_cast_text_input(source, value)?
+    };
+    // Boolean values use bool output before shared character constraints, for
+    // both explicit casts and assignment into character columns.
+    let value = if source_type.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0 {
+        astersql_expression::pg_boolean_cast(
+            value.as_deref(),
+            astersql_expression::PgBooleanCast::BoolToText,
+        )
+        .map_err(pg_bool_session_error)?
+    } else {
+        value
     };
     // SQL output coercion must use float8out, including its exponent spelling,
     // rather than the shared runtime's expanded decimal representation.

@@ -3845,9 +3845,12 @@ impl ConcreteSession {
                         }
                         let mut expression = ast::NewValueExpr(value, "utf8mb4", "utf8mb4_bin");
                         if let Some(field) = source_fields.get(index) {
-                            // Retain float identity so integer assignment uses
-                            // source-specific rounding instead of text input.
+                            // Retain source identity for float rounding and boolean
+                            // output when assigning materialized SELECT values.
                             if field.column.FieldType.PostgreSQLTextOid() == Some(1042)
+                                || field.column.GetFlag()
+                                    & astersql_parser_mysql::r#type::IsBooleanFlag
+                                    != 0
                                 || matches!(
                                     field.column.GetType(),
                                     astersql_parser_mysql::r#type::TypeFloat

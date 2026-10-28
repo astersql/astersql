@@ -2451,6 +2451,9 @@ impl ConcreteSession {
                                         astersql_parser_mysql::r#type::TypeNewDecimal
                                             | astersql_parser_mysql::r#type::TypeDouble
                                     )
+                                    || relational_expression_type(expression, &table).GetFlag()
+                                        & astersql_parser_mysql::r#type::IsBooleanFlag
+                                        != 0
                                     || super::relational_value::pg_bytea_text_pair(
                                         &relational_expression_type(expression, &table),
                                         &column.FieldType,
@@ -3774,6 +3777,9 @@ impl ConcreteSession {
                                         astersql_parser_mysql::r#type::TypeNewDecimal
                                             | astersql_parser_mysql::r#type::TypeDouble
                                     )
+                                    || relational_expression_type(expression, &table).GetFlag()
+                                        & astersql_parser_mysql::r#type::IsBooleanFlag
+                                        != 0
                                     || super::relational_value::pg_bytea_text_pair(
                                         &relational_expression_type(expression, &table),
                                         &column.FieldType,
