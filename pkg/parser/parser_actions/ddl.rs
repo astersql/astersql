@@ -7103,6 +7103,14 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                         .unwrap_or(-1),
                 );
             }
+            // PostgreSQL text has no typmod; MySQL TEXT(M) remains valid.
+            if rule == DdlRule::TextTypeAlt02
+                && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                && field_type.GetFlen() >= 0
+            {
+                yylex.AppendError(errors::New("type modifier is not allowed for type text"));
+                return Err(1);
+            }
             out.item = Some(Box::new(field_type));
         }
         DdlRule::OptCharsetWithOptBinaryAlt02

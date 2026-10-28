@@ -6044,3 +6044,16 @@ fn pg05_array_jsonb_parser_identity() {
             .is_err()
     );
 }
+
+#[test]
+fn pg06_task_033_text_declaration_modifier() {
+    for length in [0, 1, 2, 10485760] {
+        let sql = format!("CREATE TABLE t (v text({length}))");
+        let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+        assert!(pg.ParseOneStmt(&sql, "", "").is_err(), "{sql}");
+        let mut mysql = crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+        assert!(mysql.ParseOneStmt(&sql, "", "").is_ok(), "{sql}");
+    }
+    let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    assert!(pg.ParseOneStmt("CREATE TABLE t (v text)", "", "").is_ok());
+}
