@@ -1646,8 +1646,13 @@ impl Extended {
                         }
                     }
                 }
+                let mut execution_metadata = statement.metadata.clone();
+                if !execution_metadata.execution_native_types.is_empty() {
+                    execution_metadata.native_types =
+                        execution_metadata.execution_native_types.clone();
+                }
                 let description = description_formats(
-                    &statement.metadata,
+                    &execution_metadata,
                     &result_formats,
                     statement.command.unwrap_or("SELECT"),
                 )?;
@@ -1668,7 +1673,7 @@ impl Extended {
                         session_query: statement.session_query.clone(),
                         statement_name,
                         columns: statement.metadata.columns.clone(),
-                        native_types: statement.metadata.native_types.clone(),
+                        native_types: execution_metadata.native_types.clone(),
                         column_origins: statement.metadata.column_origins.clone(),
                         statement: statement.metadata.statement_id,
                         args: statement.mapping.iter().map(|i| args[*i].clone()).collect(),

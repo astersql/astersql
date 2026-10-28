@@ -4205,12 +4205,76 @@ impl ConcreteSession {
         self.relational_query_expression_value(&cast(expr, target), &HashMap::new(), None)
     }
 
+    pub(super) fn pg_intersect_execution_fields(
+        &self,
+        node: &dyn ast::Node,
+        fields: &mut [ConcreteResultField],
+    ) -> SessionResult<()> {
+        let list = if let Some(statement) = node.as_any().downcast_ref::<ast::SetOprStmt>() {
+            Some(&statement.select_list)
+        } else {
+            node.as_any().downcast_ref::<ast::SetOprSelectList>()
+        };
+        let Some(list) = list else {
+            return Ok(());
+        };
+        if !list.operators.iter().any(|operator| {
+            matches!(
+                operator,
+                Some(ast::SetOprType::Intersect | ast::SetOprType::IntersectAll)
+            )
+        }) {
+            return Ok(());
+        }
+        let Some(first) = list.selects.first() else {
+            return Ok(());
+        };
+        let mut left = self.relational_query_node_result_fields(first.as_ref(), &[])?;
+        self.pg_intersect_execution_fields(first.as_ref(), &mut left)?;
+        pg_union_unknown_inputs(first.as_ref(), &mut left);
+        for (index, branch) in list.selects.iter().enumerate().skip(1) {
+            let mut right = self.relational_query_node_result_fields(branch.as_ref(), &[])?;
+            pg_union_unknown_inputs(branch.as_ref(), &mut right);
+            for (left, right) in left.iter_mut().zip(right) {
+                let input = &left.column.FieldType;
+                let mut output = pg_union_common_type(input, &right.column.FieldType)?;
+                if matches!(
+                    list.operators.get(index).and_then(|operator| *operator),
+                    Some(ast::SetOprType::Intersect | ast::SetOprType::IntersectAll)
+                ) {
+                    // PostgreSQL's INTERSECT plan emits the left projection.
+                    // If it needs no type coercion, its execution descriptor
+                    // retains that projection's modifier. Parse/Describe still
+                    // uses the common modifier computed from both operands.
+                    let mut unmodified_input = input.clone();
+                    let mut unmodified_output = output.clone();
+                    for tp in [&mut unmodified_input, &mut unmodified_output] {
+                        tp.SetFlen(-1);
+                        tp.SetDecimal(-1);
+                    }
+                    if unmodified_input == unmodified_output {
+                        output.SetFlen(input.GetFlen());
+                        output.SetDecimal(input.GetDecimal());
+                    }
+                }
+                left.column.FieldType = output;
+            }
+        }
+        for (field, executed) in fields.iter_mut().zip(left) {
+            field.column.FieldType = executed.column.FieldType;
+        }
+        Ok(())
+    }
+
     pub(super) fn execute_relational_query_record_set(
         &self,
         node: &dyn ast::Node,
     ) -> SessionResult<ConcreteRecordSet> {
         let selected = self.execute_insert_select_node(node)?;
-        let fields = self.relational_query_node_result_fields(node, &selected.columns)?;
+        let mut fields = self.relational_query_node_result_fields(node, &selected.columns)?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            self.pg_intersect_execution_fields(node, &mut fields)?;
+        }
         // Constant-false plans can discard their projection columns together
         // with all rows. Preserve the query's result metadata for the empty
         // record set so it remains aligned with the resolved fields.

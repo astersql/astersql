@@ -1134,7 +1134,32 @@ fn run_session_worker(
                     })
                     .and_then(
                         |((statement_id, parameter_count, fields), parameter_cast_oids)| {
+                            let execution_fields = if parameter_count == 0
+                                && session.sql_dialect()
+                                    == astersql_parser_ast::SqlDialect::PostgreSQL
+                            {
+                                session.describe_execution_result_fields(&sql)?
+                            } else {
+                                fields.clone()
+                            };
                             Ok(PreparedMetadata {
+                                execution_native_types: execution_fields
+                                    .iter()
+                                    .map(|field| {
+                                        let tp = &field.column.FieldType;
+                                        crate::conn::NativeType {
+                                            code: tp.GetType(),
+                                            flags: tp.GetFlag(),
+                                            length: tp.GetFlen(),
+                                            decimal: tp.GetDecimal(),
+                                            postgresql_text_oid: tp.PostgreSQLTextOid(),
+                                            postgresql_array_element: tp.PostgreSQLArrayElement(),
+                                            postgresql_record_fields: tp
+                                                .PostgreSQLRecordFields()
+                                                .map(|fields| fields.to_vec()),
+                                        }
+                                    })
+                                    .collect(),
                                 catalog_column_origins: Vec::new(),
                                 column_origins: fields
                                     .iter()
@@ -1358,7 +1383,7 @@ fn execute_on_session(
                 // Preserve engine metadata separately from existing MySQL wire columns.
                 // Metadata unavailable from the native resolver remains explicit.
                 if !result.columns.is_empty()
-                    && let Ok(fields) = session.describe_result_fields(&statement)
+                    && let Ok(fields) = session.describe_execution_result_fields(&statement)
                 {
                     // PG result labels come from the same original-AST resolver
                     // as Describe, including constant constructors and literals.

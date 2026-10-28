@@ -240,6 +240,7 @@ impl SessionQuery {
             _ => None,
         };
         let mut result = PreparedMetadata {
+            execution_native_types: Vec::new(),
             catalog_column_origins: Vec::new(),
             column_origins: Vec::new(),
             parameter_cast_oids: Vec::new(),

@@ -661,6 +661,9 @@ pub struct PreparedMetadata {
     pub catalog_column_origins: Vec<Option<(u32, i16)>>,
     /// Original engine result types for consumers independent of wire format.
     pub native_types: Vec<NativeType>,
+    /// Execution projection types for PG portal descriptions, when distinct
+    /// from the analysis-time prepared statement descriptor.
+    pub execution_native_types: Vec<NativeType>,
     pub statement_id: u32,
     pub parameter_count: usize,
     /// Explicit integer cast constraints in engine marker occurrence order.

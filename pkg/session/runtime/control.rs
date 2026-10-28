@@ -1717,6 +1717,14 @@ impl ConcreteSession {
     /// Resolve original engine result types without executing or registering a
     /// statement. This uses the same AST/catalog resolver as prepared metadata.
     pub fn describe_result_fields(&self, sql: &str) -> SessionResult<Vec<ConcreteResultField>> {
+        self.describe_result_fields_with_execution(sql, false)
+    }
+
+    fn describe_result_fields_with_execution(
+        &self,
+        sql: &str,
+        execution: bool,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
         let statements = parse_in_dialect(sql, self.sql_dialect())?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             super::pg_array::analyze(sql, &statements, None)?;
@@ -1774,10 +1782,22 @@ impl ConcreteSession {
                     }
                 }
             }
+            if execution && self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                self.pg_intersect_execution_fields(statement.as_ref(), &mut fields)?;
+            }
             Ok(fields)
         } else {
             Ok(Vec::new())
         }
+    }
+
+    /// Describe executed results, preserving INTERSECT's left projection
+    /// modifiers independently of the analysis-time prepared descriptor.
+    pub fn describe_execution_result_fields(
+        &self,
+        sql: &str,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
+        self.describe_result_fields_with_execution(sql, true)
     }
 
     /// Parse and register a binary-protocol prepared statement without
