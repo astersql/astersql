@@ -3997,6 +3997,22 @@ pub(super) fn pg_text_relational_cast(
     } else {
         pg_float4_cast_text_input(source, value)?
     };
+    // SQL output coercion must use float8out, including its exponent spelling,
+    // rather than the shared runtime's expanded decimal representation.
+    let value = if source_type.GetType() == astersql_parser_mysql::r#type::TypeDouble {
+        astersql_expression::pg_cast_float8(value.as_deref())
+            .map(|value| {
+                value.map(|number| astersql_types::pg_array::float8_text(number.to_bits()))
+            })
+            .map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            })?
+    } else {
+        value
+    };
     astersql_expression::pg_text_cast(
         value.as_deref(),
         source_type.PostgreSQLTextOid() == Some(1042),
