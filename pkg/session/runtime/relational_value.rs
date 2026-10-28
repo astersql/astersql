@@ -4109,6 +4109,51 @@ pub(super) fn pg_time_to_interval_value(
         .transpose()
 }
 
+/// Interval-to-time ignores calendar components and wraps only elapsed time.
+/// Neither value denotes an instant, so no session or machine timezone applies.
+pub(super) fn pg_interval_to_time_value(
+    value: Option<String>,
+    precision: isize,
+) -> SessionResult<Option<String>> {
+    use astersql_types::pg_temporal::{PgInterval, PgTemporalError, PgTime};
+    value
+        .map(|text| {
+            text.parse::<PgInterval>()
+                .and_then(|interval| {
+                    let components = interval.components();
+                    if components == (i32::MAX, i32::MAX, i64::MAX)
+                        || components == (i32::MIN, i32::MIN, i64::MIN)
+                    {
+                        return Err(PgTemporalError::Range);
+                    }
+                    PgTime::from_micros(components.2.rem_euclid(PgTime::END_OF_DAY))
+                })
+                .map(|time| time.round_precision(precision).to_string())
+                .map_err(|error| {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    )
+                })
+        })
+        .transpose()
+}
+
+/// Preserve interval source identity through prepared parameters and typed NULL.
+pub(super) fn pg_interval_source(expression: &ast::ExprNode) -> bool {
+    PG_CAST_TABLE.with(|slot| {
+        let table = slot.borrow();
+        relational_expression_type(
+            expression,
+            table
+                .as_ref()
+                .unwrap_or(&astersql_meta_model::TableInfo::default()),
+        )
+        .GetType()
+            == astersql_parser_mysql::r#type::TypePgInterval
+    })
+}
+
 /// Resolve DATE identity from the AST and active catalog before reading a value.
 pub(super) fn pg_date_source(expression: &ast::ExprNode) -> bool {
     PG_CAST_TABLE.with(|slot| {

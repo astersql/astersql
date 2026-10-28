@@ -209,13 +209,19 @@ pub(crate) fn indexed_parameter_contract(sql: &str) -> Result<Vec<(usize, usize,
         .collect())
 }
 
-/// Typmods on direct interval parameter projections are constant at Bind.
+/// Direct temporal parameter casts can reject constants during Bind planning.
 /// Collect from the real AST; column metadata cannot identify which parameter
 /// a projection consumes, and conditional expressions must stay lazy.
-fn interval_parameter_modifiers(sql: &str) -> Result<Vec<(usize, isize, isize)>> {
+fn direct_temporal_parameter_modifiers(
+    sql: &str,
+    time_target: bool,
+) -> Result<Vec<(usize, isize, isize)>> {
     use astersql_parser_ast::{ExprKind, ExprNode, Node, SelectStmt, SqlDialect, Visitor};
     #[derive(Default)]
-    struct Modifiers(Vec<(usize, isize, isize)>);
+    struct Modifiers {
+        casts: Vec<(usize, isize, isize)>,
+        time_target: bool,
+    }
     impl Visitor for Modifiers {
         fn enter(&mut self, node: &dyn Node) -> bool {
             if let Some(select) = node.as_any().downcast_ref::<SelectStmt>() {
@@ -227,12 +233,17 @@ fn interval_parameter_modifiers(sql: &str) -> Result<Vec<(usize, isize, isize)>>
                         expression = inner;
                     }
                     if let ExprKind::Cast { Expr, Tp, .. } = &expression.Kind
-                        && (Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
-                            || Tp.PostgreSQLArrayElement()
-                                == Some(
-                                    astersql_session::runtime::PostgreSQLArrayElement::Interval,
-                                ))
-                        && (Tp.GetFlen() != -1 || Tp.GetDecimal() != -1)
+                        && (if self.time_target {
+                            Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration
+                                && Tp.PostgreSQLArrayElement().is_none()
+                        } else {
+                            (Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval
+                                || Tp.PostgreSQLArrayElement()
+                                    == Some(
+                                        astersql_session::runtime::PostgreSQLArrayElement::Interval,
+                                    ))
+                                && (Tp.GetFlen() != -1 || Tp.GetDecimal() != -1)
+                        })
                     {
                         let mut source: &ExprNode = Expr;
                         while let ExprKind::Parentheses(inner) = &source.Kind {
@@ -241,8 +252,11 @@ fn interval_parameter_modifiers(sql: &str) -> Result<Vec<(usize, isize, isize)>>
                         if let Some(index) = source.PostgreSQLParameterIndex()
                             && matches!(source.Kind, ExprKind::ParamMarker { .. })
                         {
-                            self.0
-                                .push((usize::from(index) - 1, Tp.GetFlen(), Tp.GetDecimal()));
+                            self.casts.push((
+                                usize::from(index) - 1,
+                                Tp.GetFlen(),
+                                Tp.GetDecimal(),
+                            ));
                         }
                     }
                 }
@@ -258,11 +272,14 @@ fn interval_parameter_modifiers(sql: &str) -> Result<Vec<(usize, isize, isize)>>
     let (statements, _) = astersql_parser::Parser::with_dialect(SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|_| error("42601", "invalid interval parameter source"))?;
-    let mut visitor = Modifiers::default();
+    let mut visitor = Modifiers {
+        time_target,
+        ..Default::default()
+    };
     for statement in statements {
         statement.accept(&mut visitor);
     }
-    Ok(visitor.0)
+    Ok(visitor.casts)
 }
 
 fn question_mark_positions(sql: &str) -> Result<Vec<usize>> {
@@ -901,6 +918,7 @@ struct Statement {
     metadata: PreparedMetadata,
     oids: Vec<u32>,
     interval_modifiers: Vec<(usize, isize, isize)>,
+    interval_time_parameters: Vec<(usize, isize, isize)>,
     mapping: Vec<usize>,
     command: Option<&'static str>,
     returning: bool,
@@ -1265,12 +1283,18 @@ impl Extended {
         }
         let interval_modifiers =
             if catalog.is_none() && oids.iter().any(|oid| matches!(oid, 1186 | 1187)) {
-                interval_parameter_modifiers(&original_sql)?
+                direct_temporal_parameter_modifiers(&original_sql, false)?
             } else {
                 Vec::new()
             };
+        let interval_time_parameters = if catalog.is_none() && oids.contains(&1186) {
+            direct_temporal_parameter_modifiers(&original_sql, true)?
+        } else {
+            Vec::new()
+        };
         Ok(Statement {
             interval_modifiers,
+            interval_time_parameters,
             original_sql,
             path,
             session_query,
@@ -1602,6 +1626,24 @@ impl Extended {
                             .parse::<astersql_types::pg_temporal::PgInterval>()
                             .and_then(|value| value.apply_typmod(fields, precision))
                             .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+                    }
+                }
+                for &(index, _, _) in &statement.interval_time_parameters {
+                    if statement.oids.get(index) == Some(&1186)
+                        && let Some(argument) = args.get(index).filter(|arg| !arg.is_null)
+                    {
+                        // Only direct interval parameters cast to time are inspected.
+                        // Keep the original parameter for Execute and skip lazy branches.
+                        let interval = std::str::from_utf8(&argument.value)
+                            .map_err(|_| error("22021", "invalid interval parameter"))?
+                            .parse::<astersql_types::pg_temporal::PgInterval>()
+                            .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
+                        if matches!(
+                            interval.components(),
+                            (i32::MAX, i32::MAX, i64::MAX) | (i32::MIN, i32::MIN, i64::MIN)
+                        ) {
+                            return Err(error("22008", "cannot convert infinite interval to time"));
+                        }
                     }
                 }
                 let description = description_formats(

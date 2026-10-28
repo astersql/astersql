@@ -2404,6 +2404,17 @@ impl ConcreteSession {
                         column.GetType() == astersql_parser_mysql::r#type::TypeDuration
                     })
                     && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgInterval
+                {
+                    pg_interval_to_time_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDuration
+                    })
+                    && relational_expression_type(expression, &table).GetType()
                         == astersql_parser_mysql::r#type::TypePgTimestampTz
                 {
                     self.pg_timestamptz_to_time_value(
@@ -3904,6 +3915,17 @@ impl ConcreteSession {
                     pg_time_to_interval_value(
                         self.relational_query_expression_value(expression, &row, None)?,
                         column_info.unwrap().GetFlen(),
+                        column_info.unwrap().GetDecimal(),
+                    )?
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && column_info.is_some_and(|column| {
+                        column.GetType() == astersql_parser_mysql::r#type::TypeDuration
+                    })
+                    && relational_expression_type(expression, &table).GetType()
+                        == astersql_parser_mysql::r#type::TypePgInterval
+                {
+                    pg_interval_to_time_value(
+                        self.relational_query_expression_value(expression, &row, None)?,
                         column_info.unwrap().GetDecimal(),
                     )?
                 } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL

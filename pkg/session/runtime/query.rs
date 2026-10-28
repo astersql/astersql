@@ -1542,6 +1542,12 @@ impl ConcreteSession {
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration
                 {
+                    if pg_interval_source(Expr) {
+                        return pg_interval_to_time_value(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
+                            Tp.GetDecimal(),
+                        );
+                    }
                     if pg_timestamptz_source(Expr) {
                         return self.pg_timestamptz_to_time_value(
                             self.relational_query_expression_value(Expr, row, group_rows)?,

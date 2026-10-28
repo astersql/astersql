@@ -1151,3 +1151,28 @@ fn pg06_task_078_time_interval_components_and_typmod() {
         assert!(pg_time_to_interval_value(Some(invalid.into()), -1, -1).is_err());
     }
 }
+
+#[test]
+fn pg06_task_079_interval_time_components() {
+    use super::pg_interval_to_time_value;
+    for (input, expected) in [
+        ("24:00:00", "00:00:00"),
+        ("-01:00:00", "23:00:00"),
+        ("1 mon 2 days 25:00:00", "01:00:00"),
+        ("-1 mon -2 days -49:00:00", "23:00:00"),
+        ("23:59:59.999999", "23:59:59.999999"),
+    ] {
+        assert_eq!(
+            pg_interval_to_time_value(Some(input.into()), -1).unwrap(),
+            Some(expected.into())
+        );
+    }
+    assert_eq!(pg_interval_to_time_value(None, 3).unwrap(), None);
+    assert_eq!(
+        pg_interval_to_time_value(Some("23:59:59.999999".into()), 3).unwrap(),
+        Some("24:00:00".into())
+    );
+    for input in ["infinity", "-infinity", "garbage"] {
+        assert!(pg_interval_to_time_value(Some(input.into()), -1).is_err());
+    }
+}

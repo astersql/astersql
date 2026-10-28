@@ -29822,3 +29822,113 @@ fn pg06_task_078() {
         before
     );
 }
+
+#[test]
+fn pg06_task_079() {
+    use crate::pg_client_integration_test::{mysql_handshake, mysql_query, start_client_server};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server);
+    let mut mysql = TcpStream::connect(cleanup.0.listener_addr().unwrap()).unwrap();
+    mysql_handshake(&mut mysql);
+    let before = mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)");
+    assert_eq!(before, vec![vec![Some(b"123".to_vec())]]);
+    let mut socket = TcpStream::connect(cleanup.0.postgres_listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    assert_eq!(query(&mut socket, "SET time_zone = 'UTC'")[0].0, b'C');
+
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.pg06_079 (id int, v time(3))"
+        )[0]
+        .0,
+        b'C'
+    );
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg06_interval_time_libpq.py"
+        ))
+        .arg(
+            cleanup
+                .0
+                .postgres_listener_addr()
+                .unwrap()
+                .port()
+                .to_string(),
+        )
+        .output()
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse(&mut socket, "explicit", "SELECT $1::time(3) AS v", &[1186]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sexplicit\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [1i16.to_be_bytes().as_slice(), &1186u32.to_be_bytes()].concat()
+        )
+    );
+    let description = read(&mut socket);
+    assert_eq!(description.0, b'T');
+    assert_eq!(
+        &description.1[description.1.len() - 12..],
+        [
+            1083u32.to_be_bytes().as_slice(),
+            &8i16.to_be_bytes(),
+            &3i32.to_be_bytes(),
+            &0i16.to_be_bytes()
+        ]
+        .concat()
+    );
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+    for (input, state, phase) in [
+        ("garbage", "22007", b'B'),
+        ("infinity", "22008", b'B'),
+        ("-infinity", "22008", b'B'),
+    ] {
+        bind_formats(&mut socket, "explicit", &[0], &[Some(input.as_bytes())]);
+        if phase == b'E' {
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            execute(&mut socket, "", 0);
+        }
+        assert_state(&read(&mut socket), state);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")[1],
+            (b'D', row(&[Some("1")]))
+        );
+    }
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg06_079")[0].0, b'C');
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT CAST(123 AS SIGNED)"),
+        before
+    );
+}
