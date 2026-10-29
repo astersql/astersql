@@ -494,7 +494,7 @@ pub fn FoldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> ExprBox {
 /// 内部折叠：特殊短路 → 全常量求值 → 空值拒绝试探 → 参数/延迟常量求值。
 fn foldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> (ExprBox, bool) {
     if let Some(function_ref) = expression.as_scalar_function() {
-        // Temporal formatting reads execution TimeZone/lc_time. Cached plans
+        // Formatting reads execution TimeZone and locale categories. Cached plans
         // must not retain a value computed with preparation-time settings.
         if (function_ref.FuncName.L == "date_trunc"
             && function_ref.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz)
@@ -504,13 +504,7 @@ fn foldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> (ExprBox, bool) 
                     arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
                 }))
             || (ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
-                && function_ref.FuncName.L == "to_char"
-                && function_ref.GetArgs().first().is_some_and(|arg| {
-                    matches!(
-                        arg.GetType(ctx.GetEvalCtx()).GetType(),
-                        mysql::TypeDatetime | mysql::TypePgTimestampTz
-                    )
-                }))
+                && function_ref.FuncName.L == "to_char")
         {
             return (expression, false);
         }

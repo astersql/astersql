@@ -62,6 +62,7 @@ pub(super) struct RuntimeRowLockState {
 /// 保存点创建时的事务可见数据与已持有锁快照。
 pub(super) struct RuntimeSavepoint {
     pub(super) pg_lc_time: super::pg_temporal::TimeLocaleSettings,
+    pub(super) pg_numeric_locales: [super::pg_temporal::TimeLocaleSettings; 2],
     pub(super) pg_interval_settings: super::pg_temporal::IntervalSettings,
     pub(super) name: String,
     pub(super) visible: BTreeMap<Vec<u8>, Vec<u8>>,

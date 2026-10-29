@@ -155,6 +155,9 @@ impl EvalContext for assertionEvalContext<'_> {
     fn PgLcTime(&self) -> String {
         self.eval_context.PgLcTime()
     }
+    fn PgNumericLocales(&self) -> [String; 2] {
+        self.eval_context.PgNumericLocales()
+    }
     fn SQLDialect(&self) -> parser_ast_dependency::SqlDialect {
         self.eval_context.SQLDialect()
     }

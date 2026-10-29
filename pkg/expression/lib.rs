@@ -958,6 +958,7 @@ mod pg08_13_test;
 mod pg08_14_test;
 
 mod pg_numeric_format;
+pub mod pg_numeric_locale;
 
 #[cfg(test)]
 mod pg08_15_test;
@@ -969,3 +970,6 @@ mod pg08_16_test;
 mod pg08_17_test;
 
 pub mod pg_time_locale;
+
+#[cfg(test)]
+mod pg08_18_test;

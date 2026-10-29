@@ -821,6 +821,11 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgNumericLocale {
+        monetary: bool,
+        setting: Option<(String, bool)>,
+        response: mpsc::SyncSender<ConnResult<String>>,
+    },
     PgLcTime {
         setting: Option<(String, bool)>,
         response: mpsc::SyncSender<ConnResult<String>>,
@@ -981,6 +986,13 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgNumericLocale {
+                monetary,
+                setting,
+                response,
+            } => {
+                let _ = response.send(Ok(session.pg_numeric_locale(monetary, setting)));
+            }
             SessionRequest::PgLcTime { setting, response } => {
                 let _ = response.send(Ok(session.pg_lc_time(setting)));
             }
@@ -1801,6 +1813,19 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn pg_numeric_locale(
+        &self,
+        monetary: bool,
+        setting: Option<(String, bool)>,
+    ) -> ConnResult<String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgNumericLocale {
+            monetary,
+            setting,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_lc_time(&self, setting: Option<(String, bool)>) -> ConnResult<String> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::PgLcTime {

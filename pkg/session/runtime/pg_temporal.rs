@@ -62,6 +62,12 @@ impl ConcreteSession {
             WithLocation(location),
             WithPgFixedTimeZone(fixed),
             astersql_expression_exprstatic::WithPgLcTime(state.pg_lc_time.current()),
+            astersql_expression_exprstatic::WithPgNumericLocales(
+                state
+                    .pg_numeric_locales
+                    .each_ref()
+                    .map(TimeLocaleSettings::current),
+            ),
             WithCurrentTime(Arc::new(move || Ok(snapshot))),
         ]))
     }
@@ -543,7 +549,7 @@ impl ConcreteSession {
     }
 }
 
-/// Connection-private lc_time, sharing the IntervalStyle transaction boundaries.
+/// Connection-private locale category, sharing the IntervalStyle transaction boundaries.
 #[derive(Clone)]
 pub(super) struct TimeLocaleSettings {
     session: String,
@@ -580,6 +586,25 @@ impl ConcreteSession {
         let mut state = self.state.borrow_mut();
         let active = state.transaction.is_some();
         let values = &mut state.pg_lc_time;
+        if let Some((value, local)) = setting {
+            if local {
+                if active {
+                    values.local = Some(value);
+                }
+            } else {
+                values.session = value;
+                values.local = None;
+            }
+        }
+        values.current()
+    }
+}
+
+impl ConcreteSession {
+    pub fn pg_numeric_locale(&self, monetary: bool, setting: Option<(String, bool)>) -> String {
+        let mut state = self.state.borrow_mut();
+        let active = state.transaction.is_some();
+        let values = &mut state.pg_numeric_locales[usize::from(monetary)];
         if let Some((value, local)) = setting {
             if local {
                 if active {

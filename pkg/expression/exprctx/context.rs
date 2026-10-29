@@ -67,6 +67,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     fn PgLcTime(&self) -> String {
         "C".into()
     }
+    /// Execution-time LC_NUMERIC and LC_MONETARY, in that order.
+    fn PgNumericLocales(&self) -> [String; 2] {
+        ["C".into(), "C".into()]
+    }
     fn CtxID(&self) -> u64;
     fn SQLMode(&self) -> mysql::SQLMode;
     fn TypeCtx(&self) -> types::Context;
@@ -393,6 +397,9 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     }
     fn PgLcTime(&self) -> String {
         self.inner.PgLcTime()
+    }
+    fn PgNumericLocales(&self) -> [String; 2] {
+        self.inner.PgNumericLocales()
     }
     fn CurrentTime(&self) -> Result<DateTime<Tz>, contextutil::errors::SharedError> {
         self.inner.CurrentTime()

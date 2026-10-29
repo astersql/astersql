@@ -5240,6 +5240,7 @@ pub mod formal_registry {
                             value,
                             source_type == mysql::TypeFloat,
                             &template,
+                            &ctx.PgNumericLocales(),
                         )
                         .map(|value| (value, false))
                         .map_err(|error| {
@@ -5266,7 +5267,11 @@ pub mod formal_registry {
                         return value
                             .parse::<types_dependency::pg_numeric::PgNumeric>()
                             .and_then(|number| {
-                                crate::pg_numeric_format::format_numeric(number, &template)
+                                crate::pg_numeric_format::format_numeric(
+                                    number,
+                                    &template,
+                                    &ctx.PgNumericLocales(),
+                                )
                             })
                             .map(|value| (value, false))
                             .map_err(|error| {

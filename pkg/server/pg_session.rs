@@ -5,6 +5,9 @@ use crate::pg_catalog_query::{ParseResult, Token, lex};
 
 #[derive(Clone, Debug)]
 pub(crate) enum SessionQuery {
+    NumericLocaleShow(bool),
+    NumericLocaleSet(bool, String, bool),
+    NumericLocaleReset(bool),
     LcTimeShow,
     LcTimeSet(String, bool),
     LcTimeReset,
@@ -134,6 +137,17 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
+            SessionQuery::NumericLocaleShow(monetary) => {
+                Some(Value::Text(context.pg_numeric_locale(*monetary, None)?))
+            }
+            SessionQuery::NumericLocaleSet(monetary, value, local) => {
+                context.pg_numeric_locale(*monetary, Some((value.clone(), *local)))?;
+                None
+            }
+            SessionQuery::NumericLocaleReset(monetary) => {
+                context.pg_numeric_locale(*monetary, Some(("C".into(), false)))?;
+                None
+            }
             SessionQuery::LcTimeShow => Some(Value::Text(context.pg_lc_time(None)?)),
             SessionQuery::LcTimeSet(value, local) => {
                 context.pg_lc_time(Some((value.clone(), *local)))?;
@@ -229,6 +243,7 @@ impl SessionQuery {
                 Self::IntervalStyleSet(
                     PgIntervalSetting::Set { local: true, .. } | PgIntervalSetting::ResetLocal
                 ) | Self::LcTimeSet(_, true)
+                    | Self::NumericLocaleSet(_, _, true)
             )
         {
             vec![(b'N',b"SWARNING\0VWARNING\0C25P01\0MSET LOCAL can only be used in transaction blocks\0\0".to_vec())]
@@ -238,9 +253,13 @@ impl SessionQuery {
     }
     pub(crate) fn command(&self) -> &'static str {
         match self {
-            Self::Show | Self::DateStyleShow | Self::IntervalStyleShow | Self::LcTimeShow => "SHOW",
-            Self::LcTimeSet(..) => "SET",
-            Self::LcTimeReset => "RESET",
+            Self::Show
+            | Self::DateStyleShow
+            | Self::IntervalStyleShow
+            | Self::LcTimeShow
+            | Self::NumericLocaleShow(_) => "SHOW",
+            Self::LcTimeSet(..) | Self::NumericLocaleSet(..) => "SET",
+            Self::LcTimeReset | Self::NumericLocaleReset(_) => "RESET",
             Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
                 "RESET"
             }
@@ -254,6 +273,11 @@ impl SessionQuery {
             Self::Show => Some("search_path"),
             Self::DateStyleShow => Some("DateStyle"),
             Self::LcTimeShow => Some("lc_time"),
+            Self::NumericLocaleShow(monetary) => Some(if *monetary {
+                "lc_monetary"
+            } else {
+                "lc_numeric"
+            }),
             Self::IntervalStyleShow => Some("IntervalStyle"),
             Self::Schema(name) | Self::Database(name) => Some(name.as_str()),
             _ => None,
@@ -312,6 +336,43 @@ impl SessionQuery {
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
         let scoped = word(tokens.get(1), "local") || word(tokens.get(1), "session");
         let index = if scoped { 2 } else { 1 };
+        if word(tokens.get(index), "lc_numeric") || word(tokens.get(index), "lc_monetary") {
+            let monetary = word(tokens.get(index), "lc_monetary");
+            let name = if monetary {
+                "lc_monetary"
+            } else {
+                "lc_numeric"
+            };
+            if !scoped && word(tokens.first(), "show") && tokens.len() == 2 {
+                return Ok(Some(Self::NumericLocaleShow(monetary)));
+            }
+            if !scoped && word(tokens.first(), "reset") && tokens.len() == 2 {
+                return Ok(Some(Self::NumericLocaleReset(monetary)));
+            }
+            if word(tokens.first(), "set")
+                && tokens.len() == index + 3
+                && (word(tokens.get(index + 1), "to")
+                    || tokens.get(index + 1) == Some(&Token::Symbol('=')))
+            {
+                let value = match &tokens[index + 2] {
+                    Token::Word(v) if v == "default" => "C",
+                    Token::Word(v) | Token::String(v) => v.as_str(),
+                    _ => return Err(("42601", "invalid numeric locale".into())),
+                };
+                if !astersql_expression::pg_numeric_locale::validate(value, monetary) {
+                    return Err((
+                        "22023",
+                        format!("invalid value for parameter \"{name}\": \"{value}\""),
+                    ));
+                }
+                return Ok(Some(Self::NumericLocaleSet(
+                    monetary,
+                    value.into(),
+                    word(tokens.get(1), "local"),
+                )));
+            }
+            return Err(("42601", "invalid numeric locale command".into()));
+        }
         if word(tokens.get(index), "lc_time") {
             if !scoped && word(tokens.first(), "show") && tokens.len() == 2 {
                 return Ok(Some(Self::LcTimeShow));

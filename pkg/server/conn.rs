@@ -946,7 +946,16 @@ pub trait TiDBContext: Send + Sync {
             "PostgreSQL interval context unavailable".into(),
         ))
     }
-    /// DATE Parse/Bind context from the owning session worker.
+    /// Numeric or monetary locale owned by the connection session worker.
+    fn pg_numeric_locale(
+        &self,
+        _monetary: bool,
+        _setting: Option<(String, bool)>,
+    ) -> ConnResult<String> {
+        Err(ConnError::Session(
+            "PostgreSQL numeric locale unavailable".into(),
+        ))
+    }
     fn pg_lc_time(&self, _setting: Option<(String, bool)>) -> ConnResult<String> {
         Err(ConnError::Session("PostgreSQL lc_time unavailable".into()))
     }

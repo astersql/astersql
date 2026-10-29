@@ -6,14 +6,21 @@ use types_dependency::pg_numeric::{PgNumeric, PgNumericError};
 #[derive(Clone, Copy)]
 enum Token {
     Digit(bool),
-    Point,
+    Point(bool),
+    Group(bool),
+    Currency,
+    Sign,
     Shift,
     Minus,
     Literal(char),
 }
 
-pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String, PgNumericError> {
-    format_number(Some(value), None, template)
+pub(crate) fn format_numeric(
+    value: PgNumeric,
+    template: &str,
+    locales: &[String; 2],
+) -> Result<String, PgNumericError> {
+    format_number(Some(value), None, template, locales)
 }
 
 /// Floating sources round in their original binary precision before layout.
@@ -22,16 +29,21 @@ pub(crate) fn format_float(
     value: f64,
     single: bool,
     template: &str,
+    locales: &[String; 2],
 ) -> Result<String, PgNumericError> {
-    format_number(None, Some((value, single)), template)
+    format_number(None, Some((value, single)), template, locales)
 }
 
 fn format_number(
     decimal: Option<PgNumeric>,
     floating: Option<(f64, bool)>,
     template: &str,
+    locales: &[String; 2],
 ) -> Result<String, PgNumericError> {
+    let symbols = crate::pg_numeric_locale::symbols(locales)?;
     let mut tokens = Vec::new();
+    let mut sign_prefix = false;
+    let mut locale_sign = false;
     let mut rest = template;
     let mut fill = false;
     let mut point = false;
@@ -90,7 +102,7 @@ fn format_number(
                 }
                 tokens.push(Token::Digit(ch == '0'));
             }
-            '.' => {
+            '.' | 'D' | 'd' => {
                 if shift {
                     return Err(PgNumericError::FormatShiftPoint);
                 }
@@ -98,7 +110,17 @@ fn format_number(
                     return Err(PgNumericError::FormatMultiplePoints);
                 }
                 point = true;
-                tokens.push(Token::Point);
+                tokens.push(Token::Point(ch != '.'));
+            }
+            ',' | 'G' | 'g' => tokens.push(Token::Group(ch != ',')),
+            'L' | 'l' => tokens.push(Token::Currency),
+            'S' | 's' => {
+                locale_sign = true;
+                if integer_count + fraction_count == 0 {
+                    sign_prefix = true;
+                } else {
+                    tokens.push(Token::Sign);
+                }
             }
             'V' | 'v' => {
                 if point {
@@ -196,12 +218,32 @@ fn format_number(
     let mut integer_at = 0;
     let mut fraction_at = 0;
     let mut after_point = false;
-    let mut signed = explicit_minus;
+    let mut signed = explicit_minus || (locale_sign && !sign_prefix);
+    let mut digit_written = false;
+    let locale_sign_text = if negative {
+        &symbols.negative
+    } else {
+        &symbols.positive
+    };
     let mut result = String::new();
     for token in tokens {
         match token {
             Token::Literal(c) => result.push(c),
             Token::Shift => {}
+            Token::Sign => result.push_str(locale_sign_text),
+            Token::Currency => result.push_str(&symbols.currency),
+            Token::Group(localized) => {
+                let group = if localized {
+                    symbols.group.as_str()
+                } else {
+                    ","
+                };
+                if digit_written {
+                    result.push_str(group);
+                } else if !fill {
+                    result.extend(std::iter::repeat_n(' ', group.chars().count()));
+                }
+            }
             Token::Minus => {
                 if negative {
                     result.push('-');
@@ -209,20 +251,22 @@ fn format_number(
                     result.push(' ');
                 }
             }
-            Token::Point => {
+            Token::Point(localized) => {
                 after_point = true;
                 if nan {
                     continue;
                 }
                 if !signed {
-                    if negative {
+                    if sign_prefix {
+                        result.push_str(locale_sign_text);
+                    } else if negative {
                         result.push('-');
                     } else if !fill {
                         result.push(' ');
                     }
                     signed = true;
                 }
-                result.push('.');
+                result.push_str(if localized { &symbols.decimal } else { "." });
                 after_point = true;
             }
             Token::Digit(required) => {
@@ -245,7 +289,9 @@ fn format_number(
                 };
                 if let Some(digit) = digit {
                     if digit != ' ' && !signed {
-                        if negative {
+                        if sign_prefix {
+                            result.push_str(locale_sign_text);
+                        } else if negative {
                             result.push('-');
                         } else if !fill {
                             result.push(' ');
@@ -253,6 +299,9 @@ fn format_number(
                         signed = true;
                     }
                     result.push(digit);
+                    if digit != ' ' {
+                        digit_written = true;
+                    }
                 }
                 if after_point {
                     fraction_at += 1;
