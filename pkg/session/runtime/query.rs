@@ -1424,7 +1424,7 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-            && FnName.L == "array_length"
+            && matches!(FnName.L.as_str(), "array_length" | "cardinality")
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
             use astersql_expression::BuildContext;
@@ -1432,14 +1432,15 @@ impl ConcreteSession {
                 .iter()
                 .map(|arg| self.pg_case_input_type(arg, &[]))
                 .collect::<Vec<_>>();
-            let candidate =
-                astersql_expression::formal_registry::resolve_pg_array_length_signature(&inputs)
-                    .map_err(|_| {
-                        super::function_diagnostics::no_matching_function(
-                            expression,
-                            &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
-                        )
-                    })?;
+            let candidate = astersql_expression::formal_registry::resolve_pg_array_signature(
+                &FnName.L, &inputs,
+            )
+            .map_err(|_| {
+                super::function_diagnostics::no_matching_function(
+                    expression,
+                    &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
+                )
+            })?;
             let mut arguments: Vec<Box<dyn astersql_expression::Expression>> = Vec::new();
             for (argument, input) in Args.iter().zip(inputs) {
                 let mut value = self
@@ -1462,14 +1463,17 @@ impl ConcreteSession {
                 *astersql_expression::types::NewFieldType(candidate.result),
                 arguments,
             )
-            .map_err(|error| session_error("build array_length", error))?;
+            .map_err(|error| session_error("build PostgreSQL array function", error))?;
             let (value, null) = built
                 .EvalInt(
                     context.GetEvalCtx(),
                     astersql_expression::chunk::Row::default(),
                 )
                 .map_err(|error| {
-                    SessionError::with_source("evaluate array_length", error.into_shared())
+                    SessionError::with_source(
+                        "evaluate PostgreSQL array function",
+                        error.into_shared(),
+                    )
                 })?;
             return Ok((!null).then(|| value.to_string()));
         }
@@ -3526,15 +3530,15 @@ impl ConcreteSession {
                     Schema,
                     Args,
                 } = &input.Kind
-                    && FnName.L == "array_length"
+                    && matches!(FnName.L.as_str(), "array_length" | "cardinality")
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
                     let inputs = Args
                         .iter()
                         .map(|arg| self.session.pg_case_input_type(arg, self.sources))
                         .collect::<Vec<_>>();
-                    if astersql_expression::formal_registry::resolve_pg_array_length_signature(
-                        &inputs,
+                    if astersql_expression::formal_registry::resolve_pg_array_signature(
+                        &FnName.L, &inputs,
                     )
                     .is_err()
                     {
@@ -4744,7 +4748,7 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-                && FnName.L == "array_length"
+                && matches!(FnName.L.as_str(), "array_length" | "cardinality")
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
                 let inputs = Args
@@ -4752,7 +4756,9 @@ impl ConcreteSession {
                     .map(|arg| self.pg_case_input_type(arg, source_fields))
                     .collect::<Vec<_>>();
                 if let Ok(candidate) =
-                    astersql_expression::formal_registry::resolve_pg_array_length_signature(&inputs)
+                    astersql_expression::formal_registry::resolve_pg_array_signature(
+                        &FnName.L, &inputs,
+                    )
                 {
                     return astersql_parser_types::NewFieldType(candidate.result);
                 }

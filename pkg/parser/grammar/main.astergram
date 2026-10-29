@@ -2645,6 +2645,7 @@ DefaultTrueDistinctOpt : DistinctOpt;
 BuggyDefaultFalseDistinctOpt : DefaultFalseDistinctOpt;
 BuggyDefaultFalseDistinctOpt : DistinctKwd "ALL" @action;
 FunctionNameConflict : "ASCII";
+FunctionNameConflict : "CARDINALITY";
 FunctionNameConflict : "CHARSET";
 FunctionNameConflict : "COALESCE";
 FunctionNameConflict : "COLLATION";

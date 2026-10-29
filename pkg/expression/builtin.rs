@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "cardinality" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeVarString],
+                result: mysql::TypeLong,
+            }],
             "array_length" => vec![PgFunctionCandidate {
                 // Full array identity is checked by resolve_pg_array_length_signature.
                 arguments: vec![mysql::TypeVarString, mysql::TypeLong],
@@ -2768,6 +2772,24 @@ pub mod formal_registry {
             "array_length",
             &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
         )
+    }
+
+    /// Resolve the bounded array family without losing the element identity.
+    pub fn resolve_pg_array_signature(
+        name: &str,
+        inputs: &[types::FieldType],
+    ) -> Result<PgFunctionCandidate, &'static str> {
+        if name == "array_length" {
+            return resolve_pg_array_length_signature(inputs);
+        }
+        if name != "cardinality"
+            || inputs.len() != 1
+            || inputs[0].PostgreSQLArrayElement()
+                != Some(types_dependency::field::ast::PostgreSQLArrayElement::Int4)
+        {
+            return Err("42883");
+        }
+        resolve_pg_signature(name, &[inputs[0].GetType()])
     }
 
     /// 类型别名 `BuiltinFactory`。
@@ -4207,6 +4229,7 @@ pub mod formal_registry {
         PgTimestampToChar,
         PgExtractTimestamp,
         PgArrayLength,
+        PgCardinality,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -4583,9 +4606,14 @@ pub mod formal_registry {
                 | CoreBuiltinKind::IsNull
                 | CoreBuiltinKind::Logic(..)
                 | CoreBuiltinKind::UnaryNot => self.eval_boolean(ctx, row),
-                CoreBuiltinKind::PgArrayLength => {
+                CoreBuiltinKind::PgArrayLength | CoreBuiltinKind::PgCardinality => {
                     let (array, array_null) = self.base.args[0].EvalString(ctx, row.clone())?;
-                    let (dimension, dimension_null) = self.base.args[1].EvalInt(ctx, row)?;
+                    let (dimension, dimension_null) =
+                        if matches!(self.kind, CoreBuiltinKind::PgArrayLength) {
+                            self.base.args[1].EvalInt(ctx, row)?
+                        } else {
+                            (1, false)
+                        };
                     if array_null || dimension_null || dimension <= 0 {
                         return Ok((0, true));
                     }
@@ -4602,6 +4630,10 @@ pub mod formal_registry {
                             ),
                             other => errors::New(other.to_string()),
                         })?;
+                    if matches!(self.kind, CoreBuiltinKind::PgCardinality) {
+                        // NULL elements count; canonical empty arrays have zero elements.
+                        return Ok((array.elements().len() as i64, false));
+                    }
                     let value = usize::try_from(dimension - 1)
                         .ok()
                         .and_then(|axis| array.shape().get(axis))
@@ -6310,16 +6342,26 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
-            "array_length" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+            "array_length" | "cardinality"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
+            {
                 let inputs = args
                     .iter()
                     .map(|arg| arg.GetType(ctx.GetEvalCtx()).clone())
                     .collect::<Vec<_>>();
-                let candidate = resolve_pg_array_length_signature(&inputs).map_err(errors::New)?;
+                let candidate = resolve_pg_array_signature(name, &inputs).map_err(errors::New)?;
                 (
-                    CoreBuiltinKind::PgArrayLength,
+                    if name == "cardinality" {
+                        CoreBuiltinKind::PgCardinality
+                    } else {
+                        CoreBuiltinKind::PgArrayLength
+                    },
                     *types::NewFieldType(candidate.result),
-                    "builtinPgArrayLengthSig",
+                    if name == "cardinality" {
+                        "builtinPgCardinalitySig"
+                    } else {
+                        "builtinPgArrayLengthSig"
+                    },
                 )
             }
             "to_char" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
@@ -7833,6 +7875,7 @@ pub mod formal_registry {
     core_factory!(extract_factory, "extract");
     core_factory!(pg_date_part_factory, "date_part");
     core_factory!(pg_array_length_factory, "array_length");
+    core_factory!(pg_cardinality_factory, "cardinality");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -7924,6 +7967,7 @@ pub mod formal_registry {
         ("extract", extract_factory),
         ("date_part", pg_date_part_factory),
         ("array_length", pg_array_length_factory),
+        ("cardinality", pg_cardinality_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8291,6 +8335,7 @@ pub mod formal_registry {
         ("extract", 2, 2),
         ("date_part", 2, 2),
         ("array_length", 2, 2),
+        ("cardinality", 1, 1),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -8586,6 +8631,7 @@ pub mod formal_registry {
                 "to_char"
                     | "date_trunc"
                     | "array_length"
+                    | "cardinality"
                     | "date_part"
                     | "numeric_abs"
                     | "float4abs"

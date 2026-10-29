@@ -290,3 +290,6 @@ mod reserved_words_test;
 
 #[cfg(test)]
 mod pg08_05_test;
+
+#[cfg(test)]
+mod pg08_20_test;

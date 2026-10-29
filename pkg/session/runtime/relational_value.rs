@@ -3140,9 +3140,10 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
-        } if FnName.L == "array_length"
+        } if matches!(FnName.L.as_str(), "array_length" | "cardinality")
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
-            && astersql_expression::formal_registry::resolve_pg_array_length_signature(
+            && astersql_expression::formal_registry::resolve_pg_array_signature(
+                &FnName.L,
                 &Args
                     .iter()
                     .map(|arg| relational_expression_type(arg, table))
