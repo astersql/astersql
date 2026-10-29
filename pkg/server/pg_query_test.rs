@@ -1398,31 +1398,46 @@ fn signed_abs_protocol_contract() {
     socket.write_all(&body).unwrap();
     while read(&mut socket).0 != b'Z' {}
     for (name, oid, width) in [("int4", 23u32, 4i16), ("int8", 20, 8)] {
-        let messages = query(
-            &mut socket,
-            &format!("SELECT pg_catalog.abs((-1)::{name}) AS v"),
-        );
-        assert!(
-            !messages.iter().any(|(tag, _)| *tag == b'E'),
-            "{name}: {messages:?}"
-        );
-        let description = &messages
-            .iter()
-            .find(|(tag, _)| *tag == b'T')
-            .expect("RowDescription")
-            .1;
-        let mut expected = vec![0, 1, b'v', 0];
-        expected.extend_from_slice(&0u32.to_be_bytes());
-        expected.extend_from_slice(&0i16.to_be_bytes());
-        expected.extend_from_slice(&oid.to_be_bytes());
-        expected.extend_from_slice(&width.to_be_bytes());
-        expected.extend_from_slice(&(-1i32).to_be_bytes());
-        expected.extend_from_slice(&0i16.to_be_bytes());
-        assert_eq!(description, &expected, "{name} result identity");
-        assert_eq!(
-            messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
-            row(&[Some("1")])
-        );
+        let maximum = if width == 4 {
+            i32::MAX as i64
+        } else {
+            i64::MAX
+        };
+        for value in [
+            Some(0),
+            Some(1),
+            Some(-1),
+            Some(maximum),
+            Some(-maximum),
+            None,
+        ] {
+            let source = value.map_or_else(|| "NULL".to_owned(), |v| format!("({v})"));
+            let messages = query(
+                &mut socket,
+                &format!("SELECT pg_catalog.abs({source}::{name}) AS v"),
+            );
+            assert!(
+                !messages.iter().any(|(tag, _)| *tag == b'E'),
+                "{name}: {messages:?}"
+            );
+            let description = &messages
+                .iter()
+                .find(|(tag, _)| *tag == b'T')
+                .expect("RowDescription")
+                .1;
+            let mut expected = vec![0, 1, b'v', 0];
+            expected.extend_from_slice(&0u32.to_be_bytes());
+            expected.extend_from_slice(&0i16.to_be_bytes());
+            expected.extend_from_slice(&oid.to_be_bytes());
+            expected.extend_from_slice(&width.to_be_bytes());
+            expected.extend_from_slice(&(-1i32).to_be_bytes());
+            expected.extend_from_slice(&0i16.to_be_bytes());
+            assert_eq!(description, &expected, "{name} result identity");
+            assert_eq!(
+                messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+                row(&[value.map(|v| v.abs().to_string()).as_deref()])
+            );
+        }
     }
     for sql in [
         "SELECT pg_catalog.abs(NULL::int4) AS v",
@@ -1517,55 +1532,119 @@ fn signed_abs_protocol_contract() {
             .clone();
         assert_eq!(&statement_description[10..14], &oid.to_be_bytes());
         assert_eq!(&statement_description[14..16], &width.to_be_bytes());
-        for (format, value) in [(0i16, Some("-1")), (1, Some("-1")), (1, None)] {
-            let mut bind = vec![0, 0, 0, 0, 0, 1]; // unnamed portal/statement, no input formats, one parameter
-            match value {
-                Some(value) => {
-                    bind.extend_from_slice(&(value.len() as i32).to_be_bytes());
-                    bind.extend_from_slice(value.as_bytes());
+        let maximum = if width == 4 {
+            i32::MAX as i64
+        } else {
+            i64::MAX
+        };
+        let precise = if width == 4 {
+            maximum
+        } else {
+            9_007_199_254_740_993
+        };
+        for format in [0i16, 1] {
+            for value in [
+                Some(0i64),
+                Some(-1),
+                Some(2),
+                Some(maximum),
+                Some(-maximum),
+                Some(-precise),
+                None,
+            ] {
+                let text = value.map(|v| v.to_string());
+                let mut bind = vec![0, 0, 0, 0, 0, 1]; // unnamed portal/statement, no input formats, one parameter
+                match text.as_deref() {
+                    Some(value) => {
+                        bind.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                        bind.extend_from_slice(value.as_bytes());
+                    }
+                    None => bind.extend_from_slice(&(-1i32).to_be_bytes()),
                 }
-                None => bind.extend_from_slice(&(-1i32).to_be_bytes()),
-            }
-            bind.extend_from_slice(&1i16.to_be_bytes());
-            bind.extend_from_slice(&format.to_be_bytes());
-            send(&mut socket, b'B', &bind);
-            send(&mut socket, b'D', b"P\0");
-            send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
-            send(&mut socket, b'S', &[]);
-            let messages = ready(&mut socket);
-            assert!(
-                !messages.iter().any(|(tag, _)| *tag == b'E'),
-                "{messages:?}"
-            );
-            let mut expected_description = statement_description.clone();
-            let end = expected_description.len();
-            expected_description[end - 2..].copy_from_slice(&format.to_be_bytes());
-            assert_eq!(
-                messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1,
-                expected_description
-            );
-            let expected = if value.is_none() {
-                row(&[None])
-            } else if format == 0 {
-                row(&[Some("1")])
-            } else {
-                let bytes = if width == 4 {
-                    1i32.to_be_bytes().to_vec()
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                send(&mut socket, b'B', &bind);
+                send(&mut socket, b'D', b"P\0");
+                send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                send(&mut socket, b'S', &[]);
+                let messages = ready(&mut socket);
+                assert!(
+                    !messages.iter().any(|(tag, _)| *tag == b'E'),
+                    "{messages:?}"
+                );
+                assert_eq!(
+                    messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    [b'2', b'T', b'D', b'C', b'Z'],
+                    "one portal description; Execute adds no description"
+                );
+                let mut expected_description = statement_description.clone();
+                let end = expected_description.len();
+                expected_description[end - 2..].copy_from_slice(&format.to_be_bytes());
+                assert_eq!(
+                    messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1,
+                    expected_description
+                );
+                let expected = if value.is_none() {
+                    row(&[None])
+                } else if format == 0 {
+                    row(&[Some(&value.unwrap().abs().to_string())])
                 } else {
-                    1i64.to_be_bytes().to_vec()
+                    let bytes = if width == 4 {
+                        (value.unwrap().abs() as i32).to_be_bytes().to_vec()
+                    } else {
+                        value.unwrap().abs().to_be_bytes().to_vec()
+                    };
+                    [
+                        &1i16.to_be_bytes()[..],
+                        &(bytes.len() as i32).to_be_bytes(),
+                        &bytes,
+                    ]
+                    .concat()
                 };
-                [
-                    &1i16.to_be_bytes()[..],
-                    &(bytes.len() as i32).to_be_bytes(),
-                    &bytes,
-                ]
-                .concat()
-            };
-            assert_eq!(
-                messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
-                expected
+                assert_eq!(
+                    messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+                    expected
+                );
+            }
+        }
+        // Overflow belongs to Execute after the typed parameter was bound;
+        // Sync must restore the same connection for an independent query.
+        let minimum = if width == 4 {
+            i32::MIN as i64
+        } else {
+            i64::MIN
+        }
+        .to_string();
+        let mut bind = vec![0, 0, 0, 0, 0, 1];
+        bind.extend_from_slice(&(minimum.len() as i32).to_be_bytes());
+        bind.extend_from_slice(minimum.as_bytes());
+        bind.extend_from_slice(&0i16.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'H', &[]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+        send(&mut socket, b'S', &[]);
+        let overflow = ready(&mut socket);
+        assert_eq!(
+            overflow.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'E', b'Z']
+        );
+        let fields = &overflow[0].1;
+        for field in [b"SERROR\0".as_slice(), b"VERROR\0", b"C22003\0"] {
+            assert!(
+                fields.windows(field.len()).any(|bytes| bytes == field),
+                "{overflow:?}"
             );
         }
+        assert_eq!(overflow[1].1, b"I");
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
         let messages = query(
             &mut socket,
             &format!("SELECT pg_catalog.abs((-1)::{name}) AS v WHERE false"),
@@ -2542,4 +2621,102 @@ fn pg_function_08() {
     // the real SQL, extended protocol and error-recovery contract.
     signed_abs_protocol_contract();
     assert_eq!(funcs.names_for_dialect(SqlDialect::MySQL), mysql_names);
+}
+
+#[test]
+fn pg_function_10() {
+    // Keep signed integer arithmetic and declared PG result identity coupled,
+    // including int8 values that cannot round-trip through float8.
+    signed_abs_protocol_contract();
+}
+
+#[test]
+fn pg_function_10_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(server.clone());
+    let mut socket = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+    for (source, expected) in [
+        ("0", Some("0")),
+        ("1", Some("1")),
+        ("-1", Some("1")),
+        ("9223372036854775807", Some("9223372036854775807")),
+        ("-9223372036854775807", Some("9223372036854775807")),
+        ("-9007199254740993", Some("9007199254740993")),
+        ("NULL", None),
+    ] {
+        mysql_packet(
+            &mut socket,
+            0,
+            &[
+                b"\x03SELECT ABS(CAST(".as_slice(),
+                source.as_bytes(),
+                b" AS SIGNED)) AS v",
+            ]
+            .concat(),
+        );
+        assert_eq!(mysql_read(&mut socket), [1]);
+        let column = mysql_read(&mut socket);
+        let mut offset = 0;
+        for _ in 0..6 {
+            let length = usize::from(column[offset]);
+            offset += length + 1;
+        }
+        assert_eq!(column[offset], 12);
+        let metadata = &column[offset + 1..offset + 13];
+        println!(
+            "pg_function_10_mysql metadata: charset={} length={} code={} flags={} decimals={}",
+            u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+            u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+            metadata[6],
+            u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+            metadata[9]
+        );
+        assert_eq!(metadata[6], 8, "MySQL ABS retains BIGINT wire code");
+        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 63);
+        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 20);
+        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 128);
+        assert_eq!(metadata[9], 31);
+        assert_eq!(mysql_read(&mut socket)[0], 0xfe);
+        let expected = expected.map_or_else(
+            || vec![0xfb],
+            |text| {
+                let mut bytes = vec![text.len() as u8];
+                bytes.extend_from_slice(text.as_bytes());
+                bytes
+            },
+        );
+        assert_eq!(mysql_read(&mut socket), expected);
+        let eof = mysql_read(&mut socket);
+        assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(&mut socket, "SHOW WARNINGS").is_empty());
+    }
+    mysql_packet(
+        &mut socket,
+        0,
+        b"\x03SELECT ABS(CAST(-9223372036854775808 AS SIGNED)) AS v",
+    );
+    let error = mysql_read(&mut socket);
+    assert_eq!(error[0], 0xff, "signed ABS overflow must fail: {error:?}");
+    assert_eq!(u16::from_le_bytes(error[1..3].try_into().unwrap()), 1690);
+    assert_eq!(&error[3..9], b"#22003");
+    assert!(std::str::from_utf8(&error[9..]).unwrap().contains("BIGINT"));
+    assert_eq!(
+        mysql_query(&mut socket, "SELECT 1"),
+        vec![vec![Some(b"1".to_vec())]]
+    );
+    mysql_packet(&mut socket, 0, &[1]);
 }

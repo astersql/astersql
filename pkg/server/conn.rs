@@ -182,6 +182,8 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
             let lower = message.to_ascii_lowercase();
             if lower.ends_with("running in read-only mode") {
                 (1836, b"HY000")
+            } else if lower.contains("[types:1690]") {
+                (1690, b"22003")
             } else if lower.contains("[executor:8173]") {
                 (8173, b"HY000")
             } else if lower.contains("[executor:8175]") {
