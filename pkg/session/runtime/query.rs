@@ -4101,7 +4101,7 @@ impl ConcreteSession {
             && match FnName.L.as_str() {
                 "abs" => Args.len() == 1,
                 "concat" => !Args.is_empty(),
-                "ifnull" | "date_format" => Args.len() == 2,
+                "ifnull" | "date_format" | "extract" => Args.len() == 2,
                 "json_extract" => Args.len() >= 2,
                 "tidb_version" => Args.is_empty(),
                 "greatest" | "least" => Args.len() >= 2,
@@ -4553,12 +4553,16 @@ impl ConcreteSession {
             tracker.Restore(false, kind, reason, force, warn);
         }
 
+        // EXTRACT descriptors retain the nullable formal signature even when
+        // the current constant input happens to evaluate to a non-NULL integer.
+        let describe_extract = self.sql_dialect() == ast::SqlDialect::MySQL
+            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "extract");
         astersql_planner_core::PlannerBuildSimpleExpr(
             &context,
             expression,
             vec![
                 astersql_expression::WithTableInfo(&self.current_database(), &table),
-                Box::new(move |options| options.DeferConstantFolding = unresolved_parameters),
+                Box::new(move |options| options.DeferConstantFolding = unresolved_parameters || describe_extract),
             ],
         )
         .map(|built| {

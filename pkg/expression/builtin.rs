@@ -6705,7 +6705,28 @@ pub mod formal_registry {
                         *types::NewFieldType(mysql::TypeDatetime),
                     ),
                     ExtractMode::Duration => {
-                        BuildCastFunction(ctx, &args[1], &types::NewFieldType(mysql::TypeDuration))
+                        // Match Go WrapWithCastAsDuration: retain temporal FSP,
+                        // use MaxFsp for text, and leave an existing TIME intact.
+                        let source = args[1].GetType(ctx.GetEvalCtx());
+                        if source.GetType() == mysql::TypeDuration {
+                            args[1].CloneExpr()
+                        } else {
+                            let mut target = *types::NewFieldType(mysql::TypeDuration);
+                            let decimal = if matches!(
+                                source.GetType(),
+                                mysql::TypeDate | mysql::TypeDatetime | mysql::TypeTimestamp
+                            ) {
+                                source.GetDecimal()
+                            } else {
+                                types_dependency::time::MaxFsp as isize
+                            };
+                            target.SetDecimal(decimal);
+                            target.SetFlen(
+                                mysql::MaxDurationWidthNoFsp as isize
+                                    + if decimal > 0 { 1 + decimal } else { 0 },
+                            );
+                            BuildCastFunction(ctx, &args[1], &target)
+                        }
                     }
                     ExtractMode::DatetimeFromString => {
                         crate::WrapWithCastAsString(ctx, args[1].CloneExpr())
@@ -6716,11 +6737,23 @@ pub mod formal_registry {
                     ExtractMode::Duration => "builtinExtractDurationSig",
                     ExtractMode::DatetimeFromString => "builtinExtractDatetimeFromStringSig",
                 };
-                (
-                    CoreBuiltinKind::Extract(mode),
-                    field_type_for_eval_type(types::ETInt),
-                    signature,
-                )
+                let mut return_type = field_type_for_eval_type(types::ETInt);
+                if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL {
+                    // Native MySQL clock-field widths include the possible sign.
+                    // Keep these properties independent of the current input value.
+                    let width = match unit.to_ascii_lowercase().as_str() {
+                        "second" => Some(3),
+                        "microsecond" => Some(7),
+                        "hour" => Some(4),
+                        _ => None,
+                    };
+                    if let Some(width) = width {
+                        return_type.SetFlen(width);
+                        return_type.SetDecimal(0);
+                        return_type.AddFlag(mysql::BinaryFlag);
+                    }
+                }
+                (CoreBuiltinKind::Extract(mode), return_type, signature)
             }
             "sleep" => {
                 args[0] = crate::WrapWithCastAsReal(ctx, args[0].CloneExpr());
@@ -8129,6 +8162,7 @@ pub mod formal_registry {
             crate::ast::SqlDialect::MySQL => !matches!(
                 name,
                 "date_trunc"
+                    | "date_part"
                     | "numeric_abs"
                     | "float4abs"
                     | "float8abs"

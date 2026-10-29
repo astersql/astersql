@@ -1817,8 +1817,11 @@ impl ConcreteSession {
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
         self.begin_pg_date_statement();
         let statements = parse_in_dialect(sql, self.sql_dialect()).map_err(|error| {
+            let hidden_mysql_function = error.mysql_hidden_function().is_some();
             let error = self.normalize_mysql_function_parse_error(error);
-            if self.sql_dialect() == ast::SqlDialect::MySQL {
+            // Unknown functions retain the normalized 1305 diagnostic for
+            // SHOW WARNINGS after COM_STMT_PREPARE, just as text queries do.
+            if self.sql_dialect() == ast::SqlDialect::MySQL && !hidden_mysql_function {
                 let mut state = self.state.borrow_mut();
                 state.current_warnings.clear();
                 state.last_warnings.clear();

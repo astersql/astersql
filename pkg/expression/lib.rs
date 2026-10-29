@@ -912,3 +912,6 @@ pub use builtin_inference::{
 pub use inference_helper::*;
 #[cfg(test)]
 mod inference_helper_test;
+
+#[cfg(test)]
+mod pg08_01_test;
