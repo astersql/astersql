@@ -1743,3 +1743,45 @@ fn pg08_09_zoned_float_fields() {
         );
     }
 }
+
+#[test]
+fn pg08_10_interval_float_fields() {
+    use crate::pg_temporal::PgInterval;
+    for unit in ["second", "seconds", "sec", "secs", "SeCoNd"] {
+        for sign in [1.0, -1.0] {
+            let value = PgInterval::from_components(0, 0, (sign * 1_003_691.0) as i64);
+            assert_eq!(
+                value.extract_float8(unit).unwrap(),
+                Some(sign * (1.0 + 3691.0 / 1_000_000.0))
+            );
+            assert_ne!(
+                value.extract_float8(unit).unwrap().unwrap(),
+                sign * 1.003691
+            );
+        }
+    }
+    for unit in ["millisecond", "milliseconds", "msec", "msecs"] {
+        let value = PgInterval::from_components(0, 0, -1_003_691);
+        assert_eq!(
+            value.extract_float8(unit).unwrap(),
+            Some(-1000.0 - 3691.0 / 1000.0)
+        );
+    }
+    let value = PgInterval::from_components(2_000_000_003, -2_000_000_000, 9_000_000_000_123_456);
+    // Real PostgreSQL 18.6 float8send result for this mixed-sign interval.
+    assert_eq!(
+        value.extract_float8("epoch").unwrap().unwrap().to_bits(),
+        0x4332126d03ee43c0
+    );
+    assert_eq!(value.extract_float8("year").unwrap(), Some(166_666_666.0));
+    for (value, expected) in [
+        ("infinity", f64::INFINITY),
+        ("-infinity", f64::NEG_INFINITY),
+    ] {
+        let interval: PgInterval = value.parse().unwrap();
+        assert_eq!(interval.extract_float8("epoch").unwrap(), Some(expected));
+        assert_eq!(interval.extract_float8("second").unwrap(), None);
+        assert!(interval.extract_float8("timezone").is_err());
+        assert!(interval.extract_float8("aster_bad_unit").is_err());
+    }
+}

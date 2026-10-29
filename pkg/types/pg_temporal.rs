@@ -1417,6 +1417,46 @@ impl PgInterval {
         text.parse().map(Some).map_err(|_| PgTemporalError::Range)
     }
 
+    /// Preserve EXTRACT's signed components and validation while applying the
+    /// float8 arithmetic order used by PostgreSQL's interval_part_common.
+    pub fn extract_float8(self, unit: &str) -> Result<Option<f64>, PgTemporalError> {
+        let Some(numeric) = self.extract_numeric(unit)? else {
+            return Ok(None);
+        };
+        if !matches!(
+            self.components(),
+            (i32::MAX, i32::MAX, i64::MAX) | (i32::MIN, i32::MIN, i64::MIN)
+        ) {
+            let micros = self.time_microseconds % 60_000_000;
+            let seconds = (micros / 1_000_000) as f64;
+            let fraction = (micros % 1_000_000) as f64;
+            let value = match unit.to_ascii_lowercase().as_str() {
+                "second" | "seconds" | "sec" | "secs" => Some(seconds + fraction / 1_000_000.0),
+                "millisecond" | "milliseconds" | "msec" | "msecs" => {
+                    Some(seconds * 1000.0 + fraction / 1000.0)
+                }
+                "epoch" => {
+                    // Add each stored group separately; casting the exact sum
+                    // would change rounding for large or mixed-sign intervals.
+                    let mut result = self.time_microseconds as f64 / 1_000_000.0;
+                    result += (365.25 * 86400.0) * f64::from(self.months / 12);
+                    result += (30.0 * 86400.0) * f64::from(self.months % 12);
+                    result += 86400.0 * f64::from(self.days);
+                    Some(result)
+                }
+                _ => None,
+            };
+            if let Some(value) = value {
+                return Ok(Some(value));
+            }
+        }
+        numeric
+            .to_string()
+            .parse()
+            .map(Some)
+            .map_err(|_| PgTemporalError::Range)
+    }
+
     /// Truncate interval fields independently, using signed division toward zero.
     /// Calendar months and days never absorb elapsed hours. Unlike timestamps,
     /// century/millennium buckets start at zero and quarters do not add a month.

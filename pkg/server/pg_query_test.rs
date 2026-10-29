@@ -10105,3 +10105,470 @@ fn pg08_09_sql() {
     assert!(TcpStream::connect(address).is_err());
     println!("pg08_09_sql: 40 scenarios passed; listener closed");
 }
+#[test]
+fn pg08_10_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (id, sql, value, zero) in [
+        (
+            "S-Q-year",
+            "SELECT date_part('year'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("2"),
+            false,
+        ),
+        (
+            "S-Q-month",
+            "SELECT date_part('month'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("3"),
+            false,
+        ),
+        (
+            "S-Q-day",
+            "SELECT date_part('day'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("4"),
+            false,
+        ),
+        (
+            "S-Q-hour",
+            "SELECT date_part('hour'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("5"),
+            false,
+        ),
+        (
+            "S-Q-second",
+            "SELECT date_part('second'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("7.123456"),
+            false,
+        ),
+        (
+            "S-Q-minute",
+            "SELECT date_part('minute'::text,'80 minutes'::interval) AS v",
+            Some("20"),
+            false,
+        ),
+        (
+            "S-Q-negative-year",
+            "SELECT date_part('year'::text,'-27 months -4 days -05:06:07.123456'::interval) AS v",
+            Some("-2"),
+            false,
+        ),
+        (
+            "S-Q-negative-month",
+            "SELECT date_part('month'::text,'-27 months -4 days -05:06:07.123456'::interval) AS v",
+            Some("-3"),
+            false,
+        ),
+        (
+            "S-Q-negative-day",
+            "SELECT date_part('day'::text,'-27 months -4 days -05:06:07.123456'::interval) AS v",
+            Some("-4"),
+            false,
+        ),
+        (
+            "S-Q-negative-hour",
+            "SELECT date_part('hour'::text,'-27 months -4 days -05:06:07.123456'::interval) AS v",
+            Some("-5"),
+            false,
+        ),
+        (
+            "S-Q-negative-second",
+            "SELECT date_part('second'::text,'-27 months -4 days -05:06:07.123456'::interval) AS v",
+            Some("-7.123456"),
+            false,
+        ),
+        (
+            "S-Q-negative-fraction",
+            "SELECT date_part('second'::text,'-0.123456 seconds'::interval) AS v",
+            Some("-0.123456"),
+            false,
+        ),
+        (
+            "S-Q-long-hour",
+            "SELECT date_part('hour'::text,'2 days 27 hours'::interval) AS v",
+            Some("27"),
+            false,
+        ),
+        (
+            "S-Q-microseconds",
+            "SELECT date_part('microseconds'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("7123456"),
+            false,
+        ),
+        (
+            "S-Q-milliseconds",
+            "SELECT date_part('milliseconds'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("7123.456"),
+            false,
+        ),
+        (
+            "S-Q-null",
+            "SELECT date_part('second'::text,NULL::interval) AS v",
+            None,
+            false,
+        ),
+        (
+            "S-Q-zero",
+            "SELECT date_part('second'::text,NULL::interval) AS v WHERE false",
+            None,
+            true,
+        ),
+        (
+            "S-Q-nested",
+            "SELECT date_part('second'::text,date_trunc('milliseconds'::text,'27 months 4 days 05:06:07.123456'::interval)) AS v",
+            Some("7.123"),
+            false,
+        ),
+        (
+            "S-Q-negative-milliseconds",
+            "SELECT date_part('milliseconds'::text,'-0.123456 seconds'::interval) AS v",
+            Some("-123.456"),
+            false,
+        ),
+        (
+            "S-Q-negative-minute",
+            "SELECT date_part('minute'::text,'-80 minutes'::interval) AS v",
+            Some("-20"),
+            false,
+        ),
+        (
+            "S-Q-epoch",
+            "SELECT date_part('epoch'::text,'27 months 4 days 05:06:07.123456'::interval) AS v",
+            Some("71255167.123456"),
+            false,
+        ),
+        (
+            "S-Q-week",
+            "SELECT date_part('week'::text,'-15 days'::interval) AS v",
+            Some("-2"),
+            false,
+        ),
+        (
+            "S-Q-quarter",
+            "SELECT date_part('quarter'::text,'-27 months'::interval) AS v",
+            Some("-2"),
+            false,
+        ),
+        (
+            "S-Q-quarter-year",
+            "SELECT date_part('quarter'::text,'-24 months'::interval) AS v",
+            Some("-1"),
+            false,
+        ),
+        (
+            "S-Q-quarter-zero",
+            "SELECT date_part('quarter'::text,'0'::interval) AS v",
+            Some("1"),
+            false,
+        ),
+        (
+            "S-Q-decade",
+            "SELECT date_part('decade'::text,'24001 months'::interval) AS v",
+            Some("200"),
+            false,
+        ),
+        (
+            "S-Q-century",
+            "SELECT date_part('century'::text,'24001 months'::interval) AS v",
+            Some("20"),
+            false,
+        ),
+        (
+            "S-Q-millennium",
+            "SELECT date_part('millennium'::text,'24001 months'::interval) AS v",
+            Some("2"),
+            false,
+        ),
+        (
+            "S-Q-infinity-hour",
+            "SELECT date_part('hour'::text,'infinity'::interval) AS v",
+            Some("Infinity"),
+            false,
+        ),
+        (
+            "S-Q-negative-infinity-day",
+            "SELECT date_part('day'::text,'-infinity'::interval) AS v",
+            Some("-Infinity"),
+            false,
+        ),
+        (
+            "S-Q-infinity-month",
+            "SELECT date_part('month'::text,'infinity'::interval) AS v",
+            None,
+            false,
+        ),
+        (
+            "S-Q-infinity-week",
+            "SELECT date_part('week'::text,'infinity'::interval) AS v",
+            None,
+            false,
+        ),
+        (
+            "S-Q-rounding",
+            "SELECT date_part('second'::text,'1.003691 seconds'::interval) AS v",
+            Some("1.0036909999999999"),
+            false,
+        ),
+        (
+            "S-Q-negative-rounding",
+            "SELECT date_part('second'::text,'-1.003691 seconds'::interval) AS v",
+            Some("-1.0036909999999999"),
+            false,
+        ),
+        (
+            "S-Q-null-unit",
+            "SELECT date_part(NULL::text,'80 minutes'::interval) AS v",
+            None,
+            false,
+        ),
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(
+            !messages.iter().any(|(tag, _)| *tag == b'E'),
+            "{id}: {messages:?}"
+        );
+        let description = &messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1;
+        let mut expected = vec![0, 1, b'v', 0];
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        expected.extend_from_slice(&701u32.to_be_bytes());
+        expected.extend_from_slice(&8i16.to_be_bytes());
+        expected.extend_from_slice(&(-1i32).to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        assert_eq!(description, &expected, "{id}");
+        let rows: Vec<_> = messages.iter().filter(|(tag, _)| *tag == b'D').collect();
+        if zero {
+            assert!(rows.is_empty(), "{id}");
+        } else {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, row(&[value]), "{id}");
+        }
+    }
+    for (unit, state) in [("aster_bad_unit", "22023"), ("timezone", "0A000")] {
+        let messages = query(
+            &mut socket,
+            &format!(
+                "SELECT date_part('{unit}'::text,'27 months 4 days 05:06:07.123456'::interval) AS v"
+            ),
+        );
+        let error = &messages
+            .iter()
+            .find(|(tag, _)| *tag == b'E')
+            .expect("error response")
+            .1;
+        assert!(
+            error
+                .windows(7)
+                .any(|bytes| bytes == format!("C{state}\0").as_bytes()),
+            "{unit}: {messages:?}"
+        );
+        assert!(!messages.iter().any(|(tag, _)| *tag == b'D'));
+        let recovered = query(&mut socket, "SELECT 1::int4 AS v");
+        assert_eq!(
+            recovered.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+            row(&[Some("1")])
+        );
+    }
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let message = read(socket);
+            let done = message.0 == b'Z';
+            messages.push(message);
+            if done {
+                return messages;
+            }
+        }
+    }
+    for empty in [false, true] {
+        let sql = format!(
+            "SELECT date_part($2::text,$1::interval) AS v{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        let parse = [b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat();
+        send(&mut socket, b'P', &parse);
+        send(&mut socket, b'D', b"S\0");
+        send(&mut socket, b'S', &[]);
+        let messages = ready(&mut socket);
+        assert_eq!(
+            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'1', b't', b'T', b'Z'],
+            "{messages:?}"
+        );
+        assert_eq!(
+            messages.iter().find(|m| m.0 == b't').unwrap().1,
+            [
+                &2i16.to_be_bytes()[..],
+                &1186u32.to_be_bytes(),
+                &25u32.to_be_bytes()
+            ]
+            .concat()
+        );
+        let description = messages.iter().find(|m| m.0 == b'T').unwrap().1.clone();
+        assert_eq!(&description[10..14], &701u32.to_be_bytes());
+        assert_eq!(&description[14..16], &8i16.to_be_bytes());
+        assert_eq!(&description[16..20], &(-1i32).to_be_bytes());
+        for input_format in [0i16, 1] {
+            for output_format in [0i16, 1] {
+                for index in 0..3 {
+                    // Binary interval stores microseconds, days and months independently.
+                    let value = if index == 1 {
+                        None
+                    } else if input_format == 0 {
+                        Some(b"40.123456 seconds".to_vec())
+                    } else {
+                        Some(
+                            [
+                                40_123_456i64.to_be_bytes().as_slice(),
+                                &0i32.to_be_bytes(),
+                                &0i32.to_be_bytes(),
+                            ]
+                            .concat(),
+                        )
+                    };
+                    let mut bind = vec![0, 0];
+                    bind.extend_from_slice(&1i16.to_be_bytes());
+                    bind.extend_from_slice(&input_format.to_be_bytes());
+                    bind.extend_from_slice(&2i16.to_be_bytes());
+                    let unit: &[u8] = if index == 2 {
+                        b"microseconds"
+                    } else {
+                        b"second"
+                    };
+                    for payload in [value.as_deref(), Some(unit)] {
+                        bind.extend_from_slice(
+                            &payload.map_or(-1, |v| v.len() as i32).to_be_bytes(),
+                        );
+                        if let Some(v) = payload {
+                            bind.extend_from_slice(v);
+                        }
+                    }
+                    bind.extend_from_slice(&1i16.to_be_bytes());
+                    bind.extend_from_slice(&output_format.to_be_bytes());
+                    send(&mut socket, b'B', &bind);
+                    send(&mut socket, b'D', b"P\0");
+                    send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                    send(&mut socket, b'S', &[]);
+                    let messages = ready(&mut socket);
+                    let expected_tags = if empty {
+                        vec![b'2', b'T', b'C', b'Z']
+                    } else {
+                        vec![b'2', b'T', b'D', b'C', b'Z']
+                    };
+                    assert_eq!(
+                        messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        expected_tags,
+                        "{messages:?}"
+                    );
+                    let mut portal = description.clone();
+                    let n = portal.len();
+                    portal[n - 2..].copy_from_slice(&output_format.to_be_bytes());
+                    assert_eq!(messages.iter().find(|m| m.0 == b'T').unwrap().1, portal);
+                    if !empty {
+                        let expected = if index == 1 {
+                            row(&[None])
+                        } else if output_format == 0 {
+                            row(&[Some(if index == 2 { "40123456" } else { "40.123456" })])
+                        } else {
+                            [
+                                &1i16.to_be_bytes()[..],
+                                &8i32.to_be_bytes(),
+                                &(if index == 2 {
+                                    40123456.0f64
+                                } else {
+                                    40.123456f64
+                                })
+                                .to_be_bytes(),
+                            ]
+                            .concat()
+                        };
+                        assert_eq!(messages.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                    }
+                    assert_eq!(messages.last().unwrap().1, b"I");
+                }
+            }
+        }
+    }
+    for (unit, state) in [("aster_bad_unit", "22023"), ("timezone", "0A000")] {
+        assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+        let sql = format!(
+            "SELECT date_part('{unit}'::text,'27 months 4 days 05:06:07.123456'::interval) AS v"
+        );
+        send(
+            &mut socket,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut socket, b'B', &[0, 0, 0, 0, 0, 0, 0, 0]);
+        send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+        send(&mut socket, b'S', &[]);
+        let messages = ready(&mut socket);
+        let error = &messages
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("runtime error")
+            .1;
+        assert!(
+            error
+                .windows(7)
+                .any(|b| b == format!("C{state}\0").as_bytes()),
+            "{messages:?}"
+        );
+        for field in [b'S', b'V', b'C', b'M'] {
+            assert!(
+                error
+                    .split(|b| *b == 0)
+                    .any(|part| part.first() == Some(&field) && part.len() > 1)
+            );
+        }
+        let phase = if messages.iter().any(|m| m.0 == b'2') {
+            "Execute"
+        } else {
+            "Bind"
+        };
+        println!("S-transaction-{unit}: phase={phase} error bytes={error:?}");
+        assert!(!messages.iter().any(|m| m.0 == b'D'));
+        assert_eq!(messages.last().unwrap().1, b"E");
+        assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4 AS v")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+    }
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    println!("pg08_10_sql: 65 scenarios passed; listener closed");
+}
