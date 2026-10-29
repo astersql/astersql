@@ -3191,8 +3191,12 @@ pub(super) fn validate_function_visibility(
                             });
                         }
                     } else if Args.len() < 2 {
-                        self.validation_error.get_or_insert_with(|| SessionError::new(format!(
-                            "[expression:1582]Incorrect parameter count in the call to native function '{}'", FnName.L)));
+                        self.validation_error.get_or_insert_with(|| {
+                            let error = astersql_util_dbterror::ClassExpression
+                                .NewStd(astersql_errno::errcode::ErrWrongParamcountToNativeFct)
+                                .GenWithStackByArgs(&[FnName.L.as_str().into()]);
+                            SessionError::with_source(error.to_string(), error)
+                        });
                     }
                 }
                 // Reject empty CONCAT before row evaluation, including empty results
@@ -3201,9 +3205,12 @@ pub(super) fn validate_function_visibility(
                     if self.dialect == ast::SqlDialect::PostgreSQL {
                         self.hidden.get_or_insert_with(|| FnName.L.clone());
                     } else {
-                        self.validation_error.get_or_insert_with(|| SessionError::new(
-                            "[expression:1582]Incorrect parameter count in the call to native function 'concat'",
-                        ));
+                        self.validation_error.get_or_insert_with(|| {
+                            let error = astersql_util_dbterror::ClassExpression
+                                .NewStd(astersql_errno::errcode::ErrWrongParamcountToNativeFct)
+                                .GenWithStackByArgs(&["concat".into()]);
+                            SessionError::with_source(error.to_string(), error)
+                        });
                     }
                     return true;
                 }
@@ -3274,4 +3281,25 @@ pub(super) fn validate_function_visibility(
         return Err(SessionError::new(message));
     }
     Ok(())
+}
+
+impl ConcreteSession {
+    /// These native functions reject arity during parsing, before the normal
+    /// statement diagnostic lifecycle. Retain their actual normalized error for
+    /// SHOW WARNINGS, as Go ParseSQL/ExecuteStmt do with StmtCtx.AppendError.
+    pub(super) fn record_mysql_function_arity_error(&self, error: &SessionError) {
+        if self.sql_dialect() != ast::SqlDialect::MySQL {
+            return;
+        }
+        let warning = SessionWarning::from_error(&error.clone().into_shared());
+        if warning.code != 1582 {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        state.current_warnings.clear();
+        state.last_warnings = vec![SessionWarning::error_with_code(
+            warning.code,
+            warning.message,
+        )];
+    }
 }

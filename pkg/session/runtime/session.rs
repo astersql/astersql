@@ -2041,8 +2041,20 @@ pub fn SplitSQLStatementsWithDialect(
     sql: &str,
     dialect: ast::SqlDialect,
 ) -> SessionResult<Vec<String>> {
-    parse_in_dialect(sql, dialect)?;
-    Ok(split_statement_sql(sql))
+    let statements = split_statement_sql(sql);
+    if let Err(error) = parse_in_dialect(sql, dialect) {
+        // A single native arity error must reach the owning SQL worker so its
+        // existing Query diagnostic lifecycle can retain SHOW WARNINGS. The
+        // worker revalidates the unchanged SQL before execution. Keep all other
+        // parse failures and multi-statement rejection at this boundary.
+        if dialect != ast::SqlDialect::MySQL
+            || statements.len() != 1
+            || SessionWarning::from_error(&error.clone().into_shared()).code != 1582
+        {
+            return Err(error);
+        }
+    }
+    Ok(statements)
 }
 
 /// 测试运行时持有的存储包装。

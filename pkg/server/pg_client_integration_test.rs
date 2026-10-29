@@ -9968,3 +9968,59 @@ fn pg_function_26_mysql_filter() {
         }
     }
 }
+
+#[test]
+fn pg_function_26_mysql_arity_diagnostics() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    assert!(astersql_session::runtime::SplitSQLStatements("SELECT 1; SELECT concat()").is_err());
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for (name, args) in [
+        ("concat", ""),
+        ("greatest", ""),
+        ("greatest", "7"),
+        ("least", ""),
+        ("least", "7"),
+    ] {
+        for prepare in [false, true] {
+            let sql = format!("SELECT {name}({args}) AS v WHERE false");
+            if prepare {
+                assert!(mysql.prepare(&sql).is_err());
+            } else {
+                let WireResponse::Err(error) = mysql.query(&sql).unwrap() else {
+                    panic!("arity must reject before a result")
+                };
+                assert_eq!(error.code, 1582);
+                assert_eq!(error.sql_state, Some(*b"42000"));
+            }
+            // Reading diagnostics twice must retain exactly the originating error.
+            for _ in 0..2 {
+                let WireResponse::ResultSet(result) = mysql.query("SHOW WARNINGS").unwrap() else {
+                    panic!("diagnostics must be queryable")
+                };
+                assert_eq!(
+                    result.rows,
+                    vec![vec![
+                        TextValue::Bytes(b"Error".to_vec()),
+                        TextValue::Bytes(b"1582".to_vec()),
+                        TextValue::Bytes(
+                            format!(
+                                "Incorrect parameter count in the call to native function '{name}'"
+                            )
+                            .into_bytes()
+                        )
+                    ]],
+                    "{sql}/prepare={prepare}"
+                );
+            }
+            let WireResponse::ResultSet(result) = mysql.query("SELECT 1 AS v").unwrap() else {
+                panic!("connection recovery")
+            };
+            assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+            let WireResponse::ResultSet(result) = mysql.query("SHOW WARNINGS").unwrap() else {
+                panic!("cleared diagnostics")
+            };
+            assert!(result.rows.is_empty());
+        }
+    }
+}

@@ -1816,7 +1816,8 @@ impl ConcreteSession {
         supplied: &[u32],
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
         self.begin_pg_date_statement();
-        let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let statements = parse_in_dialect(sql, self.sql_dialect())
+            .inspect_err(|error| self.record_mysql_function_arity_error(error))?;
         let pg_date_constants = self.prepare_pg_date_constants(&statements)?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
