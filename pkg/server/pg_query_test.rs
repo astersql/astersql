@@ -3082,3 +3082,375 @@ fn pg_function_11_mysql() {
     drop(server);
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_12() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    // Always roll back and remove our table, including assertion-unwind paths.
+    struct TableCleanup(TcpStream, String);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                query(&mut self.0, "ROLLBACK");
+                query(&mut self.0, &format!("DROP TABLE IF EXISTS {}", self.1));
+            }));
+        }
+    }
+    let table = format!("coalesce_runtime_12_{}", address.port());
+    let table_cleanup = TableCleanup(socket.try_clone().unwrap(), table.clone());
+    for sql in [
+        format!("CREATE TABLE {table}(a integer,z integer)"),
+        format!("INSERT INTO {table} VALUES(7,0)"),
+    ] {
+        let m = query(&mut socket, &sql);
+        assert_eq!(
+            m.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"CZ",
+            "{sql}: {m:?}"
+        );
+    }
+    let description = [
+        &1i16.to_be_bytes()[..],
+        b"v\0",
+        &0u32.to_be_bytes(),
+        &0i16.to_be_bytes(),
+        &23u32.to_be_bytes(),
+        &4i16.to_be_bytes(),
+        &(-1i32).to_be_bytes(),
+        &0i16.to_be_bytes(),
+    ]
+    .concat();
+    let sql = format!("SELECT coalesce(a,10/z) AS v FROM {table}");
+    let m = query(&mut socket, &sql);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ", "{m:?}");
+    assert_eq!(m[0].1, description);
+    assert_eq!(m[1].1, row(&[Some("7")]));
+    assert_eq!(m.last().unwrap().1, b"I");
+    // Both operands are typed before evaluation even when the first is non-NULL.
+    let mixed = query(
+        &mut socket,
+        &format!("SELECT coalesce(a,'x'::text) AS v FROM {table}"),
+    );
+    assert_error(&mixed, "42804", b'I');
+    assert_eq!(query(&mut socket, "SELECT 1::int4")[1].1, row(&[Some("1")]));
+    let mixed_sql = format!("SELECT coalesce(a,'x'::text) AS v FROM {table}");
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"\0".as_slice(),
+            mixed_sql.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert_error(&ready(&mut socket), "42804", b'I');
+    assert_eq!(query(&mut socket, "SELECT 1::int4")[1].1, row(&[Some("1")]));
+    query(&mut socket, &format!("UPDATE {table} SET a=NULL"));
+    assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+    let m = query(&mut socket, &sql);
+    assert_error(&m, "22012", b'E');
+    assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+    assert_eq!(query(&mut socket, "SELECT 1::int4")[1].1, row(&[Some("1")]));
+
+    fn assert_error(m: &[(u8, Vec<u8>)], state: &str, ready: u8) {
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ", "{m:?}");
+        let error = &m[0].1;
+        let mut offset = 0;
+        let mut fields = std::collections::BTreeMap::new();
+        while error[offset] != 0 {
+            let tag = error[offset];
+            offset += 1;
+            let n = error[offset..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(
+                tag,
+                std::str::from_utf8(&error[offset..offset + n]).unwrap(),
+            );
+            offset += n + 1;
+        }
+        assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'C'), Some(&state));
+        assert!(!fields[&b'M'].is_empty());
+        assert!(
+            [b'D', b'H', b'P']
+                .iter()
+                .all(|tag| !fields.contains_key(tag))
+        );
+        println!("runtime COALESCE: {fields:?}");
+        assert_eq!(m.last().unwrap().1, [ready]);
+    }
+
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    // Parse/Describe cannot evaluate the fallback. Rebind the same statement
+    // against real columns, including NULL input and an empty relation result.
+    for empty in [false, true] {
+        let statement = if empty {
+            b"runtime12_empty\0".as_slice()
+        } else {
+            b"runtime12_full\0".as_slice()
+        };
+        let statement_describe = [b"S".as_slice(), statement].concat();
+        let sql = format!(
+            "SELECT coalesce(a,$1::int4/z) AS v FROM {table}{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        send(
+            &mut socket,
+            b'P',
+            &[statement, sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+        );
+        send(&mut socket, b'D', &statement_describe);
+        send(&mut socket, b'S', &[]);
+        let m = ready(&mut socket);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ", "{m:?}");
+        assert_eq!(
+            m[1].1,
+            [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+        );
+        assert_eq!(m[2].1, description);
+        for (a, z, format, input, expected) in [
+            ("7", 0, 0i16, Some(10i32), Some(7i32)),
+            ("7", 0, 1, None, Some(7)),
+            ("NULL", 2, 0, Some(10), Some(5)),
+            ("NULL", 2, 1, None, None),
+            ("NULL", 2, 1, Some(-11), Some(-5)),
+            ("NULL", 2, 0, None, None),
+        ] {
+            let update = query(&mut socket, &format!("UPDATE {table} SET a={a},z={z}"));
+            assert_eq!(
+                update.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"CZ",
+                "{update:?}"
+            );
+            let mut bind = [b"\0".as_slice(), statement].concat();
+            bind.extend_from_slice(&1i16.to_be_bytes());
+            bind.extend_from_slice(&format.to_be_bytes());
+            bind.extend_from_slice(&1i16.to_be_bytes());
+            if let Some(value) = input {
+                let bytes = if format == 0 {
+                    value.to_string().into_bytes()
+                } else {
+                    value.to_be_bytes().to_vec()
+                };
+                bind.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                bind.extend_from_slice(&bytes);
+            } else {
+                bind.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+            bind.extend_from_slice(&1i16.to_be_bytes());
+            bind.extend_from_slice(&format.to_be_bytes());
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'D', b"P\0");
+            send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+            send(&mut socket, b'D', &statement_describe);
+            send(&mut socket, b'S', &[]);
+            let m = ready(&mut socket);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                if empty {
+                    b"2TCtTZ".as_slice()
+                } else {
+                    b"2TDCtTZ".as_slice()
+                },
+                "{m:?}"
+            );
+            let mut portal = description.clone();
+            let len = portal.len();
+            portal[len - 2..].copy_from_slice(&format.to_be_bytes());
+            assert_eq!(m[1].1, portal);
+            if !empty {
+                let mut expected_row = 1i16.to_be_bytes().to_vec();
+                if let Some(value) = expected {
+                    let bytes = if format == 0 {
+                        value.to_string().into_bytes()
+                    } else {
+                        value.to_be_bytes().to_vec()
+                    };
+                    expected_row.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    expected_row.extend_from_slice(&bytes);
+                } else {
+                    expected_row.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                assert_eq!(m[2].1, expected_row);
+            }
+            let index = if empty { 3 } else { 4 };
+            assert_eq!(m[index + 1].1, description);
+            assert_eq!(m.last().unwrap().1, b"I");
+        }
+    }
+    // A previously described named statement reaches the fallback only at Execute.
+    query(&mut socket, &format!("UPDATE {table} SET a=NULL,z=0"));
+    query(&mut socket, "BEGIN");
+    let bind = [
+        b"\0runtime12_full\0".as_slice(),
+        &0i16.to_be_bytes(),
+        &1i16.to_be_bytes(),
+        &2i32.to_be_bytes(),
+        b"10",
+        &0i16.to_be_bytes(),
+    ]
+    .concat();
+    send(&mut socket, b'B', &bind);
+    send(&mut socket, b'D', b"P\0");
+    send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+    send(&mut socket, b'S', &[]);
+    let m = ready(&mut socket);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TEZ", "{m:?}");
+    assert_eq!(m[1].1, description);
+    assert_error(&m[2..], "22012", b'E');
+    assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+    assert_eq!(query(&mut socket, "SELECT 1::int4")[1].1, row(&[Some("1")]));
+    drop(table_cleanup);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_12_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    let address = server.listener_addr().unwrap();
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+
+    fn execute(socket: &mut TcpStream, sql: &str) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u16) {
+        mysql_packet(socket, 0, format!("\x03{sql}").as_bytes());
+        let first = mysql_read(socket);
+        assert_ne!(first[0], 0xff, "{sql}: {first:?}");
+        if first[0] == 0 {
+            return (vec![], vec![], 0);
+        }
+        let columns = (0..first[0])
+            .map(|_| mysql_read(socket))
+            .collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let mut rows = vec![];
+        loop {
+            let packet = mysql_read(socket);
+            if packet[0] == 0xfe && packet.len() < 9 {
+                return (
+                    columns,
+                    rows,
+                    u16::from_le_bytes(packet[1..3].try_into().unwrap()),
+                );
+            }
+            rows.push(packet);
+        }
+    }
+    struct TableCleanup(TcpStream, String);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute(&mut self.0, &format!("DROP TABLE IF EXISTS {}", self.1));
+            }));
+        }
+    }
+    execute(
+        &mut socket,
+        "SET SESSION sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'",
+    );
+    let table = format!("coalesce_mysql_runtime12_{}", address.port());
+    let table_cleanup = TableCleanup(socket.try_clone().unwrap(), table.clone());
+    execute(
+        &mut socket,
+        &format!("CREATE TABLE {table}(a BIGINT,z BIGINT)"),
+    );
+    execute(&mut socket, &format!("INSERT INTO {table} VALUES(7,0)"));
+    for (a, z) in [("7", 0), ("NULL", 0), ("NULL", 2)] {
+        execute(&mut socket, &format!("UPDATE {table} SET a={a},z={z}"));
+        let actual = execute(
+            &mut socket,
+            &format!("SELECT COALESCE(a,10/z) AS v FROM {table}"),
+        );
+        let warnings = execute(&mut socket, "SHOW WARNINGS");
+        let mut offset = 0;
+        for _ in 0..6 {
+            offset += usize::from(actual.0[0][offset]) + 1;
+        }
+        let metadata = &actual.0[0][offset + 1..offset + 13];
+        println!(
+            "MySQL a={a} z={z}: rows={:?} warnings={} details={:?} charset={} length={} code={} flags={} decimals={}",
+            actual.1,
+            actual.2,
+            warnings.1,
+            u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+            u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+            metadata[6],
+            u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+            metadata[9]
+        );
+        assert_eq!(actual.1.len(), 1);
+        // Keep this formal-entry observation separate from PG's error contract.
+        if a == "7" {
+            assert_eq!(actual.1[0], vec![1, b'7']);
+        } else if z == 0 {
+            assert_eq!(actual.1[0], vec![0xfb]);
+        } else {
+            assert_eq!(actual.1[0], vec![6, b'5', b'.', b'0', b'0', b'0', b'0']);
+        }
+    }
+    drop(table_cleanup);
+    mysql_packet(&mut socket, 0, &[1]);
+    drop(socket);
+    drop(cleanup);
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}

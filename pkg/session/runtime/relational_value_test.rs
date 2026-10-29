@@ -1196,3 +1196,56 @@ fn pg06_task_085_unknown_null_set_identity() {
         assert!(fields[0].column_origin.is_none(), "{sql}");
     }
 }
+
+#[test]
+fn pg_function_12_session_int4_fallback() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE runtime12_local(a integer,z integer)")
+        .unwrap();
+    pg.execute("INSERT INTO runtime12_local VALUES(7,0)")
+        .unwrap();
+    for (a, z, expected) in [
+        ("7", 0, "7"),
+        ("NULL", 2, "5"),
+        ("NULL", -3, "-3"),
+        ("NULL", 11, "0"),
+        ("NULL", 2147483647, "0"),
+    ] {
+        pg.execute(&format!("UPDATE runtime12_local SET a={a},z={z}"))
+            .unwrap();
+        let result = pg
+            .execute("SELECT coalesce(a,10/z) AS v FROM runtime12_local")
+            .unwrap();
+        assert_eq!(result[0].rows[0][0], expected);
+        assert_eq!(
+            result[0].result_fields[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypeLong
+        );
+    }
+    pg.execute("UPDATE runtime12_local SET a=NULL,z=0").unwrap();
+    let error = pg
+        .execute("SELECT coalesce(a,10/z) AS v FROM runtime12_local")
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("division by zero"), "{error}");
+    pg.execute("UPDATE runtime12_local SET a=NULL,z=-1")
+        .unwrap();
+    let error = pg
+        .execute("SELECT coalesce(a,(-2147483648)::int4/z) AS v FROM runtime12_local")
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("integer out of range"),
+        "{error}"
+    );
+    pg.execute("DROP TABLE runtime12_local").unwrap();
+    domain.close();
+}

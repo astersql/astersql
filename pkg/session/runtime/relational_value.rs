@@ -1046,6 +1046,42 @@ pub(super) fn relational_expression_value(
             Ok(Some(value.to_string()))
         }
         ast::ExprKind::Binary { Op, L, R } if Op == "/" || Op.eq_ignore_ascii_case("div") => {
+            // PG ordinary-table projections retain their bound column types in
+            // this context. Keep int4 fallback division strict and integral,
+            // without changing MySQL's decimal/NULL division semantics.
+            let pg_int4 = Op == "/"
+                && PG_CAST_TABLE.with(|slot| {
+                    slot.borrow().as_ref().is_some_and(|table| {
+                        [L.as_ref(), R.as_ref()].iter().all(|operand| {
+                            super::query::pg_integer_literal_type(operand)
+                                .unwrap_or_else(|| relational_expression_type(operand, table))
+                                .GetType()
+                                == astersql_parser_mysql::r#type::TypeLong
+                        })
+                    })
+                });
+            if pg_int4 {
+                let left = relational_expression_value(L, row)?;
+                let right = relational_expression_value(R, row)?;
+                let Some((left, right)) = left.zip(right) else {
+                    return Ok(None);
+                };
+                let left = left
+                    .parse::<i32>()
+                    .map_err(|error| session_error("parse int4 dividend", error))?;
+                let right = right
+                    .parse::<i32>()
+                    .map_err(|error| session_error("parse int4 divisor", error))?;
+                let (state, message) = if right == 0 {
+                    ("22012", "division by zero")
+                } else {
+                    ("22003", "integer out of range")
+                };
+                return left
+                    .checked_div(right)
+                    .map(|value| Some(value.to_string()))
+                    .ok_or_else(|| pg_bytea_input_error(state, message));
+            }
             if Op == "/"
                 && let Some(precision) = BUILD_DIVISION_PRECISION.with(|slot| slot.get())
             {

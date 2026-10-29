@@ -3857,6 +3857,20 @@ impl ConcreteSession {
                     astersql_parser_mysql::r#type::TypeDouble,
                 );
             }
+            // PostgreSQL int4 division keeps its integer result identity; MySQL '/' remains decimal.
+            if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
+                && Op == "/"
+            {
+                let left = self.pg_case_input_type(L, source_fields);
+                let right = self.pg_case_input_type(R, source_fields);
+                if left.GetType() == astersql_parser_mysql::r#type::TypeLong
+                    && right.GetType() == astersql_parser_mysql::r#type::TypeLong
+                {
+                    return astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeLong,
+                    );
+                }
+            }
             // Preserve the existing PG integer promotion for int2 -> int4.
             // The shared MySQL expression inference otherwise labels arithmetic int8.
             if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
