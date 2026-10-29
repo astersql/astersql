@@ -1498,6 +1498,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 "numeric" | "decimal" => parser_mysql::r#type::TypeNewDecimal,
                 "timestamptz" => parser_mysql::r#type::TypePgTimestampTz,
                 "interval" => parser_mysql::r#type::TypePgInterval,
+                "int4range" => parser_mysql::r#type::TypePgInt4Range,
                 "uuid" => parser_mysql::r#type::TypePgUuid,
                 "jsonb" => parser_mysql::r#type::TypePgJsonb,
                 _ => {

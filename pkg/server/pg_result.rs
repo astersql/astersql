@@ -480,6 +480,7 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         6 => (25, -1), // NULL has no stronger engine type
         astersql_parser_mysql::r#type::TypePgTimestampTz => (1184, 8),
         astersql_parser_mysql::r#type::TypePgInterval => (1186, 16),
+        astersql_parser_mysql::r#type::TypePgInt4Range => (3904, -1),
         astersql_parser_mysql::r#type::TypePgUuid => (2950, 16),
         astersql_parser_mysql::r#type::TypePgJson => (114, -1),
         astersql_parser_mysql::r#type::TypePgJsonb => (3802, -1),
@@ -560,6 +561,16 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
                 .map(|text| Some(text.into_bytes()))
                 .map_err(|error| invalid(&error.to_string())),
             _ => Err(invalid("array result requires its canonical text carrier")),
+        };
+    }
+    if oid == 3904 {
+        return match value {
+            Value::Null => Ok(None),
+            Value::Text(text) => text
+                .parse::<astersql_types::pg_int4range::PgInt4Range>()
+                .map(|r| Some(r.to_string().into_bytes()))
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            _ => Err(invalid("int4range result requires its canonical carrier")),
         };
     }
     if oid == 3802 {
@@ -823,6 +834,10 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
         // jsonb_send uses version 1 followed by jsonb_out text, never the
         // engine's internal JSON memory representation.
         3802 => [b"\x01".as_slice(), text.as_bytes()].concat(),
+        3904 => text
+            .parse::<astersql_types::pg_int4range::PgInt4Range>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            .to_binary(),
         1700 => binary_numeric(text)?,
         22 | 30 | 1000 | 1001 | 1005 | 1007 | 1009 | 1014 | 1015 | 1182 | 1183 | 1115 | 1185
         | 1187 | 2951 | 199 | 3807 | 1016 | 1021 | 1022 | 1231 | 1028 => binary_array(text, oid)?,

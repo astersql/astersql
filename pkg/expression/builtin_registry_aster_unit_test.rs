@@ -48,10 +48,26 @@ fn builtin_registry_matches_complete_go_function_table() {
     const SQL_OPERATOR_ALIASES: &[&str] = &[
         "=", "!=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/", "%",
     ];
+    // Keep the Go inventory separate from the bounded PostgreSQL extensions.
+    const PG_EXTENSIONS: &[&str] = &[
+        "date_trunc",
+        "date_part",
+        "to_char",
+        "array_length",
+        "cardinality",
+        "array_append",
+        "int4range",
+    ];
     assert_eq!(
         funcs.len(),
-        GO_BUILTIN_COUNT + SQL_OPERATOR_ALIASES.len() + 1 /* PG-only date_trunc */
+        GO_BUILTIN_COUNT + SQL_OPERATOR_ALIASES.len() + PG_EXTENSIONS.len()
     );
+    for name in PG_EXTENSIONS {
+        assert!(
+            IsFunctionSupported(name),
+            "missing PostgreSQL extension {name}"
+        );
+    }
     for alias in SQL_OPERATOR_ALIASES {
         assert!(
             IsFunctionSupported(alias),

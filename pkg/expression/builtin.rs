@@ -2612,6 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "int4range" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeLong, mysql::TypeLong],
+                    result: mysql::TypePgInt4Range,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeLong, mysql::TypeLong, mysql::TypeVarString],
+                    result: mysql::TypePgInt4Range,
+                },
+            ],
             "array_append" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypeLong],
@@ -2782,6 +2792,28 @@ pub mod formal_registry {
             "array_length",
             &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
         )
+    }
+
+    /// Keep full argument identities while resolving the selected typed containers.
+    pub fn resolve_pg_typed_signature(
+        name: &str,
+        inputs: &[types::FieldType],
+    ) -> Result<PgFunctionCandidate, &'static str> {
+        if name == "int4range" {
+            if inputs.iter().any(|tp| {
+                tp.PostgreSQLArrayElement().is_some()
+                    || tp.PostgreSQLRecordFields().is_some()
+                    || mysql::HasUnsignedFlag(tp.GetFlag())
+                    || tp.GetFlag() & mysql::IsBooleanFlag != 0
+            }) {
+                return Err("42883");
+            }
+            return resolve_pg_signature(
+                name,
+                &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
+            );
+        }
+        resolve_pg_array_signature(name, inputs)
     }
 
     /// Resolve the bounded array family without losing the element identity.
@@ -4283,6 +4315,7 @@ pub mod formal_registry {
         PgArrayLength,
         PgCardinality,
         PgArrayAppend,
+        PgInt4Range,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -5348,6 +5381,38 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::PgInt4Range => {
+                    use types_dependency::pg_int4range::{PgInt4Range, PgInt4RangeError};
+                    let (a, an) = self.base.args[0].EvalInt(ctx, row.clone())?;
+                    let (b, bn) = self.base.args[1].EvalInt(ctx, row.clone())?;
+                    let (flags, null) = if self.base.args.len() == 3 {
+                        self.base.args[2].EvalString(ctx, row)?
+                    } else {
+                        ("[)".to_owned(), false)
+                    };
+                    let endpoint = |v: i64, null: bool| -> Result<Option<i32>, Error> {
+                        if null {
+                            return Ok(None);
+                        }
+                        i32::try_from(v).map(Some).map_err(|_| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                PgInt4RangeError {
+                                    state: "22003",
+                                    message: "integer out of range".to_owned(),
+                                },
+                            ))
+                        })
+                    };
+                    PgInt4Range::new(
+                        endpoint(a, an)?,
+                        endpoint(b, bn)?,
+                        (!null).then_some(flags.as_str()),
+                    )
+                    .map(|range| (range.to_string(), false))
+                    .map_err(|error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    })
+                }
                 CoreBuiltinKind::PgArrayAppend => {
                     use types_dependency::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
                     let diagnostic = |state, message| {
@@ -6477,14 +6542,14 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
-            "array_length" | "cardinality" | "array_append"
+            "array_length" | "cardinality" | "array_append" | "int4range"
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
             {
                 let inputs = args
                     .iter()
                     .map(|arg| arg.GetType(ctx.GetEvalCtx()).clone())
                     .collect::<Vec<_>>();
-                let candidate = resolve_pg_array_signature(name, &inputs).map_err(errors::New)?;
+                let candidate = resolve_pg_typed_signature(name, &inputs).map_err(errors::New)?;
                 let mut result = *types::NewFieldType(candidate.result);
                 if name == "array_append" {
                     result.SetPostgreSQLArrayElement(
@@ -6493,12 +6558,14 @@ pub mod formal_registry {
                 }
                 (
                     match name {
+                        "int4range" => CoreBuiltinKind::PgInt4Range,
                         "cardinality" => CoreBuiltinKind::PgCardinality,
                         "array_append" => CoreBuiltinKind::PgArrayAppend,
                         _ => CoreBuiltinKind::PgArrayLength,
                     },
                     result,
                     match name {
+                        "int4range" => "builtinPgInt4RangeSig",
                         "cardinality" => "builtinPgCardinalitySig",
                         "array_append" => "builtinPgArrayAppendSig",
                         _ => "builtinPgArrayLengthSig",
@@ -8018,6 +8085,7 @@ pub mod formal_registry {
     core_factory!(pg_array_length_factory, "array_length");
     core_factory!(pg_cardinality_factory, "cardinality");
     core_factory!(pg_array_append_factory, "array_append");
+    core_factory!(pg_int4range_factory, "int4range");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8111,6 +8179,7 @@ pub mod formal_registry {
         ("array_length", pg_array_length_factory),
         ("cardinality", pg_cardinality_factory),
         ("array_append", pg_array_append_factory),
+        ("int4range", pg_int4range_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8480,6 +8549,7 @@ pub mod formal_registry {
         ("array_length", 2, 2),
         ("cardinality", 1, 1),
         ("array_append", 2, 2),
+        ("int4range", 2, 3),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -8777,6 +8847,9 @@ pub mod formal_registry {
                     | "array_length"
                     | "cardinality"
                     | "array_append"
+                    | "int4range"
+                    | "numrange"
+                    | "isempty"
                     | "date_part"
                     | "numeric_abs"
                     | "float4abs"

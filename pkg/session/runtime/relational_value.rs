@@ -1473,6 +1473,9 @@ pub(super) fn relational_expression_value(
                     relational_expression_value(Expr, row)
                 });
             }
+            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInt4Range {
+                return pg_int4range_cast(relational_expression_value(Expr, row)?);
+            }
             if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                 return super::pg_jsonb::cast_value(relational_expression_value(Expr, row)?);
             }
@@ -3024,6 +3027,7 @@ pub(super) fn relational_expression_type(
                     | astersql_parser_mysql::r#type::TypeDuration
                     | astersql_parser_mysql::r#type::TypeDatetime
             ) || Tp.PostgreSQLArrayElement().is_some()
+                || Tp.GetType() == astersql_parser_mysql::r#type::TypePgInt4Range
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid
@@ -3142,9 +3146,9 @@ pub(super) fn relational_expression_type(
             Args,
         } if matches!(
             FnName.L.as_str(),
-            "array_length" | "cardinality" | "array_append"
+            "array_length" | "cardinality" | "array_append" | "int4range"
         ) && (Schema.L.is_empty() || Schema.L == "pg_catalog")
-            && astersql_expression::formal_registry::resolve_pg_array_signature(
+            && astersql_expression::formal_registry::resolve_pg_typed_signature(
                 &FnName.L,
                 &Args
                     .iter()
@@ -3153,7 +3157,9 @@ pub(super) fn relational_expression_type(
             )
             .is_ok() =>
         {
-            let mut result = new_type(if FnName.L == "array_append" {
+            let mut result = new_type(if FnName.L == "int4range" {
+                astersql_parser_mysql::r#type::TypePgInt4Range
+            } else if FnName.L == "array_append" {
                 astersql_parser_mysql::r#type::TypeVarString
             } else {
                 astersql_parser_mysql::r#type::TypeLong
@@ -4849,4 +4855,69 @@ pub(super) fn pg_bytea_text_pair(
         && (target.PostgreSQLTextOid().is_some()
             || (target.GetType() == astersql_parser_mysql::r#type::TypeBlob
                 && target.GetCharset() != "binary"))
+}
+
+/// Shared explicit range I/O cast for typed parameter and row consumers.
+pub(super) fn pg_int4range_cast(value: Option<String>) -> SessionResult<Option<String>> {
+    value
+        .map(|value| {
+            astersql_types::pg_int4range::PgInt4Range::from_text_with(&value, |bound| {
+                astersql_expression::pg_cast_int4(Some(bound))
+                    .map(|n| n.expect("non-null endpoint"))
+                    .map_err(|e| astersql_types::pg_int4range::PgInt4RangeError {
+                        state: e.sqlstate(),
+                        message: e.to_string(),
+                    })
+            })
+            .map(|r| r.to_string())
+            .map_err(|e| pg_int4range_error(&e))
+        })
+        .transpose()
+}
+
+/// Reject unrelated native conversions before evaluation, including zero rows
+/// and typed NULL. Range I/O casts use the same explicit text bridge as UUID.
+pub(super) fn pg_int4range_validate_cast(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> SessionResult<()> {
+    use astersql_parser_mysql::r#type::*;
+    let source_range = source.GetType() == TypePgInt4Range;
+    let target_range = target.GetType() == TypePgInt4Range;
+    if !source_range && !target_range {
+        return Ok(());
+    }
+    let text_source = source.PostgreSQLArrayElement().is_none()
+        && source.PostgreSQLRecordFields().is_none()
+        && (source.PostgreSQLTextOid() == Some(25)
+            || (matches!(source.GetType(), TypeVarString | TypeVarchar | TypeString)
+                && source.GetCharset() != "binary"
+                && source.PostgreSQLTextOid().is_none()));
+    if (target_range && (source_range || text_source || source.GetType() == TypeNull))
+        || (source_range && matches!(target.PostgreSQLTextOid(), Some(25 | 1042 | 1043)))
+    {
+        Ok(())
+    } else {
+        Err(pg_bytea_input_error(
+            "42846",
+            "cannot cast type to int4range",
+        ))
+    }
+}
+
+/// Preserve constructor hint fields through the existing function diagnostic bridge.
+pub(super) fn pg_int4range_error(
+    error: &astersql_types::pg_int4range::PgInt4RangeError,
+) -> SessionError {
+    let diagnostic = super::function_diagnostics::PgFunctionError {
+        state: error.state,
+        message: error.message.clone(),
+        position: None,
+        hint: (error.state == "42601")
+            .then_some("Valid values are \"[]\", \"[)\", \"(]\", and \"()\"."),
+    };
+    SessionError::with_source(
+        error.to_string(),
+        astersql_errors::SharedError::new(diagnostic),
+    )
 }

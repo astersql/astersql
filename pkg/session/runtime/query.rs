@@ -1298,6 +1298,21 @@ impl ConcreteSession {
             }
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
+            && FnName.L == "coalesce"
+            && Args.iter().any(|arg| {
+                self.pg_case_input_type(arg, &[]).GetType()
+                    == astersql_parser_mysql::r#type::TypePgInt4Range
+            })
+        {
+            for arg in Args {
+                if let Some(value) = self.relational_query_expression_value(arg, row, group_rows)? {
+                    return Ok(Some(value));
+                }
+            }
+            return Ok(None);
+        }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
                 FnName,
                 Schema,
@@ -1426,7 +1441,7 @@ impl ConcreteSession {
             } = &expression.Kind
             && matches!(
                 FnName.L.as_str(),
-                "array_length" | "cardinality" | "array_append"
+                "array_length" | "cardinality" | "array_append" | "int4range"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
@@ -1435,7 +1450,7 @@ impl ConcreteSession {
                 .iter()
                 .map(|arg| self.pg_case_input_type(arg, &[]))
                 .collect::<Vec<_>>();
-            let candidate = astersql_expression::formal_registry::resolve_pg_array_signature(
+            let candidate = astersql_expression::formal_registry::resolve_pg_typed_signature(
                 &FnName.L, &inputs,
             )
             .map_err(|_| {
@@ -1467,11 +1482,14 @@ impl ConcreteSession {
                 arguments,
             )
             .map_err(|error| session_error("build PostgreSQL array function", error))?;
-            if FnName.L == "array_append" {
+            if FnName.L == "array_append" || FnName.L == "int4range" {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
                     .map_err(|error| {
                         let shared = error.into_shared();
+                        if let Some(error)=shared.downcast_ref::<astersql_types::pg_int4range::PgInt4RangeError>() {
+                            return super::relational_value::pg_int4range_error(error);
+                        }
                         if let Some(error) = shared.downcast_ref::<astersql_expression::formal_registry::PgArrayAppendError>() {
                             let diagnostic = super::pg_array::PgArrayError {
                                 state: error.state,
@@ -2062,6 +2080,11 @@ impl ConcreteSession {
                                 None
                             },
                             || self.relational_query_expression_value(Expr, row, group_rows),
+                        );
+                    }
+                    if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInt4Range {
+                        return super::relational_value::pg_int4range_cast(
+                            self.relational_query_expression_value(Expr, row, group_rows)?,
                         );
                     }
                     if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
@@ -3555,7 +3578,7 @@ impl ConcreteSession {
                 } = &input.Kind
                     && matches!(
                         FnName.L.as_str(),
-                        "array_length" | "cardinality" | "array_append"
+                        "array_length" | "cardinality" | "array_append" | "int4range"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -3563,7 +3586,7 @@ impl ConcreteSession {
                         .iter()
                         .map(|arg| self.session.pg_case_input_type(arg, self.sources))
                         .collect::<Vec<_>>();
-                    if astersql_expression::formal_registry::resolve_pg_array_signature(
+                    if astersql_expression::formal_registry::resolve_pg_typed_signature(
                         &FnName.L, &inputs,
                     )
                     .is_err()
@@ -3744,6 +3767,25 @@ impl ConcreteSession {
                         astersql_errors::SharedError::new(error),
                     ));
                 }
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && FnName.L == "coalesce"
+                    && Args.iter().any(|arg| {
+                        self.session.pg_case_input_type(arg, self.sources).GetType()
+                            == astersql_parser_mysql::r#type::TypePgInt4Range
+                    })
+                    && Args.iter().any(|arg| {
+                        !matches!(
+                            self.session.pg_case_input_type(arg, self.sources).GetType(),
+                            astersql_parser_mysql::r#type::TypePgInt4Range
+                                | astersql_parser_mysql::r#type::TypeNull
+                        )
+                    })
+                {
+                    self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
+                        "42804",
+                        "COALESCE types cannot be matched to int4range",
+                    ));
+                }
                 // json -> jsonb is assignment-only. Even typed NULL cannot
                 // satisfy COALESCE's implicit coercion requirement.
                 if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
@@ -3899,6 +3941,9 @@ impl ConcreteSession {
                     if !matches!(Expr.Kind, ast::ExprKind::ParamMarker { .. }) {
                         self.scalar_cast_error = super::pg_json::validate_cast(&source, Tp)
                             .and_then(|()| super::pg_uuid::validate_cast(&source, Tp))
+                            .and_then(|()| {
+                                super::relational_value::pg_int4range_validate_cast(&source, Tp)
+                            })
                             .err()
                             .or(self.scalar_cast_error.take());
                     }
@@ -4776,7 +4821,7 @@ impl ConcreteSession {
             } = &expression.Kind
                 && matches!(
                     FnName.L.as_str(),
-                    "array_length" | "cardinality" | "array_append"
+                    "array_length" | "cardinality" | "array_append" | "int4range"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
@@ -4785,7 +4830,7 @@ impl ConcreteSession {
                     .map(|arg| self.pg_case_input_type(arg, source_fields))
                     .collect::<Vec<_>>();
                 if let Ok(candidate) =
-                    astersql_expression::formal_registry::resolve_pg_array_signature(
+                    astersql_expression::formal_registry::resolve_pg_typed_signature(
                         &FnName.L, &inputs,
                     )
                 {

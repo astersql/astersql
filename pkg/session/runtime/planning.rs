@@ -3018,6 +3018,7 @@ impl ConcreteSession {
                         _ if Tp.PostgreSQLTextOid().is_some() => Tp.PostgreSQLTextOid().unwrap(),
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeDuration => 1083,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime => 1114,
+                        _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInt4Range => 3904,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid => 2950,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson => 114,
                         _ if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb => 3802,

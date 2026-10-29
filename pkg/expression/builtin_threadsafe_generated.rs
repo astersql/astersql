@@ -41,10 +41,13 @@ pub enum GeneratedThreadSafetyPolicy {
 pub fn GeneratedThreadSafetyPolicyForSignature(
     signature: &str,
 ) -> Option<GeneratedThreadSafetyPolicy> {
-    // Array shape is immutable and carries no connection-local context.
+    // Array shape and int4range canonicalization have no connection-local context.
     if matches!(
         signature,
-        "builtinPgArrayLengthSig" | "builtinPgCardinalitySig" | "builtinPgArrayAppendSig"
+        "builtinPgArrayLengthSig"
+            | "builtinPgCardinalitySig"
+            | "builtinPgArrayAppendSig"
+            | "builtinPgInt4RangeSig"
     ) {
         return Some(GeneratedThreadSafetyPolicy::Recursive);
     }

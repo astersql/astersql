@@ -230,3 +230,6 @@ pub const TypePgUuid: u8 = 0xe4;
 pub const TypePgJson: u8 = 0xe5;
 /// Internal PostgreSQL canonical JSONB identity, never MySQL BinaryJSON.
 pub const TypePgJsonb: u8 = 0xe0;
+
+/// Internal int4range identity (PG OID3904, subtype23); never a MySQL wire type.
+pub const TypePgInt4Range: u8 = 0xdf;

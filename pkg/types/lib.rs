@@ -131,3 +131,7 @@ mod pg_jsonb_test;
 pub mod pg_array;
 #[cfg(test)]
 mod pg_array_test;
+
+pub mod pg_int4range;
+#[cfg(test)]
+mod pg_int4range_test;

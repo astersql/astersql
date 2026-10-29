@@ -482,6 +482,20 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
                 .as_bytes()
                 .to_vec(),
         ),
+        3904 => (
+            253,
+            astersql_types::pg_int4range::PgInt4Range::from_text_with(text, |bound| {
+                astersql_expression::pg_cast_int4(Some(bound))
+                    .map(|n| n.expect("non-null endpoint"))
+                    .map_err(|e| astersql_types::pg_int4range::PgInt4RangeError {
+                        state: e.sqlstate(),
+                        message: e.to_string(),
+                    })
+            })
+            .map_err(|e| error(e.state, &e.message))?
+            .to_string()
+            .into_bytes(),
+        ),
         2950 => (
             253,
             text.parse::<astersql_types::pg_uuid::PgUuid>()
@@ -623,6 +637,11 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             let timestamp = astersql_types::pg_temporal::PgTimestamp::from_binary(value)
                 .map_err(|e| error(e.sqlstate(), &e.to_string()))?;
             return parameter(1114, Some(timestamp.to_string().as_bytes()));
+        }
+        3904 => {
+            let range = astersql_types::pg_int4range::PgInt4Range::from_binary(value)
+                .map_err(|e| error(e.state, &e.message))?;
+            return parameter(3904, Some(range.to_string().as_bytes()));
         }
         2950 => {
             // uuid_recv reads exactly 16 bytes, then Bind rejects leftovers.
@@ -1237,6 +1256,7 @@ impl Extended {
                         | 1184
                         | 1186
                         | 1700
+                        | 3904
                         | 2950
                         | 3802
                         | 1005
