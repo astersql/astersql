@@ -310,7 +310,8 @@ def run(dsns, evidence, aster_mysql=None):
             fixtures={name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('pg_function_27_libpq.py','pg_function_23_libpq.py','pg_function_24_libpq.py','pg_function_25_libpq.py')},
             cargo_lock_sha256=hashlib.sha256((repo/'Cargo.lock').read_bytes()).hexdigest(),
             source_diff_sha256=hashlib.sha256(subprocess.check_output(['git','diff','HEAD','--','pkg'],cwd=repo)).hexdigest(),
-            rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None)))
+            rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None,
+            reference_build=json.loads(Path(os.environ['FUNCTION27_REFERENCE_BUILD_FILE']).read_text()) if os.environ.get('FUNCTION27_REFERENCE_BUILD_FILE') else None)))
         (evidence/'scenarios.json').write_text(json.dumps(dict(pg_calls=PG_CALLS,mysql_query=MYSQL_CASES,mysql_prepared=[(case,sql,[[None if v is None else v.hex() for v in row] for row in values]) for case,sql,values in MYSQL_EXTENDED]),indent=2))
         for side,dsn in dsns:
             conn = pq.PQconnectdb(dsn.encode()); assert conn
@@ -424,7 +425,8 @@ def run(dsns, evidence, aster_mysql=None):
                 probe(label)
         # Source18 runtime table operands keep short-circuit and first-arm errors real.
         for side,mysql in mysqls.items():
-            assert mysql.query('CREATE TABLE ifnull_runtime(a CHAR(8),z BIGINT)')['code'] == 0
+            created = mysql.query('CREATE TABLE ifnull_runtime(a CHAR(8),z BIGINT)')
+            assert created['code'] == 0, (side, created)
             assert mysql.query("INSERT INTO ifnull_runtime VALUES('ok',-9223372036854775808)")['code'] == 0
         for turn,null in enumerate((False,True,False)):
             for side,mysql in mysqls.items():
@@ -492,6 +494,9 @@ def run(dsns, evidence, aster_mysql=None):
         for conn in conns.values():
             pq.PQfinish(conn)
         for side,mysql in mysqls.items():
+            pending = mysql.mysql_store_result(mysql.conn)
+            if pending:
+                mysql.mysql_free_result(pending)
             cleanup['mysql-'+side+'-table-dropped'] = mysql.query('DROP TABLE IF EXISTS ifnull_runtime')['code'] == 0
         if reference_database:
             cleanup['reference_database_dropped'] = mysqls['reference'].query(f'DROP DATABASE {reference_database}')['code'] == 0

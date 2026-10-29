@@ -298,6 +298,9 @@ pub(super) struct SessionState {
     pub(super) pg_transaction_time: Option<f64>,
     pub(super) pg_bound_date_constants: HashMap<usize, String>,
     pub(super) mysql_bound_parameters: Option<Vec<astersql_types::datum::Datum>>,
+    /// Original prepared projections retain ParamMarker/DeferredExpr semantics
+    /// while the relational adapter executes the bound statement.
+    pub(super) mysql_bound_projection_fields: Option<Vec<Option<ast::ExprNode>>>,
     pub(super) pg_bound_float4_constants: HashMap<usize, ast::ExprNode>,
     pub(super) max_connections: u64,
     pub(super) tx_read_only: bool,
@@ -554,6 +557,7 @@ impl Default for SessionState {
             pg_transaction_time: None,
             pg_bound_date_constants: HashMap::new(),
             mysql_bound_parameters: None,
+            mysql_bound_projection_fields: None,
             pg_bound_float4_constants: HashMap::new(),
             max_connections: 0,
             tx_read_only: false,

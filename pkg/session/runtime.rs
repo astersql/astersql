@@ -176,6 +176,7 @@ pub(super) use dml::*;
 use explain_analyze::*;
 use explain_query::*;
 use explain_select::*;
+pub use function_diagnostics::ValidatePostgreSQLExclusiveFunctions;
 use mlog::RuntimeMLog;
 pub use planning::PlannedKVResult;
 pub(crate) use planning::{

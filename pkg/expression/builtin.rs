@@ -4016,19 +4016,45 @@ pub mod formal_registry {
             _ => 0,
         });
         let time = match source.convertToMysqlTime(ctx.TypeCtx(), &target) {
+            Ok(value) if value.IsNull() => return Ok(None),
             Ok(value) => value.GetMysqlTime(),
             Err(_) => {
-                let error = types::ErrWrongValue
-                    .GenWithStackByArgs(&[types::DateTimeStr.into(), source.ToString()?.into()]);
-                return match crate::expression_errors_kernel::handleInvalidTimeError(
-                    ctx,
-                    Some(error),
-                ) {
+                let mut detail = source.ToString()?;
+                // Recover parsed calendar components for Go's invalid-day
+                // diagnostic, rather than normalizing an arbitrary input string.
+                let permissive = ctx
+                    .TypeCtx()
+                    .WithFlags(ctx.TypeCtx().Flags().WithIgnoreInvalidDateErr(true));
+                if let Ok(value) = source.convertToMysqlTime(permissive, &target) {
+                    let date = value.GetMysqlTime();
+                    if date.Month() > 0
+                        && date.Month() <= 12
+                        && date.Day()
+                            > types_dependency::core_time::GetLastDay(date.Year(), date.Month())
+                                as i32
+                    {
+                        detail = format!("{}-{}-{}", date.Year(), date.Month(), date.Day());
+                    }
+                }
+                let error = types_dependency::errors::ErrWrongValue
+                    .GenWithStackByArgs(&[types::DateTimeStr.into(), detail.into()]);
+                return match crate::errCtx(ctx).HandleError(Some(error)) {
                     Some(error) => Err(error.into()),
                     None => Ok(None),
                 };
             }
         };
+        if matches!(source.Kind(), types::KindString | types::KindBytes)
+            && time.IsZero()
+            && ctx.SQLMode().HasNoZeroDateMode()
+        {
+            let error = types_dependency::errors::ErrWrongValue
+                .GenWithStackByArgs(&[types::DateTimeStr.into(), time.String().into()]);
+            return match crate::errCtx(ctx).HandleError(Some(error)) {
+                Some(error) => Err(error.into()),
+                None => Ok(None),
+            };
+        }
         Ok(Some(time))
     }
 
@@ -4047,9 +4073,9 @@ pub mod formal_registry {
             if numeric_zero && time.Fsp() == 0 {
                 return Ok((String::new(), true));
             }
-            let error = types::ErrWrongValue
+            let error = types_dependency::errors::ErrWrongValue
                 .GenWithStackByArgs(&[types::DateTimeStr.into(), time.String().into()]);
-            return match crate::expression_errors_kernel::handleInvalidTimeError(ctx, Some(error)) {
+            return match crate::errCtx(ctx).HandleError(Some(error)) {
                 Some(error) => Err(error.into()),
                 None => Ok((String::new(), true)),
             };
@@ -5491,10 +5517,12 @@ pub mod formal_registry {
                         if null {
                             return Ok((types::BinaryJSON::default(), true));
                         }
-                        paths.push(
-                            ParseJSONPathExpr(&path)
-                                .map_err(|error| errors::New(error.to_string()))?,
-                        );
+                        paths.push(ParseJSONPathExpr(&path).map_err(|error| {
+                            errors::Error::from(
+                                types_dependency::json_binary::ErrInvalidJSONPath
+                                    .GenWithStackByArgs(&[error.position().into()]),
+                            )
+                        })?);
                     }
                     Ok(document
                         .Extract(&paths)?
@@ -5574,8 +5602,41 @@ pub mod formal_registry {
         fn MemoryUsage(&self) -> i64 {
             self.base.memory_usage()
         }
+        fn vecEvalString(
+            &self,
+            ctx: &dyn EvalContext,
+            input: &chunk::Chunk,
+            result: &mut chunk::Column,
+        ) -> Result<(), Error> {
+            if !matches!(self.kind, CoreBuiltinKind::DateFormat) {
+                return crate::builtin_vectorized_kernel::vecEvalStringByRows(
+                    self, ctx, input, result,
+                );
+            }
+            // Go builtinDateFormatSig.vecEvalString evaluates both argument
+            // columns before merging their NULL maps.
+            let times = (0..input.NumRows())
+                .map(|i| DateFormatInput(ctx, self.base.args[0].Eval(ctx, input.GetRow(i))?))
+                .collect::<Result<Vec<_>, Error>>()?;
+            let mut masks = chunk::NewColumn(self.base.args[1].GetType(ctx), input.NumRows());
+            self.base.args[1].VecEvalString(ctx, input, &mut masks)?;
+            result.ReserveString(input.NumRows());
+            for (i, time) in times.into_iter().enumerate() {
+                if let Some(time) = time.filter(|_| !masks.IsNull(i)) {
+                    let (value, null) = DateFormatOutput(ctx, time, masks.GetString(i).to_owned())?;
+                    if null {
+                        result.AppendNull();
+                    } else {
+                        result.AppendString(&value);
+                    }
+                } else {
+                    result.AppendNull();
+                }
+            }
+            Ok(())
+        }
         fn vectorized(&self) -> bool {
-            false
+            matches!(self.kind, CoreBuiltinKind::DateFormat)
         }
     }
 
@@ -6516,7 +6577,11 @@ pub mod formal_registry {
                         _ => source_type.EvalType() != eval_type,
                     };
                     if needs_cast {
-                        *argument = BuildCastFunction(ctx, argument, &return_type);
+                        *argument = if eval_type == types::ETString {
+                            crate::WrapWithCastAsString(ctx, argument.CloneExpr())
+                        } else {
+                            BuildCastFunction(ctx, argument, &return_type)
+                        };
                     }
                 }
                 let signature = match eval_type {
@@ -6558,6 +6623,7 @@ pub mod formal_registry {
                 // Match Go newBaseBuiltinFuncWithTp's JSON result identity.
                 let mut return_type = field_type_for_eval_type(types::ETJson);
                 return_type.SetFlag(mysql::BinaryFlag);
+                return_type.SetDecimal(0);
                 return_type.SetFlen(mysql::MaxBlobWidth as isize);
                 return_type.SetCharset(crate::charset::CharsetUTF8MB4.into());
                 return_type.SetCollate(crate::charset::CollationUTF8MB4.into());
@@ -6738,6 +6804,11 @@ pub mod formal_registry {
                 )
             }
             "date_format" => {
+                args[0] = crate::WrapWithCastAsTime(
+                    ctx,
+                    args[0].CloneExpr(),
+                    *types::NewFieldType(mysql::TypeDatetime),
+                );
                 args[1] = crate::WrapWithCastAsString(ctx, args[1].CloneExpr());
                 let mut return_type = field_type_for_eval_type(types::ETString);
                 let (charset, collation) = ctx.GetCharsetInfo();
@@ -8314,7 +8385,26 @@ pub mod formal_registry {
                 .expect("non-null input");
                 return Ok((types::NewIntDatum(number), false));
             }
-            let datum = datum.ConvertTo(ctx.TypeCtx(), &self.base.return_type)?;
+            let datum = datum
+                .ConvertTo(ctx.TypeCtx(), &self.base.return_type)
+                .map_err(|error| {
+                    if self.base.return_type.EvalType() == types::ETJson
+                        && matches!(datum.Kind(), types::KindString | types::KindBytes)
+                        && serde_json::from_str::<serde_json::Value>(&datum.GetString()).is_err()
+                    {
+                        let detail = if datum.ToString().is_ok_and(|text| text.is_empty()) {
+                            "The document is empty"
+                        } else {
+                            "The document root must not be followed by other values."
+                        };
+                        errors::Error::from(
+                            types_dependency::json_binary::ErrInvalidJSONText
+                                .GenWithStackByArgs(&[detail.into()]),
+                        )
+                    } else {
+                        errors::Error::from(error)
+                    }
+                })?;
             let null = datum.IsNull();
             Ok((datum, null))
         }
@@ -8606,6 +8696,13 @@ pub mod formal_registry {
             c: &dyn EvalContext,
             r: chunk::Row,
         ) -> Result<(types::Time, bool), Error> {
+            if self.kind == DynamicKind::Cast
+                && self.base.return_type.GetType() == mysql::TypeDatetime
+                && c.SQLDialect() == crate::ast::SqlDialect::MySQL
+            {
+                return Ok(DateFormatInput(c, self.base.args[0].Eval(c, r)?)?
+                    .map_or((types::ZeroTime, true), |time| (time, false)));
+            }
             match self.kind {
                 DynamicKind::Cast | DynamicKind::PgInteger | DynamicKind::PgBoolean => {
                     let (d, n) = self.cast(c, r)?;
@@ -8725,6 +8822,10 @@ pub mod formal_registry {
         target: &types::FieldType,
     ) -> Box<dyn Expression> {
         let mut tp = target.clone();
+        // Go CAST AS CHAR uses VarString (parser.y CastType), unlike a stored CHAR column.
+        if tp.GetType() == mysql::TypeString && !types::IsBinaryStr(&tp) {
+            tp.SetType(mysql::TypeVarString);
+        }
         let source_type = expr.GetType(ctx.GetEvalCtx());
         if !mysql::HasNotNullFlag(source_type.GetFlag()) {
             tp.DelFlag(mysql::NotNullFlag)

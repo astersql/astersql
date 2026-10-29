@@ -5650,6 +5650,11 @@ fn pg_function_18() {
             "ifnull(7::int4,1/0)",
             "ifnull($1::text,$2::text)",
         ] {
+            let expected_state = if call.contains("'bad'::int4") {
+                "22P02"
+            } else {
+                "42883"
+            };
             for parse in [false, true] {
                 // Parameter markers belong only to the extended protocol.
                 if !parse && call.contains('$') {
@@ -5686,13 +5691,18 @@ fn pg_function_18() {
                             .split(|b| *b == 0)
                             .filter(|f| !f.is_empty())
                             .collect::<Vec<_>>();
-                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                        let code_field = format!("C{expected_state}");
+                        for field in [b"SERROR".as_slice(), b"VERROR", code_field.as_bytes()] {
                             assert!(fields.contains(&field), "{sql}: {fields:?}");
                         }
                         assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                        for tag in b"DHP" {
-                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
-                        }
+                        assert!(!fields.iter().any(|f| f[0] == b'D'), "{sql}: {fields:?}");
+                        assert_eq!(
+                            fields.iter().any(|f| f[0] == b'H'),
+                            expected_state == "42883",
+                            "{sql}: {fields:?}"
+                        );
+                        assert!(fields.iter().any(|f| f[0] == b'P'), "{sql}: {fields:?}");
                         assert_eq!(
                             messages.last().unwrap().1,
                             if transaction { b"E" } else { b"I" }
@@ -5854,11 +5864,11 @@ fn pg_function_18_mysql() {
         let expected_columns = if expression == "IFNULL(NULL,NULL)" {
             description(0, 6, 128, 63, 0)
         } else if expression.contains("SIGNED") {
-            description(80, 254, 129, 46, 31)
+            description(80, 253, 1, 46, 31)
         } else if expression.starts_with("IFNULL(CAST(NULL") {
-            description(48, 254, if expected.is_some() { 1 } else { 0 }, 46, 31)
+            description(48, 253, if expected.is_some() { 1 } else { 0 }, 46, 31)
         } else {
-            description(32, 254, 1, 46, 31)
+            description(32, 253, 1, 46, 31)
         };
         for empty in [false, true] {
             let sql = format!(
@@ -5894,7 +5904,7 @@ fn pg_function_18_mysql() {
         );
         let prepared = client.prepare(&sql).unwrap();
         assert_eq!(prepared.parameter_count, 2);
-        assert_eq!(prepared.columns, description(48, 254, 0, 46, 31), "{sql}");
+        assert_eq!(prepared.columns, description(48, 253, 0, 46, 31), "{sql}");
         for (first, second) in [
             (Some("ok"), Some("backup")),
             (None, Some("backup")),
@@ -5913,7 +5923,7 @@ fn pg_function_18_mysql() {
                 put_lenenc_bytes(&mut payload, value.as_bytes());
             }
             let actual = result(client.execute_prepared(&payload).unwrap(), &sql);
-            assert_eq!(actual.columns, prepared.columns, "{sql}");
+            assert_eq!(actual.columns, description(48, 253, 1, 46, 31), "{sql}");
             assert_eq!(
                 actual.rows,
                 if empty {
@@ -5923,7 +5933,11 @@ fn pg_function_18_mysql() {
                 },
                 "{sql}"
             );
-            assert_eq!(actual.warnings, 0);
+            assert_eq!(
+                actual.warnings,
+                u16::from(!empty),
+                "only a table-free projection rejects the TableDual cache plan"
+            );
         }
         client.close_prepared(prepared.statement_id).unwrap();
     }
@@ -5942,7 +5956,7 @@ fn pg_function_18_mysql() {
             format!("SELECT IFNULL(a,CAST(ABS(CAST(z AS SIGNED)) AS CHAR(24))) AS v FROM {table}");
         let statement = prepared.then(|| client.prepare(&sql).unwrap());
         if let Some(statement) = &statement {
-            assert_eq!(statement.columns, description(96, 254, 0, 46, 31), "{sql}");
+            assert_eq!(statement.columns, description(96, 253, 0, 46, 31), "{sql}");
         }
         for null in [false, true, false] {
             assert!(matches!(
@@ -5971,7 +5985,7 @@ fn pg_function_18_mysql() {
                 assert!(!error.message.is_empty());
             } else {
                 let result = result(response, &sql);
-                assert_eq!(result.columns, description(96, 254, 0, 46, 31), "{sql}");
+                assert_eq!(result.columns, description(96, 253, 0, 46, 31), "{sql}");
                 assert_eq!(result.rows, vec![vec![bytes(Some("ok"))]]);
             }
             assert_eq!(
@@ -6110,6 +6124,11 @@ fn pg_function_19() {
             "date_format('0000-00-00','%Y')",
             "date_format($1::text,$2::text)",
         ] {
+            let expected_state = if call.contains("'bad'::int4") {
+                "22P02"
+            } else {
+                "42883"
+            };
             for parse in [false, true] {
                 // Parameter markers belong only to the extended protocol.
                 if !parse && call.contains('$') {
@@ -6146,13 +6165,18 @@ fn pg_function_19() {
                             .split(|b| *b == 0)
                             .filter(|f| !f.is_empty())
                             .collect::<Vec<_>>();
-                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                        let code_field = format!("C{expected_state}");
+                        for field in [b"SERROR".as_slice(), b"VERROR", code_field.as_bytes()] {
                             assert!(fields.contains(&field), "{sql}: {fields:?}");
                         }
                         assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                        for tag in b"DHP" {
-                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
-                        }
+                        assert!(!fields.iter().any(|f| f[0] == b'D'), "{sql}: {fields:?}");
+                        assert_eq!(
+                            fields.iter().any(|f| f[0] == b'H'),
+                            expected_state == "42883",
+                            "{sql}: {fields:?}"
+                        );
+                        assert!(fields.iter().any(|f| f[0] == b'P'), "{sql}: {fields:?}");
                         assert_eq!(
                             messages.last().unwrap().1,
                             if transaction { b"E" } else { b"I" }
@@ -6187,7 +6211,7 @@ fn pg_function_19() {
                 b"EZ",
                 "{sql}: {messages:?}"
             );
-            assert!(messages[0].1.windows(7).any(|f| f == b"C42883\0"));
+            assert!(messages[0].1.windows(7).any(|f| f == b"C22P02\0"));
             let unchanged = query(&mut socket, &format!("SELECT v FROM {table}"));
             assert_eq!(unchanged.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
             assert_eq!(unchanged[1].1, row(&[Some("1")]));
@@ -6281,13 +6305,9 @@ fn pg_function_19_mysql() {
         assert_eq!(probe.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
     }
     for (expression, expected) in [
-        ("DATE_FORMAT(0,'%Y')", None),
+        ("DATE_FORMAT(0,'%Y')", None::<&str>),
         ("DATE_FORMAT(0.0,'%Y')", None),
-        ("DATE_FORMAT('0000-00-00','0')", Some("0")),
-        (
-            "DATE_FORMAT(NULL,ABS(CAST('-9223372036854775808' AS SIGNED)))",
-            None,
-        ),
+        // String zero is converted under NO_ZERO_DATE before the mask.
     ] {
         let WireResponse::ResultSet(result) =
             client.query(&format!("SELECT {expression} AS v")).unwrap()
@@ -6305,7 +6325,16 @@ fn pg_function_19_mysql() {
         );
         assert_eq!(result.warnings, 0, "{expression}");
     }
+    let WireResponse::ResultSet(zero) = client
+        .query("SELECT DATE_FORMAT('0000-00-00','0') AS v")
+        .unwrap()
+    else {
+        panic!("zero date")
+    };
+    assert_eq!(zero.rows, vec![vec![TextValue::Null]]);
+    assert_eq!(zero.warnings, 1);
     for expression in [
+        "DATE_FORMAT(NULL,ABS(CAST('-9223372036854775808' AS SIGNED)))",
         "DATE_FORMAT(ABS(CAST('-9223372036854775808' AS SIGNED)),NULL)",
         "DATE_FORMAT('2026-01-02',ABS(CAST('-9223372036854775808' AS SIGNED)))",
     ] {
@@ -6419,10 +6448,14 @@ fn pg_function_19_mysql() {
             let WireResponse::ResultSet(result) = client.execute_prepared(&payload).unwrap() else {
                 panic!("{sql}")
             };
-            assert_eq!(result.columns, prepared.columns, "{sql}");
+            assert_eq!(result.columns, description(176, 1), "{sql}");
             assert_eq!(
                 result.warnings,
-                u16::from(!empty && date == Some("bad")),
+                1 + if date == Some("bad") {
+                    if empty { 3 } else { 4 }
+                } else {
+                    0
+                },
                 "{sql}"
             );
             assert_eq!(
@@ -6526,6 +6559,11 @@ fn pg_function_20() {
             "json_extract('{}')",
             "json_extract($1::text,$2::text)",
         ] {
+            let expected_state = if call.contains("'bad'::int4") {
+                "22P02"
+            } else {
+                "42883"
+            };
             for parse in [false, true] {
                 // Parameter markers belong only to the extended protocol.
                 if !parse && call.contains('$') {
@@ -6562,13 +6600,18 @@ fn pg_function_20() {
                             .split(|b| *b == 0)
                             .filter(|f| !f.is_empty())
                             .collect::<Vec<_>>();
-                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                        let code_field = format!("C{expected_state}");
+                        for field in [b"SERROR".as_slice(), b"VERROR", code_field.as_bytes()] {
                             assert!(fields.contains(&field), "{sql}: {fields:?}");
                         }
                         assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                        for tag in b"DHP" {
-                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
-                        }
+                        assert!(!fields.iter().any(|f| f[0] == b'D'), "{sql}: {fields:?}");
+                        assert_eq!(
+                            fields.iter().any(|f| f[0] == b'H'),
+                            expected_state == "42883",
+                            "{sql}: {fields:?}"
+                        );
+                        assert!(fields.iter().any(|f| f[0] == b'P'), "{sql}: {fields:?}");
                         assert_eq!(
                             messages.last().unwrap().1,
                             if transaction { b"E" } else { b"I" }
@@ -6605,7 +6648,7 @@ fn pg_function_20() {
                 b"EZ",
                 "{sql}: {messages:?}"
             );
-            assert!(messages[0].1.windows(7).any(|f| f == b"C42883\0"));
+            assert!(messages[0].1.windows(7).any(|f| f == b"C22P02\0"));
             let unchanged = query(&mut socket, &format!("SELECT v FROM {table}"));
             assert_eq!(unchanged.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
             assert_eq!(unchanged[1].1, row(&[Some("1")]));
@@ -6659,7 +6702,7 @@ fn pg_function_20_mysql() {
             column_length: 16_777_216,
             column_type: 245,
             flags,
-            decimals: 31,
+            decimals: 0,
             default_value: None,
         }]
     }
@@ -6889,6 +6932,11 @@ fn pg_function_21() {
             "tidb_version('bad'::int4)",
             "tidb_version($1::text)",
         ] {
+            let expected_state = if call.contains("'bad'::int4") {
+                "22P02"
+            } else {
+                "42883"
+            };
             for parse in [false, true] {
                 // Parameter markers belong only to the extended protocol.
                 if !parse && call.contains('$') {
@@ -6925,13 +6973,18 @@ fn pg_function_21() {
                             .split(|b| *b == 0)
                             .filter(|f| !f.is_empty())
                             .collect::<Vec<_>>();
-                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                        let code_field = format!("C{expected_state}");
+                        for field in [b"SERROR".as_slice(), b"VERROR", code_field.as_bytes()] {
                             assert!(fields.contains(&field), "{sql}: {fields:?}");
                         }
                         assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                        for tag in b"DHP" {
-                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
-                        }
+                        assert!(!fields.iter().any(|f| f[0] == b'D'), "{sql}: {fields:?}");
+                        assert_eq!(
+                            fields.iter().any(|f| f[0] == b'H'),
+                            expected_state == "42883",
+                            "{sql}: {fields:?}"
+                        );
+                        assert!(fields.iter().any(|f| f[0] == b'P'), "{sql}: {fields:?}");
                         assert_eq!(
                             messages.last().unwrap().1,
                             if transaction { b"E" } else { b"I" }
@@ -6966,7 +7019,7 @@ fn pg_function_21() {
                 b"EZ",
                 "{sql}: {messages:?}"
             );
-            assert!(messages[0].1.windows(7).any(|f| f == b"C42883\0"));
+            assert!(messages[0].1.windows(7).any(|f| f == b"C22P02\0"));
             let unchanged = query(&mut socket, &format!("SELECT v FROM {table}"));
             assert_eq!(unchanged.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
             assert_eq!(unchanged[1].1, row(&[Some("1")]));

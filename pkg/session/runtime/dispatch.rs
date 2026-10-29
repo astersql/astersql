@@ -4586,6 +4586,20 @@ impl ConcreteSession {
                     ru_scope.finish()?;
                 }
                 (Err(error), _, _) => {
+                    let diagnostic = SessionWarning::from_error(&error.clone().into_shared());
+                    if self.sql_dialect() == ast::SqlDialect::MySQL
+                        && diagnostic.code == 3146
+                        && !self
+                            .state
+                            .borrow()
+                            .current_warnings
+                            .iter()
+                            .any(|warning| warning.code == 3146 && warning.level == "Error")
+                    {
+                        self.state.borrow_mut().current_warnings.push(
+                            SessionWarning::error_with_code(diagnostic.code, diagnostic.message),
+                        );
+                    }
                     let warnings = self.state.borrow().current_warnings.clone();
                     self.state.borrow_mut().last_warnings = warnings;
                     ru_scope.fail(&error);

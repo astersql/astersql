@@ -10226,15 +10226,16 @@ fn pg_function_27_mysql_arity_diagnostics() {
                         Vec::new()
                     } else {
                         vec![vec![
-                        TextValue::Bytes(b"Error".to_vec()),
-                        TextValue::Bytes(b"1582".to_vec()),
-                        TextValue::Bytes(
-                            format!(
-                                "Incorrect parameter count in the call to native function '{name}'"
-                            )
-                            .into_bytes()
-                        )
-                    ]]
+                            TextValue::Bytes(b"Error".to_vec()),
+                            TextValue::Bytes(b"1582".to_vec()),
+                            TextValue::Bytes(
+                                format!(
+                                    "Incorrect parameter count in the call to native function '{}'",
+                                    if name == "ifnull" { "IFNULL" } else { name }
+                                )
+                                .into_bytes(),
+                            ),
+                        ]]
                     },
                     "{sql}/prepare={prepare}"
                 );
@@ -10277,12 +10278,8 @@ fn pg_function_27_json_errors() {
             let WireResponse::ResultSet(warnings) = mysql.query("SHOW WARNINGS").unwrap() else {
                 panic!("JSON diagnostics")
             };
-            assert_eq!(warnings.rows.len(), 1, "{sql}");
-            assert_eq!(warnings.rows[0][0], TextValue::Bytes(b"Error".to_vec()));
-            assert_eq!(
-                warnings.rows[0][1],
-                TextValue::Bytes(code.to_string().into_bytes())
-            );
+            // Go's constant JSON execution errors precede AppendError.
+            assert!(warnings.rows.is_empty(), "{sql}: {:?}", warnings.rows);
         }
         let WireResponse::ResultSet(result) = mysql.query("SELECT 1 AS v").unwrap() else {
             panic!("JSON error recovery")
@@ -10316,5 +10313,63 @@ fn pg_function_27_json_input_type() {
             };
             assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
         }
+    }
+}
+
+#[test]
+fn pg_function_27_parser_locations() {
+    use astersql_parser_ast::Node;
+    struct Locations(Vec<(String, i32)>);
+    impl astersql_parser_ast::Visitor for Locations {
+        fn enter(&mut self, n: &dyn astersql_parser_ast::Node) -> bool {
+            if let Some(e) = n.as_any().downcast_ref::<astersql_parser_ast::ExprNode>() {
+                if let astersql_parser_ast::ExprKind::Function { FnName, .. } = &e.Kind {
+                    self.0.push((FnName.L.clone(), e.OriginTextPosition));
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn astersql_parser_ast::Node) -> bool {
+            true
+        }
+    }
+    let sql = "INSERT INTO function27_guard VALUES(ifnull(1,2))";
+    let (statements, _) =
+        astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+    let mut locations = Locations(Vec::new());
+    for s in statements {
+        s.accept(&mut locations);
+    }
+    assert!(
+        locations
+            .0
+            .iter()
+            .any(|(kind, pos)| kind == "ifnull" && *pos == sql.find("ifnull").unwrap() as i32)
+    );
+}
+
+#[test]
+fn pg_function_27_date_projection_recovery() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for sql in [
+        "SELECT DATE_FORMAT('2026-01-02','%Y-%m-%d') AS v",
+        "SELECT 1 AS v",
+    ] {
+        let response = mysql.query(sql).unwrap();
+        let WireResponse::ResultSet(result) = response else {
+            panic!("{sql}: {response:?}")
+        };
+        assert_eq!(
+            result.rows,
+            vec![vec![TextValue::Bytes(if sql.contains("DATE_FORMAT") {
+                b"2026-01-02".to_vec()
+            } else {
+                b"1".to_vec()
+            })]]
+        );
     }
 }

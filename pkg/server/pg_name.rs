@@ -1023,6 +1023,21 @@ pub(crate) fn adapt(
     context: &dyn TiDBContext,
     session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
+    if let Ok((statements, _)) =
+        astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+    {
+        if let Err(error) =
+            astersql_session::runtime::ValidatePostgreSQLExclusiveFunctions(&statements)
+            && let Some(function) = error.pg_function_error()
+        {
+            session.function_error_hint = function.hint;
+            session.relation_error_position = function
+                .position
+                .and_then(|offset| sql.get(..offset).map(|prefix| prefix.chars().count() + 1));
+            return Err((function.state, function.message));
+        }
+    }
     // Queries without native relations must not execute an extra engine query.
     match rewrite_with_position(sql, "", true, &mut session.relation_error_position) {
         Err(("3D000", _)) => {}

@@ -3244,7 +3244,12 @@ pub(super) fn validate_function_visibility(
                     self.validation_error.get_or_insert_with(|| {
                         let error = astersql_util_dbterror::ClassExpression
                             .NewStd(astersql_errno::errcode::ErrWrongParamcountToNativeFct)
-                            .GenWithStackByArgs(&[FnName.L.as_str().into()]);
+                            .GenWithStackByArgs(&[if FnName.L == "ifnull" {
+                                "IFNULL"
+                            } else {
+                                FnName.L.as_str()
+                            }
+                            .into()]);
                         SessionError::with_source(error.to_string(), error)
                     });
                     return true;
@@ -3289,6 +3294,20 @@ pub(super) fn validate_function_visibility(
                     self.validation_error.get_or_insert_with(|| {
                         super::function_diagnostics::no_matching_function(expression, &types)
                     });
+                    return true;
+                }
+                if self.dialect == ast::SqlDialect::PostgreSQL
+                    && matches!(
+                        FnName.L.as_str(),
+                        "ifnull" | "date_format" | "json_extract" | "tidb_version"
+                    )
+                {
+                    let expression = node
+                        .as_any()
+                        .downcast_ref::<ast::ExprNode>()
+                        .expect("function AST");
+                    let error = super::function_diagnostics::exclusive_function_error(expression);
+                    self.validation_error.get_or_insert(error);
                     return true;
                 }
                 if unknown_zero_argument

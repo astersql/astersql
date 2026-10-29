@@ -1,6 +1,7 @@
 // Copyright 2026 AsterSQL.
 //! Function-resolution diagnostics retain the parser's original byte span.
 use super::*;
+use astersql_parser_ast::Node;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PgFunctionError {
@@ -77,4 +78,90 @@ impl ConcreteSession {
         self.record_mysql_function_parse_error(&error);
         error
     }
+}
+
+/// Analyze explicit constant input conversions before resolving a hidden name.
+/// This never constructs or evaluates the MySQL-only function body.
+pub(super) fn exclusive_function_error(expression: &ast::ExprNode) -> SessionError {
+    struct Inputs(Option<SessionError>);
+    impl ast::Visitor for Inputs {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if self.0.is_some() {
+                return true;
+            }
+            if let Some(ast::ExprNode {
+                Kind: ast::ExprKind::Cast { Expr, Tp, .. },
+                ..
+            }) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && Tp.GetType() == astersql_parser_mysql::r#type::TypeLong
+                && let ast::ExprKind::Value(value) = &Expr.Kind
+                && let ast::ValueDatum::String(text) = &value.Datum
+                && let Err(error) = astersql_expression::pg_cast_int4(Some(text))
+            {
+                let error = PgFunctionError {
+                    state: error.sqlstate(),
+                    message: error.to_string(),
+                    hint: None,
+                    position: (Expr.OriginTextPosition > 0)
+                        .then_some(Expr.OriginTextPosition as usize),
+                };
+                self.0 = Some(SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                ));
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let ast::ExprKind::Function { Args, .. } = &expression.Kind else {
+        unreachable!()
+    };
+    let mut inputs = Inputs(None);
+    for arg in Args {
+        arg.accept(&mut inputs);
+    }
+    if let Some(error) = inputs.0 {
+        return error;
+    }
+    let types = Args
+        .iter()
+        .map(|arg| match &arg.Kind {
+            ast::ExprKind::Cast { Tp, .. } => Tp.GetType(),
+            _ => astersql_parser_mysql::r#type::TypeNull,
+        })
+        .collect::<Vec<_>>();
+    no_matching_function(expression, &types)
+}
+
+/// Validate only the four exclusive functions on original PG ASTs, before a
+/// relation adapter restores SQL and would discard their original byte spans.
+pub fn ValidatePostgreSQLExclusiveFunctions(
+    statements: &[Box<dyn ast::Node>],
+) -> SessionResult<()> {
+    struct Exclusive(Option<SessionError>);
+    impl ast::Visitor for Exclusive {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if self.0.is_some() {
+                return true;
+            }
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version"))
+            {
+                self.0 = Some(exclusive_function_error(expr));
+                return true;
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut visitor = Exclusive(None);
+    for statement in statements {
+        statement.accept(&mut visitor);
+    }
+    visitor.0.map_or(Ok(()), Err)
 }

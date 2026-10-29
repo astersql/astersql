@@ -1933,7 +1933,15 @@ impl ConcreteSession {
             || statement.as_any().is::<ast::SetOprStmt>()
             || statement.as_any().is::<ast::SetOprSelectList>()
         {
-            self.relational_query_node_result_fields(statement.as_ref(), &[])?
+            self.relational_query_node_result_fields(statement.as_ref(), &[])
+                .map_err(|error| {
+                    if self.sql_dialect() == ast::SqlDialect::MySQL {
+                        let mut state = self.state.borrow_mut();
+                        state.current_warnings.clear();
+                        state.last_warnings.clear();
+                    }
+                    error
+                })?
         } else {
             Vec::new()
         };
@@ -2240,6 +2248,8 @@ impl ConcreteSession {
         let mut mysql_analysis_cache_warning = false;
         let mut signed_abs_diagnostics = None;
         let mut mysql_function_fields = None;
+        let mut mysql_execution_parameters = None;
+        let mut mysql_execution_projections = None;
         if dialect == ast::SqlDialect::MySQL {
             let statements = parse_in_dialect(&sql, dialect)?;
             if let Some(select) = statements
@@ -2252,7 +2262,10 @@ impl ConcreteSession {
                         .Fields
                         .iter()
                         .filter_map(|field| field.Expr.as_ref())
-                        .any(|expr| self.is_mysql_signed_abs(expr, &[]))
+                        .any(|expr| {
+                            self.is_mysql_signed_abs(expr, &[])
+                                || self.is_mysql_function_projection(expr, &[])
+                        })
                 {
                     let state = self.state.borrow();
                     signed_abs_diagnostics = Some((
@@ -2262,7 +2275,7 @@ impl ConcreteSession {
                     ));
                 }
                 let affected = select.Fields.Fields.iter().map(|field| field.Expr.as_ref().is_some_and(|expr| {
-                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring" | "coalesce" | "nullif" | "concat" | "greatest" | "least"))
+                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring" | "coalesce" | "nullif" | "concat" | "greatest" | "least" | "ifnull" | "date_format" | "json_extract" | "tidb_version"))
                 })).collect::<Vec<_>>();
                 if affected.iter().any(|v| *v) {
                     let parameters = arguments
@@ -2297,6 +2310,10 @@ impl ConcreteSession {
                             })
                         })
                         .collect::<SessionResult<Vec<_>>>()?;
+                    if select.Fields.Fields.iter().any(|field| matches!(field.Expr.as_ref().map(|e| &e.Kind), Some(ast::ExprKind::Function { FnName, .. }) if FnName.L == "date_format")) {
+                        mysql_execution_parameters = Some(parameters.clone());
+                        mysql_execution_projections = Some(select.Fields.Fields.iter().map(|field| field.Expr.clone()).collect());
+                    }
                     let previous = self
                         .state
                         .borrow_mut()
@@ -2664,8 +2681,18 @@ impl ConcreteSession {
             constants,
         );
         self.state.borrow_mut().observation_sql_override = Some(sql);
+        let previous_mysql_parameters = std::mem::replace(
+            &mut self.state.borrow_mut().mysql_bound_parameters,
+            mysql_execution_parameters,
+        );
+        let previous_mysql_projections = std::mem::replace(
+            &mut self.state.borrow_mut().mysql_bound_projection_fields,
+            mysql_execution_projections,
+        );
         let execution = self.execute(&bound);
         let mut state = self.state.borrow_mut();
+        state.mysql_bound_parameters = previous_mysql_parameters;
+        state.mysql_bound_projection_fields = previous_mysql_projections;
         state.pg_bound_date_constants = previous_constants;
         state.pg_bound_float4_constants = previous_float4;
         state.observation_sql_override = None;
@@ -2679,6 +2706,10 @@ impl ConcreteSession {
                     .into_shared()
                     .downcast_ref::<super::query::MysqlSignedAbsOverflow>()
                     .is_some()
+                    || matches!(
+                        SessionWarning::from_error(&error.clone().into_shared()).code,
+                        3140 | 3143
+                    )
             })
         {
             state.current_warnings = current;
@@ -2686,13 +2717,14 @@ impl ConcreteSession {
             self.session_vars.StmtCtx.SetWarnings(context);
         }
         state.last_plan_from_cache = from_plan_cache && dual_cache_rejection.is_none();
-        if execution.is_ok()
-            && let Some(reason) = &dual_cache_rejection
-        {
-            let warning = SessionWarning::warning(format!("skip prepared plan-cache: {reason}"));
+        if execution.is_ok() {
             let mut prefix = mysql_analysis_warnings;
-            if !mysql_analysis_cache_warning {
-                prefix.push(warning);
+            if let Some(reason) = &dual_cache_rejection
+                && !mysql_analysis_cache_warning
+            {
+                prefix.push(SessionWarning::warning(format!(
+                    "skip prepared plan-cache: {reason}"
+                )));
             }
             state.current_warnings.splice(0..0, prefix);
             state.last_warnings = state.current_warnings.clone();

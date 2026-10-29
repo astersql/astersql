@@ -1543,7 +1543,8 @@ impl ConcreteSession {
                 .TypeFlags()
                 .WithTruncateAsWarning(select_warning)
                 .WithIgnoreZeroInDate(true)
-                .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode());
+                .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode())
+                .WithIgnoreZeroDateErr(!mode.HasNoZeroDateMode() || !mode.HasStrictMode());
             let mut levels = self.session_vars.StmtCtx.ErrLevels();
             levels[astersql_expression::errctx::ErrGroup::ErrGroupTruncate as usize] =
                 if select_warning {
@@ -4100,6 +4101,9 @@ impl ConcreteSession {
             && match FnName.L.as_str() {
                 "abs" => Args.len() == 1,
                 "concat" => !Args.is_empty(),
+                "ifnull" | "date_format" => Args.len() == 2,
+                "json_extract" => Args.len() >= 2,
+                "tidb_version" => Args.is_empty(),
                 "greatest" | "least" => Args.len() >= 2,
                 "round" => (1..=2).contains(&Args.len()),
                 "substr" | "substring" => (2..=3).contains(&Args.len()),
@@ -4199,15 +4203,37 @@ impl ConcreteSession {
                     astersql_expression::errctx::Level::LevelIgnore
                 };
         }
+        levels[astersql_expression::errctx::ErrGroup::ErrGroupTruncate as usize] =
+            astersql_expression::errctx::Level::LevelWarn;
+        let flags = self
+            .session_vars
+            .StmtCtx
+            .TypeFlags()
+            .WithTruncateAsWarning(true)
+            .WithIgnoreZeroInDate(true)
+            .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode())
+            .WithIgnoreZeroDateErr(!mode.HasNoZeroDateMode() || !mode.HasStrictMode());
         let eval = Arc::new(astersql_expression_exprstatic::NewEvalContext(vec![
             astersql_expression_exprstatic::WithSQLMode(mode),
-            astersql_expression_exprstatic::WithTypeFlags(self.session_vars.StmtCtx.TypeFlags()),
+            astersql_expression_exprstatic::WithTypeFlags(flags),
             astersql_expression_exprstatic::WithErrLevelMap(levels),
             astersql_expression_exprstatic::WithWarnHandler(warnings.clone()),
+            astersql_expression_exprstatic::WithParamList(
+                self.state
+                    .borrow()
+                    .mysql_bound_parameters
+                    .clone()
+                    .unwrap_or_default(),
+            ),
         ]));
         let context = astersql_expression_exprstatic::NewExprContext(vec![
             astersql_expression_exprstatic::WithEvalCtx(eval.clone()),
         ]);
+        if self.state.borrow().mysql_bound_parameters.is_some() {
+            context.GetPlanCacheTracker().SetCacheType(
+                astersql_expression::contextutil::plancache::PlanCacheType::SessionPrepared,
+            );
+        }
         let table = astersql_meta_model::TableInfo {
             Name: sources
                 .first()
@@ -4239,7 +4265,12 @@ impl ConcreteSession {
                     &table,
                 )],
             )
-            .map_err(|error| session_error("build conditional projection", error))?;
+            .map_err(|error| {
+                SessionError::with_source(
+                    format!("build conditional projection: {error}"),
+                    error.into_shared(),
+                )
+            })?;
             if analysis_complete || self.state.borrow().observation_sql_override.is_some() {
                 // Prepared analysis was already built against the original AST.
                 // This row adapter's reconstruction must not repeat its warnings.
@@ -4253,30 +4284,59 @@ impl ConcreteSession {
                     runtime_value_to_datum(value, column, self.session_vars.StmtCtx.TypeFlags())
                 })
                 .collect::<SessionResult<Vec<_>>>()?;
-            let input = astersql_expression::chunk::mutrow::MutRowFromDatums(values);
-            let value = if built.GetType(eval.as_ref()).EvalType()
+            let mut input = astersql_expression::chunk::mutrow::MutRowFromDatums(values);
+            input.c.SetNumVirtualRows(1);
+            let value = if matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "date_format")
+            {
+                let mut output =
+                    astersql_expression::chunk::NewColumn(built.GetType(eval.as_ref()), 1);
+                built
+                    .VecEvalString(eval.as_ref(), input.ToRow().Chunk(), &mut output)
+                    .map_err(|error| {
+                        SessionError::with_source(
+                            format!("evaluate DATE_FORMAT projection: {error}"),
+                            error.into_shared(),
+                        )
+                    })?;
+                if output.IsNull(0) {
+                    astersql_expression::types::Datum::default()
+                } else {
+                    astersql_expression::types::NewStringDatum(output.GetString(0).to_owned())
+                }
+            } else if built.GetType(eval.as_ref()).EvalType()
                 == astersql_expression::types::ETDecimal
             {
-                let (value, null) = built
-                    .EvalDecimal(eval.as_ref(), input.ToRow())
-                    .map_err(|error| session_error("evaluate conditional decimal", error))?;
+                let (value, null) =
+                    built
+                        .EvalDecimal(eval.as_ref(), input.ToRow())
+                        .map_err(|error| {
+                            SessionError::with_source(
+                                format!("evaluate conditional decimal: {error}"),
+                                error.into_shared(),
+                            )
+                        })?;
                 if null {
                     astersql_expression::types::Datum::default()
                 } else {
                     astersql_expression::types::NewDecimalDatum(value)
                 }
             } else {
-                built
-                    .Eval(eval.as_ref(), input.ToRow())
-                    .map_err(|error| session_error("evaluate conditional projection", error))?
+                built.Eval(eval.as_ref(), input.ToRow()).map_err(|error| {
+                    SessionError::with_source(
+                        format!("evaluate conditional projection: {error}"),
+                        error.into_shared(),
+                    )
+                })?
             };
             if value.IsNull() {
                 Ok(None)
             } else {
-                value
-                    .ToString()
-                    .map(Some)
-                    .map_err(|error| session_error("render conditional projection", error))
+                value.ToString().map(Some).map_err(|error| {
+                    SessionError::with_source(
+                        format!("render conditional projection: {error}"),
+                        error.into_shared(),
+                    )
+                })
             }
         })();
         self.state.borrow_mut().current_warnings.extend(
@@ -4459,11 +4519,21 @@ impl ConcreteSession {
                     astersql_expression::errctx::Level::LevelIgnore
                 };
         }
+        levels[astersql_expression::errctx::ErrGroup::ErrGroupTruncate as usize] =
+            astersql_expression::errctx::Level::LevelWarn;
+        let flags = self
+            .session_vars
+            .StmtCtx
+            .TypeFlags()
+            .WithTruncateAsWarning(true)
+            .WithIgnoreZeroInDate(true)
+            .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode())
+            .WithIgnoreZeroDateErr(!mode.HasNoZeroDateMode() || !mode.HasStrictMode());
         let eval = astersql_expression_exprstatic::NewEvalContext(vec![
             // Go server config DeprecateIntegerDisplayWidth defaults to true.
             astersql_expression_exprstatic::WithDeprecatedIntegerDisplayWidth(Some(true)),
             astersql_expression_exprstatic::WithSQLMode(mode),
-            astersql_expression_exprstatic::WithTypeFlags(self.session_vars.StmtCtx.TypeFlags()),
+            astersql_expression_exprstatic::WithTypeFlags(flags),
             astersql_expression_exprstatic::WithErrLevelMap(levels),
             astersql_expression_exprstatic::WithWarnHandler(warnings.clone()),
             astersql_expression_exprstatic::WithParamList(parameters),
@@ -4492,6 +4562,17 @@ impl ConcreteSession {
             ],
         )
         .map(|built| {
+            if !unresolved_parameters && self.state.borrow().mysql_bound_parameters.is_some()
+                && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "date_format")
+            {
+                // Go's physical projection candidate probe converts deferred
+                // constants to TiPB before deciding TableDual cache eligibility.
+                // This performs only in-memory capability analysis, never RPC.
+                self.domain.storage().with_storage(|store| {
+                    let client = store.GetClient();
+                    let _ = astersql_expression::NewPBConverter(client, context.GetEvalCtx()).ExprToPB(built.as_ref());
+                });
+            }
             (
                 built.GetType(context.GetEvalCtx()).clone(),
                 context.GetPlanCacheTracker().Save().2,
@@ -4504,7 +4585,12 @@ impl ConcreteSession {
                     .collect(),
             )
         })
-        .map_err(|error| session_error("resolve MySQL function result type", error))
+        .map_err(|error| {
+            SessionError::with_source(
+                format!("resolve MySQL function result type: {error}"),
+                error.into_shared(),
+            )
+        })
     }
 
     fn relational_query_expression_type_from_sources_uncollated(

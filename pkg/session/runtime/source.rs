@@ -1700,7 +1700,7 @@ impl ConcreteSession {
                 .filter_map(|field| field.Expr.as_ref())
                 .any(|expr| {
                     matches!(&expr.Kind, ast::ExprKind::Function { FnName, Schema, .. }
-                    if Schema.L.is_empty() && matches!(FnName.L.as_str(), "coalesce" | "nullif"))
+                    if Schema.L.is_empty() && matches!(FnName.L.as_str(), "coalesce" | "nullif" | "ifnull" | "date_format" | "json_extract" | "tidb_version"))
                 }) {
             self.relational_select_source_fields(select)?
         } else {
@@ -1719,8 +1719,9 @@ impl ConcreteSession {
                 let mut columns = HashSet::new();
                 collect_expression_column_names(expression, &mut columns);
                 if columns.is_empty()
-                    && self.is_mysql_conditional_projection(expression, &[])
-                    && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "nullif")
+                    && (self.is_mysql_conditional_projection(expression, &[])
+                        || self.is_mysql_function_projection(expression, &[]))
+                    && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "nullif" | "date_format" | "json_extract" | "ifnull"))
                 {
                     let (_, _, warnings) =
                         self.mysql_function_type_and_cache_reason(expression, &[])?;
@@ -2332,8 +2333,16 @@ impl ConcreteSession {
                 } else if self.is_mysql_function_projection(expression, &conditional_sources)
                     || self.is_mysql_conditional_projection(expression, &conditional_sources)
                 {
+                    let original = self
+                        .state
+                        .borrow()
+                        .mysql_bound_projection_fields
+                        .as_ref()
+                        .and_then(|fields| fields.get(field_index))
+                        .and_then(Option::as_ref)
+                        .cloned();
                     self.mysql_conditional_projection_value(
-                        expression,
+                        original.as_ref().unwrap_or(expression),
                         &representative,
                         &conditional_sources,
                         constant_nullif.contains(&field_index),

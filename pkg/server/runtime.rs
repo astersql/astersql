@@ -1324,6 +1324,13 @@ pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::Sq
     Mutex::new(Vec::new());
 
 fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
+    if let Some(cause) = astersql_parser_terror::errors::Cause(Some(&error.clone().into_shared()))
+        && let Some(normalized) = cause.downcast_ref::<astersql_parser_terror::errors::Error>()
+        && matches!(normalized.Code(), 3140 | 3143)
+    {
+        return ConnError::Session(normalized.to_string());
+    }
+
     if let Some(function) = error.pg_function_error() {
         return ConnError::PgFunction(function);
     }
