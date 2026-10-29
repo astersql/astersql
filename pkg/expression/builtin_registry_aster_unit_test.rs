@@ -1279,7 +1279,7 @@ fn pg_function_25_coalesce_factory() {
             .unwrap()
             .0
             .ToString(),
-        b"7.00"
+        b"7"
     );
     let divide = NewFunctionBase(
         &ctx,
@@ -1555,4 +1555,36 @@ fn pg_function_23_formal_factories() {
             .EvalInt(mysql.GetEvalCtx(), crate::chunk::Row::default())
             .is_err()
     );
+}
+
+#[test]
+fn pg_function_25_context_display_width() {
+    use crate::{Expression, mysql, types};
+    let legacy = exprstatic::NewExprContext(Vec::new());
+    let modern_eval =
+        exprstatic::NewEvalContext(vec![exprstatic::WithDeprecatedIntegerDisplayWidth(Some(
+            true,
+        ))]);
+    let modern = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        modern_eval,
+    ))]);
+    let mut tp = *types::NewFieldType(mysql::TypeLonglong);
+    tp.SetFlen(22);
+    tp.SetDecimal(0);
+    tp.AddFlag(mysql::BinaryFlag);
+    let arg: crate::ExprBox = Box::new(crate::Column {
+        OrigName: "p".to_owned(),
+        RetType: Some(*types::NewFieldType(mysql::TypeVarString)),
+        ..Default::default()
+    });
+    let cast = crate::BuildCastFunction(&legacy, &arg, &tp);
+    assert_eq!(
+        cast.StringWithCtx(Some(legacy.GetEvalCtx()), crate::errors::RedactLogDisable),
+        "cast(p, bigint(22) BINARY)"
+    );
+    assert_eq!(
+        cast.StringWithCtx(Some(modern.GetEvalCtx()), crate::errors::RedactLogDisable),
+        "cast(p, bigint BINARY)"
+    );
+    assert_eq!(cast.GetType(modern.GetEvalCtx()).GetFlen(), 22);
 }

@@ -164,7 +164,11 @@ impl ScalarFunction {
             for arg in self.GetArgs() {
                 buffer.push_str(&arg.StringWithCtx(Some(ctx), redact));
                 buffer.push_str(", ");
-                buffer.push_str(&self.RetType.as_ref().unwrap().String());
+                let tp = self.RetType.as_ref().unwrap();
+                buffer.push_str(&ctx.DeprecatedIntegerDisplayWidth().map_or_else(
+                    || tp.String(),
+                    |deprecated| tp.StringWithIntegerDisplayWidth(deprecated),
+                ));
             }
         } else {
             for (i, arg) in self.GetArgs().iter().enumerate() {

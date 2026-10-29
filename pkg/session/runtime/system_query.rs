@@ -4118,7 +4118,7 @@ impl ConcreteSession {
                 _ if (self.is_mysql_function_projection(expr, &[])
                     || self.is_mysql_conditional_projection(expr, &[])) =>
                 {
-                    self.mysql_conditional_projection_value(expr, &HashMap::new(), &[])?
+                    self.mysql_conditional_projection_value(expr, &HashMap::new(), &[], false)?
                         .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
                 }
                 _ => super::relational_value::relational_expression_value_with_embed(
@@ -4159,6 +4159,23 @@ impl ConcreteSession {
             .zip(&columns)
             .map(|(field, name)| {
                 let expr = field.Expr.as_ref()?;
+                if self.sql_dialect() == ast::SqlDialect::MySQL
+                    && matches!(expr.Kind, ast::ExprKind::Value(_))
+                {
+                    return self.mysql_function_result_type(expr, &[]).ok().map(|tp| {
+                        ConcreteResultField {
+                            column: astersql_meta_model::ColumnInfo {
+                                FieldType: tp,
+                                ..Default::default()
+                            },
+                            column_as_name: ast::NewCIStr(name),
+                            table_name: Default::default(),
+                            table_as_name: Default::default(),
+                            db_name: Default::default(),
+                            column_origin: None,
+                        }
+                    });
+                }
                 let ast::ExprKind::Function { FnName, Args, .. } = &expr.Kind else {
                     return None;
                 };

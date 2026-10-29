@@ -1,5 +1,5 @@
-// Copyright 2023 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -142,6 +142,10 @@ impl contextutil::WarnHandler for assertionEvalContext<'_> {
 }
 
 impl ParamValues for assertionEvalContext<'_> {
+    fn DeprecatedIntegerDisplayWidth(&self) -> Option<bool> {
+        self.eval_context.DeprecatedIntegerDisplayWidth()
+    }
+
     fn GetParamValue(&self, index: usize) -> Result<types::Datum, exprctx::ParamError> {
         self.eval_context.GetParamValue(index)
     }

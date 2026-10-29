@@ -539,6 +539,9 @@ impl FieldType {
     /// CompactStr 生成 information_schema 使用的紧凑类型字符串。
     // CompactStr 生成 information_schema 使用的紧凑类型串，保留各类型后缀分支。
     pub fn CompactStr(&self) -> String {
+        self.compact_str_with_integer_width(strict_integer_width())
+    }
+    fn compact_str_with_integer_width(&self, strict_integer_width: bool) -> String {
         let ts = TypeToStr(self.GetType(), &self.charset);
         let (defaultFlen, defaultDecimal) = mysql::GetDefaultFieldLengthAndDecimal(self.GetType());
         let isDecimalNotDefault = self.decimal != defaultDecimal
@@ -578,14 +581,14 @@ impl FieldType {
                 format!("({displayFlen})")
             }
             mysql::TypeTiny
-                if !strict_integer_width()
+                if !strict_integer_width
                     || mysql::HasZerofillFlag(self.flag)
                     || displayFlen == 1 =>
             {
                 format!("({displayFlen})")
             }
             mysql::TypeShort | mysql::TypeInt24 | mysql::TypeLong | mysql::TypeLonglong
-                if !strict_integer_width() || mysql::HasZerofillFlag(self.flag) =>
+                if !strict_integer_width || mysql::HasZerofillFlag(self.flag) =>
             {
                 format!("({displayFlen})")
             }
@@ -616,10 +619,15 @@ impl FieldType {
     /// String 组合紧凑类型、UNSIGNED/ZEROFILL/BINARY 与字符集信息。
     // String 组合紧凑类型、数值标志以及字符集/排序规则，保持 Go 输出顺序。
     pub fn String(&self) -> String {
+        self.StringWithIntegerDisplayWidth(strict_integer_width())
+    }
+
+    /// Format with a caller-owned server policy, avoiding global mutations.
+    pub fn StringWithIntegerDisplayWidth(&self, deprecated: bool) -> String {
         if self.postgresql_record_fields.is_some() {
             return "record".to_owned();
         }
-        let mut parts = vec![self.CompactStr()];
+        let mut parts = vec![self.compact_str_with_integer_width(deprecated)];
         if mysql::HasUnsignedFlag(self.flag) {
             parts.push("UNSIGNED".to_owned());
         }

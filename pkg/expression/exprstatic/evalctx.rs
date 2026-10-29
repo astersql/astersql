@@ -117,6 +117,7 @@ impl exprctx::UserVarsReader for EmptyUserVarsReader {
 pub struct EvalCtxState {
     warn_handler: SharedWarnHandler,
     sql_dialect: parser_ast::SqlDialect,
+    deprecated_integer_display_width: Option<bool>,
     sql_mode: mysql::SQLMode,
     type_ctx: types::Context,
     err_ctx: errctx::Context,
@@ -136,6 +137,7 @@ impl Clone for EvalCtxState {
         Self {
             warn_handler: Arc::clone(&self.warn_handler),
             sql_dialect: self.sql_dialect,
+            deprecated_integer_display_width: self.deprecated_integer_display_width,
             sql_mode: self.sql_mode,
             type_ctx: self.type_ctx.clone(),
             err_ctx: self.err_ctx.clone(),
@@ -158,6 +160,11 @@ pub type EvalCtxOption = Box<dyn FnOnce(&mut EvalCtxState)>;
 /// 覆盖告警处理器（与 TypeCtx/ErrCtx 共享同一 appender）。
 pub fn WithWarnHandler(handler: SharedWarnHandler) -> EvalCtxOption {
     Box::new(move |state| state.warn_handler = handler)
+}
+
+/// Context-private equivalent of the Go server's integer display-width policy.
+pub fn WithDeprecatedIntegerDisplayWidth(value: Option<bool>) -> EvalCtxOption {
+    Box::new(move |state| state.deprecated_integer_display_width = value)
 }
 
 /// Capture the connection dialect independently of mutable system variables.
@@ -276,6 +283,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
     let mut state = EvalCtxState {
         warn_handler: warning_handler,
         sql_dialect: parser_ast::SqlDialect::MySQL,
+        deprecated_integer_display_width: None,
         sql_mode: default_sql_mode(),
         type_ctx: types::NewContext(types::StrictFlags, UTC, Arc::clone(&appender)),
         err_ctx: errctx::NewContext(appender),
@@ -535,6 +543,10 @@ impl contextutil::WarnHandler for EvalContext {
 }
 
 impl exprctx::ParamValues for EvalContext {
+    fn DeprecatedIntegerDisplayWidth(&self) -> Option<bool> {
+        self.state.deprecated_integer_display_width
+    }
+
     fn GetParamValue(&self, index: usize) -> Result<types::Datum, exprctx::ParamError> {
         EvalContext::GetParamValue(self, index)
     }
@@ -635,6 +647,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithWarnHandler(warning_handler),
         WithSQLMode(context.SQLMode()),
         WithSQLDialect(context.SQLDialect()),
+        WithDeprecatedIntegerDisplayWidth(context.DeprecatedIntegerDisplayWidth()),
         WithTypeFlags(type_context.Flags()),
         WithLocation(type_context.Location()),
         WithErrLevelMap(error_context.LevelMap()),

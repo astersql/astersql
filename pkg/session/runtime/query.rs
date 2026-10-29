@@ -3171,11 +3171,20 @@ impl ConcreteSession {
                         || super::relational_value::pg_text_numeric_pair(&left, &right)
                         || super::relational_value::pg_text_numeric_pair(&right, &left)
                     {
-                        self.scalar_cast_error =
-                            Some(super::relational_value::pg_bytea_input_error(
-                                "42883",
-                                "operator does not exist for typed text and numeric operands",
-                            ));
+                        let error = super::function_diagnostics::PgFunctionError {
+                            state: "42883",
+                            message: "operator does not exist for typed text and numeric operands"
+                                .into(),
+                            hint: Some(
+                                "No operator matches the given name and argument types. You might need to add explicit type casts.",
+                            ),
+                            position: (input.OriginTextPosition >= 0)
+                                .then_some(input.OriginTextPosition as usize),
+                        };
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        ));
                     }
                 }
                 if let ast::ExprKind::Case {
@@ -3513,9 +3522,27 @@ impl ConcreteSession {
                         })
                     })
                 {
-                    self.scalar_cast_error = Some(super::relational_value::pg_bytea_input_error(
-                        "42804",
-                        "COALESCE types cannot be matched with text",
+                    let position = if let ast::ExprKind::Function { Args, .. } = &input.Kind {
+                        Args.iter()
+                            .skip(1)
+                            .find(|arg| {
+                                let first = self.session.pg_case_input_type(&Args[0], self.sources);
+                                let other = self.session.pg_case_input_type(arg, self.sources);
+                                first.EvalType() != other.EvalType()
+                            })
+                            .map(|arg| arg.OriginTextPosition as usize)
+                    } else {
+                        None
+                    };
+                    let error = super::function_diagnostics::PgFunctionError {
+                        state: "42804",
+                        message: "COALESCE types cannot be matched with text".into(),
+                        hint: None,
+                        position,
+                    };
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
                     ));
                 }
                 // json -> jsonb is assignment-only. Even typed NULL cannot
@@ -4123,6 +4150,7 @@ impl ConcreteSession {
         expression: &ast::ExprNode,
         row: &HashMap<String, Option<String>>,
         sources: &[ConcreteResultField],
+        analysis_complete: bool,
     ) -> SessionResult<Option<String>> {
         use astersql_expression::contextutil::WarnHandler;
         let warnings = Arc::new(astersql_expression::contextutil::NewStaticWarnHandler(0));
@@ -4178,6 +4206,11 @@ impl ConcreteSession {
                 )],
             )
             .map_err(|error| session_error("build conditional projection", error))?;
+            if analysis_complete || self.state.borrow().observation_sql_override.is_some() {
+                // Prepared analysis was already built against the original AST.
+                // This row adapter's reconstruction must not repeat its warnings.
+                eval.TruncateWarnings(0);
+            }
             let values = table
                 .Columns
                 .iter()
@@ -4187,9 +4220,22 @@ impl ConcreteSession {
                 })
                 .collect::<SessionResult<Vec<_>>>()?;
             let input = astersql_expression::chunk::mutrow::MutRowFromDatums(values);
-            let value = built
-                .Eval(eval.as_ref(), input.ToRow())
-                .map_err(|error| session_error("evaluate conditional projection", error))?;
+            let value = if built.GetType(eval.as_ref()).EvalType()
+                == astersql_expression::types::ETDecimal
+            {
+                let (value, null) = built
+                    .EvalDecimal(eval.as_ref(), input.ToRow())
+                    .map_err(|error| session_error("evaluate conditional decimal", error))?;
+                if null {
+                    astersql_expression::types::Datum::default()
+                } else {
+                    astersql_expression::types::NewDecimalDatum(value)
+                }
+            } else {
+                built
+                    .Eval(eval.as_ref(), input.ToRow())
+                    .map_err(|error| session_error("evaluate conditional projection", error))?
+            };
             if value.IsNull() {
                 Ok(None)
             } else {
@@ -4282,11 +4328,57 @@ impl ConcreteSession {
         tp
     }
 
+    // Go function_traits.UnCacheableFunctions rejects COALESCE during the
+    // prepared AST check, before expression folding or physical-plan checks.
+    pub(super) fn mysql_conditional_cache_reason(
+        &self,
+        select: &ast::SelectStmt,
+    ) -> Option<String> {
+        struct Coalesce(bool);
+        impl ast::ExprNodeVisitor for Coalesce {
+            fn Enter(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if matches!(&node.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "coalesce")
+                {
+                    self.0 = true;
+                }
+                (node.clone(), self.0)
+            }
+            fn Leave(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                (node.clone(), true)
+            }
+        }
+        let mut visitor = Coalesce(false);
+        for expr in select
+            .Fields
+            .Fields
+            .iter()
+            .filter_map(|field| field.Expr.as_ref())
+        {
+            let _ = expr.Accept(&mut visitor);
+        }
+        visitor
+            .0
+            .then(|| "query has 'coalesce' is un-cacheable".to_owned())
+    }
+
     pub(super) fn mysql_function_result_type(
         &self,
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],
     ) -> SessionResult<astersql_parser_types::types::FieldType> {
+        self.mysql_function_type_and_cache_reason(expression, source_fields)
+            .map(|(tp, _, _)| tp)
+    }
+
+    pub(super) fn mysql_function_type_and_cache_reason(
+        &self,
+        expression: &ast::ExprNode,
+        source_fields: &[ConcreteResultField],
+    ) -> SessionResult<(
+        astersql_parser_types::FieldType,
+        String,
+        Vec<SessionWarning>,
+    )> {
         // Reuse the formal factory and Go constant-folding rules against
         // catalog types. This retains length, nullability,
         // mixed-type and collation rules instead of picking the first arm.
@@ -4320,13 +4412,35 @@ impl ConcreteSession {
             .clone()
             .unwrap_or_else(|| vec![astersql_types::datum::Datum::default(); parameters.0]);
         use astersql_expression::BuildContext;
+        use astersql_expression::contextutil::WarnHandler;
+        let warnings = Arc::new(astersql_expression::contextutil::NewStaticWarnHandler(0));
+        let mode = astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
+            .map_err(|error| session_error("parse MySQL function sql_mode", error))?;
+        let mut levels = self.session_vars.StmtCtx.ErrLevels();
+        if !self.mdl_autocommit_write.get() {
+            levels[astersql_expression::errctx::ErrGroup::ErrGroupDividedByZero as usize] =
+                if mode.HasErrorForDivisionByZeroMode() {
+                    astersql_expression::errctx::Level::LevelWarn
+                } else {
+                    astersql_expression::errctx::Level::LevelIgnore
+                };
+        }
         let eval = astersql_expression_exprstatic::NewEvalContext(vec![
+            // Go server config DeprecateIntegerDisplayWidth defaults to true.
+            astersql_expression_exprstatic::WithDeprecatedIntegerDisplayWidth(Some(true)),
+            astersql_expression_exprstatic::WithSQLMode(mode),
+            astersql_expression_exprstatic::WithTypeFlags(self.session_vars.StmtCtx.TypeFlags()),
+            astersql_expression_exprstatic::WithErrLevelMap(levels),
+            astersql_expression_exprstatic::WithWarnHandler(warnings.clone()),
             astersql_expression_exprstatic::WithParamList(parameters),
             astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
         ]);
         let context = astersql_expression_exprstatic::NewExprContext(vec![
             astersql_expression_exprstatic::WithEvalCtx(Arc::new(eval)),
         ]);
+        context.GetPlanCacheTracker().SetCacheType(
+            astersql_expression::contextutil::plancache::PlanCacheType::SessionPrepared,
+        );
         if unresolved_parameters {
             // This private metadata context describes Prepare, before any
             // parameter is bound. Defer folding without a dynamic marker.
@@ -4343,7 +4457,19 @@ impl ConcreteSession {
                 Box::new(move |options| options.DeferConstantFolding = unresolved_parameters),
             ],
         )
-        .map(|built| built.GetType(context.GetEvalCtx()).clone())
+        .map(|built| {
+            (
+                built.GetType(context.GetEvalCtx()).clone(),
+                context.GetPlanCacheTracker().Save().2,
+                warnings
+                    .CopyWarnings(Vec::new())
+                    .into_iter()
+                    .filter_map(|warning| {
+                        warning.Err.map(|error| SessionWarning::from_error(&error))
+                    })
+                    .collect(),
+            )
+        })
         .map_err(|error| session_error("resolve MySQL function result type", error))
     }
 

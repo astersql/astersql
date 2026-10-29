@@ -2162,13 +2162,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             let Some(expr) = rhs[rhs_len - (2)].expr.clone() else {
                 return Ok(false);
             };
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(rhs[rhs_len - 1].offset);
             out.expr = Some(parser_ast::ExprNode {
-                node_text: Default::default(),
+                node_text,
                 Kind: parser_ast::ExprKind::Collate {
                     Expr: Box::new(expr),
                     Collation: rhs[rhs_len - (0)].ident.clone(),
                 },
-                OriginTextPosition: 0,
+                OriginTextPosition: rhs[rhs_len - 1].offset,
                 Flag: Default::default(),
             });
         }

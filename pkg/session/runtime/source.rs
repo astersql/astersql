@@ -1706,6 +1706,31 @@ impl ConcreteSession {
         } else {
             Vec::new()
         };
+        let mut constant_nullif = HashSet::new();
+        if self.sql_dialect() == ast::SqlDialect::MySQL && select.From.is_none() && outer.is_none()
+        {
+            for (index, expression) in select
+                .Fields
+                .Fields
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| f.Expr.as_ref().map(|e| (i, e)))
+            {
+                let mut columns = HashSet::new();
+                collect_expression_column_names(expression, &mut columns);
+                if columns.is_empty()
+                    && self.is_mysql_conditional_projection(expression, &[])
+                    && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "nullif")
+                {
+                    let (_, _, warnings) =
+                        self.mysql_function_type_and_cache_reason(expression, &[])?;
+                    if self.state.borrow().observation_sql_override.is_none() {
+                        self.state.borrow_mut().current_warnings.extend(warnings);
+                    }
+                    constant_nullif.insert(index);
+                }
+            }
+        }
         if self.sql_dialect() == ast::SqlDialect::MySQL {
             for expression in select
                 .Fields
@@ -2311,6 +2336,7 @@ impl ConcreteSession {
                         expression,
                         &representative,
                         &conditional_sources,
+                        constant_nullif.contains(&field_index),
                     )?
                 } else {
                     self.relational_query_expression_value(

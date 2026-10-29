@@ -37,3 +37,23 @@ fn pg_function_23_function_source_spans() {
         ));
     }
 }
+
+#[test]
+fn pg_function_25_conditional_spans() {
+    let sql = "SELECT coalesce('a'::text COLLATE \"C\",'a'::text COLLATE \"POSIX\") AS v";
+    let mut parser = crate::Parser::with_dialect(crate::ast::SqlDialect::PostgreSQL);
+    let node = parser.ParseOneStmt(sql, "", "").unwrap();
+    let select = node
+        .as_any()
+        .downcast_ref::<crate::ast::SelectStmt>()
+        .unwrap();
+    let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+    let crate::ast::ExprKind::Function { Args, .. } = &expr.Kind else {
+        panic!()
+    };
+    assert_eq!(
+        Args[1].node_text.OriginTextPosition() as usize,
+        sql.rfind("COLLATE").unwrap(),
+        "{expr:?}"
+    );
+}

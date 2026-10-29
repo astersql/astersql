@@ -45,6 +45,11 @@ pub const ErrParamIndexExceedParamCounts: ParamError = ParamError::IndexExceedsP
 
 /// 对应 Go ParamValues：通过位置只读取得参数值。
 pub trait ParamValues {
+    /// A private server context may override diagnostic display-width policy.
+    fn DeprecatedIntegerDisplayWidth(&self) -> Option<bool> {
+        None
+    }
+
     /// 按 0 起始下标取参数 Datum；越界返回 `ParamError`。
     fn GetParamValue(&self, idx: usize) -> Result<types::Datum, ParamError>;
 }

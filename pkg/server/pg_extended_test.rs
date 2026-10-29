@@ -1698,7 +1698,7 @@ pub(super) fn scalar_mysql_check(socket: &mut TcpStream) -> Vec<Vec<u8>> {
     );
     assert_eq!(mysql_read(socket), vec![4]);
     let mut metadata = Vec::new();
-    for _ in 0..4 {
+    for expected_code in [8, 8, 6, 8] {
         let column = mysql_read(socket);
         let mut offset = 0;
         for _ in 0..6 {
@@ -1708,7 +1708,7 @@ pub(super) fn scalar_mysql_check(socket: &mut TcpStream) -> Vec<Vec<u8>> {
         assert_eq!(column[offset], 12);
         // Original numeric/NULL metadata; no PG OID or Boolean narrowing.
         let code = column[offset + 7];
-        assert_eq!(code, 253, "{column:?}");
+        assert_eq!(code, expected_code, "{column:?}");
         metadata.push(column);
     }
     assert_eq!(mysql_read(socket)[0], 0xfe);

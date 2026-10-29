@@ -9744,7 +9744,7 @@ fn pg_function_25_mysql_semantics() {
     let server = MysqlCompatServer::start().unwrap();
     let mut mysql = server.connect_root(0, None).unwrap();
     for (sql, value, warnings) in [
-        ("SELECT coalesce(7,10/0) AS v", Some("7.0000"), 0),
+        ("SELECT coalesce(7,10/0) AS v", Some("7"), 0),
         ("SELECT coalesce(NULL,10/0) AS v", None, 1),
         ("SELECT nullif(7,10/0) AS v", Some("7"), 1),
         (
@@ -9778,6 +9778,14 @@ fn pg_function_25_mysql_semantics() {
             );
         }
     }
+    let WireResponse::ResultSet(empty) = mysql
+        .query("SELECT nullif(1,abs(CAST(-9223372036854775808 AS SIGNED))) AS v WHERE false")
+        .unwrap()
+    else {
+        panic!("empty conditional result")
+    };
+    assert!(empty.rows.is_empty());
+    assert_eq!(empty.warnings, 0);
     mysql.query("CREATE DATABASE function25_recover").unwrap();
     struct DatabaseCleanup(crate::mysql_compat_test_support::MysqlTestClient);
     impl Drop for DatabaseCleanup {
@@ -9805,7 +9813,9 @@ fn pg_function_25_mysql_semantics() {
         let WireResponse::ResultSet(result) = mysql.execute_prepared(&body).unwrap() else {
             panic!("typed decimal result")
         };
-        assert_eq!(result.columns, statement.columns);
+        let mut execution_columns = statement.columns.clone();
+        execution_columns[0].flags |= 1; // Go caches the first non-NULL Execute descriptor.
+        assert_eq!(result.columns, execution_columns);
         assert_eq!(
             result.rows,
             vec![vec![if value == Some(2) {

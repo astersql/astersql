@@ -2092,6 +2092,27 @@ impl ConcreteSession {
         let statement_id = state.next_prepared_id;
         state.next_prepared_id += 1;
         state.prepared.insert(statement_id, sql.to_owned());
+        if self.sql_dialect() == ast::SqlDialect::MySQL
+            && statements.first().and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
+                .is_some_and(|select| select.Fields.Fields.iter().filter_map(|f| f.Expr.as_ref())
+                    .any(|expr| matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "nullif")))
+        {
+            // Successful Go Prepare resets analysis diagnostics for this family.
+            state.current_warnings.clear();
+            state.last_warnings.clear();
+        }
+        if self.sql_dialect() == ast::SqlDialect::MySQL && state.prepared_plan_cache {
+            if let Some(select) = statements
+                .first()
+                .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
+                && let Some(reason) = self.mysql_conditional_cache_reason(select)
+            {
+                state.current_warnings.clear();
+                state.last_warnings = vec![SessionWarning::warning(format!(
+                    "skip prepared plan-cache: {reason}"
+                ))];
+            }
+        }
         state.protocol_prepared_planned.insert(
             statement_id,
             super::session::ProtocolPreparedState {
@@ -2215,6 +2236,8 @@ impl ConcreteSession {
         // protocol values, as Go toParamMarker does. SQL literal substitution
         // loses the unspecified string width and parameter nullability.
         let mut dual_cache_rejection = None;
+        let mut mysql_analysis_warnings = Vec::new();
+        let mut mysql_analysis_cache_warning = false;
         let mut signed_abs_diagnostics = None;
         let mut mysql_function_fields = None;
         if dialect == ast::SqlDialect::MySQL {
@@ -2239,7 +2262,7 @@ impl ConcreteSession {
                     ));
                 }
                 let affected = select.Fields.Fields.iter().map(|field| field.Expr.as_ref().is_some_and(|expr| {
-                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring"))
+                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring" | "coalesce" | "nullif"))
                 })).collect::<Vec<_>>();
                 if affected.iter().any(|v| *v) {
                     let parameters = arguments
@@ -2280,7 +2303,32 @@ impl ConcreteSession {
                         .mysql_bound_parameters
                         .replace(parameters);
                     let fields = self.describe_result_fields(&sql);
+                    let cache_analysis = (|| -> SessionResult<()> {
+                        if self.state.borrow().prepared_plan_cache {
+                            dual_cache_rejection = self.mysql_conditional_cache_reason(select);
+                            if dual_cache_rejection.is_none() {
+                                let sources = self.relational_select_source_fields(select)?;
+                                for expr in select
+                                    .Fields
+                                    .Fields
+                                    .iter()
+                                    .filter_map(|field| field.Expr.as_ref())
+                                {
+                                    let (_, reason, warnings) =
+                                        self.mysql_function_type_and_cache_reason(expr, &sources)?;
+                                    mysql_analysis_warnings.extend(warnings);
+                                    if !reason.is_empty() {
+                                        dual_cache_rejection = Some(reason);
+                                        mysql_analysis_cache_warning = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(())
+                    })();
                     self.state.borrow_mut().mysql_bound_parameters = previous;
+                    cache_analysis?;
                     let mut fields = fields?;
                     let prior = self
                         .state
@@ -2310,7 +2358,7 @@ impl ConcreteSession {
                             i64::MAX,
                         );
                         if !cacheable {
-                            dual_cache_rejection = Some(reason);
+                            dual_cache_rejection = dual_cache_rejection.or(Some(reason));
                         }
                     }
                 }
@@ -2642,8 +2690,12 @@ impl ConcreteSession {
             && let Some(reason) = &dual_cache_rejection
         {
             let warning = SessionWarning::warning(format!("skip prepared plan-cache: {reason}"));
-            state.last_warnings.push(warning.clone());
-            state.current_warnings.push(warning);
+            let mut prefix = mysql_analysis_warnings;
+            if !mysql_analysis_cache_warning {
+                prefix.push(warning);
+            }
+            state.current_warnings.splice(0..0, prefix);
+            state.last_warnings = state.current_warnings.clone();
         }
         let prepared_plan_cache = state.prepared_plan_cache;
         if execution.is_ok()

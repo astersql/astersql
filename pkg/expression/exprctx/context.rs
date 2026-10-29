@@ -353,6 +353,10 @@ impl contextutil::WarnHandler for InnerOverrideEvalContext<'_> {
 }
 
 impl ParamValues for InnerOverrideEvalContext<'_> {
+    fn DeprecatedIntegerDisplayWidth(&self) -> Option<bool> {
+        self.inner.DeprecatedIntegerDisplayWidth()
+    }
+
     fn GetParamValue(&self, index: usize) -> Result<types::Datum, ParamError> {
         self.inner.GetParamValue(index)
     }

@@ -408,6 +408,21 @@ impl PgService {
                         .filter(|sql| !sql.contains(&0))
                         .and_then(|sql| std::str::from_utf8(sql).ok());
                     if let Some(sql) = sql {
+                        if let Some(result) = extended.deallocate_query(sql, &context) {
+                            match result {
+                                Ok(()) => write_message(socket, b'C', b"DEALLOCATE\0")?,
+                                Err((state, message)) => {
+                                    extended.session.record_error(context.as_ref());
+                                    write_error(socket, "ERROR", state, &message)?;
+                                }
+                            }
+                            write_message(
+                                socket,
+                                b'Z',
+                                &[extended.session.transaction_status(context.as_ref())],
+                            )?;
+                            continue;
+                        }
                         let session_query = crate::pg_session::SessionQuery::parse(sql);
                         if let Ok(Some(query)) = &session_query {
                             if let Err((state, message)) = extended

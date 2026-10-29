@@ -5991,6 +5991,28 @@ pub mod formal_registry {
                 };
                 let left_type = args[0].GetType(ctx.GetEvalCtx()).clone();
                 let right_type = args[1].GetType(ctx.GetEvalCtx()).clone();
+                if args
+                    .iter()
+                    .any(|arg| crate::MaybeOverOptimized4PlanCache(ctx, arg.as_ref()))
+                {
+                    for index in 0..2 {
+                        if args[index].as_constant().is_some()
+                            && args[1 - index].GetType(ctx.GetEvalCtx()).EvalType() == types::ETInt
+                            && matches!(
+                                args[index].GetType(ctx.GetEvalCtx()).EvalType(),
+                                types::ETString | types::ETReal | types::ETDecimal
+                            )
+                        {
+                            ctx.SetSkipPlanCache(&format!(
+                                "'{}' may be converted to INT",
+                                args[index].StringWithCtx(
+                                    Some(ctx.GetEvalCtx()),
+                                    errors::RedactLogDisable
+                                )
+                            ));
+                        }
+                    }
+                }
                 if left_type.EvalType() == types::ETInt
                     && args[0].as_constant().is_none()
                     && right_type.EvalType() != types::ETInt
@@ -6217,7 +6239,9 @@ pub mod formal_registry {
                         | types::ETDuration => !source_type.Equal(&return_type),
                         _ => source_type.EvalType() != eval_type,
                     };
-                    if needs_cast {
+                    if name == "if" && eval_type == types::ETInt {
+                        args[index] = crate::WrapWithCastAsInt(ctx, args[index].CloneExpr(), None);
+                    } else if needs_cast {
                         args[index] = BuildCastFunction(ctx, &args[index], &return_type);
                     }
                 }
@@ -6254,9 +6278,11 @@ pub mod formal_registry {
                 return_type.AddFlag(flag);
                 for argument in &mut args {
                     let source = argument.GetType(ctx.GetEvalCtx());
-                    if source.EvalType() != eval_type
-                        || (eval_type == types::ETDecimal && !source.Equal(&return_type))
-                    {
+                    if eval_type == types::ETDecimal {
+                        // Go casts to the evaluation family, retaining each decimal's
+                        // value scale rather than coercing to the result display scale.
+                        *argument = crate::WrapWithCastAsDecimal(ctx, argument.CloneExpr());
+                    } else if source.EvalType() != eval_type {
                         *argument = BuildCastFunction(ctx, argument, &return_type);
                     }
                 }

@@ -832,9 +832,16 @@ pub(super) fn pg_conditional_collation(
             for arg in Args {
                 if let Some(name) = pg_conditional_collation(arg)? {
                     if chosen.as_ref().is_some_and(|old| old != &name) {
-                        return Err(pg_bytea_input_error(
-                            "42P21",
-                            "collation mismatch between explicit collations C and POSIX",
+                        let error = super::function_diagnostics::PgFunctionError {
+                            state: "42P21",
+                            message: "collation mismatch between explicit collations C and POSIX"
+                                .into(),
+                            hint: None,
+                            position: Some(arg.node_text.OriginTextPosition() as usize),
+                        };
+                        return Err(SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
                         ));
                     }
                     chosen = Some(name);

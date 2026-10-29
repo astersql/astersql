@@ -970,6 +970,59 @@ impl Extended {
         }
     }
 
+    /// SQL DEALLOCATE names the same connection-owned objects as protocol Close.
+    pub(crate) fn deallocate_query(
+        &mut self,
+        sql: &str,
+        context: &Arc<dyn TiDBContext>,
+    ) -> Option<Result<()>> {
+        use crate::pg_catalog_query::{Token, lex};
+        let mut tokens = lex(sql).ok()?;
+        if tokens.last() == Some(&Token::Symbol(';')) {
+            tokens.pop();
+        }
+        if !matches!(tokens.first(), Some(Token::Word(word)) if word == "deallocate") {
+            return None;
+        }
+        let mut index = 1;
+        if matches!(tokens.get(index), Some(Token::Word(word)) if word == "prepare") {
+            index += 1;
+        }
+        if tokens.len() != index + 1 {
+            return None;
+        }
+        let name = match &tokens[index] {
+            // ALL is a separate SQL form, outside this named-object bridge.
+            Token::Word(name) if name == "all" => return None,
+            Token::Word(name) | Token::Quoted(name) => name,
+            _ => return None,
+        };
+        Some((|| {
+            self.session
+                .check_transaction_command(Some("DEALLOCATE"), context.as_ref())?;
+            let statement = self
+                .statements
+                .remove(name)
+                .ok_or_else(|| error("26000", "prepared statement does not exist"))?;
+            if statement.catalog.is_none() && statement.session_query.is_none() {
+                if self
+                    .portals
+                    .values()
+                    .any(|portal| portal.statement == statement.metadata.statement_id)
+                {
+                    // Bound portals already pin the analyzed plan, as on reanalysis.
+                    self.retired_statements
+                        .push(statement.metadata.statement_id);
+                } else {
+                    context
+                        .close_prepared_statement(statement.metadata.statement_id)
+                        .map_err(engine)?;
+                }
+            }
+            Ok(())
+        })())
+    }
+
     pub(crate) fn reset_unnamed(&mut self, context: &Arc<dyn TiDBContext>) {
         if let Some(statement) = self.statements.remove("") {
             if statement.catalog.is_none() && statement.session_query.is_none() {

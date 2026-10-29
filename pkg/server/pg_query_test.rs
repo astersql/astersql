@@ -2968,11 +2968,19 @@ fn pg_function_11() {
             assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
             assert_eq!(fields.get(&b'C'), Some(&state));
             assert!(!fields[&b'M'].is_empty());
-            assert!(
-                [b'D', b'H', b'P']
-                    .iter()
-                    .all(|tag| !fields.contains_key(tag))
-            );
+            assert!([b'D', b'H'].iter().all(|tag| !fields.contains_key(tag)));
+            // PG18.6 points at the conflicting second operand. Qualified
+            // COALESCE remains the existing name-stage rejection contract.
+            let position = if state == "42804" {
+                Some(if sql.contains("NULL::text") {
+                    "28"
+                } else {
+                    "25"
+                })
+            } else {
+                None
+            };
+            assert_eq!(fields.get(&b'P').copied(), position);
             println!("{sql} extended={extended}: {fields:?}");
             assert_eq!(m[1].1, b"I");
             let probe = query(&mut socket, "SELECT 1::int4");
@@ -3232,10 +3240,12 @@ fn pg_function_12() {
         assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
         assert_eq!(fields.get(&b'C'), Some(&state));
         assert!(!fields[&b'M'].is_empty());
-        assert!(
-            [b'D', b'H', b'P']
-                .iter()
-                .all(|tag| !fields.contains_key(tag))
+        assert!([b'D', b'H'].iter().all(|tag| !fields.contains_key(tag)));
+        // Analysis identifies the incompatible text operand; runtime division
+        // has no source cursor in the independent PG18.6 contract.
+        assert_eq!(
+            fields.get(&b'P').copied(),
+            if state == "42804" { Some("19") } else { None }
         );
         println!("runtime COALESCE: {fields:?}");
         assert_eq!(m.last().unwrap().1, [ready]);
@@ -3466,12 +3476,12 @@ fn pg_function_12_mysql() {
             metadata[9]
         );
         assert_eq!(actual.1.len(), 1);
-        // Go COALESCE casts the selected BIGINT arm to the common DECIMAL(,4).
+        // Go casts to the DECIMAL family while retaining the selected arm scale.
         // The selected non-NULL arm still skips division and its warning.
         assert_eq!(actual.2, u16::from(a == "NULL" && z == 0));
         assert_eq!(warnings.1.len(), usize::from(a == "NULL" && z == 0));
         if a == "7" {
-            assert_eq!(actual.1[0], b"\x067.0000");
+            assert_eq!(actual.1[0], vec![1, b'7']);
         } else if z == 0 {
             assert_eq!(actual.1[0], vec![0xfb]);
         } else {
@@ -4256,9 +4266,14 @@ fn pg_function_14() {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>();
                 assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                for tag in b"DHP" {
+                for tag in b"DH" {
                     assert!(!fields.iter().any(|f| f[0] == *tag));
                 }
+                let expected_position = format!("P{}", sql.rfind("COLLATE").unwrap() + 1);
+                assert_eq!(
+                    fields.iter().find(|f| f[0] == b'P').copied(),
+                    Some(expected_position.as_bytes())
+                );
                 assert_eq!(
                     m.last().unwrap().1,
                     if in_transaction { b"E" } else { b"I" }

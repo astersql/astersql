@@ -5,7 +5,8 @@ Default: PORT DATABASE EVIDENCE MYSQL_PORT. --self-test is offline;
 --reference-only EVIDENCE records actual reference versions without approval.
 PG18_REFERENCE_DSN/PG_LIBPQ_LIBRARY and MYSQL8_REFERENCE_HOST/PORT/USER/PASSWORD/
 MYSQL8_CLIENT_LIBRARY follow task23. Services belong to the caller. Credentials
-are never archived. MySQL8 is a separately identified reference, not a TiDB peer.
+are never archived. The native MySQL ABI can target Go/TiDB; actual identity and
+FUNCTION25_REFERENCE_BUILD_FILE are archived without treating MySQL8 as a TiDB peer.
 """
 import copy
 import ctypes as c
@@ -264,7 +265,7 @@ def run(dsns, evidence, aster_mysql=None):
                         check(recovery['rows'] == [['31']] and recovery['ready'] == 'I', f'{side}/{case}: wire recovery')
                     probe(case)
         for side, conn in conns.items():
-            archive('pg', side, label, 'deallocate', query(conn, 'DEALLOCATE '+name.decode()))
+            archive('pg', side, label, 'deallocate', query(conn, 'DEALLOCATE '+chr(34)+name.decode().replace(chr(34),chr(34)*2)+chr(34)))
             if prepared[side]:
                 wire = wires[side]
                 archive('wire', side, label, 'close', wire.phase(b'C', b'S'+name+b'\0', '3'))
@@ -279,7 +280,9 @@ def run(dsns, evidence, aster_mysql=None):
             fixtures={s: hashlib.sha256(Path(__file__).with_name(s).read_bytes()).hexdigest() for s in sources},
             cargo_lock_sha256=hashlib.sha256((repo/'Cargo.lock').read_bytes()).hexdigest(),
             source_diff_sha256=hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD', '--', 'pkg'], cwd=repo)).hexdigest(),
-            rust_binary=binary, rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None)))
+            rust_binary=binary, rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None,
+            reference_build=(json.loads(Path(os.environ['FUNCTION25_REFERENCE_BUILD_FILE']).read_text())
+                             if os.environ.get('FUNCTION25_REFERENCE_BUILD_FILE') else None))))
         for side, dsn in dsns:
             conn = pq.PQconnectdb(dsn.encode()); assert conn
             conns[side] = conn
@@ -432,7 +435,8 @@ def run(dsns, evidence, aster_mysql=None):
                  domain='int4' if s[2] == 23 else 'text C', evaluation='matrix recorded',
                  collation='C/POSIX cases recorded; RowDescription has no collation field',
                  folding_cache='literal/prepared rebinding observed; plan optimization not proven',
-                 pushdown='unproven; no authorization', equivalence='pending full evidence')
+                 pushdown='unproven; no authorization', reference_contract='passed bounded matrix' if not failures else 'differences retained',
+                 equivalence='shared alias and optimization/pushdown approval pending')
             for s in EXTENDED], indent=2))
     except BaseException as error:
         failures.append('client aborted: '+type(error).__name__)
@@ -446,7 +450,13 @@ def run(dsns, evidence, aster_mysql=None):
         for conn in conns.values():
             pq.PQfinish(conn)
         if reference_database:
-            cleanup['reference_database_dropped'] = mysqls['reference'].query(f'DROP DATABASE {reference_database}')['code'] == 0
+            # A signal can arrive after mysql_query but before result buffering.
+            # Drain its real response before issuing DROP on this owned connection.
+            mysql = mysqls['reference']
+            pending = mysql.mysql_store_result(mysql.conn)
+            if pending:
+                mysql.mysql_free_result(pending)
+            cleanup['reference_database_dropped'] = mysql.query(f'DROP DATABASE {reference_database}')['code'] == 0
             check(cleanup['reference_database_dropped'], 'reference database cleanup')
         for mysql in mysqls.values():
             mysql.close()
