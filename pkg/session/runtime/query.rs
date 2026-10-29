@@ -4135,7 +4135,7 @@ impl ConcreteSession {
         tp
     }
 
-    fn mysql_function_result_type(
+    pub(super) fn mysql_function_result_type(
         &self,
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],

@@ -10246,3 +10246,31 @@ fn pg_function_27_json_errors() {
         assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
     }
 }
+
+#[test]
+fn pg_function_27_json_input_type() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for input in ["1", "1.5", "CAST('1' AS SIGNED)"] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT JSON_EXTRACT({input},'$') AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let WireResponse::Err(error) = mysql.query(&sql).unwrap() else {
+                panic!("Go rejects a numeric JSON document: {sql}")
+            };
+            assert_eq!(error.code, 3146, "{sql}: {error:?}");
+            assert_eq!(error.sql_state, Some(*b"22032"));
+            assert!(
+                mysql.prepare(&sql).is_err(),
+                "Go getFunction must reject document type"
+            );
+            let WireResponse::ResultSet(result) = mysql.query("SELECT 1 AS v").unwrap() else {
+                panic!("recovery")
+            };
+            assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+        }
+    }
+}

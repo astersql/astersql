@@ -5688,6 +5688,17 @@ pub mod formal_registry {
             other => other,
         };
         if name == "json_extract" {
+            // Go verifyJSONArgsType rejects numeric document types before
+            // building the signature; string-to-JSON conversion is separate.
+            let document_type = args[0].GetType(ctx.GetEvalCtx());
+            if document_type.GetType() != mysql::TypeNull
+                && !matches!(document_type.EvalType(), types::ETString | types::ETJson)
+            {
+                return Err(errors::Error::from(
+                    crate::expression_errors_kernel::ErrInvalidTypeForJSON
+                        .GenWithStackByArgs(&[1i64.into(), "json_extract".into()]),
+                ));
+            }
             let json_type = *types::NewFieldType(mysql::TypeJSON);
             args[0] = BuildCastFunction(ctx, &args[0], &json_type);
             for index in 1..args.len() {

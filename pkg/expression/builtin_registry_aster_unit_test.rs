@@ -1378,3 +1378,31 @@ fn pg_function_25_nullif_numeric_fields() {
     );
     assert_eq!(integer.GetFlag(), 0, "do not mutate the source column");
 }
+
+#[test]
+fn pg_function_27_json_document_factory() {
+    let context = exprstatic::NewExprContext(Vec::new());
+    let build = |document: crate::Constant| {
+        crate::NewFunctionBase(
+            &context,
+            "json_extract",
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            vec![Box::new(document), Box::new(crate::NewStrConst("$"))],
+        )
+    };
+    let error = build(crate::NewInt64Const(1))
+        .err()
+        .expect("Go rejects numeric documents")
+        .to_string();
+    assert!(error.contains("[expression:3146]"), "{error}");
+    assert!(build(crate::NewStrConst("1")).is_ok());
+    // NewNull() is a typed TINY NULL in this repository; Go rejects that
+    // document type as well. An untyped SQL NULL has TypeNull instead.
+    assert!(build(crate::NewNull()).is_err());
+    assert!(
+        build(crate::NewNullWithFieldType(*crate::types::NewFieldType(
+            crate::mysql::TypeNull
+        )))
+        .is_ok()
+    );
+}

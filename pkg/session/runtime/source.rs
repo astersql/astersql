@@ -1706,6 +1706,34 @@ impl ConcreteSession {
         } else {
             Vec::new()
         };
+        if self.sql_dialect() == ast::SqlDialect::MySQL {
+            for expression in select
+                .Fields
+                .Fields
+                .iter()
+                .filter_map(|field| field.Expr.as_ref())
+            {
+                if matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "json_extract")
+                {
+                    // Build eligibility is independent of row availability and
+                    // must run even when WHERE filters every row (Go getFunction).
+                    let sources = self.relational_select_source_fields(select)?;
+                    self.mysql_function_result_type(expression, &sources)
+                        .inspect_err(|error| {
+                            let diagnostic =
+                                SessionWarning::from_error(&error.clone().into_shared());
+                            if diagnostic.code == 3146 {
+                                self.state.borrow_mut().current_warnings.push(
+                                    SessionWarning::error_with_code(
+                                        diagnostic.code,
+                                        diagnostic.message,
+                                    ),
+                                );
+                            }
+                        })?;
+                }
+            }
+        }
         // Only pass necessary WHERE key conditions through plain sources.
         // Correlated/derived/outer joins and ambiguous unqualified columns keep
         // their existing evaluation boundary.

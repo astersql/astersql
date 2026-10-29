@@ -6595,7 +6595,6 @@ fn pg_function_20_mysql() {
             r#"JSON_EXTRACT('{"a": [{"aa": [{"aaa": 1}]}], "aaa": 2}', '$.a[0].aa[0].aaa', '$.aaa')"#,
             Some("[1, 2]"),
         ),
-        ("JSON_EXTRACT(1, '$')", Some("1")),
     ];
     for (expression, expected) in cases {
         for empty in [false, true] {
@@ -6632,6 +6631,7 @@ fn pg_function_20_mysql() {
         }
     }
     for expression in [
+        "JSON_EXTRACT(1, '$')",
         "JSON_EXTRACT('bad', '$.a')",
         "JSON_EXTRACT('{}', '$InvalidPath')",
         r#"JSON_EXTRACT('{"a":1}', '$.a', '$InvalidPath')"#,
