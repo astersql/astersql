@@ -3857,6 +3857,28 @@ impl ConcreteSession {
                     astersql_parser_mysql::r#type::TypeDouble,
                 );
             }
+            if let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
+                && FnName.L == "nullif"
+                && Args.len() == 2
+            {
+                let left = self.pg_case_input_type(&Args[0], source_fields);
+                let right = self.pg_case_input_type(&Args[1], source_fields);
+                use astersql_parser_mysql::r#type::{TypeLong, TypeNewDecimal};
+                // NULLIF returns the first operand of its selected equality operator.
+                // numeric = numeric widens int4 on either side; this is comparison
+                // coercion, not COALESCE's common-result-type selection.
+                if matches!(left.GetType(), TypeLong | TypeNewDecimal)
+                    && matches!(right.GetType(), TypeLong | TypeNewDecimal)
+                {
+                    return astersql_parser_types::NewFieldType(
+                        if left.GetType() == TypeNewDecimal || right.GetType() == TypeNewDecimal {
+                            TypeNewDecimal
+                        } else {
+                            TypeLong
+                        },
+                    );
+                }
+            }
             // PostgreSQL int4 division keeps its integer result identity; MySQL '/' remains decimal.
             if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
                 && Op == "/"
