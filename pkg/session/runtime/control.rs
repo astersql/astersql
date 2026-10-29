@@ -2202,6 +2202,41 @@ impl ConcreteSession {
             .ok_or_else(|| {
                 SessionError::new(format!("unknown prepared statement {statement_id}"))
             })?;
+        // Typed IFNULL parameters have one prepared result identity. Binding
+        // literals must not re-fold the result to the selected arm's type.
+        let mysql_ifnull_fields = if dialect == ast::SqlDialect::MySQL {
+            let statements = parse_in_dialect(&sql, dialect)?;
+            if let Some(select) = statements
+                .first()
+                .and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
+                && select
+                    .Fields
+                    .Fields
+                    .iter()
+                    .all(|field| field.WildCard.is_none())
+            {
+                let affected = select
+                    .Fields
+                    .Fields
+                    .iter()
+                    .map(|field| {
+                        field
+                            .Expr
+                            .as_ref()
+                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if FnName.L == "ifnull"))
+                    })
+                    .collect::<Vec<_>>();
+                if affected.iter().any(|affected| *affected) {
+                    Some((self.describe_result_fields(&sql)?, affected))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let has_pg_constructors = self
             .state
             .borrow()
@@ -2479,6 +2514,26 @@ impl ConcreteSession {
         }
         drop(state);
         execution.and_then(|mut records| {
+            if let Some((fields, affected)) = mysql_ifnull_fields {
+                if records.len() != 1
+                    || records[0].columns.len() != fields.len()
+                    || records[0].result_fields.len() != fields.len()
+                {
+                    return Err(SessionError::new(
+                        "prepared IFNULL result field count mismatch",
+                    ));
+                }
+                for ((actual, field), affected) in records[0]
+                    .result_fields
+                    .iter_mut()
+                    .zip(fields)
+                    .zip(affected)
+                {
+                    if affected {
+                        *actual = Some(field);
+                    }
+                }
+            }
             if has_pg_constructors
                 || constructor_oids.contains(&1082)
                 || constructor_oids.contains(&1083)

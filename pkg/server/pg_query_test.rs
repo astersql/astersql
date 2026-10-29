@@ -5425,3 +5425,462 @@ fn pg_function_17_mysql() {
     drop(server);
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_18() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = vec![];
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    let table = format!("ifnull_pg18_{}", address.port());
+    struct TableCleanup(TcpStream, String);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                query(&mut self.0, "ROLLBACK");
+                query(&mut self.0, &format!("DROP TABLE IF EXISTS {}", self.1));
+            }));
+        }
+    }
+    let table_cleanup = TableCleanup(socket.try_clone().unwrap(), table.clone());
+    for sql in [
+        format!("CREATE TABLE {table}(v integer)"),
+        format!("INSERT INTO {table} VALUES(1)"),
+    ] {
+        assert_eq!(
+            query(&mut socket, &sql)
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"CZ",
+            "{sql}"
+        );
+    }
+    for prefix in ["", "pg_catalog."] {
+        for call in [
+            "ifnull('ok'::char(8),'backup'::char(12))",
+            "ifnull(NULL::char(8),'backup'::char(12))",
+            "ifnull(NULL::char(8),NULL::char(12))",
+            "ifnull('bad'::int4,2)",
+            "ifnull(7::int4,1/0)",
+            "ifnull($1::text,$2::text)",
+        ] {
+            for parse in [false, true] {
+                // Parameter markers belong only to the extended protocol.
+                if !parse && call.contains('$') {
+                    continue;
+                }
+                for empty in [false, true] {
+                    for transaction in [false, true] {
+                        if transaction {
+                            assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+                        }
+                        let sql = format!(
+                            "SELECT {prefix}{call} AS v{}",
+                            if empty { " WHERE false" } else { "" }
+                        );
+                        let messages = if parse {
+                            send(
+                                &mut socket,
+                                b'P',
+                                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()]
+                                    .concat(),
+                            );
+                            send(&mut socket, b'S', &[]);
+                            ready(&mut socket)
+                        } else {
+                            query(&mut socket, &sql)
+                        };
+                        assert_eq!(
+                            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            b"EZ",
+                            "{sql}: {messages:?}"
+                        );
+                        let fields = messages[0]
+                            .1
+                            .split(|b| *b == 0)
+                            .filter(|f| !f.is_empty())
+                            .collect::<Vec<_>>();
+                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                            assert!(fields.contains(&field), "{sql}: {fields:?}");
+                        }
+                        assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
+                        for tag in b"DHP" {
+                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
+                        }
+                        assert_eq!(
+                            messages.last().unwrap().1,
+                            if transaction { b"E" } else { b"I" }
+                        );
+                        if transaction {
+                            assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+                        }
+                        let probe = query(&mut socket, "SELECT 1::int4");
+                        assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                        assert_eq!(probe[1].1, row(&[Some("1")]));
+                    }
+                }
+            }
+        }
+    }
+    for prefix in ["", "pg_catalog."] {
+        for parse in [false, true] {
+            let sql = format!("INSERT INTO {table} VALUES({prefix}ifnull(1,2))");
+            let messages = if parse {
+                send(
+                    &mut socket,
+                    b'P',
+                    &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                );
+                send(&mut socket, b'S', &[]);
+                ready(&mut socket)
+            } else {
+                query(&mut socket, &sql)
+            };
+            assert_eq!(
+                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"EZ",
+                "{sql}: {messages:?}"
+            );
+            assert!(messages[0].1.windows(7).any(|f| f == b"C42883\0"));
+            let unchanged = query(&mut socket, &format!("SELECT v FROM {table}"));
+            assert_eq!(unchanged.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+            assert_eq!(unchanged[1].1, row(&[Some("1")]));
+            assert_eq!(unchanged.last().unwrap().1, b"I");
+        }
+    }
+    // Name rejection must not change COALESCE's independent PG behavior.
+    let coalesce = query(&mut socket, "SELECT coalesce(NULL::int4,7::int4) AS v");
+    assert_eq!(coalesce.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+    assert_eq!(
+        coalesce[0].1,
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &23u32.to_be_bytes(),
+            &4i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(coalesce[1].1, row(&[Some("7")]));
+    drop(table_cleanup);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_18_mysql() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, ColumnDefinition, MysqlCompatServer, MysqlTestClient, TextResultSet,
+        TextValue, WireResponse, put_lenenc_bytes,
+    };
+    fn result(response: WireResponse, context: &str) -> TextResultSet {
+        let WireResponse::ResultSet(result) = response else {
+            panic!("{context}: {response:?}")
+        };
+        result
+    }
+    fn bytes(value: Option<&str>) -> TextValue {
+        value
+            .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+            .unwrap_or(TextValue::Null)
+    }
+    fn description(
+        length: u32,
+        code: u8,
+        flags: u16,
+        charset: u16,
+        decimals: u8,
+    ) -> Vec<ColumnDefinition> {
+        vec![ColumnDefinition {
+            catalog: "def".into(),
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            character_set: charset,
+            column_length: length,
+            column_type: code,
+            flags,
+            decimals,
+            default_value: None,
+        }]
+    }
+    let server = MysqlCompatServer::start().unwrap();
+    let address = server.mysql_addr();
+    let mut client = server
+        .connect_root(CLIENT_DEPRECATE_EOF, Some("test"))
+        .unwrap();
+    let table = format!("ifnull_contract18_{}", address.port());
+    struct TableCleanup(MysqlTestClient, String);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = self.0.query(&format!("DROP TABLE IF EXISTS {}", self.1));
+        }
+    }
+    let table_cleanup = TableCleanup(
+        server
+            .connect_root(CLIENT_DEPRECATE_EOF, Some("test"))
+            .unwrap(),
+        table.clone(),
+    );
+    assert!(matches!(
+        client
+            .query(&format!("CREATE TABLE {table}(a CHAR(8),z BIGINT)"))
+            .unwrap(),
+        WireResponse::Ok(_)
+    ));
+    // Full wire metadata is compared with the declared aggregate result type,
+    // including expression origin and charset/length/type/flags/decimals.
+    for (expression, expected) in [
+        (
+            "IFNULL(CAST('ok' AS CHAR(8)),CAST('backup' AS CHAR(12)))",
+            Some("ok"),
+        ),
+        (
+            "IFNULL(CAST(NULL AS CHAR(8)),CAST('backup' AS CHAR(12)))",
+            Some("backup"),
+        ),
+        ("IFNULL(CAST(NULL AS CHAR(8)),CAST(NULL AS CHAR(12)))", None),
+        ("IFNULL(NULL,NULL)", None),
+        (
+            "IFNULL(CAST('' AS CHAR(8)),CAST('backup' AS CHAR(12)))",
+            Some(""),
+        ),
+        (
+            "IFNULL(CAST('你好' AS CHAR(8)),CAST('backup' AS CHAR(12)))",
+            Some("你好"),
+        ),
+        (
+            "IFNULL(CAST(7 AS SIGNED),CAST('backup' AS CHAR(12)))",
+            Some("7"),
+        ),
+    ] {
+        // Go's ifNullFoldHandler keeps a non-NULL constant's own type,
+        // or the second arm's type when the first folds to NULL. Parameter
+        // and column operands below separately exercise aggregate metadata.
+        let expected_columns = if expression == "IFNULL(NULL,NULL)" {
+            description(0, 6, 128, 63, 0)
+        } else if expression.contains("SIGNED") {
+            description(80, 254, 129, 46, 31)
+        } else if expression.starts_with("IFNULL(CAST(NULL") {
+            description(48, 254, if expected.is_some() { 1 } else { 0 }, 46, 31)
+        } else {
+            description(32, 254, 1, 46, 31)
+        };
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty {
+                    format!(" FROM {table}")
+                } else {
+                    String::new()
+                }
+            );
+            let actual = result(client.query(&sql).unwrap(), &sql);
+            assert_eq!(actual.columns, expected_columns, "{sql}");
+            assert_eq!(
+                actual.rows,
+                if empty {
+                    vec![]
+                } else {
+                    vec![vec![bytes(expected)]]
+                },
+                "{sql}"
+            );
+            assert_eq!(actual.warnings, 0, "{sql}");
+        }
+    }
+    for empty in [false, true] {
+        let sql = format!(
+            "SELECT IFNULL(CAST(? AS CHAR(8)),CAST(? AS CHAR(12))) AS v{}",
+            if empty {
+                format!(" FROM {table}")
+            } else {
+                String::new()
+            }
+        );
+        let prepared = client.prepare(&sql).unwrap();
+        assert_eq!(prepared.parameter_count, 2);
+        assert_eq!(prepared.columns, description(48, 254, 0, 46, 31), "{sql}");
+        for (first, second) in [
+            (Some("ok"), Some("backup")),
+            (None, Some("backup")),
+            (None, None),
+            (Some(""), Some("backup")),
+            (Some("你好"), None),
+            (None, Some("again")),
+        ] {
+            let mut payload = prepared.statement_id.to_le_bytes().to_vec();
+            payload.push(0);
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.push(u8::from(first.is_none()) | (u8::from(second.is_none()) << 1));
+            payload.push(1);
+            payload.extend_from_slice(&[253, 0, 253, 0]);
+            for value in [first, second].into_iter().flatten() {
+                put_lenenc_bytes(&mut payload, value.as_bytes());
+            }
+            let actual = result(client.execute_prepared(&payload).unwrap(), &sql);
+            assert_eq!(actual.columns, prepared.columns, "{sql}");
+            assert_eq!(
+                actual.rows,
+                if empty {
+                    vec![]
+                } else {
+                    vec![vec![bytes(first.or(second))]]
+                },
+                "{sql}"
+            );
+            assert_eq!(actual.warnings, 0);
+        }
+        client.close_prepared(prepared.statement_id).unwrap();
+    }
+    // Table operands prevent constant folding from substituting for runtime
+    // short circuiting. ABS(BIGINT_MIN) is an actual reached-branch error.
+    assert!(matches!(
+        client
+            .query(&format!(
+                "INSERT INTO {table} VALUES('ok',-9223372036854775808)"
+            ))
+            .unwrap(),
+        WireResponse::Ok(_)
+    ));
+    for prepared in [false, true] {
+        let sql =
+            format!("SELECT IFNULL(a,CAST(ABS(CAST(z AS SIGNED)) AS CHAR(24))) AS v FROM {table}");
+        let statement = prepared.then(|| client.prepare(&sql).unwrap());
+        if let Some(statement) = &statement {
+            assert_eq!(statement.columns, description(96, 254, 0, 46, 31), "{sql}");
+        }
+        for null in [false, true, false] {
+            assert!(matches!(
+                client
+                    .query(&format!(
+                        "UPDATE {table} SET a={}",
+                        if null { "NULL" } else { "'ok'" }
+                    ))
+                    .unwrap(),
+                WireResponse::Ok(_)
+            ));
+            let response = if let Some(statement) = &statement {
+                let mut payload = statement.statement_id.to_le_bytes().to_vec();
+                payload.push(0);
+                payload.extend_from_slice(&1u32.to_le_bytes());
+                client.execute_prepared(&payload).unwrap()
+            } else {
+                client.query(&sql).unwrap()
+            };
+            if null {
+                let WireResponse::Err(error) = response else {
+                    panic!("reached ABS error: {response:?}")
+                };
+                assert_eq!(error.code, 1690);
+                assert_eq!(error.sql_state, Some(*b"22003"));
+                assert!(!error.message.is_empty());
+            } else {
+                let result = result(response, &sql);
+                assert_eq!(result.columns, description(96, 254, 0, 46, 31), "{sql}");
+                assert_eq!(result.rows, vec![vec![bytes(Some("ok"))]]);
+            }
+            assert_eq!(
+                result(client.query("SELECT 1 AS v").unwrap(), "recovery").rows,
+                vec![vec![bytes(Some("1"))]]
+            );
+            // SELECT and its failed fallback must never change table contents.
+            assert_eq!(
+                result(
+                    client.query(&format!("SELECT a,z FROM {table}")).unwrap(),
+                    "no writes"
+                )
+                .rows,
+                vec![vec![
+                    bytes(if null { None } else { Some("ok") }),
+                    bytes(Some("-9223372036854775808"))
+                ]]
+            );
+        }
+        if let Some(statement) = statement {
+            client.close_prepared(statement.statement_id).unwrap();
+        }
+    }
+    // An error in the first operand must never be mistaken for NULL.
+    for prepared in [false, true] {
+        let sql =
+            format!("SELECT IFNULL(CAST(ABS(CAST(z AS SIGNED)) AS CHAR(24)),a) AS v FROM {table}");
+        let statement = prepared.then(|| client.prepare(&sql).unwrap());
+        let response = if let Some(statement) = &statement {
+            let mut payload = statement.statement_id.to_le_bytes().to_vec();
+            payload.push(0);
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            client.execute_prepared(&payload).unwrap()
+        } else {
+            client.query(&sql).unwrap()
+        };
+        let WireResponse::Err(error) = response else {
+            panic!("first operand error: {response:?}")
+        };
+        assert_eq!(error.code, 1690);
+        assert_eq!(error.sql_state, Some(*b"22003"));
+        assert!(!error.message.is_empty());
+        assert_eq!(
+            result(
+                client.query("SELECT 1 AS v").unwrap(),
+                "first error recovery"
+            )
+            .rows,
+            vec![vec![bytes(Some("1"))]]
+        );
+        if let Some(statement) = statement {
+            client.close_prepared(statement.statement_id).unwrap();
+        }
+    }
+    drop(table_cleanup);
+    drop(client);
+    server.close();
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}

@@ -1409,6 +1409,21 @@ impl ConcreteSession {
                 })
                 .unwrap_or(Ok(None));
         }
+        if self.sql_dialect() == ast::SqlDialect::MySQL
+            && let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
+            && FnName.L == "ifnull"
+            && Args.len() == 2
+        {
+            // Re-enter the typed query evaluator only for the selected arm.
+            // The untyped fallback would bypass nested formal kernels and
+            // lose errors such as signed ABS(BIGINT_MIN).
+            if let Some(value) =
+                self.relational_query_expression_value(&Args[0], row, group_rows)?
+            {
+                return Ok(Some(value));
+            }
+            return self.relational_query_expression_value(&Args[1], row, group_rows);
+        }
         match &expression.Kind {
             ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 super::pg_record::value_with(expression, &|field| {
@@ -2529,6 +2544,12 @@ impl ConcreteSession {
                         expression_contains_cast(expr) || has_pg_query_expression(expr)
                     })
                 })))
+            // IFNULL must keep its formal aggregate result identity even for
+            // constant projections and empty results, rather than the legacy
+            // scalar path's untyped protocol fallback.
+            || (self.sql_dialect() == ast::SqlDialect::MySQL
+                && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
+                    .any(|expr| expression_contains_function(expr, "ifnull")))
             || has_derived_source
             || select
                 .From
@@ -3799,6 +3820,55 @@ impl ConcreteSession {
         tp
     }
 
+    fn mysql_ifnull_result_type(
+        &self,
+        expression: &ast::ExprNode,
+        source_fields: &[ConcreteResultField],
+    ) -> SessionResult<astersql_parser_types::types::FieldType> {
+        // Reuse the existing factory and Go constant-folding rules against
+        // catalog types. This retains length, nullability,
+        // mixed-type and collation rules instead of picking the first arm.
+        let table = astersql_meta_model::TableInfo {
+            Columns: source_fields
+                .iter()
+                .map(|field| field.column.clone())
+                .collect(),
+            ..Default::default()
+        };
+        struct Parameters(usize);
+        impl ast::ExprNodeVisitor for Parameters {
+            fn Enter(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if matches!(node.Kind, ast::ExprKind::ParamMarker { .. }) {
+                    self.0 += 1;
+                }
+                (node.clone(), false)
+            }
+            fn Leave(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                (node.clone(), true)
+            }
+        }
+        let mut parameters = Parameters(0);
+        let _ = expression.Accept(&mut parameters);
+        let parameters = vec![astersql_types::datum::Datum::default(); parameters.0];
+        let context = plan_context_with_params(
+            Arc::clone(&self.session_vars),
+            &parameters,
+            !parameters.is_empty(),
+            self.sql_dialect(),
+        );
+        let context = astersql_planner_core_base::PlanContext::GetExprCtx(context.as_ref());
+        astersql_planner_core::PlannerBuildSimpleExpr(
+            context,
+            expression,
+            vec![astersql_expression::WithTableInfo(
+                &self.current_database(),
+                &table,
+            )],
+        )
+        .map(|built| built.GetType(context.GetEvalCtx()).clone())
+        .map_err(|error| session_error("resolve MySQL IFNULL result type", error))
+    }
+
     fn relational_query_expression_type_from_sources_uncollated(
         &self,
         expression: &ast::ExprNode,
@@ -4590,13 +4660,20 @@ impl ConcreteSession {
                     result_field.column_as_name = ast::NewCIStr(&output);
                     result.push(result_field);
                 } else {
+                    let field_type = if self.sql_dialect() == ast::SqlDialect::MySQL
+                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if FnName.L == "ifnull")
+                    {
+                        self.mysql_ifnull_result_type(expression, &source_fields)?
+                    } else {
+                        self.relational_query_expression_type_from_sources(
+                            expression,
+                            &source_fields,
+                        )
+                    };
                     result.push(ConcreteResultField {
                         column: astersql_meta_model::ColumnInfo {
                             Name: ast::CIStr::default(),
-                            FieldType: self.relational_query_expression_type_from_sources(
-                                expression,
-                                &source_fields,
-                            ),
+                            FieldType: field_type,
                             ..Default::default()
                         },
                         column_as_name: ast::NewCIStr(&output),
