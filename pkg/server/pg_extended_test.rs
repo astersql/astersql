@@ -32097,3 +32097,441 @@ fn pg_function_09() {
     service.close();
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_22() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, MysqlTestClient, TextResultSet, TextValue, WireResponse,
+        put_lenenc_bytes,
+    };
+    fn result(response: WireResponse) -> TextResultSet {
+        let WireResponse::ResultSet(result) = response else {
+            panic!("{response:?}")
+        };
+        assert_eq!(result.warnings, 0);
+        result
+    }
+    fn description(oid: u32, width: i16, format: i16) -> (u8, Vec<u8>) {
+        (
+            b'T',
+            [
+                &1i16.to_be_bytes()[..],
+                b"v\0",
+                &0u32.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &oid.to_be_bytes(),
+                &width.to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &format.to_be_bytes(),
+            ]
+            .concat(),
+        )
+    }
+    fn sync(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', b"I".to_vec()));
+    }
+    fn error(message: (u8, Vec<u8>), state: &str) {
+        assert_eq!(message.0, b'E');
+        let mut fields = std::collections::BTreeMap::new();
+        let mut offset = 0;
+        while message.1[offset] != 0 {
+            let tag = message.1[offset];
+            offset += 1;
+            let n = message.1[offset..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(
+                tag,
+                std::str::from_utf8(&message.1[offset..offset + n]).unwrap(),
+            );
+            offset += n + 1;
+        }
+        assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'C'), Some(&state));
+        assert!(!fields[&b'M'].is_empty());
+        assert!([b'D', b'H', b'P'].iter().all(|t| !fields.contains_key(t)));
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = crate::pg_client_integration_test::start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    let pg_address = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let mut mysql =
+        MysqlTestClient::connect(mysql_address, CLIENT_DEPRECATE_EOF, Some("test"), &[]).unwrap();
+    let mut sockets = [0, 1].map(|_| {
+        let mut socket = TcpStream::connect(pg_address).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+        socket
+            .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&startup).unwrap();
+        assert_eq!(read(&mut socket).0, b'R');
+        while read(&mut socket).0 != b'Z' {}
+        socket
+    });
+    let build = astersql_util_printer::GetTiDBInfo();
+    let mysql_sql = [
+        "SELECT ABS(CAST(? AS SIGNED)) AS v",
+        "SELECT CONCAT(?, 'b') AS v",
+        "SELECT IFNULL(CAST(? AS CHAR(8)),CAST('backup' AS CHAR(12))) AS v",
+        "SELECT TIDB_VERSION() AS v",
+    ];
+    let prepared = mysql_sql.map(|sql| mysql.prepare(sql).unwrap());
+    for (i, statement) in prepared.iter().enumerate() {
+        assert_eq!(statement.parameter_count, if i == 3 { 0 } else { 1 });
+        assert_eq!(statement.columns.len(), 1);
+        let c = &statement.columns[0];
+        assert_eq!(c.name, "v");
+        assert!(
+            c.schema.is_empty()
+                && c.table.is_empty()
+                && c.org_table.is_empty()
+                && c.org_name.is_empty()
+        );
+        eprintln!("mysql function {i} fixed metadata: {c:?}");
+        if i == 0 {
+            assert_eq!(
+                (
+                    c.column_type,
+                    c.flags,
+                    c.character_set,
+                    c.column_length,
+                    c.decimals
+                ),
+                (8, 128, 63, 20, 31)
+            );
+        } else if i == 1 {
+            assert_eq!(
+                (
+                    c.column_type,
+                    c.flags,
+                    c.character_set,
+                    c.column_length,
+                    c.decimals
+                ),
+                (253, 0, 46, 5, 31)
+            );
+        } else if i == 2 {
+            assert_eq!(
+                (
+                    c.column_type,
+                    c.flags,
+                    c.character_set,
+                    c.column_length,
+                    c.decimals
+                ),
+                (254, 1, 46, 48, 31)
+            );
+        } else if i == 3 {
+            assert_eq!(
+                (
+                    c.column_type,
+                    c.flags,
+                    c.character_set,
+                    c.column_length,
+                    c.decimals
+                ),
+                (253, 1, 46, (build.len() * 4) as u32, 31)
+            );
+        }
+    }
+    // Identical statement names belong to each connection; ABS has different
+    // signatures on the two connections while CONCAT has different NULL rules
+    // from the third, MySQL connection. Keep all statements alive together.
+    for (i, socket) in sockets.iter_mut().enumerate() {
+        let cast = if i == 0 { "int4" } else { "int8" };
+        for (name, sql, oid, width) in [
+            (
+                "abs",
+                format!("SELECT ABS($1::{cast}) AS v"),
+                if i == 0 { 23 } else { 20 },
+                if i == 0 { 4 } else { 8 },
+            ),
+            ("concat", "SELECT CONCAT($1::text,'b') AS v".into(), 25, -1),
+            (
+                "empty",
+                format!("SELECT ABS($1::{cast}) AS v WHERE false"),
+                if i == 0 { 23 } else { 20 },
+                if i == 0 { 4 } else { 8 },
+            ),
+        ] {
+            parse(socket, name, &sql, &[]);
+            assert_eq!(read(socket), (b'1', vec![]));
+            send(socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+            let parameter_oid: u32 = if name == "concat" {
+                25
+            } else if i == 0 {
+                23
+            } else {
+                20
+            };
+            assert_eq!(
+                read(socket),
+                (
+                    b't',
+                    [&1i16.to_be_bytes()[..], &parameter_oid.to_be_bytes()].concat()
+                )
+            );
+            assert_eq!(read(socket), description(oid, width, 0));
+            sync(socket);
+        }
+    }
+    for round in 0..4 {
+        // Value -> NULL -> value -> NULL exercises cold and repeated execution.
+        let null = round % 2 == 1;
+        for (i, socket) in sockets.iter_mut().enumerate() {
+            for (name, oid, width) in [
+                (
+                    "abs",
+                    if i == 0 { 23 } else { 20 },
+                    if i == 0 { 4 } else { 8 },
+                ),
+                ("concat", 25, -1),
+                (
+                    "empty",
+                    if i == 0 { 23 } else { 20 },
+                    if i == 0 { 4 } else { 8 },
+                ),
+            ] {
+                let format: i16 = (round / 2) as i16;
+                let input = if format == 1 && name != "concat" {
+                    if i == 0 {
+                        (-2i32).to_be_bytes().to_vec()
+                    } else {
+                        (-2i64).to_be_bytes().to_vec()
+                    }
+                } else if name == "concat" {
+                    b"a".to_vec()
+                } else {
+                    b"-2".to_vec()
+                };
+                // Both input/output formats and actual -1 NULL lengths.
+                let mut body = [
+                    b"\0".as_slice(),
+                    name.as_bytes(),
+                    b"\0",
+                    &1i16.to_be_bytes(),
+                    &format.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                ]
+                .concat();
+                if null {
+                    body.extend_from_slice(&(-1i32).to_be_bytes());
+                } else {
+                    body.extend_from_slice(&(input.len() as i32).to_be_bytes());
+                    body.extend_from_slice(&input);
+                }
+                body.extend_from_slice(&1i16.to_be_bytes());
+                body.extend_from_slice(&format.to_be_bytes());
+                send(socket, b'B', &body);
+                assert_eq!(read(socket), (b'2', vec![]));
+                send(socket, b'D', b"P\0");
+                assert_eq!(read(socket), description(oid, width, format));
+                execute(socket, "", 0);
+                if name != "empty" {
+                    let expected = if name == "concat" {
+                        row(&[Some(if null { "b" } else { "ab" })])
+                    } else if null {
+                        row(&[None])
+                    } else if format == 0 {
+                        row(&[Some("2")])
+                    } else {
+                        [
+                            &1i16.to_be_bytes()[..],
+                            &(width as i32).to_be_bytes(),
+                            if width == 4 {
+                                2i32.to_be_bytes().to_vec()
+                            } else {
+                                2i64.to_be_bytes().to_vec()
+                            }
+                            .as_slice(),
+                        ]
+                        .concat()
+                    };
+                    assert_eq!(read(socket), (b'D', expected));
+                }
+                assert_eq!(
+                    read(socket),
+                    (
+                        b'C',
+                        if name == "empty" {
+                            b"SELECT 0\0".to_vec()
+                        } else {
+                            b"SELECT 1\0".to_vec()
+                        }
+                    )
+                );
+                send(socket, b'C', b"P\0");
+                assert_eq!(read(socket), (b'3', vec![]));
+                sync(socket);
+                send(socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+                let source: u32 = if name == "concat" { 25 } else { oid };
+                assert_eq!(
+                    read(socket),
+                    (
+                        b't',
+                        [&1i16.to_be_bytes()[..], &source.to_be_bytes()].concat()
+                    )
+                );
+                assert_eq!(read(socket), description(oid, width, 0));
+                sync(socket);
+            }
+            for sql in ["SELECT IFNULL(NULL,1) AS v", "SELECT TIDB_VERSION() AS v"] {
+                // Query and Parse must reject before emitting successful rows.
+                let messages = query(socket, sql);
+                assert_eq!(messages.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+                error(messages[0].clone(), "42883");
+                assert_eq!(messages[1], (b'Z', b"I".to_vec()));
+                parse(socket, "hidden", sql, &[]);
+                error(read(socket), "42883");
+                sync(socket);
+                let probe = query(socket, "SELECT 1::int4");
+                assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                assert_eq!(probe[1], (b'D', row(&[Some("1")])));
+                let recovery = result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap());
+                assert_eq!(recovery.columns, prepared[3].columns);
+                assert_eq!(
+                    recovery.rows,
+                    vec![vec![TextValue::Bytes(build.as_bytes().to_vec())]]
+                );
+            }
+            for (j, statement) in prepared.iter().enumerate() {
+                let mut payload = statement.statement_id.to_le_bytes().to_vec();
+                payload.push(0);
+                payload.extend_from_slice(&1u32.to_le_bytes());
+                if j != 3 {
+                    payload.extend_from_slice(&[u8::from(null), 1, 253, 0]);
+                    if !null {
+                        put_lenenc_bytes(&mut payload, if j == 0 { b"-2" } else { b"a" });
+                    }
+                }
+                let actual = result(mysql.execute_prepared(&payload).unwrap());
+                assert_eq!(
+                    actual.columns, statement.columns,
+                    "function {j}, connection {i}, round {round}"
+                );
+                let expected = match j {
+                    0 => {
+                        if null {
+                            None
+                        } else {
+                            Some("2")
+                        }
+                    }
+                    1 => {
+                        if null {
+                            None
+                        } else {
+                            Some("ab")
+                        }
+                    }
+                    2 => Some(if null { "backup" } else { "a" }),
+                    _ => Some(build.as_str()),
+                };
+                assert_eq!(
+                    actual.rows,
+                    vec![vec![
+                        expected
+                            .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+                            .unwrap_or(TextValue::Null)
+                    ]]
+                );
+            }
+            // Constant-folded CONCAT must retain the connection's NULL policy.
+            let pg = query(socket, "SELECT CONCAT('a',NULL,'b') AS v");
+            assert_eq!(pg.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+            assert_eq!(pg[0], description(25, -1, 0));
+            assert_eq!(pg[1], (b'D', row(&[Some("ab")])));
+            assert_eq!(
+                result(mysql.query("SELECT CONCAT('a',NULL,'b') AS v").unwrap()).rows,
+                vec![vec![TextValue::Null]]
+            );
+        }
+    }
+    for (i, socket) in sockets.iter_mut().enumerate() {
+        for sql in ["SELECT IFNULL(NULL,1) AS v", "SELECT TIDB_VERSION() AS v"] {
+            for extended in [false, true] {
+                let begin = query(socket, "BEGIN");
+                assert_eq!(begin.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+                assert_eq!(begin[1], (b'Z', b"T".to_vec()));
+                if extended {
+                    parse(socket, "hidden", sql, &[]);
+                    error(read(socket), "42883");
+                    send(socket, b'S', &[]);
+                    assert_eq!(read(socket), (b'Z', b"E".to_vec()));
+                } else {
+                    let rejected = query(socket, sql);
+                    assert_eq!(rejected.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+                    error(rejected[0].clone(), "42883");
+                    assert_eq!(rejected[1], (b'Z', b"E".to_vec()));
+                }
+                // A PG failed transaction cannot poison the authenticated peer.
+                assert_eq!(
+                    result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap()).rows,
+                    vec![vec![TextValue::Bytes(build.as_bytes().to_vec())]]
+                );
+                let rollback = query(socket, "ROLLBACK");
+                assert_eq!(rollback.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+                assert_eq!(rollback[1], (b'Z', b"I".to_vec()));
+                let probe = query(socket, "SELECT 1::int4");
+                assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                assert_eq!(probe[1], (b'D', row(&[Some("1")])));
+            }
+        }
+        bind(
+            socket,
+            "",
+            "abs",
+            &[Some(if i == 0 {
+                "-2147483648"
+            } else {
+                "-9223372036854775808"
+            })],
+        );
+        assert_eq!(read(socket), (b'2', vec![]));
+        execute(socket, "", 0);
+        error(read(socket), "22003");
+        sync(socket);
+        let probe = query(socket, "SELECT 1::int4");
+        assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+        assert_eq!(probe[1], (b'D', row(&[Some("1")])));
+        let rejected = mysql
+            .query("SELECT ABS(CAST(-9223372036854775808 AS SIGNED)) AS v")
+            .unwrap();
+        let WireResponse::Err(rejected) = rejected else {
+            panic!("{rejected:?}")
+        };
+        assert_eq!((rejected.code, rejected.sql_state), (1690, Some(*b"22003")));
+        assert!(rejected.message.contains("BIGINT"));
+        assert_eq!(
+            result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap()).rows,
+            vec![vec![TextValue::Bytes(build.as_bytes().to_vec())]]
+        );
+        for name in ["abs", "concat", "empty"] {
+            send(socket, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+            assert_eq!(read(socket), (b'3', vec![]));
+        }
+        sync(socket);
+        send(socket, b'X', &[]);
+    }
+    for statement in prepared {
+        mysql.close_prepared(statement.statement_id).unwrap();
+    }
+    drop(sockets);
+    drop(mysql);
+    drop(cleanup);
+    assert!(TcpStream::connect(pg_address).is_err());
+    assert!(TcpStream::connect(mysql_address).is_err());
+}

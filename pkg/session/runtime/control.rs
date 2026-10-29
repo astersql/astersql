@@ -2202,8 +2202,8 @@ impl ConcreteSession {
             .ok_or_else(|| {
                 SessionError::new(format!("unknown prepared statement {statement_id}"))
             })?;
-        // MySQL-only functions have one prepared result identity. Binding
-        // literals must not re-fold the result to the selected arm's type.
+        // These MySQL function projections have one prepared result identity.
+        // Binding literals must not replace it with folded or fallback metadata.
         let mysql_function_fields = if dialect == ast::SqlDialect::MySQL {
             let statements = parse_in_dialect(&sql, dialect)?;
             if let Some(select) = statements
@@ -2223,7 +2223,7 @@ impl ConcreteSession {
                         field
                             .Expr
                             .as_ref()
-                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))
+                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     })
                     .collect::<Vec<_>>();
                 if affected.iter().any(|affected| *affected) {

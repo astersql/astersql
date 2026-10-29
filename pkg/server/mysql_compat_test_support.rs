@@ -266,7 +266,7 @@ pub(crate) struct MysqlTestClient {
 }
 
 impl MysqlTestClient {
-    fn connect(
+    pub(crate) fn connect(
         address: SocketAddr,
         extra_capabilities: u32,
         database: Option<&str>,
