@@ -944,25 +944,11 @@ impl PgTimestampTz {
         zone: chrono_tz::Tz,
         fixed: Option<chrono::FixedOffset>,
     ) -> Result<Option<crate::pg_numeric::PgNumeric>, PgTemporalError> {
-        use chrono::Offset;
         // Infinity and epoch do not need transition data or a local calendar.
         if matches!(self.0, i64::MIN | i64::MAX) || unit.eq_ignore_ascii_case("epoch") {
             return PgTimestamp(self.0).extract_numeric(unit);
         }
-        let offset = if let Some(fixed) = fixed {
-            fixed.local_minus_utc()
-        } else if zone == chrono_tz::UTC {
-            0
-        } else {
-            self.0
-                .checked_add(946_684_800_000_000)
-                .and_then(chrono::DateTime::from_timestamp_micros)
-                .ok_or(PgTemporalError::Range)?
-                .with_timezone(&zone)
-                .offset()
-                .fix()
-                .local_minus_utc()
-        };
+        let offset = self.execution_offset(zone, fixed)?;
         let zone_field = match unit.to_ascii_lowercase().as_str() {
             "timezone" => Some(offset),
             "timezone_hour" => Some(offset / 3600),
@@ -982,6 +968,57 @@ impl PgTimestampTz {
                 .ok_or(PgTemporalError::Range)?,
         )
         .extract_numeric(unit)
+    }
+
+    fn execution_offset(
+        self,
+        zone: chrono_tz::Tz,
+        fixed: Option<chrono::FixedOffset>,
+    ) -> Result<i32, PgTemporalError> {
+        use chrono::Offset;
+        Ok(if let Some(fixed) = fixed {
+            fixed.local_minus_utc()
+        } else if zone == chrono_tz::UTC {
+            0
+        } else {
+            self.0
+                .checked_add(946_684_800_000_000)
+                .and_then(chrono::DateTime::from_timestamp_micros)
+                .ok_or(PgTemporalError::Range)?
+                .with_timezone(&zone)
+                .offset()
+                .fix()
+                .local_minus_utc()
+        })
+    }
+
+    /// date_part uses the execution wall clock, except epoch which is an instant.
+    /// Preserve float8 arithmetic for fractional fields rather than casting numeric.
+    pub fn extract_float8_in_zone(
+        self,
+        unit: &str,
+        zone: chrono_tz::Tz,
+        fixed: Option<chrono::FixedOffset>,
+    ) -> Result<Option<f64>, PgTemporalError> {
+        if matches!(self.0, i64::MIN | i64::MAX) || unit.eq_ignore_ascii_case("epoch") {
+            return PgTimestamp(self.0).extract_float8(unit);
+        }
+        let offset = self.execution_offset(zone, fixed)?;
+        let zone_field = match unit.to_ascii_lowercase().as_str() {
+            "timezone" => Some(offset),
+            "timezone_hour" => Some(offset / 3600),
+            "timezone_minute" => Some((offset % 3600) / 60),
+            _ => None,
+        };
+        if let Some(value) = zone_field {
+            return Ok(Some(f64::from(value)));
+        }
+        PgTimestamp(
+            self.0
+                .checked_add(i64::from(offset) * 1_000_000)
+                .ok_or(PgTemporalError::Range)?,
+        )
+        .extract_float8(unit)
     }
 
     /// Truncate the civil time in the execution zone, then restore the instant.

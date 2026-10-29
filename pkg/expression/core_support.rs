@@ -499,7 +499,7 @@ fn foldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> (ExprBox, bool) 
         if (function_ref.FuncName.L == "date_trunc"
             && function_ref.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz)
             || (ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
-                && function_ref.FuncName.L == "extract"
+                && matches!(function_ref.FuncName.L.as_str(), "extract" | "date_part")
                 && function_ref.GetArgs().get(1).is_some_and(|arg| {
                     arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
                 }))

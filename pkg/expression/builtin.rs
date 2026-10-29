@@ -2612,10 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "date_part" => vec![PgFunctionCandidate {
-                arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
-                result: mysql::TypeDouble,
-            }],
+            "date_part" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
+                    result: mysql::TypeDouble,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypePgTimestampTz],
+                    result: mysql::TypeDouble,
+                },
+            ],
             "extract" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypePgInterval],
@@ -4857,9 +4863,23 @@ pub mod formal_registry {
                     if first_null || second_null {
                         return Ok((0.0, true));
                     }
-                    value
-                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
-                        .and_then(|timestamp| timestamp.extract_float8(&unit))
+                    let result =
+                        if self.base.args[1].GetType(ctx).GetType() == mysql::TypePgTimestampTz {
+                            value
+                                .parse::<types_dependency::pg_temporal::PgTimestampTz>()
+                                .and_then(|timestamp| {
+                                    timestamp.extract_float8_in_zone(
+                                        &unit,
+                                        ctx.Location(),
+                                        ctx.PgFixedTimeZone(),
+                                    )
+                                })
+                        } else {
+                            value
+                                .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                                .and_then(|timestamp| timestamp.extract_float8(&unit))
+                        };
+                    result
                         .map(|value| (value.unwrap_or_default(), value.is_none()))
                         .map_err(|error| {
                             errors::Error::from(crate::contextutil::errors::SharedError::new(error))

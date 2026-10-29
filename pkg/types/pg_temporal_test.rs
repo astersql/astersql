@@ -1672,3 +1672,74 @@ fn pg08_08_float_fields() {
         "0A000"
     );
 }
+
+#[test]
+fn pg08_09_zoned_float_fields() {
+    use super::pg_temporal::PgTimestampTz;
+    let instant: PgTimestampTz = "2000-01-01 00:00:01.003691+00".parse().unwrap();
+    for (offset, hour, minute) in [(20700, 5.0, 45.0), (-12600, -3.0, -30.0)] {
+        let fixed = Some(chrono::FixedOffset::east_opt(offset).unwrap());
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("timezone", chrono_tz::UTC, fixed)
+                .unwrap(),
+            Some(offset as f64)
+        );
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("timezone_hour", chrono_tz::UTC, fixed)
+                .unwrap(),
+            Some(hour)
+        );
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("timezone_minute", chrono_tz::UTC, fixed)
+                .unwrap(),
+            Some(minute)
+        );
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("second", chrono_tz::UTC, fixed)
+                .unwrap()
+                .unwrap()
+                .to_bits(),
+            (1.0f64 + 3691.0 / 1_000_000.0).to_bits()
+        );
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("epoch", chrono_tz::UTC, fixed)
+                .unwrap(),
+            instant
+                .extract_float8_in_zone("epoch", chrono_tz::UTC, None)
+                .unwrap()
+        );
+    }
+    for (source, expected) in [
+        ("2024-11-03 05:30:00+00", -14400.0),
+        ("2024-11-03 06:30:00+00", -18000.0),
+    ] {
+        let instant: PgTimestampTz = source.parse().unwrap();
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("timezone", chrono_tz::America::New_York, None)
+                .unwrap(),
+            Some(expected)
+        );
+    }
+    for source in ["infinity", "-infinity"] {
+        let instant: PgTimestampTz = source.parse().unwrap();
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("timezone", chrono_tz::America::New_York, None)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            instant
+                .extract_float8_in_zone("aster_bad_unit", chrono_tz::America::New_York, None)
+                .unwrap_err()
+                .sqlstate(),
+            "22023"
+        );
+    }
+}
