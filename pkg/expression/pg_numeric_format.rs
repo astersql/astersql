@@ -8,6 +8,7 @@ enum Token {
     Digit(bool),
     Point,
     Shift,
+    Minus,
     Literal(char),
 }
 
@@ -16,6 +17,7 @@ pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String,
     let mut rest = template;
     let mut fill = false;
     let mut point = false;
+    let mut explicit_minus = false;
     let mut shift = false;
     let mut integer_count = 0usize;
     let mut fraction_count = 0usize;
@@ -25,6 +27,12 @@ pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String,
     while let Some(ch) = rest.chars().next() {
         if rest.starts_with("FM") || rest.starts_with("fm") {
             fill = true;
+            rest = &rest[2..];
+            continue;
+        }
+        if rest.starts_with("MI") || rest.starts_with("mi") {
+            explicit_minus = true;
+            tokens.push(Token::Minus);
             rest = &rest[2..];
             continue;
         }
@@ -132,12 +140,19 @@ pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String,
     let mut integer_at = 0;
     let mut fraction_at = 0;
     let mut after_point = false;
-    let mut signed = false;
+    let mut signed = explicit_minus;
     let mut result = String::new();
     for token in tokens {
         match token {
             Token::Literal(c) => result.push(c),
             Token::Shift => {}
+            Token::Minus => {
+                if negative {
+                    result.push('-');
+                } else if !fill {
+                    result.push(' ');
+                }
+            }
             Token::Point => {
                 if !signed {
                     if negative {

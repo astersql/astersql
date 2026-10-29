@@ -2614,6 +2614,14 @@ pub mod formal_registry {
         let candidates = match name {
             "to_char" => vec![
                 PgFunctionCandidate {
+                    arguments: vec![mysql::TypeLong, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeLonglong, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
                     arguments: vec![mysql::TypeNewDecimal, mysql::TypeVarString],
                     result: mysql::TypeVarString,
                 },
@@ -5197,12 +5205,24 @@ pub mod formal_registry {
                 }
 
                 CoreBuiltinKind::PgTimestampToChar => {
-                    let (value, value_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let source_type = self.base.args[0].GetType(ctx).GetType();
+                    // Integer signatures keep all 64 bits, including i64::MIN,
+                    // before entering the shared decimal template formatter.
+                    let (value, value_null) =
+                        if matches!(source_type, mysql::TypeLong | mysql::TypeLonglong) {
+                            let (value, null) = self.base.args[0].EvalInt(ctx, row.clone())?;
+                            (value.to_string(), null)
+                        } else {
+                            self.base.args[0].EvalString(ctx, row.clone())?
+                        };
                     let (template, template_null) = self.base.args[1].EvalString(ctx, row)?;
                     if value_null || template_null {
                         return Ok((String::new(), true));
                     }
-                    if self.base.args[0].GetType(ctx).GetType() == mysql::TypeNewDecimal {
+                    if matches!(
+                        source_type,
+                        mysql::TypeNewDecimal | mysql::TypeLong | mysql::TypeLonglong
+                    ) {
                         return value
                             .parse::<types_dependency::pg_numeric::PgNumeric>()
                             .and_then(|number| {

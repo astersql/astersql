@@ -958,3 +958,6 @@ mod pg08_13_test;
 mod pg08_14_test;
 
 mod pg_numeric_format;
+
+#[cfg(test)]
+mod pg08_15_test;
