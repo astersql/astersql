@@ -2,7 +2,7 @@
 
 批次：【实施批次 1】；语义依赖：无本目录语义前置；互斥前序：无。不安排并行；来源为拆分批次8，不等于实施批次8。
 
-状态：未开始
+状态：已阻塞
 
 目的：date_trunc(text,timestamp)→timestamp，复用 PgTimestamp::truncate，不重写已有实现。
 
@@ -97,7 +97,7 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Progress
 
-- [ ] 局部接口取证与当前测试名注册
+- [ ] 局部接口取证与当前测试名注册（正式工厂已注册并运行；SQL/客户端已挂载但构建受阻）
 - [ ] 失败验证或已有正确行为的当前补证
 - [ ] 最小生产接线及通过验证
 - [ ] 真实参考/双方言、清理与Ready交付
@@ -113,3 +113,63 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 ## Outcomes & Retrospective
 
 仅计划已生成，实施与验证尚未执行；未来在本节记录实际结果、证据路径和未决依赖，不写回只读plan.md。
+
+
+## 2026-10-29 本轮前置检查与阻塞交接
+
+当前 HEAD：`c3b68dc460ad55ecded44d4131263522fba82ba7`。开始时 `git status --short` 无输出。确认本任务为实施批次1、无本目录语义前置；尚未取得完整生产消费者与当前注册测试的行为证据，不能将历史通过记录作为本轮通过。
+
+阻塞原因：仅检查环境变量存在性（未输出任何连接值）确认 `PG18_REFERENCE_DSN`、`MYSQL8_REFERENCE_HOST`、`MYSQL8_REFERENCE_PORT`、`MYSQL8_REFERENCE_USER`、`MYSQL8_REFERENCE_PASSWORD` 全部 absent；可选 `PG_LIBPQ_LIBRARY` 也 absent。此结论仅描述本进程环境，不推断本机没有参考服务。本任务要求真实PG18.6与MySQL自身参考，当前无法按规定执行双方言客户端验收。接口/资源拥有者为参考数据库环境配置维护者（执行会话的启动环境提供者）；不是 expression 实现缺口。
+
+已运行只读检查：`git status --short`、`git rev-parse HEAD`；Python `os.environ` 存在性检查；`~/.rustcodegraph/bin/rustcodegraph status`（退出0，11703个索引文件）；`~/.rustcodegraph/bin/rustcodegraph explore 'resolve_pg_signature PgDateTrunc PgTimestamp truncate'`（退出0）；`~/.rustcodegraph/bin/rustcodegraph node resolve_pg_signature`（退出0）。索引显示 `pkg/expression/builtin.rs:2610` 的 date_trunc 候选为 VarString+Datetime→Datetime，调用者包括 `pkg/session/runtime/query.rs::Enter`；这只是静态导航证据，未完成整链当前源码/运行核验。expression/server/parser下未发现doc.go；`.agents/skills/tidb-verify-profile`目录检查退出1，仍缺失。
+
+按 do-task-plans 的阻塞停止规则，在前置阶段停止；未新增测试或客户端夹具，未注册case ID，未运行Cargo或调用Cargo的脚本，未领取共享槽位，实际槽位与CARGO_TARGET_DIR均不适用。WIP三条测试、Ready格式化/lint以及真实参考版本、原始观测、负向自检、协议恢复和双方言隔离均未验证。有效业务运行数0，不构成行为红灯或通过证据。
+
+恢复条件：向后续执行进程提供可用PG18.6参考DSN及MySQL参考连接环境（密码允许按参考配置为空，但须显式配置），确认可用原生客户端库，并确认前序共享文件/参考资源持有者已退出；随后重新核对HEAD和接口，先登记case ID及测试挂载，再动态领取Cargo槽位执行原定WIP/Ready流程。无需重建任何上游子系统。
+
+清理：本轮未启动数据库、Server、Python客户端后台进程，未创建测试对象或槽位锁，无运行资源待释放。只更新本编号文件，保留只读plan.md与父大计划8；依照只有编号状态更新不提交的规则，不创建Git提交。
+
+
+## 2026-10-29 恢复执行与用例登记
+
+继续调查发现 /tmp/pg05-task14-reference/install/bin/postgres 实际为18.6，MySQL8.0.46和libpq18已安装。已独立initdb启动18.6并查询version及13个截断单位后停止、删除自己的临时目录，退出0。环境变量缺失不再作为不可恢复阻塞。
+
+新增正式工厂测试pg08_01_test::pg08_01_formal，通过lib.rs的cfg(test)挂载。注册唯一ID：F-microseconds、F-milliseconds、F-second、F-minute、F-hour、F-day、F-month、F-quarter、F-year、F-decade、F-century、F-millennium、F-week-boundary、F-negative-epoch、F-infinity、F-null。预期16个场景、1个Rust测试。SQL/客户端case尚未新增，后续先登记再运行；参考探查不算AsterSQL验收。
+
+SQL测试登记：pg_query_test::pg08_01_sql。S-day、S-week、S-milliseconds、S-null、S-zero、S-nested共6个场景；S-invalid与S-timezone各含后续独立恢复查询S-recover-invalid、S-recover-timezone，共10个场景。预期1个Rust测试。普通Q消息校验OID1114/typlen8/typmod-1/列名v及数据或SQLSTATE；扩展协议将在后续登记。正式工厂本轮列表1、执行1通过，16场景通过；槽位1已释放，缓存保留。
+
+客户端登记：pg_client_integration_test::pg08_01_clients启动pg08_01_libpq.py。C-Q-<unit>覆盖13单位，C-Q-week-boundary/negative-epoch/infinity/null/zero/nested共6（合计19）；C-E-nonsense/timezone以及各自C-recover-<unit>为4；C-bind-<empty:0/1>-<input:0/1>-<output:0/1>-<value:0/1/2>共24；M-Q/prepare-<second/microsecond/hour/date_trunc/date_part>共10；I-before/middle/after共3。预期唯一场景60；对端各自采集再比较，A/B重复连接和阶段断言不重复计数。差分负向自检3项单独计数。
+构建异常：首次server --list退出101，活动槽位1的fingerprint和owner锁文件在构建中消失，非行为红灯；df -h显示191GiB空闲。正在重新领取槽位聚焦重试。
+
+
+## 2026-10-29 本轮恢复后的结果与实际阻塞
+
+状态仍为已阻塞，但原因已更正为共享构建缓存不稳定，不是参考环境缺失。无生产修改；测试准备不等于实际实现/验收完成，不标记已完成待回归，也不提交或删除编号文件。
+
+本机可安全启动自有参考：精确PG18.6路径 /tmp/pg05-task14-reference/install/bin，version()为 PostgreSQL 18.6 on aarch64-apple-darwin25.1.0, compiled by Apple clang version 16.0.0 (clang-1600.0.26.6), 64-bit。MySQL /opt/homebrew/opt/mysql@8.0/bin/mysqld 实际8.0.46。分别使用 tempfile 独立目录初始化，PG用trust+loopback、MySQL initialize-insecure+loopback，查询版本后 finally 停止/wait并删除自己的临时数据目录，退出0。不改动用户既有服务。可重用本轮临时编排脚本 /tmp/pg08-01-references.py，其环境只向测试子进程注入，不输出DSN/凭据；脚本未执行完整客户端验收。
+
+已新增独立 pkg/expression/pg08_01_test.rs、lib.rs挂载；pg_query_test.rs追加pg08_01_sql；pg_client_integration_test.rs追加pg08_01_clients并调用新增testdata/pg08_01_libpq.py。前者通过NewFunctionBase，不创建第二求值器。客户端复用既有Libpq/MySQL原生ABI与差分器，登记60场景；还需补充并运行扩展协议TCP逐阶段Describe/Sync、事务E→ROLLBACK→I、完整构建/tzdata身份与恢复证据，不能将当前夹具草稿当成契约全部完成。三层测试未得到完整通过，不运行Ready交付或提交。
+
+实际命令及结果（全部Cargo均先动态mkdir领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1，env移除LDFLAGS；未使用其它构建目录）：
+
+- cargo fmt --all：前3轮均退出0；最终补入客户端测试后格式化亦退出0，自有槽位锁正常释放。
+- env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_01_test::pg08_01_formal -- --exact --list：退出0，恰好1测试。
+- env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_01_test::pg08_01_formal -- --exact --nocapture：退出0，1 passed / 0 failed / 0 ignored，16个有效场景通过；日志 /tmp/pg08-01-formal.log。此为缓存消失之前的本轮真实结果，不能宣称当前server通过。
+- env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_01_sql -- --exact --list：两次退出101，均0个有效运行测试，不构成行为红灯。第一次活动槽位fingerprint目录与owner锁文件消失，报No such file or directory；第二次重领槽位重建时backtrace报告librustc_demangle-c03760ef0140cbb9.rmeta不存在。重试日志 /tmp/pg08-01-pg_query_test-pg08_01_sql-list.log；df -h显示191GiB空闲，未证实删除者身份，不能断言是某个其他会话。
+- python3 pkg/server/testdata/pg08_01_libpq.py --self-test：退出0，值/OID/SQLSTATE三个篡改均被拒绝，属于差分器自检，不计业务场景。
+- git diff --check：退出0；Python AST解析通过。
+
+资源状态：第一轮工厂槽位正常释放；首次server构建结束时发现自己的owner及锁目录已消失，未删除其他锁；第二次server重试正常释放自己的锁。PG/MySQL探查进程已停止并wait，临时目录已删。未运行AsterSQL server测试，不存在本轮测试listener或健康表待清理。保留缓存，不执行cargo clean或删除共享target。
+
+真实外部恢复条件：仓库共享构建目录维护者确认活动rust-slot-*及rust-slot-locks不再被并发清理/替换，然后使用上述临时参考方案继续原定聚焦测试。当前无法从编译日志识别该维护者；需要协调target清理活动而不是获取数据库凭据。恢复时先核对HEAD与共享文件变更，检查最新测试仍注册，再运行原命令，补齐尚缺协议与元数据证据及Ready。已有工作区其他计划改动保持原样。
+
+
+## 再次恢复：并发与协议补证
+
+只读ps/lsof确认在运行的cargo PID4920与rm PID85477的cwd均在独立pd仓库，不是本仓库；不能据此归因本仓库此前缓存丢失。当前锁目录为空；.cargo/config.toml的默认target-dir被绝对CARGO_TARGET_DIR覆盖，无build-dir覆盖。再次动态领取槽位1，采用CARGO_BUILD_JOBS=1，避免重复原并发配置。
+
+SQL补充登记：S-bind-<empty:0/1>-<input:0/1>-<output:0/1>-<value:0/1/2>共24个，均检查statement/portal Describe、Execute无多余描述、NULL及原始binary；S-transaction-nonsense/timezone各1，检查真实扩展协议错误后Sync状态E、ROLLBACK后I、SELECT恢复。SQL预期总数从10增至36。
+
+正式工厂追加F-invalid与F-timezone两项，预期从16增至18；只检查工厂错误不伪装完整SQLSTATE，SQL/真实参考层负责精确SQLSTATE。
+
+本轮恢复验证：make lint退出0（/tmp/pg08-01-lint.log），CARGO_BUILD_JOBS=1下构建已越过此前失败依赖，仍在编译原生依赖；无新缓存缺失。已补入36场景SQL协议断言与60场景客户端夹具，尚待当前运行结果。参考tzdata源码版本2026c。
