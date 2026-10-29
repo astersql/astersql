@@ -483,6 +483,7 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
         astersql_parser_mysql::r#type::TypePgInt4Range => (3904, -1),
         astersql_parser_mysql::r#type::TypePgNumRange => (3906, -1),
         astersql_parser_mysql::r#type::TypePgName => (19, 64),
+        astersql_parser_mysql::r#type::TypePgRegtype => (2206, 4),
         astersql_parser_mysql::r#type::TypePgUuid => (2950, 16),
         astersql_parser_mysql::r#type::TypePgJson => (114, -1),
         astersql_parser_mysql::r#type::TypePgJsonb => (3802, -1),
@@ -498,6 +499,17 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
 use astersql_types::pg_array::float_text;
 
 fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
+    if oid == 2206 {
+        return match value {
+            Value::Null => Ok(None),
+            Value::Text(text) => text
+                .parse::<u32>()
+                .map(|oid| Some(astersql_types::field::ast::PostgreSQLTypeName(oid).into_bytes()))
+                .map_err(|_| invalid("invalid regtype OID")),
+            _ => Err(invalid("regtype requires its OID carrier")),
+        };
+    }
+
     if let Value::Bytes(bytes) = value {
         if oid == 700 {
             let bits = astersql_types::pg_array::float4_binary_input(bytes)
@@ -814,6 +826,15 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
             Value::Text(s) => s.as_bytes().to_vec(),
             _ => return Err(invalid("invalid bytea value")),
         }));
+    }
+    if oid == 2206 {
+        return match value {
+            Value::Text(text) => text
+                .parse::<u32>()
+                .map(|oid| Some(oid.to_be_bytes().to_vec()))
+                .map_err(|_| invalid("invalid regtype OID")),
+            _ => Err(invalid("regtype requires its OID carrier")),
+        };
     }
     let text = value_text(value, oid)?.unwrap();
     let text = std::str::from_utf8(&text).map_err(|_| invalid("invalid binary value"))?;

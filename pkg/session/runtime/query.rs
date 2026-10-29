@@ -1306,6 +1306,7 @@ impl ConcreteSession {
                     astersql_parser_mysql::r#type::TypePgInt4Range
                         | astersql_parser_mysql::r#type::TypePgNumRange
                         | astersql_parser_mysql::r#type::TypePgName
+                        | astersql_parser_mysql::r#type::TypePgRegtype
                 )
             })
         {
@@ -1455,6 +1456,7 @@ impl ConcreteSession {
                     | "isempty"
                     | "current_database"
                     | "current_schema"
+                    | "pg_typeof"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && (!matches!(FnName.L.as_str(), "lower" | "upper")
@@ -1520,6 +1522,7 @@ impl ConcreteSession {
                     | "upper"
                     | "current_database"
                     | "current_schema"
+                    | "pg_typeof"
             ) {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
@@ -2880,6 +2883,7 @@ impl ConcreteSession {
                                 | "numeric_abs"
                                 | "current_database"
                                 | "current_schema"
+                                | "pg_typeof"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
@@ -3368,6 +3372,16 @@ impl ConcreteSession {
                         _ => None,
                     }
                 }
+                if let ast::ExprKind::Function { FnName, .. } = &input.Kind
+                    && FnName.L == "pg_typeof"
+                    && let Some(error) =
+                        super::function_diagnostics::constant_integer_input_error(input)
+                {
+                    // Analyze the input conversion before type introspection, retaining
+                    // its original literal span rather than folding it to a type constant.
+                    self.scalar_cast_error = Some(error);
+                    return (input.clone(), true);
+                }
                 if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
                     && matches!(FnName.L.as_str(), "greatest" | "least")
                     && let Err(error) = self.session.pg_extremum_result_type(Args, self.sources)
@@ -3647,6 +3661,7 @@ impl ConcreteSession {
                             | "isempty"
                             | "current_database"
                             | "current_schema"
+                            | "pg_typeof"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4921,6 +4936,7 @@ impl ConcreteSession {
                         | "isempty"
                         | "current_database"
                         | "current_schema"
+                        | "pg_typeof"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "pg_typeof" if inputs.len() == 1 => vec![PgFunctionCandidate {
+                arguments: inputs.to_vec(),
+                result: mysql::TypePgRegtype,
+            }],
             "current_database" | "current_schema" => vec![PgFunctionCandidate {
                 arguments: vec![],
                 result: mysql::TypePgName,
@@ -2849,6 +2853,15 @@ pub mod formal_registry {
         name: &str,
         inputs: &[types::FieldType],
     ) -> Result<PgFunctionCandidate, &'static str> {
+        if name == "pg_typeof" {
+            if inputs.len() != 1 || inputs[0].PostgreSQLTypeOid().is_none() {
+                return Err("42883");
+            }
+            return Ok(PgFunctionCandidate {
+                arguments: vec![inputs[0].GetType()],
+                result: mysql::TypePgRegtype,
+            });
+        }
         if matches!(
             name,
             "int4range"
@@ -4381,6 +4394,7 @@ pub mod formal_registry {
         PgRangeIsEmpty,
         PgCurrentDatabase,
         PgCurrentSchema,
+        PgTypeOf,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -5442,6 +5456,15 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgTypeOf => {
+                    // Non-strict does not mean unevaluated: preserve argument errors.
+                    self.base.args[0].Eval(ctx, row)?;
+                    let oid = self.base.args[0]
+                        .GetType(ctx)
+                        .PostgreSQLTypeOid()
+                        .ok_or_else(|| errors::New("unsupported PostgreSQL type identity"))?;
+                    Ok((oid.to_string(), false))
+                }
                 CoreBuiltinKind::PgCurrentDatabase => Ok((ctx.CurrentDB(), false)),
                 CoreBuiltinKind::PgCurrentSchema => Ok(ctx
                     .PgCurrentSchema()
@@ -6732,6 +6755,19 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "pg_typeof" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                resolve_pg_typed_signature(name, &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgTypeOf,
+                    *types::NewFieldType(mysql::TypePgRegtype),
+                    "builtinPgTypeOfSig",
+                )
+            }
+
             "current_database" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 resolve_pg_signature(
                     name,
@@ -8352,6 +8388,7 @@ pub mod formal_registry {
     core_factory!(pg_range_isempty_factory, "isempty");
     core_factory!(pg_current_database_factory, "current_database");
     core_factory!(pg_current_schema_factory, "current_schema");
+    core_factory!(pg_typeof_factory, "pg_typeof");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8452,6 +8489,7 @@ pub mod formal_registry {
         ("isempty", pg_range_isempty_factory),
         ("current_database", pg_current_database_factory),
         ("current_schema", pg_current_schema_factory),
+        ("pg_typeof", pg_typeof_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8843,6 +8881,7 @@ pub mod formal_registry {
         ("isempty", 1, 1),
         ("current_database", 0, 0),
         ("current_schema", 0, 0),
+        ("pg_typeof", 1, 1),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),

@@ -239,3 +239,6 @@ pub const TypePgNumRange: u8 = 0xde;
 
 /// Internal PostgreSQL name identity for ordinary expressions (OID19, typlen64).
 pub const TypePgName: u8 = 0xdd;
+
+/// Internal regtype OID carrier for ordinary PostgreSQL expressions.
+pub const TypePgRegtype: u8 = 0xdc;

@@ -3108,6 +3108,16 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
+        } if FnName.L == "pg_typeof"
+            && Args.len() == 1
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
+        {
+            new_type(astersql_parser_mysql::r#type::TypePgRegtype)
+        }
+        ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
         } if matches!(FnName.L.as_str(), "current_database" | "current_schema")
             && Args.is_empty()
             && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>

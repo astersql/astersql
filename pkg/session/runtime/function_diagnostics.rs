@@ -80,9 +80,8 @@ impl ConcreteSession {
     }
 }
 
-/// Analyze explicit constant input conversions before resolving a hidden name.
-/// This never constructs or evaluates the MySQL-only function body.
-pub(super) fn exclusive_function_error(expression: &ast::ExprNode) -> SessionError {
+/// Analyze explicit constant integer inputs while retaining their original spans.
+pub(super) fn constant_integer_input_error(expression: &ast::ExprNode) -> Option<SessionError> {
     struct Inputs(Option<SessionError>);
     impl ast::Visitor for Inputs {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
@@ -123,9 +122,18 @@ pub(super) fn exclusive_function_error(expression: &ast::ExprNode) -> SessionErr
     for arg in Args {
         arg.accept(&mut inputs);
     }
-    if let Some(error) = inputs.0 {
+    inputs.0
+}
+
+/// Analyze explicit constant input conversions before resolving a hidden name.
+/// This never constructs or evaluates the MySQL-only function body.
+pub(super) fn exclusive_function_error(expression: &ast::ExprNode) -> SessionError {
+    if let Some(error) = constant_integer_input_error(expression) {
         return error;
     }
+    let ast::ExprKind::Function { Args, .. } = &expression.Kind else {
+        unreachable!()
+    };
     let types = Args
         .iter()
         .map(|arg| match &arg.Kind {

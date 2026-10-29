@@ -657,3 +657,34 @@ fn pg05_array_jsonb_restore_identity() {
         serde_json::from_str(&serde_json::to_string(&tp).unwrap()).unwrap();
     assert_eq!(decoded.PostgreSQLArrayElement(), Some(element));
 }
+
+#[test]
+fn pg08_30_regtype_identity() {
+    use crate::mysql::*;
+    for (code, oid, name) in [
+        (TypeLong, 23, "integer"),
+        (TypeVarString, 25, "text"),
+        (TypePgRegtype, 2206, "regtype"),
+        (TypeNull, 705, "unknown"),
+    ] {
+        let tp = crate::NewFieldType(code);
+        assert_eq!(tp.PostgreSQLTypeOid(), Some(oid));
+        assert_eq!(crate::PostgreSQLTypeName(oid), name);
+    }
+    let mut tp = crate::NewFieldType(TypeVarString);
+    tp.SetPostgreSQLArrayElement(crate::PostgreSQLArrayElement::Int4);
+    assert_eq!(tp.PostgreSQLTypeOid(), Some(1007));
+    assert_eq!(crate::PostgreSQLTypeName(1007), "integer[]");
+    let mut text = crate::NewFieldType(TypeVarString);
+    text.SetPostgreSQLTextOid(1043);
+    assert_eq!(text.PostgreSQLTypeOid(), Some(1043));
+    let mut boolean = crate::NewFieldType(TypeTiny);
+    boolean.AddFlag(IsBooleanFlag);
+    assert_eq!(boolean.PostgreSQLTypeOid(), Some(16));
+    assert_eq!(crate::PostgreSQLTypeName(999999), "999999");
+    let mut output = Vec::new();
+    crate::NewFieldType(TypePgRegtype)
+        .FormatAsCastType(&mut output, false)
+        .unwrap();
+    assert_eq!(output, b"REGTYPE");
+}

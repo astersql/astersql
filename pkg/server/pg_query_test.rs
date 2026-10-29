@@ -16449,3 +16449,195 @@ fn pg08_29_sql() {
     assert!(TcpStream::connect(address).is_err());
     println!("pg08_29_sql: {count} scenarios passed; listener closed");
 }
+
+#[test]
+fn pg08_30_sql() {
+    let (domain, _native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(address).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    let mut count = 0;
+    for (expr, expected) in [
+        ("pg_typeof(1::int4)", "integer"),
+        ("pg_typeof(NULL::int4)", "integer"),
+        ("pg_typeof(NULL::text)", "text"),
+        ("pg_typeof(pg_typeof(NULL::text))", "regtype"),
+    ] {
+        for zero in [false, true] {
+            let sql = format!(
+                "SELECT {expr} AS v{}",
+                if zero { " WHERE false" } else { "" }
+            );
+            let ms = query(&mut s, &sql);
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+            let desc = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+            assert_eq!(&desc[2..4], b"v\0");
+            assert_eq!(&desc[10..14], &2206u32.to_be_bytes());
+            assert_eq!(&desc[14..16], &4i16.to_be_bytes());
+            assert_eq!(&desc[16..20], &(-1i32).to_be_bytes());
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'D').count(),
+                usize::from(!zero)
+            );
+            if !zero {
+                assert_eq!(
+                    ms.iter().find(|m| m.0 == b'D').unwrap().1,
+                    row(&[Some(expected)])
+                );
+            }
+            count += 1;
+        }
+    }
+    for input_fmt in [0i16, 1] {
+        let sql = "SELECT pg_typeof($1::int4) AS v";
+        send(
+            &mut s,
+            b'P',
+            &[b"type30\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut s, b'D', b"Stype30\0");
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        assert_eq!(
+            ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'1', b't', b'T', b'Z'],
+            "{ms:?}"
+        );
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b't').unwrap().1,
+            [0, 1, 0, 0, 0, 23]
+        );
+        let desc = ms.iter().find(|m| m.0 == b'T').unwrap().1.clone();
+        assert_eq!(&desc[10..14], &2206u32.to_be_bytes());
+        for result_fmt in [0i16, 1] {
+            for null in [false, true, false] {
+                let payload = if input_fmt == 0 {
+                    b"7".to_vec()
+                } else {
+                    7i32.to_be_bytes().to_vec()
+                };
+                let mut bind = b"\0type30\0".to_vec();
+                bind.extend(1u16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(1u16.to_be_bytes());
+                bind.extend(if null { -1i32 } else { payload.len() as i32 }.to_be_bytes());
+                if !null {
+                    bind.extend(&payload);
+                }
+                bind.extend(1u16.to_be_bytes());
+                bind.extend(result_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready(&mut s);
+                assert_eq!(
+                    ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    [b'2', b'T', b'D', b'C', b'Z'],
+                    "{ms:?}"
+                );
+                let mut portal = desc.clone();
+                let n = portal.len();
+                portal[n - 2..].copy_from_slice(&result_fmt.to_be_bytes());
+                assert_eq!(ms.iter().find(|m| m.0 == b'T').unwrap().1, portal);
+                let value = if result_fmt == 0 {
+                    b"integer".to_vec()
+                } else {
+                    23u32.to_be_bytes().to_vec()
+                };
+                let mut expected = vec![0, 1];
+                expected.extend((value.len() as i32).to_be_bytes());
+                expected.extend(value);
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                count += 1;
+            }
+        }
+        send(&mut s, b'C', b"Stype30\0");
+        send(&mut s, b'S', &[]);
+        ready(&mut s);
+    }
+    for sql in [
+        "SELECT pg_typeof() AS v",
+        "SELECT pg_typeof('bad'::int4) AS v",
+    ] {
+        assert_eq!(query(&mut s, "BEGIN").last().unwrap().1, b"T");
+        send(
+            &mut s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut s, b'B', &[0; 8]);
+        send(&mut s, b'E', &[0; 5]);
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        let code = if sql.contains("bad") {
+            b"C22P02\0"
+        } else {
+            b"C42883\0"
+        };
+        assert!(
+            ms.iter()
+                .find(|m| m.0 == b'E')
+                .unwrap()
+                .1
+                .windows(7)
+                .any(|b| b == code),
+            "{ms:?}"
+        );
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+        assert_eq!(ms.last().unwrap().1, b"E");
+        assert_eq!(query(&mut s, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(
+            query(&mut s, "SELECT 1::int4 AS v")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+        count += 1;
+    }
+    drop(s);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    println!("pg08_30_sql: {count} scenarios passed; listener closed");
+}

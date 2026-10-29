@@ -774,6 +774,7 @@ impl FieldType {
             mysql::TypePgInt4Range => ctx.WriteKeyWord("INT4RANGE")?,
             mysql::TypePgNumRange => ctx.WriteKeyWord("NUMRANGE")?,
             mysql::TypePgName => ctx.WriteKeyWord("NAME")?,
+            mysql::TypePgRegtype => ctx.WriteKeyWord("REGTYPE")?,
             mysql::TypePgUuid => ctx.WriteKeyWord("UUID")?,
             mysql::TypePgJson => ctx.WriteKeyWord("JSON")?,
             mysql::TypePgJsonb => ctx.WriteKeyWord("JSONB")?,
@@ -1041,5 +1042,106 @@ fn write_scale(ctx: &mut format::RestoreCtx, decimal: isize) -> std::io::Result<
 impl fmt::Display for FieldType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.String())
+    }
+}
+
+/// Canonical built-in regtype display names; unknown/user OIDs retain numeric output.
+pub fn PostgreSQLTypeName(oid: u32) -> String {
+    let name = match oid {
+        16 => "boolean",
+        17 => "bytea",
+        18 => "\"char\"",
+        19 => "name",
+        20 => "bigint",
+        21 => "smallint",
+        23 => "integer",
+        25 => "text",
+        26 => "oid",
+        700 => "real",
+        701 => "double precision",
+        705 => "unknown",
+        1042 => "character",
+        1043 => "character varying",
+        1082 => "date",
+        1083 => "time without time zone",
+        1114 => "timestamp without time zone",
+        1184 => "timestamp with time zone",
+        1186 => "interval",
+        1700 => "numeric",
+        2206 => "regtype",
+        2249 => "record",
+        2950 => "uuid",
+        114 => "json",
+        3802 => "jsonb",
+        3904 => "int4range",
+        3906 => "numrange",
+        1000 => "boolean[]",
+        1001 => "bytea[]",
+        1005 => "smallint[]",
+        1007 => "integer[]",
+        1009 => "text[]",
+        1014 => "character[]",
+        1015 => "character varying[]",
+        1016 => "bigint[]",
+        1021 => "real[]",
+        1022 => "double precision[]",
+        1231 => "numeric[]",
+        1182 => "date[]",
+        1183 => "time without time zone[]",
+        1115 => "timestamp without time zone[]",
+        1185 => "timestamp with time zone[]",
+        1187 => "interval[]",
+        2951 => "uuid[]",
+        199 => "json[]",
+        3807 => "jsonb[]",
+        _ => return oid.to_string(),
+    };
+    name.to_owned()
+}
+
+impl FieldType {
+    /// PostgreSQL identity from analyzed metadata, independent of row values and NULL.
+    pub fn PostgreSQLTypeOid(&self) -> Option<u32> {
+        if let Some(element) = self.PostgreSQLArrayElement() {
+            return Some(element.array_oid());
+        }
+        if self.PostgreSQLRecordFields().is_some() {
+            return Some(2249);
+        }
+        if let Some(oid) = self.PostgreSQLTextOid() {
+            return Some(oid);
+        }
+        if self.GetFlag() & mysql::IsBooleanFlag != 0 {
+            return Some(16);
+        }
+        Some(match self.GetType() {
+            mysql::TypeTiny | mysql::TypeShort => 21,
+            mysql::TypeLong | mysql::TypeInt24 => 23,
+            mysql::TypeLonglong => 20,
+            mysql::TypeFloat => 700,
+            mysql::TypeDouble => 701,
+            mysql::TypeNewDecimal => 1700,
+            mysql::TypeNull => 705,
+            mysql::TypeVarString | mysql::TypeVarchar | mysql::TypeString => {
+                if self.GetCharset() == "binary" {
+                    17
+                } else {
+                    25
+                }
+            }
+            mysql::TypeDate => 1082,
+            mysql::TypeDatetime | mysql::TypeTimestamp => 1114,
+            mysql::TypeDuration => 1083,
+            mysql::TypePgTimestampTz => 1184,
+            mysql::TypePgInterval => 1186,
+            mysql::TypePgName => 19,
+            mysql::TypePgRegtype => 2206,
+            mysql::TypePgUuid => 2950,
+            mysql::TypePgJson => 114,
+            mysql::TypePgJsonb => 3802,
+            mysql::TypePgInt4Range => 3904,
+            mysql::TypePgNumRange => 3906,
+            _ => return None,
+        })
     }
 }
