@@ -31894,3 +31894,206 @@ fn pg06_task_106() {
     );
     assert_eq!(mysql_query(&mut mysql, "SELECT 1"), integer_before);
 }
+
+#[test]
+fn pg_function_09() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) {
+        send(socket, b'S', &[]);
+        assert_eq!(read(socket), (b'Z', vec![b'I']));
+    }
+    fn error_fields(body: &[u8], state: &str) {
+        let mut fields = std::collections::BTreeMap::new();
+        let mut offset = 0;
+        while body[offset] != 0 {
+            let tag = body[offset];
+            offset += 1;
+            let length = body[offset..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(
+                tag,
+                std::str::from_utf8(&body[offset..offset + length]).unwrap(),
+            );
+            offset += length + 1;
+        }
+        assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'C'), Some(&state));
+        assert!(!fields[&b'M'].is_empty());
+        assert!(
+            [b'D', b'H', b'P']
+                .iter()
+                .all(|tag| !fields.contains_key(tag))
+        );
+        println!("error fields: {fields:?}; D/H/P absent");
+    }
+    let mut description = vec![0, 1, b'v', 0];
+    description.extend_from_slice(&0u32.to_be_bytes());
+    description.extend_from_slice(&0i16.to_be_bytes());
+    description.extend_from_slice(&23u32.to_be_bytes());
+    description.extend_from_slice(&4i16.to_be_bytes());
+    description.extend_from_slice(&(-1i32).to_be_bytes());
+    description.extend_from_slice(&0i16.to_be_bytes());
+    // Explicit casts constrain the function argument, while explicit Parse OIDs
+    // remain the source parameter identity used to decode binary inputs.
+    for (oids, source) in [
+        (vec![], 23u32),
+        (vec![0], 23),
+        (vec![23], 23),
+        (vec![21], 21),
+        (vec![20], 20),
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT pg_catalog.abs($1::int4) AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            parse(&mut socket, "", &sql, &oids);
+            assert_eq!(read(&mut socket), (b'1', vec![]), "{oids:?}");
+            send(&mut socket, b'D', b"S\0");
+            assert_eq!(
+                read(&mut socket),
+                (
+                    b't',
+                    [&1i16.to_be_bytes()[..], &source.to_be_bytes()].concat()
+                )
+            );
+            assert_eq!(read(&mut socket), (b'T', description.clone()));
+            ready(&mut socket);
+            for (input_format, output_format, value) in [
+                (0i16, 0i16, Some(-1i64)),
+                (1, 1, Some(2)),
+                (1, 0, None),
+                (0, 1, Some(-1)),
+                (1, 1, None),
+            ] {
+                let bytes = value.map(|v| {
+                    if input_format == 0 {
+                        v.to_string().into_bytes()
+                    } else {
+                        match source {
+                            21 => (v as i16).to_be_bytes().to_vec(),
+                            20 => v.to_be_bytes().to_vec(),
+                            _ => (v as i32).to_be_bytes().to_vec(),
+                        }
+                    }
+                });
+                let mut body = vec![0, 0];
+                body.extend_from_slice(&1i16.to_be_bytes());
+                body.extend_from_slice(&input_format.to_be_bytes());
+                body.extend_from_slice(&1i16.to_be_bytes());
+                if let Some(bytes) = bytes {
+                    body.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    body.extend_from_slice(&bytes);
+                } else {
+                    body.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                body.extend_from_slice(&1i16.to_be_bytes());
+                body.extend_from_slice(&output_format.to_be_bytes());
+                send(&mut socket, b'B', &body);
+                assert_eq!(read(&mut socket), (b'2', vec![]));
+                send(&mut socket, b'D', b"P\0");
+                let mut expected = description.clone();
+                let end = expected.len();
+                expected[end - 2..].copy_from_slice(&output_format.to_be_bytes());
+                assert_eq!(read(&mut socket), (b'T', expected));
+                execute(&mut socket, "", 0);
+                if !empty {
+                    let expected = match value {
+                        None => row(&[None]),
+                        Some(v) if output_format == 0 => row(&[Some(&v.abs().to_string())]),
+                        Some(v) => [
+                            &1i16.to_be_bytes()[..],
+                            &4i32.to_be_bytes(),
+                            &(v.abs() as i32).to_be_bytes(),
+                        ]
+                        .concat(),
+                    };
+                    assert_eq!(read(&mut socket), (b'D', expected));
+                }
+                assert_eq!(
+                    read(&mut socket),
+                    (
+                        b'C',
+                        if empty {
+                            b"SELECT 0\0".to_vec()
+                        } else {
+                            b"SELECT 1\0".to_vec()
+                        }
+                    )
+                );
+                ready(&mut socket);
+                send(&mut socket, b'D', b"S\0");
+                assert_eq!(
+                    read(&mut socket),
+                    (
+                        b't',
+                        [&1i16.to_be_bytes()[..], &source.to_be_bytes()].concat()
+                    )
+                );
+                assert_eq!(read(&mut socket), (b'T', description.clone()));
+                ready(&mut socket);
+            }
+        }
+    }
+    parse(
+        &mut socket,
+        "",
+        "SELECT pg_catalog.abs($1::int4) AS v",
+        &[23],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    for (value, phase, state) in [
+        ("bad", "Bind", "22P02"),
+        ("2147483648", "Bind", "22003"),
+        ("-2147483648", "Execute", "22003"),
+    ] {
+        bind(&mut socket, "", "", &[Some(value)]);
+        if phase == "Execute" {
+            assert_eq!(read(&mut socket), (b'2', vec![]));
+            execute(&mut socket, "", 0);
+        }
+        let response = read(&mut socket);
+        assert_eq!(response.0, b'E', "{phase}: {response:?}");
+        error_fields(&response.1, state);
+        ready(&mut socket);
+        let probe = query(&mut socket, "SELECT 1::int4");
+        assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+        assert_eq!(probe[1], (b'D', row(&[Some("1")])));
+    }
+    send(&mut socket, b'C', b"S\0");
+    assert_eq!(read(&mut socket), (b'3', vec![]));
+    ready(&mut socket);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+    assert!(TcpStream::connect(address).is_err());
+}
