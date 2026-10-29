@@ -2215,6 +2215,7 @@ impl ConcreteSession {
                     .iter()
                     .all(|field| field.WildCard.is_none())
             {
+                let conditional_sources = self.relational_select_source_fields(select)?;
                 let affected = select
                     .Fields
                     .Fields
@@ -2223,7 +2224,7 @@ impl ConcreteSession {
                         field
                             .Expr
                             .as_ref()
-                            .is_some_and(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
+                            .is_some_and(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_conditional_projection(expr, &conditional_sources) || matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     })
                     .collect::<Vec<_>>();
                 if affected.iter().any(|affected| *affected) {

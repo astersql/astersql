@@ -1249,3 +1249,54 @@ fn pg_function_12_session_int4_fallback() {
     pg.execute("DROP TABLE runtime12_local").unwrap();
     domain.close();
 }
+
+#[test]
+fn pg_function_25_nested_int4() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE runtime25_nested(a integer,z integer)")
+        .unwrap();
+    struct TableCleanup<'a>(&'a ConcreteSession);
+    impl Drop for TableCleanup<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.execute("DROP TABLE IF EXISTS runtime25_nested");
+        }
+    }
+    let _cleanup = TableCleanup(&pg);
+    pg.execute("INSERT INTO runtime25_nested VALUES(NULL,0)")
+        .unwrap();
+    let sql = "SELECT coalesce(a,10/(z+2::int4)) AS v FROM runtime25_nested";
+    let fields = pg.describe_result_fields(sql).unwrap();
+    assert_eq!(
+        fields[0].column.FieldType.GetType(),
+        astersql_parser_mysql::r#type::TypeLong
+    );
+    assert_eq!(pg.execute(sql).unwrap()[0].rows[0][0], "5");
+    for expression in [
+        "10/(z+0::int4)",
+        "z+2147483647::int4+1::int4",
+        "z-(-2147483647)::int4+2::int4",
+        "(z+2147483647::int4)*2::int4",
+    ] {
+        assert!(
+            pg.execute(&format!(
+                "SELECT coalesce(a,{expression}) AS v FROM runtime25_nested"
+            ))
+            .is_err(),
+            "required arithmetic must fail: {expression}"
+        );
+        pg.execute("UPDATE runtime25_nested SET a=7").unwrap();
+        assert_eq!(
+            pg.execute(&format!(
+                "SELECT coalesce(a,{expression}) AS v FROM runtime25_nested"
+            ))
+            .unwrap()[0]
+                .rows[0][0],
+            "7"
+        );
+        pg.execute("UPDATE runtime25_nested SET a=NULL").unwrap();
+    }
+    pg.execute("DROP TABLE runtime25_nested").unwrap();
+}

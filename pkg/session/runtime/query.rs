@@ -2654,7 +2654,7 @@ impl ConcreteSession {
             // scalar path's untyped protocol fallback.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || (select.Where.is_some() && (expression_contains_function(expr, "coalesce") || expression_contains_function(expr, "nullif"))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From
@@ -3931,6 +3931,135 @@ impl ConcreteSession {
         ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
     }
 
+    /// Only the conditional families covered by the native-client contract use
+    /// this projection bridge. Source columns retain catalog types, not values.
+    pub(super) fn is_mysql_conditional_projection(
+        &self,
+        expression: &ast::ExprNode,
+        sources: &[ConcreteResultField],
+    ) -> bool {
+        if self.sql_dialect() != ast::SqlDialect::MySQL {
+            return false;
+        }
+        let ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } = &expression.Kind
+        else {
+            return false;
+        };
+        sources.first().is_none_or(|first| {
+            sources
+                .iter()
+                .all(|source| source.table_as_name == first.table_as_name)
+        }) && Schema.L.is_empty()
+            && matches!(FnName.L.as_str(), "coalesce" | "nullif")
+            && !Args.is_empty()
+            && !relational_expression_has_aggregate(expression)
+            && !relational_expression_has_subquery(expression)
+            && Args.iter().all(|arg| {
+                matches!(
+                    self.signed_abs_argument_type(arg, sources).EvalType(),
+                    astersql_parser_types::eval_type::ETInt
+                        | astersql_parser_types::eval_type::ETDecimal
+                        | astersql_parser_types::eval_type::ETString
+                )
+            })
+    }
+
+    /// Evaluate a conditional projection through its existing formal builder,
+    /// typed chunk row and SQL warning policy. No arm is evaluated by the adapter.
+    pub(super) fn mysql_conditional_projection_value(
+        &self,
+        expression: &ast::ExprNode,
+        row: &HashMap<String, Option<String>>,
+        sources: &[ConcreteResultField],
+    ) -> SessionResult<Option<String>> {
+        use astersql_expression::contextutil::WarnHandler;
+        let warnings = Arc::new(astersql_expression::contextutil::NewStaticWarnHandler(0));
+        let mode = astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
+            .map_err(|error| session_error("parse conditional sql_mode", error))?;
+        let mut levels = self.session_vars.StmtCtx.ErrLevels();
+        if !self.mdl_autocommit_write.get() {
+            levels[astersql_expression::errctx::ErrGroup::ErrGroupDividedByZero as usize] =
+                if mode.HasErrorForDivisionByZeroMode() {
+                    astersql_expression::errctx::Level::LevelWarn
+                } else {
+                    astersql_expression::errctx::Level::LevelIgnore
+                };
+        }
+        let eval = Arc::new(astersql_expression_exprstatic::NewEvalContext(vec![
+            astersql_expression_exprstatic::WithSQLMode(mode),
+            astersql_expression_exprstatic::WithTypeFlags(self.session_vars.StmtCtx.TypeFlags()),
+            astersql_expression_exprstatic::WithErrLevelMap(levels),
+            astersql_expression_exprstatic::WithWarnHandler(warnings.clone()),
+        ]));
+        let context = astersql_expression_exprstatic::NewExprContext(vec![
+            astersql_expression_exprstatic::WithEvalCtx(eval.clone()),
+        ]);
+        let table = astersql_meta_model::TableInfo {
+            Name: sources
+                .first()
+                .map(|source| {
+                    if source.table_as_name.L.is_empty() {
+                        source.table_name.clone()
+                    } else {
+                        source.table_as_name.clone()
+                    }
+                })
+                .unwrap_or_default(),
+            Columns: sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    let mut column = source.column.clone();
+                    column.Offset = index as isize;
+                    column
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let result = (|| {
+            let built = astersql_planner_core::PlannerBuildSimpleExpr(
+                &context,
+                expression,
+                vec![astersql_expression::WithTableInfo(
+                    &self.current_database(),
+                    &table,
+                )],
+            )
+            .map_err(|error| session_error("build conditional projection", error))?;
+            let values = table
+                .Columns
+                .iter()
+                .map(|column| {
+                    let value = row.get(&column.Name.L).and_then(Option::as_ref);
+                    runtime_value_to_datum(value, column, self.session_vars.StmtCtx.TypeFlags())
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            let input = astersql_expression::chunk::mutrow::MutRowFromDatums(values);
+            let value = built
+                .Eval(eval.as_ref(), input.ToRow())
+                .map_err(|error| session_error("evaluate conditional projection", error))?;
+            if value.IsNull() {
+                Ok(None)
+            } else {
+                value
+                    .ToString()
+                    .map(Some)
+                    .map_err(|error| session_error("render conditional projection", error))
+            }
+        })();
+        self.state.borrow_mut().current_warnings.extend(
+            warnings
+                .CopyWarnings(Vec::new())
+                .into_iter()
+                .filter_map(|warning| warning.Err.map(|error| SessionWarning::from_error(&error))),
+        );
+        result
+    }
+
     /// The existing NULLIF rewriter can retain signed integer fields without
     /// depending on the currently unlinked COALESCE factory or other families.
     pub(super) fn is_mysql_signed_nullif(
@@ -4201,7 +4330,7 @@ impl ConcreteSession {
                     pg_returning_expression_type(R, source_fields),
                 ) && matches!(
                     (left.GetType(), right.GetType()),
-                    (TypeShort, TypeLong) | (TypeLong, TypeShort)
+                    (TypeShort, TypeLong) | (TypeLong, TypeShort) | (TypeLong, TypeLong)
                 ) {
                     return pg_returning_expression_type(expression, source_fields)
                         .expect("integer operands have a PG arithmetic result type");
@@ -4846,7 +4975,7 @@ impl ConcreteSession {
                     result.push(result_field);
                 } else {
                     let field_type = if self.is_mysql_signed_abs(expression, &source_fields)
-                        || self.is_mysql_signed_nullif(expression, &source_fields)
+                        || self.is_mysql_conditional_projection(expression, &source_fields)
                         || (self.sql_dialect() == ast::SqlDialect::MySQL
                             && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     {

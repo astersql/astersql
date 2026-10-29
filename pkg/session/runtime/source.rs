@@ -1692,6 +1692,20 @@ impl ConcreteSession {
         select: &ast::SelectStmt,
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
+        let conditional_sources = if self.sql_dialect() == ast::SqlDialect::MySQL
+            && select
+                .Fields
+                .Fields
+                .iter()
+                .filter_map(|field| field.Expr.as_ref())
+                .any(|expr| {
+                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, Schema, .. }
+                    if Schema.L.is_empty() && matches!(FnName.L.as_str(), "coalesce" | "nullif"))
+                }) {
+            self.relational_select_source_fields(select)?
+        } else {
+            Vec::new()
+        };
         // Only pass necessary WHERE key conditions through plain sources.
         // Correlated/derived/outer joins and ambiguous unqualified columns keep
         // their existing evaluation boundary.
@@ -2262,6 +2276,12 @@ impl ConcreteSession {
                         }
                     }
                     Some(hasher.finalize().to_string())
+                } else if self.is_mysql_conditional_projection(expression, &conditional_sources) {
+                    self.mysql_conditional_projection_value(
+                        expression,
+                        &representative,
+                        &conditional_sources,
+                    )?
                 } else {
                     self.relational_query_expression_value(
                         expression,

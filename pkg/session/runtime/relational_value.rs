@@ -1134,6 +1134,15 @@ pub(super) fn relational_expression_value(
                 _ => unreachable!("arithmetic operator checked above"),
             }
             .ok_or_else(|| SessionError::new("integer overflow: BIGINT value is out of range"))?;
+            if PG_CAST_TABLE.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|table| {
+                    relational_expression_type(expression, table).GetType()
+                        == astersql_parser_mysql::r#type::TypeLong
+                })
+            }) && i32::try_from(value).is_err()
+            {
+                return Err(pg_bytea_input_error("22003", "integer out of range"));
+            }
             Ok(Some(value.to_string()))
         }
         ast::ExprKind::Binary { Op, L, R } if matches!(Op.as_str(), "%" | "mod" | "MOD") => {
@@ -3035,6 +3044,18 @@ pub(super) fn relational_expression_type(
             ) =>
         {
             new_type(astersql_parser_mysql::r#type::TypeLonglong)
+        }
+        ast::ExprKind::Binary { Op, L, R }
+            if matches!(Op.as_str(), "+" | "-" | "*")
+                && PG_CAST_TABLE.with(|slot| slot.borrow().is_some())
+                && [L.as_ref(), R.as_ref()].iter().all(|arg| {
+                    super::query::pg_integer_literal_type(arg)
+                        .unwrap_or_else(|| relational_expression_type(arg, table))
+                        .GetType()
+                        == astersql_parser_mysql::r#type::TypeLong
+                }) =>
+        {
+            new_type(astersql_parser_mysql::r#type::TypeLong)
         }
         ast::ExprKind::Binary { Op, .. } if Op == "/" => {
             new_type(astersql_parser_mysql::r#type::TypeNewDecimal)

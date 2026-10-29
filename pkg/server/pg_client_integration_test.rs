@@ -9713,3 +9713,91 @@ fn pg_function_25_mysql_filter() {
         }
     }
 }
+
+#[test]
+fn pg_function_25_mysql_semantics() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for (sql, value, warnings) in [
+        ("SELECT coalesce(7,10/0) AS v", Some("7.0000"), 0),
+        ("SELECT coalesce(NULL,10/0) AS v", None, 1),
+        ("SELECT nullif(7,10/0) AS v", Some("7"), 1),
+        (
+            "SELECT nullif('01' COLLATE utf8mb4_bin,'1') AS v",
+            Some("01"),
+            0,
+        ),
+    ] {
+        let WireResponse::ResultSet(result) = mysql.query(sql).unwrap() else {
+            panic!("conditional SQL must return a result")
+        };
+        assert_eq!(
+            result.rows,
+            vec![vec![value.map_or(TextValue::Null, |v| TextValue::Bytes(
+                v.as_bytes().to_vec()
+            ))]],
+            "{sql}"
+        );
+        assert_eq!(result.warnings, warnings, "{sql}");
+        if warnings != 0 {
+            let WireResponse::ResultSet(rows) = mysql.query("SHOW WARNINGS").unwrap() else {
+                panic!("warning result")
+            };
+            assert_eq!(
+                rows.rows,
+                vec![vec![
+                    TextValue::Bytes(b"Warning".to_vec()),
+                    TextValue::Bytes(b"1365".to_vec()),
+                    TextValue::Bytes(b"Division by 0".to_vec())
+                ]]
+            );
+        }
+    }
+    mysql.query("CREATE DATABASE function25_recover").unwrap();
+    struct DatabaseCleanup(crate::mysql_compat_test_support::MysqlTestClient);
+    impl Drop for DatabaseCleanup {
+        fn drop(&mut self) {
+            let _ = self.0.query("DROP DATABASE IF EXISTS function25_recover");
+        }
+    }
+    let _cleanup = DatabaseCleanup(server.connect_root(0, None).unwrap());
+    mysql.query("USE function25_recover").unwrap();
+    mysql.query("CREATE TABLE t(a integer,z integer)").unwrap();
+    mysql.query("INSERT INTO t VALUES(NULL,0)").unwrap();
+    let statement = mysql
+        .prepare("SELECT coalesce(a,10/CAST(? AS SIGNED)) AS v FROM t")
+        .unwrap();
+    assert_eq!(statement.columns[0].column_type, 246);
+    assert_eq!(statement.columns[0].decimals, 4);
+    for value in [Some(2i64), Some(0), None, Some(2)] {
+        let mut body = statement.statement_id.to_le_bytes().to_vec();
+        body.push(0);
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.extend_from_slice(&[u8::from(value.is_none()), 1, 8, 0]);
+        if let Some(value) = value {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let WireResponse::ResultSet(result) = mysql.execute_prepared(&body).unwrap() else {
+            panic!("typed decimal result")
+        };
+        assert_eq!(result.columns, statement.columns);
+        assert_eq!(
+            result.rows,
+            vec![vec![if value == Some(2) {
+                TextValue::Bytes(b"5.0000".to_vec())
+            } else {
+                TextValue::Null
+            }]]
+        );
+    }
+    mysql.close_prepared(statement.statement_id).unwrap();
+    let WireResponse::ResultSet(result) =
+        mysql.query("SELECT coalesce(a,10/z) AS v FROM t").unwrap()
+    else {
+        panic!("row conditional result")
+    };
+    assert_eq!(result.columns[0].column_type, 246);
+    assert_eq!(result.warnings, 1);
+    mysql.query("DROP DATABASE function25_recover").unwrap();
+}

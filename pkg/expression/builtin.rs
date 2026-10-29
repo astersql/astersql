@@ -4065,6 +4065,7 @@ pub mod formal_registry {
         Arithmetic(&'static str, types::EvalType),
         Case,
         IfNull(types::EvalType),
+        Coalesce(types::EvalType),
         Row,
         JsonExtract,
         TiDBVersion,
@@ -4470,6 +4471,15 @@ pub mod formal_registry {
                     Some(index) => self.base.args[index].EvalInt(ctx, row),
                     None => Ok((0, true)),
                 },
+                CoreBuiltinKind::Coalesce(types::ETInt) => {
+                    for argument in &self.base.args {
+                        let result = argument.EvalInt(ctx, row.clone())?;
+                        if !result.1 {
+                            return Ok(result);
+                        }
+                    }
+                    Ok((0, true))
+                }
                 CoreBuiltinKind::IfNull(types::ETInt) => {
                     let first = self.base.args[0].EvalInt(ctx, row.clone())?;
                     if first.1 {
@@ -4821,16 +4831,22 @@ pub mod formal_registry {
                         "plus" => types_decimal::mydecimal::DecimalAdd(&left, &right, &mut result),
                         "minus" => types_decimal::mydecimal::DecimalSub(&left, &right, &mut result),
                         "mul" => types_decimal::mydecimal::DecimalMul(&left, &right, &mut result),
-                        "div" => {
-                            types_decimal::mydecimal::DecimalDiv(&left, &right, &mut result, 4)
-                        }
+                        "div" => types_decimal::mydecimal::DecimalDiv(
+                            &left,
+                            &right,
+                            &mut result,
+                            ctx.GetDivPrecisionIncrement() as isize,
+                        ),
                         "mod" => types_decimal::mydecimal::DecimalMod(&left, &right, &mut result),
                         _ => return Err(errors::New("unsupported DECIMAL arithmetic operator")),
                     };
                     match operation {
                         Ok(()) => Ok((result, false)),
-                        Err(error) if error.to_string().contains("division by zero") => {
-                            Ok((types::MyDecimal::default(), true))
+                        Err(types_decimal::mydecimal::DecimalError::DivByZero) => {
+                            match crate::expression_errors_kernel::handleDivisionByZeroError(ctx) {
+                                Some(error) => Err(error.into()),
+                                None => Ok((types::MyDecimal::default(), true)),
+                            }
                         }
                         Err(error) => Err(errors::New(error.to_string())),
                     }
@@ -4839,6 +4855,15 @@ pub mod formal_registry {
                     Some(index) => self.base.args[index].EvalDecimal(ctx, row),
                     None => Ok((types::MyDecimal::default(), true)),
                 },
+                CoreBuiltinKind::Coalesce(types::ETDecimal) => {
+                    for argument in &self.base.args {
+                        let result = argument.EvalDecimal(ctx, row.clone())?;
+                        if !result.1 {
+                            return Ok(result);
+                        }
+                    }
+                    Ok((types::MyDecimal::default(), true))
+                }
                 CoreBuiltinKind::IfNull(types::ETDecimal) => {
                     let first = self.base.args[0].EvalDecimal(ctx, row.clone())?;
                     if first.1 {
@@ -4931,6 +4956,15 @@ pub mod formal_registry {
                     Some(index) => self.base.args[index].EvalString(ctx, row),
                     None => Ok((String::new(), true)),
                 },
+                CoreBuiltinKind::Coalesce(types::ETString) => {
+                    for argument in &self.base.args {
+                        let result = argument.EvalString(ctx, row.clone())?;
+                        if !result.1 {
+                            return Ok(result);
+                        }
+                    }
+                    Ok((String::new(), true))
+                }
                 CoreBuiltinKind::IfNull(types::ETString) => {
                     let first = self.base.args[0].EvalString(ctx, row.clone())?;
                     if first.1 {
@@ -5536,9 +5570,35 @@ pub mod formal_registry {
         eval_type: types::EvalType,
         left: &types::FieldType,
         right: &types::FieldType,
+        div_precision_increment: i32,
     ) -> types::FieldType {
         let mut result = field_type_for_eval_type(eval_type);
         if !matches!(eval_type, types::ETDecimal | types::ETReal) {
+            return result;
+        }
+        // Go arithmeticDivideFunctionClass::setType4DivDecimal uses the
+        // dividend's precision and the evaluation context's scale increment.
+        if name == "div" && eval_type == types::ETDecimal {
+            result
+                .SetDecimalUnderLimit(left.GetDecimal().max(0) + div_precision_increment as isize);
+            if left.GetFlen() == types::UnspecifiedLength as isize {
+                result.SetFlen(mysql::MaxDecimalWidth as isize);
+            } else {
+                let precision = types_dependency::field::DecimalLength2Precision(
+                    left.GetFlen() as i32,
+                    left.GetDecimal() as i32,
+                    mysql::HasUnsignedFlag(left.GetFlag()),
+                );
+                result.SetFlenUnderLimit(
+                    (precision + right.GetDecimal().max(0) as i32 + div_precision_increment)
+                        as isize,
+                );
+                result.SetFlenUnderLimit(types_dependency::field::Precision2LengthNoTruncation(
+                    result.GetFlen() as i32,
+                    result.GetDecimal() as i32,
+                    mysql::HasUnsignedFlag(result.GetFlag()),
+                ) as isize);
+            }
             return result;
         }
         let left_decimal = left.GetDecimal();
@@ -5876,14 +5936,22 @@ pub mod formal_registry {
                     eval_type,
                     args[0].GetType(ctx.GetEvalCtx()),
                     args[1].GetType(ctx.GetEvalCtx()),
+                    ctx.GetEvalCtx().GetDivPrecisionIncrement(),
                 );
+                // Go's newBaseBuiltinFuncWithTp casts integer columns before
+                // decimal evaluation; direct GetMyDecimal on an INT chunk is invalid.
+                if eval_type == types::ETDecimal {
+                    for argument in &mut args {
+                        *argument = crate::WrapWithCastAsDecimal(ctx, argument.CloneExpr());
+                    }
+                }
                 (
                     CoreBuiltinKind::Arithmetic(name, eval_type),
                     return_type,
                     signature,
                 )
             }
-            "case" => {
+            "case" | "if" => {
                 let result_indices = (1..args.len())
                     .step_by(2)
                     .chain((args.len() % 2 == 1).then_some(args.len() - 1).into_iter())
@@ -5898,6 +5966,11 @@ pub mod formal_registry {
                 // explicit result arm is declared NOT NULL.
                 return_type.DelFlag(mysql::NotNullFlag);
                 let eval_type = return_type.EvalType();
+                if name == "if" && matches!(eval_type, types::ETInt | types::ETDecimal) {
+                    // Go ifFunctionClass adds newReturnFieldTypeForBaseBuiltinFunc's
+                    // BinaryFlag to these inferred numeric value branches.
+                    return_type.AddFlag(mysql::BinaryFlag);
+                }
                 for index in result_indices {
                     let source_type = args[index].GetType(ctx.GetEvalCtx());
                     let needs_cast = match eval_type {
@@ -5923,6 +5996,34 @@ pub mod formal_registry {
                     _ => "builtinCaseWhenIntSig",
                 };
                 (CoreBuiltinKind::Case, return_type, signature)
+            }
+            "coalesce" => {
+                let refs = args.iter().map(|arg| arg.as_ref()).collect::<Vec<_>>();
+                let mut return_type = crate::InferType4ControlFuncsVariadic(ctx, name, &refs)?;
+                let eval_type = return_type.EvalType();
+                let signature = match eval_type {
+                    types::ETInt => "builtinCoalesceIntSig",
+                    types::ETDecimal => "builtinCoalesceDecimalSig",
+                    types::ETString => "builtinCoalesceStringSig",
+                    _ => {
+                        return Err(errors::New(
+                            "COALESCE signature is not linked for this type family",
+                        ));
+                    }
+                };
+                let flag = args.iter().fold(0, |flag, arg| {
+                    flag | (arg.GetType(ctx.GetEvalCtx()).GetFlag() & mysql::NotNullFlag)
+                });
+                return_type.AddFlag(flag);
+                for argument in &mut args {
+                    let source = argument.GetType(ctx.GetEvalCtx());
+                    if source.EvalType() != eval_type
+                        || (eval_type == types::ETDecimal && !source.Equal(&return_type))
+                    {
+                        *argument = BuildCastFunction(ctx, argument, &return_type);
+                    }
+                }
+                (CoreBuiltinKind::Coalesce(eval_type), return_type, signature)
             }
             "ifnull" => {
                 let left_type = args[0].GetType(ctx.GetEvalCtx()).clone();
@@ -6689,7 +6790,7 @@ pub mod formal_registry {
         // IF(cond, then, else) is the three-argument CASE execution shape.
         // Keep the registered function name (`if`) on ScalarFunction while
         // sharing CASE's fully typed evaluator and protobuf signature.
-        core_builtin_factory("case", ctx, args, metadata)
+        core_builtin_factory("if", ctx, args, metadata)
     }
     core_factory!(abs_factory, "abs");
     fn round_factory(
@@ -6741,6 +6842,7 @@ pub mod formal_registry {
     core_factory!(rpad_factory, "rpad");
     core_factory!(insert_factory, "insert");
     core_factory!(ifnull_factory, "ifnull");
+    core_factory!(coalesce_factory, "coalesce");
     core_factory!(like_factory, "like");
     core_factory!(ilike_factory, "ilike");
     core_factory!(is_ipv4_factory, "is_ipv4");
@@ -6824,6 +6926,7 @@ pub mod formal_registry {
         ("rpad", rpad_factory),
         ("insert", insert_factory),
         ("ifnull", ifnull_factory),
+        ("coalesce", coalesce_factory),
         ("like", like_factory),
         ("ilike", ilike_factory),
         ("is_ipv4", is_ipv4_factory),

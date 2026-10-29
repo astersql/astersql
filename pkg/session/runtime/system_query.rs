@@ -4115,6 +4115,9 @@ impl ConcreteSession {
                     self.relational_query_expression_value(expr, &HashMap::new(), None)?
                         .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
                 }
+                _ if self.is_mysql_conditional_projection(expr, &[]) => self
+                    .mysql_conditional_projection_value(expr, &HashMap::new(), &[])?
+                    .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned()),
                 _ => super::relational_value::relational_expression_value_with_embed(
                     expr,
                     &HashMap::new(),

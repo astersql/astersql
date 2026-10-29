@@ -1193,3 +1193,188 @@ fn pg_function_08() {
         "private default candidates must not escape"
     );
 }
+
+#[test]
+fn pg_function_25_coalesce_factory() {
+    use crate::{Constant, Expression, NewFunctionBase, chunk, mysql, types};
+    let ctx = exprstatic::NewExprContext(Vec::new());
+    let mut integer = *types::NewFieldType(mysql::TypeLonglong);
+    integer.SetFlen(22);
+    integer.SetDecimal(0);
+    integer.AddFlag(mysql::BinaryFlag);
+    let arg = |value| Box::new(Constant::with_type(value, integer.clone())) as crate::ExprBox;
+    let build = |args| {
+        NewFunctionBase(
+            &ctx,
+            "coalesce",
+            *types::NewFieldType(mysql::TypeUnspecified),
+            args,
+        )
+    };
+    let overflow = || {
+        NewFunctionBase(
+            &ctx,
+            "abs",
+            integer.clone(),
+            vec![arg(types::NewIntDatum(i64::MIN))],
+        )
+        .unwrap()
+    };
+    let short = build(vec![
+        arg(types::Datum::default()),
+        arg(types::NewIntDatum(7)),
+        overflow(),
+    ])
+    .unwrap();
+    assert_eq!(
+        short
+            .EvalInt(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap(),
+        (7, false)
+    );
+    let required = build(vec![
+        arg(types::Datum::default()),
+        overflow(),
+        arg(types::NewIntDatum(7)),
+    ])
+    .unwrap();
+    assert!(
+        required
+            .EvalInt(ctx.GetEvalCtx(), chunk::Row::default())
+            .is_err()
+    );
+    assert!(build(vec![]).is_err());
+    let all_null = build(vec![
+        arg(types::Datum::default()),
+        arg(types::Datum::default()),
+    ])
+    .unwrap();
+    assert!(
+        all_null
+            .EvalInt(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap()
+            .1
+    );
+    let mut numeric = *types::NewFieldType(mysql::TypeNewDecimal);
+    numeric.SetFlen(8);
+    numeric.SetDecimal(2);
+    numeric.AddFlag(mysql::BinaryFlag);
+    let mut decimal = types::MyDecimal::default();
+    decimal.FromString(b"2.50").unwrap();
+    let mixed = build(vec![
+        arg(types::NewIntDatum(7)),
+        Box::new(Constant::with_type(
+            types::NewDecimalDatum(decimal),
+            numeric,
+        )),
+    ])
+    .unwrap();
+    assert_eq!(mixed.GetType(ctx.GetEvalCtx()).GetDecimal(), 2);
+    assert_eq!(
+        mixed
+            .EvalDecimal(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap()
+            .0
+            .ToString(),
+        b"7.00"
+    );
+    let divide = NewFunctionBase(
+        &ctx,
+        "/",
+        *types::NewFieldType(mysql::TypeUnspecified),
+        vec![arg(types::NewIntDatum(10)), arg(types::NewIntDatum(2))],
+    )
+    .unwrap();
+    assert_eq!(divide.GetType(ctx.GetEvalCtx()).GetDecimal(), 4);
+    assert_eq!(
+        divide
+            .EvalDecimal(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap()
+            .0
+            .String(),
+        "5.0000"
+    );
+    let column = |index| {
+        Box::new(crate::Column {
+            RetType: Some(integer.Clone()),
+            Index: index,
+            ..Default::default()
+        }) as crate::ExprBox
+    };
+    let division = NewFunctionBase(
+        &ctx,
+        "/",
+        *types::NewFieldType(mysql::TypeUnspecified),
+        vec![column(0), column(1)],
+    )
+    .unwrap();
+    let input =
+        chunk::mutrow::MutRowFromDatums(vec![types::NewIntDatum(10), types::NewIntDatum(2)]);
+    assert_eq!(
+        division
+            .EvalDecimal(ctx.GetEvalCtx(), input.ToRow())
+            .unwrap()
+            .0
+            .String(),
+        "5.0000"
+    );
+    let mut text = *types::NewFieldType(mysql::TypeVarchar);
+    text.SetCharset("utf8mb4".to_owned());
+    text.SetCollate("utf8mb4_bin".to_owned());
+    text.SetFlen(2);
+    let strings = build(vec![
+        Box::new(Constant::with_type(types::Datum::default(), text.clone())),
+        Box::new(Constant::with_type(
+            types::NewStringDatum(String::new()),
+            text,
+        )),
+    ])
+    .unwrap();
+    assert_eq!(
+        strings
+            .EvalString(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap(),
+        (String::new(), false)
+    );
+}
+
+#[test]
+fn pg_function_25_nullif_numeric_fields() {
+    use crate::{Constant, NewFunctionBase, mysql, types};
+    let ctx = exprstatic::NewExprContext(Vec::new());
+    let mut integer = *types::NewFieldType(mysql::TypeLong);
+    integer.SetFlen(11);
+    integer.SetDecimal(0);
+    let source = crate::Column {
+        RetType: Some(integer.Clone()),
+        Index: 0,
+        ..Default::default()
+    };
+    let function = NewFunctionBase(
+        &ctx,
+        "if",
+        integer.clone(),
+        vec![
+            Box::new(Constant::with_type(
+                types::NewIntDatum(1),
+                *types::NewFieldType(mysql::TypeLonglong),
+            )),
+            Box::new(Constant::with_type(
+                types::Datum::default(),
+                *types::NewFieldType(mysql::TypeNull),
+            )),
+            Box::new(source),
+        ],
+    )
+    .unwrap();
+    assert_ne!(
+        function.GetType(ctx.GetEvalCtx()).GetFlag() & mysql::BinaryFlag,
+        0,
+        "Go IF adds the base numeric BinaryFlag to its inferred value type"
+    );
+    assert_eq!(
+        function.GetType(ctx.GetEvalCtx()).GetType(),
+        mysql::TypeLong
+    );
+    assert_eq!(integer.GetFlag(), 0, "do not mutate the source column");
+}

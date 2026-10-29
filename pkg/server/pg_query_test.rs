@@ -3019,9 +3019,18 @@ fn pg_function_11_mysql() {
         assert_eq!(&eof[..3], &[0xfe, 0, 0]);
         (column, value)
     }
-    // Compare the complete MySQL wire description (code, flags, charset,
-    // length, decimals and origin) to the same declared scalar type. No PG OIDs.
-    for (first, second, scalar, value) in [
+    // Go formal FieldTypes: signed CAST width22, decimal(8,2) display10,
+    // utf8mb4 CHAR(4) display16. A scalar shortcut is not a type authority.
+    let expected_fields = [
+        (63u16, 22u32, 8u8, 129u16, 0u8),
+        (63, 22, 8, 128, 0),
+        (63, 10, 246, 129, 2),
+        (63, 10, 246, 128, 2),
+        (46, 16, 254, 1, 31),
+        (46, 16, 254, 0, 31),
+        (63, 0, 6, 128, 0),
+    ];
+    for ((first, second, scalar, value), (charset, length, code, flags, decimals)) in [
         (
             "NULL",
             "CAST(7 AS SIGNED)",
@@ -3059,11 +3068,27 @@ fn pg_function_11_mysql() {
             vec![0xfb],
         ),
         ("NULL", "NULL", "NULL", vec![0xfb]),
-    ] {
+    ]
+    .into_iter()
+    .zip(expected_fields)
+    {
         let baseline = result(&mut socket, scalar);
         let expression = format!("COALESCE({first},{second})");
         let actual = result(&mut socket, &expression);
-        assert_eq!(actual.0, baseline.0, "{expression}: MySQL metadata");
+        let mut expected_column = b"\x03def\0\0\0\x01v\0\x0c".to_vec();
+        expected_column.extend_from_slice(&charset.to_le_bytes());
+        expected_column.extend_from_slice(&length.to_le_bytes());
+        expected_column.push(code);
+        expected_column.extend_from_slice(&flags.to_le_bytes());
+        expected_column.extend_from_slice(&[decimals, 0, 0]);
+        assert_eq!(
+            actual.0, expected_column,
+            "{expression}: Go formal MySQL metadata"
+        );
+        assert_eq!(
+            actual.1, baseline.1,
+            "{expression}: scalar value intent retained"
+        );
         let mut offset = 0;
         for _ in 0..6 {
             offset += usize::from(actual.0[offset]) + 1;
@@ -3441,9 +3466,12 @@ fn pg_function_12_mysql() {
             metadata[9]
         );
         assert_eq!(actual.1.len(), 1);
-        // Keep this formal-entry observation separate from PG's error contract.
+        // Go COALESCE casts the selected BIGINT arm to the common DECIMAL(,4).
+        // The selected non-NULL arm still skips division and its warning.
+        assert_eq!(actual.2, u16::from(a == "NULL" && z == 0));
+        assert_eq!(warnings.1.len(), usize::from(a == "NULL" && z == 0));
         if a == "7" {
-            assert_eq!(actual.1[0], vec![1, b'7']);
+            assert_eq!(actual.1[0], b"\x067.0000");
         } else if z == 0 {
             assert_eq!(actual.1[0], vec![0xfb]);
         } else {
@@ -3998,13 +4026,22 @@ fn pg_function_13_mysql() {
             metadata[9]
         );
         assert_eq!(actual.1.len(), 1);
-        // Preserve the existing MySQL result identity and warning behavior.
-        assert_eq!(actual.2, 0);
-        assert!(warnings.1.is_empty());
+        // Go NULLIF rewrites to IF(eq(a,10/z),NULL,a). CompareDecimal evaluates
+        // both operands even for NULL a; retain that Go behavior, independently
+        // of MySQL8's first-NULL shortcut recorded by the strict differential.
+        assert_eq!(actual.2, u16::from(z == 0));
+        assert_eq!(
+            warnings.1,
+            if z == 0 {
+                vec![b"\x07Warning\x041365\x0dDivision by 0".to_vec()]
+            } else {
+                vec![]
+            }
+        );
         assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 63);
         assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 20);
         assert_eq!(metadata[6], 8);
-        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 128);
         assert_eq!(metadata[9], 0);
         if a == "7" {
             assert_eq!(actual.1[0], vec![1, b'7']);
@@ -4340,16 +4377,35 @@ fn pg_function_14_mysql() {
         }
     }
 
-    for (expr, expected, baseline) in [
+    // Explicit binary collation is distinct from a bare scalar's legacy
+    // descriptor. NULLIF's constant NULL branch follows Go's IF fold type.
+    let expected_fields = [
+        (46u16, 4u32, 253u8, 1u16, 31u8),
+        (46, 4, 253, 0, 31),
+        (46, 0, 6, 0, 31),
+        (63, 0, 6, 128, 0),
+        (46, 4, 253, 1, 31),
+    ];
+    for ((expr, expected, baseline), (charset, length, code, flags, decimals)) in [
         ("coalesce(NULL,'A' COLLATE utf8mb4_bin)", Some("A"), "'A'"),
         ("nullif('A' COLLATE utf8mb4_bin,'a')", Some("A"), "'A'"),
         ("nullif('A' COLLATE utf8mb4_bin,'A')", None, "NULL"),
         ("nullif(NULL,'A' COLLATE utf8mb4_bin)", None, "NULL"),
         ("coalesce('a' COLLATE utf8mb4_bin,'A')", Some("a"), "'a'"),
-    ] {
+    ]
+    .into_iter()
+    .zip(expected_fields)
+    {
         let actual = execute(&mut socket, &format!("SELECT {expr} AS v"));
         let baseline = execute(&mut socket, &format!("SELECT {baseline} AS v"));
-        assert_eq!(actual.0, baseline.0, "metadata {expr}");
+        let mut expected_column = b"\x03def\0\0\0\x01v\0\x0c".to_vec();
+        expected_column.extend_from_slice(&charset.to_le_bytes());
+        expected_column.extend_from_slice(&length.to_le_bytes());
+        expected_column.push(code);
+        expected_column.extend_from_slice(&flags.to_le_bytes());
+        expected_column.extend_from_slice(&[decimals, 0, 0]);
+        assert_eq!(actual.0, vec![expected_column], "Go formal metadata {expr}");
+        assert_eq!(actual.1, baseline.1, "scalar value intent {expr}");
         assert_eq!(
             actual.1,
             vec![
@@ -4365,11 +4421,20 @@ fn pg_function_14_mysql() {
             offset += usize::from(actual.0[0][offset]) + 1;
         }
         let metadata = &actual.0[0][offset + 1..offset + 13];
-        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 45);
-        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 1024);
-        assert_eq!(metadata[6], 253);
-        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
-        assert_eq!(metadata[9], 0);
+        assert_eq!(
+            u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+            charset
+        );
+        assert_eq!(
+            u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+            length
+        );
+        assert_eq!(metadata[6], code);
+        assert_eq!(
+            u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+            flags
+        );
+        assert_eq!(metadata[9], decimals);
     }
     mysql_packet(&mut socket, 0, &[1]);
     drop(socket);
