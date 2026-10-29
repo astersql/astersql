@@ -32144,11 +32144,11 @@ fn pg_function_22() {
         CLIENT_DEPRECATE_EOF, MysqlTestClient, TextResultSet, TextValue, WireResponse,
         put_lenenc_bytes,
     };
-    fn result(response: WireResponse) -> TextResultSet {
+    fn result(response: WireResponse, warnings: u16) -> TextResultSet {
         let WireResponse::ResultSet(result) = response else {
             panic!("{response:?}")
         };
-        assert_eq!(result.warnings, 0);
+        assert_eq!(result.warnings, warnings);
         result
     }
     fn description(oid: u32, width: i16, format: i16) -> (u8, Vec<u8>) {
@@ -32440,7 +32440,7 @@ fn pg_function_22() {
                 let probe = query(socket, "SELECT 1::int4");
                 assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
                 assert_eq!(probe[1], (b'D', row(&[Some("1")])));
-                let recovery = result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap());
+                let recovery = result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap(), 0);
                 assert_eq!(recovery.columns, prepared[3].columns);
                 assert_eq!(
                     recovery.rows,
@@ -32457,9 +32457,16 @@ fn pg_function_22() {
                         put_lenenc_bytes(&mut payload, if j == 0 { b"-2" } else { b"a" });
                     }
                 }
-                let actual = result(mysql.execute_prepared(&payload).unwrap());
+                let actual = result(mysql.execute_prepared(&payload).unwrap(), u16::from(j == 0));
                 assert_eq!(
-                    actual.columns, statement.columns,
+                    actual.columns,
+                    {
+                        let mut fields = statement.columns.clone();
+                        if j == 0 {
+                            fields[0].flags |= 1;
+                        }
+                        fields
+                    },
                     "function {j}, connection {i}, round {round}"
                 );
                 let expected = match j {
@@ -32495,7 +32502,7 @@ fn pg_function_22() {
             assert_eq!(pg[0], description(25, -1, 0));
             assert_eq!(pg[1], (b'D', row(&[Some("ab")])));
             assert_eq!(
-                result(mysql.query("SELECT CONCAT('a',NULL,'b') AS v").unwrap()).rows,
+                result(mysql.query("SELECT CONCAT('a',NULL,'b') AS v").unwrap(), 0).rows,
                 vec![vec![TextValue::Null]]
             );
         }
@@ -32519,7 +32526,7 @@ fn pg_function_22() {
                 }
                 // A PG failed transaction cannot poison the authenticated peer.
                 assert_eq!(
-                    result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap()).rows,
+                    result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap(), 0).rows,
                     vec![vec![TextValue::Bytes(build.as_bytes().to_vec())]]
                 );
                 let rollback = query(socket, "ROLLBACK");
@@ -32556,7 +32563,7 @@ fn pg_function_22() {
         assert_eq!((rejected.code, rejected.sql_state), (1690, Some(*b"22003")));
         assert!(rejected.message.contains("BIGINT"));
         assert_eq!(
-            result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap()).rows,
+            result(mysql.query("SELECT TIDB_VERSION() AS v").unwrap(), 0).rows,
             vec![vec![TextValue::Bytes(build.as_bytes().to_vec())]]
         );
         for name in ["abs", "concat", "empty"] {

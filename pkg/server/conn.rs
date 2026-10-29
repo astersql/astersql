@@ -129,6 +129,7 @@ pub enum ConnError {
     PgFloat8(astersql_expression::PgFloat8Error),
     PgText(astersql_expression::PgTextError),
     PgArray(astersql_session::runtime::PgArrayError),
+    PgFunction(astersql_session::runtime::PgFunctionError),
     Poisoned(&'static str),
 }
 
@@ -148,6 +149,7 @@ impl fmt::Display for ConnError {
             Self::PgFloat8(error) => error.fmt(f),
             Self::PgText(error) => error.fmt(f),
             Self::PgArray(error) => error.fmt(f),
+            Self::PgFunction(error) => error.fmt(f),
             Self::NetPacketTooLarge => write!(
                 f,
                 "{}",
@@ -227,7 +229,7 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
                 || (lower.contains("table") && lower.contains("doesn't exist"))
             {
                 (1146, b"42S02")
-            } else if lower.contains("[executor:1305]")
+            } else if (lower.contains("[executor:1305]") || lower.contains("[expression:1305]"))
                 || (lower.contains("savepoint") && lower.contains("does not exist"))
             {
                 (1305, b"42000")

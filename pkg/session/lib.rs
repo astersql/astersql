@@ -96,6 +96,19 @@ impl SessionError {
             .copied()
     }
 
+    pub fn pg_function_error(&self) -> Option<runtime::PgFunctionError> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<runtime::PgFunctionError>()
+            .cloned()
+    }
+    pub(crate) fn mysql_hidden_function(&self) -> Option<String> {
+        self.source
+            .as_ref()?
+            .downcast_ref::<runtime::function_diagnostics::MysqlHiddenFunction>()
+            .map(|error| error.0.clone())
+    }
+
     pub fn pg_array_error(&self) -> Option<runtime::PgArrayError> {
         self.source
             .as_ref()?

@@ -35,6 +35,9 @@ CASES = (
     ('abs-overflow', "SELECT pg_catalog.abs('-2147483648'::int4) AS v", None, '22003'),
     ('abs-text', "SELECT abs('1'::text) AS v", None, '42883'),
     ('abs-empty', 'SELECT abs() AS v', None, '42883'),
+    ('date-trunc-unit', "SELECT date_trunc('nonsense', timestamp '2026-10-29 12:34:56') AS v", None, '22023'),
+    ('date-trunc-text', "SELECT date_trunc('day', '2026-10-29 12:34:56'::text) AS v", None, '42883'),
+    ('abs-text-utf8', "SELECT 'é', abs('1'::text) AS v", None, '42883'),
 )
 
 
@@ -42,6 +45,9 @@ def compare(left, right):
     """Messages/positions are archived, not treated as portable equality fields."""
     for key in ('status', 'metadata', 'parameters', 'rows', 'state'):
         assert left[key] == right[key], f'differential mismatch: {key}'
+    if left['state']:
+        for field in 'SVCDHP':
+            assert left.get('errors', {}).get(field, '') == right.get('errors', {}).get(field, ''), f'PG error field mismatch: {field}'
 
 
 def self_test():
@@ -315,7 +321,9 @@ class Mysql:
                     self.mysql_free_result(result)
             observations.append(dict(phase='prepare', code=self.mysql_stmt_errno(stmt),
                                      state=self.mysql_stmt_sqlstate(stmt).decode(), metadata=meta,
-                                     parameters=self.mysql_stmt_param_count(stmt)))
+                                     parameters=self.mysql_stmt_param_count(stmt),
+                                     warning_count=self.mysql_warning_count(self.conn),
+                                     warnings=self.query('SHOW WARNINGS', warnings=False)['rows']))
             if rc:
                 return observations
             for value in values:
@@ -359,6 +367,8 @@ class Mysql:
                         obs['rows'].append([None if nulls[i].value else buffers[i].raw[:lengths[i].value].hex()
                                             for i in range(len(buffers))])
                     assert not self.mysql_stmt_free_result(stmt)
+                obs['execute_header_warning_count'] = obs['warning_count']
+                obs['warning_count'] = self.mysql_warning_count(self.conn)
                 obs['warnings'] = self.query('SHOW WARNINGS', warnings=False)['rows']
                 observations.append(obs)
             return observations
@@ -411,7 +421,7 @@ def compare_wire(left, right):
     for key in ('tags', 'metadata', 'parameters', 'rows', 'lengths', 'ready', 'commands'):
         assert left[key] == right[key], f'wire mismatch: {key}'
     def diagnostics(obs):
-        return [[e.get('S'), e.get('V'), e.get('C'), [bool(e.get(k)) for k in 'MDHP']]
+        return [[e.get('S'), e.get('V'), e.get('C'), [bool(e.get(k)) for k in 'MD'], e.get('H'), e.get('P')]
                 for e in obs['errors']]
     assert diagnostics(left) == diagnostics(right), 'wire mismatch: error fields/presence'
     if 'tail' in left or 'tail' in right:
@@ -447,6 +457,15 @@ def matrix_self_test():
                 count += 1
                 continue
             raise AssertionError(f'comparator accepted {key} corruption')
+    error = dict(wire, tags='E', rows=[], lengths=[], commands=[], errors=[dict(S='ERROR', V='ERROR', C='42883', M='missing', H='cast required', P='13')])
+    altered = copy.deepcopy(error)
+    altered['errors'][0]['P'] = '14'
+    try:
+        compare_wire(error, altered)
+    except AssertionError:
+        count += 1
+    else:
+        raise AssertionError('comparator accepted corrupted function position')
     return count
 
 
@@ -653,7 +672,7 @@ def run(dsns, evidence, aster_mysql=None):
         # Both Q and Parse must reject bad overloads, with recovery before the
         # other PG and same-server MySQL sessions resume their probes.
         for case, sql, oid, expected in CASES:
-            if case not in ('abs-text', 'abs-empty'):
+            if case not in ('abs-text', 'abs-empty', 'abs-text-utf8'):
                 continue
             for side, wire in wires.items():
                 obs = wire_keep(side, case, 'reject-parse', wire.phase(b'P', b'function23_reject\0' + sql.encode() + b'\0\0\0', '1'))
@@ -681,11 +700,13 @@ def run(dsns, evidence, aster_mysql=None):
             # SUBSTR uses unknown/string parameter while positions are fixed.
             if case == 'substr':
                 expression = 'substr(?, 2, 3)'
-            for empty in (False, True):
+            for empty, null_first in ((False, False), (True, False), (False, True), (True, True)):
                 sql = f'SELECT {expression} AS v' + (' WHERE false' if empty else '')
-                scenario = case + ('-prepared-empty' if empty else '-prepared-rows')
+                scenario = case + ('-prepared-empty' if empty else '-prepared-rows') + ('-null-first' if null_first else '')
                 for side, mysql in mysqls.items():
                     values = [b'-17', b'2', None] if case != 'substr' else [b'abcdef', b'', None]
+                    if null_first:
+                        values = values[-1:] + values[:-1]
                     observations = mysql.prepared(sql, values)
                     for index, obs in enumerate(observations):
                         archive('mysql', side, scenario, str(index), obs)
@@ -693,6 +714,8 @@ def run(dsns, evidence, aster_mysql=None):
                         if index:
                             result_scenarios += 1
                             expected = [b'17', b'2', None] if case == 'abs' else [b'-17', b'2', None] if case == 'round' else [b'bcd', b'', None]
+                            if null_first:
+                                expected = expected[-1:] + expected[:-1]
                             check(obs['rows'] == ([] if empty else [[None if expected[index-1] is None else expected[index-1].hex()]]),
                                   f'{side}/{scenario}/{index}: MySQL prepared value/NULL/zero rows')
                 interleave('mysql-' + scenario)

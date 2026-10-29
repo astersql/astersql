@@ -59,6 +59,8 @@ pub struct BuildOptions<'a> {
     pub AllowCastArray: bool,
     pub TargetFieldType: Option<&'a types::FieldType>,
     pub UseNewCollate: bool,
+    /// Prepare has unresolved parameter values; defer constant evaluation.
+    pub DeferConstantFolding: bool,
 }
 
 impl Default for BuildOptions<'_> {
@@ -71,6 +73,7 @@ impl Default for BuildOptions<'_> {
             AllowCastArray: false,
             TargetFieldType: None,
             UseNewCollate: false,
+            DeferConstantFolding: false,
         }
     }
 }

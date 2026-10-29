@@ -79,6 +79,8 @@ mod recovery;
 mod relational_scan;
 pub use paging::SetResourceGroupRuntimeStates;
 pub(crate) use relational_scan::scan_mlog_record_commit_ts;
+pub(crate) mod function_diagnostics;
+pub use function_diagnostics::PgFunctionError;
 mod pg_array;
 #[cfg(test)]
 mod pg_array_test;

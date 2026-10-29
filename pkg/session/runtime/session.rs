@@ -297,6 +297,7 @@ pub(super) struct SessionState {
     pub(super) pg_statement_time: f64,
     pub(super) pg_transaction_time: Option<f64>,
     pub(super) pg_bound_date_constants: HashMap<usize, String>,
+    pub(super) mysql_bound_parameters: Option<Vec<astersql_types::datum::Datum>>,
     pub(super) pg_bound_float4_constants: HashMap<usize, ast::ExprNode>,
     pub(super) max_connections: u64,
     pub(super) tx_read_only: bool,
@@ -387,6 +388,7 @@ pub(super) struct SessionState {
 /// Identity and cache state of one connection-owned protocol statement.
 #[derive(Clone)]
 pub(super) struct ProtocolPreparedState {
+    pub(super) mysql_execution_fields: Option<Vec<ConcreteResultField>>,
     pub(super) pg_date_constants: HashMap<usize, String>,
     pub(super) has_pg_constructors: bool,
     pub(super) constructor_parameter_oids: Vec<u32>,
@@ -551,6 +553,7 @@ impl Default for SessionState {
             pg_statement_time: 0.0,
             pg_transaction_time: None,
             pg_bound_date_constants: HashMap::new(),
+            mysql_bound_parameters: None,
             pg_bound_float4_constants: HashMap::new(),
             max_connections: 0,
             tx_read_only: false,
@@ -2049,7 +2052,8 @@ pub fn SplitSQLStatementsWithDialect(
         // parse failures and multi-statement rejection at this boundary.
         if dialect != ast::SqlDialect::MySQL
             || statements.len() != 1
-            || SessionWarning::from_error(&error.clone().into_shared()).code != 1582
+            || (SessionWarning::from_error(&error.clone().into_shared()).code != 1582
+                && error.mysql_hidden_function().is_none())
         {
             return Err(error);
         }

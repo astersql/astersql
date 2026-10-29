@@ -6,6 +6,8 @@ use std::fmt;
 pub enum PgTemporalError {
     #[error("invalid date input syntax")]
     Syntax,
+    #[error("timestamp truncation unit not recognized")]
+    TruncationUnit,
     #[error("invalid interval type modifier")]
     IntervalModifier,
     #[error("interval field overflow")]
@@ -31,7 +33,7 @@ impl PgTemporalError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::Syntax => "22007",
-            Self::IntervalModifier => "22023",
+            Self::IntervalModifier | Self::TruncationUnit => "22023",
             Self::Range => "22008",
             Self::IntervalOverflow => "22015",
             Self::ZoneRange => "22009",
@@ -553,6 +555,67 @@ impl PgTimestamp {
     pub fn micros(self) -> i64 {
         self.0
     }
+    /// PostgreSQL timestamp_trunc: calendar truncation uses the existing
+    /// proleptic Gregorian date kernel; sub-day units floor before the epoch.
+    /// Infinity is preserved only after the unit has been validated.
+    pub fn truncate(self, unit: &str) -> Result<Self, PgTemporalError> {
+        let unit = unit.to_ascii_lowercase();
+        let quantum = match unit.as_str() {
+            "microsecond" | "microseconds" | "usec" | "usecs" => Some(1),
+            "millisecond" | "milliseconds" | "msec" | "msecs" => Some(1_000),
+            "second" | "seconds" | "sec" | "secs" => Some(1_000_000),
+            "minute" | "minutes" | "min" | "mins" => Some(60_000_000),
+            "hour" | "hours" | "hr" | "hrs" => Some(3_600_000_000),
+            "day" | "days" => Some(PgTime::END_OF_DAY),
+            "week" | "weeks" | "month" | "months" | "quarter" | "year" | "years" | "decade"
+            | "decades" | "century" | "centuries" | "millennium" | "millennia" | "millenniums" => {
+                None
+            }
+            "dow" | "doy" | "isodow" | "isoyear" | "timezone" | "timezone_hour"
+            | "timezone_minute" | "julian" => return Err(PgTemporalError::Unsupported),
+            "epoch" => return Err(PgTemporalError::TruncationUnit),
+            _ => return Err(PgTemporalError::TruncationUnit),
+        };
+        if self.0 == i64::MIN || self.0 == i64::MAX {
+            return Ok(self);
+        }
+        if let Some(quantum) = quantum {
+            return Self::from_micros(self.0.div_euclid(quantum) * quantum);
+        }
+        let days = self.0.div_euclid(PgTime::END_OF_DAY);
+        if matches!(unit.as_str(), "week" | "weeks") {
+            return Self::from_micros((days - (days + 5).rem_euclid(7)) * PgTime::END_OF_DAY);
+        }
+        let (mut year, mut month, _) = PgDate(days as i32).ymd();
+        match unit.as_str() {
+            "millennium" | "millennia" | "millenniums" => {
+                year = (year - 1).div_euclid(1000) * 1000 + 1;
+                month = 1;
+            }
+            "century" | "centuries" => {
+                year = (year - 1).div_euclid(100) * 100 + 1;
+                month = 1;
+            }
+            "decade" | "decades" => {
+                year = year.div_euclid(10) * 10;
+                month = 1;
+            }
+            "year" | "years" => month = 1,
+            "quarter" => month = (month - 1) / 3 * 3 + 1,
+            _ => {}
+        }
+        let date = PgDate::from_ymd(
+            if year <= 0 {
+                (year - 1) as i32
+            } else {
+                year as i32
+            },
+            month as u32,
+            1,
+        )?;
+        Self::from_micros(i64::from(date.0) * PgTime::END_OF_DAY)
+    }
+
     pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
         if bytes.len() < 8 {
             return Err(PgTemporalError::Truncated);

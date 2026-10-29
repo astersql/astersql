@@ -2304,7 +2304,9 @@ impl ConcreteSession {
                         }
                     }
                     Some(hasher.finalize().to_string())
-                } else if self.is_mysql_conditional_projection(expression, &conditional_sources) {
+                } else if self.is_mysql_function_projection(expression, &conditional_sources)
+                    || self.is_mysql_conditional_projection(expression, &conditional_sources)
+                {
                     self.mysql_conditional_projection_value(
                         expression,
                         &representative,

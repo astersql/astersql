@@ -344,7 +344,7 @@ pub fn buildSimpleExpr<'a>(
         allowBuildCastArray: options.AllowCastArray,
         asScalar: true,
         preprocess: None,
-        disableFoldCounter: 0,
+        disableFoldCounter: isize::from(options.DeferConstantFolding),
         tryFoldCounter: 0,
         nextParamOrder: 0,
         astNodeStack: Vec::new(),

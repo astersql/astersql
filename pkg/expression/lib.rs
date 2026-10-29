@@ -140,11 +140,28 @@ pub mod types {
 
     /// 由 Datum kind 推断并写回 FieldType（含无符号标志）。
     pub fn InferParamTypeFromDatum(datum: &Datum, field_type: &mut FieldType) {
+        // Reuse the Go-aligned metadata kernel for primitive parameters. Its
+        // standalone Datum is a different Rust carrier, so bridge values rather
+        // than treating that carrier as the expression runtime's Datum.
+        macro_rules! infer {
+            ($value:expr) => {{
+                let value = $value;
+                types_dependency::field::InferParamTypeFromUnderlyingValue(
+                    Some(&value),
+                    field_type,
+                );
+            }};
+        }
         match datum.Kind() {
-            KindNull => field_type.SetType(crate::mysql::TypeNull),
-            KindInt64 | KindUint64 => field_type.SetType(crate::mysql::TypeLonglong),
-            KindFloat32 => field_type.SetType(crate::mysql::TypeFloat),
-            KindFloat64 => field_type.SetType(crate::mysql::TypeDouble),
+            KindNull => {
+                types_dependency::field::InferParamTypeFromUnderlyingValue(None, field_type)
+            }
+            KindInt64 => infer!(datum.GetInt64()),
+            KindUint64 => infer!(datum.GetUint64()),
+            KindFloat32 => infer!(datum.GetFloat32()),
+            KindFloat64 => infer!(datum.GetFloat64()),
+            KindString => infer!(datum.GetString()),
+            KindBytes => infer!(datum.GetBytes().to_vec()),
             KindMysqlDecimal => field_type.SetType(crate::mysql::TypeNewDecimal),
             KindMysqlDuration => field_type.SetType(crate::mysql::TypeDuration),
             KindMysqlTime => field_type.SetType(datum.GetMysqlTime().Type()),
@@ -152,8 +169,11 @@ pub mod types {
             KindVectorFloat32 => field_type.SetType(crate::mysql::TypeTiDBVectorFloat32),
             _ => field_type.SetType(crate::mysql::TypeVarString),
         }
-        if datum.Kind() == KindUint64 {
-            field_type.AddFlag(crate::mysql::UnsignedFlag);
+        if matches!(datum.Kind(), KindString | KindBytes) {
+            if let Ok(collation) = crate::collate::GetCollationByName(&datum.Collation()) {
+                field_type.SetCharset(collation.CharsetName);
+                field_type.SetCollate(datum.Collation());
+            }
         }
     }
 }

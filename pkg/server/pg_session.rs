@@ -23,6 +23,7 @@ pub(crate) struct PgSession {
     // Original relation cursor from name adaptation, consumed by this request's
     // Q/Parse error response and reset before the next frontend command.
     pub(crate) relation_error_position: Option<usize>,
+    pub(crate) function_error_hint: Option<&'static str>,
 }
 impl Default for PgSession {
     fn default() -> Self {
@@ -30,6 +31,7 @@ impl Default for PgSession {
             path: vec!["public".into()],
             failed_transaction: false,
             relation_error_position: None,
+            function_error_hint: None,
         }
     }
 }

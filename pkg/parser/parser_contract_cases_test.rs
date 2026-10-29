@@ -16,3 +16,24 @@ fn go_contract_tables_are_not_reduced_to_smoke_cases() {
         ]
     );
 }
+
+#[test]
+fn pg_function_23_function_source_spans() {
+    for (sql, start) in [
+        ("SELECT abs(1)", 7),
+        ("SELECT 'é', abs(1)", 13),
+        ("SELECT pg_catalog.abs(1)", 7),
+    ] {
+        let node = crate::Parser::default().ParseOneStmt(sql, "", "").unwrap();
+        let select = node
+            .as_any()
+            .downcast_ref::<crate::ast::SelectStmt>()
+            .unwrap();
+        let function = select.Fields.Fields.last().unwrap().Expr.as_ref().unwrap();
+        assert_eq!(function.OriginTextPosition, start);
+        assert!(matches!(
+            function.Kind,
+            crate::ast::ExprKind::Function { .. }
+        ));
+    }
+}

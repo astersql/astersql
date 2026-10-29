@@ -1252,3 +1252,53 @@ fn pg05_array_interval_scalar_style_signed_zero_groups() {
         assert_eq!(PgInterval::parse_with_style(&text, style).unwrap(), value);
     }
 }
+
+#[test]
+fn pg_function_23_timestamp_truncation() {
+    use super::pg_temporal::PgTimestamp;
+    for (unit, input, expected) in [
+        ("day", "2026-10-29 12:34:56", "2026-10-29 00:00:00"),
+        ("week", "2021-01-01 12:00:00", "2020-12-28 00:00:00"),
+        (
+            "second",
+            "1999-12-31 23:59:59.999999",
+            "1999-12-31 23:59:59",
+        ),
+        (
+            "milliseconds",
+            "1999-12-31 23:59:59.999999",
+            "1999-12-31 23:59:59.999",
+        ),
+        ("month", "2024-02-29 23:59:59", "2024-02-01 00:00:00"),
+        ("quarter", "2026-10-29 12:34:56", "2026-10-01 00:00:00"),
+        ("century", "2000-01-01 12:00:00", "1901-01-01 00:00:00"),
+        ("millennium", "2001-01-01 12:00:00", "2001-01-01 00:00:00"),
+        ("year", "0001-12-31 12:34:56 BC", "0001-01-01 00:00:00 BC"),
+        (
+            "century",
+            "0001-12-31 12:34:56 BC",
+            "0100-01-01 00:00:00 BC",
+        ),
+        ("DAY", "infinity", "infinity"),
+        ("day", "-infinity", "-infinity"),
+    ] {
+        assert_eq!(
+            input
+                .parse::<PgTimestamp>()
+                .unwrap()
+                .truncate(unit)
+                .unwrap()
+                .to_string(),
+            expected
+        );
+    }
+    let infinite = "infinity".parse::<PgTimestamp>().unwrap();
+    assert_eq!(
+        infinite.truncate("nonsense"),
+        Err(PgTemporalError::TruncationUnit)
+    );
+    assert_eq!(
+        infinite.truncate("epoch"),
+        Err(PgTemporalError::TruncationUnit)
+    );
+}

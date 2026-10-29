@@ -4092,7 +4092,7 @@ impl ConcreteSession {
         }
         drop(state);
         let mut statements = parse_with_dialect(&normalized_sql, sql_mode, self.sql_dialect())
-            .inspect_err(|error| self.record_mysql_function_arity_error(error))?;
+            .map_err(|error| self.normalize_mysql_function_parse_error(error))?;
         self.apply_pg_date_constants(&mut statements);
         self.apply_pg_float4_constants(&mut statements);
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {

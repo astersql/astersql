@@ -1816,8 +1816,15 @@ impl ConcreteSession {
         supplied: &[u32],
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
         self.begin_pg_date_statement();
-        let statements = parse_in_dialect(sql, self.sql_dialect())
-            .inspect_err(|error| self.record_mysql_function_arity_error(error))?;
+        let statements = parse_in_dialect(sql, self.sql_dialect()).map_err(|error| {
+            let error = self.normalize_mysql_function_parse_error(error);
+            if self.sql_dialect() == ast::SqlDialect::MySQL {
+                let mut state = self.state.borrow_mut();
+                state.current_warnings.clear();
+                state.last_warnings.clear();
+            }
+            error
+        })?;
         let pg_date_constants = self.prepare_pg_date_constants(&statements)?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
@@ -2088,6 +2095,7 @@ impl ConcreteSession {
         state.protocol_prepared_planned.insert(
             statement_id,
             super::session::ProtocolPreparedState {
+                mysql_execution_fields: None,
                 pg_date_constants,
                 dialect: self.sql_dialect(),
                 planned: false,
@@ -2203,9 +2211,98 @@ impl ConcreteSession {
             .ok_or_else(|| {
                 SessionError::new(format!("unknown prepared statement {statement_id}"))
             })?;
+        // Infer function fields from the original parameter AST and actual
+        // protocol values, as Go toParamMarker does. SQL literal substitution
+        // loses the unspecified string width and parameter nullability.
+        let mut dual_cache_rejection = None;
+        let mut mysql_function_fields = None;
+        if dialect == ast::SqlDialect::MySQL {
+            let statements = parse_in_dialect(&sql, dialect)?;
+            if let Some(select) = statements
+                .first()
+                .and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
+            {
+                let affected = select.Fields.Fields.iter().map(|field| field.Expr.as_ref().is_some_and(|expr| {
+                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring"))
+                })).collect::<Vec<_>>();
+                if affected.iter().any(|v| *v) {
+                    let parameters = arguments
+                        .iter()
+                        .map(|argument| {
+                            use astersql_types::datum::*;
+                            Ok(match argument {
+                                ConcretePreparedArgument::Null => Datum::default(),
+                                ConcretePreparedArgument::Signed(value) => NewIntDatum(*value),
+                                ConcretePreparedArgument::Unsigned(value) => NewUintDatum(*value),
+                                ConcretePreparedArgument::Float(value) => NewFloat64Datum(*value),
+                                ConcretePreparedArgument::Text(value)
+                                | ConcretePreparedArgument::Temporal(value) => {
+                                    NewStringDatum(value.clone())
+                                }
+                                ConcretePreparedArgument::Bytes(value) => {
+                                    NewBytesDatum(value.clone())
+                                }
+                                ConcretePreparedArgument::Decimal(value) => {
+                                    let mut decimal =
+                                        astersql_expression::types::MyDecimal::default();
+                                    decimal.FromString(value.as_bytes()).map_err(|error| {
+                                        session_error("read MySQL decimal parameter", error)
+                                    })?;
+                                    NewDecimalDatum(decimal)
+                                }
+                                _ => {
+                                    return Err(SessionError::new(
+                                        "PostgreSQL parameter on MySQL connection",
+                                    ));
+                                }
+                            })
+                        })
+                        .collect::<SessionResult<Vec<_>>>()?;
+                    let previous = self
+                        .state
+                        .borrow_mut()
+                        .mysql_bound_parameters
+                        .replace(parameters);
+                    let fields = self.describe_result_fields(&sql);
+                    self.state.borrow_mut().mysql_bound_parameters = previous;
+                    let mut fields = fields?;
+                    let prior = self
+                        .state
+                        .borrow()
+                        .protocol_prepared_planned
+                        .get(&statement_id)
+                        .and_then(|s| s.mysql_execution_fields.clone());
+                    // Go resultset.Columns caches the first Execute column
+                    // description on PlanCacheStmt, independently of whether
+                    // the physical plan itself is cacheable.
+                    if let Some(prior) = prior {
+                        fields = prior;
+                    }
+                    mysql_function_fields = Some((fields, affected));
+                    if select.From.is_none()
+                        && !arguments.is_empty()
+                        && self.state.borrow().prepared_plan_cache
+                    {
+                        let plan = astersql_planner_core::PlanNode::New(
+                            0,
+                            astersql_planner_core::PlanKind::Dual,
+                            Vec::new(),
+                        );
+                        let (cacheable, reason) = astersql_planner_core::isPlanCacheable(
+                            &plan,
+                            arguments.len(),
+                            i64::MAX,
+                        );
+                        if !cacheable {
+                            dual_cache_rejection = Some(reason);
+                        }
+                    }
+                }
+            }
+        }
         // These MySQL function projections have one prepared result identity.
         // Binding literals must not replace it with folded or fallback metadata.
-        let mysql_function_fields = if dialect == ast::SqlDialect::MySQL {
+        let legacy_mysql_function_fields = if dialect == ast::SqlDialect::MySQL {
             let statements = parse_in_dialect(&sql, dialect)?;
             if let Some(select) = statements
                 .first()
@@ -2225,7 +2322,7 @@ impl ConcreteSession {
                         field
                             .Expr
                             .as_ref()
-                            .is_some_and(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_conditional_projection(expr, &conditional_sources) || matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
+                            .is_some_and(|expr| self.is_mysql_conditional_projection(expr, &conditional_sources) || matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     })
                     .collect::<Vec<_>>();
                 if affected.iter().any(|affected| *affected) {
@@ -2239,6 +2336,7 @@ impl ConcreteSession {
         } else {
             None
         };
+        let mysql_function_fields = mysql_function_fields.or(legacy_mysql_function_fields);
         let has_pg_constructors = self
             .state
             .borrow()
@@ -2507,12 +2605,19 @@ impl ConcreteSession {
         state.pg_bound_date_constants = previous_constants;
         state.pg_bound_float4_constants = previous_float4;
         state.observation_sql_override = None;
-        state.last_plan_from_cache = from_plan_cache;
+        state.last_plan_from_cache = from_plan_cache && dual_cache_rejection.is_none();
+        if execution.is_ok()
+            && let Some(reason) = &dual_cache_rejection
+        {
+            let warning = SessionWarning::warning(format!("skip prepared plan-cache: {reason}"));
+            state.last_warnings.push(warning.clone());
+            state.current_warnings.push(warning);
+        }
         let prepared_plan_cache = state.prepared_plan_cache;
         if execution.is_ok()
             && let Some(planned) = state.protocol_prepared_planned.get_mut(&statement_id)
         {
-            planned.planned = prepared_plan_cache;
+            planned.planned = prepared_plan_cache && dual_cache_rejection.is_none();
         }
         drop(state);
         execution.and_then(|mut records| {
@@ -2524,6 +2629,16 @@ impl ConcreteSession {
                     return Err(SessionError::new(
                         "prepared MySQL function result field count mismatch",
                     ));
+                }
+                if let Some(prepared) = self
+                    .state
+                    .borrow_mut()
+                    .protocol_prepared_planned
+                    .get_mut(&statement_id)
+                {
+                    prepared
+                        .mysql_execution_fields
+                        .get_or_insert_with(|| fields.clone());
                 }
                 for ((actual, field), affected) in records[0]
                     .result_fields

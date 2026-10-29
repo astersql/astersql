@@ -104,6 +104,12 @@ pub mod errors {
     }
 
     impl Error {
+        /// Recover the original typed cause at a protocol/session boundary.
+        pub fn into_shared(self) -> contextutil::errors::SharedError {
+            self.cause
+                .unwrap_or_else(|| contextutil::errors::New(self.message))
+        }
+
         /// Preserve TiDB's typed error identity across Datum conversion so
         /// callers such as ranger can apply the same tolerated-error branches
         /// as Go instead of matching rendered messages.

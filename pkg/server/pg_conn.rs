@@ -401,6 +401,7 @@ impl PgService {
                 }
                 if tag == b'Q' {
                     extended.session.relation_error_position = None;
+                    extended.session.function_error_hint = None;
                     extended.reset_unnamed(&context);
                     let sql = body
                         .strip_suffix(&[0])
@@ -437,7 +438,19 @@ impl PgService {
                                 )?,
                                 Err(error) => {
                                     extended.session.record_error(context.as_ref());
-                                    if let crate::conn::ConnError::PgArray(array) = &error {
+                                    if let crate::conn::ConnError::PgFunction(function) = &error {
+                                        let position = function.position.and_then(|offset| {
+                                            sql.get(..offset)
+                                                .map(|prefix| prefix.chars().count() + 1)
+                                        });
+                                        write_function_error(
+                                            socket,
+                                            function.state,
+                                            &function.message,
+                                            position,
+                                            function.hint,
+                                        )?;
+                                    } else if let crate::conn::ConnError::PgArray(array) = &error {
                                         let position = array.position.and_then(|offset| {
                                             sql.get(..offset)
                                                 .map(|prefix| prefix.chars().count() + 1)
@@ -582,7 +595,24 @@ impl PgService {
                                     }
                                     Err(error) => {
                                         extended.session.record_error(context.as_ref());
-                                        if matches!(&error, crate::conn::ConnError::PgArray(_)) {
+                                        if let crate::conn::ConnError::PgFunction(function) = &error
+                                        {
+                                            let position = function.position.and_then(|offset| {
+                                                original_sql
+                                                    .get(..offset)
+                                                    .map(|prefix| prefix.chars().count() + 1)
+                                            });
+                                            write_function_error(
+                                                socket,
+                                                function.state,
+                                                &function.message,
+                                                position,
+                                                function.hint,
+                                            )?;
+                                        } else if matches!(
+                                            &error,
+                                            crate::conn::ConnError::PgArray(_)
+                                        ) {
                                             let position = match &error {
                                                 crate::conn::ConnError::PgArray(array) => {
                                                     array.position.and_then(|offset| {
@@ -614,13 +644,23 @@ impl PgService {
                             }
                             Err((state, message)) => {
                                 extended.session.record_error(context.as_ref());
-                                write_sql_error(
-                                    socket,
-                                    state,
-                                    &message,
-                                    sql,
-                                    extended.session.relation_error_position,
-                                )?
+                                if let Some(hint) = extended.session.function_error_hint {
+                                    write_function_error(
+                                        socket,
+                                        state,
+                                        &message,
+                                        extended.session.relation_error_position,
+                                        Some(hint),
+                                    )?;
+                                } else {
+                                    write_sql_error(
+                                        socket,
+                                        state,
+                                        &message,
+                                        sql,
+                                        extended.session.relation_error_position,
+                                    )?;
+                                }
                             }
                         }
                     } else {
@@ -844,6 +884,26 @@ fn write_error_position(
     message: &str,
     position: Option<usize>,
 ) -> io::Result<()> {
+    write_function_error_with_severity(socket, severity, state, message, position, None)
+}
+
+pub(crate) fn write_function_error(
+    socket: &mut TcpStream,
+    state: &str,
+    message: &str,
+    position: Option<usize>,
+    hint: Option<&str>,
+) -> io::Result<()> {
+    write_function_error_with_severity(socket, "ERROR", state, message, position, hint)
+}
+fn write_function_error_with_severity(
+    socket: &mut TcpStream,
+    severity: &str,
+    state: &str,
+    message: &str,
+    position: Option<usize>,
+    hint: Option<&str>,
+) -> io::Result<()> {
     let mut body = Vec::new();
     for (tag, text) in [
         (b'S', severity),
@@ -853,6 +913,11 @@ fn write_error_position(
     ] {
         body.push(tag);
         body.extend(text.bytes().filter(|b| *b != 0));
+        body.push(0);
+    }
+    if let Some(hint) = hint {
+        body.push(b'H');
+        body.extend(hint.bytes().filter(|b| *b != 0));
         body.push(0);
     }
     if let Some(position) = position {
@@ -879,6 +944,7 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
         ConnError::PgFloat8(error) => error.sqlstate(),
         ConnError::PgText(error) => error.sqlstate(),
         ConnError::PgArray(error) => error.state,
+        ConnError::PgFunction(error) => error.state,
         ConnError::AccessDenied { .. } => "28000",
         ConnError::UnsupportedCommand(_) => "0A000",
         ConnError::ServerShutdown => "57P01",

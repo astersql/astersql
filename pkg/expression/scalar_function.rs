@@ -619,6 +619,15 @@ pub fn typeInferForNull(ctx: &dyn EvalContext, args: &mut [Box<dyn Expression>])
     }
     let ret_type = ret_type.unwrap();
     for arg in args.iter_mut().filter(|arg| is_null(arg.as_ref())) {
+        // Go Constant.GetType re-infers a ParamMarker from its current Datum,
+        // so assigning RetType cannot change its dynamic NULL identity. This
+        // trait returns a borrowed FieldType; preserve that identity explicitly.
+        if arg
+            .as_constant()
+            .is_some_and(|constant| constant.ParamMarker.is_some())
+        {
+            continue;
+        }
         let mut new_arg = arg.CloneExpr();
         *new_arg.GetTypeMut() = ret_type.clone();
         new_arg.GetTypeMut().DelFlag(mysql::NotNullFlag);

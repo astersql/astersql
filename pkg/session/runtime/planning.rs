@@ -2844,7 +2844,7 @@ impl ConcreteSession {
                     Schema,
                     Args,
                 } = &input.Kind
-                    && matches!(FnName.L.as_str(), "substr" | "substring")
+                    && matches!(FnName.L.as_str(), "substr" | "substring" | "date_trunc")
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     && (2..=3).contains(&Args.len())
                 {
@@ -2854,7 +2854,16 @@ impl ConcreteSession {
                             source = inner;
                         }
                         if let ast::ExprKind::ParamMarker { Offset } = source.Kind {
-                            self.0.push((Offset, if position == 0 { 25 } else { 23 }));
+                            self.0.push((
+                                Offset,
+                                if position == 0 {
+                                    25
+                                } else if FnName.L == "date_trunc" {
+                                    1114
+                                } else {
+                                    23
+                                },
+                            ));
                         }
                     }
                 }
@@ -3220,7 +3229,7 @@ pub(super) fn validate_function_visibility(
                 if self.dialect == ast::SqlDialect::MySQL
                     && matches!(
                         FnName.L.as_str(),
-                        "ifnull" | "date_format" | "json_extract" | "tidb_version"
+                        "abs" | "ifnull" | "date_format" | "json_extract" | "tidb_version"
                     )
                     && astersql_expression::formal_registry::funcs
                         .get(&FnName.L)
@@ -3298,7 +3307,11 @@ pub(super) fn validate_function_visibility(
                 }),
             ));
         }
-        return Err(SessionError::new(message));
+        let error = super::function_diagnostics::MysqlHiddenFunction(name);
+        return Err(SessionError::with_source(
+            message,
+            astersql_errors::SharedError::new(error),
+        ));
     }
     Ok(())
 }
@@ -3307,12 +3320,12 @@ impl ConcreteSession {
     /// These native functions reject arity during parsing, before the normal
     /// statement diagnostic lifecycle. Retain their actual normalized error for
     /// SHOW WARNINGS, as Go ParseSQL/ExecuteStmt do with StmtCtx.AppendError.
-    pub(super) fn record_mysql_function_arity_error(&self, error: &SessionError) {
+    pub(super) fn record_mysql_function_parse_error(&self, error: &SessionError) {
         if self.sql_dialect() != ast::SqlDialect::MySQL {
             return;
         }
         let warning = SessionWarning::from_error(&error.clone().into_shared());
-        if warning.code != 1582 {
+        if !matches!(warning.code, 1582 | 1305) {
             return;
         }
         let mut state = self.state.borrow_mut();

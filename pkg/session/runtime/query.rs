@@ -1297,6 +1297,62 @@ impl ConcreteSession {
                 })
                 .transpose();
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+            && FnName.L == "date_trunc"
+            && Args.len() == 2
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+        {
+            use astersql_expression::BuildContext;
+            let values = Args
+                .iter()
+                .map(|arg| self.relational_query_expression_value(arg, row, group_rows))
+                .collect::<SessionResult<Vec<_>>>()?;
+            let mut args: Vec<Box<dyn astersql_expression::Expression>> = Vec::new();
+            for (index, value) in values.into_iter().enumerate() {
+                let mut argument = match value {
+                    Some(value) => astersql_expression::NewStrConst(&value),
+                    None => astersql_expression::NewNull(),
+                };
+                argument.RetType = Some(astersql_parser_types::NewFieldType(if index == 0 {
+                    astersql_parser_mysql::r#type::TypeVarString
+                } else {
+                    astersql_parser_mysql::r#type::TypeDatetime
+                }));
+                args.push(Box::new(argument));
+            }
+            let eval = astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
+            ]);
+            let context = astersql_expression_exprstatic::NewExprContext(vec![
+                astersql_expression_exprstatic::WithEvalCtx(Arc::new(eval)),
+            ]);
+            let built = astersql_expression::NewFunctionBase(
+                &context,
+                "date_trunc",
+                *astersql_expression::types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDatetime,
+                ),
+                args,
+            )
+            .map_err(|error| session_error("build timestamp truncation", error))?;
+            let (value, null) = built
+                .EvalString(
+                    context.GetEvalCtx(),
+                    astersql_expression::chunk::Row::default(),
+                )
+                .map_err(|error| {
+                    SessionError::with_source(
+                        format!("evaluate timestamp truncation: {error}"),
+                        error.into_shared(),
+                    )
+                })?;
+            return Ok((!null).then_some(value));
+        }
         // One fixed numeric signature provides a bounded implicit-cast context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -2655,7 +2711,7 @@ impl ConcreteSession {
             // this existing SELECT filter so WHERE false suppresses their rows.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || (select.Where.is_some() && ["concat", "greatest", "least"].iter().any(|name| expression_contains_function(expr, name))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+                    .any(|expr| self.is_mysql_function_projection(expr, &[]) || self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || (select.Where.is_some() && ["concat", "greatest", "least"].iter().any(|name| expression_contains_function(expr, name))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From
@@ -3237,20 +3293,48 @@ impl ConcreteSession {
                                 &FnName.L, &types,
                             )
                     {
-                        self.scalar_cast_error = Some(SessionError::with_source(
-                            format!(
-                                "function {} does not exist for these argument types",
-                                FnName.L
-                            ),
-                            astersql_errors::SharedError::new(super::pg_array::PgArrayError {
-                                state,
-                                message: format!(
+                        self.scalar_cast_error = Some(if state == "42883" {
+                            super::function_diagnostics::no_matching_function(input, &types)
+                        } else {
+                            SessionError::with_source(
+                                format!(
                                     "function {} does not exist for these argument types",
                                     FnName.L
                                 ),
-                                position: None,
-                            }),
-                        ));
+                                astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                                    state,
+                                    message: format!(
+                                        "function {} does not exist for these argument types",
+                                        FnName.L
+                                    ),
+                                    position: None,
+                                }),
+                            )
+                        });
+                    }
+                }
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Schema,
+                    Args,
+                } = &input.Kind
+                    && FnName.L == "date_trunc"
+                    && Args.len() == 2
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                {
+                    let types = Args
+                        .iter()
+                        .map(|arg| self.session.pg_case_input_type(arg, self.sources).GetType())
+                        .collect::<Vec<_>>();
+                    if astersql_expression::formal_registry::resolve_pg_signature(
+                        "date_trunc",
+                        &types,
+                    )
+                    .is_err()
+                    {
+                        self.scalar_cast_error = Some(
+                            super::function_diagnostics::no_matching_function(input, &types),
+                        );
                     }
                 }
                 // String literals and bare NULL keep unknown provenance, while
@@ -3906,6 +3990,39 @@ impl ConcreteSession {
     /// Only the existing signed ABS signature opts into formal MySQL projection
     /// fields and the relational SELECT filter. Other ABS families remain outside
     /// this runtime contract.
+    pub(super) fn is_mysql_function_projection(
+        &self,
+        expression: &ast::ExprNode,
+        sources: &[ConcreteResultField],
+    ) -> bool {
+        if self.sql_dialect() != ast::SqlDialect::MySQL {
+            return false;
+        }
+        let ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } = &expression.Kind
+        else {
+            return false;
+        };
+        !self.is_mysql_signed_abs(expression, sources)
+            && Schema.L.is_empty()
+            && match FnName.L.as_str() {
+                "abs" => Args.len() == 1,
+                "round" => (1..=2).contains(&Args.len()),
+                "substr" | "substring" => (2..=3).contains(&Args.len()),
+                _ => false,
+            }
+            && !relational_expression_has_aggregate(expression)
+            && !relational_expression_has_subquery(expression)
+            && sources.first().is_none_or(|first| {
+                sources
+                    .iter()
+                    .all(|source| source.table_as_name == first.table_as_name)
+            })
+    }
+
     pub(super) fn is_mysql_signed_abs(
         &self,
         expression: &ast::ExprNode,
@@ -4164,21 +4281,37 @@ impl ConcreteSession {
         }
         let mut parameters = Parameters(0);
         let _ = expression.Accept(&mut parameters);
-        let parameters = vec![astersql_types::datum::Datum::default(); parameters.0];
-        let context = plan_context_with_params(
-            Arc::clone(&self.session_vars),
-            &parameters,
-            !parameters.is_empty(),
-            self.sql_dialect(),
-        );
-        let context = astersql_planner_core_base::PlanContext::GetExprCtx(context.as_ref());
+        let unresolved_parameters =
+            parameters.0 > 0 && self.state.borrow().mysql_bound_parameters.is_none();
+        let parameters = self
+            .state
+            .borrow()
+            .mysql_bound_parameters
+            .clone()
+            .unwrap_or_else(|| vec![astersql_types::datum::Datum::default(); parameters.0]);
+        use astersql_expression::BuildContext;
+        let eval = astersql_expression_exprstatic::NewEvalContext(vec![
+            astersql_expression_exprstatic::WithParamList(parameters),
+            astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
+        ]);
+        let context = astersql_expression_exprstatic::NewExprContext(vec![
+            astersql_expression_exprstatic::WithEvalCtx(Arc::new(eval)),
+        ]);
+        if unresolved_parameters {
+            // This private metadata context describes Prepare, before any
+            // parameter is bound. Defer folding without a dynamic marker.
+            let tracker = context.GetPlanCacheTracker();
+            let (_, kind, reason, force, warn) = tracker.Save();
+            tracker.Restore(false, kind, reason, force, warn);
+        }
+
         astersql_planner_core::PlannerBuildSimpleExpr(
-            context,
+            &context,
             expression,
-            vec![astersql_expression::WithTableInfo(
-                &self.current_database(),
-                &table,
-            )],
+            vec![
+                astersql_expression::WithTableInfo(&self.current_database(), &table),
+                Box::new(move |options| options.DeferConstantFolding = unresolved_parameters),
+            ],
         )
         .map(|built| built.GetType(context.GetEvalCtx()).clone())
         .map_err(|error| session_error("resolve MySQL function result type", error))
@@ -4190,6 +4323,12 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if matches!(&expression.Kind, ast::ExprKind::Function { FnName, Schema, Args } if FnName.L == "date_trunc" && Args.len() == 2 && (Schema.L.is_empty() || Schema.L=="pg_catalog"))
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDatetime,
+                );
+            }
             if let ast::ExprKind::Function {
                 FnName,
                 Schema,
@@ -4975,7 +5114,9 @@ impl ConcreteSession {
                     result_field.column_as_name = ast::NewCIStr(&output);
                     result.push(result_field);
                 } else {
-                    let field_type = if self.is_mysql_signed_abs(expression, &source_fields)
+                    let field_type = if self
+                        .is_mysql_function_projection(expression, &source_fields)
+                        || self.is_mysql_signed_abs(expression, &source_fields)
                         || self.is_mysql_conditional_projection(expression, &source_fields)
                         || (self.sql_dialect() == ast::SqlDialect::MySQL
                             && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))

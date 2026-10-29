@@ -41,6 +41,9 @@ pub enum GeneratedThreadSafetyPolicy {
 pub fn GeneratedThreadSafetyPolicyForSignature(
     signature: &str,
 ) -> Option<GeneratedThreadSafetyPolicy> {
+    if signature == "builtinPgTimestampTruncSig" {
+        return Some(GeneratedThreadSafetyPolicy::Never);
+    }
     if IsGeneratedThreadsafeSignature(signature) {
         Some(GeneratedThreadSafetyPolicy::Recursive)
     } else if crate::builtin_threadunsafe_generated_kernel::IsGeneratedThreadunsafeSignature(

@@ -2973,11 +2973,13 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
                 .cloned()
                 .unwrap_or_default();
-            out.expr = Some(parser_ast::ExprNode::Function(
+            let mut function = parser_ast::ExprNode::Function(
                 parser_ast::CIStr::default(),
                 parser_ast::NewCIStr(&rhs[rhs_len - (3)].ident),
                 args,
-            ));
+            );
+            function.OriginTextPosition = rhs[rhs_len - (3)].offset;
+            out.expr = Some(function);
         }
         ExpressionRule::OptGConcatSeparatorAlt01 | ExpressionRule::OptGConcatSeparatorAlt02 => {
             let value = if rule == ExpressionRule::OptGConcatSeparatorAlt01 {
@@ -3004,11 +3006,13 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
                 .cloned()
                 .unwrap_or_default();
-            out.expr = Some(parser_ast::ExprNode::Function(
+            let mut function = parser_ast::ExprNode::Function(
                 parser_ast::NewCIStr(&rhs[rhs_len - (5)].ident),
                 parser_ast::NewCIStr(&rhs[rhs_len - (3)].ident),
                 args,
-            ));
+            );
+            function.OriginTextPosition = rhs[rhs_len - (5)].offset;
+            out.expr = Some(function);
         }
         ExpressionRule::FuncDatetimePrecAlt01 | ExpressionRule::FuncDatetimePrecAlt02 => {
             out.item = None

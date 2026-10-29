@@ -48,7 +48,10 @@ fn builtin_registry_matches_complete_go_function_table() {
     const SQL_OPERATOR_ALIASES: &[&str] = &[
         "=", "!=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/", "%",
     ];
-    assert_eq!(funcs.len(), GO_BUILTIN_COUNT + SQL_OPERATOR_ALIASES.len());
+    assert_eq!(
+        funcs.len(),
+        GO_BUILTIN_COUNT + SQL_OPERATOR_ALIASES.len() + 1 /* PG-only date_trunc */
+    );
     for alias in SQL_OPERATOR_ALIASES {
         assert!(
             IsFunctionSupported(alias),
@@ -1404,5 +1407,152 @@ fn pg_function_27_json_document_factory() {
             crate::mysql::TypeNull
         )))
         .is_ok()
+    );
+}
+
+#[test]
+fn pg_function_23_formal_factories() {
+    use crate::{BuildContext, Expression};
+    let mut null_parameter = *crate::types::NewFieldType(crate::mysql::TypeUnspecified);
+    crate::types::InferParamTypeFromDatum(&crate::types::Datum::default(), &mut null_parameter);
+    assert_eq!(null_parameter.GetType(), crate::mysql::TypeNull);
+    assert_eq!(
+        null_parameter.GetFlen(),
+        0,
+        "Go NULL parameter metadata must retain its field width"
+    );
+    assert_eq!(null_parameter.GetDecimal(), 0);
+    let mut marker =
+        crate::Constant::with_type(crate::types::Datum::default(), null_parameter.clone());
+    marker.ParamMarker = Some(crate::ParamMarker::new(0));
+    let mut arguments: Vec<Box<dyn Expression>> = vec![
+        Box::new(marker),
+        Box::new(crate::Constant::with_type(
+            crate::types::NewIntDatum(3),
+            *crate::types::NewFieldType(crate::mysql::TypeLonglong),
+        )),
+    ];
+    let mysql_eval = exprstatic::NewEvalContext(Vec::new());
+    crate::typeInferForNull(&mysql_eval, &mut arguments);
+    assert_eq!(
+        arguments[0].GetType(&mysql_eval).GetType(),
+        crate::mysql::TypeNull,
+        "Go ParamMarker dynamic type survives NULL peer inference"
+    );
+
+    let eval = exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+        crate::ast::SqlDialect::PostgreSQL,
+    )]);
+    let pg = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(eval))]);
+    for (value, expected) in [
+        (Some("2026-10-29 12:34:56"), Some("2026-10-29 00:00:00")),
+        (Some("infinity"), Some("infinity")),
+        (None, None),
+    ] {
+        let mut timestamp = value.map(crate::NewStrConst).unwrap_or_else(crate::NewNull);
+        timestamp.RetType = Some(*crate::types::NewFieldType(crate::mysql::TypeDatetime));
+        let expression = crate::NewFunctionBase(
+            &pg,
+            "date_trunc",
+            *crate::types::NewFieldType(crate::mysql::TypeDatetime),
+            vec![Box::new(crate::NewStrConst("day")), Box::new(timestamp)],
+        )
+        .unwrap();
+        assert_eq!(
+            expression.GetType(pg.GetEvalCtx()).GetType(),
+            crate::mysql::TypeDatetime
+        );
+        let scalar = expression
+            .as_any()
+            .downcast_ref::<crate::ScalarFunction>()
+            .unwrap();
+        assert!(!scalar.Function.SafeToShareAcrossSession());
+        assert_eq!(
+            scalar.Function.PbCode(),
+            0,
+            "this client evidence grants no pushdown signature"
+        );
+        for expression in [expression.CloneExpr(), expression] {
+            let (actual, null) = expression
+                .EvalString(pg.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap();
+            assert_eq!((!null).then_some(actual.as_str()), expected);
+        }
+    }
+    let mysql = exprstatic::NewExprContext(Vec::new());
+    assert!(!crate::formal_registry::FunctionVisibleInDialect(
+        "date_trunc",
+        crate::ast::SqlDialect::MySQL
+    ));
+    for (value, fraction, expected) in [(-15, -1, -20), (15, -1, 20), (42, 2, 42)] {
+        let expression = crate::NewFunctionBase(
+            &mysql,
+            "round",
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            vec![
+                Box::new(crate::NewInt64Const(value)),
+                Box::new(crate::NewInt64Const(fraction)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            expression
+                .EvalInt(mysql.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap(),
+            (expected, false)
+        );
+        assert_eq!(expression.GetType(mysql.GetEvalCtx()).GetDecimal(), 0);
+    }
+    for (value, expected) in [(2.5_f64, 2.0), (3.5, 4.0), (-2.5, -2.0)] {
+        let input = crate::Constant::with_type(
+            crate::types::NewDatum(&value),
+            *crate::types::NewFieldType(crate::mysql::TypeDouble),
+        );
+        let expression = crate::NewFunctionBase(
+            &mysql,
+            "round",
+            *crate::types::NewFieldType(crate::mysql::TypeDouble),
+            vec![Box::new(input)],
+        )
+        .unwrap();
+        assert_eq!(
+            expression
+                .EvalReal(mysql.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap(),
+            (expected, false)
+        );
+    }
+    let mut value = crate::types::MyDecimal::default();
+    value.FromString(b"12.345").unwrap();
+    let mut tp = *crate::types::NewFieldType(crate::mysql::TypeNewDecimal);
+    tp.SetFlen(6);
+    tp.SetDecimal(3);
+    let input = crate::Constant::with_type(crate::types::NewDatum(&value), tp);
+    let expression = crate::NewFunctionBase(
+        &mysql,
+        "round",
+        *crate::types::NewFieldType(crate::mysql::TypeNewDecimal),
+        vec![Box::new(input), Box::new(crate::NewInt64Const(2))],
+    )
+    .unwrap();
+    let (actual, null) = expression
+        .EvalDecimal(mysql.GetEvalCtx(), crate::chunk::Row::default())
+        .unwrap();
+    assert!(!null);
+    assert_eq!(actual.ToString(), b"12.35");
+    let expression = crate::NewFunctionBase(
+        &mysql,
+        "round",
+        *crate::types::NewFieldType(crate::mysql::TypeLonglong),
+        vec![
+            Box::new(crate::NewInt64Const(i64::MAX)),
+            Box::new(crate::NewInt64Const(-1)),
+        ],
+    )
+    .unwrap();
+    assert!(
+        expression
+            .EvalInt(mysql.GetEvalCtx(), crate::chunk::Row::default())
+            .is_err()
     );
 }

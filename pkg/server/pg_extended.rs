@@ -1025,6 +1025,7 @@ impl Extended {
             return Ok(true);
         }
         self.session.relation_error_position = None;
+        self.session.function_error_hint = None;
         // PostgreSQL sends ParameterDescription before revalidating the result
         // descriptor. Its parameter contract survives a later analysis error.
         if tag == b'D' {
@@ -1069,7 +1070,15 @@ impl Extended {
                 } else {
                     None
                 };
-                if let Some(sql) = original_sql {
+                if let Some(hint) = self.session.function_error_hint {
+                    crate::pg_conn::write_function_error(
+                        socket,
+                        state,
+                        &message,
+                        self.session.relation_error_position,
+                        Some(hint),
+                    )?;
+                } else if let Some(sql) = original_sql {
                     crate::pg_conn::write_sql_error(
                         socket,
                         state,
@@ -1247,6 +1256,15 @@ impl Extended {
                     &CancellationToken::new(),
                 )
                 .map_err(|error| {
+                    if let crate::conn::ConnError::PgFunction(function) = &error {
+                        self.session.function_error_hint = function.hint;
+                        self.session.relation_error_position =
+                            function.position.and_then(|offset| {
+                                analysis_sql
+                                    .get(..offset)
+                                    .map(|prefix| prefix.chars().count() + 1)
+                            });
+                    }
                     if let crate::conn::ConnError::PgArray(array) = &error {
                         self.session.relation_error_position = array.position.and_then(|offset| {
                             analysis_sql

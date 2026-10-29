@@ -9460,7 +9460,13 @@ fn pg_function_24_signed_local() {
             let WireResponse::ResultSet(result) = result else {
                 panic!("prepared ABS must return rows/description")
             };
-            assert_eq!(result.columns, prepared.columns, "fixed prepared signature");
+            let mut expected_fields = prepared.columns.clone();
+            expected_fields[0].flags |= 1;
+            assert_eq!(result.columns, expected_fields, "Go first Execute fields");
+            assert_eq!(
+                result.warnings, 1,
+                "parameterized TableDual is not cacheable"
+            );
             assert_eq!(
                 result.rows,
                 if empty {
@@ -9993,14 +9999,18 @@ fn pg_function_26_mysql_arity_diagnostics() {
                 assert_eq!(error.code, 1582);
                 assert_eq!(error.sql_state, Some(*b"42000"));
             }
-            // Reading diagnostics twice must retain exactly the originating error.
+            // COM_QUERY retains the error; Go PrepareStmt returns parse errors
+            // before ExecuteStmt appends statement diagnostics.
             for _ in 0..2 {
                 let WireResponse::ResultSet(result) = mysql.query("SHOW WARNINGS").unwrap() else {
                     panic!("diagnostics must be queryable")
                 };
                 assert_eq!(
                     result.rows,
-                    vec![vec![
+                    if prepare {
+                        Vec::new()
+                    } else {
+                        vec![vec![
                         TextValue::Bytes(b"Error".to_vec()),
                         TextValue::Bytes(b"1582".to_vec()),
                         TextValue::Bytes(
@@ -10009,7 +10019,8 @@ fn pg_function_26_mysql_arity_diagnostics() {
                             )
                             .into_bytes()
                         )
-                    ]],
+                    ]]
+                    },
                     "{sql}/prepare={prepare}"
                 );
             }
@@ -10175,14 +10186,18 @@ fn pg_function_27_mysql_arity_diagnostics() {
                 assert_eq!(error.code, 1582);
                 assert_eq!(error.sql_state, Some(*b"42000"));
             }
-            // Reading diagnostics twice must retain exactly the originating error.
+            // COM_QUERY retains the error; Go PrepareStmt returns parse errors
+            // before ExecuteStmt appends statement diagnostics.
             for _ in 0..2 {
                 let WireResponse::ResultSet(result) = mysql.query("SHOW WARNINGS").unwrap() else {
                     panic!("diagnostics must be queryable")
                 };
                 assert_eq!(
                     result.rows,
-                    vec![vec![
+                    if prepare {
+                        Vec::new()
+                    } else {
+                        vec![vec![
                         TextValue::Bytes(b"Error".to_vec()),
                         TextValue::Bytes(b"1582".to_vec()),
                         TextValue::Bytes(
@@ -10191,7 +10206,8 @@ fn pg_function_27_mysql_arity_diagnostics() {
                             )
                             .into_bytes()
                         )
-                    ]],
+                    ]]
+                    },
                     "{sql}/prepare={prepare}"
                 );
             }

@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "date_trunc" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
+                result: mysql::TypeDatetime,
+            }],
             "abs" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeLong],
@@ -2640,9 +2644,12 @@ pub mod formal_registry {
             inputs,
             &candidates,
             |source, target| {
-                (name == "round"
-                    && target == mysql::TypeNewDecimal
-                    && pg_numeric_implicit_source(source))
+                (name == "date_trunc"
+                    && target == mysql::TypeVarString
+                    && matches!(source, mysql::TypeString | mysql::TypeVarchar))
+                    || (name == "round"
+                        && target == mysql::TypeNewDecimal
+                        && pg_numeric_implicit_source(source))
                     || (matches!(name, "substr" | "substring")
                         && ((target == mysql::TypeVarString
                             && matches!(source, mysql::TypeString | mysql::TypeVarchar))
@@ -4061,6 +4068,9 @@ pub mod formal_registry {
         UnaryNot,
         AbsSigned(Option<u8>),
         PgRound,
+        PgDateTrunc,
+        MysqlRound(types::EvalType),
+        MysqlAbs(types::EvalType),
         UnaryMinus(types::EvalType),
         Arithmetic(&'static str, types::EvalType),
         Case,
@@ -4415,6 +4425,33 @@ pub mod formal_registry {
                 | CoreBuiltinKind::IsNull
                 | CoreBuiltinKind::Logic(..)
                 | CoreBuiltinKind::UnaryNot => self.eval_boolean(ctx, row),
+                CoreBuiltinKind::MysqlRound(types::ETInt) => {
+                    let (value, null) = self.base.args[0].EvalInt(ctx, row.clone())?;
+                    if null {
+                        return Ok((0, true));
+                    }
+                    let (fraction, null) = if self.base.args.len() == 1 {
+                        (0, false)
+                    } else {
+                        self.base.args[1].EvalInt(ctx, row)?
+                    };
+                    if null {
+                        return Ok((0, true));
+                    }
+                    if self.base.args.len() > 1
+                        && mysql::HasUnsignedFlag(self.base.args[1].GetType(ctx).GetFlag())
+                    {
+                        return Ok((value, false));
+                    }
+                    crate::builtin_math_kernel::round_with_frac_int(
+                        value,
+                        fraction,
+                        mysql::HasUnsignedFlag(self.base.return_type.GetFlag()),
+                    )
+                    .map(|v| (v, false))
+                    .map_err(|e| errors::New(e.to_string()))
+                }
+                CoreBuiltinKind::MysqlAbs(types::ETInt) => self.base.args[0].EvalInt(ctx, row),
                 CoreBuiltinKind::AbsSigned(pg_type) => {
                     let (value, null) = self.base.args[0].EvalInt(ctx, row)?;
                     if null {
@@ -4731,6 +4768,25 @@ pub mod formal_registry {
                     let (value, null) = self.base.args[0].EvalReal(ctx, row)?;
                     Ok((-value, null))
                 }
+                CoreBuiltinKind::MysqlRound(types::ETReal) => {
+                    let (value, null) = self.base.args[0].EvalReal(ctx, row.clone())?;
+                    if null {
+                        return Ok((0.0, true));
+                    }
+                    let (fraction, null) = if self.base.args.len() == 1 {
+                        (0, false)
+                    } else {
+                        self.base.args[1].EvalInt(ctx, row)?
+                    };
+                    Ok((
+                        crate::builtin_math_kernel::round_with_frac_real(value, fraction),
+                        null,
+                    ))
+                }
+                CoreBuiltinKind::MysqlAbs(types::ETReal) => {
+                    let (value, null) = self.base.args[0].EvalReal(ctx, row)?;
+                    Ok((crate::builtin_math_kernel::abs_real(value), null))
+                }
                 CoreBuiltinKind::Arithmetic(operator, types::ETReal) => {
                     let (left, left_null) = self.base.args[0].EvalReal(ctx, row.clone())?;
                     let (right, right_null) = self.base.args[1].EvalReal(ctx, row)?;
@@ -4795,6 +4851,36 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(types::MyDecimal, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::MysqlRound(types::ETDecimal) => {
+                    let (value, null) = self.base.args[0].EvalDecimal(ctx, row.clone())?;
+                    if null {
+                        return Ok((types::MyDecimal::default(), true));
+                    }
+                    let (fraction, null) = if self.base.args.len() == 1 {
+                        (0, false)
+                    } else {
+                        self.base.args[1].EvalInt(ctx, row)?
+                    };
+                    if null {
+                        return Ok((types::MyDecimal::default(), true));
+                    }
+                    crate::builtin_math_kernel::round_with_frac_decimal(
+                        &value,
+                        fraction,
+                        self.base.return_type.GetDecimal() as i32,
+                    )
+                    .map(|v| (v, false))
+                    .map_err(|e| errors::New(e.to_string()))
+                }
+                CoreBuiltinKind::MysqlAbs(types::ETDecimal) => {
+                    let (value, null) = self.base.args[0].EvalDecimal(ctx, row)?;
+                    if null {
+                        return Ok((types::MyDecimal::default(), true));
+                    }
+                    crate::builtin_math_kernel::abs_decimal(&value)
+                        .map(|v| (v, false))
+                        .map_err(|e| errors::New(e.to_string()))
+                }
                 CoreBuiltinKind::PgRound => {
                     let (text, null) = self.evalString(ctx, row)?;
                     let mut result = types::MyDecimal::default();
@@ -4908,6 +4994,20 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::PgDateTrunc => {
+                    let (unit, first_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (value, second_null) = self.base.args[1].EvalString(ctx, row)?;
+                    if first_null || second_null {
+                        return Ok((String::new(), true));
+                    }
+                    value
+                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                        .and_then(|value| value.truncate(&unit))
+                        .map(|value| (value.to_string(), false))
+                        .map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        })
+                }
                 CoreBuiltinKind::PgRound => {
                     let (text, null) = if self.base.args[0].GetType(ctx).EvalType() == types::ETInt
                     {
@@ -5711,6 +5811,18 @@ pub mod formal_registry {
             args[0] = BuildCastFunction(ctx, &args[0], &datetime_type);
         }
         let (kind, return_type, signature) = match name {
+            "date_trunc" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|arg| arg.GetType(ctx.GetEvalCtx()).GetType())
+                    .collect::<Vec<_>>();
+                resolve_pg_signature(name, &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgDateTrunc,
+                    *types::NewFieldType(mysql::TypeDatetime),
+                    "builtinPgTimestampTruncSig",
+                )
+            }
             "round" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs: Vec<_> = args
                     .iter()
@@ -5721,6 +5833,120 @@ pub mod formal_registry {
                     CoreBuiltinKind::PgRound,
                     *types::NewFieldType(mysql::TypeNewDecimal),
                     "builtinRoundWithFracDecSig",
+                )
+            }
+            "round" => {
+                let source = args[0].GetType(ctx.GetEvalCtx()).clone();
+                let et = match source.EvalType() {
+                    types::ETInt => types::ETInt,
+                    types::ETDecimal => types::ETDecimal,
+                    _ => types::ETReal,
+                };
+                args[0] = match et {
+                    types::ETInt => crate::WrapWithCastAsInt(ctx, args[0].CloneExpr(), None),
+                    types::ETDecimal => crate::WrapWithCastAsDecimal(ctx, args[0].CloneExpr()),
+                    _ => crate::WrapWithCastAsReal(ctx, args[0].CloneExpr()),
+                };
+                if args.len() > 1 {
+                    args[1] = crate::WrapWithCastAsInt(ctx, args[1].CloneExpr(), None);
+                }
+                let mut result = field_type_for_eval_type(et);
+                result.SetCharset(crate::charset::CharsetBin.into());
+                result.SetCollate(crate::charset::CollationBin.into());
+                result.AddFlag(mysql::BinaryFlag);
+                if mysql::HasUnsignedFlag(source.GetFlag()) {
+                    result.AddFlag(mysql::UnsignedFlag);
+                }
+                let (flen, decimal) = mysql::GetDefaultFieldLengthAndDecimal(result.GetType());
+                result.SetFlen(if et == types::ETReal {
+                    mysql::MaxRealWidth as isize
+                } else {
+                    flen
+                });
+                result.SetDecimal(decimal);
+                if et == types::ETDecimal {
+                    use crate::builtin_math_kernel::{
+                        EvalType, FractionMetadata, calculate_decimal_for_round_and_truncate,
+                    };
+                    let fraction = if args.len() == 1 {
+                        FractionMetadata::Missing
+                    } else if args[1].as_any().is::<crate::Constant>() {
+                        FractionMetadata::Constant(
+                            args[1]
+                                .EvalInt(ctx.GetEvalCtx(), chunk::Row::default())
+                                .ok()
+                                .and_then(|(v, n)| (!n).then_some(v)),
+                        )
+                    } else {
+                        FractionMetadata::Dynamic
+                    };
+                    let decimal = calculate_decimal_for_round_and_truncate(
+                        EvalType::Decimal,
+                        source.GetDecimal() as i32,
+                        fraction,
+                    ) as isize;
+                    result.SetDecimalUnderLimit(decimal);
+                    result.SetFlenUnderLimit(source.GetFlen());
+                    if decimal != -1 {
+                        let extra = if source.GetDecimal() == -1 {
+                            decimal
+                        } else {
+                            (decimal - source.GetDecimal()).max(0)
+                        };
+                        result.SetFlenUnderLimit(source.GetFlen() + extra);
+                    }
+                }
+                (
+                    CoreBuiltinKind::MysqlRound(et),
+                    result,
+                    match (et, args.len()) {
+                        (types::ETInt, 1) => "builtinRoundIntSig",
+                        (types::ETInt, _) => "builtinRoundWithFracIntSig",
+                        (types::ETDecimal, 1) => "builtinRoundDecSig",
+                        (types::ETDecimal, _) => "builtinRoundWithFracDecSig",
+                        (_, 1) => "builtinRoundRealSig",
+                        _ => "builtinRoundWithFracRealSig",
+                    },
+                )
+            }
+            "abs"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL
+                    && (args[0].GetType(ctx.GetEvalCtx()).EvalType() != types::ETInt
+                        || mysql::HasUnsignedFlag(args[0].GetType(ctx.GetEvalCtx()).GetFlag())) =>
+            {
+                let source = args[0].GetType(ctx.GetEvalCtx()).clone();
+                let et = match source.EvalType() {
+                    types::ETInt => types::ETInt,
+                    types::ETDecimal => types::ETDecimal,
+                    _ => types::ETReal,
+                };
+                args[0] = match et {
+                    types::ETInt => crate::WrapWithCastAsInt(ctx, args[0].CloneExpr(), None),
+                    types::ETDecimal => crate::WrapWithCastAsDecimal(ctx, args[0].CloneExpr()),
+                    _ => crate::WrapWithCastAsReal(ctx, args[0].CloneExpr()),
+                };
+                let mut result = field_type_for_eval_type(et);
+                result.AddFlag(mysql::BinaryFlag);
+                result.SetCharset(crate::charset::CharsetBin.into());
+                result.SetCollate(crate::charset::CollationBin.into());
+                if mysql::HasUnsignedFlag(source.GetFlag()) {
+                    result.AddFlag(mysql::UnsignedFlag);
+                }
+                let (flen, decimal) = if et == types::ETReal {
+                    mysql::GetDefaultFieldLengthAndDecimal(mysql::TypeDouble)
+                } else {
+                    (source.GetFlen(), source.GetDecimal())
+                };
+                result.SetFlenUnderLimit(flen);
+                result.SetDecimalUnderLimit(decimal);
+                (
+                    CoreBuiltinKind::MysqlAbs(et),
+                    result,
+                    match et {
+                        types::ETInt => "builtinAbsUIntSig",
+                        types::ETDecimal => "builtinAbsDecSig",
+                        _ => "builtinAbsRealSig",
+                    },
                 )
             }
             "abs" => {
@@ -6215,6 +6441,11 @@ pub mod formal_registry {
                         .collect();
                     resolve_pg_signature(name, &inputs).map_err(errors::New)?;
                 }
+                // Go derives the result collation before implicit argument
+                // casts. An inferred numeric NULL therefore keeps binary result
+                // identity even though the input cast itself uses UTF-8.
+                let numeric_source =
+                    args[0].GetType(ctx.GetEvalCtx()).EvalType() != types::ETString;
                 args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
                 for argument in args.iter_mut().skip(1) {
                     *argument = crate::WrapWithCastAsInt(ctx, argument.CloneExpr(), None);
@@ -6223,11 +6454,17 @@ pub mod formal_registry {
                 let binary = argument_type.GetCollate() == crate::charset::CollationBin;
                 let mut return_type = field_type_for_eval_type(types::ETString);
                 return_type.SetFlen(argument_type.GetFlen());
+                if numeric_source {
+                    return_type.SetCharset(crate::charset::CharsetBin.to_owned());
+                    return_type.SetCollate(crate::charset::CollationBin.to_owned());
+                }
                 if binary {
                     return_type.SetCharset(crate::charset::CharsetBin.to_owned());
                     return_type.SetCollate(crate::charset::CollationBin.to_owned());
                     return_type.AddFlag(mysql::BinaryFlag);
-                } else if mysql::HasBinaryFlag(argument_type.GetFlag()) {
+                } else if mysql::HasBinaryFlag(argument_type.GetFlag())
+                    || argument_type.GetType() == mysql::TypeNull
+                {
                     return_type.AddFlag(mysql::BinaryFlag);
                 }
                 (
@@ -6804,18 +7041,8 @@ pub mod formal_registry {
         core_builtin_factory("if", ctx, args, metadata)
     }
     core_factory!(abs_factory, "abs");
-    fn round_factory(
-        ctx: &dyn BuildContext,
-        args: Vec<Box<dyn Expression>>,
-        metadata: &FunctionClassMetadata,
-    ) -> Result<GeneratedBuiltinFactoryOutput, Error> {
-        if ctx.SQLDialect() != crate::ast::SqlDialect::PostgreSQL {
-            return Err(errors::New(
-                "builtin function 'round' is registered but its complete implementation is not linked",
-            ));
-        }
-        core_builtin_factory("round", ctx, args, metadata)
-    }
+    core_factory!(round_factory, "round");
+    core_factory!(pg_date_trunc_factory, "date_trunc");
     core_factory!(row_factory, "row");
     core_factory!(json_extract_factory, "json_extract");
     core_factory!(tidb_version_factory, "tidb_version");
@@ -6878,6 +7105,7 @@ pub mod formal_registry {
     const CORE_BUILTIN_FACTORIES: &[(&str, BuiltinFactory)] = &[
         ("abs", abs_factory),
         ("round", round_factory),
+        ("date_trunc", pg_date_trunc_factory),
         ("eq", eq_factory),
         ("ne", ne_factory),
         ("lt", lt_factory),
@@ -7243,6 +7471,7 @@ pub mod formal_registry {
         ("radians", 1, 1),
         ("rand", 0, 1),
         ("round", 1, 2),
+        ("date_trunc", 2, 2),
         ("sign", 1, 1),
         ("sin", 1, 1),
         ("sqrt", 1, 1),
@@ -7561,7 +7790,13 @@ pub mod formal_registry {
             ),
             crate::ast::SqlDialect::MySQL => !matches!(
                 name,
-                "numeric_abs" | "float4abs" | "float8abs" | "int2not" | "int4not" | "int8not"
+                "date_trunc"
+                    | "numeric_abs"
+                    | "float4abs"
+                    | "float8abs"
+                    | "int2not"
+                    | "int4not"
+                    | "int8not"
             ),
         }
     }
