@@ -1424,7 +1424,10 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-            && matches!(FnName.L.as_str(), "array_length" | "cardinality")
+            && matches!(
+                FnName.L.as_str(),
+                "array_length" | "cardinality" | "array_append"
+            )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
             use astersql_expression::BuildContext;
@@ -1464,6 +1467,26 @@ impl ConcreteSession {
                 arguments,
             )
             .map_err(|error| session_error("build PostgreSQL array function", error))?;
+            if FnName.L == "array_append" {
+                let (value, null) = built
+                    .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
+                    .map_err(|error| {
+                        let shared = error.into_shared();
+                        if let Some(error) = shared.downcast_ref::<astersql_expression::formal_registry::PgArrayAppendError>() {
+                            let diagnostic = super::pg_array::PgArrayError {
+                                state: error.state,
+                                message: error.message.clone(),
+                                position: None,
+                            };
+                            return SessionError::with_source(
+                                "evaluate PostgreSQL array append",
+                                astersql_errors::SharedError::new(diagnostic),
+                            );
+                        }
+                        SessionError::with_source("evaluate PostgreSQL array append", shared)
+                    })?;
+                return Ok((!null).then_some(value));
+            }
             let (value, null) = built
                 .EvalInt(
                     context.GetEvalCtx(),
@@ -3530,7 +3553,10 @@ impl ConcreteSession {
                     Schema,
                     Args,
                 } = &input.Kind
-                    && matches!(FnName.L.as_str(), "array_length" | "cardinality")
+                    && matches!(
+                        FnName.L.as_str(),
+                        "array_length" | "cardinality" | "array_append"
+                    )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
                     let inputs = Args
@@ -4748,7 +4774,10 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-                && matches!(FnName.L.as_str(), "array_length" | "cardinality")
+                && matches!(
+                    FnName.L.as_str(),
+                    "array_length" | "cardinality" | "array_append"
+                )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
                 let inputs = Args
@@ -4760,7 +4789,13 @@ impl ConcreteSession {
                         &FnName.L, &inputs,
                     )
                 {
-                    return astersql_parser_types::NewFieldType(candidate.result);
+                    let mut result = astersql_parser_types::NewFieldType(candidate.result);
+                    if FnName.L == "array_append" {
+                        result.SetPostgreSQLArrayElement(
+                            astersql_parser_types::PostgreSQLArrayElement::Int4,
+                        );
+                    }
+                    return result;
                 }
             }
             if let ast::ExprKind::Function {

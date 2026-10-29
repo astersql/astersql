@@ -3140,8 +3140,10 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
-        } if matches!(FnName.L.as_str(), "array_length" | "cardinality")
-            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+        } if matches!(
+            FnName.L.as_str(),
+            "array_length" | "cardinality" | "array_append"
+        ) && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && astersql_expression::formal_registry::resolve_pg_array_signature(
                 &FnName.L,
                 &Args
@@ -3151,7 +3153,16 @@ pub(super) fn relational_expression_type(
             )
             .is_ok() =>
         {
-            new_type(astersql_parser_mysql::r#type::TypeLong)
+            let mut result = new_type(if FnName.L == "array_append" {
+                astersql_parser_mysql::r#type::TypeVarString
+            } else {
+                astersql_parser_mysql::r#type::TypeLong
+            });
+            if FnName.L == "array_append" {
+                result
+                    .SetPostgreSQLArrayElement(astersql_parser_types::PostgreSQLArrayElement::Int4);
+            }
+            result
         }
         ast::ExprKind::Function { FnName, Args, .. } => match FnName.L.as_str() {
             "coalesce" | "ifnull" | "nullif" => Args

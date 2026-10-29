@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "array_append" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeVarString, mysql::TypeLong],
+                result: mysql::TypeVarString,
+            }],
             "cardinality" => vec![PgFunctionCandidate {
                 arguments: vec![mysql::TypeVarString],
                 result: mysql::TypeLong,
@@ -2782,6 +2786,23 @@ pub mod formal_registry {
         if name == "array_length" {
             return resolve_pg_array_length_signature(inputs);
         }
+        if name == "array_append" {
+            // This batch instantiates int4[] + int4 only; promotion belongs to its own signature.
+            if inputs.len() != 2
+                || inputs[0].PostgreSQLArrayElement()
+                    != Some(types_dependency::field::ast::PostgreSQLArrayElement::Int4)
+                || inputs[1].PostgreSQLArrayElement().is_some()
+                || inputs[1].GetType() != mysql::TypeLong
+                || mysql::HasUnsignedFlag(inputs[1].GetFlag())
+                || inputs[1].GetFlag() & mysql::IsBooleanFlag != 0
+            {
+                return Err("42883");
+            }
+            return resolve_pg_signature(
+                name,
+                &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
+            );
+        }
         if name != "cardinality"
             || inputs.len() != 1
             || inputs[0].PostgreSQLArrayElement()
@@ -2791,6 +2812,19 @@ pub mod formal_registry {
         }
         resolve_pg_signature(name, &[inputs[0].GetType()])
     }
+
+    /// Array function diagnostics cross the expression/session boundary without losing SQLSTATE.
+    #[derive(Clone, Debug)]
+    pub struct PgArrayAppendError {
+        pub state: &'static str,
+        pub message: String,
+    }
+    impl std::fmt::Display for PgArrayAppendError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message)
+        }
+    }
+    impl std::error::Error for PgArrayAppendError {}
 
     /// 类型别名 `BuiltinFactory`。
     pub type BuiltinFactory = fn(
@@ -4230,6 +4264,7 @@ pub mod formal_registry {
         PgExtractTimestamp,
         PgArrayLength,
         PgCardinality,
+        PgArrayAppend,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -5295,6 +5330,67 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::PgArrayAppend => {
+                    use types_dependency::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
+                    let diagnostic = |state, message| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(
+                            PgArrayAppendError { state, message },
+                        ))
+                    };
+                    let (source, source_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (element, element_null) = self.base.args[1].EvalInt(ctx, row)?;
+                    let array = if source_null {
+                        PgArray::new(23, -1, vec![], vec![], vec![]).expect("canonical empty array")
+                    } else {
+                        PgArray::from_text_with(source.as_bytes(), 23, -1, b',', |text, _| {
+                            crate::pg_cast_int4(Some(text))
+                                .map(|value| PgArrayElement::Int4(value.expect("non-null element")))
+                        })
+                        .map_err(|error| match error {
+                            PgArrayTextError::Element(error) => errors::Error::from(
+                                crate::contextutil::errors::SharedError::new(error),
+                            ),
+                            other => errors::New(other.to_string()),
+                        })?
+                    };
+                    if array.shape().len() > 1 {
+                        return Err(diagnostic(
+                            "22000",
+                            "argument must be empty or one-dimensional array".into(),
+                        ));
+                    }
+                    let lower = array.lower_bounds().first().copied().unwrap_or(1);
+                    let length = array.shape().first().copied().unwrap_or(0);
+                    // Match array_append's subscript check, then ArrayCheckBounds on the new dimension.
+                    lower
+                        .checked_add(length)
+                        .ok_or_else(|| diagnostic("22003", "integer out of range".into()))?;
+                    let length = length.checked_add(1).ok_or_else(|| {
+                        diagnostic("54000", "array size exceeds the supported limit".into())
+                    })?;
+                    lower.checked_add(length).ok_or_else(|| {
+                        diagnostic("54000", format!("array lower bound is too large: {lower}"))
+                    })?;
+                    let item = if element_null {
+                        None
+                    } else {
+                        Some(PgArrayElement::Int4(i32::try_from(element).map_err(
+                            |_| {
+                                errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                    crate::PgInt4Error::OutOfRange,
+                                ))
+                            },
+                        )?))
+                    };
+                    let mut elements = array.elements().to_vec();
+                    elements.push(item);
+                    let result = PgArray::new(23, -1, vec![length], vec![lower], elements)
+                        .map_err(|e| diagnostic(e.sqlstate().unwrap_or("XX000"), e.to_string()))?;
+                    result
+                        .to_text(b',')
+                        .map(|v| (v, false))
+                        .map_err(|e| diagnostic(e.sqlstate().unwrap_or("XX000"), e.to_string()))
+                }
                 CoreBuiltinKind::PgTimestampToChar => {
                     let source_type = self.base.args[0].GetType(ctx).GetType();
                     if matches!(source_type, mysql::TypeFloat | mysql::TypeDouble) {
@@ -6342,7 +6438,7 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
-            "array_length" | "cardinality"
+            "array_length" | "cardinality" | "array_append"
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
             {
                 let inputs = args
@@ -6350,17 +6446,23 @@ pub mod formal_registry {
                     .map(|arg| arg.GetType(ctx.GetEvalCtx()).clone())
                     .collect::<Vec<_>>();
                 let candidate = resolve_pg_array_signature(name, &inputs).map_err(errors::New)?;
+                let mut result = *types::NewFieldType(candidate.result);
+                if name == "array_append" {
+                    result.SetPostgreSQLArrayElement(
+                        types_dependency::field::ast::PostgreSQLArrayElement::Int4,
+                    );
+                }
                 (
-                    if name == "cardinality" {
-                        CoreBuiltinKind::PgCardinality
-                    } else {
-                        CoreBuiltinKind::PgArrayLength
+                    match name {
+                        "cardinality" => CoreBuiltinKind::PgCardinality,
+                        "array_append" => CoreBuiltinKind::PgArrayAppend,
+                        _ => CoreBuiltinKind::PgArrayLength,
                     },
-                    *types::NewFieldType(candidate.result),
-                    if name == "cardinality" {
-                        "builtinPgCardinalitySig"
-                    } else {
-                        "builtinPgArrayLengthSig"
+                    result,
+                    match name {
+                        "cardinality" => "builtinPgCardinalitySig",
+                        "array_append" => "builtinPgArrayAppendSig",
+                        _ => "builtinPgArrayLengthSig",
                     },
                 )
             }
@@ -7876,6 +7978,7 @@ pub mod formal_registry {
     core_factory!(pg_date_part_factory, "date_part");
     core_factory!(pg_array_length_factory, "array_length");
     core_factory!(pg_cardinality_factory, "cardinality");
+    core_factory!(pg_array_append_factory, "array_append");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -7968,6 +8071,7 @@ pub mod formal_registry {
         ("date_part", pg_date_part_factory),
         ("array_length", pg_array_length_factory),
         ("cardinality", pg_cardinality_factory),
+        ("array_append", pg_array_append_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8336,6 +8440,7 @@ pub mod formal_registry {
         ("date_part", 2, 2),
         ("array_length", 2, 2),
         ("cardinality", 1, 1),
+        ("array_append", 2, 2),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -8632,6 +8737,7 @@ pub mod formal_registry {
                     | "date_trunc"
                     | "array_length"
                     | "cardinality"
+                    | "array_append"
                     | "date_part"
                     | "numeric_abs"
                     | "float4abs"

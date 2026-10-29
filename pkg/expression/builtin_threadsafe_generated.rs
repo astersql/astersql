@@ -44,7 +44,7 @@ pub fn GeneratedThreadSafetyPolicyForSignature(
     // Array shape is immutable and carries no connection-local context.
     if matches!(
         signature,
-        "builtinPgArrayLengthSig" | "builtinPgCardinalitySig"
+        "builtinPgArrayLengthSig" | "builtinPgCardinalitySig" | "builtinPgArrayAppendSig"
     ) {
         return Some(GeneratedThreadSafetyPolicy::Recursive);
     }
