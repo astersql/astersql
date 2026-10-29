@@ -454,3 +454,26 @@ fn pg08_02_row_source() {
         }
     }
 }
+
+#[test]
+fn pg08_03_timestamp_conversion() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (zone, expected) in [
+        ("UTC", "2024-01-02 00:00:00+00"),
+        ("America/New_York", "2024-01-01 19:00:00-05"),
+    ] {
+        session
+            .execute(&format!("SET time_zone = '{zone}'"))
+            .unwrap();
+        let mut implicit = session
+            .execute(
+                "SELECT date_trunc('day'::text,'2024-01-02 01:30:00'::timestamp,'UTC'::text) AS v",
+            )
+            .unwrap();
+        let mut explicit = session.execute("SELECT date_trunc('day'::text,('2024-01-02 01:30:00'::timestamp)::timestamptz,'UTC'::text) AS v").unwrap();
+        assert_eq!(implicit[0].next_row().unwrap().unwrap(), [expected]);
+        assert_eq!(explicit[0].next_row().unwrap().unwrap(), [expected]);
+    }
+    println!("pg08_03_timestamp_conversion: 2 scenarios passed");
+}

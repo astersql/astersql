@@ -429,7 +429,6 @@ impl ConcreteSession {
         text: &str,
     ) -> SessionResult<astersql_types::pg_temporal::PgTimestampTz> {
         use astersql_types::pg_temporal::{PgTemporalError, PgTimestamp, PgTimestampTz};
-        use chrono::{Offset, TimeZone};
         if !matches!(
             text.trim().to_ascii_lowercase().as_str(),
             "now" | "today" | "yesterday" | "tomorrow"
@@ -457,38 +456,11 @@ impl ConcreteSession {
         }
         let wall = PgTimestamp::parse_with_context(text, self.pg_date_context(None)?)
             .map_err(temporal_error)?;
-        let offset = match *self.time_zone.borrow() {
-            RuntimeTimeZone::Fixed(zone) => zone.local_minus_utc(),
-            RuntimeTimeZone::Named(chrono_tz::UTC) => 0,
-            RuntimeTimeZone::Named(zone) => {
-                let unix = wall
-                    .micros()
-                    .checked_add(946_684_800_000_000)
-                    .ok_or_else(|| temporal_error(PgTemporalError::Range))?;
-                let local = chrono::DateTime::from_timestamp_micros(unix)
-                    .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?
-                    .naive_utc();
-                // PostgreSQL resolves a forward gap with the pre-transition
-                // offset and a backward overlap with the post-transition one.
-                // Use transition data rather than assuming a one-hour change.
-                match zone.from_local_datetime(&local) {
-                    chrono::LocalResult::Single(value) => value.offset().fix().local_minus_utc(),
-                    chrono::LocalResult::Ambiguous(_, after) => {
-                        after.offset().fix().local_minus_utc()
-                    }
-                    chrono::LocalResult::None => chrono_tz::GapInfo::new(&local, &zone)
-                        .and_then(|gap| gap.begin)
-                        .map(|(_, before)| before.fix().local_minus_utc())
-                        .ok_or_else(|| temporal_error(PgTemporalError::Unsupported))?,
-                }
-            }
+        let (zone, fixed) = match *self.time_zone.borrow() {
+            RuntimeTimeZone::Fixed(zone) => (chrono_tz::UTC, Some(zone)),
+            RuntimeTimeZone::Named(zone) => (zone, None),
         };
-        PgTimestampTz::from_micros(
-            wall.micros()
-                .checked_sub(i64::from(offset) * 1_000_000)
-                .ok_or_else(|| temporal_error(PgTemporalError::Range))?,
-        )
-        .map_err(temporal_error)
+        PgTimestampTz::from_local_timestamp(wall, zone, fixed).map_err(temporal_error)
     }
 }
 

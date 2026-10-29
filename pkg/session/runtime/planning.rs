@@ -2837,8 +2837,9 @@ impl ConcreteSession {
         struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<(usize, u32)>);
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
-                // A bare OID0 parameter acquires the fixed substring argument
-                // identity at Parse. Supplied identities remain source types.
+                // Bare OID0 parameters acquire the fixed argument identity at Parse.
+                // The three-argument date_trunc source is timestamptz and its zone
+                // is text. Supplied identities remain source types.
                 if let ast::ExprKind::Function {
                     FnName,
                     Schema,
@@ -2856,10 +2857,10 @@ impl ConcreteSession {
                         if let ast::ExprKind::ParamMarker { Offset } = source.Kind {
                             self.0.push((
                                 Offset,
-                                if position == 0 {
+                                if position == 0 || (FnName.L == "date_trunc" && position == 2) {
                                     25
                                 } else if FnName.L == "date_trunc" {
-                                    1114
+                                    if Args.len() == 3 { 1184 } else { 1114 }
                                 } else {
                                     23
                                 },

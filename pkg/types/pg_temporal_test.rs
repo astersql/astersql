@@ -1351,3 +1351,54 @@ fn pg08_02_zone_buckets() {
         "2024-01-01 18:30:00+00"
     );
 }
+
+#[test]
+fn pg08_03_local_timestamp() {
+    use super::pg_temporal::PgTimestampTz;
+    for (id, wall, zone, fixed, expected) in [
+        (
+            "T-utc",
+            "2024-01-02 01:30:00",
+            chrono_tz::UTC,
+            None,
+            "2024-01-02 01:30:00+00",
+        ),
+        (
+            "T-gap",
+            "2024-03-10 02:30:00",
+            chrono_tz::America::New_York,
+            None,
+            "2024-03-10 07:30:00+00",
+        ),
+        (
+            "T-overlap",
+            "2024-11-03 01:30:00",
+            chrono_tz::America::New_York,
+            None,
+            "2024-11-03 06:30:00+00",
+        ),
+        (
+            "T-fixed",
+            "2024-01-02 01:30:00",
+            chrono_tz::UTC,
+            chrono::FixedOffset::east_opt(19800),
+            "2024-01-01 20:00:00+00",
+        ),
+        (
+            "T-infinity",
+            "infinity",
+            chrono_tz::America::New_York,
+            None,
+            "infinity",
+        ),
+    ] {
+        assert_eq!(
+            PgTimestampTz::from_local_timestamp(wall.parse().unwrap(), zone, fixed)
+                .unwrap()
+                .to_string(),
+            expected,
+            "{id}"
+        );
+    }
+    println!("pg08_03_local_timestamp: 5 scenarios passed");
+}

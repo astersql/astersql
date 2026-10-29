@@ -1334,18 +1334,28 @@ impl ConcreteSession {
                 Args,
             } = &expression.Kind
             && FnName.L == "date_trunc"
-            && Args.len() == 2
+            && (2..=3).contains(&Args.len())
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
             use astersql_expression::BuildContext;
-            let source_type = if pg_timestamptz_source(&Args[1])
-                || self.pg_case_input_type(&Args[1], &[]).GetType()
-                    == astersql_parser_mysql::r#type::TypePgTimestampTz
-            {
-                astersql_parser_mysql::r#type::TypePgTimestampTz
-            } else {
-                astersql_parser_mysql::r#type::TypeDatetime
-            };
+            let input_types = Args
+                .iter()
+                .map(|arg| {
+                    if Args.len() == 3 {
+                        self.pg_date_trunc_input_type(arg, &[])
+                    } else {
+                        self.pg_case_input_type(arg, &[]).GetType()
+                    }
+                })
+                .collect::<Vec<_>>();
+            let candidate = astersql_expression::formal_registry::resolve_pg_signature(
+                "date_trunc",
+                &input_types,
+            )
+            .map_err(|_| {
+                super::function_diagnostics::no_matching_function(expression, &input_types)
+            })?;
+            let source_type = candidate.result;
             let values = Args
                 .iter()
                 .map(|arg| self.relational_query_expression_value(arg, row, group_rows))
@@ -1356,11 +1366,15 @@ impl ConcreteSession {
                     Some(value) => astersql_expression::NewStrConst(&value),
                     None => astersql_expression::NewNull(),
                 };
-                argument.RetType = Some(astersql_parser_types::NewFieldType(if index == 0 {
-                    astersql_parser_mysql::r#type::TypeVarString
-                } else {
-                    source_type
-                }));
+                argument.RetType = Some(astersql_parser_types::NewFieldType(
+                    if index == 1
+                        && input_types[index] == astersql_parser_mysql::r#type::TypeDatetime
+                    {
+                        input_types[index]
+                    } else {
+                        candidate.arguments[index]
+                    },
+                ));
                 args.push(Box::new(argument));
             }
             let eval = if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz {
@@ -3068,6 +3082,20 @@ impl ConcreteSession {
             .collect()
     }
 
+    // Three-argument date_trunc has one candidate. Keep untyped parameters
+    // unknown until protocol constraints assign their source identity.
+    fn pg_date_trunc_input_type(
+        &self,
+        expression: &ast::ExprNode,
+        sources: &[ConcreteResultField],
+    ) -> u8 {
+        match &expression.Kind {
+            ast::ExprKind::Parentheses(inner) => self.pg_date_trunc_input_type(inner, sources),
+            ast::ExprKind::ParamMarker { .. } => astersql_parser_mysql::r#type::TypeNull,
+            _ => self.pg_case_input_type(expression, sources).GetType(),
+        }
+    }
+
     fn pg_case_input_type(
         &self,
         expression: &ast::ExprNode,
@@ -3408,12 +3436,18 @@ impl ConcreteSession {
                     Args,
                 } = &input.Kind
                     && FnName.L == "date_trunc"
-                    && Args.len() == 2
+                    && (2..=3).contains(&Args.len())
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
                     let types = Args
                         .iter()
-                        .map(|arg| self.session.pg_case_input_type(arg, self.sources).GetType())
+                        .map(|arg| {
+                            if Args.len() == 3 {
+                                self.session.pg_date_trunc_input_type(arg, self.sources)
+                            } else {
+                                self.session.pg_case_input_type(arg, self.sources).GetType()
+                            }
+                        })
                         .collect::<Vec<_>>();
                     if astersql_expression::formal_registry::resolve_pg_signature(
                         "date_trunc",
@@ -4626,12 +4660,18 @@ impl ConcreteSession {
                 Args,
             } = &expression.Kind
                 && FnName.L == "date_trunc"
-                && Args.len() == 2
+                && (2..=3).contains(&Args.len())
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
                 let inputs = Args
                     .iter()
-                    .map(|arg| self.pg_case_input_type(arg, source_fields).GetType())
+                    .map(|arg| {
+                        if Args.len() == 3 {
+                            self.pg_date_trunc_input_type(arg, source_fields)
+                        } else {
+                            self.pg_case_input_type(arg, source_fields).GetType()
+                        }
+                    })
                     .collect::<Vec<_>>();
                 if let Ok(candidate) = astersql_expression::formal_registry::resolve_pg_signature(
                     "date_trunc",

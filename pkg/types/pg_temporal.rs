@@ -834,6 +834,46 @@ impl PgTimestampTz {
         )
     }
 
+    /// Interpret an already typed local timestamp in the execution timezone.
+    /// Shared by explicit casts and implicit function argument conversion.
+    pub fn from_local_timestamp(
+        wall: PgTimestamp,
+        zone: chrono_tz::Tz,
+        fixed: Option<chrono::FixedOffset>,
+    ) -> Result<Self, PgTemporalError> {
+        use chrono::{Offset, TimeZone};
+        if matches!(wall.micros(), i64::MIN | i64::MAX) {
+            return Self::from_micros(wall.micros());
+        }
+        let offset = if let Some(fixed) = fixed {
+            fixed.local_minus_utc()
+        } else if zone == chrono_tz::UTC {
+            0
+        } else {
+            let unix = wall
+                .micros()
+                .checked_add(946_684_800_000_000)
+                .ok_or(PgTemporalError::Range)?;
+            let local = chrono::DateTime::from_timestamp_micros(unix)
+                .ok_or(PgTemporalError::Unsupported)?
+                .naive_utc();
+            // PostgreSQL chooses the pre-gap or post-overlap offset.
+            match zone.from_local_datetime(&local) {
+                chrono::LocalResult::Single(value) => value.offset().fix().local_minus_utc(),
+                chrono::LocalResult::Ambiguous(_, after) => after.offset().fix().local_minus_utc(),
+                chrono::LocalResult::None => chrono_tz::GapInfo::new(&local, &zone)
+                    .and_then(|gap| gap.begin)
+                    .map(|(_, before)| before.fix().local_minus_utc())
+                    .ok_or(PgTemporalError::Unsupported)?,
+            }
+        };
+        Self::from_micros(
+            wall.micros()
+                .checked_sub(i64::from(offset) * 1_000_000)
+                .ok_or(PgTemporalError::Range)?,
+        )
+    }
+
     pub fn from_micros(micros: i64) -> Result<Self, PgTemporalError> {
         PgTimestamp::from_micros(micros).map(|v| Self(v.micros()))
     }
