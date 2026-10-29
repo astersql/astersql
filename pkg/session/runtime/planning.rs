@@ -3226,13 +3226,13 @@ pub(super) fn validate_function_visibility(
                             | "current_database"
                             | "current_catalog"
                     );
-                // PG COALESCE is special syntax, never a schema-qualified
+                // PG conditional/extrema syntax is never a schema-qualified
                 // ordinary function, even when the schema is pg_catalog.
-                let qualified_coalesce = self.dialect == ast::SqlDialect::PostgreSQL
-                    && FnName.L == "coalesce"
+                let qualified_special_expression = self.dialect == ast::SqlDialect::PostgreSQL
+                    && matches!(FnName.L.as_str(), "coalesce" | "greatest" | "least")
                     && !Schema.L.is_empty();
                 if unknown_zero_argument
-                    || qualified_coalesce
+                    || qualified_special_expression
                     || !astersql_expression::formal_registry::FunctionVisibleInDialect(
                         &FnName.L,
                         self.dialect,

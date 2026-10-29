@@ -2651,10 +2651,11 @@ impl ConcreteSession {
                 })))
             // MySQL-only functions keep their formal result identity even for
             // constant projections and empty results, rather than the legacy
-            // scalar path's untyped protocol fallback.
+            // scalar path's untyped protocol fallback. CONCAT/extrema also use
+            // this existing SELECT filter so WHERE false suppresses their rows.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || (select.Where.is_some() && ["concat", "greatest", "least"].iter().any(|name| expression_contains_function(expr, name))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From

@@ -9801,3 +9801,170 @@ fn pg_function_25_mysql_semantics() {
     assert_eq!(result.warnings, 1);
     mysql.query("DROP DATABASE function25_recover").unwrap();
 }
+
+#[test]
+fn pg_function_26() {
+    // This self-check runs before any reference connection is needed.
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/pg_function_26_libpq.py"
+    );
+    assert!(
+        Command::new("python3")
+            .args([script, "--self-test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("function26_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-function26-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG_FUNCTION26_EVIDENCE={}", evidence.display());
+    let database_dropped = std::cell::Cell::new(false);
+    let cleanup = Cleanup(|| {
+        server.close();
+        database_dropped.set(native.execute(&format!("DROP DATABASE {database}")).is_ok());
+        let record = serde_json::json!({
+            "database_dropped": database_dropped.get(),
+            "postgres_port_closed": TcpStream::connect(pg).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err(),
+        });
+        let _ = std::fs::write(evidence.with_extension("cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    // output() reaps the child before server/database guards run on any assertion.
+    let output = Command::new("python3")
+        .arg(script)
+        .args([
+            pg.port().to_string(),
+            database.clone(),
+            evidence.display().to_string(),
+            mysql_address.port().to_string(),
+        ])
+        .env(
+            "PG_FUNCTION26_RUST_BINARY",
+            std::env::current_exe().unwrap(),
+        )
+        .output()
+        .expect("Python3 required");
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(database_dropped.get(), "test database leaked");
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn pg_function_26_pg_special_syntax() {
+    use astersql_parser_ast::SqlDialect;
+    use astersql_session::runtime::ConcreteSession;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for name in ["greatest", "least"] {
+        for empty in [false, true] {
+            let suffix = if empty { " WHERE false" } else { "" };
+            let qualified = format!("SELECT pg_catalog.{name}(1::int4,2::int4) AS v{suffix}");
+            assert!(
+                pg.describe_result_fields(&qualified).is_err(),
+                "qualified special syntax must be an ordinary function: {qualified}"
+            );
+            assert!(
+                pg.execute(&qualified).is_err(),
+                "qualified special syntax must reject: {qualified}"
+            );
+            let ordinary = format!("SELECT {name}(1::int4,2::int4) AS v{suffix}");
+            assert!(pg.describe_result_fields(&ordinary).is_ok());
+            let mut result = pg.execute(&ordinary).unwrap();
+            let row = result[0].next_row().unwrap();
+            assert_eq!(row.is_some(), !empty);
+            if let Some(row) = row {
+                assert_eq!(row, vec![if name == "greatest" { "2" } else { "1" }]);
+            }
+        }
+    }
+}
+
+#[test]
+fn pg_function_26_mysql_filter() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for expression in ["concat('a',NULL,'b')", "greatest(2,10)", "least(2,10)"] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let WireResponse::ResultSet(result) = mysql.query(&sql).unwrap() else {
+                panic!("function query must succeed")
+            };
+            assert_eq!(result.rows.len(), usize::from(!empty), "{sql}");
+        }
+    }
+    for expression in [
+        "concat(CAST(? AS CHAR),'b')",
+        "greatest(CAST(? AS SIGNED),7)",
+        "least(CAST(? AS SIGNED),7)",
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let statement = mysql.prepare(&sql).unwrap();
+            for value in [Some(2i64), None, Some(10)] {
+                let mut body = statement.statement_id.to_le_bytes().to_vec();
+                body.push(0);
+                body.extend_from_slice(&1u32.to_le_bytes());
+                body.extend_from_slice(&[u8::from(value.is_none()), 1, 8, 0]);
+                if let Some(value) = value {
+                    body.extend_from_slice(&value.to_le_bytes());
+                }
+                let WireResponse::ResultSet(result) = mysql.execute_prepared(&body).unwrap() else {
+                    panic!("function execute must succeed")
+                };
+                assert_eq!(result.rows.len(), usize::from(!empty), "{sql}");
+            }
+            mysql.close_prepared(statement.statement_id).unwrap();
+        }
+    }
+}
