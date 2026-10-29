@@ -1023,6 +1023,9 @@ pub(crate) fn adapt(
     context: &dyn TiDBContext,
     session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
+    let path = session
+        .effective_explicit_path(context)
+        .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
     if let Ok((statements, _)) =
         astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
             .ParseSQL(sql, &[])
@@ -1045,9 +1048,6 @@ pub(crate) fn adapt(
             if message == "quoted mixed-case identifiers require exact name binding support" => {}
         result => return result,
     }
-    let path = session
-        .effective_explicit_path(context)
-        .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
     let public = path.iter().any(|name| name == "public");
     let current = context
         .execute_query("SELECT DATABASE()", false, &CancellationToken::new())

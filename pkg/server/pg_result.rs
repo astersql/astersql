@@ -332,7 +332,7 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         "SAVEPOINT"
     } else if node.is::<ast::ReleaseSavepointStmt>() {
         "RELEASE"
-    } else if node.is::<ast::SetStmt>() {
+    } else if node.is::<ast::SetRoleStmt>() || node.is::<ast::SetStmt>() {
         "SET"
     } else {
         return Err((

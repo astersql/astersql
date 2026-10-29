@@ -36,6 +36,7 @@ pub static UNCACHEABLE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::ne
     set(&[
         "database",
         "current_database",
+        "current_schema",
         "current_user",
         "current_role",
         "current_resource_group",
@@ -62,6 +63,7 @@ static UNFOLDABLE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| 
     set(&[
         "sysdate",
         "current_database",
+        "current_schema",
         "found_rows",
         "rand",
         "uuid",
@@ -108,6 +110,7 @@ pub static ILLEGAL_FUNCTIONS_FOR_GENERATED_COLUMNS: LazyLock<HashSet<&'static st
             "curtime",
             "database",
             "current_database",
+            "current_schema",
             "found_rows",
             "get_lock",
             "getvar",

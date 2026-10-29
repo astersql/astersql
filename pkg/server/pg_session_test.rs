@@ -7,7 +7,6 @@ fn pg_introspection_namespace_parser_boundaries() {
         "SET search_path = pg_catalog, public",
         "RESET search_path",
         "SHOW search_path",
-        "SELECT pg_catalog.current_schema() AS schema",
     ] {
         assert!(SessionQuery::parse(sql).unwrap().is_some(), "{sql}");
     }
@@ -20,6 +19,7 @@ fn pg_introspection_namespace_parser_boundaries() {
     for sql in [
         "SELECT 'current_schema()'",
         "SELECT current_schema_other()",
+        "SELECT pg_catalog.current_schema() AS schema",
         "SELECT current_schema() FROM t",
     ] {
         assert!(SessionQuery::parse(sql).unwrap().is_none(), "{sql}");

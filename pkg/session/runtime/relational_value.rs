@@ -3108,7 +3108,7 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
-        } if FnName.L == "current_database"
+        } if matches!(FnName.L.as_str(), "current_database" | "current_schema")
             && Args.is_empty()
             && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
         {

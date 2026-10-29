@@ -125,6 +125,7 @@ pub struct EvalCtxState {
     type_ctx: types::Context,
     err_ctx: errctx::Context,
     current_db: String,
+    pg_current_schema: Option<String>,
     current_time: Arc<TimeOnce>,
     max_allowed_packet: u64,
     enable_redact_log: String,
@@ -148,6 +149,7 @@ impl Clone for EvalCtxState {
             type_ctx: self.type_ctx.clone(),
             err_ctx: self.err_ctx.clone(),
             current_db: self.current_db.clone(),
+            pg_current_schema: self.pg_current_schema.clone(),
             current_time: Arc::clone(&self.current_time),
             max_allowed_packet: self.max_allowed_packet,
             enable_redact_log: self.enable_redact_log.clone(),
@@ -211,6 +213,11 @@ pub fn WithPgFixedTimeZone(zone: Option<chrono::FixedOffset>) -> EvalCtxOption {
 /// 设置错误组级别映射（Error/Warn/Ignore）。
 pub fn WithErrLevelMap(levels: errctx::LevelMap) -> EvalCtxOption {
     Box::new(move |state| state.err_ctx = state.err_ctx.WithErrGroupLevels(levels))
+}
+
+/// Capture the execution-time effective explicit schema (None means SQL NULL).
+pub fn WithPgCurrentSchema(schema: Option<String>) -> EvalCtxOption {
+    Box::new(move |state| state.pg_current_schema = schema)
 }
 
 /// 设置当前数据库名。
@@ -312,6 +319,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
         type_ctx: types::NewContext(types::StrictFlags, UTC, Arc::clone(&appender)),
         err_ctx: errctx::NewContext(appender),
         current_db: String::new(),
+        pg_current_schema: None,
         current_time: Arc::new(TimeOnce::empty()),
         max_allowed_packet: vardef::DefMaxAllowedPacket,
         enable_redact_log: vardef::DefTiDBRedactLog.to_owned(),
@@ -617,6 +625,10 @@ impl exprctx::EvalContext for EvalContext {
         EvalContext::CurrentDB(self)
     }
 
+    fn PgCurrentSchema(&self) -> Option<String> {
+        self.state.pg_current_schema.clone()
+    }
+
     fn GetMaxAllowedPacket(&self) -> u64 {
         EvalContext::GetMaxAllowedPacket(self)
     }
@@ -688,6 +700,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithPgNumericLocales(context.PgNumericLocales()),
         WithErrLevelMap(error_context.LevelMap()),
         WithCurrentDB(context.CurrentDB()),
+        WithPgCurrentSchema(context.PgCurrentSchema()),
         WithCurrentTime(current_time_fn),
         WithMaxAllowedPacket(context.GetMaxAllowedPacket()),
         WithDefaultWeekFormatMode(context.GetDefaultWeekFormatMode()),

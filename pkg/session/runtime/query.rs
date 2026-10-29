@@ -1454,6 +1454,7 @@ impl ConcreteSession {
                     | "upper"
                     | "isempty"
                     | "current_database"
+                    | "current_schema"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && (!matches!(FnName.L.as_str(), "lower" | "upper")
@@ -1493,6 +1494,13 @@ impl ConcreteSession {
                     astersql_expression_exprstatic::NewEvalContext(vec![
                         astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
                         astersql_expression_exprstatic::WithCurrentDB(self.current_database()),
+                        astersql_expression_exprstatic::WithPgCurrentSchema(
+                            if FnName.L == "current_schema" {
+                                self.pg_effective_path()?.into_iter().next()
+                            } else {
+                                None
+                            },
+                        ),
                     ]),
                 )),
             ]);
@@ -1505,7 +1513,13 @@ impl ConcreteSession {
             .map_err(|error| session_error("build PostgreSQL array function", error))?;
             if matches!(
                 FnName.L.as_str(),
-                "array_append" | "int4range" | "numrange" | "lower" | "upper" | "current_database"
+                "array_append"
+                    | "int4range"
+                    | "numrange"
+                    | "lower"
+                    | "upper"
+                    | "current_database"
+                    | "current_schema"
             ) {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
@@ -2865,6 +2879,7 @@ impl ConcreteSession {
                                 | "float8abs"
                                 | "numeric_abs"
                                 | "current_database"
+                                | "current_schema"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
@@ -3631,6 +3646,7 @@ impl ConcreteSession {
                             | "upper"
                             | "isempty"
                             | "current_database"
+                            | "current_schema"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4904,6 +4920,7 @@ impl ConcreteSession {
                         | "upper"
                         | "isempty"
                         | "current_database"
+                        | "current_schema"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

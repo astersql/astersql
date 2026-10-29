@@ -2612,7 +2612,7 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "current_database" => vec![PgFunctionCandidate {
+            "current_database" | "current_schema" => vec![PgFunctionCandidate {
                 arguments: vec![],
                 result: mysql::TypePgName,
             }],
@@ -2851,7 +2851,13 @@ pub mod formal_registry {
     ) -> Result<PgFunctionCandidate, &'static str> {
         if matches!(
             name,
-            "int4range" | "numrange" | "lower" | "upper" | "isempty" | "current_database"
+            "int4range"
+                | "numrange"
+                | "lower"
+                | "upper"
+                | "isempty"
+                | "current_database"
+                | "current_schema"
         ) {
             if inputs.iter().any(|tp| {
                 tp.PostgreSQLArrayElement().is_some()
@@ -4374,6 +4380,7 @@ pub mod formal_registry {
         PgRangeUpper,
         PgRangeIsEmpty,
         PgCurrentDatabase,
+        PgCurrentSchema,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -5436,6 +5443,9 @@ pub mod formal_registry {
         ) -> Result<(String, bool), Error> {
             match self.kind {
                 CoreBuiltinKind::PgCurrentDatabase => Ok((ctx.CurrentDB(), false)),
+                CoreBuiltinKind::PgCurrentSchema => Ok(ctx
+                    .PgCurrentSchema()
+                    .map_or((String::new(), true), |schema| (schema, false))),
                 CoreBuiltinKind::Extremum(greatest, types::ETString) => {
                     let (mut selected, null) = self.base.args[0].EvalString(ctx, row.clone())?;
                     if null {
@@ -6735,6 +6745,21 @@ pub mod formal_registry {
                     CoreBuiltinKind::PgCurrentDatabase,
                     *types::NewFieldType(mysql::TypePgName),
                     "builtinPgCurrentDatabaseSig",
+                )
+            }
+            "current_schema" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                resolve_pg_signature(
+                    name,
+                    &args
+                        .iter()
+                        .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgCurrentSchema,
+                    *types::NewFieldType(mysql::TypePgName),
+                    "builtinPgCurrentSchemaSig",
                 )
             }
             "isempty" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
@@ -8326,6 +8351,7 @@ pub mod formal_registry {
     core_factory!(pg_range_upper_factory, "upper");
     core_factory!(pg_range_isempty_factory, "isempty");
     core_factory!(pg_current_database_factory, "current_database");
+    core_factory!(pg_current_schema_factory, "current_schema");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8425,6 +8451,7 @@ pub mod formal_registry {
         ("__pg_range_upper", pg_range_upper_factory),
         ("isempty", pg_range_isempty_factory),
         ("current_database", pg_current_database_factory),
+        ("current_schema", pg_current_schema_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8815,6 +8842,7 @@ pub mod formal_registry {
         ("numrange", 2, 3),
         ("isempty", 1, 1),
         ("current_database", 0, 0),
+        ("current_schema", 0, 0),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),

@@ -77,6 +77,7 @@ pub static unFoldableFunctions: LazyLock<HashMap<&'static str, ()>> = LazyLock::
     HashMap::from([
         (ast::Sysdate, ()),
         ("current_database", ()),
+        ("current_schema", ()),
         (ast::FoundRows, ()),
         (ast::Rand, ()),
         (ast::UUID, ()),

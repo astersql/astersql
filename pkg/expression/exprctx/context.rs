@@ -83,6 +83,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     /// 同一 CtxID 的多次调用应返回同一时刻；错误仍通过 Result 传播。
     fn CurrentTime(&self) -> Result<DateTime<Tz>, contextutil::errors::SharedError>;
     fn CurrentDB(&self) -> String;
+    /// Effective explicit PostgreSQL path at statement execution.
+    fn PgCurrentSchema(&self) -> Option<String> {
+        None
+    }
     fn GetMaxAllowedPacket(&self) -> u64;
     fn GetTiDBRedactLog(&self) -> String;
     fn GetDefaultWeekFormatMode(&self) -> String;
@@ -406,6 +410,10 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     }
     fn CurrentDB(&self) -> String {
         self.inner.CurrentDB()
+    }
+
+    fn PgCurrentSchema(&self) -> Option<String> {
+        self.inner.PgCurrentSchema()
     }
     fn GetMaxAllowedPacket(&self) -> u64 {
         self.inner.GetMaxAllowedPacket()

@@ -93,7 +93,9 @@ mod pg_jsonb_test;
 mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
+mod pg_schema;
 mod pg_temporal;
+pub use pg_schema::PgSchemaCommand;
 #[cfg(test)]
 mod pg_temporal_test;
 mod pg_uuid;

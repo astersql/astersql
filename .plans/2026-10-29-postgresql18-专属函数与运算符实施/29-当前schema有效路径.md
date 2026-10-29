@@ -2,7 +2,7 @@
 
 批次：【实施批次 29】；语义依赖：28；互斥前序：批次28结束或释放资源。不安排并行；来源为拆分批次8，不等于实施批次8。
 
-状态：未开始
+状态：已完成，待回归
 
 目的：current_schema() 普通表达式只选存在且有USAGE的显式路径首项。
 
@@ -97,14 +97,14 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Progress
 
-- [ ] 局部接口取证与当前测试名注册
-- [ ] 失败验证或已有正确行为的当前补证
-- [ ] 最小生产接线及通过验证
-- [ ] 真实参考/双方言、清理与Ready交付
+- [x] 局部接口取证与当前测试名注册
+- [x] 失败验证或已有正确行为的当前补证
+- [x] 最小生产接线及PG聚焦通过验证
+- [ ] 真实参考/双方言、清理与Ready交付（已实际执行并清理；MySQL六项既有回归待修复后原样复验）
 
 ## Surprises & Discoveries
 
-规划只进行了静态取证；当前实现状态与旧文档不同，必须复用本文件基线，不把历史缺口重新实现。本任务未运行测试。
+2026-10-30 实施前置取证确认缺少本任务必需的 schema USAGE 事实及自定义 PG schema 目录接口；详细证据与恢复条件见下方。本轮未新增测试、未运行 Cargo 或行为验证。
 
 ## Decision Log
 
@@ -112,4 +112,102 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Outcomes & Retrospective
 
-仅计划已生成，实施与验证尚未执行；未来在本节记录实际结果、证据路径和未决依赖，不写回只读plan.md。
+2026-10-30：新增排障授权后已补齐必要的局部schema/USAGE元数据接口，正式工厂6场景、SQL29场景及客户端57个PG/错误恢复/交错场景当前通过。完整客户端73场景仍有6项未修改MySQL路径回归，标记已完成，待回归并保留本文件；不宣称完整双方言通过。原阻塞记录为历史，所有来源plan.md及父大计划8保持不变。
+
+
+## 2026-10-30 前置接口取证与阻塞交接
+
+当前实施批次29，语义依赖28；实际完整HEAD为 `843c783d928239d85ce2a8460521ae8117257bd4`。批次28提交已保留正式 `current_database` 工厂、name身份及防折叠接线，可复用而不重做。通过应用 `list_threads` 核实前序会话 `01a189d4-a89b-77f3-afd7-158d386a5d1d` 为 idle；`read_thread` 的最终交接确认其已提交并清理参考实例、连接、监听器和槽位。批次28状态为已完成，待回归（六项未修改MySQL路径失败），不把此历史测试当成本轮证据。检查 `target/rust-slot-locks` 为空，本轮不占用共享资源。
+
+依赖接口取证（RustCodeGraph已索引11812文件；status成功，实际源码文本仅用于图未覆盖的SQL字符串、注册及配置核对）：
+
+1. `pkg/server/pg_session.rs:107 effective_explicit_path(&self, context: &dyn TiDBContext) -> ConnResult<Vec<String>>` 只调用 `namespace_names` 与 `user_identity`，展开 `$user`、存在性过滤和去重，无USAGE检查。真实消费者 `effective_schema`（127行）取首项，`PgSession::execute` 的 `SessionQuery::Schema`（206行）消费；扩展协议 `pg_extended.rs:1891` 也使用该事实。不能只修目录探测特例。
+2. `pkg/server/pg_catalog.rs:3752 namespace_rows` 仅生成 `pg_catalog`，并在当前原生数据库存在时生成 `public`；注释明确原生数据库不是PG search_path schema。`namespace_names`（3762行）消费该列表，未提供 `s_hidden`/`s_ok` 等独立PG schema目录事实。通过创建其他MySQL数据库冒充PG schema会违背现有目录身份契约。
+3. `pkg/server/conn.rs:908 TiDBContext` 提供 `user_identity`、`schema_snapshot`；全文schema/privilege/usage搜索未发现schema USAGE授权接口。`pkg/session/runtime/control.rs:5873 execute_grant` 是MySQL权限实现，5904行将 `mysql::UsagePriv` 映射成空集合；这不是PG schema USAGE许可事实。RustCodeGraph查询 `has_schema_privilege` 无结果。未将身份字符串或MySQL USAGE视为权限许可。
+4. `pkg/expression/builtin.rs` 的正式PG签名（2615行）、求值分支（6725行）、工厂（8328/8427行）已支持 `current_database`，而 `current_schema` 只出现在MySQL拒绝集合（9120行）；规划门控 `pkg/session/runtime/planning.rs:3275` 已列其名称，不代表正式工厂已实现。`pkg/expression/lib.rs:1005` 已挂载 `pg08_28_test`；本任务三个 `pg08_29` 测试尚未注册，未伪造已存在测试数。
+
+阻塞归属：PG目录/schema身份所有者（`pkg/server/pg_catalog.rs` 及其共享schema元数据），PG身份/授权事实所有者（`pkg/server/conn.rs::TiDBContext`、`pkg/server/runtime.rs` 到共享session权限状态的桥接）。本编号消费其接口，不拥有完整目录或角色/GRANT/REVOKE系统。
+
+恢复条件：上游提供真实PG schema枚举和存在性，以及针对当前连接身份、可在GRANT/REVOKE后的下一语句更新的schema USAGE检查；明确生产消费者及注册测试，并释放共享文件和参考资源。之后先核对新HEAD与接口，再注册本编号formal/SQL/client测试及唯一case ID清单，领取动态Cargo槽位、运行list与行为红灯，按原计划最小接线。不得通过固定public、测试专用许可表或目录探测特例绕过本阻塞。
+
+参考环境只读检查：`PG18_REFERENCE_DSN`、`PG_LIBPQ_LIBRARY`、`MYSQL8_REFERENCE_HOST`、`MYSQL8_REFERENCE_PORT`、`MYSQL8_REFERENCE_USER`、`MYSQL8_REFERENCE_PASSWORD` 均unset（只报告配置状态，未输出值）。未连接服务，也未将此环境状态当行为红灯；接口恢复后可沿已有参考启动方式提供真实18.6/MySQL8服务，无需本轮提前启动。
+
+本轮验证为前置只读取证，不适用WIP/Ready代码profile；未运行fmt、三条Cargo测试、make lint、真实客户端或负向自检，无行为通过声明。业务场景预期清单尚未注册，实际0、通过0、失败0、跳过0；此0不构成验收证据。Cargo实际槽位：未领取，CARGO_TARGET_DIR：未设置，无缓存或锁变动。未创建Server、Python客户端、数据库对象、参考实例和临时目录，无此类进程/端口/数据需清理；耗时图调用 `rustcodegraph callers effective_explicit_path --limit 15` 最终自行完成（退出0），返回实际消费者 `pg_extended::prepare`、`pg_extended::reanalyze`、`pg_name::adapt` 和 `effective_schema`；清理探测尝试kill时PID已不存在（退出1），未终止任何其他任务进程。
+
+已运行检查：`git status --short`、`git log -5 --format='%H %s'`、`git rev-parse HEAD`；`rustcodegraph status`；`rustcodegraph explore 'PgSession effective_explicit_path current_schema schema USAGE privilege'`；`rustcodegraph query effective_explicit_path --limit 5`、`query current_schema --limit 10`、`query has_schema_privilege --limit 5`；`rustcodegraph node effective_explicit_path`、`node namespace_names` 及上述接口的按文件行号读取；`rg -n 'schema.*(usage|privilege)|has_schema_privilege|USAGE|UsagePriv|effective_schema|current_schema'` 对任务候选文件搜索；`rg -n 'pg08_29|pg08_28|PgCurrentDatabase'` 核对注册；Python只读环境配置检查；`git diff --check`（退出0）。上述图查询及取证命令成功；对已退出自有进程的kill探测退出1，不影响接口结论。expression/server/session目标包未发现doc.go；未创建schema授权夹具，因此未进入DDL修改流程。验证profile skill缺失，与编号预告一致。
+
+风险/验证限度：未改变生产行为，无新增正确性、兼容性或性能风险；本任务要求的USAGE过滤、授权刷新、普通表达式/行源/嵌套、Parse后SET再Execute、双方言隔离及实际18.6差分仍全部待验证。不得宣称实现完成或删除编号文件。本次更新只记录阻塞、接口归属与恢复条件；所有来源plan.md保持只读。
+
+
+## 2026-10-30 恢复实施设计（新增用户排障授权）
+
+原“缺接口即停”记录为历史。用户明确授权突破阻塞并实现不可缺少的局部接口，本轮继续，非因参考环境变量未继承而停止。复用target/pg08-28-evidence的Cargo/临时参考启动器（同11参考二进制），复制到target/pg08-29-evidence并保留退出清理。
+
+精确局部设计：expression新增 `EvalContext::PgCurrentSchema() -> Option<String>` 与exprstatic快照选项，正式 `current_schema` 工厂返回name并防折叠。server通过TiDBContext新请求将连接私有search_path同步到共享session；session执行时从目录/ACL事实计算有效首项，不能把Parse时值冻结。namespace与USAGE缺口用新增 `pkg/session/runtime/pg_schema.rs`（在runtime.rs注册）提供有界持久元数据接口：以当前原生database ID为键，在现有Domain KV事务保存独立PG schema名字、owner、USAGE授权；不把MySQL数据库当schema。公共schema/pg_catalog继承既有事实。PG utility命令由既有pg_session lexer解析CREATE/DROP SCHEMA及GRANT/REVOKE USAGE ON SCHEMA，转成类型化命令，经server worker交给session元数据所有者；不是current_schema探测实现或第二求值器。不新增角色系统：复用既有CREATE ROLE、GRANT角色、SET ROLE生产逻辑及其active_roles，ACL按当前有效角色检查，root bootstrap对应管理身份；未授权角色不能任意切换。作用域限空schema目录与USAGE元数据，不实现schema内表DDL/完整权限系统。新模块旧路径不适用原因：namespace_rows只有builtin映射，MySQL UsagePriv是无权限位，均不能持有独立PG schema ACL。所有生产修改限该契约、动态上下文、普通SQL和name元数据局部接线。
+
+TDD先注册formal、SQL、client三个原定名字，工厂/普通SQL未实现时得到运行期断言红灯；新增上下文方法/选项只提供可构造测试接口，不预先实现函数逻辑。业务ID首批：formal A/B/A、empty、arity、dialect共6；SQL沿28的三表达式×零行/非零×Q/P0/P1及2错误恢复共20，追加path/Parse-SET/ACL独立ID。客户端基础沿28的49个ID，更名schema主题；新增路径及ACL刷新ID在运行前登记。原始预期数随新增测试同步记录，不以循环/字段assert充数。
+
+
+新增测试运行前场景登记：formal6；SQL29（原20，加path-catalog/path-empty/path-missing/path-public、parse-set-execute、acl-mixed/acl-hidden/acl-grant/acl-revoke共9）；客户端72唯一ID（原49，加path-{catalog,empty,missing,mixed,hidden,grant,revoke}-{Q,P0,P1}共21与refresh-P0/P1共2）。无参数函数NULL输入不适用；空路径产生SQL NULL属于业务场景。实际运行计数待收集。测试名字list各1；初次接口测试编译import错误不算红灯，修正后formal、SQL、client均实际1测试运行失败（退出101），证据red-tests.log、red-final.log。真实临时参考生命周期已清理。
+
+SQL授权回归产生新的真实红灯：`SET ROLE <owned-role>` 被pg_result.rs::command_for_phase拒绝0A000，已有session execute_set_role未被调用。只将SetRoleStmt归入SET command gate，不重做执行器或角色系统；此为必要局部接线。基础formal6已通过，SQL扩展场景未全绿前不宣称完成。
+
+当前WIP：formal6/6、SQL29/29通过；实际客户端72/72，66通过、6失败、0跳过，失败仅M-{database,version,connection_id}-{Q,P}，与批次28原始观测同一未修改路径。增加第73个唯一ID I-path-isolation：A路径missing,s_hidden,s_ok，B保持public，M读健康表保持7；在运行前登记。最后DROP空schema时清除恢复为默认值的KV扩展记录，不删除修改过的builtin ACL。所有参考实例生命周期及监听器已关闭。
+
+
+## 最终交接：2026-10-30，已完成，待回归
+
+目的行为已实现：current_schema普通表达式按执行期显式path选择存在且具有USAGE的首项，返回独立name身份；空有效路径返回SQL NULL。formal6/6、SQL29/29、客户端57个PG/错误恢复/交错场景通过。当前完整客户端73/预期73/去重73，67通过、6失败、0跳过；独立value/OID/SQLSTATE负向自检3/3。成功分类success11、zero4、binding32（无参数载荷，这里指无参prepared执行）、error-recovery6、interleaved4、mysql10；12个空路径NULL观测包含在业务ID中，不追加总数。NULL输入不适用。libpq无参数时未伪造text/binary输入矩阵，结果text/binary均覆盖，TCP补充statement/portal Describe及Execute不得重发RowDescription、事务E→ROLLBACK→I与Sync恢复。
+
+失败仍为M-{database,version,connection_id}-{Q,P}：MySQL系统函数metadata的code/flags/charset/length/decimals与自身MySQL8参考不一致，以及VERSION值与独立客户端握手身份不一致。DATABASE值、CONNECTION_ID与独立连接事实4项关系断言通过，VERSION两项关系失败未屏蔽。`pkg/session/runtime/system_query.rs`、`pkg/server/server.rs`与任务起始HEAD相同；批次28已有相同六项原始失败，本轮实际重现，未重编独立HEAD基线作对照。其修复归MySQL系统函数/协议拥有者，不吞并任务32或扩建MySQL系统函数。恢复条件：修复这些既有差异后原样运行本编号三条聚焦命令和适用Ready检查，完整成功后再删除本编号；当前保留严格失败断言。
+
+生产修改及必要局部接线依据：
+
+| 文件/符号 | 本任务契约依据 |
+| --- | --- |
+| expression/builtin.rs签名、PgCurrentSchema求值、正式工厂及有界注册 | formal A/B/A、NULL、参数个数、方言；SQL及真实客户端必须从同一工厂求值 |
+| expression/core_support.rs、function_traits.rs、builtin_threadsafe_generated.rs | 禁止把会话schema冻结为常量、非法生成列或跨会话共享；core_support_test和formal实际折叠入口验证 |
+| expression/exprctx/context.rs、exprstatic/evalctx.rs、expression/context.rs | 传递Option<String>执行期有效schema，装饰器与静态转换保留该事实；不固定public |
+| session/runtime/query.rs、relational_value.rs | 行源/嵌套/普通表达式消费正式工厂，分析返回name，不按值猜OID |
+| session/runtime/pg_schema.rs（runtime.rs注册）、runtime/session.rs | 按真实数据库ID持久化独立空PG schema及USAGE ACL；复用既有有效角色，不用MySQL数据库伪装schema；GRANT/REVOKE下一语句新读事实 |
+| server/conn.rs、runtime.rs、pg_session.rs、pg_name.rs | 将连接私有path及有界schema utility交给共享worker；无FROM表达式也同步执行上下文；移除current_schema单独SELECT探测截获 |
+| server/pg_result.rs | 允许已存在SetRoleStmt执行器经PG SET门控用于实际权限身份，无新角色系统 |
+| 独立pg08_29_test、pg_query_test、pg_client_integration_test、pg08_29_libpq及挂载、pg_session_test | 独立factory/普通SQL/真实双方言与原parser边界回归，不将测试放生产文件 |
+
+该局部前置接口仅实现空schema目录和USAGE管理，不实现schema内表DDL、完整pg_namespace扩展展示或完整角色/权限系统；unsupported schema utility形式拒绝向MySQL数据库DDL降级，事务内namespace utility延续有界DDL拒绝策略。root管理身份来自当前bootstrap root认证，SET ROLE资格复用已有共享角色校验；未新增登录或绕过鉴权。实现不改变MySQL连接sql_mode、数据库事实或活跃角色。正确性风险限这些明确有界接口；未验证完整DDL/授权语法或角色继承系统。兼容性为PG新增工厂/name及局部metadata key，不改Cargo依赖、Go或Bazel。性能风险为有效路径刷新需要读取小型namespace KV记录，未运行性能基准；按任务范围未进行RealTiKV或全包广扫。
+
+验证profile为WIP聚焦及Ready适用检查（profile skill确实缺失，不宣称运行该技能）。Ready包含fmt、三条原命令、5个相邻过滤器、make lint及diff检查。所有8个过滤器list均恰好1测试；formal和SQL及5相邻均1测试通过，client恰好1测试失败但真实执行73业务场景。make lint退出0，未触发Go/依赖/Bazel变更，不需bazel_prepare，未运行bazel_lint_changed或Go failpoint测试。最终只改了上下文选项注释位置与NULL路径计数报告（12），又运行fmt和原客户端命令；行为断言未降低。
+
+构建槽位：主要所有实际行为验证动态领取1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。一次早期formal预备编译动态领取2（/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2），发现冷缓存后主动TERM自有runner并回收其子进程，退出143，不计行为证据；随后在已释放的1重新运行得到真正红灯。最初接口测试的import编译错误退出101也未当红灯。所有槽位锁已释放，两个缓存保留。正常、失败和中断路径由cargo-runner和references-runner的finally清理。
+
+临时参考复用现有二进制：PostgreSQL18.6、libpq180006，MySQL8.0.46原生客户端及参考；tzdata2026c。身份/编码/locale/TimeZone/sql_mode、真实二进制版本及hash、客户端版本、fixture hash、当前基线完整HEAD、Rust二进制hash和完整暂存pkg差异hash均存原始build/reference/mysql日志，未输出DSN。所有owned schema、角色、source/health表、数据库与连接、Server监听器、临时参考PID及数据目录均清理，进程已wait、端口拒绝连接；未停止用户服务。仅留下脱敏证据与编译缓存。
+
+最终原始证据目录：`target/pg08-29-evidence/30048-62079`。summary.json、build.jsonl、reference-A/B.jsonl、aster-A/B.jsonl和mysql-reference/aster.jsonl保留独立观测；server清理`target/pg08-29-evidence/30048-62079.cleanup.json`，参考生命周期`target/pg08-29-evidence/reference-lifecycle-*.json`均cleanup_verified=true；检查锁目录为空。fixture SHA256 `b461f36ba6616025c67d6088f22035ef9abeecb7a25fb6604b89a904093c6f3c`，起始HEAD `843c783d928239d85ce2a8460521ae8117257bd4`；提交hash由最终交接报告。
+
+确切交付命令、退出码与日志（工作目录为仓库根，均继承上述绝对CARGO_TARGET_DIR）：
+
+    cargo fmt --all # exit=0; ready-fmt.log
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_29_test::pg08_29_formal -- --exact --list # exit=0; ready-pg08_29_test-pg08_29_formal--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_29_test::pg08_29_formal -- --exact --nocapture # exit=0; ready-pg08_29_test-pg08_29_formal--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_29_sql -- --exact --list # exit=0; ready-pg_query_test-pg08_29_sql--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_29_sql -- --exact --nocapture # exit=0; ready-pg_query_test-pg08_29_sql--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_29_clients -- --exact --list # exit=0; ready-pg_client_integration_test-pg08_29_clients--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_29_clients -- --exact --nocapture # exit=101; ready-pg_client_integration_test-pg08_29_clients--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib core_support_test::function_trait_sets_match_go_exactly -- --exact --list # exit=0; ready-core_support_test-function_trait_sets_match_go_exactly--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib core_support_test::function_trait_sets_match_go_exactly -- --exact --nocapture # exit=0; ready-core_support_test-function_trait_sets_match_go_exactly--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_28_test::pg08_28_formal -- --exact --list # exit=0; ready-pg08_28_test-pg08_28_formal--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_28_test::pg08_28_formal -- --exact --nocapture # exit=0; ready-pg08_28_test-pg08_28_formal--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_28_sql -- --exact --list # exit=0; ready-pg_query_test-pg08_28_sql--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_28_sql -- --exact --nocapture # exit=0; ready-pg_query_test-pg08_28_sql--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg_introspection_namespace_session_state -- --exact --list # exit=0; ready-pg_query_test-pg_introspection_namespace_session_state--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg_introspection_namespace_session_state -- --exact --nocapture # exit=0; ready-pg_query_test-pg_introspection_namespace_session_state--nocapture.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_session_test::pg_introspection_namespace_parser_boundaries -- --exact --list # exit=0; ready-pg_session_test-pg_introspection_namespace_parser_boundaries--list.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_session_test::pg_introspection_namespace_parser_boundaries -- --exact --nocapture # exit=0; ready-pg_session_test-pg_introspection_namespace_parser_boundaries--nocapture.log
+    make lint # exit=0; ready-lint.log
+    git diff --check # exit=0; ready-diff.log
+    cargo fmt --all # exit=0; final-fmt.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_29_clients -- --exact --nocapture # exit=101; final-client.log
+    git diff --check # exit=0; final-diff.log
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_29_clients -- --exact --nocapture # exit=101; delivery-clients.log
+
+阶段启动命令：`python3 target/pg08-29-evidence/cargo-runner.py python3 target/pg08-29-evidence/references-runner.py python3 target/pg08-29-evidence/ready.py`（聚合退出1，因严格client失败）；最后暂存后客户端复验同包装器运行原client cargo命令，内层退出101、临时实例和锁正常清理。完整命令机器记录在ready-commands.json及commands.jsonl。额外静态检查`python3 -m py_compile pkg/server/testdata/pg08_29_libpq.py`、`git diff --cached --check`退出0。所有变更只提交本任务，外部未跟踪计划目录排除。

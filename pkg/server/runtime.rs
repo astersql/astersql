@@ -821,6 +821,11 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgSchemaPath {
+        path: Vec<String>,
+        command: Option<astersql_session::runtime::PgSchemaCommand>,
+        response: mpsc::SyncSender<ConnResult<Vec<String>>>,
+    },
     PgNumericLocale {
         monetary: bool,
         setting: Option<(String, bool)>,
@@ -986,6 +991,19 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgSchemaPath {
+                path,
+                command,
+                response,
+            } => {
+                session.pg_search_path(path);
+                let result = command
+                    .as_ref()
+                    .map_or(Ok(()), |command| session.pg_schema_command(command))
+                    .and_then(|_| session.pg_effective_path())
+                    .map_err(session_protocol_error);
+                let _ = response.send(result);
+            }
             SessionRequest::PgNumericLocale {
                 monetary,
                 setting,
@@ -1907,6 +1925,21 @@ impl TiDBContext for ConcreteTiDBContext {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;
         rx.recv().map_err(packet_error)
+    }
+    fn pg_schema_path(
+        &self,
+        path: Vec<String>,
+        command: Option<astersql_session::runtime::PgSchemaCommand>,
+    ) -> Option<ConnResult<Vec<String>>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        Some(
+            self.send_request(SessionRequest::PgSchemaPath {
+                path,
+                command,
+                response: tx,
+            })
+            .and_then(|_| rx.recv().map_err(packet_error)?),
+        )
     }
     fn user_identity(&self) -> ConnResult<String> {
         let (tx, rx) = mpsc::sync_channel(1);

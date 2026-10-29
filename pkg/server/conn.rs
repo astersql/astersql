@@ -906,6 +906,14 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    /// None means the context does not implement PostgreSQL namespace facts.
+    fn pg_schema_path(
+        &self,
+        _path: Vec<String>,
+        _command: Option<astersql_session::runtime::PgSchemaCommand>,
+    ) -> Option<ConnResult<Vec<String>>> {
+        None
+    }
     fn user_identity(&self) -> ConnResult<String> {
         Ok(String::new())
     }

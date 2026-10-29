@@ -16166,3 +16166,286 @@ fn pg08_28_sql() {
     assert!(TcpStream::connect(address).is_err());
     println!("pg08_28_sql: {count} scenarios passed; listener closed");
 }
+
+#[test]
+fn pg08_29_sql() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(address).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    let mut count = 0;
+    for (path, expected) in [
+        ("pg_catalog", Some("pg_catalog")),
+        ("''", None),
+        ("missing", None),
+        ("public", Some("public")),
+    ] {
+        assert!(
+            !query(&mut s, &format!("SET search_path TO {path}"))
+                .iter()
+                .any(|m| m.0 == b'E')
+        );
+        let ms = query(
+            &mut s,
+            "SELECT COALESCE(current_schema(), current_schema()) AS v",
+        );
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b'D').unwrap().1,
+            row(&[expected]),
+            "{ms:?}"
+        );
+        count += 1;
+    }
+    send(
+        &mut s,
+        b'P',
+        b"refresh29\0SELECT current_schema() AS v\0\0\0",
+    );
+    send(&mut s, b'S', &[]);
+    assert!(!ready(&mut s).iter().any(|m| m.0 == b'E'));
+    assert!(
+        !query(&mut s, "SET search_path TO pg_catalog")
+            .iter()
+            .any(|m| m.0 == b'E')
+    );
+    send(&mut s, b'B', b"\0refresh29\0\0\0\0\0\0\0");
+    send(&mut s, b'E', &[0; 5]);
+    send(&mut s, b'S', &[]);
+    let ms = ready(&mut s);
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("pg_catalog")])
+    );
+    count += 1;
+    query(&mut s, "SET search_path TO public");
+
+    for expr in [
+        "current_schema()",
+        "pg_catalog.current_schema()",
+        "COALESCE(current_schema(),current_schema())",
+    ] {
+        for zero in [false, true] {
+            let sql = format!(
+                "SELECT {expr} AS v{}",
+                if zero { " WHERE false" } else { "" }
+            );
+            let ms = query(&mut s, &sql);
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+            let desc = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+            assert_eq!(&desc[2..4], b"v\0");
+            assert_eq!(&desc[10..14], &19u32.to_be_bytes());
+            assert_eq!(&desc[14..16], &64i16.to_be_bytes());
+            assert_eq!(&desc[16..20], &(-1i32).to_be_bytes());
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'D').count(),
+                usize::from(!zero)
+            );
+            if !zero {
+                assert_eq!(
+                    ms.iter().find(|m| m.0 == b'D').unwrap().1,
+                    row(&[Some("public")])
+                );
+            }
+            count += 1;
+            send(
+                &mut s,
+                b'P',
+                &[b"schema29\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+            );
+            send(&mut s, b'D', b"Sschema29\0");
+            send(&mut s, b'S', &[]);
+            let ms = ready(&mut s);
+            assert_eq!(
+                ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'1', b't', b'T', b'Z'],
+                "{ms:?}"
+            );
+            assert_eq!(ms.iter().find(|m| m.0 == b't').unwrap().1, vec![0, 0]);
+            assert_eq!(ms.iter().find(|m| m.0 == b'T').unwrap().1, *desc);
+            for fmt in [0i16, 1] {
+                let mut bind = b"\0schema29\0".to_vec();
+                bind.extend([0, 0, 0, 0, 0, 1]);
+                bind.extend(fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready(&mut s);
+                assert_eq!(
+                    ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    if zero {
+                        vec![b'2', b'T', b'C', b'Z']
+                    } else {
+                        vec![b'2', b'T', b'D', b'C', b'Z']
+                    },
+                    "{ms:?}"
+                );
+                let mut portal = desc.clone();
+                let n = portal.len();
+                portal[n - 2..].copy_from_slice(&fmt.to_be_bytes());
+                assert_eq!(ms.iter().find(|m| m.0 == b'T').unwrap().1, portal);
+                if !zero {
+                    assert_eq!(
+                        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+                        row(&[Some("public")])
+                    );
+                }
+                count += 1;
+            }
+            send(&mut s, b'C', b"Sschema29\0");
+            send(&mut s, b'S', &[]);
+            assert_eq!(
+                ready(&mut s).iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'3', b'Z']
+            );
+        }
+    }
+    for sql in [
+        "SELECT current_schema(1::int4) AS v",
+        "SELECT pg_catalog.current_schema(NULL::int4) AS v WHERE false",
+    ] {
+        assert_eq!(query(&mut s, "BEGIN").last().unwrap().1, b"T");
+        send(
+            &mut s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut s, b'B', &[0; 8]);
+        send(&mut s, b'E', &[0; 5]);
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        assert!(
+            ms.iter()
+                .find(|m| m.0 == b'E')
+                .unwrap()
+                .1
+                .windows(7)
+                .any(|b| b == b"C42883\0"),
+            "{ms:?}"
+        );
+        assert_eq!(ms.iter().map(|m| m.0).collect::<Vec<_>>(), [b'E', b'Z']);
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+        assert_eq!(ms.last().unwrap().1, b"E");
+        assert_eq!(query(&mut s, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(
+            query(&mut s, "SELECT 1::int4 AS v")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+        count += 1;
+    }
+    let role = format!("pg0829_role_{}", address.port());
+    native.execute(&format!("CREATE ROLE {role}")).unwrap();
+    native
+        .execute(&format!("GRANT {role} TO 'root'@'%'"))
+        .unwrap();
+    for sql in [
+        "CREATE SCHEMA s_hidden".to_owned(),
+        "CREATE SCHEMA s_ok".to_owned(),
+        format!("GRANT USAGE ON SCHEMA s_ok TO {role}"),
+        format!("SET ROLE {role}"),
+        "SET search_path TO missing,s_hidden,s_ok".to_owned(),
+    ] {
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    }
+    assert_eq!(
+        query(&mut s, "SELECT current_schema() AS v")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("s_ok")])
+    );
+    count += 1;
+    query(&mut s, "SET search_path TO missing,s_hidden");
+    assert_eq!(
+        query(&mut s, "SELECT current_schema() AS v")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[None])
+    );
+    count += 1;
+    query(&mut s, "SET ROLE NONE");
+    query(&mut s, &format!("GRANT USAGE ON SCHEMA s_hidden TO {role}"));
+    query(&mut s, &format!("SET ROLE {role}"));
+    assert_eq!(
+        query(&mut s, "SELECT current_schema() AS v")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("s_hidden")])
+    );
+    count += 1;
+    query(&mut s, "SET ROLE NONE");
+    query(
+        &mut s,
+        &format!("REVOKE USAGE ON SCHEMA s_hidden FROM {role}"),
+    );
+    query(&mut s, &format!("SET ROLE {role}"));
+    assert_eq!(
+        query(&mut s, "SELECT current_schema() AS v")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[None])
+    );
+    count += 1;
+    query(&mut s, "SET ROLE NONE");
+    query(&mut s, "SET search_path TO public");
+    for name in ["s_hidden", "s_ok"] {
+        let ms = query(&mut s, &format!("DROP SCHEMA {name}"));
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    }
+    native.execute(&format!("DROP ROLE {role}")).unwrap();
+    drop(s);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    println!("pg08_29_sql: {count} scenarios passed; listener closed");
+}

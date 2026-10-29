@@ -19,7 +19,7 @@ pub(crate) enum SessionQuery {
     DateStyleReset,
     Set(Vec<String>),
     Reset,
-    Schema(String),
+    SchemaUtility(astersql_session::runtime::PgSchemaCommand),
 }
 #[derive(Debug)]
 pub(crate) struct PgSession {
@@ -77,6 +77,10 @@ impl PgSession {
                     | "DROP TABLE"
                     | "CREATE DATABASE"
                     | "DROP DATABASE"
+                    | "CREATE SCHEMA"
+                    | "DROP SCHEMA"
+                    | "GRANT"
+                    | "REVOKE"
                     | "ALTER TABLE"
                     | "TRUNCATE TABLE"
             )
@@ -108,6 +112,9 @@ impl PgSession {
         &self,
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<Vec<String>> {
+        if let Some(result) = context.pg_schema_path(self.path.clone(), None) {
+            return result;
+        }
         let namespaces = crate::pg_catalog::namespace_names(context)?;
         let identity = context.user_identity()?;
         let user = identity
@@ -197,16 +204,24 @@ impl PgSession {
             )),
             SessionQuery::Set(path) => {
                 self.path = path.clone();
+                self.effective_explicit_path(context)?;
                 None
             }
             SessionQuery::Reset => {
                 *self = Self::default();
+                self.effective_explicit_path(context)?;
                 None
             }
-            SessionQuery::Schema(_) => Some(
-                self.effective_schema(context)?
-                    .map_or(Value::Null, Value::Text),
-            ),
+            SessionQuery::SchemaUtility(command) => {
+                context
+                    .pg_schema_path(self.path.clone(), Some(command.clone()))
+                    .ok_or_else(|| {
+                        crate::conn::ConnError::Session(
+                            "PostgreSQL schema metadata unavailable".into(),
+                        )
+                    })??;
+                None
+            }
         };
         let meta = query.metadata();
         Ok(QueryResult {
@@ -247,9 +262,14 @@ impl SessionQuery {
             Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
                 "RESET"
             }
+            Self::SchemaUtility(command) => match command {
+                astersql_session::runtime::PgSchemaCommand::Create(_) => "CREATE SCHEMA",
+                astersql_session::runtime::PgSchemaCommand::Drop(_) => "DROP SCHEMA",
+                astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
+                astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
+            },
             Self::Set(_) | Self::DateStyleSet(_) | Self::IntervalStyleSet(_) => "SET",
             Self::Reset | Self::DateStyleReset => "RESET",
-            _ => "SELECT",
         }
     }
     pub(crate) fn metadata(&self) -> PreparedMetadata {
@@ -263,7 +283,6 @@ impl SessionQuery {
                 "lc_numeric"
             }),
             Self::IntervalStyleShow => Some("IntervalStyle"),
-            Self::Schema(name) => Some(name.as_str()),
             _ => None,
         };
         let mut result = PreparedMetadata {
@@ -277,11 +296,7 @@ impl SessionQuery {
             native_types: Vec::new(),
         };
         if let Some(name) = name {
-            let code = if matches!(self, Self::Schema(_)) {
-                crate::pg_result::CatalogColumnType::Name as u8
-            } else {
-                253
-            };
+            let code = 253;
             result.columns.push(ColumnInfo {
                 name: name.into(),
                 column_type: code,
@@ -318,6 +333,52 @@ impl SessionQuery {
             tokens.pop();
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
+        use astersql_session::runtime::PgSchemaCommand;
+        let identifier = |token: &Token| match token {
+            Token::Word(name) | Token::Quoted(name) => Some(name.clone()),
+            _ => None,
+        };
+        if tokens.len() == 3 && word(tokens.get(1), "schema") {
+            if let Some(name) = identifier(&tokens[2]) {
+                if word(tokens.first(), "create") {
+                    return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Create(name))));
+                }
+                if word(tokens.first(), "drop") {
+                    return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Drop(name))));
+                }
+            }
+        }
+        if tokens.len() == 7
+            && (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
+            && word(tokens.get(1), "usage")
+            && word(tokens.get(2), "on")
+            && word(tokens.get(3), "schema")
+        {
+            let grant = word(tokens.first(), "grant");
+            if word(tokens.get(5), if grant { "to" } else { "from" })
+                && let (Some(schema), Some(mut grantee)) =
+                    (identifier(&tokens[4]), identifier(&tokens[6]))
+            {
+                if word(tokens.get(6), "public") {
+                    grantee = "PUBLIC".into();
+                }
+                return Ok(Some(Self::SchemaUtility(PgSchemaCommand::Usage {
+                    schema,
+                    grantee,
+                    grant,
+                })));
+            }
+        }
+        // Do not let unsupported PG namespace utility syntax fall through to
+        // CREATE DATABASE or the unrelated MySQL privilege model.
+        if (word(tokens.first(), "create") || word(tokens.first(), "drop"))
+            && word(tokens.get(1), "schema")
+            || (word(tokens.first(), "grant") || word(tokens.first(), "revoke"))
+                && word(tokens.get(1), "usage")
+                && word(tokens.get(3), "schema")
+        {
+            return Err(("0A000", "unsupported PostgreSQL schema utility form".into()));
+        }
         let scoped = word(tokens.get(1), "local") || word(tokens.get(1), "session");
         let index = if scoped { 2 } else { 1 };
         if word(tokens.get(index), "lc_numeric") || word(tokens.get(index), "lc_monetary") {
@@ -521,36 +582,6 @@ impl SessionQuery {
             }
             return Ok(Some(Self::Set(path)));
         }
-        if !word(tokens.first(), "select") {
-            return Ok(None);
-        }
-        let mut i = 1;
-        if word(tokens.get(i), "pg_catalog") && tokens.get(i + 1) == Some(&Token::Symbol('.')) {
-            i += 2;
-        }
-        let function = match tokens.get(i) {
-            Some(Token::Word(name)) if name == "current_schema" => name.clone(),
-            _ => return Ok(None),
-        };
-        i += 1;
-        if tokens.get(i) == Some(&Token::Symbol('('))
-            && tokens.get(i + 1) == Some(&Token::Symbol(')'))
-        {
-            i += 2;
-        } else {
-            return Ok(None);
-        }
-        let mut label = function.clone();
-        if word(tokens.get(i), "as") {
-            i += 1;
-        }
-        if let Some(Token::Word(alias) | Token::Quoted(alias)) = tokens.get(i) {
-            label = alias.clone();
-            i += 1;
-        }
-        if i != tokens.len() {
-            return Ok(None);
-        }
-        Ok(Some(Self::Schema(label)))
+        Ok(None)
     }
 }

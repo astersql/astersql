@@ -181,6 +181,9 @@ impl EvalContext for assertionEvalContext<'_> {
     ) -> Result<chrono::DateTime<chrono_tz::Tz>, contextutil::errors::SharedError> {
         self.eval_context.CurrentTime()
     }
+    fn PgCurrentSchema(&self) -> Option<String> {
+        self.eval_context.PgCurrentSchema()
+    }
     fn CurrentDB(&self) -> String {
         self.eval_context.CurrentDB()
     }
