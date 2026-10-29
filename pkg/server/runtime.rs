@@ -1976,8 +1976,8 @@ impl TiDBContext for ConcreteTiDBContext {
             return Err(ConnError::Session("session is closed".to_owned()));
         }
         self.ensure_not_cancelled(cancel)?;
-        let statements = SplitSQLStatementsWithDialect(sql, self.dialect)
-            .map_err(|error| ConnError::Session(error.to_string()))?;
+        let statements =
+            SplitSQLStatementsWithDialect(sql, self.dialect).map_err(session_protocol_error)?;
         if !allow_multi_statements && statements.len() > 1 {
             return Err(ConnError::Session(
                 "multi-statement execution is disabled".to_owned(),
@@ -2061,8 +2061,8 @@ impl TiDBContext for ConcreteTiDBContext {
             return Err(ConnError::Session("session is closed".to_owned()));
         }
         self.ensure_not_cancelled(cancel)?;
-        let statements = SplitSQLStatementsWithDialect(sql, self.dialect)
-            .map_err(|error| ConnError::Session(error.to_string()))?;
+        let statements =
+            SplitSQLStatementsWithDialect(sql, self.dialect).map_err(session_protocol_error)?;
         self.in_multi_statements
             .store(statements.len() > 1, Ordering::Release);
         if !allow_multi_statements && statements.len() > 1 {

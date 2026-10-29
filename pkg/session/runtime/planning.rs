@@ -3158,9 +3158,16 @@ pub(super) fn validate_function_visibility(
     struct Visibility {
         dialect: ast::SqlDialect,
         hidden: Option<String>,
+        collation_error: Option<SessionError>,
     }
     impl ast::Visitor for Visibility {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if self.dialect == ast::SqlDialect::PostgreSQL
+                && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && let Err(error) = super::relational_value::pg_conditional_collation(expr)
+            {
+                self.collation_error.get_or_insert(error);
+            }
             if let Some(ast::ExprNode {
                 Kind:
                     ast::ExprKind::Function {
@@ -3215,9 +3222,13 @@ pub(super) fn validate_function_visibility(
     let mut visitor = Visibility {
         dialect,
         hidden: None,
+        collation_error: None,
     };
     for statement in statements {
         statement.accept(&mut visitor);
+    }
+    if let Some(error) = visitor.collation_error {
+        return Err(error);
     }
     if let Some(name) = visitor.hidden {
         let message = format!("function {name} does not exist");

@@ -4016,3 +4016,361 @@ fn pg_function_13_mysql() {
     drop(server);
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_14() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    fn description(oid: u32, width: i16, format: i16) -> Vec<u8> {
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &oid.to_be_bytes(),
+            &width.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &format.to_be_bytes(),
+        ]
+        .concat()
+    }
+
+    for (expression, expected) in [
+        (r#"coalesce(NULL::text,'A'::text COLLATE "C")"#, Some("A")),
+        (r#"nullif('A'::text COLLATE "C",'a'::text)"#, Some("A")),
+        (r#"nullif('A'::text COLLATE "C",'A'::text)"#, None),
+        (r#"nullif('01'::text COLLATE "C",'1'::text)"#, Some("01")),
+        (
+            r#"coalesce(NULL::text,'A'::text COLLATE "POSIX")"#,
+            Some("A"),
+        ),
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let m = query(&mut socket, &sql);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                if empty {
+                    b"TCZ".as_slice()
+                } else {
+                    b"TDCZ".as_slice()
+                },
+                "{sql}: {m:?}"
+            );
+            assert_eq!(m[0].1, description(25, -1, 0), "{sql}");
+            if !empty {
+                assert_eq!(m[1].1, row(&[expected]), "{sql}");
+            }
+            assert_eq!(m.last().unwrap().1, b"I");
+        }
+    }
+
+    for expression in [
+        r#"coalesce($1::text,'A'::text COLLATE "C")"#,
+        r#"nullif($1::text COLLATE "C",'A'::text)"#,
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            send(
+                &mut socket,
+                b'P',
+                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+            );
+            send(&mut socket, b'D', b"S\0");
+            send(&mut socket, b'S', &[]);
+            let m = ready(&mut socket);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"1tTZ",
+                "{sql}: {m:?}"
+            );
+            assert_eq!(
+                m[1].1,
+                [&1i16.to_be_bytes()[..], &25u32.to_be_bytes()].concat()
+            );
+            assert_eq!(m[2].1, description(25, -1, 0));
+            for (format, value) in [
+                (0i16, Some("a")),
+                (1, None),
+                (1, Some("A")),
+                (0, None),
+                (0, Some("a")),
+            ] {
+                let mut bind = vec![0, 0];
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                if let Some(value) = value {
+                    bind.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                    bind.extend_from_slice(value.as_bytes());
+                } else {
+                    bind.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                send(&mut socket, b'B', &bind);
+                send(&mut socket, b'D', b"P\0");
+                send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                send(&mut socket, b'S', &[]);
+                let m = ready(&mut socket);
+                assert_eq!(
+                    m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    if empty {
+                        b"2TCZ".as_slice()
+                    } else {
+                        b"2TDCZ".as_slice()
+                    },
+                    "{sql}: {m:?}"
+                );
+                assert_eq!(m[1].1, description(25, -1, format));
+                let expected = if expression.starts_with("coalesce") {
+                    Some(value.unwrap_or("A"))
+                } else {
+                    value.filter(|v| *v != "A")
+                };
+                if !empty {
+                    assert_eq!(m[2].1, row(&[expected]), "{sql}");
+                }
+                assert_eq!(m.last().unwrap().1, b"I");
+            }
+        }
+    }
+    for expression in [
+        r#"coalesce('A'::text COLLATE "C",'b'::text COLLATE "POSIX")"#,
+        r#"coalesce(NULL::text COLLATE "C",'b'::text COLLATE "POSIX")"#,
+        r#"nullif('A'::text COLLATE "C",'a'::text COLLATE "POSIX")"#,
+    ] {
+        for parse in [false, true] {
+            for in_transaction in [false, true] {
+                if in_transaction {
+                    assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+                }
+                let sql = format!("SELECT {expression} AS v WHERE false");
+                let m = if parse {
+                    send(
+                        &mut socket,
+                        b'P',
+                        &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                    );
+                    send(&mut socket, b'S', &[]);
+                    ready(&mut socket)
+                } else {
+                    query(&mut socket, &sql)
+                };
+                assert_eq!(
+                    m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"EZ",
+                    "{sql}: {m:?}"
+                );
+                let e = &m[0].1;
+                assert!(e.windows(7).any(|s| s == b"C42P21\0"), "{e:?}");
+                assert!(e.windows(7).any(|s| s == b"SERROR\0"));
+                assert!(e.windows(7).any(|s| s == b"VERROR\0"));
+                let fields = e
+                    .split(|b| *b == 0)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>();
+                assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
+                for tag in b"DHP" {
+                    assert!(!fields.iter().any(|f| f[0] == *tag));
+                }
+                assert_eq!(
+                    m.last().unwrap().1,
+                    if in_transaction { b"E" } else { b"I" }
+                );
+                if in_transaction {
+                    assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+                }
+                let probe = query(&mut socket, "SELECT 1::int4");
+                assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                assert_eq!(probe[1].1, row(&[Some("1")]));
+            }
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_14_identity() {
+    use astersql_parser_ast::SqlDialect;
+    use astersql_session::runtime::ConcreteSession;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for name in ["C", "POSIX"] {
+        for empty in [false, true] {
+            for expr in [
+                format!("coalesce(NULL::text,'A'::text COLLATE \"{name}\")"),
+                format!("nullif('A'::text,'a'::text COLLATE \"{name}\")"),
+            ] {
+                let sql = format!(
+                    "SELECT {expr} AS v{}",
+                    if empty { " WHERE false" } else { "" }
+                );
+                let fields = pg.describe_result_fields(&sql).unwrap();
+                assert_eq!(fields[0].column.FieldType.GetCollate(), name, "{sql}");
+            }
+            // The session API consumes engine markers; the TCP test above
+            // independently verifies the public $1 spelling and translation.
+            for expr in [
+                format!("coalesce(?::text,'A'::text COLLATE \"{name}\")"),
+                format!("nullif(?::text,'a'::text COLLATE \"{name}\")"),
+            ] {
+                let sql = format!(
+                    "SELECT {expr} AS v{}",
+                    if empty { " WHERE false" } else { "" }
+                );
+                let (id, count, fields) = pg
+                    .prepare_protocol_statement_with_parameter_types(&sql, &[25])
+                    .unwrap();
+                assert_eq!(count, 1);
+                assert_eq!(fields[0].column.FieldType.GetCollate(), name, "{sql}");
+                pg.close_protocol_statement(id).unwrap();
+            }
+        }
+    }
+    // Casting to a noncollatable result drops the text identity. Explicit
+    // input collations must not create a spurious integer-result conflict.
+    let sql =
+        r#"SELECT coalesce(('1'::text COLLATE "C")::int4,('2'::text COLLATE "POSIX")::int4) AS v"#;
+    let fields = pg.describe_result_fields(sql).unwrap();
+    assert_eq!(
+        fields[0].column.FieldType.GetType(),
+        astersql_parser_mysql::r#type::TypeLong
+    );
+    assert_eq!(
+        pg.execute(sql).unwrap()[0].next_row().unwrap().unwrap(),
+        vec!["1"]
+    );
+}
+
+#[test]
+fn pg_function_14_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    let address = server.listener_addr().unwrap();
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+
+    fn execute(socket: &mut TcpStream, sql: &str) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u16) {
+        mysql_packet(socket, 0, format!("\x03{sql}").as_bytes());
+        let first = mysql_read(socket);
+        assert_ne!(first[0], 0xff, "{sql}: {first:?}");
+        if first[0] == 0 {
+            return (vec![], vec![], 0);
+        }
+        let columns = (0..first[0])
+            .map(|_| mysql_read(socket))
+            .collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let mut rows = vec![];
+        loop {
+            let packet = mysql_read(socket);
+            if packet[0] == 0xfe && packet.len() < 9 {
+                return (
+                    columns,
+                    rows,
+                    u16::from_le_bytes(packet[1..3].try_into().unwrap()),
+                );
+            }
+            rows.push(packet);
+        }
+    }
+
+    for (expr, expected, baseline) in [
+        ("coalesce(NULL,'A' COLLATE utf8mb4_bin)", Some("A"), "'A'"),
+        ("nullif('A' COLLATE utf8mb4_bin,'a')", Some("A"), "'A'"),
+        ("nullif('A' COLLATE utf8mb4_bin,'A')", None, "NULL"),
+        ("nullif(NULL,'A' COLLATE utf8mb4_bin)", None, "NULL"),
+        ("coalesce('a' COLLATE utf8mb4_bin,'A')", Some("a"), "'a'"),
+    ] {
+        let actual = execute(&mut socket, &format!("SELECT {expr} AS v"));
+        let baseline = execute(&mut socket, &format!("SELECT {baseline} AS v"));
+        assert_eq!(actual.0, baseline.0, "metadata {expr}");
+        assert_eq!(
+            actual.1,
+            vec![
+                expected
+                    .map(|v| [vec![v.len() as u8], v.as_bytes().to_vec()].concat())
+                    .unwrap_or(vec![0xfb])
+            ],
+            "{expr}"
+        );
+        assert_eq!(actual.2, 0);
+        let mut offset = 0;
+        for _ in 0..6 {
+            offset += usize::from(actual.0[0][offset]) + 1;
+        }
+        let metadata = &actual.0[0][offset + 1..offset + 13];
+        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 45);
+        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 1024);
+        assert_eq!(metadata[6], 253);
+        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
+        assert_eq!(metadata[9], 0);
+    }
+    mysql_packet(&mut socket, 0, &[1]);
+    drop(socket);
+    drop(cleanup);
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}

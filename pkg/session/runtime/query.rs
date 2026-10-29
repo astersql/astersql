@@ -3769,6 +3769,25 @@ impl ConcreteSession {
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
+        let mut tp = self
+            .relational_query_expression_type_from_sources_uncollated(expression, source_fields);
+        // Collation is an analysis identity, independent of row selection and
+        // common-result typing. Retain the existing type-family derivation.
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && tp.PostgreSQLTextOid().is_some()
+            && let Ok(Some(collation)) =
+                super::relational_value::pg_conditional_collation(expression)
+        {
+            tp.SetCollate(collation);
+        }
+        tp
+    }
+
+    fn relational_query_expression_type_from_sources_uncollated(
+        &self,
+        expression: &ast::ExprNode,
+        source_fields: &[ConcreteResultField],
+    ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             if let ast::ExprKind::Function {
                 FnName,

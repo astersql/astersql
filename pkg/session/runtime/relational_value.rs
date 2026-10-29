@@ -807,6 +807,42 @@ pub(super) fn relational_hex_value(argument: &ast::ExprNode, value: &str) -> Str
         .collect()
 }
 
+/// Derive the explicit identity needed by conditional text expressions. C and
+/// POSIX share bytewise comparison but remain distinct explicit SQL collations.
+/// An outer COLLATE overrides the child's derived identity; the analysis
+/// visitor independently validates every inner conditional expression.
+pub(super) fn pg_conditional_collation(
+    expression: &ast::ExprNode,
+) -> SessionResult<Option<String>> {
+    match &expression.Kind {
+        ast::ExprKind::Collate { Collation, .. } if matches!(Collation.as_str(), "C" | "POSIX") => {
+            Ok(Some(Collation.clone()))
+        }
+        ast::ExprKind::Parentheses(inner) => pg_conditional_collation(inner),
+        ast::ExprKind::Cast {
+            Expr: inner, Tp, ..
+        } if Tp.PostgreSQLTextOid().is_some() => pg_conditional_collation(inner),
+        ast::ExprKind::Function { FnName, Args, .. }
+            if matches!(FnName.L.as_str(), "coalesce" | "nullif") =>
+        {
+            let mut chosen = None;
+            for arg in Args {
+                if let Some(name) = pg_conditional_collation(arg)? {
+                    if chosen.as_ref().is_some_and(|old| old != &name) {
+                        return Err(pg_bytea_input_error(
+                            "42P21",
+                            "collation mismatch between explicit collations C and POSIX",
+                        ));
+                    }
+                    chosen = Some(name);
+                }
+            }
+            Ok(chosen)
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Evaluate one scalar expression against a decoded relational row.
 pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
@@ -1560,10 +1596,18 @@ pub(super) fn relational_expression_value(
                 "nullif" if Args.len() == 2 => {
                     let left = relational_expression_value(&Args[0], row)?;
                     let right = relational_expression_value(&Args[1], row)?;
+                    let bytewise = PG_CAST_TABLE.with(|slot| slot.borrow().is_some())
+                        && pg_conditional_collation(expression)?.is_some();
                     if left
                         .as_deref()
                         .zip(right.as_deref())
-                        .is_some_and(|(left, right)| relational_compare(left, right).is_eq())
+                        .is_some_and(|(left, right)| {
+                            if bytewise {
+                                left == right
+                            } else {
+                                relational_compare(left, right).is_eq()
+                            }
+                        })
                     {
                         Ok(None)
                     } else {

@@ -1884,13 +1884,21 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::CharsetNameAlt02 => out.ident = "binary".to_owned(),
         ExpressionRule::CollationNameAlt01 => {
             let name = &rhs[rhs_len - (0)].ident;
-            match charset::charset::GetCollationByName(name) {
-                Ok(info) => out.ident = info.Name,
-                Err(_) => {
-                    yylex.AppendError(
-                        ErrUnknownCollation.GenWithStackByArgs(&[name.clone().into()]),
-                    );
-                    return Err(1);
+            // PG's built-in bytewise collations retain their SQL identity;
+            // they are not entries in MySQL's charset/collation registry.
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                && matches!(name.as_str(), "C" | "POSIX")
+            {
+                out.ident = name.clone();
+            } else {
+                match charset::charset::GetCollationByName(name) {
+                    Ok(info) => out.ident = info.Name,
+                    Err(_) => {
+                        yylex.AppendError(
+                            ErrUnknownCollation.GenWithStackByArgs(&[name.clone().into()]),
+                        );
+                        return Err(1);
+                    }
                 }
             }
         }
