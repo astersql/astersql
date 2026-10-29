@@ -9496,3 +9496,220 @@ fn pg_function_24_signed_local() {
     };
     assert_eq!(recovered.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
 }
+
+#[test]
+fn pg_function_25() {
+    // This self-check runs before any reference connection is needed.
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/pg_function_25_libpq.py"
+    );
+    assert!(
+        Command::new("python3")
+            .args([script, "--self-test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("function25_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-function25-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG_FUNCTION25_EVIDENCE={}", evidence.display());
+    let database_dropped = std::cell::Cell::new(false);
+    let cleanup = Cleanup(|| {
+        server.close();
+        database_dropped.set(native.execute(&format!("DROP DATABASE {database}")).is_ok());
+        let record = serde_json::json!({
+            "database_dropped": database_dropped.get(),
+            "postgres_port_closed": TcpStream::connect(pg).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err(),
+        });
+        let _ = std::fs::write(evidence.with_extension("cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    // output() reaps the child before server/database guards run on any assertion.
+    let output = Command::new("python3")
+        .arg(script)
+        .args([
+            pg.port().to_string(),
+            database.clone(),
+            evidence.display().to_string(),
+            mysql_address.port().to_string(),
+        ])
+        .env(
+            "PG_FUNCTION25_RUST_BINARY",
+            std::env::current_exe().unwrap(),
+        )
+        .output()
+        .expect("Python3 required");
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(database_dropped.get(), "test database leaked");
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn pg_function_25_local() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    use astersql_parser_ast::SqlDialect;
+    use astersql_session::runtime::ConcreteSession;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for expression in ["nullif(7::int4,'x'::text)", "nullif('x'::text,7::int4)"] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            assert!(
+                pg.describe_result_fields(&sql).is_err(),
+                "typed NULLIF equality must reject during analysis: {sql}"
+            );
+            assert!(
+                pg.execute(&sql).is_err(),
+                "typed NULLIF equality must reject before execution"
+            );
+        }
+    }
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for function in ["coalesce", "nullif"] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {function}(CAST(? AS SIGNED),CAST(2 AS SIGNED)) AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let statement = mysql.prepare(&sql).unwrap();
+            assert_eq!(statement.columns[0].column_type, 8, "formal integer result");
+            assert_eq!(statement.columns[0].decimals, 0);
+            for value in [Some(7i64), None, Some(2), Some(-2147483648)] {
+                let mut body = statement.statement_id.to_le_bytes().to_vec();
+                body.push(0);
+                body.extend_from_slice(&1u32.to_le_bytes());
+                body.extend_from_slice(&[u8::from(value.is_none()), 1, 8, 0]);
+                if let Some(value) = value {
+                    body.extend_from_slice(&value.to_le_bytes());
+                }
+                let WireResponse::ResultSet(result) = mysql.execute_prepared(&body).unwrap() else {
+                    panic!("conditional execution must succeed")
+                };
+                assert_eq!(result.columns, statement.columns, "fixed prepared identity");
+                let expected = if function == "coalesce" {
+                    value.or(Some(2))
+                } else {
+                    value.filter(|v| *v != 2)
+                };
+                assert_eq!(
+                    result.rows,
+                    if empty {
+                        vec![]
+                    } else {
+                        vec![vec![expected.map_or(TextValue::Null, |v| {
+                            TextValue::Bytes(v.to_string().into_bytes())
+                        })]]
+                    }
+                );
+            }
+            mysql.close_prepared(statement.statement_id).unwrap();
+            let WireResponse::ResultSet(result) = mysql
+                .query(&format!(
+                    "SELECT {function}(CAST(7 AS SIGNED),CAST(2 AS SIGNED)) AS v{}",
+                    if empty { " WHERE false" } else { "" }
+                ))
+                .unwrap()
+            else {
+                panic!("conditional query must succeed")
+            };
+            assert_eq!(result.columns[0].column_type, 8);
+            assert_eq!(result.rows.len(), usize::from(!empty));
+        }
+    }
+}
+
+#[test]
+fn pg_function_25_pg_type() {
+    use astersql_parser_ast::SqlDialect;
+    use astersql_session::runtime::ConcreteSession;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for expression in ["nullif(7::int4,'x'::text)", "nullif('x'::text,7::int4)"] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            assert!(
+                pg.describe_result_fields(&sql).is_err(),
+                "typed NULLIF equality must reject during analysis: {sql}"
+            );
+            assert!(
+                pg.execute(&sql).is_err(),
+                "typed NULLIF equality must reject before execution"
+            );
+        }
+    }
+}
+
+#[test]
+fn pg_function_25_mysql_filter() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for function in ["coalesce", "nullif"] {
+        for expression in [
+            format!("{function}(CAST(7 AS SIGNED),CAST(2 AS SIGNED))"),
+            format!("{function}(NULL,10/0)"),
+        ] {
+            let WireResponse::ResultSet(result) = mysql
+                .query(&format!("SELECT {expression} AS v WHERE false"))
+                .unwrap()
+            else {
+                panic!("empty conditional result")
+            };
+            assert!(
+                result.rows.is_empty(),
+                "selection precedes evaluation: {expression}"
+            );
+        }
+    }
+}

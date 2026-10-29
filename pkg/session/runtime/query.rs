@@ -2654,7 +2654,7 @@ impl ConcreteSession {
             // scalar path's untyped protocol fallback.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || (select.Where.is_some() && (expression_contains_function(expr, "coalesce") || expression_contains_function(expr, "nullif"))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From
@@ -3070,6 +3070,26 @@ impl ConcreteSession {
                     && let Err(error) = self.session.pg_extremum_result_type(Args, self.sources)
                 {
                     self.scalar_cast_error = Some(error);
+                }
+                // NULLIF selects an equality operator before row evaluation.
+                // Typed text cannot use the unknown-literal numeric coercion path.
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && FnName.L == "nullif"
+                    && Args.len() == 2
+                {
+                    let left = self.session.pg_case_input_type(&Args[0], self.sources);
+                    let right = self.session.pg_case_input_type(&Args[1], self.sources);
+                    if super::relational_value::pg_text_int4_pair(&left, &right)
+                        || super::relational_value::pg_text_int4_pair(&right, &left)
+                        || super::relational_value::pg_text_numeric_pair(&left, &right)
+                        || super::relational_value::pg_text_numeric_pair(&right, &left)
+                    {
+                        self.scalar_cast_error =
+                            Some(super::relational_value::pg_bytea_input_error(
+                                "42883",
+                                "operator does not exist for typed text and numeric operands",
+                            ));
+                    }
                 }
                 if let ast::ExprKind::Case {
                     WhenClauses,
@@ -3909,6 +3929,37 @@ impl ConcreteSession {
             source.GetType(),
             astersql_parser_mysql::r#type::TypeLong | astersql_parser_mysql::r#type::TypeLonglong
         ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+    }
+
+    /// The existing NULLIF rewriter can retain signed integer fields without
+    /// depending on the currently unlinked COALESCE factory or other families.
+    pub(super) fn is_mysql_signed_nullif(
+        &self,
+        expression: &ast::ExprNode,
+        source_fields: &[ConcreteResultField],
+    ) -> bool {
+        if self.sql_dialect() != ast::SqlDialect::MySQL {
+            return false;
+        }
+        let ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } = &expression.Kind
+        else {
+            return false;
+        };
+        if FnName.L != "nullif" || !Schema.L.is_empty() || Args.len() != 2 {
+            return false;
+        }
+        Args.iter().all(|arg| {
+            let source = self.signed_abs_argument_type(arg, source_fields);
+            matches!(
+                source.GetType(),
+                astersql_parser_mysql::r#type::TypeLong
+                    | astersql_parser_mysql::r#type::TypeLonglong
+            ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+        })
     }
 
     /// ABS consumes the explicit integer cast identity even on the MySQL
@@ -4795,6 +4846,7 @@ impl ConcreteSession {
                     result.push(result_field);
                 } else {
                     let field_type = if self.is_mysql_signed_abs(expression, &source_fields)
+                        || self.is_mysql_signed_nullif(expression, &source_fields)
                         || (self.sql_dialect() == ast::SqlDialect::MySQL
                             && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     {
