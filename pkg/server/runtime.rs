@@ -642,6 +642,9 @@ impl ConnectionDomain for CanonicalConnectionDomain {
 }
 
 pub struct ConcreteSessionDriver {
+    #[cfg(test)]
+    pub(crate) function_registry:
+        Option<Arc<astersql_expression::formal_registry::FunctionClassRegistry>>,
     domain: Arc<Domain>,
     auth_mode: BootstrapAuthMode,
     session_manager: RwLock<Option<Weak<dyn SessionManager>>>,
@@ -650,6 +653,8 @@ pub struct ConcreteSessionDriver {
 impl ConcreteSessionDriver {
     pub fn new(factory: Arc<CanonicalSessionFactory>, auth_mode: BootstrapAuthMode) -> Self {
         Self {
+            #[cfg(test)]
+            function_registry: None,
             domain: Arc::clone(factory.domain()),
             auth_mode,
             session_manager: RwLock::new(None),
@@ -659,6 +664,8 @@ impl ConcreteSessionDriver {
     #[cfg(test)]
     pub(crate) fn new_for_test(domain: Arc<Domain>, auth_mode: BootstrapAuthMode) -> Self {
         Self {
+            #[cfg(test)]
+            function_registry: None,
             domain,
             auth_mode,
             session_manager: RwLock::new(None),
@@ -668,6 +675,8 @@ impl ConcreteSessionDriver {
     /// 使用已初始化的 canonical Domain 装配驱动，供嵌入式入口与集成测试复用。
     pub fn from_initialized_domain(domain: Arc<Domain>, auth_mode: BootstrapAuthMode) -> Self {
         Self {
+            #[cfg(test)]
+            function_registry: None,
             domain,
             auth_mode,
             session_manager: RwLock::new(None),
@@ -717,22 +726,33 @@ impl SessionDriver for ConcreteSessionDriver {
             .read()
             .map_err(|_| ConnError::Poisoned("session manager"))?
             .clone();
+        #[cfg(test)]
+        let function_registry = self.function_registry.clone();
         let result_sender = Arc::downgrade(&request_tx);
         let worker = thread::Builder::new()
             .name(format!("sql-session-{connection_id}"))
             .spawn(move || {
-                run_session_worker(
-                    domain,
-                    dialect,
-                    connection_id,
-                    capability,
-                    collation,
-                    database,
-                    session_manager,
-                    init_tx,
-                    request_rx,
-                    result_sender,
-                );
+                let run = move || {
+                    run_session_worker(
+                        domain,
+                        dialect,
+                        connection_id,
+                        capability,
+                        collation,
+                        database,
+                        session_manager,
+                        init_tx,
+                        request_rx,
+                        result_sender,
+                    )
+                };
+                #[cfg(test)]
+                if let Some(registry) = function_registry {
+                    return astersql_expression::formal_registry::with_function_registry(
+                        registry, run,
+                    );
+                }
+                run();
             })
             .map_err(packet_error)?;
         let (cancellation, transaction_mdl) = match init_rx.recv().map_err(packet_error)? {

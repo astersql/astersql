@@ -1809,3 +1809,166 @@ fn pg_function_02_mysql() {
     }
     mysql_packet(&mut socket, 0, &[1]);
 }
+
+#[test]
+fn pg_function_03() {
+    fn connect(isolated: bool) -> (Cleanup, TcpStream) {
+        let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+        let mut driver = ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        );
+        if isolated {
+            driver.function_registry = Some(Arc::new(
+                astersql_expression::formal_registry::funcs.snapshot_without_factory("abs"),
+            ));
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = PgService::start(
+            listener,
+            Arc::new(driver),
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap();
+        let cleanup = Cleanup(service);
+        let mut socket = TcpStream::connect(address).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        while read(&mut socket).0 != b'Z' {}
+        (cleanup, socket)
+    }
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let (cleanup, mut socket) = connect(true);
+    let (healthy_cleanup, mut ordinary) = connect(false);
+    let address = socket.peer_addr().unwrap();
+    let healthy_address = ordinary.peer_addr().unwrap();
+    for (sql, state, message) in [
+        ("SELECT abs((-1)::int4) AS v", "0A000", "not linked"),
+        ("SELECT abs(NULL::int4) AS v", "0A000", "not linked"),
+        (
+            "SELECT pg_catalog.abs((-1)::int4) AS v",
+            "0A000",
+            "not linked",
+        ),
+        (
+            "SELECT astersql_missing_function_03(1::int4) AS v",
+            "42883",
+            "astersql_missing_function_03",
+        ),
+    ] {
+        for parse in [false, true] {
+            let messages = if parse {
+                send(
+                    &mut socket,
+                    b'P',
+                    &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                );
+                // Parse describes the visible signature without constructing its
+                // evaluator. The missing factory must fail when Execute builds it.
+                send(&mut socket, b'B', &[0, 0, 0, 0, 0, 0, 0, 0]);
+                send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                send(&mut socket, b'S', &[]);
+                let mut messages = Vec::new();
+                loop {
+                    let m = read(&mut socket);
+                    let done = m.0 == b'Z';
+                    messages.push(m);
+                    if done {
+                        break;
+                    }
+                }
+                messages
+            } else {
+                query(&mut socket, sql)
+            };
+            assert_eq!(
+                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                if parse {
+                    b"12EZ".as_slice()
+                } else {
+                    b"EZ".as_slice()
+                },
+                "{sql}: {messages:?}"
+            );
+            let error = &messages.iter().find(|m| m.0 == b'E').unwrap().1;
+            let mut fields = std::collections::BTreeMap::new();
+            let mut offset = 0;
+            while error[offset] != 0 {
+                let tag = error[offset];
+                offset += 1;
+                let length = error[offset..].iter().position(|b| *b == 0).unwrap();
+                fields.insert(
+                    tag,
+                    std::str::from_utf8(&error[offset..offset + length]).unwrap(),
+                );
+                offset += length + 1;
+            }
+            println!("{sql} parse={parse}: {fields:?}");
+            assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'C'), Some(&state));
+            assert!(fields[&b'M'].contains(message));
+            assert!(
+                [b'D', b'H', b'P']
+                    .iter()
+                    .all(|tag| !fields.contains_key(tag))
+            );
+            assert_eq!(messages.last().unwrap().1, [b'I']);
+            assert_eq!(
+                query(&mut socket, "SELECT 1::int4")
+                    .iter()
+                    .find(|m| m.0 == b'D')
+                    .unwrap()
+                    .1,
+                row(&[Some("1")])
+            );
+            // A concurrent ordinary connection still uses the real ABS factory.
+            let healthy = query(&mut ordinary, "SELECT abs((-1)::int4) AS v");
+            assert_eq!(
+                healthy.iter().find(|m| m.0 == b'D').unwrap().1,
+                row(&[Some("1")])
+            );
+        }
+    }
+    for (sql, value) in [
+        ("SELECT abs((-1)::int4) AS v", Some("1")),
+        ("SELECT abs(NULL::int4) AS v", None),
+    ] {
+        let messages = query(&mut ordinary, sql);
+        assert_eq!(messages.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+        let expected = [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &23u32.to_be_bytes(),
+            &4i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat();
+        assert_eq!(messages[0].1, expected);
+        assert_eq!(messages[1].1, row(&[value]));
+    }
+    send(&mut socket, b'X', &[]);
+    send(&mut ordinary, b'X', &[]);
+    drop(socket);
+    drop(ordinary);
+    drop(cleanup);
+    drop(healthy_cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    assert!(TcpStream::connect(healthy_address).is_err());
+}

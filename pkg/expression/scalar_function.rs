@@ -657,9 +657,8 @@ pub fn newFunctionImpl(
         ast::Sysdate if ctx.GetSysdateIsNow() => func_name = ast::Now.to_owned(),
         _ => {}
     }
-    let Some(fc) = funcs
-        .get_for_dialect(&func_name, ctx.GetEvalCtx().SQLDialect())
-        .or_else(|| extensionFuncs.get_for_dialect(&func_name, ctx.GetEvalCtx().SQLDialect()))
+    let Some(fc) =
+        crate::formal_registry::resolve_function_class(&func_name, ctx.GetEvalCtx().SQLDialect())
     else {
         let db = ctx.GetEvalCtx().CurrentDB();
         return if db.is_empty() {

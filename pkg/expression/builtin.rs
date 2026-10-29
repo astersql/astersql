@@ -6403,6 +6403,42 @@ pub mod formal_registry {
         }
     }
 
+    std::thread_local! {
+        // Canonical server sessions own a dedicated SQL worker. A scoped snapshot
+        // follows that worker without changing factories seen by other sessions.
+        static SCOPED_REGISTRY: std::cell::RefCell<Option<Arc<FunctionClassRegistry>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Run construction against a private snapshot, restoring the previous scope
+    /// on normal return and unwinding. The snapshot must stay on this SQL worker.
+    pub fn with_function_registry<T>(
+        registry: Arc<FunctionClassRegistry>,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        struct Restore(Option<Arc<FunctionClassRegistry>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SCOPED_REGISTRY.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+        let _restore = Restore(SCOPED_REGISTRY.with(|slot| slot.replace(Some(registry))));
+        run()
+    }
+
+    /// Resolve construction candidates from the current private scope, if any.
+    pub fn resolve_function_class(
+        name: &str,
+        dialect: crate::ast::SqlDialect,
+    ) -> Option<Arc<dyn functionClass>> {
+        SCOPED_REGISTRY.with(|slot| match slot.borrow().as_ref() {
+            Some(registry) => registry.get_for_dialect(name, dialect),
+            None => funcs
+                .get_for_dialect(name, dialect)
+                .or_else(|| extensionFuncs.get_for_dialect(name, dialect)),
+        })
+    }
+
     fn invoke_factory(
         name: &str,
         ctx: &dyn BuildContext,
@@ -6416,16 +6452,20 @@ pub mod formal_registry {
             return crate::planner_bridge_kernel::build_builtin(name, ctx, args)
                 .expect("planner bridge builtin predicate and dispatcher must stay in sync");
         }
-        let factory = BUILTIN_FACTORIES
-            .read()
-            .map_err(|_| errors::New("builtin factory registry poisoned"))?
-            .get(name)
-            .copied()
-            .ok_or_else(|| {
-                errors::New(format!(
-                    "builtin function '{name}' is registered but its complete implementation is not linked"
-                ))
-            })?;
+        let scoped_factory = SCOPED_REGISTRY.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|registry| registry.factories.as_ref())
+                .map(|factories| factories.get(name).copied())
+        });
+        let factory = match scoped_factory {
+            Some(factory) => factory,
+            None => BUILTIN_FACTORIES.read()
+                .map_err(|_| errors::New("builtin factory registry poisoned"))?
+                .get(name).copied(),
+        }.ok_or_else(|| errors::New(format!(
+            "builtin function '{name}' is registered but its complete implementation is not linked"
+        )))?;
         factory(ctx, args, metadata)
             .map(GeneratedPolicyBuiltin::new)
             .map(|function| Box::new(function) as Box<dyn builtinFunc>)
@@ -6435,9 +6475,31 @@ pub mod formal_registry {
     /// 结构体 `FunctionClassRegistry`。
     pub struct FunctionClassRegistry {
         entries: RwLock<HashMap<String, Arc<dyn functionClass>>>,
+        factories: Option<HashMap<String, BuiltinFactory>>,
     }
 
     impl FunctionClassRegistry {
+        /// Copy candidates and factories for an isolated unavailable-factory fixture.
+        /// Removing a factory preserves its visible class and never mutates globals.
+        pub fn snapshot_without_factory(&self, name: &str) -> Self {
+            let entries = self
+                .entries
+                .read()
+                .expect("function registry poisoned")
+                .clone();
+            let mut factories = self.factories.clone().unwrap_or_else(|| {
+                BUILTIN_FACTORIES
+                    .read()
+                    .expect("builtin factory registry poisoned")
+                    .clone()
+            });
+            factories.remove(name);
+            Self {
+                entries: RwLock::new(entries),
+                factories: Some(factories),
+            }
+        }
+
         fn from_specs(specs: &[(&str, usize, isize)]) -> Self {
             BUILTIN_FACTORIES
                 .write()
@@ -6478,6 +6540,7 @@ pub mod formal_registry {
                 .collect();
             Self {
                 entries: RwLock::new(entries),
+                factories: None,
             }
         }
 

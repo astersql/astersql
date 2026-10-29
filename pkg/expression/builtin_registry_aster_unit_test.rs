@@ -727,3 +727,75 @@ fn pg_function_02() {
         );
     }
 }
+
+#[test]
+fn pg_function_03() {
+    use crate::ast::SqlDialect;
+    use crate::formal_registry::{resolve_function_class, with_function_registry};
+    let fixture = std::sync::Arc::new(funcs.snapshot_without_factory("abs"));
+    for dialect in [SqlDialect::PostgreSQL, SqlDialect::MySQL] {
+        let eval = exprstatic::NewEvalContext(vec![
+            exprstatic::WithSQLDialect(dialect),
+            exprstatic::WithCurrentDB("test".to_owned()),
+        ]);
+        let context =
+            exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(eval))]);
+        let build = |name: &str| {
+            crate::NewFunctionBase(
+                &context,
+                name,
+                *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+                vec![Box::new(crate::NewInt64Const(-1))],
+            )
+        };
+        with_function_registry(fixture.clone(), || {
+            assert!(resolve_function_class("abs", dialect).is_some());
+            assert!(resolve_function_class("astersql_missing_function_03", dialect).is_none());
+            let error = build("abs")
+                .err()
+                .expect("visible ABS without factory must fail")
+                .to_string();
+            assert_eq!(
+                error,
+                "builtin function 'abs' is registered but its complete implementation is not linked"
+            );
+            let unknown = build("astersql_missing_function_03")
+                .err()
+                .expect("unknown function must fail")
+                .to_string();
+            assert!(!unknown.contains("not linked"));
+            assert_eq!(
+                unknown,
+                "FUNCTION test.astersql_missing_function_03 does not exist"
+            );
+            println!("{dialect:?}: missing factory={error}; unknown={unknown}");
+            // A nested failure restores the outer private snapshot as well.
+            let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_function_registry(fixture.clone(), || panic!("fixture unwind"));
+            }));
+            assert!(nested.is_err());
+            assert!(build("abs").is_err());
+        });
+        assert_eq!(
+            build("abs")
+                .unwrap()
+                .EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap(),
+            (1, false)
+        );
+    }
+    // Unwinding the outermost scope also restores the ordinary factory.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_function_registry(fixture, || panic!("outer fixture unwind"));
+    }));
+    let context = exprstatic::NewExprContext(Vec::new());
+    assert!(
+        crate::NewFunctionBase(
+            &context,
+            "abs",
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            vec![Box::new(crate::NewInt64Const(-1))]
+        )
+        .is_ok()
+    );
+}

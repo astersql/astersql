@@ -887,6 +887,9 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
             if message == "PostgreSQL ESCAPE expression evaluation is unsupported"
                 || message == "DML RETURNING is unsupported by the PostgreSQL listener"
                 || message.starts_with("PostgreSQL RETURNING ")
+                // Session evaluation adds context around the formal factory error.
+                || (message.contains("builtin function '")
+                    && message.ends_with("' is registered but its complete implementation is not linked"))
             {
                 "0A000"
             } else if message == "PG catalog row limit exceeded (16384 rows)"
@@ -909,6 +912,19 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
             {
                 "42883"
             } else if message.starts_with("function ") && message.ends_with(" does not exist") {
+                "42883"
+            } else if message
+                .rsplit_once("unsupported scalar function ")
+                .is_some_and(|(_, name)| {
+                    // The relational evaluator also owns kernels outside this table.
+                    // Only a completely absent name qualifies as undefined_function.
+                    astersql_expression::formal_registry::resolve_function_class(
+                        name,
+                        astersql_parser_ast::SqlDialect::PostgreSQL,
+                    )
+                    .is_none()
+                })
+            {
                 "42883"
             } else if message.starts_with("Unknown column ") {
                 "42703"
