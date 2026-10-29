@@ -5666,6 +5666,9 @@ pub mod formal_registry {
                     source.clone()
                 } else {
                     let mut result = field_type_for_eval_type(types::ETInt);
+                    // Go newReturnFieldTypeForBaseBuiltinFunc marks numeric ABS
+                    // as binary independently of the argument's nullability.
+                    result.AddFlag(mysql::BinaryFlag);
                     result.SetFlen(source.GetFlen());
                     result.SetDecimal(source.GetDecimal());
                     result

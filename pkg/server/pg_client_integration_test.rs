@@ -9396,3 +9396,103 @@ fn pg_function_24() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn pg_function_24_signed_local() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut client = server.connect_root(0, None).unwrap();
+    // Selection must precede ABS evaluation: even the minimum has no overflow
+    // when WHERE eliminates the candidate row.
+    for source in ["-17", "NULL", "-9223372036854775808"] {
+        let WireResponse::ResultSet(result) = client
+            .query(&format!(
+                "SELECT abs(CAST({source} AS SIGNED)) AS v WHERE false"
+            ))
+            .unwrap()
+        else {
+            panic!("empty signed ABS projection must succeed")
+        };
+        assert!(result.rows.is_empty(), "WHERE false must select no rows");
+        assert_eq!(result.columns[0].column_type, 8);
+        assert_eq!(result.columns[0].decimals, 0);
+        assert_ne!(result.columns[0].flags & 128, 0, "numeric BinaryFlag");
+    }
+    let WireResponse::ResultSet(result) = client
+        .query("SELECT abs(CAST(-9007199254740993 AS SIGNED)) AS v")
+        .unwrap()
+    else {
+        panic!("signed ABS query must succeed")
+    };
+    assert_eq!(
+        result.rows,
+        vec![vec![TextValue::Bytes(b"9007199254740993".to_vec())]]
+    );
+    assert_eq!(result.columns[0].decimals, 0);
+    for empty in [false, true] {
+        let sql = format!(
+            "SELECT abs(CAST(? AS SIGNED)) AS v{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        let prepared = client.prepare(&sql).unwrap();
+        assert_eq!(prepared.columns[0].decimals, 0);
+        assert_eq!(
+            prepared.columns[0].column_length, 22,
+            "Go signed CAST width"
+        );
+        assert_ne!(prepared.columns[0].flags & 128, 0);
+        for value in [Some(-9007199254740993i64), None, Some(i64::MIN), Some(2)] {
+            let mut body = prepared.statement_id.to_le_bytes().to_vec();
+            body.push(0);
+            body.extend_from_slice(&1u32.to_le_bytes());
+            body.extend_from_slice(&[u8::from(value.is_none()), 1, 8, 0]);
+            if let Some(value) = value {
+                body.extend_from_slice(&value.to_le_bytes());
+            }
+            let result = client.execute_prepared(&body).unwrap();
+            if value == Some(i64::MIN) && !empty {
+                let WireResponse::Err(error) = result else {
+                    panic!("prepared overflow must fail")
+                };
+                assert_eq!(error.code, 1690);
+                continue;
+            }
+            let WireResponse::ResultSet(result) = result else {
+                panic!("prepared ABS must return rows/description")
+            };
+            assert_eq!(result.columns, prepared.columns, "fixed prepared signature");
+            assert_eq!(
+                result.rows,
+                if empty {
+                    vec![]
+                } else {
+                    vec![vec![value.map_or(TextValue::Null, |v| {
+                        TextValue::Bytes(v.abs().to_string().into_bytes())
+                    })]]
+                }
+            );
+        }
+        client.close_prepared(prepared.statement_id).unwrap();
+    }
+    let WireResponse::Err(error) = client
+        .query("SELECT abs(CAST(-9223372036854775808 AS SIGNED)) AS v")
+        .unwrap()
+    else {
+        panic!("signed ABS overflow must fail")
+    };
+    assert_eq!(error.code, 1690);
+    let WireResponse::ResultSet(warnings) = client.query("SHOW WARNINGS").unwrap() else {
+        panic!("SHOW WARNINGS must return rows")
+    };
+    assert_eq!(warnings.rows.len(), 1);
+    assert_eq!(warnings.rows[0][0], TextValue::Bytes(b"Error".to_vec()));
+    assert_eq!(warnings.rows[0][1], TextValue::Bytes(b"1690".to_vec()));
+    assert_eq!(
+        warnings.rows[0][2],
+        TextValue::Bytes(b"BIGINT value is out of range in 'abs(-9223372036854775808)'".to_vec())
+    );
+    let WireResponse::ResultSet(recovered) = client.query("SELECT 1").unwrap() else {
+        panic!("connection must recover")
+    };
+    assert_eq!(recovered.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+}

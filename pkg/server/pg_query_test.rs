@@ -2687,9 +2687,12 @@ fn pg_function_10_mysql() {
         );
         assert_eq!(metadata[6], 8, "MySQL ABS retains BIGINT wire code");
         assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 63);
-        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 20);
-        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 128);
-        assert_eq!(metadata[9], 31);
+        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 22);
+        assert_eq!(
+            u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+            128 | u16::from(expected.is_some())
+        );
+        assert_eq!(metadata[9], 0);
         assert_eq!(mysql_read(&mut socket)[0], 0xfe);
         let expected = expected.map_or_else(
             || vec![0xfb],

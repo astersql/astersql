@@ -1247,6 +1247,20 @@ impl ConcreteSession {
                                 astersql_errors::SharedError::new(cause),
                             )
                         } else {
+                            // EvalInt's validated signed ABS kernel only rejects
+                            // overflow. Publish its actual diagnostic through the
+                            // existing statement warning area as Go does for errors.
+                            let diagnostic = error.to_string();
+                            // SHOW WARNINGS exposes the SQL message, without the
+                            // internal class/code prefix (Go terror.ToSQLError).
+                            let message = diagnostic
+                                .strip_prefix("[types:1690]")
+                                .unwrap_or(&diagnostic)
+                                .to_owned();
+                            self.state
+                                .borrow_mut()
+                                .current_warnings
+                                .push(SessionWarning::error_with_code(1690, message));
                             session_error("evaluate signed ABS", error)
                         }
                     })?;
@@ -2640,7 +2654,7 @@ impl ConcreteSession {
             // scalar path's untyped protocol fallback.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+                    .any(|expr| self.is_mysql_signed_abs(expr, &[]) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From
@@ -3868,6 +3882,35 @@ impl ConcreteSession {
         }
     }
 
+    /// Only the existing signed ABS signature opts into formal MySQL projection
+    /// fields and the relational SELECT filter. Other ABS families remain outside
+    /// this runtime contract.
+    pub(super) fn is_mysql_signed_abs(
+        &self,
+        expression: &ast::ExprNode,
+        source_fields: &[ConcreteResultField],
+    ) -> bool {
+        if self.sql_dialect() != ast::SqlDialect::MySQL {
+            return false;
+        }
+        let ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } = &expression.Kind
+        else {
+            return false;
+        };
+        if FnName.L != "abs" || !Schema.L.is_empty() || Args.len() != 1 {
+            return false;
+        }
+        let source = self.signed_abs_argument_type(&Args[0], source_fields);
+        matches!(
+            source.GetType(),
+            astersql_parser_mysql::r#type::TypeLong | astersql_parser_mysql::r#type::TypeLonglong
+        ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+    }
+
     /// ABS consumes the explicit integer cast identity even on the MySQL
     /// constant shortcut, whose generic type fallback predates formal factories.
     pub(super) fn signed_abs_argument_type(
@@ -4751,8 +4794,9 @@ impl ConcreteSession {
                     result_field.column_as_name = ast::NewCIStr(&output);
                     result.push(result_field);
                 } else {
-                    let field_type = if self.sql_dialect() == ast::SqlDialect::MySQL
-                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version"))
+                    let field_type = if self.is_mysql_signed_abs(expression, &source_fields)
+                        || (self.sql_dialect() == ast::SqlDialect::MySQL
+                            && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     {
                         self.mysql_function_result_type(expression, &source_fields)?
                     } else {

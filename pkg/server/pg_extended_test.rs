@@ -32210,7 +32210,7 @@ fn pg_function_22() {
                     c.column_length,
                     c.decimals
                 ),
-                (8, 128, 63, 20, 31)
+                (8, 128, 63, 22, 0)
             );
         } else if i == 1 {
             assert_eq!(
