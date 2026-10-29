@@ -9195,3 +9195,81 @@ fn pg05_array_jsonb_libpq_four_directions() {
         assert_eq!(summary[key], true);
     }
 }
+
+#[test]
+fn pg_function_23() {
+    // This self-check runs before any reference connection is needed.
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/pg_function_23_libpq.py"
+    );
+    assert!(
+        Command::new("python3")
+            .args([script, "--self-test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("function23_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        server.close();
+        let _ = native.execute(&format!("DROP DATABASE {database}"));
+    });
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-function23-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG_FUNCTION23_EVIDENCE={}", evidence.display());
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    // output() reaps the child before server/database guards run on any assertion.
+    let output = Command::new("python3")
+        .arg(script)
+        .args([
+            pg.port().to_string(),
+            database.clone(),
+            evidence.display().to_string(),
+        ])
+        .output()
+        .expect("Python3 required");
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
