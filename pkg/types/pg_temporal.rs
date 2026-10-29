@@ -18,6 +18,10 @@ pub enum PgTemporalError {
     IntervalOverflow,
     #[error("unit \"week\" not supported for type interval")]
     IntervalWeek,
+    #[error("unit \"{0}\" not supported for type interval")]
+    IntervalExtraction(&'static str),
+    #[error("interval extraction unit not recognized")]
+    IntervalExtractionUnit,
     #[error("date field out of range")]
     Range,
     #[error("time zone displacement out of range")]
@@ -39,13 +43,17 @@ impl PgTemporalError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::Syntax => "22007",
-            Self::IntervalModifier | Self::TruncationUnit | Self::ExtractionUnit => "22023",
+            Self::IntervalModifier
+            | Self::TruncationUnit
+            | Self::ExtractionUnit
+            | Self::IntervalExtractionUnit => "22023",
             Self::Range => "22008",
             Self::IntervalOverflow => "22015",
             Self::ZoneRange => "22009",
             Self::UnknownZone => "22023",
             Self::Unsupported
             | Self::ExtractionTimezone(_)
+            | Self::IntervalExtraction(_)
             | Self::DurationBridge
             | Self::TimestampBridge
             | Self::IntervalWeek => "0A000",
@@ -1229,6 +1237,107 @@ impl PgInterval {
     pub const fn components(self) -> (i32, i32, i64) {
         (self.months, self.days, self.time_microseconds)
     }
+    /// Extract the signed calendar and elapsed-time components without normalizing
+    /// months into days or hours into days. Decimal scaling uses integer arithmetic.
+    pub fn extract_numeric(
+        self,
+        unit: &str,
+    ) -> Result<Option<crate::pg_numeric::PgNumeric>, PgTemporalError> {
+        let lower = unit.to_ascii_lowercase();
+        let unit = match lower.as_str() {
+            "microsecond" | "microseconds" | "usec" | "usecs" => "microseconds",
+            "millisecond" | "milliseconds" | "msec" | "msecs" => "milliseconds",
+            "second" | "seconds" | "sec" | "secs" => "second",
+            "minute" | "minutes" | "min" | "mins" => "minute",
+            "hour" | "hours" | "hr" | "hrs" => "hour",
+            "day" | "days" => "day",
+            "week" | "weeks" => "week",
+            "month" | "months" | "mon" | "mons" => "month",
+            "year" | "years" | "yr" | "yrs" => "year",
+            "quarter" => "quarter",
+            "decade" | "decades" => "decade",
+            "century" | "centuries" => "century",
+            "millennium" | "millennia" | "millenniums" => "millennium",
+            "epoch" => "epoch",
+            "timezone" => return Err(PgTemporalError::IntervalExtraction("timezone")),
+            "timezone_hour" => return Err(PgTemporalError::IntervalExtraction("timezone_hour")),
+            "timezone_minute" => {
+                return Err(PgTemporalError::IntervalExtraction("timezone_minute"));
+            }
+            "dow" => return Err(PgTemporalError::IntervalExtraction("dow")),
+            "doy" => return Err(PgTemporalError::IntervalExtraction("doy")),
+            "isodow" => return Err(PgTemporalError::IntervalExtraction("isodow")),
+            "isoyear" => return Err(PgTemporalError::IntervalExtraction("isoyear")),
+            "julian" => return Err(PgTemporalError::IntervalExtraction("julian")),
+            _ => return Err(PgTemporalError::IntervalExtractionUnit),
+        };
+        let text = if matches!(
+            self.components(),
+            (i32::MAX, i32::MAX, i64::MAX) | (i32::MIN, i32::MIN, i64::MIN)
+        ) {
+            if matches!(
+                unit,
+                "microseconds"
+                    | "milliseconds"
+                    | "second"
+                    | "minute"
+                    | "week"
+                    | "month"
+                    | "quarter"
+            ) {
+                return Ok(None);
+            }
+            if self.months < 0 {
+                "-Infinity".to_owned()
+            } else {
+                "Infinity".to_owned()
+            }
+        } else {
+            let months = i128::from(self.months);
+            let days = i128::from(self.days);
+            let time = i128::from(self.time_microseconds);
+            let (value, scale) = match unit {
+                "microseconds" => (time % 60_000_000, 0),
+                "milliseconds" => (time % 60_000_000, 3),
+                "second" => (time % 60_000_000, 6),
+                "minute" => (time / 60_000_000 % 60, 0),
+                "hour" => (time / 3_600_000_000, 0),
+                "day" => (days, 0),
+                "week" => (days / 7, 0),
+                "month" => (months % 12, 0),
+                "year" => (months / 12, 0),
+                "quarter" => (
+                    (months.abs() % 12 / 3 + 1) * if months < 0 { -1 } else { 1 },
+                    0,
+                ),
+                "decade" => (months / 120, 0),
+                "century" => (months / 1200, 0),
+                "millennium" => (months / 12000, 0),
+                // PG defines epoch using 365.25-day years and 30-day residual
+                // months; this does not alter the interval's stored components.
+                "epoch" => (
+                    ((1461 * (months / 12) + 120 * (months % 12) + 4 * days) * 21600) * 1_000_000
+                        + time,
+                    6,
+                ),
+                _ => unreachable!(),
+            };
+            if scale == 0 {
+                value.to_string()
+            } else {
+                let divisor = 10i128.pow(scale as u32);
+                format!(
+                    "{}{}.{:0width$}",
+                    if value < 0 { "-" } else { "" },
+                    value.abs() / divisor,
+                    value.abs() % divisor,
+                    width = scale
+                )
+            }
+        };
+        text.parse().map(Some).map_err(|_| PgTemporalError::Range)
+    }
+
     /// Truncate interval fields independently, using signed division toward zero.
     /// Calendar months and days never absorb elapsed hours. Unlike timestamps,
     /// century/millennium buckets start at zero and quarters do not add a month.

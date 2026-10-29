@@ -2614,6 +2614,10 @@ pub mod formal_registry {
         let candidates = match name {
             "extract" => vec![
                 PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypePgInterval],
+                    result: mysql::TypeNewDecimal,
+                },
+                PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
                     result: mysql::TypeNewDecimal,
                 },
@@ -5130,22 +5134,27 @@ pub mod formal_registry {
                     if first_null || second_null {
                         return Ok((String::new(), true));
                     }
-                    let result =
-                        if self.base.args[1].GetType(ctx).GetType() == mysql::TypePgTimestampTz {
-                            value
-                                .parse::<types_dependency::pg_temporal::PgTimestampTz>()
-                                .and_then(|timestamp| {
-                                    timestamp.extract_numeric_in_zone(
-                                        &unit,
-                                        ctx.Location(),
-                                        ctx.PgFixedTimeZone(),
-                                    )
-                                })
-                        } else {
-                            value
-                                .parse::<types_dependency::pg_temporal::PgTimestamp>()
-                                .and_then(|timestamp| timestamp.extract_numeric(&unit))
-                        };
+                    let result = if self.base.args[1].GetType(ctx).GetType()
+                        == mysql::TypePgTimestampTz
+                    {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgTimestampTz>()
+                            .and_then(|timestamp| {
+                                timestamp.extract_numeric_in_zone(
+                                    &unit,
+                                    ctx.Location(),
+                                    ctx.PgFixedTimeZone(),
+                                )
+                            })
+                    } else if self.base.args[1].GetType(ctx).GetType() == mysql::TypePgInterval {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgInterval>()
+                            .and_then(|interval| interval.extract_numeric(&unit))
+                    } else {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                            .and_then(|timestamp| timestamp.extract_numeric(&unit))
+                    };
                     result
                         .map(|value| match value {
                             Some(value) => (value.to_string(), false),

@@ -1533,3 +1533,81 @@ fn pg08_06_zone_fields() {
         );
     }
 }
+
+#[test]
+fn pg08_07_components() {
+    use crate::pg_temporal::PgInterval;
+    for (source, field, expected) in [
+        (
+            "27 months 4 days 05:06:07.123456",
+            "second",
+            Some("7.123456"),
+        ),
+        ("-0.123456 seconds", "second", Some("-0.123456")),
+        ("-0.123456 seconds", "milliseconds", Some("-123.456")),
+        ("-80 minutes", "minute", Some("-20")),
+        (
+            "27 months 4 days 05:06:07.123456",
+            "epoch",
+            Some("71255167.123456"),
+        ),
+        ("-15 days", "week", Some("-2")),
+        ("-27 months", "quarter", Some("-2")),
+        ("-24 months", "quarter", Some("-1")),
+        ("0", "quarter", Some("1")),
+        ("24001 months", "decade", Some("200")),
+        ("24001 months", "century", Some("20")),
+        ("24001 months", "millennium", Some("2")),
+        ("infinity", "hour", Some("Infinity")),
+        ("-infinity", "day", Some("-Infinity")),
+        ("infinity", "month", None),
+        ("infinity", "week", None),
+    ] {
+        let interval: PgInterval = source.parse().unwrap();
+        assert_eq!(
+            interval
+                .extract_numeric(field)
+                .unwrap()
+                .map(|n| n.to_string())
+                .as_deref(),
+            expected,
+            "{source} {field}"
+        );
+    }
+    for source in ["0", "infinity", "-infinity"] {
+        let interval: PgInterval = source.parse().unwrap();
+        for field in [
+            "timezone",
+            "timezone_hour",
+            "timezone_minute",
+            "dow",
+            "doy",
+            "isodow",
+            "isoyear",
+            "julian",
+        ] {
+            assert_eq!(
+                interval.extract_numeric(field).unwrap_err().sqlstate(),
+                "0A000"
+            );
+        }
+        assert_eq!(
+            interval
+                .extract_numeric("aster_bad_unit")
+                .unwrap_err()
+                .sqlstate(),
+            "22023"
+        );
+    }
+    let extreme = PgInterval::from_components(i32::MIN, i32::MAX, i64::MIN);
+    assert_eq!(
+        extreme
+            .extract_numeric("quarter")
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        "-3"
+    );
+    assert!(extreme.extract_numeric("epoch").unwrap().is_some());
+    println!("pg08_07_components: 45 assertions passed");
+}
