@@ -236,3 +236,6 @@ pub const TypePgInt4Range: u8 = 0xdf;
 
 /// Internal numrange identity (PG OID3906, numeric subtype1700).
 pub const TypePgNumRange: u8 = 0xde;
+
+/// Internal PostgreSQL name identity for ordinary expressions (OID19, typlen64).
+pub const TypePgName: u8 = 0xdd;

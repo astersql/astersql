@@ -1305,6 +1305,7 @@ impl ConcreteSession {
                     self.pg_case_input_type(arg, &[]).GetType(),
                     astersql_parser_mysql::r#type::TypePgInt4Range
                         | astersql_parser_mysql::r#type::TypePgNumRange
+                        | astersql_parser_mysql::r#type::TypePgName
                 )
             })
         {
@@ -1452,6 +1453,7 @@ impl ConcreteSession {
                     | "lower"
                     | "upper"
                     | "isempty"
+                    | "current_database"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && (!matches!(FnName.L.as_str(), "lower" | "upper")
@@ -1490,6 +1492,7 @@ impl ConcreteSession {
                 astersql_expression_exprstatic::WithEvalCtx(Arc::new(
                     astersql_expression_exprstatic::NewEvalContext(vec![
                         astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
+                        astersql_expression_exprstatic::WithCurrentDB(self.current_database()),
                     ]),
                 )),
             ]);
@@ -1502,7 +1505,7 @@ impl ConcreteSession {
             .map_err(|error| session_error("build PostgreSQL array function", error))?;
             if matches!(
                 FnName.L.as_str(),
-                "array_append" | "int4range" | "numrange" | "lower" | "upper"
+                "array_append" | "int4range" | "numrange" | "lower" | "upper" | "current_database"
             ) {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
@@ -2856,7 +2859,12 @@ impl ConcreteSession {
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
                         && matches!(
                             FnName.L.as_str(),
-                            "int4not" | "int8not" | "float4abs" | "float8abs" | "numeric_abs"
+                            "int4not"
+                                | "int8not"
+                                | "float4abs"
+                                | "float8abs"
+                                | "numeric_abs"
+                                | "current_database"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
@@ -3622,6 +3630,7 @@ impl ConcreteSession {
                             | "lower"
                             | "upper"
                             | "isempty"
+                            | "current_database"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4894,6 +4903,7 @@ impl ConcreteSession {
                         | "lower"
                         | "upper"
                         | "isempty"
+                        | "current_database"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

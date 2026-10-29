@@ -3104,6 +3104,16 @@ pub(super) fn relational_expression_type(
         | ast::ExprKind::InList { .. }
         | ast::ExprKind::Between { .. }
         | ast::ExprKind::Like { .. } => new_type(astersql_parser_mysql::r#type::TypeLonglong),
+        ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } if FnName.L == "current_database"
+            && Args.is_empty()
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
+        {
+            new_type(astersql_parser_mysql::r#type::TypePgName)
+        }
         ast::ExprKind::Case {
             WhenClauses,
             ElseClause,

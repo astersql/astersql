@@ -20,7 +20,6 @@ pub(crate) enum SessionQuery {
     Set(Vec<String>),
     Reset,
     Schema(String),
-    Database(String),
 }
 #[derive(Debug)]
 pub(crate) struct PgSession {
@@ -208,21 +207,6 @@ impl PgSession {
                 self.effective_schema(context)?
                     .map_or(Value::Null, Value::Text),
             ),
-            SessionQuery::Database(_) => {
-                let result = context.execute_query(
-                    "SELECT DATABASE()",
-                    false,
-                    &crate::conn::CancellationToken::new(),
-                )?;
-                Some(
-                    result
-                        .first()
-                        .and_then(|r| r.rows.first())
-                        .and_then(|r| r.first())
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                )
-            }
         };
         let meta = query.metadata();
         Ok(QueryResult {
@@ -279,7 +263,7 @@ impl SessionQuery {
                 "lc_numeric"
             }),
             Self::IntervalStyleShow => Some("IntervalStyle"),
-            Self::Schema(name) | Self::Database(name) => Some(name.as_str()),
+            Self::Schema(name) => Some(name.as_str()),
             _ => None,
         };
         let mut result = PreparedMetadata {
@@ -545,11 +529,7 @@ impl SessionQuery {
             i += 2;
         }
         let function = match tokens.get(i) {
-            Some(Token::Word(name))
-                if matches!(name.as_str(), "current_schema" | "current_database") =>
-            {
-                name.clone()
-            }
+            Some(Token::Word(name)) if name == "current_schema" => name.clone(),
             _ => return Ok(None),
         };
         i += 1;
@@ -571,10 +551,6 @@ impl SessionQuery {
         if i != tokens.len() {
             return Ok(None);
         }
-        Ok(Some(if function == "current_schema" {
-            Self::Schema(label)
-        } else {
-            Self::Database(label)
-        }))
+        Ok(Some(Self::Schema(label)))
     }
 }

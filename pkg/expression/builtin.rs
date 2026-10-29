@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "current_database" => vec![PgFunctionCandidate {
+                arguments: vec![],
+                result: mysql::TypePgName,
+            }],
             "isempty" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypePgInt4Range],
@@ -2847,7 +2851,7 @@ pub mod formal_registry {
     ) -> Result<PgFunctionCandidate, &'static str> {
         if matches!(
             name,
-            "int4range" | "numrange" | "lower" | "upper" | "isempty"
+            "int4range" | "numrange" | "lower" | "upper" | "isempty" | "current_database"
         ) {
             if inputs.iter().any(|tp| {
                 tp.PostgreSQLArrayElement().is_some()
@@ -4369,6 +4373,7 @@ pub mod formal_registry {
         PgRangeLower,
         PgRangeUpper,
         PgRangeIsEmpty,
+        PgCurrentDatabase,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -5430,6 +5435,7 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgCurrentDatabase => Ok((ctx.CurrentDB(), false)),
                 CoreBuiltinKind::Extremum(greatest, types::ETString) => {
                     let (mut selected, null) = self.base.args[0].EvalString(ctx, row.clone())?;
                     if null {
@@ -6716,6 +6722,21 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "current_database" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                resolve_pg_signature(
+                    name,
+                    &args
+                        .iter()
+                        .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgCurrentDatabase,
+                    *types::NewFieldType(mysql::TypePgName),
+                    "builtinPgCurrentDatabaseSig",
+                )
+            }
             "isempty" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -8304,6 +8325,7 @@ pub mod formal_registry {
     core_factory!(pg_range_lower_factory, "lower");
     core_factory!(pg_range_upper_factory, "upper");
     core_factory!(pg_range_isempty_factory, "isempty");
+    core_factory!(pg_current_database_factory, "current_database");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8402,6 +8424,7 @@ pub mod formal_registry {
         ("__pg_range_lower", pg_range_lower_factory),
         ("__pg_range_upper", pg_range_upper_factory),
         ("isempty", pg_range_isempty_factory),
+        ("current_database", pg_current_database_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8791,6 +8814,7 @@ pub mod formal_registry {
         ("int4range", 2, 3),
         ("numrange", 2, 3),
         ("isempty", 1, 1),
+        ("current_database", 0, 0),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -9092,6 +9116,10 @@ pub mod formal_registry {
                     | "numrange"
                     | "isempty"
                     | "date_part"
+                    | "current_database"
+                    | "current_schema"
+                    | "pg_typeof"
+                    | "pg_backend_pid"
                     | "numeric_abs"
                     | "float4abs"
                     | "float8abs"
