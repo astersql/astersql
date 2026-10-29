@@ -964,3 +964,8 @@ mod pg08_15_test;
 
 #[cfg(test)]
 mod pg08_16_test;
+
+#[cfg(test)]
+mod pg08_17_test;
+
+pub mod pg_time_locale;

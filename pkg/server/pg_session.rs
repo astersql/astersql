@@ -5,6 +5,9 @@ use crate::pg_catalog_query::{ParseResult, Token, lex};
 
 #[derive(Clone, Debug)]
 pub(crate) enum SessionQuery {
+    LcTimeShow,
+    LcTimeSet(String, bool),
+    LcTimeReset,
     Show,
     IntervalStyleShow,
     IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting),
@@ -131,6 +134,15 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
+            SessionQuery::LcTimeShow => Some(Value::Text(context.pg_lc_time(None)?)),
+            SessionQuery::LcTimeSet(value, local) => {
+                context.pg_lc_time(Some((value.clone(), *local)))?;
+                None
+            }
+            SessionQuery::LcTimeReset => {
+                context.pg_lc_time(Some(("C".into(), false)))?;
+                None
+            }
             SessionQuery::IntervalStyleShow => {
                 Some(Value::Text(context.pg_interval_style(None)?.name().into()))
             }
@@ -216,7 +228,7 @@ impl SessionQuery {
                 self,
                 Self::IntervalStyleSet(
                     PgIntervalSetting::Set { local: true, .. } | PgIntervalSetting::ResetLocal
-                )
+                ) | Self::LcTimeSet(_, true)
             )
         {
             vec![(b'N',b"SWARNING\0VWARNING\0C25P01\0MSET LOCAL can only be used in transaction blocks\0\0".to_vec())]
@@ -226,7 +238,9 @@ impl SessionQuery {
     }
     pub(crate) fn command(&self) -> &'static str {
         match self {
-            Self::Show | Self::DateStyleShow | Self::IntervalStyleShow => "SHOW",
+            Self::Show | Self::DateStyleShow | Self::IntervalStyleShow | Self::LcTimeShow => "SHOW",
+            Self::LcTimeSet(..) => "SET",
+            Self::LcTimeReset => "RESET",
             Self::IntervalStyleSet(astersql_types::pg_temporal::PgIntervalSetting::Reset) => {
                 "RESET"
             }
@@ -239,6 +253,7 @@ impl SessionQuery {
         let name = match self {
             Self::Show => Some("search_path"),
             Self::DateStyleShow => Some("DateStyle"),
+            Self::LcTimeShow => Some("lc_time"),
             Self::IntervalStyleShow => Some("IntervalStyle"),
             Self::Schema(name) | Self::Database(name) => Some(name.as_str()),
             _ => None,
@@ -297,6 +312,36 @@ impl SessionQuery {
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
         let scoped = word(tokens.get(1), "local") || word(tokens.get(1), "session");
         let index = if scoped { 2 } else { 1 };
+        if word(tokens.get(index), "lc_time") {
+            if !scoped && word(tokens.first(), "show") && tokens.len() == 2 {
+                return Ok(Some(Self::LcTimeShow));
+            }
+            if !scoped && word(tokens.first(), "reset") && tokens.len() == 2 {
+                return Ok(Some(Self::LcTimeReset));
+            }
+            if word(tokens.first(), "set")
+                && tokens.len() == index + 3
+                && (word(tokens.get(index + 1), "to")
+                    || tokens.get(index + 1) == Some(&Token::Symbol('=')))
+            {
+                let value = match &tokens[index + 2] {
+                    Token::Word(v) if v == "default" => "C",
+                    Token::Word(v) | Token::String(v) => v.as_str(),
+                    _ => return Err(("42601", "invalid lc_time".into())),
+                };
+                if !astersql_expression::pg_time_locale::validate(value) {
+                    return Err((
+                        "22023",
+                        format!("invalid value for parameter \"lc_time\": \"{value}\""),
+                    ));
+                }
+                return Ok(Some(Self::LcTimeSet(
+                    value.into(),
+                    word(tokens.get(1), "local"),
+                )));
+            }
+            return Err(("42601", "invalid lc_time command".into()));
+        }
         if word(tokens.get(index), "intervalstyle") {
             use astersql_types::pg_temporal::{PgIntervalSetting, PgIntervalStyle};
             if !scoped && word(tokens.first(), "show") && tokens.len() == 2 {

@@ -5,8 +5,9 @@ use types_dependency::pg_temporal::{PgInterval, PgTemporalError, PgTimestamp, Pg
 pub(crate) fn format_timestamp(
     timestamp: PgTimestamp,
     template: &str,
+    locale: &str,
 ) -> Result<Option<String>, PgTemporalError> {
-    format_wall(timestamp, template, 0)
+    format_wall(timestamp, template, 0, locale)
 }
 
 /// Resolve the wall clock and its offset at Execute, including DST overlaps.
@@ -16,6 +17,7 @@ pub(crate) fn format_timestamptz(
     template: &str,
     zone: chrono_tz::Tz,
     fixed: Option<chrono::FixedOffset>,
+    locale: &str,
 ) -> Result<Option<String>, PgTemporalError> {
     if template.is_empty() || matches!(timestamp.micros(), i64::MIN | i64::MAX) {
         return Ok(None);
@@ -32,18 +34,19 @@ pub(crate) fn format_timestamptz(
             .checked_add(i64::from(offset) * 1_000_000)
             .ok_or(PgTemporalError::Range)?,
     )?;
-    format_wall(wall, template, offset)
+    format_wall(wall, template, offset, locale)
 }
 
 fn format_wall(
     timestamp: PgTimestamp,
     template: &str,
     offset: i32,
+    locale: &str,
 ) -> Result<Option<String>, PgTemporalError> {
     if template.is_empty() || matches!(timestamp.micros(), i64::MIN | i64::MAX) {
         return Ok(None);
     }
-    format_fields(Some(timestamp), None, template, offset)
+    format_fields(Some(timestamp), None, template, offset, locale)
 }
 
 /// Keep the stored month/day/time components independent. In particular hours
@@ -60,7 +63,7 @@ pub(crate) fn format_interval(
     {
         return Ok(None);
     }
-    format_fields(None, Some(interval), template, 0)
+    format_fields(None, Some(interval), template, 0, "C")
 }
 
 fn format_fields(
@@ -68,6 +71,7 @@ fn format_fields(
     interval: Option<PgInterval>,
     template: &str,
     offset: i32,
+    locale: &str,
 ) -> Result<Option<String>, PgTemporalError> {
     let field = |name: &str| -> Result<i64, PgTemporalError> {
         if let Some(interval) = interval {
@@ -118,9 +122,61 @@ fn format_fields(
             }
             continue;
         }
+        // One prefix modifies the next token only, following PostgreSQL.
         let fill = remaining.starts_with("FM") || remaining.starts_with("fm");
-        if fill {
+        let translated = remaining.starts_with("TM") || remaining.starts_with("tm");
+        if fill || translated {
             remaining = &remaining[2..];
+        }
+        let upper = remaining.to_ascii_uppercase();
+        if let Some(token) = ["MONTH", "MON", "DAY", "DY"]
+            .into_iter()
+            .find(|t| upper.starts_with(t))
+        {
+            if interval.is_some() {
+                return Err(PgTemporalError::IntervalFormat);
+            }
+            let month = token.starts_with("MON");
+            let short = matches!(token, "MON" | "DY");
+            let index = if month {
+                field("month")? - 1
+            } else {
+                field("dow")?
+            };
+            let name = crate::pg_time_locale::name(
+                if translated { locale } else { "C" },
+                month,
+                short,
+                index as usize,
+            )?;
+            let spelling = &remaining[..token.len()];
+            let name = if spelling == token {
+                name.to_ascii_uppercase()
+            } else if spelling == token.to_ascii_lowercase() {
+                name.to_ascii_lowercase()
+            } else {
+                // Current C input collation treats non-ASCII characters as word delimiters.
+                let mut start = true;
+                name.chars()
+                    .map(|ch| {
+                        let value = if start {
+                            ch.to_ascii_uppercase()
+                        } else {
+                            ch.to_ascii_lowercase()
+                        };
+                        start = !ch.is_ascii_alphanumeric();
+                        value
+                    })
+                    .collect()
+            };
+            result.push_str(&name);
+            if !short && !fill && !translated {
+                for _ in name.len()..9 {
+                    result.push(' ');
+                }
+            }
+            remaining = &remaining[token.len()..];
+            continue;
         }
         // Longest tokens first; '%' is ordinary literal text in PostgreSQL.
         let token = [

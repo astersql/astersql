@@ -947,6 +947,9 @@ pub trait TiDBContext: Send + Sync {
         ))
     }
     /// DATE Parse/Bind context from the owning session worker.
+    fn pg_lc_time(&self, _setting: Option<(String, bool)>) -> ConnResult<String> {
+        Err(ConnError::Session("PostgreSQL lc_time unavailable".into()))
+    }
     fn pg_date_context(
         &self,
         _order: Option<astersql_types::pg_temporal::PgDateOrder>,

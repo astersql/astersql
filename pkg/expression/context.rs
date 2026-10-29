@@ -152,6 +152,9 @@ impl ParamValues for assertionEvalContext<'_> {
 }
 
 impl EvalContext for assertionEvalContext<'_> {
+    fn PgLcTime(&self) -> String {
+        self.eval_context.PgLcTime()
+    }
     fn SQLDialect(&self) -> parser_ast_dependency::SqlDialect {
         self.eval_context.SQLDialect()
     }

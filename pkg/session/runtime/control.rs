@@ -967,9 +967,12 @@ impl ConcreteSession {
         commit: bool,
         allow_mutation_retry: bool,
     ) -> SessionResult<()> {
+        let mut locale_before = self.state.borrow().pg_lc_time.clone();
         let mut interval_before = self.state.borrow().pg_interval_settings.clone();
         let result = self.finish_transaction_with_retry_inner(commit, allow_mutation_retry);
         if result.is_err() && self.state.borrow().transaction.is_none() {
+            locale_before.finish(false);
+            self.state.borrow_mut().pg_lc_time = locale_before;
             interval_before.finish(false);
             self.state.borrow_mut().pg_interval_settings = interval_before;
         }
@@ -1042,6 +1045,7 @@ impl ConcreteSession {
             let transaction = state.transaction.take();
             state.pg_transaction_time = None;
             state.pg_interval_settings.finish(commit);
+            state.pg_lc_time.finish(commit);
             let had_transaction = transaction.is_some();
             let was_pessimistic = state.transaction_pessimistic;
             let injected_commit_error = (commit && had_transaction)
@@ -1505,6 +1509,7 @@ impl ConcreteSession {
         state.pg_transaction_time =
             (self.sql_dialect() == ast::SqlDialect::PostgreSQL).then_some(state.pg_statement_time);
         state.pg_interval_settings.begin();
+        state.pg_lc_time.begin();
         state.transaction = Some(transaction);
         state.transaction_info_schema = Some(transaction_info_schema);
         self.transaction_mdl.clear();
@@ -1570,8 +1575,10 @@ impl ConcreteSession {
             state.deferred_optimistic_constraint_errors.clone();
         let pending_ttl_insert_rows = state.pending_ttl_insert_rows;
         let pg_interval_settings = state.pg_interval_settings.clone();
+        let pg_lc_time = state.pg_lc_time.clone();
         state.savepoints.push(RuntimeSavepoint {
             pg_interval_settings,
+            pg_lc_time,
             name,
             visible,
             held_locks,
@@ -1616,6 +1623,7 @@ impl ConcreteSession {
             };
             let savepoint = state.savepoints[position].clone();
             state.pg_interval_settings = savepoint.pg_interval_settings.clone();
+            state.pg_lc_time = savepoint.pg_lc_time.clone();
             let transaction = state
                 .transaction
                 .as_mut()

@@ -1378,7 +1378,10 @@ impl ConcreteSession {
                 ));
                 args.push(Box::new(argument));
             }
-            let eval = if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz
+            let eval = if (FnName.L == "to_char"
+                && candidate.arguments.first()
+                    == Some(&astersql_parser_mysql::r#type::TypeDatetime))
+                || source_type == astersql_parser_mysql::r#type::TypePgTimestampTz
                 || candidate
                     .arguments
                     .contains(&astersql_parser_mysql::r#type::TypePgTimestampTz)

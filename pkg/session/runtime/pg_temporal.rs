@@ -61,6 +61,7 @@ impl ConcreteSession {
             WithSQLDialect(self.sql_dialect()),
             WithLocation(location),
             WithPgFixedTimeZone(fixed),
+            astersql_expression_exprstatic::WithPgLcTime(state.pg_lc_time.current()),
             WithCurrentTime(Arc::new(move || Ok(snapshot))),
         ]))
     }
@@ -539,5 +540,56 @@ impl ConcreteSession {
             None => {}
         }
         values.local.unwrap_or(values.session)
+    }
+}
+
+/// Connection-private lc_time, sharing the IntervalStyle transaction boundaries.
+#[derive(Clone)]
+pub(super) struct TimeLocaleSettings {
+    session: String,
+    local: Option<String>,
+    transaction: Option<String>,
+}
+impl Default for TimeLocaleSettings {
+    fn default() -> Self {
+        Self {
+            session: "C".into(),
+            local: None,
+            transaction: None,
+        }
+    }
+}
+impl TimeLocaleSettings {
+    pub(super) fn current(&self) -> String {
+        self.local.as_ref().unwrap_or(&self.session).clone()
+    }
+    pub(super) fn begin(&mut self) {
+        self.transaction = Some(self.session.clone());
+    }
+    pub(super) fn finish(&mut self, commit: bool) {
+        if let Some(value) = self.transaction.take() {
+            if !commit {
+                self.session = value;
+            }
+        }
+        self.local = None;
+    }
+}
+impl ConcreteSession {
+    pub fn pg_lc_time(&self, setting: Option<(String, bool)>) -> String {
+        let mut state = self.state.borrow_mut();
+        let active = state.transaction.is_some();
+        let values = &mut state.pg_lc_time;
+        if let Some((value, local)) = setting {
+            if local {
+                if active {
+                    values.local = Some(value);
+                }
+            } else {
+                values.session = value;
+                values.local = None;
+            }
+        }
+        values.current()
     }
 }

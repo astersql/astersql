@@ -5286,6 +5286,7 @@ pub mod formal_registry {
                                     &template,
                                     ctx.Location(),
                                     ctx.PgFixedTimeZone(),
+                                    &ctx.PgLcTime(),
                                 )
                             })
                     } else if self.base.args[0].GetType(ctx).GetType() == mysql::TypePgInterval {
@@ -5298,7 +5299,11 @@ pub mod formal_registry {
                         value
                             .parse::<types_dependency::pg_temporal::PgTimestamp>()
                             .and_then(|timestamp| {
-                                crate::pg_timestamp_format::format_timestamp(timestamp, &template)
+                                crate::pg_timestamp_format::format_timestamp(
+                                    timestamp,
+                                    &template,
+                                    &ctx.PgLcTime(),
+                                )
                             })
                     };
                     result

@@ -2,7 +2,7 @@
 
 批次：【实施批次 17】；语义依赖：11；互斥前序：批次16结束或释放资源。不安排并行；来源为拆分批次8，不等于实施批次8。
 
-状态：未开始
+状态：已完成，待回归
 
 目的：to_char时间TM月份/星期读取当前lc_time。
 
@@ -97,10 +97,10 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Progress
 
-- [ ] 局部接口取证与当前测试名注册
-- [ ] 失败验证或已有正确行为的当前补证
-- [ ] 最小生产接线及通过验证
-- [ ] 真实参考/双方言、清理与Ready交付
+- [x] 局部接口取证与当前测试名注册
+- [x] 失败验证或已有正确行为的当前补证
+- [x] 最小生产接线及通过验证（工厂13、SQL/协议38、PG客户端69当前通过）
+- [ ] 真实参考/双方言、清理与Ready交付（Ready检查已执行；6项既有MySQL差分待回归）
 
 ## Surprises & Discoveries
 
@@ -113,3 +113,71 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 ## Outcomes & Retrospective
 
 仅计划已生成，实施与验证尚未执行；未来在本节记录实际结果、证据路径和未决依赖，不写回只读plan.md。
+
+## 当前实施取证与阻塞交接（2026-10-30）
+
+本轮为实施批次17，语义依赖11。最新完整HEAD为42009a2d1d6629bc2a6eadfb15505a1a9ccc0dc6；批次11保留提交912661e50bd3cca102f4a0c77eb90914626d75ba及真实注册的pg08_11_test::pg08_11_formal、pg_query_test::pg08_11_sql。批次16会话01a18949-33e9-7d73-8a44-01cb5d72b9e9已idle，其最终交接确认子进程、参考端口、目录及槽位锁已清理；本轮检查target/rust-slot-locks为空。没有并发修改共享文件。工作区另有未跟踪Go逐提交对齐计划目录，本轮不处理。plan.md及所有来源文档保持只读。
+
+阻塞是本任务明确要求的上游lc_time事实接口缺失，而不是缺少TM token本身。RustCodeGraph status成功（11781文件），query lc_time仅找到MySQL TestLcTimeNamesReadOnly；原始全仓Rust检索确认lc_time_names只在MySQL变量注册、工具配置和既有测试中，pkg/sessionctx/variable/sysvar_builtins.rs:1548–1550将其定义为en_US、ScopeGlobal、ReadOnly。不能用此变量冒充PG连接私有lc_time。
+
+实际生产消费者为pkg/expression/builtin.rs:5278–5302：timestamp仅传值及模板到pg_timestamp_format::format_timestamp，timestamptz额外消费Location/PgFixedTimeZone。pkg/expression/exprctx/context.rs::EvalContext具备SQLDialect、Location、PgFixedTimeZone等，但无lc_time事实；pkg/server/pg_session.rs::SessionQuery及PgSession没有lc_time设置/读取，pkg/server/conn.rs的既有pg_date_context只负责日期上下文。pkg/expression/pg_timestamp_format.rs目前复用统一扫描器，token清单为数字日期/时间和区域偏移，没有月份/星期名称和TM；待上游事实就绪后才新增本任务TM/FM消费，不创建另一求值器。
+
+接口拥有者：工作流会话上下文维护者（PG会话设置、TiDBContext/SessionVars及expression EvalContext桥接）。恢复条件：提供连接私有lc_time的设置/读取、合法locale验证和执行阶段向正式工厂传递事实的可消费接口；准备后更改设置须在Execute生效，另一PG及MySQL连接保持隔离。该前置应由拥有者单独交付并提供当前源码/测试证据；本任务不递归补建通用locale平台。恢复后复用上述现有to_char工厂，先注册独立测试/客户端夹具及case ID、预期场景总数，再运行真实红绿验证。
+
+环境只读检查：PG18_REFERENCE_DSN、PG_LIBPQ_LIBRARY、MYSQL8_REFERENCE_HOST、MYSQL8_REFERENCE_PORT、MYSQL8_REFERENCE_USER、MYSQL8_REFERENCE_PASSWORD均未配置；未打印值/DSN。locale -a确认de_DE.UTF-8、de_DE.ISO8859-15、de_DE.ISO8859-1及de_DE存在，因此不是德语locale缺失。真实参考恢复条件为配置PG18.6及MySQL自身参考，或复用已核实版本并带完整清理的专有参考启动方式；本轮没有启动服务或以历史18.6证据冒充当前通过。
+
+已运行只读取证命令：git status --short、git log -6 --format='%H %s'、rg --files -g doc.go pkg/expression pkg/session pkg/server pkg/parser（未找到目标doc.go）、~/.rustcodegraph/bin/rustcodegraph status、explore 'lc_time PgSessionState EvalContext format_timestamp pg_timestamp_format'、query lc_time --limit 10、node --file pkg/expression/pg_timestamp_format.rs --offset 1 --limit 230、node --file pkg/server/pg_session.rs --offset 1 --limit 170、node --file pkg/expression/builtin.rs --offset 5260 --limit 53、node --file pkg/expression/exprctx/context.rs --offset 1 --limit 165；上述图命令退出0。补充rg -n -i 'lc_time|lctime|lc_time_names' pkg --glob '*.rs'与locale -a | rg '^de_DE'确认缺口及本机locale；环境Python仅输出configured/absent。本轮按根规则读取AGENTS.md、PLANS.md、pkg/server/AGENTS.md、testing-flow及两项技能，没有修改它们。
+
+本轮未新增生产代码、测试、夹具或注册；pg08_17相关三个测试尚不存在，不能运行空过滤器制造证据。有效业务测试数0，成功0、行为失败0、跳过0（未启动验证）；case ID/预期场景总数尚未注册，不虚报未来计数。WIP/Ready构建验证未启动，三个cargo目标、cargo fmt --all、make lint及真实客户端均未运行。未运行任何Cargo命令或调用Cargo的脚本，因此未领取槽位，实际槽位及CARGO_TARGET_DIR均为不适用；本轮没有进程、端口、测试对象、锁或临时副本需要清理。
+
+结果：只更新本编号文件为已阻塞，保留所有未完成验收项；不提交只有状态/阻塞记录的变更，不删除本编号。正确性和隔离尚未获得当前行为验证，未评估性能；不能宣称完成、红灯或绿色。恢复依赖后须按原有三层验收和Ready适用检查继续。
+
+## 恢复实施与测试登记（2026-10-30）
+
+用户授权突破阻塞，恢复本任务。只补必要lc_time事实桥接，不建设完整locale平台。新增生产辅助模块计划：pkg/expression/pg_time_locale.rs，lib.rs公开注册，使用系统newlocale/nl_langinfo_l（线程私有locale对象，不更改全局setlocale）读取真实月份/星期名称并校验locale；现有timestamp统一扫描器不具备该功能。需增加已锁定的libc crate直接依赖以安全使用平台常量和ABI，不移植外部仓库、不引入本地覆盖。最小接口接线涉及exprctx/context.rs、exprstatic/evalctx.rs、session/runtime/session.rs与pg_temporal.rs、server/conn.rs、runtime.rs、pg_session.rs；消费既有pg_temporal_eval_context，保守保持to_char稳定不折叠。生产依据均为本编号TM月份/星期、准备后改lc_time、连接隔离验收。
+
+注册formal 7场景，SQL基线37加德语1为38场景，客户端63场景：复用pg08_12_libpq的62个已列CASE_IDS并新增C-context-german。CASE_IDS完整唯一清单存入本任务新夹具；未来扩充前更新清单。三项测试已在真实lib.rs/既有server测试模块注册，尚未运行。测试维持前序MySQL六项差分原断言，不降低验收。
+
+扩充测试登记：formal 9（新增C/德语执行上下文），SQL38，客户端78（原63加C-context-cache-c, C-context-cache-de, C-Q-german-abbrev, C-Q-german-upper, C-Q-german-lower, C-Q-fm-english, C-Q-quoted, C-Q-locale-null, C-Q-locale-template-null, C-Q-locale-zero, C-Q-locale-nested, C-E-locale, C-recover-locale, C-Q-locale-row, C-Q-locale-row-zero），所有ID在夹具CASE_IDS中预先登记；绑定index2改为TM月份/星期，保持四种格式及重复/NULL/零行矩阵。基线期三项有效测试均运行1项/退出101：formal稳定性折叠、SQL德语值、client德语值真实失败。一次新增libc manifest但锁条目未更新造成--list失败，不计红灯；现已补齐同一libc已锁版本条目。
+
+新增登记C-context-transaction（SET/LOCAL/保存点/ROLLBACK）及C-Q-unicode（真实德语三月字节），客户端预期80。formal增加三种德语三月大小写为12场景。新locale状态的事务/保存点接线是防止新增会话设置泄漏的必要局部保护，完全复用IntervalStyle现有生命周期；不扩展事务系统。
+
+WIP formal12场景当前通过，SQL/client仍在德语场景返回January Tuesday。真实消费者定位query.rs:1380仅对timestamptz构建完整执行上下文，timestamp使用空静态上下文。最小修复为该既有分支对to_char(timestamp,text)也调用pg_temporal_eval_context；不修改分析身份或第二求值器。assertionEvalContext补转发PgLcTime，静态快照复制也补明确断言；正式测试加入FMTM/TMFM组合为13场景。协议绑定index2改为TMMonth TMDay以保持同一矩阵的真实locale模板覆盖。所有locale事务处理基于已有IntervalStyle钩子；已读取DDL入口与pkg/ddl/doc.go，只使用既有表夹具。
+
+## 最终交付结果（2026-10-30，取代早期阻塞记录）
+
+实施完成，状态为已完成，待回归；本编号保留，所有plan.md和父大计划8只读。本轮已突破环境与接口门槛，不再以未继承连接环境或缺少旧lc_time接口作为阻塞。仅完整客户端中的6项既有MySQL差分未通过，不能宣称完整Ready绿色。
+
+生产修改对应本任务依据：pg_timestamp_format.rs复用统一扫描器实现MONTH/MON/DAY/DY及TM/FM、引用文字和C输入collation大小写；新pg_time_locale.rs从系统独立locale对象获取真实名称，编码转为UTF8，不调用全局setlocale；expression/Cargo.toml及Cargo.lock只增加已锁libc的直接使用，无版本变更/外部依赖移植/本地覆盖。builtin.rs是同一to_char求值分支传递lc_time；core_support.rs仅timestamp/timestamptz格式禁止准备阶段折叠，numeric/integer/float与interval路径保持原策略。exprctx/context.rs、exprstatic/evalctx.rs及context.rs分别为事实入口、快照复制和装饰器透传。session/runtime/session.rs与pg_temporal.rs保存私有事实并装入执行快照，query.rs使timestamp格式消费该快照；control.rs与transaction.rs按既有IntervalStyle钩子保存事务/保存点并回滚新设置，防止新增状态泄漏。server/conn.rs、runtime.rs、pg_session.rs为真实session worker提供SHOW/SET/LOCAL/RESET及locale合法性检查，未改目录查询解析器、OID猜测、参数协议或第二求值器。所有修改Rust文件保留AsterSQL及原有PingCAP Apache头。
+
+最终工厂13场景、SQL/协议38场景通过，各exact过滤器有效1测试。真实客户端预期80、实际80、去重80、通过74、失败6、跳过0；PG客户端69全部通过，另MySQL名称拒绝2和双方言交错3通过。通过分类为success21、NULL7、zero4、error3、recovery2、binding24、context7、transaction1、mysql2、interleaved3，总数74；独立差分器负向自检3通过，不计业务总数。准备后切换C/de_DE.UTF-8、另一连接保持C、三月非ASCII字节、真实行源、typed NULL、零行、四种格式及重复/NULL绑定、事务LOCAL/保存点/回滚均有实际双方观测。statement/portal Describe的OID25、typlen/typmod -1、列名v及Execute不重发描述由SQL TCP测试验证，错误S/V/C/M与适用D/H/P、Sync恢复及E→ROLLBACK→I保留。
+
+缺证为同前序的6项MySQL差分：M-Q-date-format/M-prepare-date-format值正确但metadata flags128/length124与Aster flags1/length440不符；M-Q-empty/M-prepare-empty参考实际返回NULL，任务保留契约要求空串；M-Q-format/M-prepare-format在Aster返回1105/HY000，参考locale成功。没有屏蔽字段、改断言或吞并MySQL子系统。拥有者为MySQL DATE_FORMAT/FORMAT正式工厂及元数据/兼容契约维护者。恢复条件是协调空模板契约并修复既有元数据/locale行为，然后原样重跑本编号客户端；因此保留本编号，不删除、不标全部通过。
+
+Ready使用本任务明列检查（.agents/skills/tidb-verify-profile不存在）：fmt、lint、diff-check退出0，本任务formal/SQL退出0、client退出101（仅上述六项）；相邻timestamp工厂11场景与timestamptz工厂16场景通过，各有效1测试。WIP→Ready原命令及全部迭代退出码/日志在target/pg08-17-evidence/commands.jsonl；首次三层运行均有效1测试且运行期失败，不能以中间锁条目/参数修正的编译失败计红灯。未改变Go/import/Bazel/Go模块，不触发bazel_prepare；未运行bazel_lint_changed、Go单元/failpoint或RealTiKV。
+
+最终真实参考证据为target/pg08-17-evidence/38124-63124：PG18.6/server_version_num180006、libpq180000、MySQL8.0.46/mysqlclient80046、tzdata2026c；reference.jsonl和mysql-reference.jsonl保留version、locale、编码、TimeZone、sql_mode，build.jsonl保留二进制版本/hash、源码diff和Cargo.lock/hash。测试基线HEAD42009a2d1d6629bc2a6eadfb15505a1a9ccc0dc6，fixture SHA256 f7fde236f5bc766d9066a040ffb7f257d0b8e6b2896ea17902e2551dab25baf4。参考为本任务独立临时实例，不是历史绿色；早期green6证据37861-63039同样保留真实失败。
+
+所有Cargo及调用Cargo脚本均动态领取槽位1，绝对CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；每轮结束wait子进程后释放锁，缓存保留。正常、断言失败及TERM中断路径都验证自有PG/MySQL实例已停止wait、端口关闭、临时目录删除；interrupt-check.py退出0并验证子执行退出143、槽位释放。全部reference-lifecycle-*.json的cleanup_verified为true。最终Rust cleanup确认数据库删除、双listener不可连接；客户端summary确认参考表/库删除、locale/TimeZone恢复、连接关闭。没有停止用户服务，没有未清理的自有锁/进程/对象；仅保留脱敏证据和构建缓存。
+
+风险与边界：C输入collation及C/de_DE.UTF-8的选定时间locale名称经过真实验证；其他collation的语言大小写、非Unix平台、全部系统locale、其他to_char模板、TiKV持久化和性能基准未验证。系统locale可用性依赖部署主机；实现使用独立newlocale对象保护并发隔离，但未做性能基准。不扩建通用locale/collation子系统。唯一未完成交付检查是上述范围外MySQL差分，不存在本任务PG行为缺证。
+
+确切Ready命令均从仓库根目录在上述槽位、references-runner注入的自有参考环境执行，所有--list均1 test, 0 benchmarks且退出0：
+
+    cargo fmt --all  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_17_test::pg08_17_formal -- --exact --list  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_17_test::pg08_17_formal -- --exact --nocapture  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_17_sql -- --exact --list  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_17_sql -- --exact --nocapture  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_17_clients -- --exact --list  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_17_clients -- --exact --nocapture  # exit 101
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_11_test::pg08_11_formal -- --exact --list  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_11_test::pg08_11_formal -- --exact --nocapture  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_12_test::pg08_12_formal -- --exact --list  # exit 0
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_12_test::pg08_12_formal -- --exact --nocapture  # exit 0
+    make lint  # exit 0
+    git diff --check  # exit 0
+
+其他验证命令：python3 -m py_compile pkg/server/testdata/pg08_17_libpq.py（退出0）；python3 pkg/server/testdata/pg08_17_libpq.py --self-test（退出0、3负向自检）；python3 target/pg08-17-evidence/interrupt-check.py（退出0，TERM子执行143）；git diff --check（退出0）。各WIP相同命令、外层参考启动命令及实际退出详情保留在red.log、green*.log、ready.log、commands.jsonl和reference-lifecycle文件，不混淆脚本退出0与其中client测试退出101。
+
+本次交付包含本编号、Cargo.lock、expression manifest/locale/工厂/上下文/扫描器/测试挂载、session事实与事务钩子、server设置桥接与三层测试/客户端夹具。只按git-commit提交本任务明确文件，排除无关Go对齐计划目录。下一步由MySQL行为拥有者解决六项差分后回归本编号，不将父计划或全工作流标完成。

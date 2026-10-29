@@ -64,6 +64,9 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     fn SQLDialect(&self) -> parser_ast::SqlDialect {
         parser_ast::SqlDialect::MySQL
     }
+    fn PgLcTime(&self) -> String {
+        "C".into()
+    }
     fn CtxID(&self) -> u64;
     fn SQLMode(&self) -> mysql::SQLMode;
     fn TypeCtx(&self) -> types::Context;
@@ -387,6 +390,9 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     }
     fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
         self.inner.PgFixedTimeZone()
+    }
+    fn PgLcTime(&self) -> String {
+        self.inner.PgLcTime()
     }
     fn CurrentTime(&self) -> Result<DateTime<Tz>, contextutil::errors::SharedError> {
         self.inner.CurrentTime()

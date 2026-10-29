@@ -118,6 +118,7 @@ pub struct EvalCtxState {
     warn_handler: SharedWarnHandler,
     sql_dialect: parser_ast::SqlDialect,
     pg_fixed_time_zone: Option<chrono::FixedOffset>,
+    pg_lc_time: String,
     deprecated_integer_display_width: Option<bool>,
     sql_mode: mysql::SQLMode,
     type_ctx: types::Context,
@@ -139,6 +140,7 @@ impl Clone for EvalCtxState {
             warn_handler: Arc::clone(&self.warn_handler),
             sql_dialect: self.sql_dialect,
             pg_fixed_time_zone: self.pg_fixed_time_zone,
+            pg_lc_time: self.pg_lc_time.clone(),
             deprecated_integer_display_width: self.deprecated_integer_display_width,
             sql_mode: self.sql_mode,
             type_ctx: self.type_ctx.clone(),
@@ -190,6 +192,10 @@ pub fn WithLocation(location: Tz) -> EvalCtxOption {
 }
 
 /// Preserve an explicitly configured PostgreSQL fixed displacement.
+pub fn WithPgLcTime(value: String) -> EvalCtxOption {
+    Box::new(move |state| state.pg_lc_time = value)
+}
+
 pub fn WithPgFixedTimeZone(zone: Option<chrono::FixedOffset>) -> EvalCtxOption {
     Box::new(move |state| state.pg_fixed_time_zone = zone)
 }
@@ -291,6 +297,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
         warn_handler: warning_handler,
         sql_dialect: parser_ast::SqlDialect::MySQL,
         pg_fixed_time_zone: None,
+        pg_lc_time: "C".into(),
         deprecated_integer_display_width: None,
         sql_mode: default_sql_mode(),
         type_ctx: types::NewContext(types::StrictFlags, UTC, Arc::clone(&appender)),
@@ -583,6 +590,9 @@ impl exprctx::EvalContext for EvalContext {
     fn Location(&self) -> Tz {
         EvalContext::Location(self)
     }
+    fn PgLcTime(&self) -> String {
+        self.state.pg_lc_time.clone()
+    }
     fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
         self.state.pg_fixed_time_zone
     }
@@ -662,6 +672,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithTypeFlags(type_context.Flags()),
         WithLocation(type_context.Location()),
         WithPgFixedTimeZone(context.PgFixedTimeZone()),
+        WithPgLcTime(context.PgLcTime()),
         WithErrLevelMap(error_context.LevelMap()),
         WithCurrentDB(context.CurrentDB()),
         WithCurrentTime(current_time_fn),

@@ -4858,6 +4858,7 @@ dependencies = [
  "flate2",
  "hex 0.4.3",
  "jsonschema",
+ "libc",
  "maplit",
  "md-5 0.10.6",
  "num-traits",

@@ -821,6 +821,10 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgLcTime {
+        setting: Option<(String, bool)>,
+        response: mpsc::SyncSender<ConnResult<String>>,
+    },
     PgIntervalStyle {
         setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
         response: mpsc::SyncSender<ConnResult<astersql_types::pg_temporal::PgIntervalStyle>>,
@@ -977,6 +981,9 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgLcTime { setting, response } => {
+                let _ = response.send(Ok(session.pg_lc_time(setting)));
+            }
             SessionRequest::PgIntervalStyle { setting, response } => {
                 let _ = response.send(Ok(session.pg_interval_style(setting)));
             }
@@ -1794,6 +1801,14 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn pg_lc_time(&self, setting: Option<(String, bool)>) -> ConnResult<String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgLcTime {
+            setting,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
+    }
     fn pg_interval_style(
         &self,
         setting: Option<astersql_types::pg_temporal::PgIntervalSetting>,
