@@ -7434,3 +7434,337 @@ fn pg08_01_sql() {
     assert!(TcpStream::connect(address).is_err());
     println!("pg08_01_sql: 36 scenarios passed; listener closed");
 }
+
+#[test]
+fn pg08_02_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (id, sql, value, zero) in [
+        (
+            "S-day",
+            "SELECT date_trunc('day'::text, '2024-01-02 00:00:40.123456'::timestamptz) AS v",
+            Some("2024-01-02 00:00:00+00"),
+            false,
+        ),
+        (
+            "S-week",
+            "SELECT date_trunc('week'::text, '2021-01-01 12:34:56'::timestamptz) AS v",
+            Some("2020-12-28 00:00:00+00"),
+            false,
+        ),
+        (
+            "S-milliseconds",
+            "SELECT date_trunc('milliseconds'::text, '2024-01-02 00:00:40.123456'::timestamptz) AS v",
+            Some("2024-01-02 00:00:40.123+00"),
+            false,
+        ),
+        (
+            "S-null",
+            "SELECT date_trunc('day'::text, NULL::timestamptz) AS v",
+            None,
+            false,
+        ),
+        (
+            "S-zero",
+            "SELECT date_trunc('day'::text, NULL::timestamptz) AS v WHERE false",
+            None,
+            true,
+        ),
+        (
+            "S-nested",
+            "SELECT date_trunc('day'::text, date_trunc('hour'::text, '2024-01-02 12:34:56'::timestamptz)) AS v",
+            Some("2024-01-02 00:00:00+00"),
+            false,
+        ),
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(
+            !messages.iter().any(|(tag, _)| *tag == b'E'),
+            "{id}: {messages:?}"
+        );
+        let description = &messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1;
+        let mut expected = vec![0, 1, b'v', 0];
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        expected.extend_from_slice(&1184u32.to_be_bytes());
+        expected.extend_from_slice(&8i16.to_be_bytes());
+        expected.extend_from_slice(&(-1i32).to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        assert_eq!(description, &expected, "{id}");
+        let rows: Vec<_> = messages.iter().filter(|(tag, _)| *tag == b'D').collect();
+        if zero {
+            assert!(rows.is_empty(), "{id}");
+        } else {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, row(&[value]), "{id}");
+        }
+    }
+    for (unit, state) in [("nonsense", "22023"), ("timezone", "0A000")] {
+        let messages = query(
+            &mut socket,
+            &format!("SELECT date_trunc('{unit}'::text, '2024-01-02 12:34:56'::timestamptz) AS v"),
+        );
+        let error = &messages
+            .iter()
+            .find(|(tag, _)| *tag == b'E')
+            .expect("error response")
+            .1;
+        assert!(
+            error
+                .windows(7)
+                .any(|bytes| bytes == format!("C{state}\0").as_bytes()),
+            "{unit}: {messages:?}"
+        );
+        assert!(!messages.iter().any(|(tag, _)| *tag == b'D'));
+        let recovered = query(&mut socket, "SELECT 1::int4 AS v");
+        assert_eq!(
+            recovered.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+            row(&[Some("1")])
+        );
+    }
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let message = read(socket);
+            let done = message.0 == b'Z';
+            messages.push(message);
+            if done {
+                return messages;
+            }
+        }
+    }
+    for empty in [false, true] {
+        let sql = format!(
+            "SELECT date_trunc($2::text,$1::timestamptz) AS v{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        let parse = [b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat();
+        send(&mut socket, b'P', &parse);
+        send(&mut socket, b'D', b"S\0");
+        send(&mut socket, b'S', &[]);
+        let messages = ready(&mut socket);
+        assert_eq!(
+            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'1', b't', b'T', b'Z'],
+            "{messages:?}"
+        );
+        assert_eq!(
+            messages.iter().find(|m| m.0 == b't').unwrap().1,
+            [
+                &2i16.to_be_bytes()[..],
+                &1184u32.to_be_bytes(),
+                &25u32.to_be_bytes()
+            ]
+            .concat()
+        );
+        let description = messages.iter().find(|m| m.0 == b'T').unwrap().1.clone();
+        assert_eq!(&description[10..14], &1184u32.to_be_bytes());
+        assert_eq!(&description[14..16], &8i16.to_be_bytes());
+        assert_eq!(&description[16..20], &(-1i32).to_be_bytes());
+        for input_format in [0i16, 1] {
+            for output_format in [0i16, 1] {
+                for index in 0..3 {
+                    // 2000-01-01 is PostgreSQL's binary timestamp epoch.
+                    let value = if index == 1 {
+                        None
+                    } else if input_format == 0 {
+                        Some(b"2000-01-01 00:00:40.123456".to_vec())
+                    } else {
+                        Some(40_123_456i64.to_be_bytes().to_vec())
+                    };
+                    let mut bind = vec![0, 0];
+                    bind.extend_from_slice(&1i16.to_be_bytes());
+                    bind.extend_from_slice(&input_format.to_be_bytes());
+                    bind.extend_from_slice(&2i16.to_be_bytes());
+                    for payload in [value.as_deref(), Some(b"milliseconds".as_slice())] {
+                        bind.extend_from_slice(
+                            &payload.map_or(-1, |v| v.len() as i32).to_be_bytes(),
+                        );
+                        if let Some(v) = payload {
+                            bind.extend_from_slice(v);
+                        }
+                    }
+                    bind.extend_from_slice(&1i16.to_be_bytes());
+                    bind.extend_from_slice(&output_format.to_be_bytes());
+                    send(&mut socket, b'B', &bind);
+                    send(&mut socket, b'D', b"P\0");
+                    send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                    send(&mut socket, b'S', &[]);
+                    let messages = ready(&mut socket);
+                    let expected_tags = if empty {
+                        vec![b'2', b'T', b'C', b'Z']
+                    } else {
+                        vec![b'2', b'T', b'D', b'C', b'Z']
+                    };
+                    assert_eq!(
+                        messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        expected_tags,
+                        "{messages:?}"
+                    );
+                    let mut portal = description.clone();
+                    let n = portal.len();
+                    portal[n - 2..].copy_from_slice(&output_format.to_be_bytes());
+                    assert_eq!(messages.iter().find(|m| m.0 == b'T').unwrap().1, portal);
+                    if !empty {
+                        let expected = if index == 1 {
+                            row(&[None])
+                        } else if output_format == 0 {
+                            row(&[Some("2000-01-01 00:00:40.123+00")])
+                        } else {
+                            [
+                                &1i16.to_be_bytes()[..],
+                                &8i32.to_be_bytes(),
+                                &40_123_000i64.to_be_bytes(),
+                            ]
+                            .concat()
+                        };
+                        assert_eq!(messages.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                    }
+                    assert_eq!(messages.last().unwrap().1, b"I");
+                }
+            }
+        }
+    }
+    for (unit, state) in [("nonsense", "22023"), ("timezone", "0A000")] {
+        assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+        let sql = "SELECT date_trunc($2::text,$1::timestamptz) AS v";
+        send(
+            &mut socket,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut socket, b'S', &[]);
+        let parsed = ready(&mut socket);
+        assert!(!parsed.iter().any(|m| m.0 == b'E'));
+        let mut bind = vec![0, 0, 0, 0, 0, 2];
+        for value in ["2000-01-01 00:00:40", unit] {
+            bind.extend_from_slice(&(value.len() as i32).to_be_bytes());
+            bind.extend_from_slice(value.as_bytes());
+        }
+        bind.extend_from_slice(&0i16.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+        send(&mut socket, b'S', &[]);
+        let messages = ready(&mut socket);
+        let error = &messages
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("runtime error")
+            .1;
+        assert!(
+            error
+                .windows(7)
+                .any(|b| b == format!("C{state}\0").as_bytes()),
+            "{messages:?}"
+        );
+        for field in [b'S', b'V', b'C', b'M'] {
+            assert!(
+                error
+                    .split(|b| *b == 0)
+                    .any(|part| part.first() == Some(&field) && part.len() > 1)
+            );
+        }
+        let phase = if messages.iter().any(|m| m.0 == b'2') {
+            "Execute"
+        } else {
+            "Bind"
+        };
+        println!("S-transaction-{unit}: phase={phase} error bytes={error:?}");
+        assert!(!messages.iter().any(|m| m.0 == b'D'));
+        assert_eq!(messages.last().unwrap().1, b"E");
+        assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4 AS v")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+    }
+    for (zone, source, expected) in [
+        ("UTC", "2024-01-02 01:30:00+00", "2024-01-02 00:00:00+00"),
+        (
+            "America/New_York",
+            "2024-01-02 01:30:00+00",
+            "2024-01-01 00:00:00-05",
+        ),
+        (
+            "America/New_York",
+            "2024-03-10 16:00:00+00",
+            "2024-03-10 00:00:00-05",
+        ),
+        (
+            "America/New_York",
+            "2024-03-11 16:00:00+00",
+            "2024-03-11 00:00:00-04",
+        ),
+        (
+            "America/New_York",
+            "2024-11-03 16:00:00+00",
+            "2024-11-03 00:00:00-04",
+        ),
+        (
+            "America/New_York",
+            "2024-11-04 16:00:00+00",
+            "2024-11-04 00:00:00-05",
+        ),
+    ] {
+        assert!(
+            !query(&mut socket, &format!("SET time_zone = '{zone}'"))
+                .iter()
+                .any(|m| m.0 == b'E')
+        );
+        let messages = query(
+            &mut socket,
+            &format!("SELECT date_trunc('day'::text,'{source}'::timestamptz) AS v"),
+        );
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+        assert_eq!(
+            messages.iter().find(|m| m.0 == b'D').unwrap().1,
+            row(&[Some(expected)])
+        );
+        assert_eq!(
+            &messages.iter().find(|m| m.0 == b'T').unwrap().1[10..14],
+            &1184u32.to_be_bytes()
+        );
+    }
+    assert!(
+        !query(&mut socket, "SET time_zone = 'UTC'")
+            .iter()
+            .any(|m| m.0 == b'E')
+    );
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    println!("pg08_02_sql: 42 scenarios passed; listener closed");
+}

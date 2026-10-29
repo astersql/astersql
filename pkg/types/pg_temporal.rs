@@ -753,6 +753,87 @@ impl fmt::Display for PgTimestamp {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PgTimestampTz(i64);
 impl PgTimestampTz {
+    /// Truncate the civil time in the execution zone, then restore the instant.
+    /// Like PostgreSQL, day and larger buckets resolve their new UTC offset;
+    /// sub-day buckets retain the input offset through an autumn overlap.
+    pub fn truncate_in_zone(
+        self,
+        unit: &str,
+        zone: chrono_tz::Tz,
+        fixed: Option<chrono::FixedOffset>,
+    ) -> Result<Self, PgTemporalError> {
+        use chrono::{Offset, TimeZone};
+        // Validate the unit even for infinity, before consulting transition data.
+        PgTimestamp(0).truncate(unit)?;
+        if matches!(self.0, i64::MIN | i64::MAX) {
+            return Ok(self);
+        }
+        let datetime = |micros: i64| {
+            micros
+                .checked_add(946_684_800_000_000)
+                .and_then(chrono::DateTime::from_timestamp_micros)
+                .ok_or(PgTemporalError::Range)
+        };
+        let offset = if let Some(fixed) = fixed {
+            fixed.local_minus_utc()
+        } else if zone == chrono_tz::UTC {
+            0
+        } else {
+            datetime(self.0)?
+                .with_timezone(&zone)
+                .offset()
+                .fix()
+                .local_minus_utc()
+        };
+        let wall = PgTimestamp(
+            self.0
+                .checked_add(i64::from(offset) * 1_000_000)
+                .ok_or(PgTemporalError::Range)?,
+        )
+        .truncate(unit)?;
+        let subday = matches!(
+            unit.to_ascii_lowercase().as_str(),
+            "microsecond"
+                | "microseconds"
+                | "usec"
+                | "usecs"
+                | "millisecond"
+                | "milliseconds"
+                | "msec"
+                | "msecs"
+                | "second"
+                | "seconds"
+                | "sec"
+                | "secs"
+                | "minute"
+                | "minutes"
+                | "min"
+                | "mins"
+                | "hour"
+                | "hours"
+                | "hr"
+                | "hrs"
+        );
+        let offset = if fixed.is_some() || zone == chrono_tz::UTC || subday {
+            offset
+        } else {
+            let local = datetime(wall.0)?.naive_utc();
+            match zone.from_local_datetime(&local) {
+                chrono::LocalResult::Single(value) => value.offset().fix().local_minus_utc(),
+                chrono::LocalResult::Ambiguous(_, after) => after.offset().fix().local_minus_utc(),
+                chrono::LocalResult::None => chrono_tz::GapInfo::new(&local, &zone)
+                    .and_then(|gap| gap.begin)
+                    .map(|(_, before)| before.fix().local_minus_utc())
+                    .ok_or(PgTemporalError::Range)?,
+            }
+        };
+        Self::from_micros(
+            wall.0
+                .checked_sub(i64::from(offset) * 1_000_000)
+                .ok_or(PgTemporalError::Range)?,
+        )
+    }
+
     pub fn from_micros(micros: i64) -> Result<Self, PgTemporalError> {
         PgTimestamp::from_micros(micros).map(|v| Self(v.micros()))
     }
@@ -795,9 +876,9 @@ impl PgTimestampTz {
                 && !zone.eq_ignore_ascii_case("GMT")
                 && zone.parse::<chrono_tz::Tz>().is_err()
             {
-                // A numeric displacement followed by another word is trailing
-                // input, not a standalone unrecognized zone name.
-                return Err(if clock.contains(['+', '-']) {
+                // Unknown abbreviations and trailing words are syntax errors.
+                // An unrecognized IANA-style name has the zone diagnostic.
+                return Err(if clock.contains(['+', '-']) || !zone.contains('/') {
                     PgTemporalError::Syntax
                 } else {
                     PgTemporalError::UnknownZone

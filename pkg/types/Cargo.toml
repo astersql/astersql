@@ -10,6 +10,7 @@ path = "lib.rs"
 [dependencies]
 base64 = "0.22"
 chrono-tz = "0.10"
+chrono = "0.4"
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
 thiserror = "2"
 collate = { package = "astersql-util-collate", path = "../util/collate" }
@@ -30,7 +31,6 @@ types-json-path = { package = "astersql-types-json-path", path = "internal/json_
 types-decimal = { package = "astersql-types-decimal", path = "internal/decimal" }
 
 [dev-dependencies]
-chrono = "0.4"
 rand = "0.8"
 rust_decimal = "1.37"
 

@@ -1338,6 +1338,14 @@ impl ConcreteSession {
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
             use astersql_expression::BuildContext;
+            let source_type = if pg_timestamptz_source(&Args[1])
+                || self.pg_case_input_type(&Args[1], &[]).GetType()
+                    == astersql_parser_mysql::r#type::TypePgTimestampTz
+            {
+                astersql_parser_mysql::r#type::TypePgTimestampTz
+            } else {
+                astersql_parser_mysql::r#type::TypeDatetime
+            };
             let values = Args
                 .iter()
                 .map(|arg| self.relational_query_expression_value(arg, row, group_rows))
@@ -1351,22 +1359,24 @@ impl ConcreteSession {
                 argument.RetType = Some(astersql_parser_types::NewFieldType(if index == 0 {
                     astersql_parser_mysql::r#type::TypeVarString
                 } else {
-                    astersql_parser_mysql::r#type::TypeDatetime
+                    source_type
                 }));
                 args.push(Box::new(argument));
             }
-            let eval = astersql_expression_exprstatic::NewEvalContext(vec![
-                astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
-            ]);
+            let eval = if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz {
+                self.pg_temporal_eval_context()?
+            } else {
+                astersql_expression_exprstatic::NewEvalContext(vec![
+                    astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
+                ])
+            };
             let context = astersql_expression_exprstatic::NewExprContext(vec![
                 astersql_expression_exprstatic::WithEvalCtx(Arc::new(eval)),
             ]);
             let built = astersql_expression::NewFunctionBase(
                 &context,
                 "date_trunc",
-                *astersql_expression::types::NewFieldType(
-                    astersql_parser_mysql::r#type::TypeDatetime,
-                ),
+                *astersql_expression::types::NewFieldType(source_type),
                 args,
             )
             .map_err(|error| session_error("build timestamp truncation", error))?;
@@ -1381,7 +1391,12 @@ impl ConcreteSession {
                         error.into_shared(),
                     )
                 })?;
-            return Ok((!null).then_some(value));
+            let value = (!null).then_some(value);
+            return if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz {
+                self.pg_timestamptz_relational_value(value, -1)
+            } else {
+                Ok(value)
+            };
         }
         // One fixed numeric signature provides a bounded implicit-cast context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
@@ -2061,7 +2076,9 @@ impl ConcreteSession {
                     } else {
                         value
                     };
-                    return self.pg_timestamptz_relational_value(value, Tp.GetDecimal());
+                    return self
+                        .pg_timestamptz_relational_value(value, Tp.GetDecimal())
+                        .map_err(|error| super::pg_temporal::pg_temporal_input_error(error, Expr));
                 }
                 if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && Tp.GetType() == astersql_parser_mysql::r#type::TypeDatetime
@@ -4603,11 +4620,25 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-            if matches!(&expression.Kind, ast::ExprKind::Function { FnName, Schema, Args } if FnName.L == "date_trunc" && Args.len() == 2 && (Schema.L.is_empty() || Schema.L=="pg_catalog"))
+            if let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+                && FnName.L == "date_trunc"
+                && Args.len() == 2
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
-                return astersql_parser_types::NewFieldType(
-                    astersql_parser_mysql::r#type::TypeDatetime,
-                );
+                let inputs = Args
+                    .iter()
+                    .map(|arg| self.pg_case_input_type(arg, source_fields).GetType())
+                    .collect::<Vec<_>>();
+                if let Ok(candidate) = astersql_expression::formal_registry::resolve_pg_signature(
+                    "date_trunc",
+                    &inputs,
+                ) {
+                    return astersql_parser_types::NewFieldType(candidate.result);
+                }
             }
             if let ast::ExprKind::Function {
                 FnName,

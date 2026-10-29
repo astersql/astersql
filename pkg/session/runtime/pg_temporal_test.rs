@@ -391,3 +391,66 @@ fn pg06_task_077_kernel() {
         );
     }
 }
+
+#[test]
+fn pg08_02_execution_context_snapshot() {
+    use astersql_expression::EvalContext as _;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session.execute("SET timestamp = 1704159000").unwrap();
+    session
+        .execute("SET time_zone = 'America/New_York'")
+        .unwrap();
+    session.execute("BEGIN").unwrap();
+    let before = session.pg_temporal_eval_context().unwrap();
+    session.execute("SET timestamp = 1704245400").unwrap();
+    session.execute("SET time_zone = '+05:30'").unwrap();
+    let after = session.pg_temporal_eval_context().unwrap();
+    assert_eq!(before.Location().name(), "America/New_York");
+    assert_eq!(after.PgFixedTimeZone().unwrap().local_minus_utc(), 19800);
+    assert_eq!(
+        before.CurrentTime().unwrap().timestamp(),
+        after.CurrentTime().unwrap().timestamp()
+    );
+    session.execute("ROLLBACK").unwrap();
+}
+
+#[test]
+fn pg08_02_row_source() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    session
+        .execute("SET time_zone = 'America/New_York'")
+        .unwrap();
+    for (expression, empty) in [
+        ("date_trunc('day'::text, t)", false),
+        (
+            "date_trunc('day'::text, date_trunc('hour'::text, t))",
+            false,
+        ),
+        ("date_trunc('day'::text, t)", true),
+    ] {
+        let sql = format!(
+            "SELECT {expression} AS v FROM (SELECT '2024-01-02 01:30:00+00'::timestamptz AS t) AS source{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        let mut sets = session.execute(&sql).unwrap();
+        assert_eq!(
+            sets[0].result_fields()[0]
+                .as_ref()
+                .unwrap()
+                .column
+                .FieldType
+                .GetType(),
+            astersql_parser_mysql::r#type::TypePgTimestampTz
+        );
+        if empty {
+            assert!(sets[0].next_row().unwrap().is_none());
+        } else {
+            assert_eq!(
+                sets[0].next_row().unwrap().unwrap(),
+                ["2024-01-01 00:00:00-05"]
+            );
+        }
+    }
+}

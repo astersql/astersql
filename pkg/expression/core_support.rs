@@ -494,6 +494,13 @@ pub fn FoldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> ExprBox {
 /// 内部折叠：特殊短路 → 全常量求值 → 空值拒绝试探 → 参数/延迟常量求值。
 fn foldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> (ExprBox, bool) {
     if let Some(function_ref) = expression.as_scalar_function() {
+        // This overload is stable in the execution TimeZone. Cached plans
+        // must not retain a value computed in the preparation connection zone.
+        if function_ref.FuncName.L == "date_trunc"
+            && function_ref.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
+        {
+            return (expression, false);
+        }
         // 不可折叠或扩展函数：保持原树。
         if unFoldableFunctions.contains_key(function_ref.FuncName.L.as_str())
             || function_ref.Function.isExtensionFunction()

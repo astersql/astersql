@@ -2612,10 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "date_trunc" => vec![PgFunctionCandidate {
-                arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
-                result: mysql::TypeDatetime,
-            }],
+            "date_trunc" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
+                    result: mysql::TypeDatetime,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypePgTimestampTz],
+                    result: mysql::TypePgTimestampTz,
+                },
+            ],
             "abs" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeLong],
@@ -5097,13 +5103,22 @@ pub mod formal_registry {
                     if first_null || second_null {
                         return Ok((String::new(), true));
                     }
-                    value
-                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
-                        .and_then(|value| value.truncate(&unit))
-                        .map(|value| (value.to_string(), false))
-                        .map_err(|error| {
-                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
-                        })
+                    let result = if self.base.return_type.GetType() == mysql::TypePgTimestampTz {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgTimestampTz>()
+                            .and_then(|value| {
+                                value.truncate_in_zone(&unit, ctx.Location(), ctx.PgFixedTimeZone())
+                            })
+                            .map(|value| value.to_string())
+                    } else {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                            .and_then(|value| value.truncate(&unit))
+                            .map(|value| value.to_string())
+                    };
+                    result.map(|value| (value, false)).map_err(|error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    })
                 }
                 CoreBuiltinKind::PgRound => {
                     let (text, null) = if self.base.args[0].GetType(ctx).EvalType() == types::ETInt
@@ -5950,10 +5965,10 @@ pub mod formal_registry {
                     .iter()
                     .map(|arg| arg.GetType(ctx.GetEvalCtx()).GetType())
                     .collect::<Vec<_>>();
-                resolve_pg_signature(name, &inputs).map_err(errors::New)?;
+                let candidate = resolve_pg_signature(name, &inputs).map_err(errors::New)?;
                 (
                     CoreBuiltinKind::PgDateTrunc,
-                    *types::NewFieldType(mysql::TypeDatetime),
+                    *types::NewFieldType(candidate.result),
                     "builtinPgTimestampTruncSig",
                 )
             }

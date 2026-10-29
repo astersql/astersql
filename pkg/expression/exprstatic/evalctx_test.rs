@@ -562,3 +562,23 @@ fn pg_core_dialect_context_snapshot_eval() {
         SqlDialect::PostgreSQL
     );
 }
+
+#[test]
+fn pg08_02_fixed_zone_snapshot() {
+    use exprctx::EvalContext as _;
+    let offset = chrono::FixedOffset::east_opt(19800);
+    let context = NewEvalContext(vec![
+        WithLocation(New_York),
+        WithPgFixedTimeZone(offset),
+        WithCurrentTime(Arc::new(|| {
+            Ok(UTC.with_ymd_and_hms(2024, 1, 2, 1, 30, 0).unwrap())
+        })),
+    ]);
+    let snapshot = MakeEvalContextStatic(&context);
+    assert_eq!(snapshot.Location(), New_York);
+    assert_eq!(snapshot.PgFixedTimeZone(), offset);
+    assert_eq!(
+        snapshot.CurrentTime().unwrap(),
+        context.CurrentTime().unwrap()
+    );
+}

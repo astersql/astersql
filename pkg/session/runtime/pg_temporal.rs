@@ -9,7 +9,62 @@ fn temporal_error(error: astersql_types::pg_temporal::PgTemporalError) -> Sessio
     SessionError::with_source(error.to_string(), astersql_errors::SharedError::new(error))
 }
 
+/// Retain the literal's source position for PostgreSQL input diagnostics.
+pub(super) fn pg_temporal_input_error(error: SessionError, source: &ast::ExprNode) -> SessionError {
+    if let Some(cause) = error.pg_temporal_error()
+        && matches!(
+            cause,
+            astersql_types::pg_temporal::PgTemporalError::Syntax
+                | astersql_types::pg_temporal::PgTemporalError::UnknownZone
+        )
+    {
+        let diagnostic = super::function_diagnostics::PgFunctionError {
+            state: cause.sqlstate(),
+            message: error.to_string(),
+            hint: None,
+            position: (source.OriginTextPosition >= 0)
+                .then_some(source.OriginTextPosition as usize),
+        };
+        SessionError::with_source(
+            diagnostic.to_string(),
+            astersql_errors::SharedError::new(diagnostic),
+        )
+    } else {
+        error
+    }
+}
+
 impl ConcreteSession {
+    /// Build only the existing scalar context from execution-time session facts.
+    /// The saved transaction/statement clock is copied, never resampled per row.
+    pub(super) fn pg_temporal_eval_context(
+        &self,
+    ) -> SessionResult<astersql_expression_exprstatic::EvalContext> {
+        use astersql_expression_exprstatic::{
+            NewEvalContext, WithCurrentTime, WithLocation, WithPgFixedTimeZone, WithSQLDialect,
+        };
+        let (location, fixed) = match *self.time_zone.borrow() {
+            RuntimeTimeZone::Named(zone) => (zone, None),
+            RuntimeTimeZone::Fixed(zone) => (chrono_tz::UTC, Some(zone)),
+        };
+        let state = self.state.borrow();
+        let seconds = if state.transaction.is_some() {
+            state.pg_transaction_time.unwrap_or(state.pg_statement_time)
+        } else {
+            state.pg_statement_time
+        };
+        let snapshot = chrono::DateTime::from_timestamp_micros((seconds * 1_000_000.0) as i64)
+            .filter(|_| seconds.is_finite())
+            .ok_or_else(|| temporal_error(astersql_types::pg_temporal::PgTemporalError::Range))?
+            .with_timezone(&location);
+        Ok(NewEvalContext(vec![
+            WithSQLDialect(self.sql_dialect()),
+            WithLocation(location),
+            WithPgFixedTimeZone(fixed),
+            WithCurrentTime(Arc::new(move || Ok(snapshot))),
+        ]))
+    }
+
     /// Snapshot the statement wall clock. The native override supplies the
     /// existing deterministic clock boundary; the PG transaction freezes it.
     pub fn begin_pg_date_statement(&self) {
@@ -169,7 +224,9 @@ impl ConcreteSession {
                                     self.values
                                         .insert(expr.OriginTextPosition as usize, v.to_string());
                                 }
-                                Err(error) => self.error = Some(error),
+                                Err(error) => {
+                                    self.error = Some(pg_temporal_input_error(error, source));
+                                }
                             }
                             return false;
                         } else if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInterval {

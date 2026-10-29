@@ -1302,3 +1302,52 @@ fn pg_function_23_timestamp_truncation() {
         Err(PgTemporalError::TruncationUnit)
     );
 }
+
+#[test]
+fn pg08_02_zone_buckets() {
+    use crate::pg_temporal::PgTimestampTz;
+    assert_eq!(
+        "2024-01-02 01:30 NoSuchZone"
+            .parse::<PgTimestampTz>()
+            .unwrap_err(),
+        crate::pg_temporal::PgTemporalError::Syntax
+    );
+    assert_eq!(
+        "2024-01-02 01:30 NoSuch/Zone"
+            .parse::<PgTimestampTz>()
+            .unwrap_err(),
+        crate::pg_temporal::PgTemporalError::UnknownZone
+    );
+    let ny = "America/New_York".parse().unwrap();
+    let trunc = |text: &str, unit| {
+        text.parse::<PgTimestampTz>()
+            .unwrap()
+            .truncate_in_zone(unit, ny, None)
+            .unwrap()
+    };
+    assert_eq!(
+        trunc("2024-03-11 16:00:00+00", "day").micros()
+            - trunc("2024-03-10 16:00:00+00", "day").micros(),
+        23 * 3_600_000_000
+    );
+    assert_eq!(
+        trunc("2024-11-04 16:00:00+00", "day").micros()
+            - trunc("2024-11-03 16:00:00+00", "day").micros(),
+        25 * 3_600_000_000
+    );
+    for (input, expected) in [
+        ("2024-11-03 05:30:00+00", "2024-11-03 05:00:00+00"),
+        ("2024-11-03 06:30:00+00", "2024-11-03 06:00:00+00"),
+    ] {
+        assert_eq!(trunc(input, "hour").to_string(), expected);
+    }
+    assert_eq!(
+        "2024-01-02 01:30:00+00"
+            .parse::<PgTimestampTz>()
+            .unwrap()
+            .truncate_in_zone("day", ny, chrono::FixedOffset::east_opt(19800))
+            .unwrap()
+            .to_string(),
+        "2024-01-01 18:30:00+00"
+    );
+}

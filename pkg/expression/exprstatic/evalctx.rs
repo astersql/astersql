@@ -117,6 +117,7 @@ impl exprctx::UserVarsReader for EmptyUserVarsReader {
 pub struct EvalCtxState {
     warn_handler: SharedWarnHandler,
     sql_dialect: parser_ast::SqlDialect,
+    pg_fixed_time_zone: Option<chrono::FixedOffset>,
     deprecated_integer_display_width: Option<bool>,
     sql_mode: mysql::SQLMode,
     type_ctx: types::Context,
@@ -137,6 +138,7 @@ impl Clone for EvalCtxState {
         Self {
             warn_handler: Arc::clone(&self.warn_handler),
             sql_dialect: self.sql_dialect,
+            pg_fixed_time_zone: self.pg_fixed_time_zone,
             deprecated_integer_display_width: self.deprecated_integer_display_width,
             sql_mode: self.sql_mode,
             type_ctx: self.type_ctx.clone(),
@@ -185,6 +187,11 @@ pub fn WithTypeFlags(flags: types::Flags) -> EvalCtxOption {
 /// 设置会话时区（影响 DATETIME/TIMESTAMP 解释）。
 pub fn WithLocation(location: Tz) -> EvalCtxOption {
     Box::new(move |state| state.type_ctx = state.type_ctx.WithLocation(location))
+}
+
+/// Preserve an explicitly configured PostgreSQL fixed displacement.
+pub fn WithPgFixedTimeZone(zone: Option<chrono::FixedOffset>) -> EvalCtxOption {
+    Box::new(move |state| state.pg_fixed_time_zone = zone)
 }
 
 /// 设置错误组级别映射（Error/Warn/Ignore）。
@@ -283,6 +290,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
     let mut state = EvalCtxState {
         warn_handler: warning_handler,
         sql_dialect: parser_ast::SqlDialect::MySQL,
+        pg_fixed_time_zone: None,
         deprecated_integer_display_width: None,
         sql_mode: default_sql_mode(),
         type_ctx: types::NewContext(types::StrictFlags, UTC, Arc::clone(&appender)),
@@ -575,6 +583,9 @@ impl exprctx::EvalContext for EvalContext {
     fn Location(&self) -> Tz {
         EvalContext::Location(self)
     }
+    fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
+        self.state.pg_fixed_time_zone
+    }
 
     fn CurrentTime(&self) -> Result<DateTime<Tz>, SharedError> {
         EvalContext::CurrentTime(self)
@@ -650,6 +661,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithDeprecatedIntegerDisplayWidth(context.DeprecatedIntegerDisplayWidth()),
         WithTypeFlags(type_context.Flags()),
         WithLocation(type_context.Location()),
+        WithPgFixedTimeZone(context.PgFixedTimeZone()),
         WithErrLevelMap(error_context.LevelMap()),
         WithCurrentDB(context.CurrentDB()),
         WithCurrentTime(current_time_fn),

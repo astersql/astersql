@@ -69,6 +69,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     fn TypeCtx(&self) -> types::Context;
     fn ErrCtx(&self) -> errctx::Context;
     fn Location(&self) -> Tz;
+    /// Explicit PostgreSQL numeric zone; named zones continue to use Location.
+    fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
+        None
+    }
     /// 同一 CtxID 的多次调用应返回同一时刻；错误仍通过 Result 传播。
     fn CurrentTime(&self) -> Result<DateTime<Tz>, contextutil::errors::SharedError>;
     fn CurrentDB(&self) -> String;
@@ -380,6 +384,9 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     }
     fn Location(&self) -> Tz {
         self.inner.Location()
+    }
+    fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
+        self.inner.PgFixedTimeZone()
     }
     fn CurrentTime(&self) -> Result<DateTime<Tz>, contextutil::errors::SharedError> {
         self.inner.CurrentTime()
