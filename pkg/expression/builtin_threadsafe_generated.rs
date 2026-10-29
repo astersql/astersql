@@ -51,6 +51,7 @@ pub fn GeneratedThreadSafetyPolicyForSignature(
             | "builtinPgNumRangeSig"
             | "builtinPgRangeLowerSig"
             | "builtinPgRangeUpperSig"
+            | "builtinPgRangeIsEmptySig"
     ) {
         return Some(GeneratedThreadSafetyPolicy::Recursive);
     }

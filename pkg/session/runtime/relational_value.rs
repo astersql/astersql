@@ -3148,7 +3148,7 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
-        } if matches!(FnName.L.as_str(), "lower" | "upper")
+        } if matches!(FnName.L.as_str(), "lower" | "upper" | "isempty")
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && Args.len() == 1
             && matches!(
@@ -3158,13 +3158,17 @@ pub(super) fn relational_expression_type(
             ) =>
         {
             let inputs = vec![relational_expression_type(&Args[0], table)];
-            new_type(
+            let mut result = new_type(
                 astersql_expression::formal_registry::resolve_pg_typed_signature(
                     &FnName.L, &inputs,
                 )
                 .expect("range bound signature")
                 .result,
-            )
+            );
+            if FnName.L == "isempty" {
+                result.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+            }
+            result
         }
         ast::ExprKind::Function {
             FnName,

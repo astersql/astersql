@@ -2612,6 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "isempty" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypePgInt4Range],
+                    result: mysql::TypeTiny,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypePgNumRange],
+                    result: mysql::TypeTiny,
+                },
+            ],
             "lower" | "upper" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypePgInt4Range],
@@ -2835,7 +2845,10 @@ pub mod formal_registry {
         name: &str,
         inputs: &[types::FieldType],
     ) -> Result<PgFunctionCandidate, &'static str> {
-        if matches!(name, "int4range" | "numrange" | "lower" | "upper") {
+        if matches!(
+            name,
+            "int4range" | "numrange" | "lower" | "upper" | "isempty"
+        ) {
             if inputs.iter().any(|tp| {
                 tp.PostgreSQLArrayElement().is_some()
                     || tp.PostgreSQLRecordFields().is_some()
@@ -4355,6 +4368,7 @@ pub mod formal_registry {
         PgNumRange,
         PgRangeLower,
         PgRangeUpper,
+        PgRangeIsEmpty,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -4709,6 +4723,25 @@ pub mod formal_registry {
         }
         fn evalInt(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<(i64, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgRangeIsEmpty => {
+                    let (text, null) = self.base.args[0].EvalString(ctx, row)?;
+                    if null {
+                        return Ok((0, true));
+                    }
+                    let diagnostic =
+                        |e| errors::Error::from(crate::contextutil::errors::SharedError::new(e));
+                    let empty =
+                        if self.base.args[0].GetType(ctx).GetType() == mysql::TypePgInt4Range {
+                            text.parse::<types_dependency::pg_int4range::PgInt4Range>()
+                                .map_err(diagnostic)?
+                                .is_empty()
+                        } else {
+                            text.parse::<types_dependency::pg_numrange::PgNumRange>()
+                                .map_err(diagnostic)?
+                                .is_empty()
+                        };
+                    Ok((i64::from(empty), false))
+                }
                 CoreBuiltinKind::PgRangeLower => {
                     let (text, null) = self.base.args[0].EvalString(ctx, row)?;
                     if null {
@@ -6683,6 +6716,20 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "isempty" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                let candidate = resolve_pg_typed_signature(name, &inputs).map_err(errors::New)?;
+                let mut result = *types::NewFieldType(candidate.result);
+                result.AddFlag(mysql::IsBooleanFlag);
+                (
+                    CoreBuiltinKind::PgRangeIsEmpty,
+                    result,
+                    "builtinPgRangeIsEmptySig",
+                )
+            }
             "lower" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -8256,6 +8303,7 @@ pub mod formal_registry {
     core_factory!(pg_numrange_factory, "numrange");
     core_factory!(pg_range_lower_factory, "lower");
     core_factory!(pg_range_upper_factory, "upper");
+    core_factory!(pg_range_isempty_factory, "isempty");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8353,6 +8401,7 @@ pub mod formal_registry {
         ("numrange", pg_numrange_factory),
         ("__pg_range_lower", pg_range_lower_factory),
         ("__pg_range_upper", pg_range_upper_factory),
+        ("isempty", pg_range_isempty_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8741,6 +8790,7 @@ pub mod formal_registry {
         ("array_append", 2, 2),
         ("int4range", 2, 3),
         ("numrange", 2, 3),
+        ("isempty", 1, 1),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),

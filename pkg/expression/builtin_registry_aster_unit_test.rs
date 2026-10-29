@@ -58,6 +58,7 @@ fn builtin_registry_matches_complete_go_function_table() {
         "array_append",
         "int4range",
         "numrange",
+        "isempty",
     ];
     assert_eq!(
         funcs.len(),

@@ -1451,6 +1451,7 @@ impl ConcreteSession {
                     | "numrange"
                     | "lower"
                     | "upper"
+                    | "isempty"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && (!matches!(FnName.L.as_str(), "lower" | "upper")
@@ -1536,7 +1537,17 @@ impl ConcreteSession {
                         error.into_shared(),
                     )
                 })?;
-            return Ok((!null).then(|| value.to_string()));
+            return Ok((!null).then(|| {
+                if FnName.L == "isempty" {
+                    if value == 0 {
+                        "f".to_owned()
+                    } else {
+                        "t".to_owned()
+                    }
+                } else {
+                    value.to_string()
+                }
+            }));
         }
         // One fixed numeric signature provides a bounded implicit-cast context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
@@ -3610,6 +3621,7 @@ impl ConcreteSession {
                             | "numrange"
                             | "lower"
                             | "upper"
+                            | "isempty"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4881,6 +4893,7 @@ impl ConcreteSession {
                         | "numrange"
                         | "lower"
                         | "upper"
+                        | "isempty"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
@@ -4899,6 +4912,9 @@ impl ConcreteSession {
                             astersql_expression::formal_registry::pg_array_append_element(&inputs)
                                 .expect("validated array append signature"),
                         );
+                    }
+                    if FnName.L == "isempty" {
+                        result.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
                     }
                     return result;
                 }
