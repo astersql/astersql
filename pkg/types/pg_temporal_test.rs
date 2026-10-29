@@ -1785,3 +1785,20 @@ fn pg08_10_interval_float_fields() {
         assert!(interval.extract_float8("aster_bad_unit").is_err());
     }
 }
+
+#[test]
+fn pg08_11_timestamp_midnight() {
+    use super::pg_temporal::PgTimestamp;
+    for (source, canonical) in [
+        ("2021-01-01", "2021-01-01 00:00:00"),
+        ("2024-02-29", "2024-02-29 00:00:00"),
+        ("0001-01-02 BC", "0001-01-02 00:00:00 BC"),
+    ] {
+        let value: PgTimestamp = source.parse().unwrap();
+        assert_eq!(value.to_string(), canonical);
+        assert_eq!(value, canonical.parse::<PgTimestamp>().unwrap());
+    }
+    for source in ["2023-02-29", "2024-13-01", "aster_bad_date"] {
+        assert!(source.parse::<PgTimestamp>().is_err(), "{source}");
+    }
+}

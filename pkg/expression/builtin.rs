@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "to_char" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeDatetime, mysql::TypeVarString],
+                result: mysql::TypeVarString,
+            }],
             "date_part" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
@@ -2694,7 +2698,7 @@ pub mod formal_registry {
                     && inputs.len() == 3
                     && source == mysql::TypeDatetime
                     && target == mysql::TypePgTimestampTz)
-                    || (matches!(name, "date_trunc" | "extract" | "date_part")
+                    || (matches!(name, "date_trunc" | "extract" | "date_part" | "to_char")
                         && target == mysql::TypeVarString
                         && matches!(source, mysql::TypeString | mysql::TypeVarchar))
                     || (name == "round"
@@ -4145,6 +4149,7 @@ pub mod formal_registry {
         AbsSigned(Option<u8>),
         PgRound,
         PgDateTrunc,
+        PgTimestampToChar,
         PgExtractTimestamp,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
@@ -5177,6 +5182,25 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::PgTimestampToChar => {
+                    let (value, value_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (template, template_null) = self.base.args[1].EvalString(ctx, row)?;
+                    if value_null || template_null {
+                        return Ok((String::new(), true));
+                    }
+                    value
+                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                        .and_then(|timestamp| {
+                            crate::pg_timestamp_format::format_timestamp(timestamp, &template)
+                        })
+                        .map(|value| match value {
+                            Some(value) => (value, false),
+                            None => (String::new(), true),
+                        })
+                        .map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        })
+                }
                 CoreBuiltinKind::PgDatePartTimestamp => {
                     let (value, null) = self.evalReal(ctx, row)?;
                     Ok((
@@ -6116,6 +6140,18 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "to_char" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|arg| arg.GetType(ctx.GetEvalCtx()).GetType())
+                    .collect::<Vec<_>>();
+                let candidate = resolve_pg_signature(name, &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgTimestampToChar,
+                    *types::NewFieldType(candidate.result),
+                    "builtinPgTimestampToCharSig",
+                )
+            }
             "date_trunc" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -7603,6 +7639,7 @@ pub mod formal_registry {
     core_factory!(abs_factory, "abs");
     core_factory!(round_factory, "round");
     core_factory!(pg_date_trunc_factory, "date_trunc");
+    core_factory!(pg_timestamp_to_char_factory, "to_char");
     core_factory!(row_factory, "row");
     core_factory!(json_extract_factory, "json_extract");
     core_factory!(tidb_version_factory, "tidb_version");
@@ -7670,6 +7707,7 @@ pub mod formal_registry {
         ("abs", abs_factory),
         ("round", round_factory),
         ("date_trunc", pg_date_trunc_factory),
+        ("to_char", pg_timestamp_to_char_factory),
         ("eq", eq_factory),
         ("ne", ne_factory),
         ("lt", lt_factory),
@@ -8040,6 +8078,7 @@ pub mod formal_registry {
         ("rand", 0, 1),
         ("round", 1, 2),
         ("date_trunc", 2, 3),
+        ("to_char", 2, 2),
         ("sign", 1, 1),
         ("sin", 1, 1),
         ("sqrt", 1, 1),
@@ -8359,7 +8398,8 @@ pub mod formal_registry {
             ),
             crate::ast::SqlDialect::MySQL => !matches!(
                 name,
-                "date_trunc"
+                "to_char"
+                    | "date_trunc"
                     | "date_part"
                     | "numeric_abs"
                     | "float4abs"

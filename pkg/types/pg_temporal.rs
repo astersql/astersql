@@ -843,7 +843,9 @@ impl PgTimestamp {
         }
         let bc = text.to_ascii_uppercase().ends_with(" BC");
         let text = if bc { &text[..text.len() - 3] } else { text };
-        let (date, clock) = text.split_once([' ', 'T']).ok_or(PgTemporalError::Syntax)?;
+        // A date without a clock denotes midnight, just as an explicit
+        // timestamp cast in PostgreSQL. Keep calendar/range validation below.
+        let (date, clock) = text.split_once([' ', 'T']).unwrap_or((text, "00:00:00"));
         let date: PgDate = if bc {
             PgDate::parse_calendar(&format!("{date} BC"), false)?
         } else {

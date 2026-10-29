@@ -2,7 +2,7 @@
 
 批次：【实施批次 11】；语义依赖：无本目录语义前置；互斥前序：批次10结束或释放资源。不安排并行；来源为拆分批次8，不等于实施批次8。
 
-状态：未开始
+状态：已完成，待回归
 
 目的：to_char(timestamp,text) 的时间模板及修饰符。
 
@@ -97,10 +97,10 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Progress
 
-- [ ] 局部接口取证与当前测试名注册
-- [ ] 失败验证或已有正确行为的当前补证
-- [ ] 最小生产接线及通过验证
-- [ ] 真实参考/双方言、清理与Ready交付
+- [x] 局部接口取证与当前测试名注册（2026-10-30：已定位本地参考并注册四项聚焦测试、54个客户端场景）
+- [x] 失败验证或已有正确行为的当前补证（正式工厂、SQL、真实客户端缺失to_char红灯；日期缺省午夜单测Syntax红灯）
+- [x] 最小生产接线及通过验证（正式工厂11场景、SQL37场景、PG客户端43场景及日期载体回归通过）
+- [ ] 真实参考/双方言、清理与Ready交付（参考与清理已具证、fmt/lint通过；MySQL既有6项失败待对应拥有者修复，完整Ready尚未通过）
 
 ## Surprises & Discoveries
 
@@ -112,4 +112,65 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Outcomes & Retrospective
 
-仅计划已生成，实施与验证尚未执行；未来在本节记录实际结果、证据路径和未决依赖，不写回只读plan.md。
+2026-10-30最终：环境已恢复，选定to_char生产行为、正式工厂11场景、SQL37场景和真实PG18.6客户端43场景通过。完整客户端54项中48通过、6项既有MySQL差分失败、0跳过，状态为已完成，待回归；本编号保留、不宣称完整Ready通过。详见最终交付节和target/pg08-11-evidence/delivery.json。所有plan.md只读。
+
+
+## 2026-10-30 执行前置检查与阻塞交接
+
+本次确认实施批次为11，语义依赖无本目录前置，按交接前序共享资源持有者已退出；未并行修改共享文件。当前完整HEAD为 `5e287695336146c8f1e3f1ab5ed07ebcec913a9c`，最近提交已包括批次10 interval date_part。历史提交和索引结果均不作为当前通过证据。所有来源plan.md保持只读。
+
+已读取do-task-plans技能、仓库rustcodegraph技能、根AGENTS.md、pkg/server/AGENTS.md、根PLANS.md及docs/agents/testing-flow.md。expression、server、session目标包未发现doc.go；`.agents/skills/tidb-verify-profile/SKILL.md`仍不存在，未宣称应用该技能。RustCodeGraph status退出0，索引包含11767文件；explore及精确query退出0。图中正式签名入口为 `pkg/expression/builtin.rs:2610::resolve_pg_signature`，可见正式框架调用方；`pg08_10_clients`位于 `pkg/server/pg_client_integration_test.rs:11212`。`query pg08_11 --limit 10`无结果，只能证明索引未发现该名字，尚未完成当前源码的全部注册和接口取证。
+
+阻塞原因：只检查变量存在性且未输出任何值，当前执行进程中 `PG18_REFERENCE_DSN`、`PG_LIBPQ_LIBRARY`、`MYSQL8_REFERENCE_HOST`、`MYSQL8_REFERENCE_PORT`、`MYSQL8_REFERENCE_USER`、`MYSQL8_REFERENCE_PASSWORD`全部unset。PG_LIBPQ_LIBRARY为可选项；其余参考连接配置缺失使必需的真实PG18.6及MySQL自身参考无法按本任务约定启动验证。没有把变量缺失、缺少客户端证据或未运行测试记作行为红灯。尚未判断本任务实现正确或错误。
+
+接口/环境拥有者：真实参考实例及连接配置由本工作区的参考环境提供者维护；正式签名及求值接口归expression，会话分析/执行归session，协议与客户端夹具归server，本次没有发现并断言这些上游接口缺失。恢复条件：向执行会话注入上述必需参考连接配置（允许密码显式空值），提供可用libpq与原生MySQL客户端库，实际确认PG为18.6及MySQL自身参考版本后，从里程碑一继续核对最新源码、注册case ID和有效预期数、添加并挂载三个测试及客户端夹具，再领取共享槽位执行TDD。不要把本记录当成测试注册或实现完成。
+
+本轮命令与结果：`git status --short`、`git rev-parse HEAD`、`git log -6 --format='%H %s'`均退出0；`~/.rustcodegraph/bin/rustcodegraph status`、`explore 'pkg/expression/builtin.rs resolve_pg_signature to_char PgDateTrunc registeredFunctionClass CORE_BUILTIN_FACTORIES pkg/session/runtime/query.rs'`、`node resolve_pg_signature`、`query pg08_11 --limit 10`、`query pg08_10_clients --limit 2`均退出0；Python环境变量存在性检查退出0。文档读取和doc.go/验证技能存在性检查完成。交接最终另运行`git diff --check`和本编号文件差异审阅。
+
+遵循do-task-plans“遇到阻碍（缺少依赖、测试失败、指令不明确）立即停止执行”，停在参考环境门槛，仅更新本编号文件，没有生产/测试/配置修改。WIP三项和Ready的cargo fmt、三项复验、make lint均未运行；本轮行为有效运行数0，成功/失败/跳过业务场景均未产生，参考版本/客户端版本/fixture hash/locale/tzdata/协议元数据/负向自检/清理证据均未取得。未调用Cargo及其脚本，未领取槽位，CARGO_TARGET_DIR未设置；未启动Server、参考实例或客户端，未创建测试对象，无本任务进程/监听/槽位锁需要清理。没有Go/依赖/Bazel变更，未触发bazel_prepare；未运行RealTiKV或广扫。
+
+仅编号任务状态/交接记录发生变化，按用户要求不提交、不删除本文件；不修改父大计划8、任何plan.md或原始覆盖表。原有无关未跟踪目录保持不动。正确性、兼容性、性能均未通过本轮验证，恢复后仍须完整验收。
+
+
+## 恢复执行（2026-10-30）
+
+用户授权突破环境阻塞，使用已有本地PG18.6及MySQL8.0.46二进制启动独占临时实例；此前变量缺失不再是停止条件。状态暂保留未完成，以下为实际执行登记。
+
+已新增并挂载pg08_11_formal（11场景）、pg08_11_sql（37场景）与pg08_11_clients。客户端预期去重场景数54，唯一ID为：
+
+I-before, I-middle, I-after, C-Q-microseconds, C-Q-iso, C-Q-modifiers, C-Q-percent, C-Q-quoted, C-Q-empty, C-Q-infinity, C-Q-negative-infinity, C-Q-null, C-Q-null-template, C-Q-zero, C-Q-nested, C-E-signature, C-recover-signature, C-Q-row, C-Q-row-nested, C-Q-row-zero, C-bind-0-0-0-0, C-bind-0-0-0-1, C-bind-0-0-0-2, C-bind-0-0-1-0, C-bind-0-0-1-1, C-bind-0-0-1-2, C-bind-0-1-0-0, C-bind-0-1-0-1, C-bind-0-1-0-2, C-bind-0-1-1-0, C-bind-0-1-1-1, C-bind-0-1-1-2, C-bind-1-0-0-0, C-bind-1-0-0-1, C-bind-1-0-0-2, C-bind-1-0-1-0, C-bind-1-0-1-1, C-bind-1-0-1-2, C-bind-1-1-0-0, C-bind-1-1-0-1, C-bind-1-1-0-2, C-bind-1-1-1-0, C-bind-1-1-1-1, C-bind-1-1-1-2, C-txn-signature, C-E-date-format, M-Q-date-format, M-prepare-date-format, M-Q-empty, M-prepare-empty, M-Q-format, M-prepare-format, M-Q-to-char, M-prepare-to-char。
+
+正式工厂和SQL测试覆盖10个模板/NULL用例、text源拒绝、零行、嵌套、四种格式及重复/NULL绑定；客户端增加真实行源、双方言交错、MySQL模板/locale保留、名称隔离与错误恢复。客户端自检独立计数3。测试先注册后运行，尚未取得红绿证据。
+
+生产辅助模块设计：新增 `pkg/expression/pg_timestamp_format.rs::format_timestamp`，在expression/lib.rs注册私有mod；由builtin.rs正式CoreBuiltinKind::PgTimestampToChar求值分支唯一调用。旧builtin_time.rs是MySQL百分号模板实现，不能直接复用PG模板语法；新模块只处理本签名选定的时间模板，不引入独立SQL求值器。日历字段与ISO年周复用PgTimestamp::extract_numeric，微秒复用规范micros，不新增依赖。builtin.rs新增有界(timestamp,text)→text签名、正式factory及MySQL可见性拒绝；query.rs三个已有时间函数分析/行源/求值入口加入to_char名称是最小必要接线。返回metadata复用已有text身份，无需改pg_result/extended或参数协议。
+
+WIP首轮slot1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；fmt退出0，两个--list各1测试退出0，formal及sql各运行1项退出101（缺失to_char工厂/不支持标量函数），是行为红灯。阶段结束锁已释放。
+
+客户端同过滤器--list退出0、有效1项；真实PG18.6/MySQL8启动后测试运行1项退出101，AsterSQL首个to_char不支持而参考成功。参考运行已记录build identity，finally删除临时表/库并关闭连接，外层停止wait两个实例、检查端口关闭、删除临时目录。三个目标均取得行为红灯。
+
+复验发现 `builtin_threadsafe_generated.rs::GeneratedThreadSafetyPolicyForSignature` 拒绝未登记签名，formal运行1项退出101；新增 `builtinPgTimestampToCharSig` 到现有PG时间签名Never清单是正式工厂不可缺少的局部接线，保守禁止共享，不新增折叠/下推许可。已主动停止该轮后续无效复验；runner捕获TERM，wait Cargo后释放slot1，参考实例全部停止wait、端口关闭、目录删除，外层退出143。修复登记后重跑原三条命令。
+
+2026-10-30迭代：formal夹具直接给规范timestamp标注日期文本导致Syntax，已补全00:00:00；SQL显式日期转换用例不变。链接server时遇到session增量rlib匿名符号缺失，编译失败不算行为红灯。领取slot1后执行`env -u LDFLAGS cargo clean -p astersql-session`定向重建损坏产物（保留其他缓存）；不扩展代码范围。Ready `make lint > target/pg08-11-evidence/make-lint.log 2>&1`退出0。
+
+SQL与真实客户端复验均在iso日期用例得到22007，定位 `pkg/types/pg_temporal.rs::PgTimestamp::parse_wall` 强制时分秒分隔符，连执行前时间常量解析也拒绝任务明确要求的`2021-01-01::timestamp`。这是本签名实际必需的局部载体修复：只令合法日期缺省午夜，保留PgDate既有日期验证及范围检查；不补建时态系统。先在现有挂载的 `pkg/types/pg_temporal_test.rs` 注册 `pg08_11_timestamp_midnight`，覆盖AD/闰日/BC与非法日期，使用types同过滤器list及run取得红灯后改一处解析，再同命令复验。formal的NULL模板补显式text类型，匹配任务的typed NULL契约。
+
+2026-10-30：types午夜回归--list有效1项/退出0，执行1项退出101 Syntax；同轮formal修正typed NULL夹具后有效1项退出0、11场景通过。已将parse_wall的无分隔符处理改为午夜，其他日期/范围校验沿用原逻辑，正在同命令复验四项测试。pkg/types/doc.go不存在。
+
+午夜回归1项、formal1项/11场景、SQL1项/37场景已通过。客户端PG场景通过后，MySQL DATE_FORMAT值正确但既有metadata不同（参考flags128,length124；Aster flags1,length440），不属于to_char增量且Go兼容逻辑明示worst-case宽度。本任务不改DATE_FORMAT生产逻辑，先尝试用显式外层CAST固定MySQL检查的返回契约，仍保留percent、空串与locale行为并严格比较全metadata/值/警告/错误，绝不屏蔽字段。客户端场景ID与数目不变，待取得当前证据。
+
+
+## 2026-10-30 当前交付结果（取代早期环境阻塞状态）
+
+状态为已完成，待回归：本任务to_char(timestamp,text)的选定模板行为已实现并获得当前真实PG18.6证据；完整双方言验收仍未通过，不删除本编号文件。恢复环境已突破；没有未配置变量的阻塞。生产修改只限上文登记的正式工厂、签名共享策略、选定模板模块、三个既有会话接口及日期缺省午夜的必要载体接线；不修改MySQL DATE_FORMAT/FORMAT生产实现或通用元数据系统。
+
+最终客户端使用原始直接DATE_FORMAT/FORMAT SELECT，撤回外层CAST尝试，差分器不屏蔽任何metadata/值/错误。为避免首项失败遮蔽后续场景，只聚合MySQL用例断言后统一失败，所有预期场景均实际执行。最新证据目录 `target/pg08-11-evidence/71591-56494/`：预期54、实际54、通过48、失败6、跳过0、去重54；通过PG成功8、NULL5、零行2、错误2、恢复1、绑定24、事务1，共43；通过MySQL名称拒绝2、交错3。独立负向自检3项通过，不计入业务数。statement/portal Describe与Execute行描述约束由SQL测试37场景补充；正式工厂11场景通过；新增午夜测试1项（3正常与3非法输入）通过。
+
+待回归6项为 M-Q-date-format、M-prepare-date-format、M-Q-empty、M-prepare-empty、M-Q-format、M-prepare-format。直接DATE_FORMAT格式化值正确，但MySQL参考metadata为flags128/length124而Aster为flags1/length440（参考8.0.46与Aster Go最坏宽度策略不同）；空模板参考实际返回NULL（包含原生预处理is_null证据），任务期望/Go保留行为为空串；FORMAT(...,'de_DE')在Aster返回1105/HY000，参考成功返回12.345,68。这些生产路径未由本任务修改，不能递归重做既有专属函数或以改期望/删断言通过。拥有者为expression的DATE_FORMAT元数据/FORMAT正式求值及session的MySQL投影描述契约；需先确认Go保留行为与MySQL原生空模板的契约差异，再由相应任务修复，之后原命令复验本客户端1项直至54通过。to_char两个MySQL名称拒绝用例通过，两个PG连接A/B与MySQL M前中后交错和健康表读回3项通过。
+
+适用Ready已执行：cargo fmt --all退出0；三项原命令各list有效1项且退出0，formal执行1项退出0、SQL执行1项退出0、client执行1项退出101（上述6项真实差分失败，不是缺环境或编译失败）；make lint退出0；git diff --check退出0。确切命令、全部红/绿/环境迭代退出码和日志在 `target/pg08-11-evidence/commands.jsonl`，保留本轮失败证据。所有Cargo阶段均动态领取slot1，绝对CARGO_TARGET_DIR为 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`，结束均wait子进程后删除owner和slot锁，保留缓存。额外针对parse_wall变更运行 `env -u LDFLAGS cargo test --locked -p astersql-types --lib pg_temporal_test::pg_timestamp -- --nocapture`，实际6项/5通过/1失败；失败pg_timestamptz_invalid_zone_and_payload是原有parse_with_offset早期Unknown缩写诊断22007而旧断言22023，与本次后续parse_wall午夜分支无关，未扩修。随后将三个timestamp输入/域/上下文测试逐项exact重验，结果随交付补充。
+
+参考身份、locale、编码、sql_mode、tzdata版本/hash、客户端/真实二进制版本/hash、HEAD、fixture/hash、Rust二进制/hash分别保存在客户端build/reference/mysql-reference观察。自启PG18.6及MySQL8.0.46每次使用唯一临时目录和动态端口；reference-lifecycle-*.json均在对应阶段结束记录停止wait、双端口关闭、目录删除。客户端summary确认自己的参考临时表和库删除、连接关闭；Rust同名.cleanup.json确认自己的数据库删除及PG/MySQL监听关闭。正常、断言失败及主动TERM中断路径都有清理证据，不停止已有用户服务。临时脚本及本任务pyc交付前删除，仅保留脱敏证据和构建缓存。
+
+风险/验证边界：选定时间模板精度、ISO周、FM/TH/引用、NULL及类型身份已验证；其他to_char签名、locale完整模板、TiKV实存储、全包/性能基准未验证，均不扩范围。既有MySQL差分和未知zone单测仍保留真实失败；完整Ready不能宣称通过。无Go/import/依赖/Bazel修改，不触发bazel_prepare；未跑禁止默认的bazel_lint_changed或RealTiKV。父大计划8和所有plan.md只读，保留本文件供回归，不将整个工作流标完成。
+
+最终补充：三个timestamp精确回归各--list有效1项/退出0，各执行1项/退出0。所有reference-lifecycle记录及最终Rust cleanup均重新只读验证，目录已删除、端口不可连接，自己slot1锁不存在。Ready缺证与全部命令/文件hash汇总为target/pg08-11-evidence/delivery.json；日志/原始双方观测完整保留。根据用户允许无关原因待回归的交付规则，提交本任务实际变更及本编号记录，保留本文件，不删除、不宣称全部成功。
