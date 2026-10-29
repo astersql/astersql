@@ -2614,6 +2614,10 @@ pub mod formal_registry {
         let candidates = match name {
             "to_char" => vec![
                 PgFunctionCandidate {
+                    arguments: vec![mysql::TypeNewDecimal, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
                     arguments: vec![mysql::TypeDatetime, mysql::TypeVarString],
                     result: mysql::TypeVarString,
                 },
@@ -5197,6 +5201,19 @@ pub mod formal_registry {
                     let (template, template_null) = self.base.args[1].EvalString(ctx, row)?;
                     if value_null || template_null {
                         return Ok((String::new(), true));
+                    }
+                    if self.base.args[0].GetType(ctx).GetType() == mysql::TypeNewDecimal {
+                        return value
+                            .parse::<types_dependency::pg_numeric::PgNumeric>()
+                            .and_then(|number| {
+                                crate::pg_numeric_format::format_numeric(number, &template)
+                            })
+                            .map(|value| (value, false))
+                            .map_err(|error| {
+                                errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                    error,
+                                ))
+                            });
                     }
                     let result = if self.base.args[0].GetType(ctx).GetType()
                         == mysql::TypePgTimestampTz

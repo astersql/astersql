@@ -2,7 +2,7 @@
 
 批次：【实施批次 14】；语义依赖：11；互斥前序：批次13结束或释放资源。不安排并行；来源为拆分批次8，不等于实施批次8。
 
-状态：未开始
+状态：已完成，待回归
 
 目的：to_char(numeric,text) 支持选定数字模板与错误。
 
@@ -97,10 +97,10 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Progress
 
-- [ ] 局部接口取证与当前测试名注册
-- [ ] 失败验证或已有正确行为的当前补证
-- [ ] 最小生产接线及通过验证
-- [ ] 真实参考/双方言、清理与Ready交付
+- [x] 局部接口取证与当前测试名注册
+- [x] 失败验证或已有正确行为的当前补证
+- [x] 最小生产接线及通过验证
+- [ ] 真实参考/双方言、清理与Ready交付（本任务PG与清理、Ready适用检查完成；剩余6项既有MySQL差分待所属接口修复后回归）
 
 ## Surprises & Discoveries
 
@@ -113,3 +113,56 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 ## Outcomes & Retrospective
 
 仅计划已生成，实施与验证尚未执行；未来在本节记录实际结果、证据路径和未决依赖，不写回只读plan.md。
+
+## 2026-10-30 实施取证与注册
+
+当前HEAD f71759b093c1dff7ad5d19d3f5783e9ca2b53bdf；语义前置批次11 912661e50bd3cca102f4a0c77eb90914626d75ba 的共享正式工厂已接时间模板。批次11/12/13会话均idle，锁目录为空，前序资源已释放。RustCodeGraph索引11774文件，目标包未发现doc.go；verify-profile技能缺失。当前resolve_pg_signature的to_char仅有timestamp/timestamptz/interval；PgNumeric::round_scale、to_binary/from_binary与正式numeric输入已可复用。真实参考环境未继承，但可启动既有PG18.6/MySQL8自有临时实例；probe.log记录18.6数字模板观测，参考PID/datadir/端口已清理。
+
+计划生产辅助模块：pkg/expression/pg_numeric_format.rs::format_numeric，lib.rs私有mod挂载。数字9/0/FM/小数点及数字舍入与时间字段扫描语义不同，不复用时间扫描器；消费PgNumeric::round_scale，不转f64。builtin.rs只新增numeric签名与既有to_char求值分支；PgNumericError新增模板错误用于现有SQLSTATE消费，不新增求值器。具体修改仅由新增测试运行期红灯授权。
+
+新增formal18场景（17正常/NULL及1错误），SQL52场景（19普通与32绑定及1事务恢复），各过滤器预期恰好1测试；客户端预期74去重业务场景。唯一客户端case ID：
+
+I-before, I-middle, I-after, C-Q-main, C-Q-negative, C-Q-spaces, C-Q-zero-fill, C-Q-fraction, C-Q-optional, C-Q-round, C-Q-negative-round, C-Q-overflow, C-Q-zero, C-Q-fill-zero, C-Q-literal-spaces, C-Q-quoted, C-Q-empty, C-Q-null, C-Q-null-template, C-Q-exact, C-Q-zero-row, C-Q-nested, C-E-vdecimal, C-recover-vdecimal, C-E-signature, C-recover-signature, C-Q-row, C-Q-row-nested, C-Q-row-zero, C-bind-0-0-0-0, C-bind-0-0-0-1, C-bind-0-0-0-2, C-bind-0-0-0-3, C-bind-0-0-1-0, C-bind-0-0-1-1, C-bind-0-0-1-2, C-bind-0-0-1-3, C-bind-0-1-0-0, C-bind-0-1-0-1, C-bind-0-1-0-2, C-bind-0-1-0-3, C-bind-0-1-1-0, C-bind-0-1-1-1, C-bind-0-1-1-2, C-bind-0-1-1-3, C-bind-1-0-0-0, C-bind-1-0-0-1, C-bind-1-0-0-2, C-bind-1-0-0-3, C-bind-1-0-1-0, C-bind-1-0-1-1, C-bind-1-0-1-2, C-bind-1-0-1-3, C-bind-1-1-0-0, C-bind-1-1-0-1, C-bind-1-1-0-2, C-bind-1-1-0-3, C-bind-1-1-1-0, C-bind-1-1-1-1, C-bind-1-1-1-2, C-bind-1-1-1-3, C-context-utc, C-context-ny, C-isolation, C-txn-signature, C-E-date-format, M-Q-date-format, M-prepare-date-format, M-Q-empty, M-prepare-empty, M-Q-format, M-prepare-format, M-Q-to-char, M-prepare-to-char
+
+当前业务有效运行0；三项差分器负向自检独立计数。全部测试先挂载再 --list，不以编译失败/缺环境/零测试充当行为红灯。
+
+红灯阶段2188：三个 --list 均恰好1/退出0，三个本任务测试均在运行期因numeric签名42883失败/退出101，正式工厂、SQL main、真实客户端C-Q-main一致。不是环境/编译失败。slot1（绝对target/rust-slot-1）已释放，参考与listener/datadir清理证据已保存。生产修改授权：builtin.rs numeric候选和共享求值分支对应main/typed NULL；pg_numeric_format.rs独立数字模板内核对应17正常/NULL与非法V模板；pkg/types/pg_numeric.rs模板typed error及42601映射复用既有协议消费，无需第二错误路由。
+
+阶段4100首次绿灯复验编译时计数类型推导不匹配，未执行测试，不计行为红灯，已显式usize修正；阶段5196工厂18场景退出0。SQL/客户端至nested前的numeric模板均通过；nested夹具误用了既有未支持的abs(numeric)。静态核对abs只有int4/int8，round(numeric,int4)为现有正式接口，故嵌套改用round，绝不扩入abs实现。该夹具失败不计本任务生产缺陷；业务ID/预期保持，SQL真实总数为19普通+32绑定+1事务=52，修正原53口误。另将SQL binary参数改为独立原始numeric_send字节，并补参考lc_numeric/lc_monetary和Execute阶段标签。
+
+## 2026-10-30 结果、验证与恢复条件
+
+实现完成，状态为已完成，待回归，保留本编号文件。未修改任何plan.md、父大计划8、原路线图或覆盖表。未扩入abs(numeric)、整数/浮点/locale等后续签名。
+
+最终阶段7799：formal恰好1测试/18场景退出0；SQL恰好1测试/52场景退出0；真实PostgreSQL18.6客户端C-*63个场景全部通过。完整客户端恰好1测试退出101：预期74、实际74、通过68、失败6、跳过0、去重74。通过分类为成功18、NULL2、零行2、错误3、恢复2、绑定32、上下文3、事务1、MySQL2、交错3；三项值/OID/SQLSTATE负向自检独立计数且全部通过。双方原始观测、错误S/V/C/M/D/H/P、参数/结果raw payload与实际阶段见target/pg08-14-evidence/8286-60085/；SQL TCP额外验证statement与portal Describe、Execute无重复RowDescription及Sync恢复。Q为整体协议阶段，不虚构不可观察的内部折叠阶段。
+
+六项失败与批次13现有记录完全一致：M-Q-date-format/M-prepare-date-format为列flags/length差分；M-Q-empty/M-prepare-empty为DATE_FORMAT空模板NULL/空串差分；M-Q-format/M-prepare-format为locale FORMAT既有HY000。生产修改仅PostgreSQL的numeric to_char签名/求值与错误类型，不更改MySQL DATE_FORMAT/FORMAT，故不递归修复。所属接口拥有者为MySQL DATE_FORMAT/FORMAT正式工厂及MySQL协议元数据维护方；恢复条件为修复这些既有行为后以真实PG18.6/MySQL8原样重跑pg08_14_clients，不能删除断言或放宽比较器。本任务不得宣称完整客户端通过或删除编号文件。
+
+采用WIP聚焦到Ready适用检查（verify-profile技能路径缺失，未宣称执行该技能）。最终cargo fmt --all、make lint、git diff --check退出0；批次11/12/13相邻formal各恰好1测试，11/16/15场景均退出0。所有最终--list均恰好1/退出0。未变更Go/import/dependency/Bazel，不触发bazel_prepare；未运行Go单测，无failpoint启停需求；未运行bazel_lint_changed、全包、RealTiKV或性能基准。正确性限于选定数字模板族；兼容风险为上述既有MySQL差分；性能复用规范numeric舍入，未做性能保证。
+
+参考身份：PostgreSQL18.6/server_version_num180006，libpq180000；MySQL8.0.46，原生mysqlclient80046；tzdata2026c。build.jsonl保留二进制/fixture/Cargo.lock/源码diff hash，reference.jsonl保留version、编码及lc_time/lc_numeric/lc_monetary，mysql-reference.jsonl保留sql_mode/charset/collation。未打印或保存DSN/密码。正常探测、行为断言失败、编译失败、最终既有差分失败均在finally清理并留下reference-lifecycle记录；独立TERM中断自检退出143，slot与参考PID/datadir/端口均清理。Rust测试server/双listener与本任务库清理见8286-60085.cleanup.json，全部true。Python子进程已wait；参考临时数据目录删除、监听端口关闭，未停止用户服务。
+
+全部Cargo阶段动态领取slot1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；TERM持锁清理自检亦动态取得slot1（当时空闲，不按任务编号分配），未运行Cargo构建。所有锁已释放，编译缓存保留。详细argv/退出码/槽位/log见target/pg08-14-evidence/commands.jsonl与delivery.json；中断证据见interrupt-check.json。
+
+最终确切验证命令（仓库根；上述绝对CARGO_TARGET_DIR由原子mkdir锁的runner设置并继承；前期红灯与编译失败也在commands.jsonl，不计入通过数）：
+
+    cargo fmt --all
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_14_test::pg08_14_formal -- --exact --list
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_14_test::pg08_14_formal -- --exact --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_14_sql -- --exact --list
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg08_14_sql -- --exact --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_14_clients -- --exact --list
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_client_integration_test::pg08_14_clients -- --exact --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_11_test::pg08_11_formal -- --exact --list
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_11_test::pg08_11_formal -- --exact --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_12_test::pg08_12_formal -- --exact --list
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_12_test::pg08_12_formal -- --exact --nocapture
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_13_test::pg08_13_formal -- --exact --list
+    env -u LDFLAGS cargo test --locked -p astersql-expression --lib pg08_13_test::pg08_13_formal -- --exact --nocapture
+    make lint
+    git diff --check
+    python3 -m py_compile pkg/server/testdata/pg08_14_libpq.py
+    python3 pkg/server/testdata/pg08_14_libpq.py --self-test
+    python3 target/pg08-14-evidence/interrupt-check.py
+
+变更文件：pkg/expression/{builtin.rs,lib.rs,pg_numeric_format.rs,pg08_14_test.rs}、pkg/types/pg_numeric.rs、pkg/server/{pg_query_test.rs,pg_client_integration_test.rs,testdata/pg08_14_libpq.py}及本编号。已自审最小生产接线、独立测试挂载、版权与差分质量；只提交上述任务变更，无关未跟踪Go对齐计划目录排除。下一步由MySQL接口拥有者修复六项，再执行保留客户端测试完成回归。

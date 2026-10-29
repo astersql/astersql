@@ -5,6 +5,10 @@ use std::{fmt, str::FromStr};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PgNumericError {
+    #[error("cannot use \"V\" and decimal point together")]
+    FormatShiftPoint,
+    #[error("multiple decimal points")]
+    FormatMultiplePoints,
     #[error("invalid input syntax for type numeric")]
     InvalidSyntax,
     #[error("invalid numeric precision or scale")]
@@ -22,6 +26,7 @@ impl PgNumericError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::InvalidSyntax => "22P02",
+            Self::FormatShiftPoint | Self::FormatMultiplePoints => "42601",
             Self::InvalidModifier => "22023",
             Self::OutOfRange => "22003",
             Self::Unsupported => "0A000",
