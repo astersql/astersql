@@ -41,6 +41,10 @@ pub enum GeneratedThreadSafetyPolicy {
 pub fn GeneratedThreadSafetyPolicyForSignature(
     signature: &str,
 ) -> Option<GeneratedThreadSafetyPolicy> {
+    // Array shape is immutable and carries no connection-local context.
+    if signature == "builtinPgArrayLengthSig" {
+        return Some(GeneratedThreadSafetyPolicy::Recursive);
+    }
     if matches!(
         signature,
         "builtinPgTimestampTruncSig"

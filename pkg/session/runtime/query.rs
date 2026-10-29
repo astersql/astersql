@@ -1418,6 +1418,61 @@ impl ConcreteSession {
                 Ok(value)
             };
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+            && FnName.L == "array_length"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+        {
+            use astersql_expression::BuildContext;
+            let inputs = Args
+                .iter()
+                .map(|arg| self.pg_case_input_type(arg, &[]))
+                .collect::<Vec<_>>();
+            let candidate =
+                astersql_expression::formal_registry::resolve_pg_array_length_signature(&inputs)
+                    .map_err(|_| {
+                        super::function_diagnostics::no_matching_function(
+                            expression,
+                            &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
+                        )
+                    })?;
+            let mut arguments: Vec<Box<dyn astersql_expression::Expression>> = Vec::new();
+            for (argument, input) in Args.iter().zip(inputs) {
+                let mut value = self
+                    .relational_query_expression_value(argument, row, group_rows)?
+                    .map(|text| astersql_expression::NewStrConst(&text))
+                    .unwrap_or_else(astersql_expression::NewNull);
+                value.RetType = Some(input);
+                arguments.push(Box::new(value));
+            }
+            let context = astersql_expression_exprstatic::NewExprContext(vec![
+                astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+                    astersql_expression_exprstatic::NewEvalContext(vec![
+                        astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
+                    ]),
+                )),
+            ]);
+            let built = astersql_expression::NewFunctionBase(
+                &context,
+                &FnName.L,
+                *astersql_expression::types::NewFieldType(candidate.result),
+                arguments,
+            )
+            .map_err(|error| session_error("build array_length", error))?;
+            let (value, null) = built
+                .EvalInt(
+                    context.GetEvalCtx(),
+                    astersql_expression::chunk::Row::default(),
+                )
+                .map_err(|error| {
+                    SessionError::with_source("evaluate array_length", error.into_shared())
+                })?;
+            return Ok((!null).then(|| value.to_string()));
+        }
         // One fixed numeric signature provides a bounded implicit-cast context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -3466,6 +3521,30 @@ impl ConcreteSession {
                         );
                     }
                 }
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Schema,
+                    Args,
+                } = &input.Kind
+                    && FnName.L == "array_length"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                {
+                    let inputs = Args
+                        .iter()
+                        .map(|arg| self.session.pg_case_input_type(arg, self.sources))
+                        .collect::<Vec<_>>();
+                    if astersql_expression::formal_registry::resolve_pg_array_length_signature(
+                        &inputs,
+                    )
+                    .is_err()
+                    {
+                        self.scalar_cast_error =
+                            Some(super::function_diagnostics::no_matching_function(
+                                input,
+                                &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
+                            ));
+                    }
+                }
                 // String literals and bare NULL keep unknown provenance, while
                 // explicitly typed NULLs must participate with their declared type.
                 if let ast::ExprKind::Function {
@@ -4660,6 +4739,24 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+                && FnName.L == "array_length"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                let inputs = Args
+                    .iter()
+                    .map(|arg| self.pg_case_input_type(arg, source_fields))
+                    .collect::<Vec<_>>();
+                if let Ok(candidate) =
+                    astersql_expression::formal_registry::resolve_pg_array_length_signature(&inputs)
+                {
+                    return astersql_parser_types::NewFieldType(candidate.result);
+                }
+            }
             if let ast::ExprKind::Function {
                 FnName,
                 Schema,

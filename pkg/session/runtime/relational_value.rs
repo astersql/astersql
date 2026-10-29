@@ -3136,6 +3136,22 @@ pub(super) fn relational_expression_type(
                 new_type(astersql_parser_mysql::r#type::TypeLonglong)
             }
         }
+        ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } if FnName.L == "array_length"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && astersql_expression::formal_registry::resolve_pg_array_length_signature(
+                &Args
+                    .iter()
+                    .map(|arg| relational_expression_type(arg, table))
+                    .collect::<Vec<_>>(),
+            )
+            .is_ok() =>
+        {
+            new_type(astersql_parser_mysql::r#type::TypeLong)
+        }
         ast::ExprKind::Function { FnName, Args, .. } => match FnName.L.as_str() {
             "coalesce" | "ifnull" | "nullif" => Args
                 .iter()

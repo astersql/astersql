@@ -973,3 +973,6 @@ pub mod pg_time_locale;
 
 #[cfg(test)]
 mod pg08_18_test;
+
+#[cfg(test)]
+mod pg08_19_test;

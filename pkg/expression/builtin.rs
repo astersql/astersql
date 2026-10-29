@@ -2612,6 +2612,11 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "array_length" => vec![PgFunctionCandidate {
+                // Full array identity is checked by resolve_pg_array_length_signature.
+                arguments: vec![mysql::TypeVarString, mysql::TypeLong],
+                result: mysql::TypeLong,
+            }],
             "to_char" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeFloat, mysql::TypeVarString],
@@ -2724,10 +2729,11 @@ pub mod formal_registry {
             inputs,
             &candidates,
             |source, target| {
-                (name == "date_trunc"
-                    && inputs.len() == 3
-                    && source == mysql::TypeDatetime
-                    && target == mysql::TypePgTimestampTz)
+                (name == "array_length" && source == mysql::TypeShort && target == mysql::TypeLong)
+                    || (name == "date_trunc"
+                        && inputs.len() == 3
+                        && source == mysql::TypeDatetime
+                        && target == mysql::TypePgTimestampTz)
                     || (matches!(name, "date_trunc" | "extract" | "date_part" | "to_char")
                         && target == mysql::TypeVarString
                         && matches!(source, mysql::TypeString | mysql::TypeVarchar))
@@ -2743,6 +2749,25 @@ pub mod formal_registry {
             |_| false,
         )
         .cloned()
+    }
+
+    /// Preserve array identity before using the storage-code candidate resolver.
+    pub fn resolve_pg_array_length_signature(
+        inputs: &[types::FieldType],
+    ) -> Result<PgFunctionCandidate, &'static str> {
+        use types_dependency::field::ast::PostgreSQLArrayElement;
+        if inputs.len() != 2
+            || inputs[0].PostgreSQLArrayElement() != Some(PostgreSQLArrayElement::Int4)
+            || inputs[1].PostgreSQLArrayElement().is_some()
+            || mysql::HasUnsignedFlag(inputs[1].GetFlag())
+            || inputs[1].GetFlag() & mysql::IsBooleanFlag != 0
+        {
+            return Err("42883");
+        }
+        resolve_pg_signature(
+            "array_length",
+            &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
+        )
     }
 
     /// 类型别名 `BuiltinFactory`。
@@ -4181,6 +4206,7 @@ pub mod formal_registry {
         PgDateTrunc,
         PgTimestampToChar,
         PgExtractTimestamp,
+        PgArrayLength,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -4557,6 +4583,31 @@ pub mod formal_registry {
                 | CoreBuiltinKind::IsNull
                 | CoreBuiltinKind::Logic(..)
                 | CoreBuiltinKind::UnaryNot => self.eval_boolean(ctx, row),
+                CoreBuiltinKind::PgArrayLength => {
+                    let (array, array_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (dimension, dimension_null) = self.base.args[1].EvalInt(ctx, row)?;
+                    if array_null || dimension_null || dimension <= 0 {
+                        return Ok((0, true));
+                    }
+                    use types_dependency::pg_array::{PgArray, PgArrayElement, PgArrayTextError};
+                    let array =
+                        PgArray::from_text_with(array.as_bytes(), 23, -1, b',', |text, _| {
+                            crate::pg_cast_int4(Some(text)).map(|value| {
+                                PgArrayElement::Int4(value.expect("non-null array element"))
+                            })
+                        })
+                        .map_err(|error| match error {
+                            PgArrayTextError::Element(error) => errors::Error::from(
+                                crate::contextutil::errors::SharedError::new(error),
+                            ),
+                            other => errors::New(other.to_string()),
+                        })?;
+                    let value = usize::try_from(dimension - 1)
+                        .ok()
+                        .and_then(|axis| array.shape().get(axis))
+                        .copied();
+                    Ok(value.map_or((0, true), |length| (i64::from(length), false)))
+                }
                 CoreBuiltinKind::MysqlRound(types::ETInt) => {
                     let (value, null) = self.base.args[0].EvalInt(ctx, row.clone())?;
                     if null {
@@ -6259,6 +6310,18 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "array_length" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|arg| arg.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                let candidate = resolve_pg_array_length_signature(&inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgArrayLength,
+                    *types::NewFieldType(candidate.result),
+                    "builtinPgArrayLengthSig",
+                )
+            }
             "to_char" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -7769,6 +7832,7 @@ pub mod formal_registry {
     core_factory!(time_to_sec_factory, "time_to_sec");
     core_factory!(extract_factory, "extract");
     core_factory!(pg_date_part_factory, "date_part");
+    core_factory!(pg_array_length_factory, "array_length");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -7859,6 +7923,7 @@ pub mod formal_registry {
         ("time_to_sec", time_to_sec_factory),
         ("extract", extract_factory),
         ("date_part", pg_date_part_factory),
+        ("array_length", pg_array_length_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8225,6 +8290,7 @@ pub mod formal_registry {
         ("dayofyear", 1, 1),
         ("extract", 2, 2),
         ("date_part", 2, 2),
+        ("array_length", 2, 2),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),
@@ -8519,6 +8585,7 @@ pub mod formal_registry {
                 name,
                 "to_char"
                     | "date_trunc"
+                    | "array_length"
                     | "date_part"
                     | "numeric_abs"
                     | "float4abs"
