@@ -287,3 +287,6 @@ mod parser_test;
 #[cfg(test)]
 #[path = "reserved_words_test.rs"]
 mod reserved_words_test;
+
+#[cfg(test)]
+mod pg08_05_test;

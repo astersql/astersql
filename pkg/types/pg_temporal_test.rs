@@ -1436,3 +1436,60 @@ fn pg08_04_interval_components() {
         Err(PgTemporalError::TruncationUnit)
     );
 }
+
+#[test]
+fn pg08_05_timestamp_fields() {
+    use super::pg_temporal::PgTimestamp;
+    for (source, unit, expected) in [
+        ("1969-12-31 23:59:59.999999", "second", Some("59.999999")),
+        ("2000-01-01 00:00:00.000001", "microseconds", Some("1")),
+        ("2021-01-01 00:00:00", "week", Some("53")),
+        ("2019-12-30 00:00:00", "isoyear", Some("2020")),
+        ("0001-01-01 00:00:00 BC", "year", Some("-1")),
+        ("infinity", "year", Some("Infinity")),
+        ("-infinity", "year", Some("-Infinity")),
+        ("infinity", "second", None),
+    ] {
+        assert_eq!(
+            source
+                .parse::<PgTimestamp>()
+                .unwrap()
+                .extract_numeric(unit)
+                .unwrap()
+                .map(|n| n.to_string())
+                .as_deref(),
+            expected
+        );
+    }
+    for unit in ["timezone_hour", "timezone_minute"] {
+        assert!(
+            "infinity"
+                .parse::<PgTimestamp>()
+                .unwrap()
+                .extract_numeric(unit)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            "2024-01-02 00:00:40.123456"
+                .parse::<PgTimestamp>()
+                .unwrap()
+                .extract_numeric(unit)
+                .unwrap_err()
+                .sqlstate(),
+            "0A000"
+        );
+    }
+    let finite = "2024-01-02 00:00:40.123456".parse::<PgTimestamp>().unwrap();
+    assert_eq!(
+        finite.extract_numeric("timezone").unwrap_err().sqlstate(),
+        "0A000"
+    );
+    assert_eq!(
+        finite
+            .extract_numeric("aster_bad_unit")
+            .unwrap_err()
+            .sqlstate(),
+        "22023"
+    );
+}

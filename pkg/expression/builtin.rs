@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "extract" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
+                result: mysql::TypeNewDecimal,
+            }],
             "date_trunc" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypePgInterval],
@@ -2666,7 +2670,7 @@ pub mod formal_registry {
                     && inputs.len() == 3
                     && source == mysql::TypeDatetime
                     && target == mysql::TypePgTimestampTz)
-                    || (name == "date_trunc"
+                    || (matches!(name, "date_trunc" | "extract")
                         && target == mysql::TypeVarString
                         && matches!(source, mysql::TypeString | mysql::TypeVarchar))
                     || (name == "round"
@@ -4117,6 +4121,7 @@ pub mod formal_registry {
         AbsSigned(Option<u8>),
         PgRound,
         PgDateTrunc,
+        PgExtractTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
         UnaryMinus(types::EvalType),
@@ -4965,7 +4970,7 @@ pub mod formal_registry {
                         .map(|v| (v, false))
                         .map_err(|e| errors::New(e.to_string()))
                 }
-                CoreBuiltinKind::PgRound => {
+                CoreBuiltinKind::PgRound | CoreBuiltinKind::PgExtractTimestamp => {
                     let (text, null) = self.evalString(ctx, row)?;
                     let mut result = types::MyDecimal::default();
                     if !null {
@@ -5113,6 +5118,23 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::PgExtractTimestamp => {
+                    let (unit, first_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (value, second_null) = self.base.args[1].EvalString(ctx, row)?;
+                    if first_null || second_null {
+                        return Ok((String::new(), true));
+                    }
+                    value
+                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                        .and_then(|timestamp| timestamp.extract_numeric(&unit))
+                        .map(|value| match value {
+                            Some(value) => (value.to_string(), false),
+                            None => (String::new(), true),
+                        })
+                        .map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        })
+                }
                 CoreBuiltinKind::PgDateTrunc => {
                     use types_dependency::pg_temporal::{
                         PgInterval, PgTemporalError, PgTimestamp, PgTimestampTz,
@@ -6745,6 +6767,18 @@ pub mod formal_registry {
                 field_type_for_eval_type(types::ETInt),
                 "builtinTimeToSecSig",
             ),
+            "extract" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                    .collect::<Vec<_>>();
+                let candidate = resolve_pg_signature(name, &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgExtractTimestamp,
+                    *types::NewFieldType(candidate.result),
+                    "builtinPgTimestampExtractSig",
+                )
+            }
             "extract" => {
                 args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
                 let (unit, _) = args[0].EvalString(ctx.GetEvalCtx(), chunk::Row::default())?;

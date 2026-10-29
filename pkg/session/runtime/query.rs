@@ -1333,7 +1333,7 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-            && FnName.L == "date_trunc"
+            && matches!(FnName.L.as_str(), "date_trunc" | "extract")
             && (2..=3).contains(&Args.len())
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
@@ -1348,13 +1348,11 @@ impl ConcreteSession {
                     }
                 })
                 .collect::<Vec<_>>();
-            let candidate = astersql_expression::formal_registry::resolve_pg_signature(
-                "date_trunc",
-                &input_types,
-            )
-            .map_err(|_| {
-                super::function_diagnostics::no_matching_function(expression, &input_types)
-            })?;
+            let candidate =
+                astersql_expression::formal_registry::resolve_pg_signature(&FnName.L, &input_types)
+                    .map_err(|_| {
+                        super::function_diagnostics::no_matching_function(expression, &input_types)
+                    })?;
             let source_type = candidate.result;
             let values = Args
                 .iter()
@@ -1389,7 +1387,7 @@ impl ConcreteSession {
             ]);
             let built = astersql_expression::NewFunctionBase(
                 &context,
-                "date_trunc",
+                &FnName.L,
                 *astersql_expression::types::NewFieldType(source_type),
                 args,
             )
@@ -3435,7 +3433,7 @@ impl ConcreteSession {
                     Schema,
                     Args,
                 } = &input.Kind
-                    && FnName.L == "date_trunc"
+                    && matches!(FnName.L.as_str(), "date_trunc" | "extract")
                     && (2..=3).contains(&Args.len())
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -3449,11 +3447,8 @@ impl ConcreteSession {
                             }
                         })
                         .collect::<Vec<_>>();
-                    if astersql_expression::formal_registry::resolve_pg_signature(
-                        "date_trunc",
-                        &types,
-                    )
-                    .is_err()
+                    if astersql_expression::formal_registry::resolve_pg_signature(&FnName.L, &types)
+                        .is_err()
                     {
                         self.scalar_cast_error = Some(
                             super::function_diagnostics::no_matching_function(input, &types),
@@ -4659,7 +4654,7 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-                && FnName.L == "date_trunc"
+                && matches!(FnName.L.as_str(), "date_trunc" | "extract")
                 && (2..=3).contains(&Args.len())
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
@@ -4673,10 +4668,9 @@ impl ConcreteSession {
                         }
                     })
                     .collect::<Vec<_>>();
-                if let Ok(candidate) = astersql_expression::formal_registry::resolve_pg_signature(
-                    "date_trunc",
-                    &inputs,
-                ) {
+                if let Ok(candidate) =
+                    astersql_expression::formal_registry::resolve_pg_signature(&FnName.L, &inputs)
+                {
                     return astersql_parser_types::NewFieldType(candidate.result);
                 }
             }

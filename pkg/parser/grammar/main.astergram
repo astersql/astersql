@@ -2709,6 +2709,8 @@ FunctionCallNonKeyword : FunctionNameDateArithMultiForms "(" Expression "," Expr
 FunctionCallNonKeyword : FunctionNameDateArithMultiForms "(" Expression "," "INTERVAL" Expression TimeUnit ")" @action;
 FunctionCallNonKeyword : FunctionNameDateArith "(" Expression "," "INTERVAL" Expression TimeUnit ")" @action;
 FunctionCallNonKeyword : builtinExtract "(" TimeUnit "FROM" Expression ")" @action;
+FunctionCallNonKeyword : builtinExtract "(" identifier "FROM" Expression ")" @action;
+FunctionCallNonKeyword : builtinExtract "(" stringLit "FROM" Expression ")" @action;
 FunctionCallNonKeyword : "GET_FORMAT" "(" GetFormatSelector "," Expression ")" @action;
 FunctionCallNonKeyword : builtinPosition "(" BitExpr "IN" Expression ")" @action;
 FunctionCallNonKeyword : builtinSubstring "(" Expression "," Expression ")" @action;

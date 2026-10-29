@@ -19,6 +19,7 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
+    PgExtractField,
     PgRow,
     RowFieldFirst,
     RowFieldNext,
@@ -763,6 +764,8 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "functioncallnonkeyword_functionnamedatearith_exp--dabaf68894bed054" => {
             Some(ExpressionRule::FunctionCallNonKeywordAlt05)
         }
+        "functioncallnonkeyword_builtinextract_identifier--532aa3bf28f505fa" => Some(ExpressionRule::PgExtractField),
+        "functioncallnonkeyword_builtinextract_stringlit--e83e72fac6ce59fb" => Some(ExpressionRule::PgExtractField),
         "functioncallnonkeyword_builtinextract_timeunit_f--e47699e1eb009572" => {
             Some(ExpressionRule::FunctionCallNonKeywordAlt06)
         }
@@ -1051,6 +1054,18 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         lexer: yylex,
     } = context;
     match rule {
+        ExpressionRule::PgExtractField => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("EXTRACT text fields require PostgreSQL", &[]));
+                return Err(1);
+            }
+            let mut field = parser_ast::ExprNode::Value(rhs[3].ident.clone());
+            field.OriginTextPosition = rhs[3].offset as i32;
+            out.expr = Some(parser_ast::ExprNode::Function(
+                parser_ast::CIStr::default(), parser_ast::NewCIStr("extract"),
+                vec![field, rhs[5].expr.clone().unwrap()],
+            ));
+        }
         ExpressionRule::PgArrayEmpty => {
             out.item = Some(Box::new((
                 Vec::<parser_ast::ExprNode>::new(),
@@ -2665,10 +2680,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     expr(2),
                     Some(special(parser_ast::ExprKind::TimeUnit(unit(1)))),
                 ],
-                ExpressionRule::FunctionCallNonKeywordAlt06 => vec![
-                    Some(special(parser_ast::ExprKind::TimeUnit(unit(3)))),
-                    expr(1),
-                ],
+                ExpressionRule::FunctionCallNonKeywordAlt06 => {
+                    let mut field = if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                        parser_ast::ExprNode::Value(parser_state.src[rhs[rhs_len - 3].offset as usize..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect())
+                    } else {
+                        special(parser_ast::ExprKind::TimeUnit(unit(3)))
+                    };
+                    field.OriginTextPosition = rhs[rhs_len - 3].offset as i32;
+                    vec![Some(field), expr(1)]
+                },
                 ExpressionRule::FunctionCallNonKeywordAlt07 => vec![
                     Some(special(parser_ast::ExprKind::GetFormatSelector(
                         rhs[rhs_len - (3)]

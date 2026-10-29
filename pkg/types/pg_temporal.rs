@@ -8,6 +8,10 @@ pub enum PgTemporalError {
     Syntax,
     #[error("timestamp truncation unit not recognized")]
     TruncationUnit,
+    #[error("timestamp extraction unit not recognized")]
+    ExtractionUnit,
+    #[error("unit \"{0}\" not supported for type timestamp without time zone")]
+    ExtractionTimezone(&'static str),
     #[error("invalid interval type modifier")]
     IntervalModifier,
     #[error("interval field overflow")]
@@ -35,12 +39,13 @@ impl PgTemporalError {
     pub fn sqlstate(self) -> &'static str {
         match self {
             Self::Syntax => "22007",
-            Self::IntervalModifier | Self::TruncationUnit => "22023",
+            Self::IntervalModifier | Self::TruncationUnit | Self::ExtractionUnit => "22023",
             Self::Range => "22008",
             Self::IntervalOverflow => "22015",
             Self::ZoneRange => "22009",
             Self::UnknownZone => "22023",
             Self::Unsupported
+            | Self::ExtractionTimezone(_)
             | Self::DurationBridge
             | Self::TimestampBridge
             | Self::IntervalWeek => "0A000",
@@ -619,6 +624,130 @@ impl PgTimestamp {
             1,
         )?;
         Self::from_micros(i64::from(date.0) * PgTime::END_OF_DAY)
+    }
+
+    /// Extract calendar fields using integer microseconds, retaining numeric scale.
+    /// The field is validated before infinity dispatch; inapplicable fields on
+    /// infinity are SQL NULL, whereas monotonic fields preserve its sign.
+    pub fn extract_numeric(
+        self,
+        unit: &str,
+    ) -> Result<Option<crate::pg_numeric::PgNumeric>, PgTemporalError> {
+        let unit = unit.to_ascii_lowercase();
+        let unit = match unit.as_str() {
+            "second" | "seconds" => "second",
+            "microsecond" | "microseconds" => "microseconds",
+            "year" | "years" => "year",
+            "month" | "months" => "month",
+            "day" | "days" => "day",
+            "week" | "weeks" => "week",
+            "millisecond" | "milliseconds" => "milliseconds",
+            "minute" | "minutes" => "minute",
+            "hour" | "hours" => "hour",
+            "quarter" => "quarter",
+            "decade" | "decades" => "decade",
+            "century" | "centuries" => "century",
+            "millennium" | "millennia" | "millenniums" => "millennium",
+            "isoyear" | "dow" | "isodow" | "doy" | "epoch" | "julian" | "timezone"
+            | "timezone_hour" | "timezone_minute" => unit.as_str(),
+            _ => return Err(PgTemporalError::ExtractionUnit),
+        };
+        let text = if matches!(self.0, i64::MIN | i64::MAX) {
+            if !matches!(
+                unit,
+                "year" | "isoyear" | "decade" | "century" | "millennium" | "epoch" | "julian"
+            ) {
+                return Ok(None);
+            }
+            if self.0 == i64::MIN {
+                "-Infinity".to_owned()
+            } else {
+                "Infinity".to_owned()
+            }
+        } else {
+            let days = self.0.div_euclid(PgTime::END_OF_DAY);
+            let (year, month, day) = PgDate(days as i32).ymd();
+            let micros = self.0.rem_euclid(60_000_000);
+            match unit {
+                "second" => format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000),
+                "microseconds" => micros.to_string(),
+                "milliseconds" => format!("{}.{:03}", micros / 1_000, micros % 1_000),
+                "minute" => (self.0.rem_euclid(3_600_000_000) / 60_000_000).to_string(),
+                "hour" => (self.0.rem_euclid(PgTime::END_OF_DAY) / 3_600_000_000).to_string(),
+                "quarter" => ((month - 1) / 3 + 1).to_string(),
+                "decade" => year.div_euclid(10).to_string(),
+                "century" => (if year > 0 {
+                    (year + 99) / 100
+                } else {
+                    -(100 - year) / 100
+                })
+                .to_string(),
+                "millennium" => (if year > 0 {
+                    (year + 999) / 1000
+                } else {
+                    -(1000 - year) / 1000
+                })
+                .to_string(),
+                "dow" => ((days + 6).rem_euclid(7)).to_string(),
+                "isodow" => ((days + 5).rem_euclid(7) + 1).to_string(),
+                "doy" => (days
+                    - i64::from(PgDate::from_ymd((year - i64::from(year <= 0)) as i32, 1, 1)?.0)
+                    + 1)
+                .to_string(),
+                "epoch" => {
+                    let micros = i128::from(self.0) + 946_684_800_000_000;
+                    format!(
+                        "{}{}.{:06}",
+                        if micros < 0 { "-" } else { "" },
+                        micros.abs() / 1_000_000,
+                        micros.abs() % 1_000_000
+                    )
+                }
+                "julian" => {
+                    let numerator = i128::from(self.0.rem_euclid(PgTime::END_OF_DAY));
+                    // numeric_div selects at least 16 significant decimal digits
+                    // from base-10000 weights, then rounds the quotient. The
+                    // fixed divisor is 864 * 10000^2; widening avoids overflow.
+                    let mut first = numerator;
+                    let mut weight = 0i32;
+                    while first >= 10_000 {
+                        first /= 10_000;
+                        weight += 1;
+                    }
+                    let quotient_weight = weight - 2 - i32::from(first <= 864);
+                    let scale = (16 - quotient_weight * 4) as usize;
+                    let factor = 10i128.pow(scale as u32);
+                    let fraction = (numerator * factor + i128::from(PgTime::END_OF_DAY) / 2)
+                        / i128::from(PgTime::END_OF_DAY);
+                    format!("{}.{:0scale$}", days + 2_451_545, fraction)
+                }
+                "timezone" => return Err(PgTemporalError::ExtractionTimezone("timezone")),
+                "timezone_hour" => {
+                    return Err(PgTemporalError::ExtractionTimezone("timezone_hour"));
+                }
+                "timezone_minute" => {
+                    return Err(PgTemporalError::ExtractionTimezone("timezone_minute"));
+                }
+                "year" => (year - i64::from(year <= 0)).to_string(),
+                "month" => month.to_string(),
+                "day" => day.to_string(),
+                "week" | "isoyear" => {
+                    // ISO year is the calendar year of this week's Thursday.
+                    let thursday = days + 3 - (days + 5).rem_euclid(7);
+                    let (iso_year, _, _) = PgDate(thursday as i32).ymd();
+                    if unit == "isoyear" {
+                        (iso_year - i64::from(iso_year <= 0)).to_string()
+                    } else {
+                        let jan4 =
+                            PgDate::from_ymd((iso_year - i64::from(iso_year <= 0)) as i32, 1, 4)?.0
+                                as i64;
+                        (1 + (days - (jan4 - (jan4 + 5).rem_euclid(7))) / 7).to_string()
+                    }
+                }
+                _ => unreachable!(),
+            }
+        };
+        text.parse().map(Some).map_err(|_| PgTemporalError::Range)
     }
 
     pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {

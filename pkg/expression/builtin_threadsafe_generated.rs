@@ -41,7 +41,10 @@ pub enum GeneratedThreadSafetyPolicy {
 pub fn GeneratedThreadSafetyPolicyForSignature(
     signature: &str,
 ) -> Option<GeneratedThreadSafetyPolicy> {
-    if signature == "builtinPgTimestampTruncSig" {
+    if matches!(
+        signature,
+        "builtinPgTimestampTruncSig" | "builtinPgTimestampExtractSig"
+    ) {
         return Some(GeneratedThreadSafetyPolicy::Never);
     }
     if IsGeneratedThreadsafeSignature(signature) {
