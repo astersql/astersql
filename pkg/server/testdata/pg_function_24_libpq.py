@@ -3,7 +3,10 @@
 
 Uses the import-safe task23 native client bindings, never its test entrypoint.
 PG18_REFERENCE_DSN/PG_LIBPQ_LIBRARY and MYSQL8_REFERENCE_HOST/PORT/USER/PASSWORD/
-MYSQL8_CLIENT_LIBRARY have the same contracts as task23. No secrets are logged.
+MYSQL8_CLIENT_LIBRARY have the same contracts as task23. The native client ABI
+can target Go/TiDB; actual reference server/build identity is archived separately.
+FUNCTION24_REFERENCE_BUILD_FILE optionally supplies the verified build manifest.
+No secrets are logged.
 --reference-only EVIDENCE records the actual version, without equivalence claims.
 Default arguments: PORT DATABASE EVIDENCE MYSQL_PORT. Exact18.6 remains required.
 """
@@ -64,7 +67,9 @@ class Mysql(NativeMysql):
                     self.mysql_free_result(result)
             observations.append(dict(phase='prepare', code=self.mysql_stmt_errno(stmt),
                                      state=self.mysql_stmt_sqlstate(stmt).decode(), metadata=meta,
-                                     parameters=self.mysql_stmt_param_count(stmt)))
+                                     parameters=self.mysql_stmt_param_count(stmt),
+                                     warning_count=self.mysql_warning_count(self.conn),
+                                     warnings=self.query('SHOW WARNINGS', warnings=False)['rows']))
             if rc:
                 return observations
             for value in values:
@@ -105,6 +110,7 @@ class Mysql(NativeMysql):
                         # during result buffering. Keep the actual descriptor and stage.
                         obs['code'] = self.mysql_stmt_errno(stmt)
                         obs['state'] = self.mysql_stmt_sqlstate(stmt).decode()
+                        obs['execute_header_warning_count'] = obs['warning_count']
                         obs['warning_count'] = self.mysql_warning_count(self.conn)
                         self.mysql_stmt_free_result(stmt)
                         obs['warnings'] = self.query('SHOW WARNINGS', warnings=False)['rows']
@@ -118,6 +124,8 @@ class Mysql(NativeMysql):
                         obs['rows'].append([None if nulls[i].value else buffers[i].raw[:lengths[i].value].hex()
                                             for i in range(len(buffers))])
                     assert not self.mysql_stmt_free_result(stmt)
+                obs['execute_header_warning_count'] = obs['warning_count']
+                obs['warning_count'] = self.mysql_warning_count(self.conn)
                 obs['warnings'] = self.query('SHOW WARNINGS', warnings=False)['rows']
                 observations.append(obs)
             return observations
@@ -187,7 +195,9 @@ def run(dsns, evidence, aster_mysql=None):
             bindings_sha256=hashlib.sha256(Path(__file__).with_name('pg_function_23_libpq.py').read_bytes()).hexdigest(),
             cargo_lock_sha256=hashlib.sha256((repo / 'Cargo.lock').read_bytes()).hexdigest(),
             source_diff_sha256=hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD', '--', 'pkg/server'], cwd=repo)).hexdigest(),
-            rust_binary=binary, rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None)))
+            rust_binary=binary, rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None,
+            reference_build=(json.loads(Path(os.environ['FUNCTION24_REFERENCE_BUILD_FILE']).read_text())
+                             if os.environ.get('FUNCTION24_REFERENCE_BUILD_FILE') else None))))
         for side, dsn in dsns:
             conn = pq.PQconnectdb(dsn.encode())
             assert conn
@@ -214,7 +224,7 @@ def run(dsns, evidence, aster_mysql=None):
             reference_database = name
             assert mysqls['reference'].query(f'USE {name}')['code'] == 0
         else:
-            check(False, 'MySQL8 reference required')
+            check(False, 'native MySQL/TiDB reference required')
         for side, mysql in mysqls.items():
             identity = {sql: mysql.query(sql) for sql in ('SELECT version()', 'SELECT @@sql_mode', 'SELECT @@character_set_connection', 'SELECT @@collation_connection')}
             (evidence / f'mysql-{side}-identity.json').write_text(json.dumps(dict(client_version=mysql.mysql_get_client_version(), observations=identity)))
@@ -337,7 +347,14 @@ def run(dsns, evidence, aster_mysql=None):
         for conn in connections.values():
             pq.PQfinish(conn)
         if reference_database:
-            cleanup['reference_database_dropped'] = mysqls['reference'].query(f'DROP DATABASE {reference_database}')['code'] == 0
+            # A Python signal may arrive after mysql_query returns but before
+            # query() buffers its result. Drain that real pending response before
+            # issuing DROP, otherwise native MySQL rejects it as out of sync.
+            mysql = mysqls['reference']
+            pending = mysql.mysql_store_result(mysql.conn)
+            if pending:
+                mysql.mysql_free_result(pending)
+            cleanup['reference_database_dropped'] = mysql.query(f'DROP DATABASE {reference_database}')['code'] == 0
             check(cleanup['reference_database_dropped'], 'reference database cleanup')
         for mysql in mysqls.values():
             mysql.close()

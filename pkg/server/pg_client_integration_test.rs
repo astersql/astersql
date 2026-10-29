@@ -9455,6 +9455,27 @@ fn pg_function_24_signed_local() {
                     panic!("prepared overflow must fail")
                 };
                 assert_eq!(error.code, 1690);
+                let WireResponse::ResultSet(warnings) = client.query("SHOW WARNINGS").unwrap()
+                else {
+                    panic!("prepared fold failure must preserve prior diagnostics")
+                };
+                assert_eq!(
+                    warnings.warnings, 0,
+                    "SHOW WARNINGS has no new protocol warnings"
+                );
+                let WireResponse::ResultSet(repeated) = client.query("SHOW WARNINGS").unwrap()
+                else {
+                    panic!("diagnostics must remain readable")
+                };
+                assert_eq!(repeated.rows, warnings.rows);
+                assert_eq!(repeated.warnings, 0);
+                assert_eq!(warnings.rows.len(), 1);
+                assert_eq!(warnings.rows[0][0], TextValue::Bytes(b"Warning".to_vec()));
+                assert_eq!(warnings.rows[0][1], TextValue::Bytes(b"1105".to_vec()));
+                assert_eq!(
+                    warnings.rows[0][2],
+                    TextValue::Bytes(b"skip prepared plan-cache: get a TableDual plan".to_vec())
+                );
                 continue;
             }
             let WireResponse::ResultSet(result) = result else {
@@ -9490,12 +9511,9 @@ fn pg_function_24_signed_local() {
     let WireResponse::ResultSet(warnings) = client.query("SHOW WARNINGS").unwrap() else {
         panic!("SHOW WARNINGS must return rows")
     };
-    assert_eq!(warnings.rows.len(), 1);
-    assert_eq!(warnings.rows[0][0], TextValue::Bytes(b"Error".to_vec()));
-    assert_eq!(warnings.rows[0][1], TextValue::Bytes(b"1690".to_vec()));
-    assert_eq!(
-        warnings.rows[0][2],
-        TextValue::Bytes(b"BIGINT value is out of range in 'abs(-9223372036854775808)'".to_vec())
+    assert!(
+        warnings.rows.is_empty(),
+        "Go constant-fold rejection precedes AppendError"
     );
     let WireResponse::ResultSet(recovered) = client.query("SELECT 1").unwrap() else {
         panic!("connection must recover")

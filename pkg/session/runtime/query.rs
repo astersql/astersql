@@ -17,6 +17,17 @@
 
 use super::*;
 
+/// Identifies the validated signed ABS fold failure without matching error text.
+#[derive(Debug)]
+pub(super) struct MysqlSignedAbsOverflow(String);
+
+impl std::fmt::Display for MysqlSignedAbsOverflow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl std::error::Error for MysqlSignedAbsOverflow {}
+
 // Unknown is a property of a literal expression, never of its rendered value.
 // A nested set node has already resolved its output and is not unknown again.
 pub(super) fn pg_union_unknown_inputs(node: &dyn ast::Node, fields: &mut [ConcreteResultField]) {
@@ -1247,21 +1258,40 @@ impl ConcreteSession {
                                 astersql_errors::SharedError::new(cause),
                             )
                         } else {
-                            // EvalInt's validated signed ABS kernel only rejects
-                            // overflow. Publish its actual diagnostic through the
-                            // existing statement warning area as Go does for errors.
-                            let diagnostic = error.to_string();
-                            // SHOW WARNINGS exposes the SQL message, without the
-                            // internal class/code prefix (Go terror.ToSQLError).
-                            let message = diagnostic
-                                .strip_prefix("[types:1690]")
-                                .unwrap_or(&diagnostic)
-                                .to_owned();
-                            self.state
-                                .borrow_mut()
-                                .current_warnings
-                                .push(SessionWarning::error_with_code(1690, message));
-                            session_error("evaluate signed ABS", error)
+                            fn literal(expr: &ast::ExprNode) -> bool {
+                                match &expr.Kind {
+                                    ast::ExprKind::Value(_) => true,
+                                    ast::ExprKind::Cast { Expr, .. }
+                                    | ast::ExprKind::Parentheses(Expr) => literal(Expr),
+                                    ast::ExprKind::Unary { Op, V }
+                                        if matches!(Op.as_str(), "+" | "-") =>
+                                    {
+                                        literal(V)
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            if row.is_empty() && group_rows.is_none() && literal(&Args[0]) {
+                                // Constant ABS overflow fails during Go optimization,
+                                // before ExecuteStmt's AppendError lifecycle.
+                                SessionError::with_source(
+                                    format!("evaluate signed ABS: {error}"),
+                                    astersql_errors::SharedError::new(MysqlSignedAbsOverflow(
+                                        error.to_string(),
+                                    )),
+                                )
+                            } else {
+                                let diagnostic = error.to_string();
+                                let message = diagnostic
+                                    .strip_prefix("[types:1690]")
+                                    .unwrap_or(&diagnostic)
+                                    .to_owned();
+                                self.state
+                                    .borrow_mut()
+                                    .current_warnings
+                                    .push(SessionWarning::error_with_code(1690, message));
+                                session_error("evaluate signed ABS", error)
+                            }
                         }
                     })?;
                 return Ok((!null).then(|| value.to_string()));

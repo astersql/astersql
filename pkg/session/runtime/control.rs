@@ -2215,6 +2215,7 @@ impl ConcreteSession {
         // protocol values, as Go toParamMarker does. SQL literal substitution
         // loses the unspecified string width and parameter nullability.
         let mut dual_cache_rejection = None;
+        let mut signed_abs_diagnostics = None;
         let mut mysql_function_fields = None;
         if dialect == ast::SqlDialect::MySQL {
             let statements = parse_in_dialect(&sql, dialect)?;
@@ -2222,6 +2223,21 @@ impl ConcreteSession {
                 .first()
                 .and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
             {
+                if select.From.is_none()
+                    && select
+                        .Fields
+                        .Fields
+                        .iter()
+                        .filter_map(|field| field.Expr.as_ref())
+                        .any(|expr| self.is_mysql_signed_abs(expr, &[]))
+                {
+                    let state = self.state.borrow();
+                    signed_abs_diagnostics = Some((
+                        state.current_warnings.clone(),
+                        state.last_warnings.clone(),
+                        self.session_vars.StmtCtx.GetWarnings(),
+                    ));
+                }
                 let affected = select.Fields.Fields.iter().map(|field| field.Expr.as_ref().is_some_and(|expr| {
                     matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring"))
                 })).collect::<Vec<_>>();
@@ -2605,6 +2621,22 @@ impl ConcreteSession {
         state.pg_bound_date_constants = previous_constants;
         state.pg_bound_float4_constants = previous_float4;
         state.observation_sql_override = None;
+        // Go rejects this constant fold before replacing the prepared execution's
+        // diagnostic area. Restore only the typed, table-free signed ABS failure;
+        // ordinary execution failures retain their own diagnostics.
+        if let Some((current, last, context)) = signed_abs_diagnostics
+            && execution.as_ref().err().is_some_and(|error| {
+                error
+                    .clone()
+                    .into_shared()
+                    .downcast_ref::<super::query::MysqlSignedAbsOverflow>()
+                    .is_some()
+            })
+        {
+            state.current_warnings = current;
+            state.last_warnings = last;
+            self.session_vars.StmtCtx.SetWarnings(context);
+        }
         state.last_plan_from_cache = from_plan_cache && dual_cache_rejection.is_none();
         if execution.is_ok()
             && let Some(reason) = &dual_cache_rejection

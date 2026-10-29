@@ -2755,6 +2755,9 @@ impl ConcreteSession {
                 return Ok(Some(self.execute_show_index(show)?));
             }
             if show.Tp == ast::ShowStmtType::Warnings {
+                // SHOW reads the retained diagnostic area, but produces no new
+                // warnings of its own (Go ResetContextOfStmt/ShowExec).
+                self.state.borrow_mut().current_warnings.clear();
                 let rows = self
                     .state
                     .borrow()
