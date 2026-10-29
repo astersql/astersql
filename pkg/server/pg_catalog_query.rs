@@ -15,7 +15,7 @@ pub(crate) enum Token {
     Word(String),
     Quoted(String),
     String(String),
-    Number(i64),
+    Number(String),
     Parameter(usize),
     Symbol(char),
     Cast,
@@ -232,11 +232,10 @@ pub(crate) fn lex(sql: &str) -> ParseResult<Vec<Token>> {
             while i < b.len() && b[i].is_ascii_digit() {
                 i += 1;
             }
-            out.push(Token::Number(
-                sql[start..i]
-                    .parse()
-                    .map_err(|_| syntax("integer is out of range"))?,
-            ));
+            // Keep the magnitude lexical until ownership is established. A
+            // native function may contain the magnitude of i64::MIN (or a
+            // numeric literal outside bigint) without being a catalog query.
+            out.push(Token::Number(sql[start..i].to_owned()));
             continue;
         }
         if b[i].is_ascii() {
@@ -609,7 +608,11 @@ impl Parser {
             match self.peek().cloned() {
                 Some(Token::Number(n)) => {
                     self.pos += 1;
-                    Expr::Integer(-n)
+                    Expr::Integer(
+                        format!("-{n}")
+                            .parse()
+                            .map_err(|_| syntax("integer is out of range"))?,
+                    )
                 }
                 _ => return Err(syntax("expected integer after minus")),
             }
@@ -617,7 +620,7 @@ impl Parser {
             match self.peek().cloned() {
                 Some(Token::Number(n)) => {
                     self.pos += 1;
-                    Expr::Integer(n)
+                    Expr::Integer(n.parse().map_err(|_| syntax("integer is out of range"))?)
                 }
                 Some(Token::String(s)) => {
                     self.pos += 1;
@@ -1045,6 +1048,7 @@ impl Parser {
             match self.peek().cloned() {
                 Some(Token::Number(n)) => {
                     self.pos += 1;
+                    let n = n.parse::<i64>().map_err(|_| syntax("invalid LIMIT"))?;
                     Some(usize::try_from(n).map_err(|_| syntax("invalid LIMIT"))?)
                 }
                 _ => return Err(syntax("expected nonnegative LIMIT")),

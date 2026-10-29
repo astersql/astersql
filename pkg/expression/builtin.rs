@@ -3718,6 +3718,7 @@ pub mod formal_registry {
         IsNull,
         Logic(&'static str),
         UnaryNot,
+        AbsSigned(Option<u8>),
         UnaryMinus(types::EvalType),
         Arithmetic(&'static str, types::EvalType),
         Case,
@@ -4069,6 +4070,31 @@ pub mod formal_registry {
                 | CoreBuiltinKind::IsNull
                 | CoreBuiltinKind::Logic(..)
                 | CoreBuiltinKind::UnaryNot => self.eval_boolean(ctx, row),
+                CoreBuiltinKind::AbsSigned(pg_type) => {
+                    let (value, null) = self.base.args[0].EvalInt(ctx, row)?;
+                    if null {
+                        return Ok((0, true));
+                    }
+                    let value = value.checked_abs().ok_or_else(|| {
+                        if pg_type.is_some() {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                crate::PgInt4Error::OutOfRange,
+                            ))
+                        } else {
+                            errors::New(format!(
+                                "[types:1690]BIGINT value is out of range in 'abs({value})'"
+                            ))
+                        }
+                    })?;
+                    if pg_type == Some(mysql::TypeLong) && value > i64::from(i32::MAX) {
+                        return Err(errors::Error::from(
+                            crate::contextutil::errors::SharedError::new(
+                                crate::PgInt4Error::OutOfRange,
+                            ),
+                        ));
+                    }
+                    Ok((value, false))
+                }
                 CoreBuiltinKind::UnaryMinus(types::ETInt) => {
                     let (value, null) = self.base.args[0].EvalInt(ctx, row)?;
                     Ok((
@@ -5223,6 +5249,32 @@ pub mod formal_registry {
             args[0] = BuildCastFunction(ctx, &args[0], &datetime_type);
         }
         let (kind, return_type, signature) = match name {
+            "abs" => {
+                let source = args[0].GetType(ctx.GetEvalCtx());
+                if source.EvalType() != types::ETInt || mysql::HasUnsignedFlag(source.GetFlag()) {
+                    return Err(errors::New(
+                        "ABS factory currently requires a signed integer",
+                    ));
+                }
+                let return_type = if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL {
+                    if !matches!(source.GetType(), mysql::TypeLong | mysql::TypeLonglong) {
+                        return Err(errors::New("ABS requires an int4 or int8 signature"));
+                    }
+                    source.clone()
+                } else {
+                    let mut result = field_type_for_eval_type(types::ETInt);
+                    result.SetFlen(source.GetFlen());
+                    result.SetDecimal(source.GetDecimal());
+                    result
+                };
+                let pg_type = (ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL)
+                    .then_some(source.GetType());
+                (
+                    CoreBuiltinKind::AbsSigned(pg_type),
+                    return_type,
+                    "builtinAbsIntSig",
+                )
+            }
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq" => {
                 let operation = match name {
                     "eq" => opcode::Op::EQ,
@@ -6190,6 +6242,7 @@ pub mod formal_registry {
         // sharing CASE's fully typed evaluator and protobuf signature.
         core_builtin_factory("case", ctx, args, metadata)
     }
+    core_factory!(abs_factory, "abs");
     core_factory!(row_factory, "row");
     core_factory!(json_extract_factory, "json_extract");
     core_factory!(uuid_factory, "uuid");
@@ -6247,6 +6300,7 @@ pub mod formal_registry {
     core_factory!(symbol_modulo_factory, "%");
 
     const CORE_BUILTIN_FACTORIES: &[(&str, BuiltinFactory)] = &[
+        ("abs", abs_factory),
         ("eq", eq_factory),
         ("ne", ne_factory),
         ("lt", lt_factory),

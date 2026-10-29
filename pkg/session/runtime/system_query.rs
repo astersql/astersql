@@ -3851,6 +3851,12 @@ impl ConcreteSession {
                 .ok_or_else(|| SessionError::new("constant SELECT field requires an expression"))?;
             let numeric_literal = pg_numeric_literal_value(expr).transpose()?;
             let value = match &expr.Kind {
+                ast::ExprKind::Function { FnName, Args, .. }
+                    if FnName.L == "abs" && Args.len() == 1 =>
+                {
+                    self.relational_query_expression_value(expr, &HashMap::new(), None)?
+                        .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
+                }
                 _ if numeric_literal.is_some() => numeric_literal.unwrap(),
                 ast::ExprKind::Value(literal) => match &literal.Datum {
                     ast::ValueDatum::Null => CONCRETE_NULL_VALUE.to_owned(),
@@ -4134,9 +4140,47 @@ impl ConcreteSession {
         } else {
             true
         };
-        Ok(Some(ConcreteRecordSet::new(
+        // Signed ABS now has a formal return type. Carry that field through
+        // the constant shortcut instead of replacing it with generic text.
+        let result_fields = statement
+            .Fields
+            .Fields
+            .iter()
+            .zip(&columns)
+            .map(|(field, name)| {
+                let expr = field.Expr.as_ref()?;
+                let ast::ExprKind::Function { FnName, Args, .. } = &expr.Kind else {
+                    return None;
+                };
+                if FnName.L != "abs" || Args.len() != 1 {
+                    return None;
+                }
+                let source = self.signed_abs_argument_type(&Args[0], &[]);
+                if !matches!(
+                    source.GetType(),
+                    astersql_parser_mysql::r#type::TypeLong
+                        | astersql_parser_mysql::r#type::TypeLonglong
+                ) || source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag != 0
+                {
+                    return None;
+                }
+                Some(ConcreteResultField {
+                    column: astersql_meta_model::ColumnInfo {
+                        FieldType: self.relational_query_expression_type_from_sources(expr, &[]),
+                        ..Default::default()
+                    },
+                    column_as_name: ast::NewCIStr(name),
+                    table_name: ast::CIStr::default(),
+                    table_as_name: ast::CIStr::default(),
+                    db_name: ast::CIStr::default(),
+                    column_origin: None,
+                })
+            })
+            .collect();
+        Ok(Some(ConcreteRecordSet::new_with_fields(
             columns,
             if visible { vec![row] } else { Vec::new() },
+            result_fields,
         )))
     }
 

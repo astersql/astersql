@@ -556,3 +556,17 @@ fn catalog_datagrip_scalar_and_lateral_bounds() {
         assert_eq!(parse(&sql).unwrap_err().0, "0A000", "{sql}");
     }
 }
+
+#[test]
+fn pg_function_01_catalog_ownership_keeps_numeric_magnitudes_lexical() {
+    assert!(
+        parse("SELECT pg_catalog.abs((-9223372036854775808)::int8) AS v")
+            .unwrap()
+            .is_none()
+    );
+    let query = parse("SELECT -9223372036854775808 FROM pg_catalog.pg_database")
+        .unwrap()
+        .unwrap();
+    assert_eq!(query.projections[0].expr, Expr::Integer(i64::MIN));
+    assert!(parse("SELECT 9223372036854775808 FROM pg_catalog.pg_database").is_err());
+}

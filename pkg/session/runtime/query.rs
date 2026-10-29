@@ -1189,6 +1189,70 @@ impl ConcreteSession {
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
+        if let ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } = &expression.Kind
+            && FnName.L == "abs"
+            && Args.len() == 1
+            && (Schema.L.is_empty()
+                || (self.sql_dialect() == ast::SqlDialect::PostgreSQL && Schema.L == "pg_catalog"))
+        {
+            use astersql_expression::BuildContext;
+            let source = self.signed_abs_argument_type(&Args[0], &[]);
+            if matches!(
+                source.GetType(),
+                astersql_parser_mysql::r#type::TypeLong
+                    | astersql_parser_mysql::r#type::TypeLonglong
+            ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+            {
+                let value = self.relational_query_expression_value(&Args[0], row, group_rows)?;
+                let mut argument = match value {
+                    None => astersql_expression::NewNull(),
+                    Some(value) => astersql_expression::NewInt64Const(
+                        value
+                            .parse()
+                            .map_err(|error| session_error("parse signed ABS argument", error))?,
+                    ),
+                };
+                argument.RetType = Some(source);
+                let eval = astersql_expression_exprstatic::NewEvalContext(vec![
+                    astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
+                ]);
+                let context = astersql_expression_exprstatic::NewExprContext(vec![
+                    astersql_expression_exprstatic::WithEvalCtx(Arc::new(eval)),
+                ]);
+                let function = astersql_expression::NewFunctionBase(
+                    &context,
+                    "abs",
+                    *astersql_expression::types::NewFieldType(
+                        astersql_expression::mysql::TypeUnspecified,
+                    ),
+                    vec![Box::new(argument)],
+                )
+                .map_err(|error| session_error("build signed ABS", error))?;
+                let (value, null) = function
+                    .EvalInt(
+                        context.GetEvalCtx(),
+                        astersql_expression::chunk::Row::default(),
+                    )
+                    .map_err(|error| {
+                        // The argument is already a validated integer Constant;
+                        // the signed ABS kernel can only reject overflow here.
+                        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                            let cause = astersql_expression::PgInt4Error::OutOfRange;
+                            SessionError::with_source(
+                                cause.to_string(),
+                                astersql_errors::SharedError::new(cause),
+                            )
+                        } else {
+                            session_error("evaluate signed ABS", error)
+                        }
+                    })?;
+                return Ok((!null).then(|| value.to_string()));
+            }
+        }
         // One fixed numeric signature provides a bounded implicit-cast context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -3576,12 +3640,54 @@ impl ConcreteSession {
         }
     }
 
+    /// ABS consumes the explicit integer cast identity even on the MySQL
+    /// constant shortcut, whose generic type fallback predates formal factories.
+    pub(super) fn signed_abs_argument_type(
+        &self,
+        expression: &ast::ExprNode,
+        source_fields: &[ConcreteResultField],
+    ) -> astersql_parser_types::FieldType {
+        match &expression.Kind {
+            ast::ExprKind::Cast { Tp, .. }
+                if matches!(
+                    Tp.GetType(),
+                    astersql_parser_mysql::r#type::TypeLong
+                        | astersql_parser_mysql::r#type::TypeLonglong
+                ) =>
+            {
+                Tp.clone()
+            }
+            ast::ExprKind::Parentheses(inner) => {
+                self.signed_abs_argument_type(inner, source_fields)
+            }
+            _ => self.relational_query_expression_type_from_sources(expression, source_fields),
+        }
+    }
+
     pub(super) fn relational_query_expression_type_from_sources(
         &self,
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+                && FnName.L == "abs"
+                && Args.len() == 1
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                let source = self.signed_abs_argument_type(&Args[0], source_fields);
+                if matches!(
+                    source.GetType(),
+                    astersql_parser_mysql::r#type::TypeLong
+                        | astersql_parser_mysql::r#type::TypeLonglong
+                ) {
+                    return source;
+                }
+            }
             // A null test has a fixed boolean result, independently of whether
             // its parameter type came from Parse OIDs or an explicit cast.
             if matches!(expression.Kind, ast::ExprKind::IsNull { .. }) {

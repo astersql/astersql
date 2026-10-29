@@ -1359,3 +1359,271 @@ fn pg_core_int8_wire_semantics() {
     assert!(TcpStream::connect(address).is_err());
     assert!(status.success(), "libpq int8 semantics failed");
 }
+
+#[test]
+fn pg_function_01() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (name, oid, width) in [("int4", 23u32, 4i16), ("int8", 20, 8)] {
+        let messages = query(
+            &mut socket,
+            &format!("SELECT pg_catalog.abs((-1)::{name}) AS v"),
+        );
+        assert!(
+            !messages.iter().any(|(tag, _)| *tag == b'E'),
+            "{name}: {messages:?}"
+        );
+        let description = &messages
+            .iter()
+            .find(|(tag, _)| *tag == b'T')
+            .expect("RowDescription")
+            .1;
+        let mut expected = vec![0, 1, b'v', 0];
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        expected.extend_from_slice(&oid.to_be_bytes());
+        expected.extend_from_slice(&width.to_be_bytes());
+        expected.extend_from_slice(&(-1i32).to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        assert_eq!(description, &expected, "{name} result identity");
+        assert_eq!(
+            messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+            row(&[Some("1")])
+        );
+    }
+    for sql in [
+        "SELECT pg_catalog.abs(NULL::int4) AS v",
+        "SELECT pg_catalog.abs(NULL::int8) AS v",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert_eq!(
+            messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+            row(&[None])
+        );
+    }
+    for sql in [
+        "SELECT pg_catalog.abs((-2147483648)::int4) AS v",
+        "SELECT pg_catalog.abs((-9223372036854775808)::int8) AS v",
+    ] {
+        let messages = query(&mut socket, sql);
+        let error = &messages
+            .iter()
+            .find(|(tag, _)| *tag == b'E')
+            .expect("overflow ErrorResponse")
+            .1;
+        assert!(
+            error.windows(7).any(|bytes| bytes == b"C22003\0"),
+            "{messages:?}"
+        );
+        let mut fields = std::collections::BTreeMap::new();
+        let mut offset = 0;
+        while error[offset] != 0 {
+            let tag = error[offset];
+            offset += 1;
+            let length = error[offset..].iter().position(|byte| *byte == 0).unwrap();
+            fields.insert(
+                tag,
+                std::str::from_utf8(&error[offset..offset + length]).unwrap(),
+            );
+            offset += length + 1;
+        }
+        assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'C'), Some(&"22003"));
+        assert!(!fields[&b'M'].is_empty());
+        println!(
+            "{sql}: evaluation error {fields:?}; D/H/P present={:?}",
+            [b'D', b'H', b'P'].map(|tag| fields.contains_key(&tag))
+        );
+        assert_eq!(
+            messages.iter().map(|(tag, _)| *tag).collect::<Vec<_>>(),
+            [b'E', b'Z']
+        );
+        assert_eq!(messages.last().unwrap().1, [b'I']);
+        assert!(!messages.iter().any(|(tag, _)| *tag == b'D'));
+        assert!(
+            query(&mut socket, "SELECT 1::int4")
+                .iter()
+                .any(|(tag, _)| *tag == b'D')
+        );
+    }
+    // Parse/statement Describe, then rebind the same statement with text and
+    // binary output and NULL. The actual session owns all result identities.
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let message = read(socket);
+            let done = message.0 == b'Z';
+            messages.push(message);
+            if done {
+                return messages;
+            }
+        }
+    }
+    for (name, oid, width) in [("int4", 23u32, 4i16), ("int8", 20, 8)] {
+        let sql = format!("SELECT pg_catalog.abs($1::{name}) AS v");
+        let mut parse = [b"\0".as_slice(), sql.as_bytes(), b"\0", &1i16.to_be_bytes()].concat();
+        parse.extend_from_slice(&oid.to_be_bytes());
+        send(&mut socket, b'P', &parse);
+        send(&mut socket, b'D', b"S\0");
+        send(&mut socket, b'S', &[]);
+        let messages = ready(&mut socket);
+        assert!(
+            !messages.iter().any(|(tag, _)| *tag == b'E'),
+            "{messages:?}"
+        );
+        assert_eq!(
+            messages.iter().find(|(tag, _)| *tag == b't').unwrap().1,
+            [&1i16.to_be_bytes()[..], &oid.to_be_bytes()].concat()
+        );
+        let statement_description = messages
+            .iter()
+            .find(|(tag, _)| *tag == b'T')
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(&statement_description[10..14], &oid.to_be_bytes());
+        assert_eq!(&statement_description[14..16], &width.to_be_bytes());
+        for (format, value) in [(0i16, Some("-1")), (1, Some("-1")), (1, None)] {
+            let mut bind = vec![0, 0, 0, 0, 0, 1]; // unnamed portal/statement, no input formats, one parameter
+            match value {
+                Some(value) => {
+                    bind.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                    bind.extend_from_slice(value.as_bytes());
+                }
+                None => bind.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
+            bind.extend_from_slice(&1i16.to_be_bytes());
+            bind.extend_from_slice(&format.to_be_bytes());
+            send(&mut socket, b'B', &bind);
+            send(&mut socket, b'D', b"P\0");
+            send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+            send(&mut socket, b'S', &[]);
+            let messages = ready(&mut socket);
+            assert!(
+                !messages.iter().any(|(tag, _)| *tag == b'E'),
+                "{messages:?}"
+            );
+            let mut expected_description = statement_description.clone();
+            let end = expected_description.len();
+            expected_description[end - 2..].copy_from_slice(&format.to_be_bytes());
+            assert_eq!(
+                messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1,
+                expected_description
+            );
+            let expected = if value.is_none() {
+                row(&[None])
+            } else if format == 0 {
+                row(&[Some("1")])
+            } else {
+                let bytes = if width == 4 {
+                    1i32.to_be_bytes().to_vec()
+                } else {
+                    1i64.to_be_bytes().to_vec()
+                };
+                [
+                    &1i16.to_be_bytes()[..],
+                    &(bytes.len() as i32).to_be_bytes(),
+                    &bytes,
+                ]
+                .concat()
+            };
+            assert_eq!(
+                messages.iter().find(|(tag, _)| *tag == b'D').unwrap().1,
+                expected
+            );
+        }
+        let messages = query(
+            &mut socket,
+            &format!("SELECT pg_catalog.abs((-1)::{name}) AS v WHERE false"),
+        );
+        assert!(messages.iter().any(|(tag, _)| *tag == b'T'));
+        assert!(!messages.iter().any(|(tag, _)| *tag == b'D' || *tag == b'E'));
+        assert_eq!(
+            messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1,
+            statement_description
+        );
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_01_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(server.clone());
+    let mut socket = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+    mysql_packet(&mut socket, 0, b"\x03SELECT ABS(CAST(-1 AS SIGNED)) AS v");
+    assert_eq!(mysql_read(&mut socket), [1]);
+    let column = mysql_read(&mut socket);
+    let mut offset = 0;
+    for _ in 0..6 {
+        let length = usize::from(column[offset]);
+        offset += length + 1;
+    }
+    assert_eq!(column[offset], 12);
+    let metadata = &column[offset + 1..offset + 13];
+    println!(
+        "pg_function_01_mysql metadata: charset={} length={} code={} flags={} decimals={}",
+        u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+        u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+        metadata[6],
+        u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+        metadata[9]
+    );
+    assert_eq!(metadata[6], 8, "MySQL ABS retains BIGINT wire code");
+    assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 63);
+    assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 20);
+    assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 128);
+    assert_eq!(metadata[9], 31);
+    assert_eq!(mysql_read(&mut socket)[0], 0xfe);
+    assert_eq!(mysql_read(&mut socket), b"\x011");
+    let eof = mysql_read(&mut socket);
+    assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+    assert!(mysql_query(&mut socket, "SHOW WARNINGS").is_empty());
+    mysql_packet(&mut socket, 0, &[1]);
+}

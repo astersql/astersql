@@ -578,3 +578,86 @@ pub(crate) fn run_builtin_registry_parity_suite() {
     migrated_string_control_and_like_factories_match_go_runtime();
     pb_signature_names_do_not_confuse_camel_case_functions_with_comparisons();
 }
+
+#[test]
+fn pg_function_01() {
+    let context = exprstatic::NewExprContext(Vec::new());
+    let expression = crate::NewFunctionBase(
+        &context,
+        "abs",
+        *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+        vec![Box::new(crate::NewInt64Const(-1))],
+    )
+    .expect("ABS must construct through the formal registry");
+    assert_eq!(
+        expression
+            .EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap(),
+        (1, false)
+    );
+    assert_eq!(
+        expression.GetType(context.GetEvalCtx()).GetType(),
+        crate::mysql::TypeLonglong
+    );
+}
+
+#[test]
+fn pg_function_01_exact_signed_signatures() {
+    let eval = exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+        crate::ast::SqlDialect::PostgreSQL,
+    )]);
+    let context =
+        exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(eval))]);
+    for (kind, maximum, minimum) in [
+        (
+            crate::mysql::TypeLong,
+            i64::from(i32::MAX),
+            i64::from(i32::MIN),
+        ),
+        (crate::mysql::TypeLonglong, i64::MAX, i64::MIN),
+    ] {
+        for (value, expected) in [
+            (Some(-1), Some(1)),
+            (Some(0), Some(0)),
+            (Some(maximum), Some(maximum)),
+            (None, None),
+        ] {
+            let mut argument = value.map_or_else(crate::NewNull, crate::NewInt64Const);
+            argument.RetType = Some(*crate::types::NewFieldType(kind));
+            let function = crate::NewFunctionBase(
+                &context,
+                "abs",
+                *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+                vec![Box::new(argument)],
+            )
+            .unwrap();
+            assert_eq!(function.GetType(context.GetEvalCtx()).GetType(), kind);
+            let (actual, null) = function
+                .EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap();
+            assert_eq!((!null).then_some(actual), expected);
+        }
+        let mut argument = crate::NewInt64Const(minimum);
+        argument.RetType = Some(*crate::types::NewFieldType(kind));
+        let function = crate::NewFunctionBase(
+            &context,
+            "abs",
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            vec![Box::new(argument)],
+        )
+        .unwrap();
+        assert!(
+            function
+                .EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+                .is_err()
+        );
+        // The selected signature owns its overflow domain even if an
+        // expression is evaluated with another connection's context.
+        let mysql_context = exprstatic::NewExprContext(Vec::new());
+        assert!(
+            function
+                .EvalInt(mysql_context.GetEvalCtx(), crate::chunk::Row::default())
+                .is_err()
+        );
+    }
+}
