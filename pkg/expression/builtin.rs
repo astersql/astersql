@@ -2614,6 +2614,14 @@ pub mod formal_registry {
         let candidates = match name {
             "to_char" => vec![
                 PgFunctionCandidate {
+                    arguments: vec![mysql::TypeFloat, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeDouble, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
                     arguments: vec![mysql::TypeLong, mysql::TypeVarString],
                     result: mysql::TypeVarString,
                 },
@@ -5206,6 +5214,38 @@ pub mod formal_registry {
 
                 CoreBuiltinKind::PgTimestampToChar => {
                     let source_type = self.base.args[0].GetType(ctx).GetType();
+                    if matches!(source_type, mysql::TypeFloat | mysql::TypeDouble) {
+                        let (value, value_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                        let (template, template_null) = self.base.args[1].EvalString(ctx, row)?;
+                        if value_null || template_null {
+                            return Ok((String::new(), true));
+                        }
+                        // The session bridge carries typed canonical text; use the
+                        // PostgreSQL converters, including non-finite values and -0.
+                        let value = if source_type == mysql::TypeFloat {
+                            crate::pg_cast_float4(Some(&value))
+                                .map(|v| v.map(f64::from))
+                                .map_err(|e| {
+                                    errors::Error::from(
+                                        crate::contextutil::errors::SharedError::new(e),
+                                    )
+                                })?
+                        } else {
+                            crate::pg_cast_float8(Some(&value)).map_err(|e| {
+                                errors::Error::from(crate::contextutil::errors::SharedError::new(e))
+                            })?
+                        }
+                        .expect("non-null floating source");
+                        return crate::pg_numeric_format::format_float(
+                            value,
+                            source_type == mysql::TypeFloat,
+                            &template,
+                        )
+                        .map(|value| (value, false))
+                        .map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        });
+                    }
                     // Integer signatures keep all 64 bits, including i64::MIN,
                     // before entering the shared decimal template formatter.
                     let (value, value_null) =

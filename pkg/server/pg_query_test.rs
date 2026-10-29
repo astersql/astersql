@@ -12253,3 +12253,430 @@ fn pg08_15_sql() {
     assert!(TcpStream::connect(address).is_err());
     println!("pg08_15_sql: 86 scenarios passed; listener closed");
 }
+
+#[test]
+fn pg08_16_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (id, zone, sql, value, zero) in [
+        (
+            "float4-basic",
+            "UTC",
+            "SELECT to_char('125.5'::float4,'FM999.0'::text) AS v",
+            Some("125.5"),
+            false,
+        ),
+        (
+            "float4-tie",
+            "UTC",
+            "SELECT to_char('2.5'::float4,'FM9'::text) AS v",
+            Some("2"),
+            false,
+        ),
+        (
+            "float4-precision",
+            "UTC",
+            "SELECT to_char('1.23456789'::float4,'FM9.999999999'::text) AS v",
+            Some("1.23457"),
+            false,
+        ),
+        (
+            "float4-edge",
+            "UTC",
+            "SELECT to_char('9.999999'::float4,'FM99.999999999'::text) AS v",
+            Some("10."),
+            false,
+        ),
+        (
+            "float4-nan",
+            "UTC",
+            "SELECT to_char('NaN'::float4,'FM999.0'::text) AS v",
+            Some("NaN"),
+            false,
+        ),
+        (
+            "float4-inf",
+            "UTC",
+            "SELECT to_char('Infinity'::float4,'FM999.0'::text) AS v",
+            Some("###."),
+            false,
+        ),
+        (
+            "float4-ninf",
+            "UTC",
+            "SELECT to_char('-Infinity'::float4,'FM999.0'::text) AS v",
+            Some("-###."),
+            false,
+        ),
+        (
+            "float4-negzero",
+            "UTC",
+            "SELECT to_char('-0'::float4,'FM999.0'::text) AS v",
+            Some("-.0"),
+            false,
+        ),
+        (
+            "float4-empty",
+            "UTC",
+            "SELECT to_char('1'::float4,''::text) AS v",
+            Some(""),
+            false,
+        ),
+        (
+            "float4-null",
+            "UTC",
+            "SELECT to_char(NULL::float4,'FM999.0'::text) AS v",
+            None,
+            false,
+        ),
+        (
+            "float4-null-template",
+            "UTC",
+            "SELECT to_char('1'::float4,NULL::text) AS v",
+            None,
+            false,
+        ),
+        (
+            "float4-shift",
+            "UTC",
+            "SELECT to_char('1.23456789'::float4,'FM99V99'::text) AS v",
+            Some("123"),
+            false,
+        ),
+        (
+            "float8-basic",
+            "UTC",
+            "SELECT to_char('125.5'::float8,'FM999.0'::text) AS v",
+            Some("125.5"),
+            false,
+        ),
+        (
+            "float8-tie",
+            "UTC",
+            "SELECT to_char('2.5'::float8,'FM9'::text) AS v",
+            Some("2"),
+            false,
+        ),
+        (
+            "float8-precision",
+            "UTC",
+            "SELECT to_char('1.23456789'::float8,'FM9.999999999'::text) AS v",
+            Some("1.23456789"),
+            false,
+        ),
+        (
+            "float8-edge",
+            "UTC",
+            "SELECT to_char('9.999999'::float8,'FM99.999999999'::text) AS v",
+            Some("9.999999"),
+            false,
+        ),
+        (
+            "float8-nan",
+            "UTC",
+            "SELECT to_char('NaN'::float8,'FM999.0'::text) AS v",
+            Some("NaN"),
+            false,
+        ),
+        (
+            "float8-inf",
+            "UTC",
+            "SELECT to_char('Infinity'::float8,'FM999.0'::text) AS v",
+            Some("###.#"),
+            false,
+        ),
+        (
+            "float8-ninf",
+            "UTC",
+            "SELECT to_char('-Infinity'::float8,'FM999.0'::text) AS v",
+            Some("-###.#"),
+            false,
+        ),
+        (
+            "float8-negzero",
+            "UTC",
+            "SELECT to_char('-0'::float8,'FM999.0'::text) AS v",
+            Some("-.0"),
+            false,
+        ),
+        (
+            "float8-empty",
+            "UTC",
+            "SELECT to_char('1'::float8,''::text) AS v",
+            Some(""),
+            false,
+        ),
+        (
+            "float8-null",
+            "UTC",
+            "SELECT to_char(NULL::float8,'FM999.0'::text) AS v",
+            None,
+            false,
+        ),
+        (
+            "float8-null-template",
+            "UTC",
+            "SELECT to_char('1'::float8,NULL::text) AS v",
+            None,
+            false,
+        ),
+        (
+            "float8-shift",
+            "UTC",
+            "SELECT to_char('1.23456789'::float8,'FM99V99'::text) AS v",
+            Some("123"),
+            false,
+        ),
+        (
+            "float4-zero-row",
+            "UTC",
+            "SELECT to_char(NULL::float4,'FM000'::text) AS v WHERE false",
+            None,
+            true,
+        ),
+        (
+            "float4-nested",
+            "UTC",
+            "SELECT to_char(float4abs('-12'::float4),'FM000'::text) AS v",
+            Some("012"),
+            false,
+        ),
+        (
+            "float8-zero-row",
+            "UTC",
+            "SELECT to_char(NULL::float8,'FM000'::text) AS v WHERE false",
+            None,
+            true,
+        ),
+        (
+            "float8-nested",
+            "UTC",
+            "SELECT to_char(float8abs('-12'::float8),'FM000'::text) AS v",
+            Some("012"),
+            false,
+        ),
+    ] {
+        assert!(
+            !query(&mut socket, &format!("SET time_zone = '{zone}'"))
+                .iter()
+                .any(|m| m.0 == b'E')
+        );
+        let messages = query(&mut socket, sql);
+        assert!(
+            !messages.iter().any(|(tag, _)| *tag == b'E'),
+            "{id}: {messages:?}"
+        );
+        let description = &messages.iter().find(|(tag, _)| *tag == b'T').unwrap().1;
+        let mut expected = vec![0, 1, b'v', 0];
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        expected.extend_from_slice(&25u32.to_be_bytes());
+        expected.extend_from_slice(&(-1i16).to_be_bytes());
+        expected.extend_from_slice(&(-1i32).to_be_bytes());
+        expected.extend_from_slice(&0i16.to_be_bytes());
+        assert_eq!(description, &expected, "{id}");
+        let rows: Vec<_> = messages.iter().filter(|(tag, _)| *tag == b'D').collect();
+        if zero {
+            assert!(rows.is_empty(), "{id}");
+        } else {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, row(&[value]), "{id}");
+        }
+    }
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let message = read(socket);
+            let done = message.0 == b'Z';
+            messages.push(message);
+            if done {
+                return messages;
+            }
+        }
+    }
+    for (source_type, oid) in [("float4", 700u32), ("float8", 701u32)] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT to_char($1::{source_type},$2::text) AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            query(&mut socket, "SET time_zone = 'UTC'");
+            let parse = [b"fmt16\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat();
+            send(&mut socket, b'P', &parse);
+            send(&mut socket, b'D', b"Sfmt16\0");
+            send(&mut socket, b'S', &[]);
+            let messages = ready(&mut socket);
+            assert_eq!(
+                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'1', b't', b'T', b'Z'],
+                "{messages:?}"
+            );
+            assert_eq!(
+                messages.iter().find(|m| m.0 == b't').unwrap().1,
+                [
+                    &2i16.to_be_bytes()[..],
+                    &oid.to_be_bytes(),
+                    &25u32.to_be_bytes()
+                ]
+                .concat()
+            );
+            let description = messages.iter().find(|m| m.0 == b'T').unwrap().1.clone();
+            assert_eq!(&description[10..14], &25u32.to_be_bytes());
+            assert_eq!(&description[14..16], &(-1i16).to_be_bytes());
+            assert_eq!(&description[16..20], &(-1i32).to_be_bytes());
+            query(&mut socket, "SET time_zone = 'America/New_York'");
+            for input_format in [0i16, 1] {
+                for output_format in [0i16, 1] {
+                    for index in 0..4 {
+                        let value = if index == 1 {
+                            None
+                        } else if input_format == 0 {
+                            Some(b"12".to_vec())
+                        } else {
+                            Some(if oid == 700 {
+                                12f32.to_be_bytes().to_vec()
+                            } else {
+                                12f64.to_be_bytes().to_vec()
+                            })
+                        };
+                        let mut bind = b"\0fmt16\0".to_vec();
+                        bind.extend_from_slice(&1i16.to_be_bytes());
+                        bind.extend_from_slice(&input_format.to_be_bytes());
+                        bind.extend_from_slice(&2i16.to_be_bytes());
+                        let unit: &[u8] = if index == 3 {
+                            b"99.9V99"
+                        } else if index == 2 {
+                            b"FM999MI"
+                        } else {
+                            b"FM000"
+                        };
+                        for payload in [value.as_deref(), Some(unit)] {
+                            bind.extend_from_slice(
+                                &payload.map_or(-1, |v| v.len() as i32).to_be_bytes(),
+                            );
+                            if let Some(v) = payload {
+                                bind.extend_from_slice(v);
+                            }
+                        }
+                        bind.extend_from_slice(&1i16.to_be_bytes());
+                        bind.extend_from_slice(&output_format.to_be_bytes());
+                        send(&mut socket, b'B', &bind);
+                        send(&mut socket, b'D', b"P\0");
+                        send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                        send(&mut socket, b'S', &[]);
+                        let messages = ready(&mut socket);
+                        if index == 3 && !empty {
+                            assert_eq!(
+                                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                                [b'2', b'T', b'E', b'Z']
+                            );
+                            let error = &messages.iter().find(|m| m.0 == b'E').unwrap().1;
+                            assert!(error.windows(7).any(|b| b == b"C42601\0"));
+                            assert_eq!(messages.last().unwrap().1, b"I");
+                            assert_eq!(
+                                query(&mut socket, "SELECT 1::int4 AS v")
+                                    .iter()
+                                    .find(|m| m.0 == b'D')
+                                    .unwrap()
+                                    .1,
+                                row(&[Some("1")])
+                            );
+                            continue;
+                        }
+                        let expected_tags = if empty {
+                            vec![b'2', b'T', b'C', b'Z']
+                        } else {
+                            vec![b'2', b'T', b'D', b'C', b'Z']
+                        };
+                        assert_eq!(
+                            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            expected_tags,
+                            "{messages:?}"
+                        );
+                        let mut portal = description.clone();
+                        let n = portal.len();
+                        portal[n - 2..].copy_from_slice(&output_format.to_be_bytes());
+                        assert_eq!(messages.iter().find(|m| m.0 == b'T').unwrap().1, portal);
+                        if !empty {
+                            let expected = if index == 1 {
+                                row(&[None])
+                            } else {
+                                row(&[Some(if index == 2 { "12" } else { "012" })])
+                            };
+                            assert_eq!(messages.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                        }
+                        assert_eq!(messages.last().unwrap().1, b"I");
+                    }
+                }
+            }
+            send(&mut socket, b'C', b"Sfmt16\0");
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                ready(&mut socket).iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'3', b'Z']
+            );
+        }
+    }
+    assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+    let bad = "SELECT to_char('2024-01-02'::text,'YYYY'::text) AS v";
+    send(
+        &mut socket,
+        b'P',
+        &[b"\0".as_slice(), bad.as_bytes(), b"\0\0\0"].concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    let messages = ready(&mut socket);
+    let error = &messages.iter().find(|m| m.0 == b'E').unwrap().1;
+    assert!(error.windows(7).any(|b| b == b"C42883\0"), "{messages:?}");
+    for field in [b'S', b'V', b'C', b'M'] {
+        assert!(
+            error
+                .split(|b| *b == 0)
+                .any(|part| part.first() == Some(&field) && part.len() > 1)
+        );
+    }
+    assert!(!messages.iter().any(|m| m.0 == b'D'));
+    assert_eq!(messages.last().unwrap().1, b"E");
+    assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+    assert_eq!(
+        query(&mut socket, "SELECT 1::int4 AS v")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    println!("pg08_16_sql: 93 scenarios passed; listener closed");
+}

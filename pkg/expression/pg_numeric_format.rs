@@ -13,6 +13,24 @@ enum Token {
 }
 
 pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String, PgNumericError> {
+    format_number(Some(value), None, template)
+}
+
+/// Floating sources round in their original binary precision before layout.
+/// PostgreSQL limits decimal places to FLT_DIG/DBL_DIG minus the rounded prefix.
+pub(crate) fn format_float(
+    value: f64,
+    single: bool,
+    template: &str,
+) -> Result<String, PgNumericError> {
+    format_number(None, Some((value, single)), template)
+}
+
+fn format_number(
+    decimal: Option<PgNumeric>,
+    floating: Option<(f64, bool)>,
+    template: &str,
+) -> Result<String, PgNumericError> {
     let mut tokens = Vec::new();
     let mut rest = template;
     let mut fill = false;
@@ -106,22 +124,60 @@ pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String,
             })
             .collect());
     }
-    let original = value.to_string();
-    let negative = original.starts_with('-');
-    let value = if shift_count != 0 {
-        format!("{original}e{shift_count}").parse::<PgNumeric>()?
-    } else {
-        value
-    };
     if fraction_count > 16383 {
         return Err(PgNumericError::OutOfRange);
     }
-    let rounded = value.round_scale(fraction_count as i32).to_string();
+    let (rounded, negative, nan) = if let Some((value, single)) = floating {
+        let mut value = if single { (value as f32) as f64 } else { value };
+        if shift_count != 0 {
+            let multiplier = 10f64.powi(shift_count);
+            value = if single {
+                ((value as f32) * (multiplier as f32)) as f64
+            } else {
+                value * multiplier
+            };
+        }
+        let prefix = if value.is_infinite() {
+            8
+        } else if value.is_nan() {
+            3
+        } else {
+            format!("{:.0}", value.abs()).len()
+        };
+        fraction_count =
+            fraction_count.min((if single { 6usize } else { 15usize }).saturating_sub(prefix));
+        required_fraction = required_fraction.min(fraction_count);
+        (
+            if value.is_nan() {
+                "NaN".into()
+            } else if value.is_infinite() {
+                "Infinity".into()
+            } else {
+                format!("{:.*}", fraction_count, value)
+            },
+            value.is_sign_negative(),
+            value.is_nan(),
+        )
+    } else {
+        let value = decimal.expect("numeric source");
+        let original = value.to_string();
+        let negative = original.starts_with('-');
+        let value = if shift_count != 0 {
+            format!("{original}e{shift_count}").parse::<PgNumeric>()?
+        } else {
+            value
+        };
+        (
+            value.round_scale(fraction_count as i32).to_string(),
+            negative,
+            false,
+        )
+    };
     let unsigned = rounded.strip_prefix('-').unwrap_or(&rounded);
     let (integer, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-    let special = matches!(unsigned, "NaN" | "Infinity");
+    let special = !nan && matches!(unsigned, "NaN" | "Infinity");
     let overflow = special || integer.len() > integer_count;
-    let mut fraction_end = fraction_count as usize;
+    let mut fraction_end = if nan { 0 } else { fraction_count as usize };
     if fill && !overflow {
         while fraction_end > required_fraction as usize
             && fraction.as_bytes().get(fraction_end - 1) == Some(&b'0')
@@ -154,6 +210,10 @@ pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String,
                 }
             }
             Token::Point => {
+                after_point = true;
+                if nan {
+                    continue;
+                }
                 if !signed {
                     if negative {
                         result.push('-');
@@ -166,7 +226,9 @@ pub(crate) fn format_numeric(value: PgNumeric, template: &str) -> Result<String,
                 after_point = true;
             }
             Token::Digit(required) => {
-                let digit = if overflow {
+                let digit = if after_point && (nan || fraction_at >= fraction_count) {
+                    None
+                } else if overflow {
                     Some('#')
                 } else if after_point {
                     (fraction_at < fraction_end).then(|| fraction.as_bytes()[fraction_at] as char)

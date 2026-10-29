@@ -961,3 +961,6 @@ mod pg_numeric_format;
 
 #[cfg(test)]
 mod pg08_15_test;
+
+#[cfg(test)]
+mod pg08_16_test;

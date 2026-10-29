@@ -11789,3 +11789,100 @@ fn pg08_15_clients() {
     assert_eq!(summary["connections_closed"], true);
     assert_eq!(summary["reference_table_dropped"], true);
 }
+
+#[test]
+fn pg08_16_clients() {
+    // This self-check runs before any reference connection is needed.
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pg08_16_libpq.py");
+    assert!(
+        Command::new("python3")
+            .args([script, "--self-test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg0815_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg08-16-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG08_16_EVIDENCE={}", evidence.display());
+    let database_dropped = std::cell::Cell::new(false);
+    let cleanup = Cleanup(|| {
+        server.close();
+        database_dropped.set(native.execute(&format!("DROP DATABASE {database}")).is_ok());
+        let record = serde_json::json!({
+            "database_dropped": database_dropped.get(),
+            "postgres_port_closed": TcpStream::connect(pg).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err(),
+        });
+        let _ = std::fs::write(evidence.with_extension("cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    // output() reaps the child before server/database guards run on any assertion.
+    let output = Command::new("python3")
+        .arg(script)
+        .args([
+            pg.port().to_string(),
+            database.clone(),
+            evidence.display().to_string(),
+            mysql_address.port().to_string(),
+        ])
+        .env("PG08_16_RUST_BINARY", std::env::current_exe().unwrap())
+        .output()
+        .expect("Python3 required");
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(database_dropped.get(), "test database leaked");
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["expected"], 115);
+    assert_eq!(summary["passed"], 115);
+    assert_eq!(summary["unique"], 115);
+    assert_eq!(summary["actual"], 115);
+    assert_eq!(summary["failed"], 0);
+    assert_eq!(summary["skipped"], 0);
+    assert_eq!(summary["negative_self_checks"], 3);
+    assert_eq!(summary["reference_database_dropped"], true);
+    assert_eq!(summary["connections_closed"], true);
+    assert_eq!(summary["reference_table_dropped"], true);
+}
