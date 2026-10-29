@@ -1444,9 +1444,22 @@ impl ConcreteSession {
             } = &expression.Kind
             && matches!(
                 FnName.L.as_str(),
-                "array_length" | "cardinality" | "array_append" | "int4range" | "numrange"
+                "array_length"
+                    | "cardinality"
+                    | "array_append"
+                    | "int4range"
+                    | "numrange"
+                    | "lower"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && (FnName.L != "lower"
+                || Args.first().is_some_and(|arg| {
+                    matches!(
+                        self.pg_case_input_type(arg, &[]).GetType(),
+                        astersql_parser_mysql::r#type::TypePgInt4Range
+                            | astersql_parser_mysql::r#type::TypePgNumRange
+                    )
+                }))
         {
             use astersql_expression::BuildContext;
             let inputs = Args
@@ -1485,7 +1498,10 @@ impl ConcreteSession {
                 arguments,
             )
             .map_err(|error| session_error("build PostgreSQL array function", error))?;
-            if matches!(FnName.L.as_str(), "array_append" | "int4range" | "numrange") {
+            if matches!(
+                FnName.L.as_str(),
+                "array_append" | "int4range" | "numrange" | "lower"
+            ) {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
                     .map_err(|error| {
@@ -3586,7 +3602,12 @@ impl ConcreteSession {
                 } = &input.Kind
                     && matches!(
                         FnName.L.as_str(),
-                        "array_length" | "cardinality" | "array_append" | "int4range" | "numrange"
+                        "array_length"
+                            | "cardinality"
+                            | "array_append"
+                            | "int4range"
+                            | "numrange"
+                            | "lower"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4851,7 +4872,12 @@ impl ConcreteSession {
             } = &expression.Kind
                 && matches!(
                     FnName.L.as_str(),
-                    "array_length" | "cardinality" | "array_append" | "int4range" | "numrange"
+                    "array_length"
+                        | "cardinality"
+                        | "array_append"
+                        | "int4range"
+                        | "numrange"
+                        | "lower"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

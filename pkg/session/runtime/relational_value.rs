@@ -3148,6 +3148,26 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
+        } if FnName.L == "lower"
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            && Args.len() == 1
+            && matches!(
+                relational_expression_type(&Args[0], table).GetType(),
+                astersql_parser_mysql::r#type::TypePgInt4Range
+                    | astersql_parser_mysql::r#type::TypePgNumRange
+            ) =>
+        {
+            let inputs = vec![relational_expression_type(&Args[0], table)];
+            new_type(
+                astersql_expression::formal_registry::resolve_pg_typed_signature("lower", &inputs)
+                    .expect("range lower signature")
+                    .result,
+            )
+        }
+        ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
         } if matches!(
             FnName.L.as_str(),
             "array_length" | "cardinality" | "array_append" | "int4range" | "numrange"
