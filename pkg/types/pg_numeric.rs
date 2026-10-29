@@ -227,6 +227,22 @@ impl PgNumeric {
             }
             NumericKind::Finite => {}
         }
+        self = self.round_scale(scale as i32);
+        if self.coefficient != "0"
+            && self.coefficient.len() as isize - self.scale as isize > precision - scale
+        {
+            return Err(PgNumericError::OutOfRange);
+        }
+        Ok(self)
+    }
+
+    /// numeric ROUND has no declaration precision check. Clamp before arithmetic
+    /// just as PostgreSQL does, retaining the full numeric display-scale domain.
+    pub fn round_scale(mut self, scale: i32) -> Self {
+        if self.kind != NumericKind::Finite {
+            return self;
+        }
+        let scale = scale.clamp(-131073, 16383) as isize;
         let cut = self.scale as isize - scale;
         if cut > 0 {
             let keep = self.coefficient.len() as isize - cut;
@@ -266,10 +282,8 @@ impl PgNumeric {
         };
         if self.coefficient == "0" {
             self.negative = false;
-        } else if self.coefficient.len() as isize - self.scale as isize > precision - scale {
-            return Err(PgNumericError::OutOfRange);
         }
-        Ok(self)
+        self
     }
 }
 impl FromStr for PgNumeric {

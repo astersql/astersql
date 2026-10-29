@@ -2378,6 +2378,107 @@ pub mod formal_registry {
         }
     }
 
+    /// A typed candidate belongs to its function class; eligibility is supplied
+    /// by that class's existing implicit conversions, never by a cost table.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct PgFunctionCandidate {
+        pub arguments: Vec<u8>,
+        pub result: u8,
+    }
+
+    /// Apply PostgreSQL's exact-position filter before category preference.
+    /// The owning class supplies eligibility; ties remain explicit ambiguity.
+    pub fn select_pg_candidate<'a>(
+        inputs: &[u8],
+        candidates: &'a [PgFunctionCandidate],
+        implicit: impl Fn(u8, u8) -> bool,
+        category: impl Fn(u8) -> u8,
+        preferred: impl Fn(u8) -> bool,
+    ) -> Result<&'a PgFunctionCandidate, &'static str> {
+        let mut viable: Vec<_> = candidates
+            .iter()
+            .filter(|c| {
+                c.arguments.len() == inputs.len()
+                    && inputs
+                        .iter()
+                        .zip(&c.arguments)
+                        .all(|(&source, &target)| source == target || implicit(source, target))
+            })
+            .collect();
+        let exact = |c: &&PgFunctionCandidate| {
+            inputs
+                .iter()
+                .zip(&c.arguments)
+                .filter(|(s, t)| s == t)
+                .count()
+        };
+        let maximum = viable.iter().map(exact).max().ok_or("42883")?;
+        viable.retain(|c| exact(c) == maximum);
+        let preference = |c: &&PgFunctionCandidate| {
+            inputs
+                .iter()
+                .zip(&c.arguments)
+                .filter(|(s, t)| s != t && category(**s) == category(**t) && preferred(**t))
+                .count()
+        };
+        let maximum = viable.iter().map(preference).max().unwrap();
+        viable.retain(|c| preference(c) == maximum);
+        if viable.len() == 1 {
+            Ok(viable[0])
+        } else {
+            Err("42725")
+        }
+    }
+
+    /// The bounded numeric_abs input eligibility, shared with function selection.
+    pub fn pg_numeric_implicit_source(source: u8) -> bool {
+        matches!(
+            source,
+            mysql::TypeShort
+                | mysql::TypeLong
+                | mysql::TypeLonglong
+                | mysql::TypeNewDecimal
+                | mysql::TypeNull
+        )
+    }
+
+    /// Only the signed ABS and two-argument numeric ROUND signatures addressed
+    /// here. Other type families keep their existing owning implementations.
+    pub fn resolve_pg_signature(
+        name: &str,
+        inputs: &[u8],
+    ) -> Result<PgFunctionCandidate, &'static str> {
+        let candidates = match name {
+            "abs" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeLong],
+                    result: mysql::TypeLong,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeLonglong],
+                    result: mysql::TypeLonglong,
+                },
+            ],
+            "round" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeNewDecimal, mysql::TypeLong],
+                result: mysql::TypeNewDecimal,
+            }],
+            _ => return Err("42883"),
+        };
+        select_pg_candidate(
+            inputs,
+            &candidates,
+            |source, target| {
+                name == "round"
+                    && target == mysql::TypeNewDecimal
+                    && pg_numeric_implicit_source(source)
+            },
+            |_| b'N',
+            |_| false,
+        )
+        .cloned()
+    }
+
     /// 类型别名 `BuiltinFactory`。
     pub type BuiltinFactory = fn(
         &dyn BuildContext,
@@ -3719,6 +3820,7 @@ pub mod formal_registry {
         Logic(&'static str),
         UnaryNot,
         AbsSigned(Option<u8>),
+        PgRound,
         UnaryMinus(types::EvalType),
         Arithmetic(&'static str, types::EvalType),
         Case,
@@ -4441,6 +4543,17 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(types::MyDecimal, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgRound => {
+                    let (text, null) = self.evalString(ctx, row)?;
+                    let mut result = types::MyDecimal::default();
+                    if !null {
+                        result
+                            .FromString(text.as_bytes())
+                            .map_err(|e| errors::New(e.to_string()))?;
+                    }
+                    Ok((result, null))
+                }
+
                 CoreBuiltinKind::UnaryMinus(types::ETDecimal) => {
                     let (value, null) = self.base.args[0].EvalDecimal(ctx, row)?;
                     if null {
@@ -4512,6 +4625,26 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgRound => {
+                    let (text, null) = if self.base.args[0].GetType(ctx).EvalType() == types::ETInt
+                    {
+                        let (value, null) = self.base.args[0].EvalInt(ctx, row.clone())?;
+                        (value.to_string(), null)
+                    } else {
+                        self.base.args[0].EvalString(ctx, row.clone())?
+                    };
+                    let (scale, scale_null) = self.base.args[1].EvalInt(ctx, row)?;
+                    if null || scale_null {
+                        return Ok((String::new(), true));
+                    }
+                    let scale = i32::try_from(scale)
+                        .map_err(|_| errors::New("ROUND scale out of range"))?;
+                    let number = text
+                        .parse::<types_dependency::pg_numeric::PgNumeric>()
+                        .map_err(|e| errors::New(e.to_string()))?;
+                    Ok((number.round_scale(scale).to_string(), false))
+                }
+
                 CoreBuiltinKind::Uuid => {
                     Ok((crate::builtin_miscellaneous_kernel::uuid_v1(), false))
                 }
@@ -5249,6 +5382,18 @@ pub mod formal_registry {
             args[0] = BuildCastFunction(ctx, &args[0], &datetime_type);
         }
         let (kind, return_type, signature) = match name {
+            "round" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs: Vec<_> = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                    .collect();
+                resolve_pg_signature("round", &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgRound,
+                    *types::NewFieldType(mysql::TypeNewDecimal),
+                    "builtinRoundWithFracDecSig",
+                )
+            }
             "abs" => {
                 let source = args[0].GetType(ctx.GetEvalCtx());
                 if source.EvalType() != types::ETInt || mysql::HasUnsignedFlag(source.GetFlag()) {
@@ -6243,6 +6388,18 @@ pub mod formal_registry {
         core_builtin_factory("case", ctx, args, metadata)
     }
     core_factory!(abs_factory, "abs");
+    fn round_factory(
+        ctx: &dyn BuildContext,
+        args: Vec<Box<dyn Expression>>,
+        metadata: &FunctionClassMetadata,
+    ) -> Result<GeneratedBuiltinFactoryOutput, Error> {
+        if ctx.SQLDialect() != crate::ast::SqlDialect::PostgreSQL {
+            return Err(errors::New(
+                "builtin function 'round' is registered but its complete implementation is not linked",
+            ));
+        }
+        core_builtin_factory("round", ctx, args, metadata)
+    }
     core_factory!(row_factory, "row");
     core_factory!(json_extract_factory, "json_extract");
     core_factory!(uuid_factory, "uuid");
@@ -6301,6 +6458,7 @@ pub mod formal_registry {
 
     const CORE_BUILTIN_FACTORIES: &[(&str, BuiltinFactory)] = &[
         ("abs", abs_factory),
+        ("round", round_factory),
         ("eq", eq_factory),
         ("ne", ne_factory),
         ("lt", lt_factory),

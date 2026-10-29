@@ -799,3 +799,77 @@ fn pg_function_03() {
         .is_ok()
     );
 }
+
+#[test]
+fn pg_function_04() {
+    let eval = exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+        crate::ast::SqlDialect::PostgreSQL,
+    )]);
+    let context =
+        exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(eval))]);
+    let mut value = crate::NewInt64Const(4);
+    value.RetType = Some(*crate::types::NewFieldType(crate::mysql::TypeLong));
+    let result = crate::NewFunctionBase(
+        &context,
+        "round",
+        *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+        vec![Box::new(value.clone()), Box::new(value)],
+    );
+    assert!(
+        result.is_ok(),
+        "round(int4,int4) must select numeric: {:?}",
+        result.err().map(|e| e.to_string())
+    );
+    let result = result.unwrap();
+    assert_eq!(
+        result.GetType(context.GetEvalCtx()).GetType(),
+        crate::mysql::TypeNewDecimal
+    );
+    assert_eq!(
+        result
+            .EvalString(context.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap(),
+        ("4.0000".into(), false)
+    );
+}
+
+#[test]
+fn pg_function_04_candidate_order() {
+    use crate::formal_registry::{
+        PgFunctionCandidate as C, pg_numeric_implicit_source, select_pg_candidate,
+    };
+    use crate::mysql::{TypeDouble as F, TypeLong as I, TypeNewDecimal as N};
+    let exact = C {
+        arguments: vec![I, I],
+        result: I,
+    };
+    let numeric = C {
+        arguments: vec![I, N],
+        result: N,
+    };
+    let preferred = C {
+        arguments: vec![F, I],
+        result: F,
+    };
+    // These are the existing numeric_abs and float8abs implicit input sets;
+    // fixtures do not install a process-global registry or invent cast costs.
+    let implicit = |source, target| {
+        (target == N && pg_numeric_implicit_source(source))
+            || (target == F && matches!(source, I | N | F))
+    };
+    for reverse in [false, true] {
+        let mut candidates = vec![numeric.clone(), preferred.clone(), exact.clone()];
+        if reverse {
+            candidates.reverse();
+        }
+        assert_eq!(
+            select_pg_candidate(&[I, I], &candidates, implicit, |_| b'N', |t| t == F),
+            Ok(&exact)
+        );
+        candidates.retain(|c| c != &exact);
+        assert_eq!(
+            select_pg_candidate(&[I, I], &candidates, implicit, |_| b'N', |t| t == F),
+            Ok(&preferred)
+        );
+    }
+}

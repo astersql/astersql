@@ -1972,3 +1972,223 @@ fn pg_function_03() {
     assert!(TcpStream::connect(address).is_err());
     assert!(TcpStream::connect(healthy_address).is_err());
 }
+
+#[test]
+fn pg_function_04() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    let messages = query(&mut socket, "SELECT round(4::int4,4::int4) AS v");
+    assert_eq!(
+        messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"TDCZ",
+        "{messages:?}"
+    );
+    assert_eq!(messages[1].1, row(&[Some("4.0000")]));
+
+    fn description(oid: u32, width: i16, format: i16) -> Vec<u8> {
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &oid.to_be_bytes(),
+            &width.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &format.to_be_bytes(),
+        ]
+        .concat()
+    }
+    assert_eq!(messages[0].1, description(1700, -1, 0));
+    for (sql, expected, oid, width) in [
+        ("SELECT abs((-1)::int4) AS v", Some("1"), 23, 4),
+        ("SELECT abs((-1)::int8) AS v", Some("1"), 20, 8),
+        ("SELECT round(NULL::int4,4::int4) AS v", None, 1700, -1),
+        ("SELECT round(4::int4,NULL::int4) AS v", None, 1700, -1),
+        (
+            "SELECT round((-15)::int4,(-1)::int4) AS v",
+            Some("-20"),
+            1700,
+            -1,
+        ),
+        (
+            "SELECT round(2147483647::int4,4::int4) AS v",
+            Some("2147483647.0000"),
+            1700,
+            -1,
+        ),
+    ] {
+        let m = query(&mut socket, sql);
+        assert_eq!(
+            m.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCZ",
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m[0].1, description(oid, width, 0));
+        assert_eq!(m[1].1, row(&[expected]));
+    }
+    for (sql, state) in [
+        ("SELECT abs('1'::text) AS v", "42883"),
+        ("SELECT abs(NULL::text) AS v", "42883"),
+        ("SELECT abs() AS v", "42883"),
+        ("SELECT round('invalid'::int4,4::int4) AS v", "22P02"),
+    ] {
+        for extended in [false, true] {
+            let m = if extended {
+                send(
+                    &mut socket,
+                    b'P',
+                    &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                );
+                send(&mut socket, b'B', &[0, 0, 0, 0, 0, 0, 0, 0]);
+                send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                send(&mut socket, b'S', &[]);
+                ready(&mut socket)
+            } else {
+                query(&mut socket, sql)
+            };
+            println!("{sql}: {m:?}");
+            let tags = m.iter().map(|m| m.0).collect::<Vec<_>>();
+            assert!(
+                tags == b"EZ" || (extended && tags == b"12EZ"),
+                "{sql} extended={extended}: {tags:?}"
+            );
+            println!("error phase extended={extended}: {tags:?}");
+            let mut fields = std::collections::BTreeMap::new();
+            let e = &m.iter().find(|m| m.0 == b'E').unwrap().1;
+            let mut offset = 0;
+            while e[offset] != 0 {
+                let tag = e[offset];
+                offset += 1;
+                let len = e[offset..].iter().position(|b| *b == 0).unwrap();
+                fields.insert(tag, std::str::from_utf8(&e[offset..offset + len]).unwrap());
+                offset += len + 1;
+            }
+            assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'C'), Some(&state));
+            assert!(!fields[&b'M'].is_empty());
+            println!("error fields={fields:?}");
+            assert!(
+                [b'D', b'H', b'P']
+                    .iter()
+                    .all(|tag| !fields.contains_key(tag))
+            );
+            assert_eq!(m.last().unwrap().1, [b'I']);
+            assert_eq!(query(&mut socket, "SELECT 1::int4")[1].1, row(&[Some("1")]));
+        }
+    }
+    let zero = query(
+        &mut socket,
+        "SELECT round(4::int4,4::int4) AS v WHERE false",
+    );
+    assert_eq!(zero.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(zero[0].1, description(1700, -1, 0));
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut m = Vec::new();
+        loop {
+            let x = read(socket);
+            let end = x.0 == b'Z';
+            m.push(x);
+            if end {
+                return m;
+            }
+        }
+    }
+    let sql = "SELECT round($1::int4,4::int4) AS v";
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &1i16.to_be_bytes(),
+            &23u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"S\0");
+    send(&mut socket, b'S', &[]);
+    let m = ready(&mut socket);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ", "{m:?}");
+    assert_eq!(
+        m[1].1,
+        [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+    );
+    assert_eq!(m[2].1, description(1700, -1, 0));
+    for (format, value) in [
+        (0i16, Some("4")),
+        (1, Some("4")),
+        (0, None),
+        (1, None),
+        (0, Some("5")),
+    ] {
+        let mut bind = vec![0, 0, 0, 0, 0, 1];
+        match value {
+            Some(v) => {
+                bind.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                bind.extend_from_slice(v.as_bytes());
+            }
+            None => bind.extend_from_slice(&(-1i32).to_be_bytes()),
+        }
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&format.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'D', b"P\0");
+        send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+        send(&mut socket, b'S', &[]);
+        let m = ready(&mut socket);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ", "{m:?}");
+        assert_eq!(m[1].1, description(1700, -1, format));
+        let expected = match value {
+            None => row(&[None]),
+            Some(v) if format == 0 => row(&[Some(&format!("{v}.0000"))]),
+            Some(v) => {
+                assert_eq!(v, "4");
+                // numeric_recv: ndigits=1, weight=0, positive, dscale=4, digit=4.
+                let bytes = vec![0, 1, 0, 0, 0, 0, 0, 4, 0, 4];
+                [
+                    &1i16.to_be_bytes()[..],
+                    &(bytes.len() as i32).to_be_bytes(),
+                    &bytes,
+                ]
+                .concat()
+            }
+        };
+        assert_eq!(m[2].1, expected);
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+    assert!(TcpStream::connect(address).is_err());
+}

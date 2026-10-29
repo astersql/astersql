@@ -1253,6 +1253,36 @@ impl ConcreteSession {
                 return Ok((!null).then(|| value.to_string()));
             }
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+            && FnName.L == "round"
+            && Args.len() == 2
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+        {
+            let value = self.relational_query_expression_value(&Args[0], row, group_rows)?;
+            let scale = self.relational_query_expression_value(&Args[1], row, group_rows)?;
+            return value
+                .zip(scale)
+                .map(|(value, scale)| {
+                    let scale = scale
+                        .parse::<i32>()
+                        .map_err(|e| session_error("parse ROUND scale", e))?;
+                    value
+                        .parse::<astersql_types::pg_numeric::PgNumeric>()
+                        .map(|n| n.round_scale(scale).to_string())
+                        .map_err(|e| {
+                            SessionError::with_source(
+                                e.to_string(),
+                                astersql_errors::SharedError::new(e),
+                            )
+                        })
+                })
+                .transpose();
+        }
         // One fixed numeric signature provides a bounded implicit-cast context.
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Function {
@@ -3000,13 +3030,8 @@ impl ConcreteSession {
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     && (Args.len() != 1
                         || (!matches!(Args[0].Kind, ast::ExprKind::ParamMarker { .. })
-                            && !matches!(
+                            && !astersql_expression::formal_registry::pg_numeric_implicit_source(
                                 relational_expression_type(&Args[0], self.table).GetType(),
-                                astersql_parser_mysql::r#type::TypeShort
-                                    | astersql_parser_mysql::r#type::TypeLong
-                                    | astersql_parser_mysql::r#type::TypeLonglong
-                                    | astersql_parser_mysql::r#type::TypeNewDecimal
-                                    | astersql_parser_mysql::r#type::TypeNull
                             )))
                 {
                     self.scalar_cast_error = Some(SessionError::with_source(
@@ -3018,6 +3043,52 @@ impl ConcreteSession {
                             position: None,
                         }),
                     ));
+                }
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                } = &input.Kind
+                    && (FnName.L == "abs" || (FnName.L == "round" && Args.len() == 2))
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                {
+                    let types: Vec<_> = Args
+                        .iter()
+                        .map(|a| relational_expression_type(a, self.table).GetType())
+                        .collect();
+                    // Parameter markers acquire their identity through existing
+                    // Parse constraints; validate actual types after binding.
+                    if !(FnName.L == "abs"
+                        && types.contains(&astersql_parser_mysql::r#type::TypeNull))
+                        && !Args.iter().any(|a| {
+                            matches!(a.Kind, ast::ExprKind::ParamMarker { .. })
+                                || literal(a).is_some_and(|v| {
+                                    matches!(
+                                        v.Datum,
+                                        ast::ValueDatum::String(_) | ast::ValueDatum::Null
+                                    )
+                                })
+                        })
+                        && let Err(state) =
+                            astersql_expression::formal_registry::resolve_pg_signature(
+                                &FnName.L, &types,
+                            )
+                    {
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            format!(
+                                "function {} does not exist for these argument types",
+                                FnName.L
+                            ),
+                            astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                                state,
+                                message: format!(
+                                    "function {} does not exist for these argument types",
+                                    FnName.L
+                                ),
+                                position: None,
+                            }),
+                        ));
+                    }
                 }
                 // Only implicit numeric sources satisfy float4abs(real).
                 if let ast::ExprKind::Function {
@@ -3729,8 +3800,12 @@ impl ConcreteSession {
                     astersql_parser_mysql::r#type::TypeLonglong,
                 );
             }
-            if let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind
-                && FnName.L == "numeric_abs"
+            if let ast::ExprKind::Function {
+                FnName,
+                Schema,
+                Args,
+            } = &expression.Kind
+                && (FnName.L == "numeric_abs" || (FnName.L == "round" && Args.len() == 2))
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
                 return astersql_parser_types::NewFieldType(

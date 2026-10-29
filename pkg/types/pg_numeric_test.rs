@@ -207,3 +207,35 @@ fn pg05_array_numeric_binary_codec() {
         "22P03"
     );
 }
+
+#[test]
+fn pg_function_04_round_exact() {
+    use crate::pg_numeric::PgNumeric;
+    for (text, scale, expected) in [
+        ("4", 4, "4.0000"),
+        ("-15", -1, "-20"),
+        ("15", -1, "20"),
+        ("0", 4, "0.0000"),
+        ("9.995", 2, "10.00"),
+        ("-9.995", 2, "-10.00"),
+        ("NaN", 4, "NaN"),
+        ("Infinity", 4, "Infinity"),
+        ("4", i32::MIN, "0"),
+    ] {
+        assert_eq!(
+            text.parse::<PgNumeric>()
+                .unwrap()
+                .round_scale(scale)
+                .to_string(),
+            expected
+        );
+    }
+    assert_eq!(
+        "4".parse::<PgNumeric>()
+            .unwrap()
+            .round_scale(i32::MAX)
+            .to_string()
+            .len(),
+        16385
+    );
+}
