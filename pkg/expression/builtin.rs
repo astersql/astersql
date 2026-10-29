@@ -6486,6 +6486,25 @@ pub mod formal_registry {
             self.entries.read().ok()?.get(name).cloned()
         }
 
+        /// Resolve only candidates visible to the owning connection.
+        pub fn get_for_dialect(
+            &self,
+            name: &str,
+            dialect: crate::ast::SqlDialect,
+        ) -> Option<Arc<dyn functionClass>> {
+            FunctionVisibleInDialect(name, dialect)
+                .then(|| self.get(name))
+                .flatten()
+        }
+
+        /// Enumerate candidates using the same visibility gate as construction.
+        pub fn names_for_dialect(&self, dialect: crate::ast::SqlDialect) -> Vec<String> {
+            self.names()
+                .into_iter()
+                .filter(|name| FunctionVisibleInDialect(name, dialect))
+                .collect()
+        }
+
         /// 函数 `Load`。
         pub fn Load(&self, name: &str) -> Option<Arc<dyn functionClass>> {
             self.get(name)
@@ -6887,6 +6906,20 @@ pub mod formal_registry {
             Some(class) => class.verifyArgsByCount(count),
             // 与 Go 相同：调用者已保证函数受支持，表中不存在时不额外制造错误。
             None => Ok(()),
+        }
+    }
+
+    /// Connection-local visibility, applied before factory lookup or extension fallback.
+    pub fn FunctionVisibleInDialect(name: &str, dialect: crate::ast::SqlDialect) -> bool {
+        match dialect {
+            crate::ast::SqlDialect::PostgreSQL => !matches!(
+                name,
+                "ifnull" | "date_format" | "json_extract" | "tidb_version"
+            ),
+            crate::ast::SqlDialect::MySQL => !matches!(
+                name,
+                "numeric_abs" | "float4abs" | "float8abs" | "int2not" | "int4not" | "int8not"
+            ),
         }
     }
 

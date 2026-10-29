@@ -661,3 +661,69 @@ fn pg_function_01_exact_signed_signatures() {
         );
     }
 }
+
+#[test]
+fn pg_function_02() {
+    let eval = exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+        crate::ast::SqlDialect::PostgreSQL,
+    )]);
+    let context =
+        exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(eval))]);
+    let fixture = crate::formal_registry::FunctionClassRegistry::default();
+    fixture.Store("numeric_abs", funcs.get("abs").unwrap());
+    assert!(
+        fixture
+            .get_for_dialect("numeric_abs", crate::ast::SqlDialect::PostgreSQL)
+            .is_some()
+    );
+    assert!(
+        fixture
+            .get_for_dialect("numeric_abs", crate::ast::SqlDialect::MySQL)
+            .is_none()
+    );
+    assert!(
+        fixture
+            .names_for_dialect(crate::ast::SqlDialect::MySQL)
+            .is_empty()
+    );
+    assert_eq!(
+        fixture.names_for_dialect(crate::ast::SqlDialect::PostgreSQL),
+        ["numeric_abs"]
+    );
+    for name in ["ifnull", "date_format", "json_extract", "tidb_version"] {
+        assert!(
+            funcs
+                .get_for_dialect(name, crate::ast::SqlDialect::MySQL)
+                .is_some()
+        );
+        assert!(
+            funcs
+                .get_for_dialect(name, crate::ast::SqlDialect::PostgreSQL)
+                .is_none()
+        );
+        assert!(
+            !funcs
+                .names_for_dialect(crate::ast::SqlDialect::PostgreSQL)
+                .contains(&name.to_owned())
+        );
+    }
+    for (name, count) in [
+        ("ifnull", 2),
+        ("date_format", 2),
+        ("json_extract", 2),
+        ("tidb_version", 0),
+    ] {
+        let result = crate::NewFunctionBase(
+            &context,
+            name,
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            (0..count)
+                .map(|_| Box::new(crate::NewNull()) as crate::ExprBox)
+                .collect(),
+        );
+        assert!(
+            result.is_err(),
+            "PostgreSQL must hide {name} before constructing a builtin"
+        );
+    }
+}

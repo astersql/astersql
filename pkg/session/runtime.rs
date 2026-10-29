@@ -1351,6 +1351,10 @@ fn parse_with_dialect(
                 "[parser:1064]You have an error in your SQL syntax; {error}"
             ))
         })
+        .and_then(|statements| {
+            planning::validate_function_visibility(&statements, dialect)?;
+            Ok(statements)
+        })
 }
 
 /// Name identity supplied by the owning parser, without changing shared CIStr folding.

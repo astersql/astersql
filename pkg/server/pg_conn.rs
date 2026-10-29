@@ -908,6 +908,8 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
                 || message == "PostgreSQL int8not requires a bigint argument"
             {
                 "42883"
+            } else if message.starts_with("function ") && message.ends_with(" does not exist") {
+                "42883"
             } else if message.starts_with("Unknown column ") {
                 "42703"
             } else if message.starts_with("Table ") && message.ends_with(" doesn't exist") {

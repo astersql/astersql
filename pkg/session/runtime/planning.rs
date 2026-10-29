@@ -3128,3 +3128,78 @@ impl ConcreteSession {
         Ok(oids)
     }
 }
+
+/// Reject hidden names on the AST before casts, folding, or runtime shortcuts.
+pub(super) fn validate_function_visibility(
+    statements: &[Box<dyn ast::Node>],
+    dialect: ast::SqlDialect,
+) -> SessionResult<()> {
+    struct Visibility {
+        dialect: ast::SqlDialect,
+        hidden: Option<String>,
+    }
+    impl ast::Visitor for Visibility {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(ast::ExprNode {
+                Kind: ast::ExprKind::Function { FnName, Args, .. },
+                ..
+            }) = node.as_any().downcast_ref::<ast::ExprNode>()
+            {
+                // Zero-argument calls have no input-type resolution to defer.
+                // Session-owned PostgreSQL kernels remain outside the MySQL table.
+                let unknown_zero_argument = self.dialect == ast::SqlDialect::PostgreSQL
+                    && Args.is_empty()
+                    && !astersql_expression::formal_registry::funcs.contains_key(&FnName.L)
+                    && !astersql_expression::formal_registry::extensionFuncs
+                        .contains_key(&FnName.L)
+                    && !matches!(
+                        FnName.L.as_str(),
+                        "numeric_abs"
+                            | "float4abs"
+                            | "float8abs"
+                            | "int2not"
+                            | "int4not"
+                            | "int8not"
+                            | "current_schema"
+                            | "current_database"
+                            | "current_catalog"
+                    );
+                if unknown_zero_argument
+                    || !astersql_expression::formal_registry::FunctionVisibleInDialect(
+                        &FnName.L,
+                        self.dialect,
+                    )
+                {
+                    self.hidden.get_or_insert_with(|| FnName.L.clone());
+                    return true;
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut visitor = Visibility {
+        dialect,
+        hidden: None,
+    };
+    for statement in statements {
+        statement.accept(&mut visitor);
+    }
+    if let Some(name) = visitor.hidden {
+        let message = format!("function {name} does not exist");
+        if dialect == ast::SqlDialect::PostgreSQL {
+            return Err(SessionError::with_source(
+                message.clone(),
+                astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                    state: "42883",
+                    message,
+                    position: None,
+                }),
+            ));
+        }
+        return Err(SessionError::new(message));
+    }
+    Ok(())
+}

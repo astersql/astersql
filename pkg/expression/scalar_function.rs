@@ -643,6 +643,10 @@ pub fn newFunctionImpl(
     let Some(mut return_type) = ret_type.take() else {
         return Err(errors::Errorf("RetType cannot be nil for ScalarFunction"));
     };
+    if !crate::formal_registry::FunctionVisibleInDialect(&func_name, ctx.GetEvalCtx().SQLDialect())
+    {
+        return Err(errors::New(format!("function {func_name} does not exist")));
+    }
     match func_name.as_str() {
         ast::Cast => return Ok(BuildCastFunction(ctx, &args[0], &return_type)),
         ast::GetVar => return BuildGetVarFunction(ctx, &args[0], &return_type),
@@ -654,8 +658,8 @@ pub fn newFunctionImpl(
         _ => {}
     }
     let Some(fc) = funcs
-        .get(&func_name)
-        .or_else(|| extensionFuncs.Load(&func_name))
+        .get_for_dialect(&func_name, ctx.GetEvalCtx().SQLDialect())
+        .or_else(|| extensionFuncs.get_for_dialect(&func_name, ctx.GetEvalCtx().SQLDialect()))
     else {
         let db = ctx.GetEvalCtx().CurrentDB();
         return if db.is_empty() {

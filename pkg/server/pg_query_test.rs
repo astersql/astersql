@@ -1627,3 +1627,185 @@ fn pg_function_01_mysql() {
     assert!(mysql_query(&mut socket, "SHOW WARNINGS").is_empty());
     mysql_packet(&mut socket, 0, &[1]);
 }
+
+#[test]
+fn pg_function_02() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for prefix in ["", "pg_catalog."] {
+        for call in [
+            "ifnull(1, 2)",
+            "ifnull(NULL::int4, 2)",
+            "ifnull('bad'::int4, 2)",
+            "date_format('2026-01-01', '%Y')",
+            "date_format(NULL::text, '%Y')",
+            "date_format('bad'::int4, '%Y')",
+            "json_extract('{}', '$.a')",
+            "json_extract(NULL::text, '$.a')",
+            "json_extract('bad'::int4, '$.a')",
+            "tidb_version()",
+            "tidb_version(NULL::int4)",
+            "tidb_version('bad'::int4)",
+            "astersql_contract_missing_fn_20261023()",
+        ] {
+            let sql = format!("SELECT {prefix}{call} AS v");
+            let messages = query(&mut socket, &sql);
+            let error = &messages
+                .iter()
+                .find(|(tag, _)| *tag == b'E')
+                .unwrap_or_else(|| panic!("expected name rejection: {sql}: {messages:?}"))
+                .1;
+            assert!(
+                error.windows(7).any(|bytes| bytes == b"C42883\0"),
+                "{sql}: {messages:?}"
+            );
+            let mut fields = std::collections::BTreeMap::new();
+            let mut offset = 0;
+            while error[offset] != 0 {
+                let tag = error[offset];
+                offset += 1;
+                let length = error[offset..].iter().position(|byte| *byte == 0).unwrap();
+                fields.insert(
+                    tag,
+                    std::str::from_utf8(&error[offset..offset + length]).unwrap(),
+                );
+                offset += length + 1;
+            }
+            assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'C'), Some(&"42883"));
+            assert!(!fields[&b'M'].is_empty());
+            println!(
+                "{sql}: name analysis rejection {fields:?}; D/H/P present={:?}",
+                [b'D', b'H', b'P'].map(|tag| fields.contains_key(&tag))
+            );
+            assert_eq!(
+                messages.iter().map(|(tag, _)| *tag).collect::<Vec<_>>(),
+                [b'E', b'Z']
+            );
+            assert_eq!(messages.last().unwrap().1, [b'I']);
+            // Parse must reject the name before a Bind can supply or convert values.
+            let parse = [b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat();
+            send(&mut socket, b'P', &parse);
+            send(&mut socket, b'S', &[]);
+            let mut extended = Vec::new();
+            loop {
+                let message = read(&mut socket);
+                let done = message.0 == b'Z';
+                extended.push(message);
+                if done {
+                    break;
+                }
+            }
+            assert_eq!(
+                extended.iter().map(|(tag, _)| *tag).collect::<Vec<_>>(),
+                [b'E', b'Z'],
+                "Parse stage: {sql}: {extended:?}"
+            );
+            assert!(
+                extended[0].1.windows(7).any(|bytes| bytes == b"C42883\0"),
+                "{sql}: {extended:?}"
+            );
+            assert_eq!(extended.last().unwrap().1, [b'I']);
+            assert!(
+                query(&mut socket, "SELECT 1::int4")
+                    .iter()
+                    .any(|(tag, _)| *tag == b'D')
+            );
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    service.close();
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_02_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_query, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(server.clone());
+    let mut socket = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+
+    for (sql, expected) in [
+        ("SELECT IFNULL(NULL, 2) AS v", Some("2")),
+        ("SELECT DATE_FORMAT('2026-01-01', '%Y') AS v", Some("2026")),
+        ("SELECT JSON_EXTRACT('{\"a\":1}', '$.a') AS v", Some("1")),
+        ("SELECT TIDB_VERSION() AS v", None),
+    ] {
+        let mut command = vec![3];
+        command.extend_from_slice(sql.as_bytes());
+        mysql_packet(&mut socket, 0, &command);
+        assert_eq!(mysql_read(&mut socket), [1], "{sql}");
+        let column = mysql_read(&mut socket);
+        let mut offset = 0;
+        for _ in 0..6 {
+            let length = usize::from(column[offset]);
+            offset += length + 1;
+        }
+        assert_eq!(column[offset], 12);
+        let metadata = &column[offset + 1..offset + 13];
+        println!(
+            "{sql}: charset={} length={} code={} flags={} decimals={}",
+            u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+            u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+            metadata[6],
+            u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+            metadata[9]
+        );
+        assert_eq!(mysql_read(&mut socket)[0], 0xfe);
+        let value = mysql_read(&mut socket);
+        assert_ne!(value[0], 0xfb);
+        if let Some(expected) = expected {
+            assert_eq!(&value[1..], expected.as_bytes(), "{sql}");
+        } else {
+            assert!(value.len() > 1);
+        }
+        let eof = mysql_read(&mut socket);
+        assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+        assert!(mysql_query(&mut socket, "SHOW WARNINGS").is_empty());
+    }
+    mysql_packet(&mut socket, 0, &[1]);
+}
