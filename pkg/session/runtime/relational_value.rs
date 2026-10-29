@@ -843,6 +843,73 @@ pub(super) fn pg_conditional_collation(
     }
 }
 
+// Extrema use the existing PG common-type relation, retaining unknown
+// provenance until every known operand has participated in selection.
+pub(super) fn pg_extremum_common_type(
+    inputs: impl Iterator<Item = astersql_parser_types::FieldType>,
+) -> SessionResult<astersql_parser_types::FieldType> {
+    use astersql_parser_mysql::r#type::TypeNull;
+    let mut target = None;
+    for input in inputs.filter(|tp| tp.GetType() != TypeNull) {
+        target = Some(match target {
+            None => input,
+            Some(old) => super::query::pg_union_common_type(&old, &input)?,
+        });
+    }
+    let mut target = match target {
+        Some(tp) => tp,
+        None => {
+            let unknown = astersql_parser_types::NewFieldType(TypeNull);
+            super::query::pg_union_common_type(&unknown, &unknown)?
+        }
+    };
+    target.SetFlen(-1);
+    target.SetDecimal(-1);
+    Ok(target)
+}
+
+// Inputs have already passed through PG numeric parsing. Compare normalized
+// decimal digits without rounding through DOUBLE or MySQL's bounded decimal.
+fn pg_extremum_numeric_order(left: &str, right: &str) -> std::cmp::Ordering {
+    let rank = |s: &str| match s {
+        "-Infinity" => 0,
+        "Infinity" => 2,
+        "NaN" => 3,
+        _ => 1,
+    };
+    let order = rank(left).cmp(&rank(right));
+    if !order.is_eq() || rank(left) != 1 {
+        return order;
+    }
+    let negative_left = left.starts_with('-');
+    let negative_right = right.starts_with('-');
+    if negative_left != negative_right {
+        return negative_right.cmp(&negative_left);
+    }
+    let digits = |s: &str| {
+        let (whole, fraction) = s
+            .trim_start_matches('-')
+            .split_once('.')
+            .unwrap_or((s.trim_start_matches('-'), ""));
+        (
+            whole.trim_start_matches('0').to_owned(),
+            fraction.trim_end_matches('0').to_owned(),
+        )
+    };
+    let (li, lf) = digits(left);
+    let (ri, rf) = digits(right);
+    let order = li
+        .len()
+        .cmp(&ri.len())
+        .then_with(|| li.cmp(&ri))
+        .then_with(|| lf.cmp(&rf));
+    if negative_left {
+        order.reverse()
+    } else {
+        order
+    }
+}
+
 /// Evaluate one scalar expression against a decoded relational row.
 pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
@@ -1640,27 +1707,65 @@ pub(super) fn relational_expression_value(
                     Ok(Some(index.to_string()))
                 }
                 "greatest" | "least" if !Args.is_empty() => {
-                    let mut values = Vec::with_capacity(Args.len());
+                    let postgres = PG_CAST_TABLE.with(|slot| slot.borrow().is_some());
+                    let target = if postgres {
+                        Some(PG_CAST_TABLE.with(|slot| {
+                            let table = slot.borrow();
+                            let table = table.as_ref().expect("PG expression context");
+                            pg_extremum_common_type(Args.iter().map(|arg| {
+                                let mut arg = arg;
+                                while let ast::ExprKind::Parentheses(inner) = &arg.Kind {
+                                    arg = inner;
+                                }
+                                let unknown = matches!(&arg.Kind,
+                                    ast::ExprKind::Value(value) if matches!(value.Datum,
+                                        ast::ValueDatum::Null | ast::ValueDatum::String(_)));
+                                if unknown {
+                                    astersql_parser_types::NewFieldType(
+                                        astersql_parser_mysql::r#type::TypeNull,
+                                    )
+                                } else {
+                                    relational_expression_type(arg, table)
+                                }
+                            }))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let string_mode = target.as_ref().map_or_else(
+                        || {
+                            Args.iter()
+                                .any(|arg| relational_expression_is_string(arg, row))
+                        },
+                        |tp| tp.PostgreSQLTextOid().is_some(),
+                    );
+                    let mut selected: Option<String> = None;
                     for argument in Args {
-                        let Some(value) = relational_expression_value(argument, row)? else {
+                        let Some(mut value) = relational_expression_value(argument, row)? else {
+                            if postgres {
+                                continue;
+                            }
                             return Ok(None);
                         };
-                        values.push(value);
-                    }
-                    let numeric_mode = values
-                        .iter()
-                        .all(|value| relational_numeric_prefix(value).is_some());
-                    let mut selected: Option<String> = None;
-                    for value in values {
-                        if numeric_mode && value.parse::<f64>().is_err() {
-                            continue;
+                        let exact_numeric = target.as_ref().is_some_and(|tp| {
+                            matches!(
+                                tp.GetType(),
+                                astersql_parser_mysql::r#type::TypeLong
+                                    | astersql_parser_mysql::r#type::TypeNewDecimal
+                            )
+                        });
+                        if exact_numeric {
+                            let numeric = astersql_parser_types::NewFieldType(
+                                astersql_parser_mysql::r#type::TypeNewDecimal,
+                            );
+                            value = pg_numeric_relational_value(Some(value), &numeric)?
+                                .expect("non-NULL numeric");
                         }
                         let replace = selected.as_ref().is_none_or(|current| {
-                            let ordering = if numeric_mode {
-                                value
-                                    .parse::<f64>()
-                                    .unwrap_or_default()
-                                    .total_cmp(&current.parse::<f64>().unwrap_or_default())
+                            let ordering = if string_mode {
+                                value.cmp(current)
+                            } else if exact_numeric {
+                                pg_extremum_numeric_order(&value, current)
                             } else {
                                 relational_compare(&value, current)
                             };

@@ -4676,3 +4676,388 @@ fn pg_function_15_mysql() {
     drop(server);
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_16() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    fn description(oid: u32, width: i16, format: i16) -> Vec<u8> {
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &oid.to_be_bytes(),
+            &width.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &format.to_be_bytes(),
+        ]
+        .concat()
+    }
+
+    for (expression, expected, oid, width) in [
+        ("greatest(NULL,7::int4)", Some("7"), 23, 4),
+        ("least(NULL,7::int4)", Some("7"), 23, 4),
+        ("greatest(NULL::int4,NULL::int4)", None, 23, 4),
+        ("least(NULL::int4,NULL::int4)", None, 23, 4),
+        ("greatest(NULL,NULL)", None, 25, -1),
+        ("least(NULL,NULL)", None, 25, -1),
+        ("greatest(2::int4,10.5::numeric)", Some("10.5"), 1700, -1),
+        ("least(2::int4,10.5::numeric)", Some("2"), 1700, -1),
+        ("greatest(7::int4)", Some("7"), 23, 4),
+        ("least(7::int4)", Some("7"), 23, 4),
+        ("greatest(2::int4,'10')", Some("10"), 23, 4),
+        (
+            "least((-2147483648)::int4,2147483647::int4)",
+            Some("-2147483648"),
+            23,
+            4,
+        ),
+        (
+            "greatest(1.00000000000000000001::numeric,1.00000000000000000002::numeric)",
+            Some("1.00000000000000000002"),
+            1700,
+            -1,
+        ),
+        (
+            "least((-1.00000000000000000001)::numeric,(-1.00000000000000000002)::numeric)",
+            Some("-1.00000000000000000002"),
+            1700,
+            -1,
+        ),
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let m = query(&mut socket, &sql);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                if empty {
+                    b"TCZ".as_slice()
+                } else {
+                    b"TDCZ".as_slice()
+                },
+                "{sql}: {m:?}"
+            );
+            assert_eq!(m[0].1, description(oid, width, 0), "{sql}");
+            if !empty {
+                assert_eq!(m[1].1, row(&[expected]), "{sql}");
+            }
+            assert_eq!(m.last().unwrap().1, b"I");
+        }
+    }
+
+    for expression in [
+        "greatest($1::int4,7::int4)",
+        "least($1::int4,7::int4)",
+        "greatest($1::int4,NULL::int4)",
+        "least($1::int4,NULL::int4)",
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            send(
+                &mut socket,
+                b'P',
+                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+            );
+            send(&mut socket, b'D', b"S\0");
+            send(&mut socket, b'S', &[]);
+            let m = ready(&mut socket);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"1tTZ",
+                "{sql}: {m:?}"
+            );
+            assert_eq!(
+                m[1].1,
+                [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+            );
+            assert_eq!(m[2].1, description(23, 4, 0));
+            for (format, value) in [
+                (0i16, Some(2i32)),
+                (1, None),
+                (1, Some(10i32)),
+                (0, None),
+                (0, Some(2i32)),
+            ] {
+                let mut bind = vec![0, 0];
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                if let Some(value) = value {
+                    let bytes = if format == 0 {
+                        value.to_string().into_bytes()
+                    } else {
+                        value.to_be_bytes().to_vec()
+                    };
+                    bind.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    bind.extend_from_slice(&bytes);
+                } else {
+                    bind.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                send(&mut socket, b'B', &bind);
+                send(&mut socket, b'D', b"P\0");
+                send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                send(&mut socket, b'D', b"S\0");
+                send(&mut socket, b'S', &[]);
+                let m = ready(&mut socket);
+                assert_eq!(
+                    m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    if empty {
+                        b"2TCtTZ".as_slice()
+                    } else {
+                        b"2TDCtTZ".as_slice()
+                    },
+                    "{sql}: {m:?}"
+                );
+                assert_eq!(m[1].1, description(23, 4, format));
+                assert_eq!(
+                    m[m.len() - 3].1,
+                    [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+                );
+                assert_eq!(m[m.len() - 2].1, description(23, 4, 0));
+                let selected = if expression.contains("NULL") {
+                    value
+                } else if expression.starts_with("greatest") {
+                    Some(value.unwrap_or(7).max(7))
+                } else {
+                    Some(value.unwrap_or(7).min(7))
+                };
+                if !empty {
+                    let bytes = selected.map(|selected| {
+                        if format == 0 {
+                            selected.to_string().into_bytes()
+                        } else {
+                            selected.to_be_bytes().to_vec()
+                        }
+                    });
+                    let length = bytes.as_ref().map_or(-1, |b| b.len() as i32);
+                    let bytes = bytes.unwrap_or_default();
+                    assert_eq!(
+                        m[2].1,
+                        [&1i16.to_be_bytes()[..], &length.to_be_bytes(), &bytes].concat(),
+                        "{sql}"
+                    );
+                }
+                assert_eq!(m.last().unwrap().1, b"I");
+            }
+        }
+    }
+    for (expression, state) in [
+        ("greatest(1::int4,'a'::text)", "42804"),
+        ("least(NULL::int4,NULL::text)", "42804"),
+        ("greatest()", "42601"),
+        ("least()", "42601"),
+        ("greatest(VARIADIC ARRAY[1,2])", "42601"),
+        ("least(VARIADIC ARRAY[1,2])", "42601"),
+    ] {
+        for parse in [false, true] {
+            for in_transaction in [false, true] {
+                if in_transaction {
+                    assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+                }
+                let sql = format!("SELECT {expression} AS v WHERE false");
+                let m = if parse {
+                    send(
+                        &mut socket,
+                        b'P',
+                        &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                    );
+                    send(&mut socket, b'S', &[]);
+                    ready(&mut socket)
+                } else {
+                    query(&mut socket, &sql)
+                };
+                assert_eq!(
+                    m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    b"EZ",
+                    "{sql}: {m:?}"
+                );
+                let e = &m[0].1;
+                assert!(
+                    e.windows(7).any(|s| s == format!("C{state}\0").as_bytes()),
+                    "{e:?}"
+                );
+                assert!(e.windows(7).any(|s| s == b"SERROR\0"));
+                assert!(e.windows(7).any(|s| s == b"VERROR\0"));
+                let fields = e
+                    .split(|b| *b == 0)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>();
+                assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
+                for tag in b"DH" {
+                    assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
+                }
+                let position = fields.iter().find(|f| f[0] == b'P');
+                if expression.contains("VARIADIC") {
+                    assert!(
+                        position
+                            .is_some_and(|p| p.len() > 1 && p[1..].iter().all(u8::is_ascii_digit)),
+                        "{sql}: {fields:?}"
+                    );
+                } else {
+                    assert!(position.is_none(), "{sql}: {fields:?}");
+                }
+                assert_eq!(
+                    m.last().unwrap().1,
+                    if in_transaction { b"E" } else { b"I" }
+                );
+                if in_transaction {
+                    assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+                }
+                let probe = query(&mut socket, "SELECT 1::int4");
+                assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                assert_eq!(probe[1].1, row(&[Some("1")]));
+            }
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_16_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    let address = server.listener_addr().unwrap();
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+
+    fn execute(socket: &mut TcpStream, sql: &str) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, u16) {
+        mysql_packet(socket, 0, format!("\x03{sql}").as_bytes());
+        let first = mysql_read(socket);
+        assert_ne!(first[0], 0xff, "{sql}: {first:?}");
+        if first[0] == 0 {
+            return (vec![], vec![], 0);
+        }
+        let columns = (0..first[0])
+            .map(|_| mysql_read(socket))
+            .collect::<Vec<_>>();
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let mut rows = vec![];
+        loop {
+            let packet = mysql_read(socket);
+            if packet[0] == 0xfe && packet.len() < 9 {
+                return (
+                    columns,
+                    rows,
+                    u16::from_le_bytes(packet[1..3].try_into().unwrap()),
+                );
+            }
+            rows.push(packet);
+        }
+    }
+
+    for (expr, expected, baseline) in [
+        ("greatest(NULL,7)", None, "NULL"),
+        ("least(7,NULL)", None, "NULL"),
+        ("greatest(2,10)", Some("10"), "10"),
+        ("least(2,10)", Some("2"), "2"),
+        ("greatest('2','10')", Some("2"), "'2'"),
+        ("least('2','10')", Some("10"), "'10'"),
+        ("greatest(2,'10')", Some("2"), "'2'"),
+        ("least(2,'10')", Some("10"), "'10'"),
+    ] {
+        let actual = execute(&mut socket, &format!("SELECT {expr} AS v"));
+        let baseline = execute(&mut socket, &format!("SELECT {baseline} AS v"));
+        assert_eq!(actual.0, baseline.0, "metadata {expr}");
+        assert_eq!(
+            actual.1,
+            vec![
+                expected
+                    .map(|v| [vec![v.len() as u8], v.as_bytes().to_vec()].concat())
+                    .unwrap_or(vec![0xfb])
+            ],
+            "{expr}"
+        );
+        assert_eq!(actual.2, 0);
+        let mut offset = 0;
+        for _ in 0..6 {
+            offset += usize::from(actual.0[0][offset]) + 1;
+        }
+        let metadata = &actual.0[0][offset + 1..offset + 13];
+        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 45);
+        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 1024);
+        assert_eq!(metadata[6], 253);
+        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
+        assert_eq!(metadata[9], 0);
+    }
+    for expression in ["greatest(7)", "least(7)", "greatest()", "least()"] {
+        mysql_packet(
+            &mut socket,
+            0,
+            format!("\x03SELECT {expression} AS v").as_bytes(),
+        );
+        let error = mysql_read(&mut socket);
+        assert_eq!(error[0], 0xff, "{expression}: {error:?}");
+        assert_eq!(u16::from_le_bytes(error[1..3].try_into().unwrap()), 1582);
+        assert_eq!(&error[3..9], b"#42000");
+        assert_eq!(execute(&mut socket, "SELECT 1 AS v").1, vec![vec![1, b'1']]);
+    }
+    mysql_packet(&mut socket, 0, &[1]);
+    drop(socket);
+    drop(cleanup);
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}

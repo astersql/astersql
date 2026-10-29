@@ -3178,6 +3178,23 @@ pub(super) fn validate_function_visibility(
                 ..
             }) = node.as_any().downcast_ref::<ast::ExprNode>()
             {
+                // PG extrema are special expressions; the MySQL SQL surface
+                // retains its two-argument minimum independently of the helper.
+                if matches!(FnName.L.as_str(), "greatest" | "least") {
+                    if self.dialect == ast::SqlDialect::PostgreSQL {
+                        if Args.is_empty() {
+                            self.validation_error.get_or_insert_with(|| {
+                                super::relational_value::pg_bytea_input_error(
+                                    "42601",
+                                    "GREATEST/LEAST requires an expression",
+                                )
+                            });
+                        }
+                    } else if Args.len() < 2 {
+                        self.validation_error.get_or_insert_with(|| SessionError::new(format!(
+                            "[expression:1582]Incorrect parameter count in the call to native function '{}'", FnName.L)));
+                    }
+                }
                 // Reject empty CONCAT before row evaluation, including empty results
                 // and prepared statements. The dialect owns the error identity.
                 if FnName.L == "concat" && Args.is_empty() {

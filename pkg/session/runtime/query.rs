@@ -2714,6 +2714,16 @@ impl ConcreteSession {
         Ok(None)
     }
 
+    fn pg_extremum_result_type(
+        &self,
+        args: &[ast::ExprNode],
+        sources: &[ConcreteResultField],
+    ) -> SessionResult<astersql_parser_types::FieldType> {
+        super::relational_value::pg_extremum_common_type(
+            args.iter().map(|arg| self.pg_case_input_type(arg, sources)),
+        )
+    }
+
     // PostgreSQL considers ELSE before the WHEN results. Unknown literals do
     // not become text until the entire CASE has been considered.
     fn pg_case_result_type(
@@ -2928,6 +2938,12 @@ impl ConcreteSession {
                         ast::ExprKind::Value(value) => Some(value),
                         _ => None,
                     }
+                }
+                if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                    && matches!(FnName.L.as_str(), "greatest" | "least")
+                    && let Err(error) = self.session.pg_extremum_result_type(Args, self.sources)
+                {
+                    self.scalar_cast_error = Some(error);
                 }
                 if let ast::ExprKind::Case {
                     WhenClauses,
@@ -3816,6 +3832,13 @@ impl ConcreteSession {
                 return tp;
             }
 
+            if let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
+                && matches!(FnName.L.as_str(), "greatest" | "least")
+            {
+                return self
+                    .pg_extremum_result_type(Args, source_fields)
+                    .unwrap_or_default();
+            }
             if matches!(expression.Kind, ast::ExprKind::Case { .. }) {
                 return self
                     .pg_case_result_type(expression, source_fields)
