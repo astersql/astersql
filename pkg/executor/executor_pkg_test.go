@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/tidb/pkg/domain"
 	"github.com/pingcap/tidb/pkg/errctx"
 	"github.com/pingcap/tidb/pkg/executor/internal/exec"
+	executil "github.com/pingcap/tidb/pkg/executor/internal/util"
 	"github.com/pingcap/tidb/pkg/executor/join"
 	"github.com/pingcap/tidb/pkg/expression"
 	"github.com/pingcap/tidb/pkg/inference"
@@ -42,6 +43,7 @@ import (
 	"github.com/pingcap/tidb/pkg/table/tables"
 	"github.com/pingcap/tidb/pkg/tablecodec"
 	"github.com/pingcap/tidb/pkg/types"
+	"github.com/pingcap/tidb/pkg/util/chunk"
 	"github.com/pingcap/tidb/pkg/util/collate"
 	"github.com/pingcap/tidb/pkg/util/memory"
 	"github.com/pingcap/tidb/pkg/util/mock"
@@ -236,6 +238,155 @@ func TestMViewRefreshSourceExecutorConcurrency(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestMarkMViewCompleteDeltaTouchedRowsByColumnStringUsesBinaryCompare(t *testing.T) {
+	testCases := []struct {
+		name      string
+		collation string
+		oldVal    string
+		newVal    string
+		touched   bool
+	}{
+		{
+			name:      "case-insensitive collation still compares bytes",
+			collation: "utf8mb4_general_ci",
+			oldVal:    "a",
+			newVal:    "A",
+			touched:   true,
+		},
+		{
+			name:      "binary collation keeps byte-sensitive change",
+			collation: "utf8mb4_bin",
+			oldVal:    "a",
+			newVal:    "A",
+			touched:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ft := types.NewFieldTypeWithCollation(mysql.TypeVarString, tc.collation, types.UnspecifiedLength)
+			input := chunk.NewChunkWithCapacity([]*types.FieldType{ft, ft}, 1)
+			input.AppendString(0, tc.oldVal)
+			input.AppendString(1, tc.newVal)
+
+			updateTouchedBitmap := make([]uint8, 1)
+			err := executil.MarkTouchedRowsByColumn(
+				[]int{0},
+				updateTouchedBitmap,
+				1,
+				0,
+				input.Column(0),
+				input.Column(1),
+				ft,
+				true,
+				"test",
+			)
+			require.NoError(t, err)
+			require.Equal(t, tc.touched, updateTouchedBitmap[0] != 0)
+		})
+	}
+}
+
+func TestMarkMViewCompleteDeltaTouchedRowsByColumnEnumSetUseBinaryNameCompare(t *testing.T) {
+	enumFT := types.NewFieldType(mysql.TypeEnum)
+	enumFT.SetCharset("utf8mb4")
+	enumFT.SetCollate("utf8mb4_general_ci")
+	enumChk := chunk.NewChunkWithCapacity([]*types.FieldType{enumFT, enumFT}, 1)
+	enumChk.AppendEnum(0, types.Enum{Name: "x", Value: 1})
+	enumChk.AppendEnum(1, types.Enum{Name: "x", Value: 2})
+
+	enumBitmap := make([]uint8, 1)
+	err := executil.MarkTouchedRowsByColumn(
+		[]int{0},
+		enumBitmap,
+		1,
+		0,
+		enumChk.Column(0),
+		enumChk.Column(1),
+		enumFT,
+		true,
+		"test",
+	)
+	require.NoError(t, err)
+	require.Equal(t, []uint8{0}, enumBitmap)
+
+	setFT := types.NewFieldType(mysql.TypeSet)
+	setFT.SetCharset("utf8mb4")
+	setFT.SetCollate("utf8mb4_general_ci")
+	setChk := chunk.NewChunkWithCapacity([]*types.FieldType{setFT, setFT}, 1)
+	setChk.AppendSet(0, types.Set{Name: "a,b", Value: 3})
+	setChk.AppendSet(1, types.Set{Name: "a,b", Value: 7})
+
+	setBitmap := make([]uint8, 1)
+	err = executil.MarkTouchedRowsByColumn(
+		[]int{0},
+		setBitmap,
+		1,
+		0,
+		setChk.Column(0),
+		setChk.Column(1),
+		setFT,
+		true,
+		"test",
+	)
+	require.NoError(t, err)
+	require.Equal(t, []uint8{0}, setBitmap)
+}
+
+func TestMViewCompleteDeltaApplyRuntimeStatsString(t *testing.T) {
+	stats := &mviewCompleteDeltaApplyRuntimeStats{
+		writerTime: 12 * time.Millisecond,
+		writerDetail: mviewCompleteDeltaApplyWriterStats{
+			chunks:     2,
+			rowOps:     7,
+			insertRows: 1,
+			updateRows: 3,
+			deleteRows: 2,
+		},
+	}
+	s := stats.String()
+	require.Contains(t, s, "mview_complete_delta_apply")
+	require.Contains(t, s, "writer:{time:12ms")
+	require.Contains(t, s, "chunks:2")
+	require.Contains(t, s, "row_ops:7")
+	require.Contains(t, s, "rows:{insert:1, update:3, delete:2}")
+}
+
+func TestMViewCompleteDeltaApplyRuntimeStatsMergeAndClone(t *testing.T) {
+	left := &mviewCompleteDeltaApplyRuntimeStats{
+		writerTime: 5 * time.Millisecond,
+		writerDetail: mviewCompleteDeltaApplyWriterStats{
+			chunks:     1,
+			rowOps:     4,
+			insertRows: 1,
+			updateRows: 2,
+			deleteRows: 1,
+		},
+	}
+	right := &mviewCompleteDeltaApplyRuntimeStats{
+		writerTime: 7 * time.Millisecond,
+		writerDetail: mviewCompleteDeltaApplyWriterStats{
+			chunks:     2,
+			rowOps:     5,
+			updateRows: 1,
+			deleteRows: 1,
+		},
+	}
+
+	left.Merge(right)
+	require.Equal(t, 12*time.Millisecond, left.writerTime)
+	require.Equal(t, int64(3), left.writerDetail.chunks)
+	require.Equal(t, int64(9), left.writerDetail.rowOps)
+	require.Equal(t, int64(1), left.writerDetail.insertRows)
+	require.Equal(t, int64(3), left.writerDetail.updateRows)
+	require.Equal(t, int64(2), left.writerDetail.deleteRows)
+
+	cloned, ok := left.Clone().(*mviewCompleteDeltaApplyRuntimeStats)
+	require.True(t, ok)
+	require.Equal(t, left.writerTime, cloned.writerTime)
+	require.Equal(t, left.writerDetail, cloned.writerDetail)
 }
 
 func TestStorageClassTransitionTimeZoneSetup(t *testing.T) {
