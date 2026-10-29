@@ -14,6 +14,8 @@ pub enum PgTemporalError {
     ExtractionTimezone(&'static str),
     #[error("invalid interval type modifier")]
     IntervalModifier,
+    #[error("invalid format specification for an interval value")]
+    IntervalFormat,
     #[error("interval field overflow")]
     IntervalOverflow,
     #[error("unit \"week\" not supported for type interval")]
@@ -42,7 +44,7 @@ pub enum PgTemporalError {
 impl PgTemporalError {
     pub fn sqlstate(self) -> &'static str {
         match self {
-            Self::Syntax => "22007",
+            Self::Syntax | Self::IntervalFormat => "22007",
             Self::IntervalModifier
             | Self::TruncationUnit
             | Self::ExtractionUnit

@@ -2621,6 +2621,10 @@ pub mod formal_registry {
                     arguments: vec![mysql::TypePgTimestampTz, mysql::TypeVarString],
                     result: mysql::TypeVarString,
                 },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypePgInterval, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
             ],
             "date_part" => vec![
                 PgFunctionCandidate {
@@ -5206,6 +5210,12 @@ pub mod formal_registry {
                                     ctx.Location(),
                                     ctx.PgFixedTimeZone(),
                                 )
+                            })
+                    } else if self.base.args[0].GetType(ctx).GetType() == mysql::TypePgInterval {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgInterval>()
+                            .and_then(|interval| {
+                                crate::pg_timestamp_format::format_interval(interval, &template)
                             })
                     } else {
                         value

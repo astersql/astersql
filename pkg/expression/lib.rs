@@ -950,3 +950,6 @@ mod pg_timestamp_format;
 
 #[cfg(test)]
 mod pg08_12_test;
+
+#[cfg(test)]
+mod pg08_13_test;

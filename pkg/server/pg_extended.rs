@@ -1313,6 +1313,7 @@ impl Extended {
                 )
                 .map_err(|error| {
                     self.session.error_detail = crate::pg_conn::temporal_error_detail(&error);
+                    self.session.function_error_hint = crate::pg_conn::temporal_error_hint(&error);
                     if let crate::conn::ConnError::PgFunction(function) = &error {
                         self.session.function_error_hint = function.hint;
                         self.session.relation_error_position =
@@ -1870,6 +1871,8 @@ impl Extended {
                         Err(e) => {
                             context.finish_protocol_response(std::time::Duration::ZERO);
                             self.session.error_detail = crate::pg_conn::temporal_error_detail(&e);
+                            self.session.function_error_hint =
+                                crate::pg_conn::temporal_error_hint(&e);
                             return Err(engine(e));
                         }
                     };

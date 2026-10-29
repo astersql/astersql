@@ -1,6 +1,6 @@
 // Copyright 2026 AsterSQL.
 //! The selected numeric timestamp templates, independently of MySQL DATE_FORMAT.
-use types_dependency::pg_temporal::{PgTemporalError, PgTimestamp, PgTimestampTz};
+use types_dependency::pg_temporal::{PgInterval, PgTemporalError, PgTimestamp, PgTimestampTz};
 
 pub(crate) fn format_timestamp(
     timestamp: PgTimestamp,
@@ -43,13 +43,57 @@ fn format_wall(
     if template.is_empty() || matches!(timestamp.micros(), i64::MIN | i64::MAX) {
         return Ok(None);
     }
+    format_fields(Some(timestamp), None, template, offset)
+}
+
+/// Keep the stored month/day/time components independent. In particular hours
+/// must not wrap at midnight or absorb days (PostgreSQL interval_to_char).
+pub(crate) fn format_interval(
+    interval: PgInterval,
+    template: &str,
+) -> Result<Option<String>, PgTemporalError> {
+    if template.is_empty()
+        || matches!(
+            interval.components(),
+            (i32::MAX, i32::MAX, i64::MAX) | (i32::MIN, i32::MIN, i64::MIN)
+        )
+    {
+        return Ok(None);
+    }
+    format_fields(None, Some(interval), template, 0)
+}
+
+fn format_fields(
+    timestamp: Option<PgTimestamp>,
+    interval: Option<PgInterval>,
+    template: &str,
+    offset: i32,
+) -> Result<Option<String>, PgTemporalError> {
     let field = |name: &str| -> Result<i64, PgTemporalError> {
-        timestamp
-            .extract_numeric(name)?
-            .ok_or(PgTemporalError::Range)?
-            .to_string()
-            .parse()
-            .map_err(|_| PgTemporalError::Range)
+        if let Some(interval) = interval {
+            let (months, days, time) = interval.components();
+            return match name {
+                "year" => Ok(i64::from(months / 12)),
+                "month" => Ok(i64::from(months % 12)),
+                "day" => Ok(i64::from(days)),
+                "hour" => Ok(time / 3_600_000_000),
+                "minute" => Ok(time / 60_000_000 % 60),
+                "second" => Ok(time / 1_000_000 % 60),
+                "microsecond" => Ok(time % 1_000_000),
+                _ => Err(PgTemporalError::Unsupported),
+            };
+        }
+        let timestamp = timestamp.expect("timestamp or interval source");
+        match name {
+            "second" => Ok(timestamp.micros().rem_euclid(60_000_000) / 1_000_000),
+            "microsecond" => Ok(timestamp.micros().rem_euclid(1_000_000)),
+            _ => timestamp
+                .extract_numeric(name)?
+                .ok_or(PgTemporalError::Range)?
+                .to_string()
+                .parse()
+                .map_err(|_| PgTemporalError::Range),
+        }
     };
     let mut remaining = template;
     let mut result = String::new();
@@ -95,6 +139,9 @@ fn format_wall(
         };
         remaining = &remaining[token.len()..];
         if matches!(token, "TZH" | "TZM" | "OF") {
+            if interval.is_some() {
+                return Err(PgTemporalError::IntervalFormat);
+            }
             let magnitude = offset.unsigned_abs();
             let hour = magnitude / 3600;
             let minute = magnitude % 3600 / 60;
@@ -114,20 +161,38 @@ fn format_wall(
             continue;
         }
         let (value, width) = match token {
-            "YYYY" => (field("year")?.abs(), 4),
+            "YYYY" => (
+                if interval.is_some() {
+                    field("year")?
+                } else {
+                    field("year")?.abs()
+                },
+                4,
+            ),
             "IYYY" => (field("isoyear")?.abs(), 4),
-            "Y" => (field("year")?.abs() % 10, 1),
+            "Y" => (
+                if interval.is_some() {
+                    field("year")? % 10
+                } else {
+                    field("year")?.abs() % 10
+                },
+                1,
+            ),
             "IW" => (field("week")?, 2),
             "MM" => (field("month")?, 2),
             "DD" => (field("day")?, 2),
             "HH24" => (field("hour")?, 2),
             "MI" => (field("minute")?, 2),
-            "SS" => (timestamp.micros().rem_euclid(60_000_000) / 1_000_000, 2),
-            "US" => (timestamp.micros().rem_euclid(1_000_000), 6),
+            "SS" => (field("second")?, 2),
+            "US" => (field("microsecond")?, 6),
             _ => unreachable!(),
         };
         // Fractional precision is fixed even when FM suppresses date padding.
-        let width = if fill && token != "US" { 0 } else { width };
+        let width = if fill && token != "US" {
+            0
+        } else {
+            width + usize::from(value < 0 && token != "US")
+        };
         result.push_str(&format!("{value:0width$}"));
         if remaining.starts_with("TH") || remaining.starts_with("th") {
             let suffix = if (11..=13).contains(&(value % 100)) {

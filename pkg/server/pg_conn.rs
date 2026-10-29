@@ -454,7 +454,15 @@ impl PgService {
                                 )?,
                                 Err(error) => {
                                     extended.session.record_error(context.as_ref());
-                                    if let Some(detail) = temporal_error_detail(&error) {
+                                    if let Some(hint) = temporal_error_hint(&error) {
+                                        write_function_error(
+                                            socket,
+                                            sqlstate(&error),
+                                            &error.to_string(),
+                                            None,
+                                            Some(hint),
+                                        )?;
+                                    } else if let Some(detail) = temporal_error_detail(&error) {
                                         write_error_detail(
                                             socket,
                                             sqlstate(&error),
@@ -620,7 +628,15 @@ impl PgService {
                                     }
                                     Err(error) => {
                                         extended.session.record_error(context.as_ref());
-                                        if let Some(detail) = temporal_error_detail(&error) {
+                                        if let Some(hint) = temporal_error_hint(&error) {
+                                            write_function_error(
+                                                socket,
+                                                sqlstate(&error),
+                                                &error.to_string(),
+                                                None,
+                                                Some(hint),
+                                            )?;
+                                        } else if let Some(detail) = temporal_error_detail(&error) {
                                             write_error_detail(
                                                 socket,
                                                 sqlstate(&error),
@@ -931,6 +947,16 @@ pub(crate) fn write_function_error(
 ) -> io::Result<()> {
     write_function_error_with_severity(socket, "ERROR", state, message, position, hint, None)
 }
+/// Interval template hints come from a typed engine diagnostic.
+pub(crate) fn temporal_error_hint(error: &crate::conn::ConnError) -> Option<&'static str> {
+    match error {
+        crate::conn::ConnError::PgTemporal(
+            astersql_types::pg_temporal::PgTemporalError::IntervalFormat,
+        ) => Some("Intervals are not tied to specific calendar dates."),
+        _ => None,
+    }
+}
+
 /// Detail comes from a typed engine diagnostic, never from SQL text or message matching.
 pub(crate) fn temporal_error_detail(error: &crate::conn::ConnError) -> Option<&'static str> {
     match error {
