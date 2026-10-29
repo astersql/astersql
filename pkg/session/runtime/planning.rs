@@ -3214,6 +3214,26 @@ pub(super) fn validate_function_visibility(
                     }
                     return true;
                 }
+                // These MySQL-only names use the existing registry's arity contract
+                // before row evaluation. Preserve Go's native error identity so the
+                // worker's established Query/Prepare diagnostic bridge can retain it.
+                if self.dialect == ast::SqlDialect::MySQL
+                    && matches!(
+                        FnName.L.as_str(),
+                        "ifnull" | "date_format" | "json_extract" | "tidb_version"
+                    )
+                    && astersql_expression::formal_registry::funcs
+                        .get(&FnName.L)
+                        .is_some_and(|class| class.verifyArgsByCount(Args.len()).is_err())
+                {
+                    self.validation_error.get_or_insert_with(|| {
+                        let error = astersql_util_dbterror::ClassExpression
+                            .NewStd(astersql_errno::errcode::ErrWrongParamcountToNativeFct)
+                            .GenWithStackByArgs(&[FnName.L.as_str().into()]);
+                        SessionError::with_source(error.to_string(), error)
+                    });
+                    return true;
+                }
                 // Zero-argument calls have no input-type resolution to defer.
                 // Session-owned PostgreSQL kernels remain outside the MySQL table.
                 let unknown_zero_argument = self.dialect == ast::SqlDialect::PostgreSQL

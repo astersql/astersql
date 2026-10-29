@@ -2289,7 +2289,20 @@ impl ConcreteSession {
                         aggregate_query.then_some(group.as_slice()),
                     )
                     .map_err(|error| {
-                        if error.pg_json_error().is_some()
+                        let diagnostic = SessionWarning::from_error(&error.clone().into_shared());
+                        if self.sql_dialect() == ast::SqlDialect::MySQL
+                            && matches!(diagnostic.code, 3140 | 3143)
+                        {
+                            // JSON_EXTRACT's reached invalid document/path is a
+                            // statement error, retained by Go in SHOW WARNINGS.
+                            self.state.borrow_mut().current_warnings.push(
+                                SessionWarning::error_with_code(
+                                    diagnostic.code,
+                                    diagnostic.message,
+                                ),
+                            );
+                            error
+                        } else if error.pg_json_error().is_some()
                             || error.to_string() == "Subquery returns more than 1 row"
                         {
                             error

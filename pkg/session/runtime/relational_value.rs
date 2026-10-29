@@ -2130,14 +2130,37 @@ pub(super) fn relational_expression_value(
                     let Some(document) = relational_expression_value(&Args[0], row)? else {
                         return Ok(None);
                     };
-                    let document =
-                        astersql_types::json_functions::ParseBinaryJSONFromString(&document)
-                            .map_err(|error| session_error("parse JSON_EXTRACT document", error))?;
+                    // Keep parse failures distinct from binary-JSON construction
+                    // errors, matching Go's string-to-JSON cast error identity.
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&document).map_err(|error| {
+                            let detail = if document.is_empty() {
+                                "The document is empty".to_owned()
+                            } else {
+                                error.to_string()
+                            };
+                            let error = astersql_util_dbterror::ClassJSON
+                                .NewStd(astersql_errno::errcode::ErrInvalidJSONText)
+                                .GenWithStackByArgs(&[detail.into()]);
+                            SessionError::with_source(error.to_string(), error)
+                        })?;
+                    let document = astersql_types::json_functions::CreateBinaryJSON(parsed)
+                        .map_err(|error| session_error("build JSON_EXTRACT document", error))?;
                     let mut paths = Vec::with_capacity(Args.len() - 1);
                     for argument in &Args[1..] {
                         let Some(path) = relational_expression_value(argument, row)? else {
                             return Ok(None);
                         };
+                        // Parse each reached path before evaluating the next arm:
+                        // a later NULL cannot erase an earlier invalid path (Go
+                        // builtinJSONExtractSig.evalJSON). Use the existing full
+                        // parser's real position rather than guessing from text.
+                        astersql_types::json_path::ParseJSONPathExpr(&path).map_err(|error| {
+                            let error = astersql_util_dbterror::ClassJSON
+                                .NewStd(astersql_errno::errcode::ErrInvalidJSONPath)
+                                .GenWithStackByArgs(&[error.position().into()]);
+                            SessionError::with_source(error.to_string(), error)
+                        })?;
                         paths.push(path);
                     }
                     let paths = paths.iter().map(String::as_str).collect::<Vec<_>>();

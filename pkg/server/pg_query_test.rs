@@ -6994,8 +6994,8 @@ fn pg_function_21_mysql() {
     let WireResponse::Err(error) = response else {
         panic!("argument rejection: {response:?}")
     };
-    assert_eq!(error.code, 1105);
-    assert_eq!(error.sql_state, Some(*b"HY000"));
+    assert_eq!(error.code, 1582);
+    assert_eq!(error.sql_state, Some(*b"42000"));
     assert!(error.message.contains("parameter count"), "{error:?}");
     eprintln!("TIDB_VERSION argument Query error: {error:?}");
     let error = client

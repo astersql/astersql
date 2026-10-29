@@ -10024,3 +10024,225 @@ fn pg_function_26_mysql_arity_diagnostics() {
         }
     }
 }
+
+#[test]
+fn pg_function_27() {
+    // This self-check runs before any reference connection is needed.
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/pg_function_27_libpq.py"
+    );
+    assert!(
+        Command::new("python3")
+            .args([script, "--self-test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("function27_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg-function27-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG_FUNCTION27_EVIDENCE={}", evidence.display());
+    let database_dropped = std::cell::Cell::new(false);
+    let cleanup = Cleanup(|| {
+        server.close();
+        database_dropped.set(native.execute(&format!("DROP DATABASE {database}")).is_ok());
+        let record = serde_json::json!({
+            "database_dropped": database_dropped.get(),
+            "postgres_port_closed": TcpStream::connect(pg).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err(),
+        });
+        let _ = std::fs::write(evidence.with_extension("cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    struct Client(std::process::Child);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Client(
+        Command::new("python3")
+            .arg(script)
+            .args([
+                pg.port().to_string(),
+                database.clone(),
+                evidence.display().to_string(),
+                mysql_address.port().to_string(),
+            ])
+            .env(
+                "PG_FUNCTION27_RUST_BINARY",
+                std::env::current_exe().unwrap(),
+            )
+            .env(
+                "PG_FUNCTION27_BUILD_INFO",
+                astersql_util_printer::GetTiDBInfo(),
+            )
+            .env("PG_FUNCTION27_CHECKPOINT", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("Python3 required"),
+    );
+    use std::io::BufRead;
+    let mut middle = false;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG_FUNCTION27_MID" {
+            assert_eq!(
+                crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+                baseline
+            );
+            middle = true;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    drop(child);
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(database_dropped.get(), "test database leaked");
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    assert!(middle, "client midpoint missing");
+    assert!(status.success(), "exclusive-function client matrix failed");
+}
+
+#[test]
+fn pg_function_27_mysql_arity_diagnostics() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    assert!(astersql_session::runtime::SplitSQLStatements("SELECT 1; SELECT ifnull()").is_err());
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for (name, args) in [
+        ("ifnull", ""),
+        ("ifnull", "1"),
+        ("ifnull", "1,2,3"),
+        ("date_format", "'2026-01-02'"),
+        ("json_extract", "'{}'"),
+        ("tidb_version", "NULL"),
+    ] {
+        for prepare in [false, true] {
+            let sql = format!("SELECT {name}({args}) AS v WHERE false");
+            if prepare {
+                assert!(mysql.prepare(&sql).is_err());
+            } else {
+                let WireResponse::Err(error) = mysql.query(&sql).unwrap() else {
+                    panic!("arity must reject before a result")
+                };
+                assert_eq!(error.code, 1582);
+                assert_eq!(error.sql_state, Some(*b"42000"));
+            }
+            // Reading diagnostics twice must retain exactly the originating error.
+            for _ in 0..2 {
+                let WireResponse::ResultSet(result) = mysql.query("SHOW WARNINGS").unwrap() else {
+                    panic!("diagnostics must be queryable")
+                };
+                assert_eq!(
+                    result.rows,
+                    vec![vec![
+                        TextValue::Bytes(b"Error".to_vec()),
+                        TextValue::Bytes(b"1582".to_vec()),
+                        TextValue::Bytes(
+                            format!(
+                                "Incorrect parameter count in the call to native function '{name}'"
+                            )
+                            .into_bytes()
+                        )
+                    ]],
+                    "{sql}/prepare={prepare}"
+                );
+            }
+            let WireResponse::ResultSet(result) = mysql.query("SELECT 1 AS v").unwrap() else {
+                panic!("connection recovery")
+            };
+            assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+            let WireResponse::ResultSet(result) = mysql.query("SHOW WARNINGS").unwrap() else {
+                panic!("cleared diagnostics")
+            };
+            assert!(result.rows.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pg_function_27_json_errors() {
+    use crate::mysql_compat_test_support::{MysqlCompatServer, TextValue, WireResponse};
+    let server = MysqlCompatServer::start().unwrap();
+    let mut mysql = server.connect_root(0, None).unwrap();
+    for (expression, code, state) in [
+        ("JSON_EXTRACT('bad','$.a')", 3140, *b"22032"),
+        ("JSON_EXTRACT('{}','$InvalidPath')", 3143, *b"42000"),
+        ("JSON_EXTRACT('{}','$InvalidPath',NULL)", 3143, *b"42000"),
+        (
+            "JSON_EXTRACT('{\"a\":1}','$.a','$InvalidPath')",
+            3143,
+            *b"42000",
+        ),
+    ] {
+        let sql = format!("SELECT {expression} AS v");
+        let WireResponse::Err(error) = mysql.query(&sql).unwrap() else {
+            panic!("JSON must reject invalid input before returning a value: {sql}")
+        };
+        assert_eq!(error.code, code, "{sql}: {error:?}");
+        assert_eq!(error.sql_state, Some(state), "{sql}");
+        assert!(!error.message.is_empty());
+        for _ in 0..2 {
+            let WireResponse::ResultSet(warnings) = mysql.query("SHOW WARNINGS").unwrap() else {
+                panic!("JSON diagnostics")
+            };
+            assert_eq!(warnings.rows.len(), 1, "{sql}");
+            assert_eq!(warnings.rows[0][0], TextValue::Bytes(b"Error".to_vec()));
+            assert_eq!(
+                warnings.rows[0][1],
+                TextValue::Bytes(code.to_string().into_bytes())
+            );
+        }
+        let WireResponse::ResultSet(result) = mysql.query("SELECT 1 AS v").unwrap() else {
+            panic!("JSON error recovery")
+        };
+        assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+    }
+}
