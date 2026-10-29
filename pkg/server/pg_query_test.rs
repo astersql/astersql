@@ -1362,6 +1362,10 @@ fn pg_core_int8_wire_semantics() {
 
 #[test]
 fn pg_function_01() {
+    signed_abs_protocol_contract();
+}
+
+fn signed_abs_protocol_contract() {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -2375,4 +2379,24 @@ fn pg_function_05() {
     drop(socket);
     service.close();
     assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_06() {
+    use astersql_expression::ast::SqlDialect;
+    use astersql_expression::formal_registry::funcs;
+    let mysql_names = funcs.names_for_dialect(SqlDialect::MySQL);
+    for name in [
+        "abs",
+        "ifnull",
+        "date_format",
+        "json_extract",
+        "tidb_version",
+    ] {
+        assert!(mysql_names.iter().any(|n| n == name), "{name}");
+    }
+    // Exercise the same real TCP ABS contract after adding private selector
+    // coverage, including extended Describe, rebinding and error recovery.
+    signed_abs_protocol_contract();
+    assert_eq!(funcs.names_for_dialect(SqlDialect::MySQL), mysql_names);
 }

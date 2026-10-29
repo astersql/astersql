@@ -961,3 +961,51 @@ fn pg_function_05_formal_substr() {
         .is_err()
     );
 }
+
+#[test]
+fn pg_function_06() {
+    use crate::formal_registry::{PgFunctionCandidate, select_pg_candidate};
+    use crate::mysql::{TypeLong as I, TypeLonglong as B, TypeNull as U};
+    let before = funcs.names();
+    // Private signatures for one schema's f(int4)/f(int8); never register f.
+    // Deliberately cross the result identities: return type cannot break a tie.
+    for reverse in [false, true] {
+        let mut candidates = vec![
+            PgFunctionCandidate {
+                arguments: vec![I],
+                result: B,
+            },
+            PgFunctionCandidate {
+                arguments: vec![B],
+                result: I,
+            },
+        ];
+        if reverse {
+            candidates.reverse();
+        }
+        for source in ["unknown literal '1'", "unknown NULL"] {
+            assert_eq!(
+                select_pg_candidate(
+                    &[U],
+                    &candidates,
+                    |s, t| s == I && t == B,
+                    |_| b'N',
+                    |_| false
+                ),
+                Err("42725"),
+                "{source}, reverse={reverse}"
+            );
+        }
+        let selected = select_pg_candidate(
+            &[I],
+            &candidates,
+            |s, t| s == I && t == B,
+            |_| b'N',
+            |_| false,
+        )
+        .unwrap();
+        assert_eq!(selected.arguments, vec![I]);
+        assert_eq!(selected.result, B);
+    }
+    assert_eq!(funcs.names(), before, "private candidates must not escape");
+}
