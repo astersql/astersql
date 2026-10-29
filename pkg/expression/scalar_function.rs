@@ -271,11 +271,11 @@ impl ScalarFunction {
     pub fn Eval(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<types::Datum, Error> {
         intest::AssertNotNil(Some(ctx), &[]);
         let tp = self.GetType(ctx);
-        // PG numeric CAST and range lower carry validated exact numeric payloads;
+        // PG numeric CAST and range bounds carry validated exact numeric payloads;
         // EvalDecimal is the MySQL-only fixed-capacity API.
         if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
             && (self.FuncName.L == crate::ast::Cast
-                || (self.FuncName.L == "lower"
+                || (matches!(self.FuncName.L.as_str(), "lower" | "upper")
                     && self.GetArgs().len() == 1
                     && self.GetArgs()[0].GetType(ctx).GetType() == mysql::TypePgNumRange))
             && tp.GetType() == mysql::TypeNewDecimal

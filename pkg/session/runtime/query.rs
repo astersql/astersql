@@ -1450,9 +1450,10 @@ impl ConcreteSession {
                     | "int4range"
                     | "numrange"
                     | "lower"
+                    | "upper"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
-            && (FnName.L != "lower"
+            && (!matches!(FnName.L.as_str(), "lower" | "upper")
                 || Args.first().is_some_and(|arg| {
                     matches!(
                         self.pg_case_input_type(arg, &[]).GetType(),
@@ -1500,7 +1501,7 @@ impl ConcreteSession {
             .map_err(|error| session_error("build PostgreSQL array function", error))?;
             if matches!(
                 FnName.L.as_str(),
-                "array_append" | "int4range" | "numrange" | "lower"
+                "array_append" | "int4range" | "numrange" | "lower" | "upper"
             ) {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
@@ -3608,6 +3609,7 @@ impl ConcreteSession {
                             | "int4range"
                             | "numrange"
                             | "lower"
+                            | "upper"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4878,6 +4880,7 @@ impl ConcreteSession {
                         | "int4range"
                         | "numrange"
                         | "lower"
+                        | "upper"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

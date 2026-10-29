@@ -2612,7 +2612,7 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "lower" => vec![
+            "lower" | "upper" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypePgInt4Range],
                     result: mysql::TypeLong,
@@ -2788,7 +2788,7 @@ pub mod formal_registry {
                         && target == mysql::TypePgTimestampTz)
                     || (matches!(
                         name,
-                        "date_trunc" | "extract" | "date_part" | "to_char" | "lower"
+                        "date_trunc" | "extract" | "date_part" | "to_char" | "lower" | "upper"
                     ) && target == mysql::TypeVarString
                         && matches!(source, mysql::TypeString | mysql::TypeVarchar))
                     || (matches!(name, "round" | "numrange")
@@ -2800,13 +2800,13 @@ pub mod formal_registry {
                             || (target == mysql::TypeLong && source == mysql::TypeShort)))
             },
             |tp| {
-                if name == "lower" && tp == mysql::TypeVarString {
+                if matches!(name, "lower" | "upper") && tp == mysql::TypeVarString {
                     b'S'
                 } else {
                     b'N'
                 }
             },
-            |tp| name == "lower" && tp == mysql::TypeVarString,
+            |tp| matches!(name, "lower" | "upper") && tp == mysql::TypeVarString,
         )
         .cloned()
     }
@@ -2835,7 +2835,7 @@ pub mod formal_registry {
         name: &str,
         inputs: &[types::FieldType],
     ) -> Result<PgFunctionCandidate, &'static str> {
-        if matches!(name, "int4range" | "numrange" | "lower") {
+        if matches!(name, "int4range" | "numrange" | "lower" | "upper") {
             if inputs.iter().any(|tp| {
                 tp.PostgreSQLArrayElement().is_some()
                     || tp.PostgreSQLRecordFields().is_some()
@@ -4354,6 +4354,7 @@ pub mod formal_registry {
         PgInt4Range,
         PgNumRange,
         PgRangeLower,
+        PgRangeUpper,
         PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
@@ -4719,6 +4720,18 @@ pub mod formal_registry {
                             errors::Error::from(crate::contextutil::errors::SharedError::new(e))
                         })?;
                     Ok((range.lower().map_or(0, i64::from), range.lower().is_none()))
+                }
+                CoreBuiltinKind::PgRangeUpper => {
+                    let (text, null) = self.base.args[0].EvalString(ctx, row)?;
+                    if null {
+                        return Ok((0, true));
+                    }
+                    let range = text
+                        .parse::<types_dependency::pg_int4range::PgInt4Range>()
+                        .map_err(|e| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(e))
+                        })?;
+                    Ok((range.upper().map_or(0, i64::from), range.upper().is_none()))
                 }
 
                 CoreBuiltinKind::Extremum(greatest, types::ETInt) => {
@@ -5286,7 +5299,8 @@ pub mod formal_registry {
                 }
                 CoreBuiltinKind::PgRound
                 | CoreBuiltinKind::PgExtractTimestamp
-                | CoreBuiltinKind::PgRangeLower => {
+                | CoreBuiltinKind::PgRangeLower
+                | CoreBuiltinKind::PgRangeUpper => {
                     let (text, null) = self.evalString(ctx, row)?;
                     let mut result = types::MyDecimal::default();
                     if !null {
@@ -5451,6 +5465,28 @@ pub mod formal_registry {
                             text.parse::<types_dependency::pg_numrange::PgNumRange>()
                                 .map_err(diagnostic)?
                                 .lower()
+                                .map(ToString::to_string)
+                        };
+                    let null = value.is_none();
+                    Ok((value.unwrap_or_default(), null))
+                }
+                CoreBuiltinKind::PgRangeUpper => {
+                    let (text, null) = self.base.args[0].EvalString(ctx, row)?;
+                    if null {
+                        return Ok((String::new(), true));
+                    }
+                    let diagnostic =
+                        |e| errors::Error::from(crate::contextutil::errors::SharedError::new(e));
+                    let value =
+                        if self.base.args[0].GetType(ctx).GetType() == mysql::TypePgInt4Range {
+                            text.parse::<types_dependency::pg_int4range::PgInt4Range>()
+                                .map_err(diagnostic)?
+                                .upper()
+                                .map(|v| v.to_string())
+                        } else {
+                            text.parse::<types_dependency::pg_numrange::PgNumRange>()
+                                .map_err(diagnostic)?
+                                .upper()
                                 .map(ToString::to_string)
                         };
                     let null = value.is_none();
@@ -6657,6 +6693,18 @@ pub mod formal_registry {
                     CoreBuiltinKind::PgRangeLower,
                     *types::NewFieldType(candidate.result),
                     "builtinPgRangeLowerSig",
+                )
+            }
+            "upper" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                let candidate = resolve_pg_typed_signature(name, &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgRangeUpper,
+                    *types::NewFieldType(candidate.result),
+                    "builtinPgRangeUpperSig",
                 )
             }
             "array_length" | "cardinality" | "array_append" | "int4range" | "numrange"
@@ -8207,6 +8255,7 @@ pub mod formal_registry {
     core_factory!(pg_int4range_factory, "int4range");
     core_factory!(pg_numrange_factory, "numrange");
     core_factory!(pg_range_lower_factory, "lower");
+    core_factory!(pg_range_upper_factory, "upper");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8303,6 +8352,7 @@ pub mod formal_registry {
         ("int4range", pg_int4range_factory),
         ("numrange", pg_numrange_factory),
         ("__pg_range_lower", pg_range_lower_factory),
+        ("__pg_range_upper", pg_range_upper_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8430,15 +8480,19 @@ pub mod formal_registry {
                 .expect("planner bridge builtin predicate and dispatcher must stay in sync");
         }
         // Select the range overload by the analyzed argument identity. The
-        // existing string lower factory and MySQL lookup retain their own key.
-        let name = if name == "lower"
+        // existing string factories and MySQL lookup retain their own key.
+        let name = if matches!(name, "lower" | "upper")
             && ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
             && args.len() == 1
             && matches!(
                 args[0].GetType(ctx.GetEvalCtx()).GetType(),
                 mysql::TypePgInt4Range | mysql::TypePgNumRange
             ) {
-            "__pg_range_lower"
+            if name == "lower" {
+                "__pg_range_lower"
+            } else {
+                "__pg_range_upper"
+            }
         } else {
             name
         };

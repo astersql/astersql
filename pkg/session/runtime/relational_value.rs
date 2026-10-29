@@ -3148,7 +3148,7 @@ pub(super) fn relational_expression_type(
             FnName,
             Schema,
             Args,
-        } if FnName.L == "lower"
+        } if matches!(FnName.L.as_str(), "lower" | "upper")
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && Args.len() == 1
             && matches!(
@@ -3159,9 +3159,11 @@ pub(super) fn relational_expression_type(
         {
             let inputs = vec![relational_expression_type(&Args[0], table)];
             new_type(
-                astersql_expression::formal_registry::resolve_pg_typed_signature("lower", &inputs)
-                    .expect("range lower signature")
-                    .result,
+                astersql_expression::formal_registry::resolve_pg_typed_signature(
+                    &FnName.L, &inputs,
+                )
+                .expect("range bound signature")
+                .result,
             )
         }
         ast::ExprKind::Function {

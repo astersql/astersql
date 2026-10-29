@@ -994,3 +994,6 @@ mod pg08_24_test;
 
 #[cfg(test)]
 mod pg08_25_test;
+
+#[cfg(test)]
+mod pg08_26_test;
