@@ -758,6 +758,48 @@ impl PgTimestamp {
         text.parse().map(Some).map_err(|_| PgTemporalError::Range)
     }
 
+    /// date_part shares EXTRACT's field validation and calendar arithmetic.
+    /// Fractional fields retain PostgreSQL's float8 operation order, which can
+    /// round differently from parsing the exact numeric EXTRACT result.
+    pub fn extract_float8(self, unit: &str) -> Result<Option<f64>, PgTemporalError> {
+        let Some(numeric) = self.extract_numeric(unit)? else {
+            return Ok(None);
+        };
+        if !matches!(self.0, i64::MIN | i64::MAX) {
+            let micros = self.0.rem_euclid(60_000_000);
+            let seconds = (micros / 1_000_000) as f64;
+            let fraction = (micros % 1_000_000) as f64;
+            let value = match unit.to_ascii_lowercase().as_str() {
+                "second" | "seconds" => seconds + fraction / 1_000_000.0,
+                "millisecond" | "milliseconds" => seconds * 1000.0 + fraction / 1000.0,
+                "epoch" => {
+                    self.0.checked_add(946_684_800_000_000).map_or_else(
+                        || self.0 as f64 + 946_684_800_000_000.0,
+                        |micros| micros as f64,
+                    ) / 1_000_000.0
+                }
+                "julian" => {
+                    let day = self.0.div_euclid(PgTime::END_OF_DAY) + 2_451_545;
+                    let whole_seconds = self.0.rem_euclid(PgTime::END_OF_DAY) / 1_000_000;
+                    day as f64 + (whole_seconds as f64 + fraction / 1_000_000.0) / 86400.0
+                }
+                _ => {
+                    return numeric
+                        .to_string()
+                        .parse()
+                        .map(Some)
+                        .map_err(|_| PgTemporalError::Range);
+                }
+            };
+            return Ok(Some(value));
+        }
+        numeric
+            .to_string()
+            .parse()
+            .map(Some)
+            .map_err(|_| PgTemporalError::Range)
+    }
+
     pub fn from_binary(bytes: &[u8]) -> Result<Self, PgTemporalError> {
         if bytes.len() < 8 {
             return Err(PgTemporalError::Truncated);

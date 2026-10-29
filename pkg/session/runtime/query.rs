@@ -1333,7 +1333,7 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-            && matches!(FnName.L.as_str(), "date_trunc" | "extract")
+            && matches!(FnName.L.as_str(), "date_trunc" | "extract" | "date_part")
             && (2..=3).contains(&Args.len())
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
         {
@@ -3436,7 +3436,7 @@ impl ConcreteSession {
                     Schema,
                     Args,
                 } = &input.Kind
-                    && matches!(FnName.L.as_str(), "date_trunc" | "extract")
+                    && matches!(FnName.L.as_str(), "date_trunc" | "extract" | "date_part")
                     && (2..=3).contains(&Args.len())
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4657,7 +4657,7 @@ impl ConcreteSession {
                 Schema,
                 Args,
             } = &expression.Kind
-                && matches!(FnName.L.as_str(), "date_trunc" | "extract")
+                && matches!(FnName.L.as_str(), "date_trunc" | "extract" | "date_part")
                 && (2..=3).contains(&Args.len())
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

@@ -43,7 +43,7 @@ pub fn GeneratedThreadSafetyPolicyForSignature(
 ) -> Option<GeneratedThreadSafetyPolicy> {
     if matches!(
         signature,
-        "builtinPgTimestampTruncSig" | "builtinPgTimestampExtractSig"
+        "builtinPgTimestampTruncSig" | "builtinPgTimestampExtractSig" | "builtinPgTimestampPartSig"
     ) {
         return Some(GeneratedThreadSafetyPolicy::Never);
     }

@@ -1611,3 +1611,64 @@ fn pg08_07_components() {
     assert!(extreme.extract_numeric("epoch").unwrap().is_some());
     println!("pg08_07_components: 45 assertions passed");
 }
+
+#[test]
+fn pg08_08_float_fields() {
+    use super::pg_temporal::PgTimestamp;
+    // These fields intentionally round after float8 arithmetic, rather than
+    // converting the exact decimal EXTRACT result directly to float8.
+    let timestamp: PgTimestamp = "2000-01-01 00:00:01.003691".parse().unwrap();
+    assert_eq!(
+        timestamp
+            .extract_float8("second")
+            .unwrap()
+            .unwrap()
+            .to_bits(),
+        (1.0f64 + 3691.0 / 1_000_000.0).to_bits()
+    );
+    assert_ne!(timestamp.extract_float8("second").unwrap(), Some(1.003691));
+    assert_eq!(
+        timestamp.extract_float8("milliseconds").unwrap(),
+        Some(1003.691)
+    );
+    assert_eq!(
+        timestamp.extract_float8("microseconds").unwrap(),
+        Some(1003691.0)
+    );
+    for (source, expected) in [
+        ("1969-12-31 23:59:59.999999", -0.000001),
+        ("1970-01-01 00:00:00", 0.0),
+        ("2000-01-01 00:00:00", 946684800.0),
+    ] {
+        assert_eq!(
+            source
+                .parse::<PgTimestamp>()
+                .unwrap()
+                .extract_float8("epoch")
+                .unwrap(),
+            Some(expected)
+        );
+    }
+    for source in ["infinity", "-infinity"] {
+        let timestamp: PgTimestamp = source.parse().unwrap();
+        assert_eq!(timestamp.extract_float8("second").unwrap(), None);
+        assert!(
+            timestamp
+                .extract_float8("year")
+                .unwrap()
+                .unwrap()
+                .is_infinite()
+        );
+        assert_eq!(
+            timestamp
+                .extract_float8("aster_bad_unit")
+                .unwrap_err()
+                .sqlstate(),
+            "22023"
+        );
+    }
+    assert_eq!(
+        timestamp.extract_float8("timezone").unwrap_err().sqlstate(),
+        "0A000"
+    );
+}

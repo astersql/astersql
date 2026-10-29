@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "date_part" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
+                result: mysql::TypeDouble,
+            }],
             "extract" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypePgInterval],
@@ -2680,7 +2684,7 @@ pub mod formal_registry {
                     && inputs.len() == 3
                     && source == mysql::TypeDatetime
                     && target == mysql::TypePgTimestampTz)
-                    || (matches!(name, "date_trunc" | "extract")
+                    || (matches!(name, "date_trunc" | "extract" | "date_part")
                         && target == mysql::TypeVarString
                         && matches!(source, mysql::TypeString | mysql::TypeVarchar))
                     || (name == "round"
@@ -4132,6 +4136,7 @@ pub mod formal_registry {
         PgRound,
         PgDateTrunc,
         PgExtractTimestamp,
+        PgDatePartTimestamp,
         MysqlRound(types::EvalType),
         MysqlAbs(types::EvalType),
         UnaryMinus(types::EvalType),
@@ -4846,6 +4851,21 @@ pub mod formal_registry {
         }
         fn evalReal(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<(f64, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgDatePartTimestamp => {
+                    let (unit, first_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (value, second_null) = self.base.args[1].EvalString(ctx, row)?;
+                    if first_null || second_null {
+                        return Ok((0.0, true));
+                    }
+                    value
+                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                        .and_then(|timestamp| timestamp.extract_float8(&unit))
+                        .map(|value| (value.unwrap_or_default(), value.is_none()))
+                        .map_err(|error| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                        })
+                }
+
                 CoreBuiltinKind::UnaryMinus(types::ETReal) => {
                     let (value, null) = self.base.args[0].EvalReal(ctx, row)?;
                     Ok((-value, null))
@@ -5128,6 +5148,13 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::PgDatePartTimestamp => {
+                    let (value, null) = self.evalReal(ctx, row)?;
+                    Ok((
+                        types_dependency::pg_array::float8_text(value.to_bits()),
+                        null,
+                    ))
+                }
                 CoreBuiltinKind::PgExtractTimestamp => {
                     let (unit, first_null) = self.base.args[0].EvalString(ctx, row.clone())?;
                     let (value, second_null) = self.base.args[1].EvalString(ctx, row)?;
@@ -6796,6 +6823,18 @@ pub mod formal_registry {
                 field_type_for_eval_type(types::ETInt),
                 "builtinTimeToSecSig",
             ),
+            "date_part" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                    .collect::<Vec<_>>();
+                let candidate = resolve_pg_signature(name, &inputs).map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgDatePartTimestamp,
+                    *types::NewFieldType(candidate.result),
+                    "builtinPgTimestampPartSig",
+                )
+            }
             "extract" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -7544,6 +7583,7 @@ pub mod formal_registry {
     core_factory!(set_var_factory, "setvar");
     core_factory!(time_to_sec_factory, "time_to_sec");
     core_factory!(extract_factory, "extract");
+    core_factory!(pg_date_part_factory, "date_part");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -7632,6 +7672,7 @@ pub mod formal_registry {
         ("setvar", set_var_factory),
         ("time_to_sec", time_to_sec_factory),
         ("extract", extract_factory),
+        ("date_part", pg_date_part_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -7996,6 +8037,7 @@ pub mod formal_registry {
         ("dayofweek", 1, 1),
         ("dayofyear", 1, 1),
         ("extract", 2, 2),
+        ("date_part", 2, 2),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),

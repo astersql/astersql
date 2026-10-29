@@ -933,3 +933,6 @@ mod pg08_06_test;
 
 #[cfg(test)]
 mod pg08_07_test;
+
+#[cfg(test)]
+mod pg08_08_test;
