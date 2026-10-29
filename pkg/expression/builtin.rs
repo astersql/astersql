@@ -2612,10 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "array_append" => vec![PgFunctionCandidate {
-                arguments: vec![mysql::TypeVarString, mysql::TypeLong],
-                result: mysql::TypeVarString,
-            }],
+            "array_append" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypeLong],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypeLonglong],
+                    result: mysql::TypeVarString,
+                },
+            ],
             "cardinality" => vec![PgFunctionCandidate {
                 arguments: vec![mysql::TypeVarString],
                 result: mysql::TypeLong,
@@ -2787,17 +2793,7 @@ pub mod formal_registry {
             return resolve_pg_array_length_signature(inputs);
         }
         if name == "array_append" {
-            // This batch instantiates int4[] + int4 only; promotion belongs to its own signature.
-            if inputs.len() != 2
-                || inputs[0].PostgreSQLArrayElement()
-                    != Some(types_dependency::field::ast::PostgreSQLArrayElement::Int4)
-                || inputs[1].PostgreSQLArrayElement().is_some()
-                || inputs[1].GetType() != mysql::TypeLong
-                || mysql::HasUnsignedFlag(inputs[1].GetFlag())
-                || inputs[1].GetFlag() & mysql::IsBooleanFlag != 0
-            {
-                return Err("42883");
-            }
+            pg_array_append_element(inputs)?;
             return resolve_pg_signature(
                 name,
                 &inputs.iter().map(|tp| tp.GetType()).collect::<Vec<_>>(),
@@ -2811,6 +2807,28 @@ pub mod formal_registry {
             return Err("42883");
         }
         resolve_pg_signature(name, &[inputs[0].GetType()])
+    }
+
+    /// Bounded common element selection, frozen from input types before evaluation.
+    /// int4 -> int8 is an implicit widening; text, bool and array-valued items
+    /// never acquire that qualification from a NULL or a rendered value.
+    pub fn pg_array_append_element(
+        inputs: &[types::FieldType],
+    ) -> Result<types_dependency::field::ast::PostgreSQLArrayElement, &'static str> {
+        use types_dependency::field::ast::PostgreSQLArrayElement as E;
+        if inputs.len() != 2
+            || inputs[0].PostgreSQLArrayElement() != Some(E::Int4)
+            || inputs[1].PostgreSQLArrayElement().is_some()
+            || mysql::HasUnsignedFlag(inputs[1].GetFlag())
+            || inputs[1].GetFlag() & mysql::IsBooleanFlag != 0
+        {
+            return Err("42883");
+        }
+        match inputs[1].GetType() {
+            mysql::TypeLong => Ok(E::Int4),
+            mysql::TypeLonglong => Ok(E::Int8),
+            _ => Err("42883"),
+        }
     }
 
     /// Array function diagnostics cross the expression/session boundary without losing SQLSTATE.
@@ -5371,8 +5389,12 @@ pub mod formal_registry {
                     lower.checked_add(length).ok_or_else(|| {
                         diagnostic("54000", format!("array lower bound is too large: {lower}"))
                     })?;
+                    let wide = self.base.return_type.PostgreSQLArrayElement()
+                        == Some(types_dependency::field::ast::PostgreSQLArrayElement::Int8);
                     let item = if element_null {
                         None
+                    } else if wide {
+                        Some(PgArrayElement::Int8(element))
                     } else {
                         Some(PgArrayElement::Int4(i32::try_from(element).map_err(
                             |_| {
@@ -5382,10 +5404,27 @@ pub mod formal_registry {
                             },
                         )?))
                     };
-                    let mut elements = array.elements().to_vec();
+                    let mut elements = array
+                        .elements()
+                        .iter()
+                        .map(|value| {
+                            value.as_ref().map(|value| match value {
+                                PgArrayElement::Int4(value) if wide => {
+                                    PgArrayElement::Int8(i64::from(*value))
+                                }
+                                other => other.clone(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
                     elements.push(item);
-                    let result = PgArray::new(23, -1, vec![length], vec![lower], elements)
-                        .map_err(|e| diagnostic(e.sqlstate().unwrap_or("XX000"), e.to_string()))?;
+                    let result = PgArray::new(
+                        if wide { 20 } else { 23 },
+                        -1,
+                        vec![length],
+                        vec![lower],
+                        elements,
+                    )
+                    .map_err(|e| diagnostic(e.sqlstate().unwrap_or("XX000"), e.to_string()))?;
                     result
                         .to_text(b',')
                         .map(|v| (v, false))
@@ -6449,7 +6488,7 @@ pub mod formal_registry {
                 let mut result = *types::NewFieldType(candidate.result);
                 if name == "array_append" {
                     result.SetPostgreSQLArrayElement(
-                        types_dependency::field::ast::PostgreSQLArrayElement::Int4,
+                        pg_array_append_element(&inputs).map_err(errors::New)?,
                     );
                 }
                 (

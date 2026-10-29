@@ -4792,7 +4792,8 @@ impl ConcreteSession {
                     let mut result = astersql_parser_types::NewFieldType(candidate.result);
                     if FnName.L == "array_append" {
                         result.SetPostgreSQLArrayElement(
-                            astersql_parser_types::PostgreSQLArrayElement::Int4,
+                            astersql_expression::formal_registry::pg_array_append_element(&inputs)
+                                .expect("validated array append signature"),
                         );
                     }
                     return result;

@@ -3159,8 +3159,15 @@ pub(super) fn relational_expression_type(
                 astersql_parser_mysql::r#type::TypeLong
             });
             if FnName.L == "array_append" {
-                result
-                    .SetPostgreSQLArrayElement(astersql_parser_types::PostgreSQLArrayElement::Int4);
+                result.SetPostgreSQLArrayElement(
+                    astersql_expression::formal_registry::pg_array_append_element(
+                        &Args
+                            .iter()
+                            .map(|arg| relational_expression_type(arg, table))
+                            .collect::<Vec<_>>(),
+                    )
+                    .expect("validated array append signature"),
+                );
             }
             result
         }
