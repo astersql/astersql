@@ -31931,7 +31931,7 @@ fn pg_function_09() {
         send(socket, b'S', &[]);
         assert_eq!(read(socket), (b'Z', vec![b'I']));
     }
-    fn error_fields(body: &[u8], state: &str) {
+    fn error_fields(body: &[u8], state: &str, position: Option<usize>) {
         let mut fields = std::collections::BTreeMap::new();
         let mut offset = 0;
         while body[offset] != 0 {
@@ -31948,12 +31948,12 @@ fn pg_function_09() {
         assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
         assert_eq!(fields.get(&b'C'), Some(&state));
         assert!(!fields[&b'M'].is_empty());
-        assert!(
-            [b'D', b'H', b'P']
-                .iter()
-                .all(|tag| !fields.contains_key(tag))
+        assert!([b'D', b'H'].iter().all(|tag| !fields.contains_key(tag)));
+        assert_eq!(
+            fields.get(&b'P').map(|v| v.parse::<usize>().unwrap()),
+            position
         );
-        println!("error fields: {fields:?}; D/H/P absent");
+        println!("error fields: {fields:?}; D/H absent; P={position:?}");
     }
     let mut description = vec![0, 1, b'v', 0];
     description.extend_from_slice(&0u32.to_be_bytes());
@@ -32066,7 +32066,7 @@ fn pg_function_09() {
     }
     parse(
         &mut socket,
-        "",
+        "error_abs",
         "SELECT pg_catalog.abs($1::int4) AS v",
         &[23],
     );
@@ -32076,20 +32076,60 @@ fn pg_function_09() {
         ("2147483648", "Bind", "22003"),
         ("-2147483648", "Execute", "22003"),
     ] {
-        bind(&mut socket, "", "", &[Some(value)]);
+        bind(&mut socket, "", "error_abs", &[Some(value)]);
         if phase == "Execute" {
             assert_eq!(read(&mut socket), (b'2', vec![]));
             execute(&mut socket, "", 0);
         }
         let response = read(&mut socket);
         assert_eq!(response.0, b'E', "{phase}: {response:?}");
-        error_fields(&response.1, state);
+        error_fields(&response.1, state, None);
         ready(&mut socket);
         let probe = query(&mut socket, "SELECT 1::int4");
         assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
         assert_eq!(probe[1], (b'D', row(&[Some("1")])));
+        // Simple Query destroys unnamed statements; a named statement must
+        // survive the recovery probe with its original analyzed identity.
+        send(&mut socket, b'D', b"Serror_abs\0");
+        assert_eq!(
+            read(&mut socket),
+            (
+                b't',
+                [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+            )
+        );
+        assert_eq!(read(&mut socket), (b'T', description.clone()));
+        ready(&mut socket);
     }
-    send(&mut socket, b'C', b"S\0");
+    let create = query(
+        &mut socket,
+        "CREATE TABLE public.pg_function_09_conflict (i INT, t TEXT)",
+    );
+    assert_eq!(create.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+    for sql in [
+        "INSERT INTO public.pg_function_09_conflict VALUES ($1,$1)",
+        "INSERT INTO public.pg_function_09_conflict VALUES (pg_catalog.abs($1::int4),$1)",
+    ] {
+        for oids in [vec![], vec![0]] {
+            parse(&mut socket, "conflict", sql, &oids);
+            let response = read(&mut socket);
+            assert_eq!(
+                response.0, b'E',
+                "Parse must reject conflicting source identity: {response:?}"
+            );
+            error_fields(&response.1, "42P08", Some(sql.rfind("$1").unwrap() + 1));
+            ready(&mut socket);
+            let probe = query(&mut socket, "SELECT 1::int4");
+            assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+            assert_eq!(probe[1], (b'D', row(&[Some("1")])));
+        }
+    }
+    // Parse rejection has no DML side effects.
+    let empty = query(&mut socket, "SELECT i FROM public.pg_function_09_conflict");
+    assert_eq!(empty.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    let drop_table = query(&mut socket, "DROP TABLE public.pg_function_09_conflict");
+    assert_eq!(drop_table.iter().map(|m| m.0).collect::<Vec<_>>(), b"CZ");
+    send(&mut socket, b'C', b"Serror_abs\0");
     assert_eq!(read(&mut socket), (b'3', vec![]));
     ready(&mut socket);
     send(&mut socket, b'X', &[]);
