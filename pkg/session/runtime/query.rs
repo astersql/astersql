@@ -1424,6 +1424,97 @@ impl ConcreteSession {
             }
             return self.relational_query_expression_value(&Args[1], row, group_rows);
         }
+        if self.sql_dialect() == ast::SqlDialect::MySQL
+            && let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
+            && FnName.L == "date_format"
+            && Args.len() == 2
+        {
+            use astersql_expression::contextutil::WarnHandler;
+            let warnings = Arc::new(astersql_expression::contextutil::NewStaticWarnHandler(0));
+            let mode = astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
+                .map_err(|error| session_error("parse DATE_FORMAT sql_mode", error))?;
+            // The relational SELECT route bypasses ResetContextOfStmt.
+            // Apply Go's SELECT conversion policy locally, retaining strict
+            // errors when this query evaluator runs inside a writing statement.
+            let select_warning = !self.mdl_autocommit_write.get() || !mode.HasStrictMode();
+            let flags = self
+                .session_vars
+                .StmtCtx
+                .TypeFlags()
+                .WithTruncateAsWarning(select_warning)
+                .WithIgnoreZeroInDate(true)
+                .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode());
+            let mut levels = self.session_vars.StmtCtx.ErrLevels();
+            levels[astersql_expression::errctx::ErrGroup::ErrGroupTruncate as usize] =
+                if select_warning {
+                    astersql_expression::errctx::Level::LevelWarn
+                } else {
+                    astersql_expression::errctx::Level::LevelError
+                };
+            let eval = astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLMode(mode),
+                astersql_expression_exprstatic::WithTypeFlags(flags),
+                astersql_expression_exprstatic::WithErrLevelMap(levels),
+                astersql_expression_exprstatic::WithLocation(self.session_vars.StmtCtx.TimeZone()),
+                astersql_expression_exprstatic::WithWarnHandler(warnings.clone()),
+            ]);
+            let value = self.relational_query_expression_value(&Args[0], row, group_rows)?;
+            let mut source = value
+                .map(astersql_types::datum::NewStringDatum)
+                .unwrap_or_default();
+            if let ast::ExprKind::Value(literal) = &Args[0].Kind {
+                match &literal.Datum {
+                    ast::ValueDatum::Int64(value) => {
+                        source = astersql_types::datum::NewIntDatum(*value)
+                    }
+                    ast::ValueDatum::Uint64(value) => {
+                        source = astersql_types::datum::NewUintDatum(*value)
+                    }
+                    ast::ValueDatum::Decimal(value) => {
+                        let mut decimal = astersql_expression::types::MyDecimal::default();
+                        decimal
+                            .FromString(value.as_bytes())
+                            .map_err(|error| session_error("read DATE_FORMAT decimal", error))?;
+                        source = astersql_types::datum::NewDecimalDatum(decimal);
+                    }
+                    _ => {}
+                }
+            }
+            let source_text = source.ToString().unwrap_or_default();
+            let value = match astersql_expression::formal_registry::DateFormatInput(&eval, source) {
+                Ok(Some(time)) => {
+                    match self.relational_query_expression_value(&Args[1], row, group_rows)? {
+                        Some(mask) => astersql_expression::formal_registry::DateFormatOutput(
+                            &eval, time, mask,
+                        ),
+                        None => Ok((String::new(), true)),
+                    }
+                }
+                Ok(None) => Ok((String::new(), true)),
+                Err(error) => Err(error),
+            };
+            self.state.borrow_mut().current_warnings.extend(
+                warnings
+                    .CopyWarnings(Vec::new())
+                    .into_iter()
+                    .filter_map(|warning| {
+                        warning.Err.map(|error| SessionWarning::from_error(&error))
+                    }),
+            );
+            return value
+                .map(|(value, null)| if null { None } else { Some(value) })
+                .map_err(|error| {
+                    if error.Equal(&astersql_types::errors::ErrWrongValue) {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_types::errors::ErrWrongValue
+                                .GenWithStackByArgs(&["datetime".into(), source_text.into()]),
+                        )
+                    } else {
+                        session_error("evaluate DATE_FORMAT", error)
+                    }
+                });
+        }
         match &expression.Kind {
             ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 super::pg_record::value_with(expression, &|field| {
@@ -2544,12 +2635,12 @@ impl ConcreteSession {
                         expression_contains_cast(expr) || has_pg_query_expression(expr)
                     })
                 })))
-            // IFNULL must keep its formal aggregate result identity even for
+            // IFNULL and DATE_FORMAT keep their formal result identity even for
             // constant projections and empty results, rather than the legacy
             // scalar path's untyped protocol fallback.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| expression_contains_function(expr, "ifnull")))
+                    .any(|expr| expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format")))
             || has_derived_source
             || select
                 .From
@@ -3820,12 +3911,12 @@ impl ConcreteSession {
         tp
     }
 
-    fn mysql_ifnull_result_type(
+    fn mysql_function_result_type(
         &self,
         expression: &ast::ExprNode,
         source_fields: &[ConcreteResultField],
     ) -> SessionResult<astersql_parser_types::types::FieldType> {
-        // Reuse the existing factory and Go constant-folding rules against
+        // Reuse the formal factory and Go constant-folding rules against
         // catalog types. This retains length, nullability,
         // mixed-type and collation rules instead of picking the first arm.
         let table = astersql_meta_model::TableInfo {
@@ -3866,7 +3957,7 @@ impl ConcreteSession {
             )],
         )
         .map(|built| built.GetType(context.GetEvalCtx()).clone())
-        .map_err(|error| session_error("resolve MySQL IFNULL result type", error))
+        .map_err(|error| session_error("resolve MySQL function result type", error))
     }
 
     fn relational_query_expression_type_from_sources_uncollated(
@@ -4661,9 +4752,9 @@ impl ConcreteSession {
                     result.push(result_field);
                 } else {
                     let field_type = if self.sql_dialect() == ast::SqlDialect::MySQL
-                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if FnName.L == "ifnull")
+                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format"))
                     {
-                        self.mysql_ifnull_result_type(expression, &source_fields)?
+                        self.mysql_function_result_type(expression, &source_fields)?
                     } else {
                         self.relational_query_expression_type_from_sources(
                             expression,

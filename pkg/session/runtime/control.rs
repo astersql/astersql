@@ -2202,9 +2202,9 @@ impl ConcreteSession {
             .ok_or_else(|| {
                 SessionError::new(format!("unknown prepared statement {statement_id}"))
             })?;
-        // Typed IFNULL parameters have one prepared result identity. Binding
+        // Typed IFNULL and DATE_FORMAT parameters have one prepared result identity. Binding
         // literals must not re-fold the result to the selected arm's type.
-        let mysql_ifnull_fields = if dialect == ast::SqlDialect::MySQL {
+        let mysql_function_fields = if dialect == ast::SqlDialect::MySQL {
             let statements = parse_in_dialect(&sql, dialect)?;
             if let Some(select) = statements
                 .first()
@@ -2223,7 +2223,7 @@ impl ConcreteSession {
                         field
                             .Expr
                             .as_ref()
-                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if FnName.L == "ifnull"))
+                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format")))
                     })
                     .collect::<Vec<_>>();
                 if affected.iter().any(|affected| *affected) {
@@ -2514,13 +2514,13 @@ impl ConcreteSession {
         }
         drop(state);
         execution.and_then(|mut records| {
-            if let Some((fields, affected)) = mysql_ifnull_fields {
+            if let Some((fields, affected)) = mysql_function_fields {
                 if records.len() != 1
                     || records[0].columns.len() != fields.len()
                     || records[0].result_fields.len() != fields.len()
                 {
                     return Err(SessionError::new(
-                        "prepared IFNULL result field count mismatch",
+                        "prepared MySQL function result field count mismatch",
                     ));
                 }
                 for ((actual, field), affected) in records[0]

@@ -3987,6 +3987,71 @@ pub mod formal_registry {
         DatetimeFromString,
     }
 
+    /// Convert DATE_FORMAT's first argument before evaluating its mask.
+    /// Shared with the relational session evaluator to preserve Go's operand
+    /// order and statement error policy without duplicating time semantics.
+    pub fn DateFormatInput(
+        ctx: &dyn EvalContext,
+        source: types::Datum,
+    ) -> Result<Option<types::Time>, Error> {
+        // Evaluate the source before conversion so operand errors are
+        // retained. Datum's legacy temporal conversion erases its
+        // TimeError identity; normalize only this conversion boundary
+        // to Go's ErrWrongValue for the statement error policy.
+        if source.IsNull() {
+            return Ok(None);
+        }
+        let mut target = *types::NewFieldType(mysql::TypeDatetime);
+        target.SetDecimal(match source.Kind() {
+            types::KindMysqlTime => source.GetMysqlTime().Fsp() as isize,
+            types::KindMysqlDecimal if source.GetMysqlDecimal().IsZero() => 0,
+            types::KindString | types::KindBytes | types::KindMysqlDecimal => 6,
+            _ => 0,
+        });
+        let time = match source.convertToMysqlTime(ctx.TypeCtx(), &target) {
+            Ok(value) => value.GetMysqlTime(),
+            Err(_) => {
+                let error = types::ErrWrongValue
+                    .GenWithStackByArgs(&[types::DateTimeStr.into(), source.ToString()?.into()]);
+                return match crate::expression_errors_kernel::handleInvalidTimeError(
+                    ctx,
+                    Some(error),
+                ) {
+                    Some(error) => Err(error.into()),
+                    None => Ok(None),
+                };
+            }
+        };
+        Ok(Some(time))
+    }
+
+    /// Apply the DATE_FORMAT mask after source conversion and NULL handling.
+    pub fn DateFormatOutput(
+        ctx: &dyn EvalContext,
+        time: types::Time,
+        mask: String,
+    ) -> Result<(String, bool), Error> {
+        // Go checks the special mask before rejecting zero dates.
+        if mask == "0" {
+            return Ok((mask, false));
+        }
+        if time.InvalidZero() {
+            let numeric_zero = time.ToNumber().is_zero();
+            if numeric_zero && time.Fsp() == 0 {
+                return Ok((String::new(), true));
+            }
+            let error = types::ErrWrongValue
+                .GenWithStackByArgs(&[types::DateTimeStr.into(), time.String().into()]);
+            return match crate::expression_errors_kernel::handleInvalidTimeError(ctx, Some(error)) {
+                Some(error) => Err(error.into()),
+                None => Ok((String::new(), true)),
+            };
+        }
+        time.DateFormat(&mask)
+            .map(|value| (value, false))
+            .map_err(|error| errors::New(error.to_string()))
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum CoreBuiltinKind {
         Compare(&'static str, types::EvalType),
@@ -4009,6 +4074,7 @@ pub mod formal_registry {
         TimeToSec,
         Extract(ExtractMode),
         Weekday,
+        DateFormat,
         Atan,
         Pow,
         DateAddSub(bool),
@@ -4800,6 +4866,19 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::DateFormat => {
+                    let Some(time) =
+                        DateFormatInput(ctx, self.base.args[0].Eval(ctx, row.clone())?)?
+                    else {
+                        return Ok((String::new(), true));
+                    };
+                    let (mask, null) = self.base.args[1].EvalString(ctx, row)?;
+                    if null {
+                        return Ok((String::new(), true));
+                    }
+                    DateFormatOutput(ctx, time, mask)
+                }
+
                 CoreBuiltinKind::PgRound => {
                     let (text, null) = if self.base.args[0].GetType(ctx).EvalType() == types::ETInt
                     {
@@ -6052,6 +6131,20 @@ pub mod formal_registry {
                     },
                 )
             }
+            "date_format" => {
+                args[1] = crate::WrapWithCastAsString(ctx, args[1].CloneExpr());
+                let mut return_type = field_type_for_eval_type(types::ETString);
+                let (charset, collation) = ctx.GetCharsetInfo();
+                return_type.SetCharset(charset);
+                return_type.SetCollate(collation);
+                // Match Go's worst-case %r expansion, including unknown masks.
+                return_type.SetFlen((args[1].GetType(ctx.GetEvalCtx()).GetFlen() + 1) / 2 * 11);
+                (
+                    CoreBuiltinKind::DateFormat,
+                    return_type,
+                    "builtinDateFormatSig",
+                )
+            }
             "weekday" => {
                 let mut return_type = field_type_for_eval_type(types::ETInt);
                 return_type.SetFlen(1);
@@ -6421,6 +6514,7 @@ pub mod formal_registry {
                 tipb::ScalarFuncSig::ExtractDatetimeFromString as i32
             }
             CoreBuiltinKind::Weekday => tipb::ScalarFuncSig::WeekDay as i32,
+            CoreBuiltinKind::DateFormat => tipb::ScalarFuncSig::DateFormatSig as i32,
             CoreBuiltinKind::Atan if base.args.len() == 1 => tipb::ScalarFuncSig::Atan1Arg as i32,
             CoreBuiltinKind::Atan => tipb::ScalarFuncSig::Atan2Args as i32,
             CoreBuiltinKind::Pow => tipb::ScalarFuncSig::Pow as i32,
@@ -6597,6 +6691,7 @@ pub mod formal_registry {
     core_factory!(trim_factory, "trim");
     core_factory!(ascii_factory, "ascii");
     core_factory!(weekday_factory, "weekday");
+    core_factory!(date_format_factory, "date_format");
     core_factory!(atan_factory, "atan");
     core_factory!(atan2_factory, "atan2");
     core_factory!(pow_factory, "pow");
@@ -6678,6 +6773,7 @@ pub mod formal_registry {
         ("trim", trim_factory),
         ("ascii", ascii_factory),
         ("weekday", weekday_factory),
+        ("date_format", date_format_factory),
         ("atan", atan_factory),
         ("atan2", atan2_factory),
         ("pow", pow_factory),

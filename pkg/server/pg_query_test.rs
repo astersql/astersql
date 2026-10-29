@@ -5884,3 +5884,418 @@ fn pg_function_18_mysql() {
     drop(server);
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_19() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = vec![];
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    let table = format!("date_format_pg19_{}", address.port());
+    struct TableCleanup(TcpStream, String);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                query(&mut self.0, "ROLLBACK");
+                query(&mut self.0, &format!("DROP TABLE IF EXISTS {}", self.1));
+            }));
+        }
+    }
+    let table_cleanup = TableCleanup(socket.try_clone().unwrap(), table.clone());
+    for sql in [
+        format!("CREATE TABLE {table}(v integer)"),
+        format!("INSERT INTO {table} VALUES(1)"),
+    ] {
+        assert_eq!(
+            query(&mut socket, &sql)
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"CZ",
+            "{sql}"
+        );
+    }
+    for prefix in ["", "pg_catalog."] {
+        for call in [
+            "date_format('2026-01-02','%Y-%m-%d')",
+            "date_format(NULL::text,'%Y')",
+            "date_format('2026-01-02',NULL::text)",
+            "date_format('2026-01-02','')",
+            "date_format('bad'::int4,'%Y')",
+            "date_format('0000-00-00','%Y')",
+            "date_format($1::text,$2::text)",
+        ] {
+            for parse in [false, true] {
+                // Parameter markers belong only to the extended protocol.
+                if !parse && call.contains('$') {
+                    continue;
+                }
+                for empty in [false, true] {
+                    for transaction in [false, true] {
+                        if transaction {
+                            assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+                        }
+                        let sql = format!(
+                            "SELECT {prefix}{call} AS v{}",
+                            if empty { " WHERE false" } else { "" }
+                        );
+                        let messages = if parse {
+                            send(
+                                &mut socket,
+                                b'P',
+                                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()]
+                                    .concat(),
+                            );
+                            send(&mut socket, b'S', &[]);
+                            ready(&mut socket)
+                        } else {
+                            query(&mut socket, &sql)
+                        };
+                        assert_eq!(
+                            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            b"EZ",
+                            "{sql}: {messages:?}"
+                        );
+                        let fields = messages[0]
+                            .1
+                            .split(|b| *b == 0)
+                            .filter(|f| !f.is_empty())
+                            .collect::<Vec<_>>();
+                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                            assert!(fields.contains(&field), "{sql}: {fields:?}");
+                        }
+                        assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
+                        for tag in b"DHP" {
+                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
+                        }
+                        assert_eq!(
+                            messages.last().unwrap().1,
+                            if transaction { b"E" } else { b"I" }
+                        );
+                        if transaction {
+                            assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+                        }
+                        let probe = query(&mut socket, "SELECT 1::int4");
+                        assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                        assert_eq!(probe[1].1, row(&[Some("1")]));
+                    }
+                }
+            }
+        }
+    }
+    for prefix in ["", "pg_catalog."] {
+        for parse in [false, true] {
+            let sql = format!("INSERT INTO {table} VALUES({prefix}date_format('bad'::int4,'%Y'))");
+            let messages = if parse {
+                send(
+                    &mut socket,
+                    b'P',
+                    &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                );
+                send(&mut socket, b'S', &[]);
+                ready(&mut socket)
+            } else {
+                query(&mut socket, &sql)
+            };
+            assert_eq!(
+                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"EZ",
+                "{sql}: {messages:?}"
+            );
+            assert!(messages[0].1.windows(7).any(|f| f == b"C42883\0"));
+            let unchanged = query(&mut socket, &format!("SELECT v FROM {table}"));
+            assert_eq!(unchanged.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+            assert_eq!(unchanged[1].1, row(&[Some("1")]));
+            assert_eq!(unchanged.last().unwrap().1, b"I");
+        }
+    }
+    // Name rejection must not change COALESCE's independent PG behavior.
+    let coalesce = query(&mut socket, "SELECT coalesce(NULL::int4,7::int4) AS v");
+    assert_eq!(coalesce.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+    assert_eq!(
+        coalesce[0].1,
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &23u32.to_be_bytes(),
+            &4i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(coalesce[1].1, row(&[Some("7")]));
+    drop(table_cleanup);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_19_mysql() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, ColumnDefinition, MysqlCompatServer, TextValue, WireResponse,
+        put_lenenc_bytes,
+    };
+    let server = MysqlCompatServer::start().unwrap();
+    let mut client = server
+        .connect_root(CLIENT_DEPRECATE_EOF, Some("test"))
+        .unwrap();
+    for setting in [
+        "SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE'",
+        "SET time_zone='+00:00'",
+        "SET lc_time_names='en_US'",
+    ] {
+        assert!(
+            matches!(client.query(setting).unwrap(), WireResponse::Ok(_)),
+            "{setting}"
+        );
+    }
+    for (expression, expected) in [
+        ("DATE_FORMAT('2026-01-02','%Y-%m-%d')", Some("2026-01-02")),
+        ("DATE_FORMAT(NULL,'%Y')", None),
+        ("DATE_FORMAT('2026-01-02',NULL)", None),
+        ("DATE_FORMAT('2026-01-02','')", Some("")),
+    ] {
+        let response = client.query(&format!("SELECT {expression} AS v")).unwrap();
+        let WireResponse::ResultSet(result) = response else {
+            panic!("{expression}: {response:?}")
+        };
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                expected
+                    .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+                    .unwrap_or(TextValue::Null)
+            ]],
+            "{expression}"
+        );
+    }
+    // Go evalString handles invalid time through handleInvalidTimeError:
+    // a SELECT yields NULL and a warning even under the fixed strict mode.
+    for input in ["bad", "0000-00-00", "2026-00-02", "2026-02-31"] {
+        let sql = format!("SELECT DATE_FORMAT('{input}','%Y-%m-%d') AS v");
+        let response = client.query(&sql).unwrap();
+        let WireResponse::ResultSet(result) = response else {
+            panic!("invalid date must yield NULL plus warning: {sql}: {response:?}")
+        };
+        assert_eq!(result.rows, vec![vec![TextValue::Null]], "{sql}");
+        assert_eq!(result.warnings, 1, "{sql}");
+        let WireResponse::ResultSet(warnings) = client.query("SHOW WARNINGS").unwrap() else {
+            panic!("SHOW WARNINGS")
+        };
+        assert_eq!(warnings.rows.len(), 1, "{sql}");
+        assert_eq!(warnings.rows[0][0], TextValue::Bytes(b"Warning".to_vec()));
+        assert_eq!(warnings.rows[0][1], TextValue::Bytes(b"1292".to_vec()));
+        let WireResponse::ResultSet(probe) = client.query("SELECT 1 AS v").unwrap() else {
+            panic!("recovery")
+        };
+        assert_eq!(probe.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+    }
+    for (expression, expected) in [
+        ("DATE_FORMAT(0,'%Y')", None),
+        ("DATE_FORMAT(0.0,'%Y')", None),
+        ("DATE_FORMAT('0000-00-00','0')", Some("0")),
+        (
+            "DATE_FORMAT(NULL,ABS(CAST('-9223372036854775808' AS SIGNED)))",
+            None,
+        ),
+    ] {
+        let WireResponse::ResultSet(result) =
+            client.query(&format!("SELECT {expression} AS v")).unwrap()
+        else {
+            panic!("{expression}")
+        };
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                expected
+                    .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+                    .unwrap_or(TextValue::Null)
+            ]],
+            "{expression}"
+        );
+        assert_eq!(result.warnings, 0, "{expression}");
+    }
+    for expression in [
+        "DATE_FORMAT(ABS(CAST('-9223372036854775808' AS SIGNED)),NULL)",
+        "DATE_FORMAT('2026-01-02',ABS(CAST('-9223372036854775808' AS SIGNED)))",
+    ] {
+        let WireResponse::Err(error) = client.query(&format!("SELECT {expression} AS v")).unwrap()
+        else {
+            panic!("{expression}")
+        };
+        assert_eq!(error.code, 1690, "{expression}");
+        assert_eq!(error.sql_state, Some(*b"22003"), "{expression}");
+        let WireResponse::ResultSet(probe) = client.query("SELECT 1 AS v").unwrap() else {
+            panic!("recovery")
+        };
+        assert_eq!(probe.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+    }
+    // Preserve all five Go TestDateFormat rows, including fractional
+    // seconds, week-year boundaries, year zero and unknown format tokens.
+    for (date, mask, expected) in [
+        (
+            "2010-01-07 23:12:34.12345",
+            "%b %M %m %c %D %d %e %j %k %h %i %p %r %T %s %f %U %u %V %v %a %W %w %X %x %Y %y %%",
+            "Jan January 01 1 7th 07 7 007 23 11 12 PM 11:12:34 PM 23:12:34 34 123450 01 01 01 01 Thu Thursday 4 2010 2010 2010 10 %",
+        ),
+        (
+            "2012-12-21 23:12:34.123456",
+            "%b %M %m %c %D %d %e %j %k %h %i %p %r %T %s %f %U %u %V %v %a %W %w %X %x %Y %y %%",
+            "Dec December 12 12 21st 21 21 356 23 11 12 PM 11:12:34 PM 23:12:34 34 123456 51 51 51 51 Fri Friday 5 2012 2012 2012 12 %",
+        ),
+        (
+            "0000-01-01 00:00:00.123456",
+            "%b %M %m %c %D %d %e %j %k %h %i %p %r %T %s %f %v %x %Y %y %%",
+            "Jan January 01 1 1st 01 1 001 0 12 00 AM 12:00:00 AM 00:00:00 00 123456 52 4294967295 0000 00 %",
+        ),
+        (
+            "2016-09-3 00:59:59.123456",
+            "abc%b %M %m %c %D %d %e %j %k %h %i %p %r %T %s %f %U %u %V %v %a %W %w %X %x %Y %y!123 %%xyz %z",
+            "abcSep September 09 9 3rd 03 3 247 0 12 59 AM 12:59:59 AM 00:59:59 59 123456 35 35 35 35 Sat Saturday 6 2016 2016 2016 16!123 %xyz z",
+        ),
+        (
+            "2012-10-01 00:00:00",
+            "%b %M %m %c %D %d %e %j %k %H %i %p %r %T %s %f %v %x %Y %y %%",
+            "Oct October 10 10 1st 01 1 275 0 00 00 AM 12:00:00 AM 00:00:00 00 000000 40 2012 2012 12 %",
+        ),
+    ] {
+        let sql = format!("SELECT DATE_FORMAT('{date}','{mask}') AS v");
+        let WireResponse::ResultSet(result) = client.query(&sql).unwrap() else {
+            panic!("{sql}")
+        };
+        assert_eq!(
+            result.rows,
+            vec![vec![TextValue::Bytes(expected.as_bytes().to_vec())]],
+            "{sql}"
+        );
+        assert_eq!(result.warnings, 0, "{sql}");
+    }
+    fn description(length: u32, flags: u16) -> Vec<ColumnDefinition> {
+        vec![ColumnDefinition {
+            catalog: "def".into(),
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            character_set: 46,
+            column_length: length,
+            column_type: 253,
+            flags,
+            decimals: 31,
+            default_value: None,
+        }]
+    }
+    // Go getFunction expands the declared mask length, not the selected value.
+    for (mask, length) in [("%Y-%m-%d", 176), ("%r%r", 88), ("", 0)] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT DATE_FORMAT('2026-01-02','{mask}') AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let WireResponse::ResultSet(result) = client.query(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(result.columns, description(length, 1), "{sql}");
+            assert_eq!(result.rows.len(), usize::from(!empty));
+        }
+    }
+    for empty in [false, true] {
+        let sql = format!(
+            "SELECT DATE_FORMAT(CAST(? AS CHAR(26)),CAST(? AS CHAR(8))) AS v{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        let prepared = client.prepare(&sql).unwrap();
+        assert_eq!(prepared.parameter_count, 2);
+        assert_eq!(prepared.columns, description(176, 0), "{sql}");
+        for (date, mask, expected) in [
+            (Some("2026-01-02"), Some("%Y-%m-%d"), Some("2026-01-02")),
+            (None, Some("%Y"), None),
+            (Some("2026-01-02"), None, None),
+            (Some("2026-01-02"), Some(""), Some("")),
+            (Some("2026-01-02"), Some("%Y"), Some("2026")),
+            (Some("bad"), Some("%Y"), None),
+            (Some("2026-01-02"), Some("%Y"), Some("2026")),
+        ] {
+            let mut payload = prepared.statement_id.to_le_bytes().to_vec();
+            payload.push(0);
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.push(u8::from(date.is_none()) | (u8::from(mask.is_none()) << 1));
+            payload.push(1);
+            payload.extend_from_slice(&[253, 0, 253, 0]);
+            for value in [date, mask].into_iter().flatten() {
+                put_lenenc_bytes(&mut payload, value.as_bytes());
+            }
+            let WireResponse::ResultSet(result) = client.execute_prepared(&payload).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(result.columns, prepared.columns, "{sql}");
+            assert_eq!(
+                result.warnings,
+                u16::from(!empty && date == Some("bad")),
+                "{sql}"
+            );
+            assert_eq!(
+                result.rows,
+                if empty {
+                    vec![]
+                } else {
+                    vec![vec![
+                        expected
+                            .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+                            .unwrap_or(TextValue::Null),
+                    ]]
+                },
+                "{sql}"
+            );
+        }
+        client.close_prepared(prepared.statement_id).unwrap();
+    }
+    drop(client);
+    let address = server.mysql_addr();
+    server.close();
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}
