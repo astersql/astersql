@@ -823,7 +823,10 @@ pub(super) fn pg_conditional_collation(
             Expr: inner, Tp, ..
         } if Tp.PostgreSQLTextOid().is_some() => pg_conditional_collation(inner),
         ast::ExprKind::Function { FnName, Args, .. }
-            if matches!(FnName.L.as_str(), "coalesce" | "nullif") =>
+            if matches!(
+                FnName.L.as_str(),
+                "coalesce" | "nullif" | "greatest" | "least"
+            ) =>
         {
             let mut chosen = None;
             for arg in Args {
