@@ -3162,7 +3162,12 @@ pub(super) fn validate_function_visibility(
     impl ast::Visitor for Visibility {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
             if let Some(ast::ExprNode {
-                Kind: ast::ExprKind::Function { FnName, Args, .. },
+                Kind:
+                    ast::ExprKind::Function {
+                        FnName,
+                        Args,
+                        Schema,
+                    },
                 ..
             }) = node.as_any().downcast_ref::<ast::ExprNode>()
             {
@@ -3185,7 +3190,13 @@ pub(super) fn validate_function_visibility(
                             | "current_database"
                             | "current_catalog"
                     );
+                // PG COALESCE is special syntax, never a schema-qualified
+                // ordinary function, even when the schema is pg_catalog.
+                let qualified_coalesce = self.dialect == ast::SqlDialect::PostgreSQL
+                    && FnName.L == "coalesce"
+                    && !Schema.L.is_empty();
                 if unknown_zero_argument
+                    || qualified_coalesce
                     || !astersql_expression::formal_registry::FunctionVisibleInDialect(
                         &FnName.L,
                         self.dialect,

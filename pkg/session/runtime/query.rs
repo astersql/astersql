@@ -3915,6 +3915,28 @@ impl ConcreteSession {
                 use astersql_parser_mysql::r#type::{
                     TypeDate, TypeDatetime, TypeNull, TypePgTimestampTz,
                 };
+                // COALESCE fixes the common numeric identity during analysis,
+                // before a row (or a NULL binding) can select an operand. Keep
+                // the existing temporal/text families on their current paths.
+                use astersql_parser_mysql::r#type::{TypeLong, TypeNewDecimal};
+                if types
+                    .iter()
+                    .all(|tp| matches!(tp.GetType(), TypeLong | TypeNewDecimal | TypeNull))
+                {
+                    let mut known = types.iter().filter(|tp| tp.GetType() != TypeNull);
+                    let mut target = known
+                        .next()
+                        .cloned()
+                        .unwrap_or_else(|| astersql_parser_types::NewFieldType(TypeNull));
+                    for input in known {
+                        target = pg_union_common_type(&target, input).unwrap_or_default();
+                    }
+                    if target.GetType() != TypeNull {
+                        target.SetFlen(-1);
+                        target.SetDecimal(-1);
+                        return target;
+                    }
+                }
                 if types.iter().all(|tp| {
                     matches!(
                         tp.GetType(),

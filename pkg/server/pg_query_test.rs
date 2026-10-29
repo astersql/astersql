@@ -2720,3 +2720,365 @@ fn pg_function_10_mysql() {
     );
     mysql_packet(&mut socket, 0, &[1]);
 }
+
+#[test]
+fn pg_function_11() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    fn description(oid: u32, width: i16, format: i16) -> Vec<u8> {
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &oid.to_be_bytes(),
+            &width.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &format.to_be_bytes(),
+        ]
+        .concat()
+    }
+    // Each expression is also analyzed with zero rows. NULL propagation is
+    // asserted in DataRow; RowDescription has no nullable bit.
+    for (expression, expected, oid, width) in [
+        ("coalesce(NULL::int4,7::int4)", Some("7"), 23, 4),
+        ("coalesce(NULL::int4,NULL::int4)", None, 23, 4),
+        ("coalesce(NULL,NULL)", None, 25, -1),
+        ("coalesce(7::int4,2.50::numeric)", Some("7"), 1700, -1),
+        ("coalesce(NULL::int4,2.50::numeric)", Some("2.50"), 1700, -1),
+        ("coalesce(NULL::numeric,7::int4)", Some("7"), 1700, -1),
+        ("coalesce(NULL::int4,NULL::numeric)", None, 1700, -1),
+        (
+            "coalesce((-2147483648)::int4,2147483647::int4)",
+            Some("-2147483648"),
+            23,
+            4,
+        ),
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let m = query(&mut socket, &sql);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                if empty {
+                    b"TCZ".as_slice()
+                } else {
+                    b"TDCZ".as_slice()
+                },
+                "{sql}: {m:?}"
+            );
+            assert_eq!(m[0].1, description(oid, width, 0), "{sql}");
+            if !empty {
+                assert_eq!(m[1].1, row(&[expected]), "{sql}");
+            }
+            assert_eq!(m.last().unwrap().1, b"I");
+        }
+    }
+    // The same analyzed statement is rebound value/NULL/value in both wire
+    // formats. Mixed numeric keeps its identity even when int4 supplies the row.
+    for (expression, oid, width) in [
+        ("coalesce($1::int4,NULL::int4)", 23u32, 4i16),
+        ("coalesce($1::int4,NULL::numeric)", 1700, -1),
+    ] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            send(
+                &mut socket,
+                b'P',
+                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+            );
+            send(&mut socket, b'D', b"S\0");
+            send(&mut socket, b'S', &[]);
+            let m = ready(&mut socket);
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"1tTZ",
+                "{sql}: {m:?}"
+            );
+            assert_eq!(
+                m[1].1,
+                [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+            );
+            assert_eq!(m[2].1, description(oid, width, 0));
+            for (format, value) in [
+                (0i16, Some(-1i32)),
+                (1, None),
+                (1, Some(2)),
+                (0, None),
+                (0, Some(3)),
+            ] {
+                let mut bind = vec![0, 0];
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                if let Some(v) = value {
+                    let bytes = if format == 0 {
+                        v.to_string().into_bytes()
+                    } else {
+                        v.to_be_bytes().to_vec()
+                    };
+                    bind.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    bind.extend_from_slice(&bytes);
+                } else {
+                    bind.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&format.to_be_bytes());
+                send(&mut socket, b'B', &bind);
+                send(&mut socket, b'D', b"P\0");
+                send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+                send(&mut socket, b'D', b"S\0");
+                send(&mut socket, b'S', &[]);
+                let m = ready(&mut socket);
+                assert_eq!(
+                    m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    if empty {
+                        b"2TCtTZ".as_slice()
+                    } else {
+                        b"2TDCtTZ".as_slice()
+                    },
+                    "{sql}: {m:?}"
+                );
+                assert_eq!(m[1].1, description(oid, width, format));
+                if !empty {
+                    let bytes = value.map(|v| {
+                        if format == 0 {
+                            v.to_string().into_bytes()
+                        } else if oid == 23 {
+                            v.to_be_bytes().to_vec()
+                        } else {
+                            // PostgreSQL numeric: ndigits, weight, sign, dscale,
+                            // followed by base-10000 digits; these inputs are one digit.
+                            [
+                                1i16.to_be_bytes(),
+                                0i16.to_be_bytes(),
+                                (if v < 0 { 0x4000i16 } else { 0 }).to_be_bytes(),
+                                0i16.to_be_bytes(),
+                                (v.abs() as i16).to_be_bytes(),
+                            ]
+                            .concat()
+                        }
+                    });
+                    let mut expected = 1i16.to_be_bytes().to_vec();
+                    if let Some(bytes) = bytes {
+                        expected.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                        expected.extend_from_slice(&bytes);
+                    } else {
+                        expected.extend_from_slice(&(-1i32).to_be_bytes());
+                    }
+                    assert_eq!(m[2].1, expected);
+                }
+                let index = if empty { 3 } else { 4 };
+                assert_eq!(
+                    m[index].1,
+                    [&1i16.to_be_bytes()[..], &23u32.to_be_bytes()].concat()
+                );
+                assert_eq!(m[index + 1].1, description(oid, width, 0));
+                assert_eq!(m.last().unwrap().1, b"I");
+            }
+        }
+    }
+    for (sql, state) in [
+        ("SELECT coalesce(1::int4,'x'::text) AS v", "42804"),
+        (
+            "SELECT coalesce(NULL::int4,NULL::text) AS v WHERE false",
+            "42804",
+        ),
+        ("SELECT pg_catalog.coalesce(1::int4,2::int4) AS v", "42883"),
+    ] {
+        for extended in [false, true] {
+            let m = if extended {
+                send(
+                    &mut socket,
+                    b'P',
+                    &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                );
+                send(&mut socket, b'S', &[]);
+                ready(&mut socket)
+            } else {
+                query(&mut socket, sql)
+            };
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"EZ",
+                "{sql}: {m:?}"
+            );
+            let error = &m[0].1;
+            let mut offset = 0;
+            let mut fields = std::collections::BTreeMap::new();
+            while error[offset] != 0 {
+                let tag = error[offset];
+                offset += 1;
+                let n = error[offset..].iter().position(|b| *b == 0).unwrap();
+                fields.insert(
+                    tag,
+                    std::str::from_utf8(&error[offset..offset + n]).unwrap(),
+                );
+                offset += n + 1;
+            }
+            assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+            assert_eq!(fields.get(&b'C'), Some(&state));
+            assert!(!fields[&b'M'].is_empty());
+            assert!(
+                [b'D', b'H', b'P']
+                    .iter()
+                    .all(|tag| !fields.contains_key(tag))
+            );
+            println!("{sql} extended={extended}: {fields:?}");
+            assert_eq!(m[1].1, b"I");
+            let probe = query(&mut socket, "SELECT 1::int4");
+            assert_eq!(probe[1].1, row(&[Some("1")]));
+        }
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_11_mysql() {
+    use crate::pg_client_integration_test::{
+        mysql_handshake, mysql_packet, mysql_read, start_client_server,
+    };
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    let address = server.listener_addr().unwrap();
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut socket);
+    fn result(socket: &mut TcpStream, expression: &str) -> (Vec<u8>, Vec<u8>) {
+        mysql_packet(
+            socket,
+            0,
+            format!("\x03SELECT {expression} AS v").as_bytes(),
+        );
+        assert_eq!(mysql_read(socket), [1]);
+        let column = mysql_read(socket);
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        let value = mysql_read(socket);
+        let eof = mysql_read(socket);
+        assert_eq!(&eof[..3], &[0xfe, 0, 0]);
+        (column, value)
+    }
+    // Compare the complete MySQL wire description (code, flags, charset,
+    // length, decimals and origin) to the same declared scalar type. No PG OIDs.
+    for (first, second, scalar, value) in [
+        (
+            "NULL",
+            "CAST(7 AS SIGNED)",
+            "CAST(7 AS SIGNED)",
+            vec![1, b'7'],
+        ),
+        (
+            "CAST(NULL AS SIGNED)",
+            "CAST(NULL AS SIGNED)",
+            "CAST(NULL AS SIGNED)",
+            vec![0xfb],
+        ),
+        (
+            "NULL",
+            "CAST(2.50 AS DECIMAL(8,2))",
+            "CAST(2.50 AS DECIMAL(8,2))",
+            vec![4, b'2', b'.', b'5', b'0'],
+        ),
+        (
+            "CAST(NULL AS DECIMAL(8,2))",
+            "CAST(NULL AS DECIMAL(8,2))",
+            "CAST(NULL AS DECIMAL(8,2))",
+            vec![0xfb],
+        ),
+        (
+            "NULL",
+            "CAST('ab' AS CHAR(4))",
+            "CAST('ab' AS CHAR(4))",
+            vec![2, b'a', b'b'],
+        ),
+        (
+            "CAST(NULL AS CHAR(4))",
+            "CAST(NULL AS CHAR(4))",
+            "CAST(NULL AS CHAR(4))",
+            vec![0xfb],
+        ),
+        ("NULL", "NULL", "NULL", vec![0xfb]),
+    ] {
+        let baseline = result(&mut socket, scalar);
+        let expression = format!("COALESCE({first},{second})");
+        let actual = result(&mut socket, &expression);
+        assert_eq!(actual.0, baseline.0, "{expression}: MySQL metadata");
+        let mut offset = 0;
+        for _ in 0..6 {
+            offset += usize::from(actual.0[offset]) + 1;
+        }
+        let metadata = &actual.0[offset + 1..offset + 13];
+        println!(
+            "{expression}: charset={} length={} code={} flags={} decimals={}",
+            u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+            u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+            metadata[6],
+            u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+            metadata[9],
+        );
+        assert_eq!(actual.1, value, "{expression}");
+    }
+    mysql_packet(&mut socket, 0, &[1]);
+    drop(socket);
+    drop(cleanup);
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}
