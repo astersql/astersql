@@ -887,6 +887,53 @@ impl fmt::Display for PgTimestamp {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PgTimestampTz(i64);
 impl PgTimestampTz {
+    /// Extract from the execution-zone wall clock; epoch remains an instant.
+    pub fn extract_numeric_in_zone(
+        self,
+        unit: &str,
+        zone: chrono_tz::Tz,
+        fixed: Option<chrono::FixedOffset>,
+    ) -> Result<Option<crate::pg_numeric::PgNumeric>, PgTemporalError> {
+        use chrono::Offset;
+        // Infinity and epoch do not need transition data or a local calendar.
+        if matches!(self.0, i64::MIN | i64::MAX) || unit.eq_ignore_ascii_case("epoch") {
+            return PgTimestamp(self.0).extract_numeric(unit);
+        }
+        let offset = if let Some(fixed) = fixed {
+            fixed.local_minus_utc()
+        } else if zone == chrono_tz::UTC {
+            0
+        } else {
+            self.0
+                .checked_add(946_684_800_000_000)
+                .and_then(chrono::DateTime::from_timestamp_micros)
+                .ok_or(PgTemporalError::Range)?
+                .with_timezone(&zone)
+                .offset()
+                .fix()
+                .local_minus_utc()
+        };
+        let zone_field = match unit.to_ascii_lowercase().as_str() {
+            "timezone" => Some(offset),
+            "timezone_hour" => Some(offset / 3600),
+            "timezone_minute" => Some((offset % 3600) / 60),
+            _ => None,
+        };
+        if let Some(value) = zone_field {
+            return value
+                .to_string()
+                .parse()
+                .map(Some)
+                .map_err(|_| PgTemporalError::Range);
+        }
+        PgTimestamp(
+            self.0
+                .checked_add(i64::from(offset) * 1_000_000)
+                .ok_or(PgTemporalError::Range)?,
+        )
+        .extract_numeric(unit)
+    }
+
     /// Truncate the civil time in the execution zone, then restore the instant.
     /// Like PostgreSQL, day and larger buckets resolve their new UTC offset;
     /// sub-day buckets retain the input offset through an autumn overlap.

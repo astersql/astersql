@@ -496,8 +496,13 @@ fn foldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> (ExprBox, bool) 
     if let Some(function_ref) = expression.as_scalar_function() {
         // This overload is stable in the execution TimeZone. Cached plans
         // must not retain a value computed in the preparation connection zone.
-        if function_ref.FuncName.L == "date_trunc"
-            && function_ref.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
+        if (function_ref.FuncName.L == "date_trunc"
+            && function_ref.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz)
+            || (ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                && function_ref.FuncName.L == "extract"
+                && function_ref.GetArgs().get(1).is_some_and(|arg| {
+                    arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
+                }))
         {
             return (expression, false);
         }

@@ -1493,3 +1493,43 @@ fn pg08_05_timestamp_fields() {
         "22023"
     );
 }
+
+#[test]
+fn pg08_06_zone_fields() {
+    use crate::pg_temporal::PgTimestampTz;
+    let value: PgTimestampTz = "2024-01-02 01:30:40.123456+00".parse().unwrap();
+    let offset = chrono::FixedOffset::west_opt(19800).unwrap();
+    for (field, expected) in [
+        ("hour", "20"),
+        ("timezone", "-19800"),
+        ("timezone_hour", "-5"),
+        ("timezone_minute", "-30"),
+        ("second", "40.123456"),
+        ("microseconds", "40123456"),
+    ] {
+        assert_eq!(
+            value
+                .extract_numeric_in_zone(field, chrono_tz::UTC, Some(offset))
+                .unwrap()
+                .unwrap()
+                .to_string(),
+            expected
+        );
+    }
+    for source in ["infinity", "-infinity"] {
+        let value: PgTimestampTz = source.parse().unwrap();
+        assert!(
+            value
+                .extract_numeric_in_zone("timezone", chrono_tz::America::New_York, None)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            value
+                .extract_numeric_in_zone("aster_bad_unit", chrono_tz::UTC, None)
+                .unwrap_err()
+                .sqlstate(),
+            "22023"
+        );
+    }
+}

@@ -2612,10 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "extract" => vec![PgFunctionCandidate {
-                arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
-                result: mysql::TypeNewDecimal,
-            }],
+            "extract" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
+                    result: mysql::TypeNewDecimal,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypePgTimestampTz],
+                    result: mysql::TypeNewDecimal,
+                },
+            ],
             "date_trunc" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypePgInterval],
@@ -5124,9 +5130,23 @@ pub mod formal_registry {
                     if first_null || second_null {
                         return Ok((String::new(), true));
                     }
-                    value
-                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
-                        .and_then(|timestamp| timestamp.extract_numeric(&unit))
+                    let result =
+                        if self.base.args[1].GetType(ctx).GetType() == mysql::TypePgTimestampTz {
+                            value
+                                .parse::<types_dependency::pg_temporal::PgTimestampTz>()
+                                .and_then(|timestamp| {
+                                    timestamp.extract_numeric_in_zone(
+                                        &unit,
+                                        ctx.Location(),
+                                        ctx.PgFixedTimeZone(),
+                                    )
+                                })
+                        } else {
+                            value
+                                .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                                .and_then(|timestamp| timestamp.extract_numeric(&unit))
+                        };
+                    result
                         .map(|value| match value {
                             Some(value) => (value.to_string(), false),
                             None => (String::new(), true),

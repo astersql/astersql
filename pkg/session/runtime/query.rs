@@ -1375,7 +1375,10 @@ impl ConcreteSession {
                 ));
                 args.push(Box::new(argument));
             }
-            let eval = if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz {
+            let eval = if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz
+                || candidate.arguments.get(1)
+                    == Some(&astersql_parser_mysql::r#type::TypePgTimestampTz)
+            {
                 self.pg_temporal_eval_context()?
             } else {
                 astersql_expression_exprstatic::NewEvalContext(vec![
