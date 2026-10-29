@@ -2508,6 +2508,8 @@ pub mod formal_registry {
         pub schema: String,
         pub signature: PgFunctionCandidate<u32>,
         pub variadic: Option<types_dependency::field::ast::PostgreSQLArrayElement>,
+        /// Number of trailing positions with defaults; expressions are not evaluated here.
+        pub default_arguments: usize,
     }
 
     /// Prepare visible declarations before the ordinary typed overload filters.
@@ -2527,6 +2529,9 @@ pub mod formal_registry {
                 continue;
             };
             let mut signature = candidate.signature.clone();
+            if candidate.default_arguments > signature.arguments.len() {
+                continue;
+            }
             let expanded = match candidate.variadic {
                 Some(element) => {
                     // The declaration must actually end in its declared array identity.
@@ -2546,7 +2551,17 @@ pub mod formal_registry {
                     }
                 }
                 None if explicit_variadic => continue,
-                None => false,
+                None => {
+                    let required = signature.arguments.len() - candidate.default_arguments;
+                    if inputs.len() < required || inputs.len() > signature.arguments.len() {
+                        continue;
+                    }
+                    // Keep the declaration identity but compare only supplied positions.
+                    // Equal prefixes in one schema must remain competing candidates,
+                    // regardless of their omitted types or return identities.
+                    signature.arguments.truncate(inputs.len());
+                    false
+                }
             };
             prepared.push((candidate, signature, rank, expanded));
         }

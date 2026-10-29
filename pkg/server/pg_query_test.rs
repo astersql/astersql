@@ -2531,3 +2531,15 @@ fn pg_function_07() {
     service.close();
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_08() {
+    use astersql_expression::ast::SqlDialect;
+    use astersql_expression::formal_registry::funcs;
+    let mysql_names = funcs.names_for_dialect(SqlDialect::MySQL);
+    assert!(mysql_names.iter().any(|name| name == "abs"));
+    // Defaults remain parse-only private declarations; ordinary ABS still uses
+    // the real SQL, extended protocol and error-recovery contract.
+    signed_abs_protocol_contract();
+    assert_eq!(funcs.names_for_dialect(SqlDialect::MySQL), mysql_names);
+}

@@ -1024,6 +1024,7 @@ fn pg_function_07() {
             result: 23,
         },
         variadic,
+        default_arguments: 0,
     };
     let variadic = declaration("a", vec![E::Int4.array_oid()], Some(E::Int4));
     let fixed = declaration("a", vec![23, 23], None);
@@ -1119,4 +1120,76 @@ fn pg_function_07() {
         Err("42883")
     );
     assert_eq!(funcs.names(), before);
+}
+
+#[test]
+fn pg_function_08() {
+    use crate::formal_registry::{
+        PgDeclaredCandidate, PgFunctionCandidate, select_pg_declared_candidate,
+    };
+    let before = funcs.names();
+    let declaration = |schema: &str, arguments: Vec<u32>, result, defaults| PgDeclaredCandidate {
+        schema: schema.into(),
+        signature: PgFunctionCandidate { arguments, result },
+        variadic: None,
+        default_arguments: defaults,
+    };
+    let a = declaration("a", vec![23, 23], 20, 1);
+    let b = declaration("a", vec![23, 20], 23, 1);
+    let select = |inputs: &[u32], candidates: &[PgDeclaredCandidate], path: &[&str]| {
+        select_pg_declared_candidate(
+            inputs,
+            candidates,
+            path,
+            false,
+            |s, t| s == 23 && t == 20,
+            |_| b'N',
+            |_| false,
+        )
+        .cloned()
+    };
+    for reverse in [false, true] {
+        let mut pair = vec![a.clone(), b.clone()];
+        if reverse {
+            pair.reverse();
+        }
+        // Omitted positions leave equal effective signatures in the same schema.
+        // Crossed return identities cannot break this ambiguity.
+        assert_eq!(select(&[23], &pair, &["a"]), Err("42725"));
+        assert_eq!(select(&[0], &pair, &["a"]), Err("42725"));
+        assert_eq!(select(&[23, 23], &pair, &["a"]), Ok(a.clone()));
+        assert_eq!(select(&[23, 20], &pair, &["a"]), Ok(b.clone()));
+        assert_eq!(select(&[], &pair, &["a"]), Err("42883"));
+        assert_eq!(select(&[23, 23, 23], &pair, &["a"]), Err("42883"));
+        assert_eq!(select(&[25], &pair, &["a"]), Err("42883"));
+        assert_eq!(select(&[23], &[a.clone()], &["a"]), Ok(a.clone()));
+        assert_eq!(select(&[23], &pair, &["hidden"]), Err("42883"));
+        let earlier = declaration("b", vec![23, 20], 25, 1);
+        let mut cross = vec![a.clone(), earlier.clone()];
+        if reverse {
+            cross.reverse();
+        }
+        assert_eq!(select(&[23], &cross, &["b", "a"]), Ok(earlier.clone()));
+        assert_eq!(select(&[23], &cross, &["a", "b"]), Ok(a.clone()));
+        assert_eq!(select(&[23], &cross, &["b"]), Ok(earlier));
+        // Distinct effective input signatures compete by type, not path rank.
+        let wider = declaration("b", vec![20, 20], 25, 1);
+        assert_eq!(
+            select(&[23], &[wider, a.clone()], &["b", "a"]),
+            Ok(a.clone())
+        );
+        let fixed = declaration("a", vec![23], 25, 0);
+        assert_eq!(select(&[23], &[fixed, a.clone()], &["a"]), Err("42725"));
+    }
+    let all_default = declaration("a", vec![23, 20], 23, 2);
+    assert_eq!(select(&[], &[all_default.clone()], &["a"]), Ok(all_default));
+    let malformed = declaration("a", vec![23], 23, 2);
+    assert_eq!(select(&[23], &[malformed], &["a"]), Err("42883"));
+    let required = declaration("a", vec![23, 20], 23, 0);
+    assert_eq!(select(&[23], &[required], &["a"]), Err("42883"));
+    assert_eq!(
+        funcs.names(),
+        before,
+        "private default candidates must not escape"
+    );
 }
