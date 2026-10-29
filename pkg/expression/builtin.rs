@@ -2381,9 +2381,9 @@ pub mod formal_registry {
     /// A typed candidate belongs to its function class; eligibility is supplied
     /// by that class's existing implicit conversions, never by a cost table.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct PgFunctionCandidate {
-        pub arguments: Vec<u8>,
-        pub result: u8,
+    pub struct PgFunctionCandidate<T = u8> {
+        pub arguments: Vec<T>,
+        pub result: T,
     }
 
     /// Apply PostgreSQL's exact-position filter before category preference.
@@ -2395,33 +2395,48 @@ pub mod formal_registry {
         category: impl Fn(u8) -> u8,
         preferred: impl Fn(u8) -> bool,
     ) -> Result<&'a PgFunctionCandidate, &'static str> {
+        select_pg_typed_candidate(
+            inputs,
+            candidates,
+            mysql::TypeNull,
+            implicit,
+            category,
+            preferred,
+        )
+    }
+
+    fn select_pg_typed_candidate<'a, T: Copy + Eq>(
+        inputs: &[T],
+        candidates: &'a [PgFunctionCandidate<T>],
+        unknown: T,
+        implicit: impl Fn(T, T) -> bool,
+        category: impl Fn(T) -> u8,
+        preferred: impl Fn(T) -> bool,
+    ) -> Result<&'a PgFunctionCandidate<T>, &'static str> {
         let mut viable: Vec<_> = candidates
             .iter()
             .filter(|c| {
                 c.arguments.len() == inputs.len()
                     && inputs.iter().zip(&c.arguments).all(|(&source, &target)| {
-                        source == mysql::TypeNull || source == target || implicit(source, target)
+                        source == unknown || source == target || implicit(source, target)
                     })
             })
             .collect();
-        let exact = |c: &&PgFunctionCandidate| {
+        let exact = |c: &&PgFunctionCandidate<T>| {
             inputs
                 .iter()
                 .zip(&c.arguments)
-                .filter(|(s, t)| **s != mysql::TypeNull && s == t)
+                .filter(|(s, t)| **s != unknown && s == t)
                 .count()
         };
         let maximum = viable.iter().map(exact).max().ok_or("42883")?;
         viable.retain(|c| exact(c) == maximum);
-        let preference = |c: &&PgFunctionCandidate| {
+        let preference = |c: &&PgFunctionCandidate<T>| {
             inputs
                 .iter()
                 .zip(&c.arguments)
                 .filter(|(s, t)| {
-                    **s != mysql::TypeNull
-                        && s != t
-                        && category(**s) == category(**t)
-                        && preferred(**t)
+                    **s != unknown && s != t && category(**s) == category(**t) && preferred(**t)
                 })
                 .count()
         };
@@ -2435,7 +2450,7 @@ pub mod formal_registry {
         // type. A conflicting non-string category leaves the call ambiguous.
         let mut unknown_choices = Vec::new();
         for (position, source) in inputs.iter().enumerate() {
-            if *source != mysql::TypeNull {
+            if *source != unknown {
                 continue;
             }
             let categories: Vec<_> = viable
@@ -2467,8 +2482,8 @@ pub mod formal_registry {
         }
         // When all known inputs share one type, try that type for every unknown
         // position, without changing the source identity of typed NULLs.
-        if let Some(known) = inputs.iter().copied().find(|t| *t != mysql::TypeNull) {
-            if inputs.iter().all(|t| *t == mysql::TypeNull || *t == known) {
+        if let Some(known) = inputs.iter().copied().find(|t| *t != unknown) {
+            if inputs.iter().all(|t| *t == unknown || *t == known) {
                 let same: Vec<_> = viable
                     .iter()
                     .copied()
@@ -2484,6 +2499,83 @@ pub mod formal_registry {
             }
         }
         Err("42725")
+    }
+
+    /// A parse-only declaration. OIDs retain the existing scalar/array identity;
+    /// this carrier neither registers a SQL function nor grants an execution factory.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct PgDeclaredCandidate {
+        pub schema: String,
+        pub signature: PgFunctionCandidate<u32>,
+        pub variadic: Option<types_dependency::field::ast::PostgreSQLArrayElement>,
+    }
+
+    /// Prepare visible declarations before the ordinary typed overload filters.
+    /// The name environment supplies an ordered path (or one qualified schema).
+    pub fn select_pg_declared_candidate<'a>(
+        inputs: &[u32],
+        candidates: &'a [PgDeclaredCandidate],
+        path: &[&str],
+        explicit_variadic: bool,
+        implicit: impl Fn(u32, u32) -> bool,
+        category: impl Fn(u32) -> u8,
+        preferred: impl Fn(u32) -> bool,
+    ) -> Result<&'a PgDeclaredCandidate, &'static str> {
+        let mut prepared = Vec::new();
+        for candidate in candidates {
+            let Some(rank) = path.iter().position(|schema| *schema == candidate.schema) else {
+                continue;
+            };
+            let mut signature = candidate.signature.clone();
+            let expanded = match candidate.variadic {
+                Some(element) => {
+                    // The declaration must actually end in its declared array identity.
+                    if signature.arguments.last() != Some(&element.array_oid()) {
+                        continue;
+                    }
+                    if explicit_variadic {
+                        false
+                    } else {
+                        let fixed = signature.arguments.len() - 1;
+                        if inputs.len() < fixed {
+                            continue;
+                        }
+                        signature.arguments.truncate(fixed);
+                        signature.arguments.resize(inputs.len(), element.oid());
+                        true
+                    }
+                }
+                None if explicit_variadic => continue,
+                None => false,
+            };
+            prepared.push((candidate, signature, rank, expanded));
+        }
+        // Path order only hides identical effective signatures. Within the same
+        // schema a non-expanded signature wins over an expanded variadic one.
+        // Distinct input signatures still compete in the ordinary type filters.
+        let visible: Vec<_> = prepared
+            .iter()
+            .filter(|(_, signature, rank, expanded)| {
+                !prepared
+                    .iter()
+                    .any(|(_, other, other_rank, other_expanded)| {
+                        signature.arguments == other.arguments
+                            && (other_rank < rank
+                                || (other_rank == rank && *expanded && !other_expanded))
+                    })
+            })
+            .collect();
+        let signatures: Vec<_> = visible
+            .iter()
+            .map(|(_, signature, _, _)| signature.clone())
+            .collect();
+        let selected =
+            select_pg_typed_candidate(inputs, &signatures, 0, implicit, category, preferred)?;
+        let index = signatures
+            .iter()
+            .position(|c| std::ptr::eq(c, selected))
+            .unwrap();
+        Ok(visible[index].0)
     }
 
     /// The bounded numeric_abs input eligibility, shared with function selection.

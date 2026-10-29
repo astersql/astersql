@@ -2400,3 +2400,134 @@ fn pg_function_06() {
     signed_abs_protocol_contract();
     assert_eq!(funcs.names_for_dialect(SqlDialect::MySQL), mysql_names);
 }
+
+#[test]
+fn pg_function_07() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    use astersql_expression::{ast::SqlDialect, formal_registry::funcs};
+    let before = funcs.names_for_dialect(SqlDialect::MySQL);
+    let mut description = vec![0, 1, b'v', 0];
+    description.extend_from_slice(&0u32.to_be_bytes());
+    description.extend_from_slice(&0i16.to_be_bytes());
+    description.extend_from_slice(&25u32.to_be_bytes());
+    description.extend_from_slice(&(-1i16).to_be_bytes());
+    description.extend_from_slice(&(-1i32).to_be_bytes());
+    description.extend_from_slice(&0i16.to_be_bytes());
+    // Existing CONCAT bypass: parse-only candidates must not change evaluation.
+    for (sql, expected) in [
+        ("SELECT concat('a','b') AS v", Some("ab")),
+        ("SELECT concat('') AS v", Some("")),
+        ("SELECT concat(NULL::text,'b') AS v", None),
+    ] {
+        let m = query(&mut socket, sql);
+        assert_eq!(
+            m.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCZ",
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m[0].1, description);
+        assert_eq!(m[1].1, row(&[expected]));
+        assert_eq!(m[3].1, b"I");
+    }
+    let zero = query(&mut socket, "SELECT concat('a','b') AS v WHERE false");
+    assert_eq!(zero.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(zero[0].1, description);
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let message = read(socket);
+            let end = message.0 == b'Z';
+            messages.push(message);
+            if end {
+                return messages;
+            }
+        }
+    }
+    let sql = "SELECT concat($1::text,'b') AS v";
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &1i16.to_be_bytes(),
+            &25u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"S\0");
+    send(&mut socket, b'S', &[]);
+    let m = ready(&mut socket);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ", "{m:?}");
+    assert_eq!(
+        m[1].1,
+        [&1i16.to_be_bytes()[..], &25u32.to_be_bytes()].concat()
+    );
+    assert_eq!(m[2].1, description);
+    for (format, value, expected) in [
+        (0i16, Some("a"), Some("ab")),
+        (1, Some("c"), Some("cb")),
+        (0, None, None),
+        (1, None, None),
+        (0, Some("d"), Some("db")),
+    ] {
+        let mut bind = vec![0, 0, 0, 0, 0, 1];
+        match value {
+            Some(v) => {
+                bind.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                bind.extend_from_slice(v.as_bytes());
+            }
+            None => bind.extend_from_slice(&(-1i32).to_be_bytes()),
+        }
+        bind.extend_from_slice(&1i16.to_be_bytes());
+        bind.extend_from_slice(&format.to_be_bytes());
+        send(&mut socket, b'B', &bind);
+        send(&mut socket, b'D', b"P\0");
+        send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+        send(&mut socket, b'S', &[]);
+        let m = ready(&mut socket);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ", "{m:?}");
+        let mut expected_description = description.clone();
+        let n = expected_description.len();
+        expected_description[n - 2..].copy_from_slice(&format.to_be_bytes());
+        assert_eq!(m[1].1, expected_description);
+        assert_eq!(m[2].1, row(&[expected]));
+        assert_eq!(m.last().unwrap().1, b"I");
+    }
+    assert_eq!(funcs.names_for_dialect(SqlDialect::MySQL), before);
+    drop(socket);
+    service.close();
+    assert!(TcpStream::connect(address).is_err());
+}

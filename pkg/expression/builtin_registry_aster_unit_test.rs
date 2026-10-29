@@ -1009,3 +1009,114 @@ fn pg_function_06() {
     }
     assert_eq!(funcs.names(), before, "private candidates must not escape");
 }
+
+#[test]
+fn pg_function_07() {
+    use crate::formal_registry::{
+        PgDeclaredCandidate, PgFunctionCandidate, select_pg_declared_candidate,
+    };
+    use types_dependency::field::ast::PostgreSQLArrayElement as E;
+    let before = funcs.names();
+    let declaration = |schema: &str, arguments: Vec<u32>, variadic| PgDeclaredCandidate {
+        schema: schema.into(),
+        signature: PgFunctionCandidate {
+            arguments,
+            result: 23,
+        },
+        variadic,
+    };
+    let variadic = declaration("a", vec![E::Int4.array_oid()], Some(E::Int4));
+    let fixed = declaration("a", vec![23, 23], None);
+    let select = |inputs: &[u32], candidates: &[PgDeclaredCandidate], path: &[&str], explicit| {
+        select_pg_declared_candidate(
+            inputs,
+            candidates,
+            path,
+            explicit,
+            |s, t| s == 23 && t == 20,
+            |_| b'N',
+            |_| false,
+        )
+        .cloned()
+    };
+    for reverse in [false, true] {
+        let mut pair = vec![variadic.clone(), fixed.clone()];
+        if reverse {
+            pair.reverse();
+        }
+        // Scalar expansion, including zero variadic elements and a fixed prefix.
+        for inputs in [vec![], vec![23], vec![23, 23, 23], vec![0, 23]] {
+            assert_eq!(
+                select(&inputs, &[variadic.clone()], &["a"], false),
+                Ok(variadic.clone())
+            );
+        }
+        assert_eq!(select(&[23, 23], &pair, &["a"], false), Ok(fixed.clone()));
+        assert_eq!(
+            select(&[E::Int4.array_oid()], &pair, &["a"], true),
+            Ok(variadic.clone())
+        );
+        assert_eq!(select(&[23], &pair, &["a"], true), Err("42883"));
+        assert_eq!(
+            select(&[E::Int8.array_oid()], &pair, &["a"], true),
+            Err("42883")
+        );
+        let prefix = declaration("a", vec![25, E::Int4.array_oid()], Some(E::Int4));
+        assert_eq!(
+            select(&[25], &[prefix.clone()], &["a"], false),
+            Ok(prefix.clone())
+        );
+        assert_eq!(select(&[], &[prefix.clone()], &["a"], false), Err("42883"));
+        assert_eq!(
+            select(&[25, 23, 23], &[prefix.clone()], &["a"], false),
+            Ok(prefix.clone())
+        );
+        assert_eq!(
+            select(&[25, E::Int4.array_oid()], &[prefix.clone()], &["a"], true),
+            Ok(prefix)
+        );
+        let earlier = declaration("b", vec![23, 23], None);
+        let mut cross = vec![earlier.clone(), variadic.clone()];
+        if reverse {
+            cross.reverse();
+        }
+        assert_eq!(select(&[23, 23], &cross, &["b", "a"], false), Ok(earlier));
+        assert_eq!(
+            select(&[23, 23], &cross, &["a", "b"], false),
+            Ok(variadic.clone())
+        );
+        let wider = declaration("b", vec![20, 20], None);
+        let mut different = vec![wider, variadic.clone()];
+        if reverse {
+            different.reverse();
+        }
+        assert_eq!(
+            select(&[23, 23], &different, &["b", "a"], false),
+            Ok(variadic.clone())
+        );
+        assert_eq!(
+            select(&[0, 0], &different, &["b", "a"], false),
+            Err("42725")
+        );
+        assert_eq!(
+            select(&[23], &[variadic.clone()], &["hidden"], false),
+            Err("42883")
+        );
+        assert_eq!(
+            select(&[E::Int4.array_oid()], &[fixed.clone()], &["a"], true),
+            Err("42883")
+        );
+    }
+    let malformed = declaration("a", vec![23], Some(E::Int4));
+    assert_eq!(select(&[23], &[malformed], &["a"], false), Err("42883"));
+    assert_eq!(
+        select(&[23, 23], &[fixed.clone(), fixed.clone()], &["a"], false),
+        Err("42725")
+    );
+    // Ordinary array arguments do not implicitly become variadic scalar elements.
+    assert_eq!(
+        select(&[E::Int4.array_oid()], &[variadic.clone()], &["a"], false),
+        Err("42883")
+    );
+    assert_eq!(funcs.names(), before);
+}
