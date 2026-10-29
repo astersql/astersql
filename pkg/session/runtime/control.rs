@@ -2223,7 +2223,7 @@ impl ConcreteSession {
                         field
                             .Expr
                             .as_ref()
-                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract")))
+                            .is_some_and(|expr| matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     })
                     .collect::<Vec<_>>();
                 if affected.iter().any(|affected| *affected) {

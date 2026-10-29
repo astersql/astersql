@@ -2640,7 +2640,7 @@ impl ConcreteSession {
             // scalar path's untyped protocol fallback.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract")))
+                    .any(|expr| expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From
@@ -4752,7 +4752,7 @@ impl ConcreteSession {
                     result.push(result_field);
                 } else {
                     let field_type = if self.sql_dialect() == ast::SqlDialect::MySQL
-                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract"))
+                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version"))
                     {
                         self.mysql_function_result_type(expression, &source_fields)?
                     } else {

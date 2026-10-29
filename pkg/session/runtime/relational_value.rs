@@ -1965,6 +1965,14 @@ pub(super) fn relational_expression_value(
                         .and_then(|next| next.pred_opt())
                         .map(|date| date.format("%Y-%m-%d").to_string()))
                 }
+                "tidb_version" => {
+                    astersql_expression::formal_registry::VerifyArgsWrapper(
+                        "tidb_version",
+                        Args.len(),
+                    )
+                    .map_err(|error| session_error("validate TIDB_VERSION arguments", error))?;
+                    Ok(Some(astersql_expression::tidb_version()))
+                }
                 "date_format" if Args.len() == 2 => {
                     let Some(value) = relational_expression_value(&Args[0], row)? else {
                         return Ok(None);

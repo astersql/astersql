@@ -4067,6 +4067,7 @@ pub mod formal_registry {
         IfNull(types::EvalType),
         Row,
         JsonExtract,
+        TiDBVersion,
         Uuid,
         Rand,
         Md5,
@@ -4866,6 +4867,9 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::TiDBVersion => {
+                    Ok((crate::builtin_info_kernel::tidb_version(), false))
+                }
                 CoreBuiltinKind::DateFormat => {
                     let Some(time) =
                         DateFormatInput(ctx, self.base.args[0].Eval(ctx, row.clone())?)?
@@ -5967,6 +5971,19 @@ pub mod formal_registry {
                 args[0].GetType(ctx.GetEvalCtx()).clone(),
                 "builtinRowSig",
             ),
+            "tidb_version" => {
+                let mut return_type = field_type_for_eval_type(types::ETString);
+                let (charset, collation) = ctx.GetCharsetInfo();
+                return_type.SetCharset(charset);
+                return_type.SetCollate(collation);
+                // Go's tidbVersionFunctionClass uses the build info's byte length.
+                return_type.SetFlen(crate::builtin_info_kernel::tidb_version().len() as isize);
+                (
+                    CoreBuiltinKind::TiDBVersion,
+                    return_type,
+                    "builtinTiDBVersionSig",
+                )
+            }
             "json_extract" => {
                 // Match Go newBaseBuiltinFuncWithTp's JSON result identity.
                 let mut return_type = field_type_for_eval_type(types::ETJson);
@@ -6686,6 +6703,7 @@ pub mod formal_registry {
     }
     core_factory!(row_factory, "row");
     core_factory!(json_extract_factory, "json_extract");
+    core_factory!(tidb_version_factory, "tidb_version");
     core_factory!(uuid_factory, "uuid");
     core_factory!(rand_factory, "rand");
     core_factory!(md5_factory, "md5");
@@ -6768,6 +6786,7 @@ pub mod formal_registry {
         ("if", if_factory),
         ("row", row_factory),
         ("json_extract", json_extract_factory),
+        ("tidb_version", tidb_version_factory),
         ("uuid", uuid_factory),
         ("rand", rand_factory),
         ("md5", md5_factory),
