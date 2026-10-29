@@ -1588,3 +1588,123 @@ fn pg_function_25_context_display_width() {
     );
     assert_eq!(cast.GetType(modern.GetEvalCtx()).GetFlen(), 22);
 }
+
+#[test]
+fn pg_function_26_formal_factories() {
+    use crate::{Constant, Expression, NewFunctionBase, chunk, mysql, types};
+    let ctx = exprstatic::NewExprContext(Vec::new());
+    let mut integer = *types::NewFieldType(mysql::TypeLonglong);
+    integer.SetFlen(22);
+    integer.SetDecimal(0);
+    let arg = |value| Box::new(Constant::with_type(value, integer.clone())) as crate::ExprBox;
+    let overflow = || {
+        NewFunctionBase(
+            &ctx,
+            "abs",
+            integer.clone(),
+            vec![arg(types::NewIntDatum(i64::MIN))],
+        )
+        .unwrap()
+    };
+    let build = |name: &str, args| {
+        NewFunctionBase(
+            &ctx,
+            name,
+            *types::NewFieldType(mysql::TypeUnspecified),
+            args,
+        )
+    };
+    for name in ["greatest", "least", "concat"] {
+        let short = build(name, vec![arg(types::Datum::default()), overflow()]).unwrap();
+        assert!(
+            short
+                .Eval(ctx.GetEvalCtx(), chunk::Row::default())
+                .unwrap()
+                .IsNull(),
+            "{name}: NULL stops later error"
+        );
+        let required = build(name, vec![overflow(), arg(types::Datum::default())]).unwrap();
+        assert!(
+            required
+                .Eval(ctx.GetEvalCtx(), chunk::Row::default())
+                .is_err(),
+            "{name}: preceding error propagates"
+        );
+        assert!(build(name, vec![]).is_err());
+    }
+    for name in ["greatest", "least"] {
+        let values = build(
+            name,
+            vec![
+                arg(types::NewIntDatum(i64::MIN)),
+                arg(types::NewIntDatum(i64::MAX)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            values
+                .EvalInt(ctx.GetEvalCtx(), chunk::Row::default())
+                .unwrap(),
+            (
+                if name == "greatest" {
+                    i64::MAX
+                } else {
+                    i64::MIN
+                },
+                false
+            )
+        );
+        assert!(build(name, vec![arg(types::NewIntDatum(7))]).is_err());
+    }
+    let mut numeric = *types::NewFieldType(mysql::TypeNewDecimal);
+    numeric.SetFlen(4);
+    numeric.SetDecimal(1);
+    let mut decimal = types::MyDecimal::default();
+    decimal.FromString(b"10.5").unwrap();
+    let mixed = build(
+        "least",
+        vec![
+            arg(types::NewIntDatum(2)),
+            Box::new(Constant::with_type(
+                types::NewDecimalDatum(decimal),
+                numeric,
+            )),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        mixed.GetType(ctx.GetEvalCtx()).GetType(),
+        mysql::TypeNewDecimal
+    );
+    assert_eq!(
+        mixed
+            .EvalDecimal(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap()
+            .0
+            .ToString(),
+        b"2"
+    );
+    // CONCAT packet overflow uses the existing statement warning/error policy.
+    let limited_eval = exprstatic::NewEvalContext(vec![exprstatic::WithMaxAllowedPacket(1)]);
+    let limited = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        limited_eval,
+    ))]);
+    let text = |v: &str| {
+        Box::new(Constant::with_type(
+            types::NewStringDatum(v.to_owned()),
+            *types::NewFieldType(mysql::TypeVarString),
+        )) as crate::ExprBox
+    };
+    let concat = NewFunctionBase(
+        &limited,
+        "concat",
+        *types::NewFieldType(mysql::TypeUnspecified),
+        vec![text("ab")],
+    )
+    .unwrap();
+    assert!(
+        concat
+            .EvalString(limited.GetEvalCtx(), chunk::Row::default())
+            .is_err()
+    );
+}

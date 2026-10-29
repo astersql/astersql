@@ -3212,7 +3212,13 @@ pub(super) fn validate_function_visibility(
                 // and prepared statements. The dialect owns the error identity.
                 if FnName.L == "concat" && Args.is_empty() {
                     if self.dialect == ast::SqlDialect::PostgreSQL {
-                        self.hidden.get_or_insert_with(|| FnName.L.clone());
+                        let expression = node
+                            .as_any()
+                            .downcast_ref::<ast::ExprNode>()
+                            .expect("function AST");
+                        self.validation_error.get_or_insert_with(|| {
+                            super::function_diagnostics::no_matching_function(expression, &[])
+                        });
                     } else {
                         self.validation_error.get_or_insert_with(|| {
                             let error = astersql_util_dbterror::ClassExpression
@@ -3267,6 +3273,24 @@ pub(super) fn validate_function_visibility(
                 let qualified_special_expression = self.dialect == ast::SqlDialect::PostgreSQL
                     && matches!(FnName.L.as_str(), "coalesce" | "greatest" | "least")
                     && !Schema.L.is_empty();
+                if qualified_special_expression && matches!(FnName.L.as_str(), "greatest" | "least")
+                {
+                    let expression = node
+                        .as_any()
+                        .downcast_ref::<ast::ExprNode>()
+                        .expect("function AST");
+                    let types = Args
+                        .iter()
+                        .map(|arg| match &arg.Kind {
+                            ast::ExprKind::Cast { Tp, .. } => Tp.GetType(),
+                            _ => astersql_parser_mysql::r#type::TypeNull,
+                        })
+                        .collect::<Vec<_>>();
+                    self.validation_error.get_or_insert_with(|| {
+                        super::function_diagnostics::no_matching_function(expression, &types)
+                    });
+                    return true;
+                }
                 if unknown_zero_argument
                     || qualified_special_expression
                     || !astersql_expression::formal_registry::FunctionVisibleInDialect(

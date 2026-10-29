@@ -221,7 +221,8 @@ def run(dsns, evidence, aster_mysql=None):
                         check(recovery['rows'] == [['31']] and recovery['ready'] == 'I', f'{side}/{case}: wire recovery')
                     probe(case)
         for side, conn in conns.items():
-            archive('pg', side, label, 'deallocate', query(conn, 'DEALLOCATE '+name.decode()))
+            deallocated = archive('pg', side, label, 'deallocate', query(conn, 'DEALLOCATE '+chr(34)+name.decode().replace(chr(34),chr(34)*2)+chr(34)))
+            check(deallocated['status'] == 1, f'{side}/{label}: named statement cleanup')
             if prepared[side][1]:
                 wire = wires[side]
                 archive('wire', side, label, 'close', wire.phase(b'C', b'S'+name+b'\0', '3'))
@@ -237,7 +238,9 @@ def run(dsns, evidence, aster_mysql=None):
             fixtures={s: hashlib.sha256(Path(__file__).with_name(s).read_bytes()).hexdigest() for s in sources},
             cargo_lock_sha256=hashlib.sha256((repo/'Cargo.lock').read_bytes()).hexdigest(),
             source_diff_sha256=hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD', '--', 'pkg'], cwd=repo)).hexdigest(),
-            rust_binary=binary, rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None)))
+            rust_binary=binary, rust_binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest() if binary else None,
+            reference_build=(json.loads(Path(os.environ['FUNCTION26_REFERENCE_BUILD_FILE']).read_text())
+                             if os.environ.get('FUNCTION26_REFERENCE_BUILD_FILE') else None))))
         for side, dsn in dsns:
             conn = pq.PQconnectdb(dsn.encode()); assert conn
             conns[side] = conn
@@ -370,7 +373,11 @@ def run(dsns, evidence, aster_mysql=None):
         for conn in conns.values():
             pq.PQfinish(conn)
         if reference_database:
-            cleanup['reference_database_dropped'] = mysqls['reference'].query(f'DROP DATABASE {reference_database}')['code'] == 0
+            mysql = mysqls['reference']
+            pending = mysql.mysql_store_result(mysql.conn)
+            if pending:
+                mysql.mysql_free_result(pending)
+            cleanup['reference_database_dropped'] = mysql.query(f'DROP DATABASE {reference_database}')['code'] == 0
             check(cleanup['reference_database_dropped'], 'reference database cleanup')
         for mysql in mysqls.values():
             mysql.close()

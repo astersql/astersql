@@ -3156,7 +3156,39 @@ impl ConcreteSession {
                     && matches!(FnName.L.as_str(), "greatest" | "least")
                     && let Err(error) = self.session.pg_extremum_result_type(Args, self.sources)
                 {
-                    self.scalar_cast_error = Some(error);
+                    let mut target = None;
+                    let mut position = None;
+                    for arg in Args {
+                        let tp = self.session.pg_case_input_type(arg, self.sources);
+                        if tp.GetType() == astersql_parser_mysql::r#type::TypeNull {
+                            continue;
+                        }
+                        if let Some(old) = &target {
+                            match pg_union_common_type(old, &tp) {
+                                Ok(tp) => target = Some(tp),
+                                Err(_) => {
+                                    position = Some(arg.OriginTextPosition as usize);
+                                    break;
+                                }
+                            }
+                        } else {
+                            target = Some(tp);
+                        }
+                    }
+                    self.scalar_cast_error = Some(if let Some(position) = position {
+                        let diagnostic = super::function_diagnostics::PgFunctionError {
+                            state: "42804",
+                            message: format!("{} types cannot be matched", FnName.L.to_uppercase()),
+                            hint: None,
+                            position: Some(position),
+                        };
+                        SessionError::with_source(
+                            diagnostic.to_string(),
+                            astersql_errors::SharedError::new(diagnostic),
+                        )
+                    } else {
+                        error
+                    });
                 }
                 // NULLIF selects an equality operator before row evaluation.
                 // Typed text cannot use the unknown-literal numeric coercion path.
@@ -4067,6 +4099,8 @@ impl ConcreteSession {
             && Schema.L.is_empty()
             && match FnName.L.as_str() {
                 "abs" => Args.len() == 1,
+                "concat" => !Args.is_empty(),
+                "greatest" | "least" => Args.len() >= 2,
                 "round" => (1..=2).contains(&Args.len()),
                 "substr" | "substring" => (2..=3).contains(&Args.len()),
                 _ => false,

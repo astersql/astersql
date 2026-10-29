@@ -57,3 +57,60 @@ fn pg_function_25_conditional_spans() {
         "{expr:?}"
     );
 }
+
+#[test]
+fn pg_function_26_extrema_syntax_spans() {
+    for (sql, position) in [
+        ("SELECT greatest()", 17),
+        ("SELECT least()", 14),
+        ("SELECT greatest(VARIADIC ARRAY[1,2])", 17),
+        ("SELECT least(/* é */ VARIADIC ARRAY[1,2])", 22),
+    ] {
+        let mut parser = crate::Parser::with_dialect(crate::ast::SqlDialect::PostgreSQL);
+        assert!(parser.ParseOneStmt(sql, "", "").is_err());
+        assert_eq!(
+            parser.PostgreSQLSyntaxErrorPosition(),
+            Some(position),
+            "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT greatest(1)",
+        "SELECT least(NULL,2)",
+        "SELECT \"variadic\"",
+        "SELECT 'VARIADIC'",
+    ] {
+        assert!(
+            crate::Parser::with_dialect(crate::ast::SqlDialect::PostgreSQL)
+                .ParseOneStmt(sql, "", "")
+                .is_ok(),
+            "{sql}"
+        );
+    }
+    assert!(
+        crate::Parser::default()
+            .ParseOneStmt("SELECT variadic", "", "")
+            .is_ok()
+    );
+}
+
+#[test]
+fn pg_function_26_decimal_literal_field() {
+    let node = crate::Parser::default()
+        .ParseOneStmt("SELECT 10.5", "", "")
+        .unwrap();
+    let select = node
+        .as_any()
+        .downcast_ref::<crate::ast::SelectStmt>()
+        .unwrap();
+    let crate::ast::ExprKind::Value(value) = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+    else {
+        panic!()
+    };
+    assert_eq!(
+        value.Type.GetFlen(),
+        5,
+        "Go DefaultTypeForValue(MyDecimal) reserves decimal point width"
+    );
+    assert_eq!(value.Type.GetDecimal(), 1);
+}

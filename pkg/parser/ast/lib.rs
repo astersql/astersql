@@ -1112,7 +1112,9 @@ impl ExprNode {
             }
             ValueDatum::Decimal(value) => {
                 field_type.SetType(parser_mysql::r#type::TypeNewDecimal);
-                field_type.SetFlen(value.len() as isize);
+                // Go DefaultTypeForValue(MyDecimal) reserves the decimal point
+                // in addition to the literal's byte width, before function typing.
+                field_type.SetFlen(value.len() as isize + 1);
                 field_type.SetDecimal(
                     value
                         .split_once('.')

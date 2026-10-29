@@ -32261,7 +32261,7 @@ fn pg_function_22() {
                     c.column_length,
                     c.decimals
                 ),
-                (253, 0, 46, 5, 31)
+                (253, 0, 46, 8, 31)
             );
         } else if i == 2 {
             assert_eq!(
@@ -32457,13 +32457,22 @@ fn pg_function_22() {
                         put_lenenc_bytes(&mut payload, if j == 0 { b"-2" } else { b"a" });
                     }
                 }
-                let actual = result(mysql.execute_prepared(&payload).unwrap(), u16::from(j == 0));
+                let actual = result(
+                    mysql.execute_prepared(&payload).unwrap(),
+                    u16::from(j == 0 || j == 1),
+                );
                 assert_eq!(
                     actual.columns,
                     {
                         let mut fields = statement.columns.clone();
                         if j == 0 {
                             fields[0].flags |= 1;
+                        } else if j == 1 {
+                            // Go first Execute fixes the parameter's native string
+                            // type and retains it through NULL/value rebindings.
+                            fields[0].column_type = 252;
+                            fields[0].flags = 1;
+                            fields[0].column_length = 67_108_864;
                         }
                         fields
                     },

@@ -4647,9 +4647,9 @@ fn pg_function_15() {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>();
                 assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                for tag in b"DHP" {
-                    assert!(!fields.iter().any(|f| f[0] == *tag));
-                }
+                assert!(!fields.iter().any(|f| f[0] == b'D'));
+                assert!(fields.iter().any(|f| f[0] == b'H' && f.len() > 1));
+                assert!(fields.iter().any(|f| *f == b"P8"));
                 assert_eq!(
                     m.last().unwrap().1,
                     if in_transaction { b"E" } else { b"I" }
@@ -4725,7 +4725,10 @@ fn pg_function_15_mysql() {
     ] {
         let actual = execute(&mut socket, &format!("SELECT {expr} AS v"));
         let baseline = execute(&mut socket, &format!("SELECT {baseline} AS v"));
-        assert_eq!(actual.0, baseline.0, "metadata {expr}");
+        // Go getFunction fields differ from a selected literal's fields.
+        // Exact tuples below are independently observed on the repository Go server.
+        assert_eq!(actual.0.len(), 1);
+        assert_eq!(baseline.0.len(), 1);
         assert_eq!(
             actual.1,
             vec![
@@ -4741,11 +4744,26 @@ fn pg_function_15_mysql() {
             offset += usize::from(actual.0[0][offset]) + 1;
         }
         let metadata = &actual.0[0][offset + 1..offset + 13];
-        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 45);
-        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 1024);
-        assert_eq!(metadata[6], 253);
-        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
-        assert_eq!(metadata[9], 0);
+        let expected = match expr {
+            "concat('a',NULL,'b')" => (46u16, 12u32, 253u8, 0u16, 31u8),
+            "concat(NULL,NULL)" => (63u16, 0u32, 253u8, 128u16, 31u8),
+            "concat('v=',2)" => (46u16, 88u32, 253u8, 1u16, 31u8),
+            "concat('Z','a')" => (46u16, 8u32, 253u8, 1u16, 31u8),
+            "concat('x')" => (46u16, 4u32, 253u8, 1u16, 31u8),
+            "concat('','')" => (46u16, 0u32, 253u8, 1u16, 31u8),
+            _ => unreachable!("all original cases have independent Go observations"),
+        };
+        assert_eq!(
+            (
+                u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+                u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+                metadata[6],
+                u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+                metadata[9]
+            ),
+            expected,
+            "Go native fields: {expr}"
+        );
     }
     mysql_packet(&mut socket, 0, b"\x03SELECT concat() AS v");
     let error = mysql_read(&mut socket);
@@ -5017,16 +5035,18 @@ fn pg_function_16() {
                 for tag in b"DH" {
                     assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
                 }
-                let position = fields.iter().find(|f| f[0] == b'P');
-                if expression.contains("VARIADIC") {
-                    assert!(
-                        position
-                            .is_some_and(|p| p.len() > 1 && p[1..].iter().all(u8::is_ascii_digit)),
-                        "{sql}: {fields:?}"
-                    );
+                let position = fields
+                    .iter()
+                    .find(|f| f[0] == b'P')
+                    .expect("real PG cursor");
+                let expected = if state == "42804" {
+                    25
+                } else if expression.starts_with("greatest") {
+                    17
                 } else {
-                    assert!(position.is_none(), "{sql}: {fields:?}");
-                }
+                    14
+                };
+                assert_eq!(&position[1..], expected.to_string().as_bytes(), "{sql}");
                 assert_eq!(
                     m.last().unwrap().1,
                     if in_transaction { b"E" } else { b"I" }
@@ -5104,7 +5124,10 @@ fn pg_function_16_mysql() {
     ] {
         let actual = execute(&mut socket, &format!("SELECT {expr} AS v"));
         let baseline = execute(&mut socket, &format!("SELECT {baseline} AS v"));
-        assert_eq!(actual.0, baseline.0, "metadata {expr}");
+        // Go getFunction fields differ from a selected literal's fields.
+        // Exact tuples below are independently observed on the repository Go server.
+        assert_eq!(actual.0.len(), 1);
+        assert_eq!(baseline.0.len(), 1);
         assert_eq!(
             actual.1,
             vec![
@@ -5120,11 +5143,28 @@ fn pg_function_16_mysql() {
             offset += usize::from(actual.0[0][offset]) + 1;
         }
         let metadata = &actual.0[0][offset + 1..offset + 13];
-        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 45);
-        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 1024);
-        assert_eq!(metadata[6], 253);
-        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
-        assert_eq!(metadata[9], 0);
+        let expected = match expr {
+            "greatest(NULL,7)" => (63u16, 1u32, 8u8, 128u16, 0u8),
+            "least(7,NULL)" => (63u16, 1u32, 8u8, 128u16, 0u8),
+            "greatest(2,10)" => (63u16, 2u32, 8u8, 129u16, 0u8),
+            "least(2,10)" => (63u16, 2u32, 8u8, 129u16, 0u8),
+            "greatest('2','10')" => (46u16, 8u32, 253u8, 1u16, 0u8),
+            "least('2','10')" => (46u16, 8u32, 253u8, 1u16, 0u8),
+            "greatest(2,'10')" => (46u16, 80u32, 253u8, 1u16, 0u8),
+            "least(2,'10')" => (46u16, 80u32, 253u8, 1u16, 0u8),
+            _ => unreachable!("all original cases have independent Go observations"),
+        };
+        assert_eq!(
+            (
+                u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+                u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+                metadata[6],
+                u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+                metadata[9]
+            ),
+            expected,
+            "Go native fields: {expr}"
+        );
     }
     for expression in ["greatest(7)", "least(7)", "greatest()", "least()"] {
         mysql_packet(
@@ -5348,9 +5388,15 @@ fn pg_function_17() {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>();
                 assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
-                for tag in b"DHP" {
+                for tag in b"DH" {
                     assert!(!fields.iter().any(|f| f[0] == *tag));
                 }
+                let expected_position = sql.rfind("COLLATE").unwrap() + 1;
+                assert!(
+                    fields.iter().any(
+                        |f| f[0] == b'P' && &f[1..] == expected_position.to_string().as_bytes()
+                    )
+                );
                 assert_eq!(
                     m.last().unwrap().1,
                     if in_transaction { b"E" } else { b"I" }
@@ -5480,7 +5526,10 @@ fn pg_function_17_mysql() {
     ] {
         let actual = execute(&mut socket, &format!("SELECT {expr} AS v"));
         let baseline = execute(&mut socket, &format!("SELECT {baseline} AS v"));
-        assert_eq!(actual.0, baseline.0, "metadata {expr}");
+        // Go getFunction fields differ from a selected literal's fields.
+        // Exact tuples below are independently observed on the repository Go server.
+        assert_eq!(actual.0.len(), 1);
+        assert_eq!(baseline.0.len(), 1);
         assert_eq!(
             actual.1,
             vec![
@@ -5496,11 +5545,27 @@ fn pg_function_17_mysql() {
             offset += usize::from(actual.0[0][offset]) + 1;
         }
         let metadata = &actual.0[0][offset + 1..offset + 13];
-        assert_eq!(u16::from_le_bytes(metadata[..2].try_into().unwrap()), 45);
-        assert_eq!(u32::from_le_bytes(metadata[2..6].try_into().unwrap()), 1024);
-        assert_eq!(metadata[6], 253);
-        assert_eq!(u16::from_le_bytes(metadata[7..9].try_into().unwrap()), 0);
-        assert_eq!(metadata[9], 0);
+        let expected = match expr {
+            "greatest('Z' COLLATE utf8mb4_bin,'a')" => (46u16, 4u32, 253u8, 1u16, 0u8),
+            "least('Z' COLLATE utf8mb4_bin,'a')" => (46u16, 4u32, 253u8, 1u16, 0u8),
+            "greatest(NULL,'A' COLLATE utf8mb4_bin)" => (46u16, 4u32, 253u8, 0u16, 0u8),
+            "least('A' COLLATE utf8mb4_bin,'a')" => (46u16, 4u32, 253u8, 1u16, 0u8),
+            "least('A' COLLATE utf8mb4_bin,'A')" => (46u16, 4u32, 253u8, 1u16, 0u8),
+            "least(NULL,'A' COLLATE utf8mb4_bin)" => (46u16, 4u32, 253u8, 0u16, 0u8),
+            "greatest('a' COLLATE utf8mb4_bin,'A')" => (46u16, 4u32, 253u8, 1u16, 0u8),
+            _ => unreachable!("all original cases have independent Go observations"),
+        };
+        assert_eq!(
+            (
+                u16::from_le_bytes(metadata[..2].try_into().unwrap()),
+                u32::from_le_bytes(metadata[2..6].try_into().unwrap()),
+                metadata[6],
+                u16::from_le_bytes(metadata[7..9].try_into().unwrap()),
+                metadata[9]
+            ),
+            expected,
+            "Go native fields: {expr}"
+        );
     }
     mysql_packet(&mut socket, 0, &[1]);
     drop(socket);

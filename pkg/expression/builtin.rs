@@ -4076,6 +4076,8 @@ pub mod formal_registry {
         Case,
         IfNull(types::EvalType),
         Coalesce(types::EvalType),
+        Concat(u64),
+        Extremum(bool, types::EvalType),
         Row,
         JsonExtract,
         TiDBVersion,
@@ -4420,6 +4422,23 @@ pub mod formal_registry {
         }
         fn evalInt(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<(i64, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::Extremum(greatest, types::ETInt) => {
+                    let (mut selected, null) = self.base.args[0].EvalInt(ctx, row.clone())?;
+                    if null {
+                        return Ok((0, true));
+                    }
+                    for argument in &self.base.args[1..] {
+                        let (value, null) = argument.EvalInt(ctx, row.clone())?;
+                        if null {
+                            return Ok((0, true));
+                        }
+                        let ordering = value.cmp(&selected);
+                        if (greatest && ordering.is_gt()) || (!greatest && ordering.is_lt()) {
+                            selected = value;
+                        }
+                    }
+                    Ok((selected, false))
+                }
                 CoreBuiltinKind::Compare(..)
                 | CoreBuiltinKind::In(..)
                 | CoreBuiltinKind::IsNull
@@ -4851,6 +4870,23 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(types::MyDecimal, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::Extremum(greatest, types::ETDecimal) => {
+                    let (mut selected, null) = self.base.args[0].EvalDecimal(ctx, row.clone())?;
+                    if null {
+                        return Ok((types::MyDecimal::default(), true));
+                    }
+                    for argument in &self.base.args[1..] {
+                        let (value, null) = argument.EvalDecimal(ctx, row.clone())?;
+                        if null {
+                            return Ok((types::MyDecimal::default(), true));
+                        }
+                        let ordering = value.Compare(&selected).cmp(&0);
+                        if (greatest && ordering.is_gt()) || (!greatest && ordering.is_lt()) {
+                            selected = value;
+                        }
+                    }
+                    Ok((selected, false))
+                }
                 CoreBuiltinKind::MysqlRound(types::ETDecimal) => {
                     let (value, null) = self.base.args[0].EvalDecimal(ctx, row.clone())?;
                     if null {
@@ -4978,6 +5014,41 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::Extremum(greatest, types::ETString) => {
+                    let (mut selected, null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    if null {
+                        return Ok((String::new(), true));
+                    }
+                    for argument in &self.base.args[1..] {
+                        let (value, null) = argument.EvalString(ctx, row.clone())?;
+                        if null {
+                            return Ok((String::new(), true));
+                        }
+                        let ordering = self.base.collator.Compare(&value, &selected).cmp(&0);
+                        if (greatest && ordering.is_gt()) || (!greatest && ordering.is_lt()) {
+                            selected = value;
+                        }
+                    }
+                    Ok((selected, false))
+                }
+                CoreBuiltinKind::Concat(limit) => {
+                    let mut result = String::new();
+                    for argument in &self.base.args {
+                        let (value, null) = argument.EvalString(ctx, row.clone())?;
+                        if null {
+                            return Ok((String::new(), true));
+                        }
+                        if result.len() as u128 + value.len() as u128 > limit as u128 {
+                            crate::expression_errors_kernel::handleAllowedPacketOverflowed(
+                                ctx, "concat", limit,
+                            )
+                            .map_err(Error::from)?;
+                            return Ok((String::new(), true));
+                        }
+                        result.push_str(&value);
+                    }
+                    Ok((result, false))
+                }
                 CoreBuiltinKind::TiDBVersion => {
                     Ok((crate::builtin_info_kernel::tidb_version(), false))
                 }
@@ -5810,6 +5881,8 @@ pub mod formal_registry {
             let datetime_type = *types::NewFieldType(mysql::TypeDatetime);
             args[0] = BuildCastFunction(ctx, &args[0], &datetime_type);
         }
+        let split_collation_args = matches!(name, "concat" | "greatest" | "least")
+            .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
             "date_trunc" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
@@ -6149,11 +6222,20 @@ pub mod formal_registry {
                     types::ETDecimal => "builtinUnaryMinusDecimalSig",
                     _ => "builtinUnaryMinusRealSig",
                 };
-                (
-                    CoreBuiltinKind::UnaryMinus(eval_type),
-                    field_type_for_eval_type(eval_type),
-                    signature,
-                )
+                let source = args[0].GetType(ctx.GetEvalCtx());
+                let mut result = field_type_for_eval_type(eval_type);
+                if matches!(eval_type, types::ETInt | types::ETDecimal) {
+                    result.AddFlag(mysql::BinaryFlag | (source.GetFlag() & mysql::NotNullFlag));
+                    result.SetDecimal(source.GetDecimal());
+                    let column = args[0].as_column().is_some()
+                        || args[0].as_any().is::<crate::CorrelatedColumn>();
+                    let reserved_signed_width = column
+                        && (eval_type == types::ETDecimal
+                            || !mysql::HasUnsignedFlag(source.GetFlag()));
+                    result
+                        .SetFlenUnderLimit(source.GetFlen() + isize::from(!reserved_signed_width));
+                }
+                (CoreBuiltinKind::UnaryMinus(eval_type), result, signature)
             }
             "plus" | "minus" | "mul" | "div" | "intdiv" | "mod" => {
                 let left = args[0].GetType(ctx.GetEvalCtx()).EvalType();
@@ -6257,6 +6339,127 @@ pub mod formal_registry {
                     _ => "builtinCaseWhenIntSig",
                 };
                 (CoreBuiltinKind::Case, return_type, signature)
+            }
+            "concat" | "greatest" | "least" => {
+                if ctx.SQLDialect() != crate::ast::SqlDialect::MySQL {
+                    return Err(errors::New(
+                        "dialect-specific CONCAT/extrema require the PG expression path",
+                    ));
+                }
+                let inputs = args
+                    .iter()
+                    .map(|arg| arg.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                let aggregate =
+                    types_dependency::field::AggFieldType(&inputs.iter().collect::<Vec<_>>());
+                let eval_type = if name == "concat" {
+                    types::ETString
+                } else {
+                    aggregate.EvalType()
+                };
+                if !matches!(eval_type, types::ETInt | types::ETDecimal | types::ETString) {
+                    return Err(errors::New(
+                        "CONCAT/extrema signature is not linked for this type family",
+                    ));
+                }
+                let mut result = field_type_for_eval_type(eval_type);
+                if eval_type != types::ETString {
+                    result.AddFlag(mysql::BinaryFlag);
+                }
+                if inputs.iter().all(|tp| mysql::HasNotNullFlag(tp.GetFlag())) {
+                    result.AddFlag(mysql::NotNullFlag);
+                }
+                let signature;
+                let kind;
+                if name == "concat" {
+                    let mut flen = 0;
+                    for tp in &inputs {
+                        if tp.GetFlen() < 0 {
+                            flen = mysql::MaxBlobWidth as isize;
+                        }
+                        flen += tp.GetFlen();
+                    }
+                    result.SetFlen(flen.min(mysql::MaxBlobWidth as isize));
+                    result.SetDecimal(types::UnspecifiedLength as isize);
+                    // Go addBinFlag is applied after deriving the original arguments' collation.
+                    kind = CoreBuiltinKind::Concat(ctx.GetEvalCtx().GetMaxAllowedPacket());
+                    signature = "builtinConcatSig";
+                } else {
+                    result.SetFlenUnderLimit(
+                        inputs.iter().map(|tp| tp.GetFlen()).fold(0, isize::max),
+                    );
+                    result.SetDecimalUnderLimit(
+                        inputs.iter().map(|tp| tp.GetDecimal()).fold(0, isize::max),
+                    );
+                    if eval_type == types::ETInt {
+                        result.AddFlag(aggregate.GetFlag());
+                    }
+                    kind = CoreBuiltinKind::Extremum(name == "greatest", eval_type);
+                    signature = match (name, eval_type) {
+                        ("greatest", types::ETInt) => "builtinGreatestIntSig",
+                        ("least", types::ETInt) => "builtinLeastIntSig",
+                        ("greatest", types::ETDecimal) => "builtinGreatestDecimalSig",
+                        ("least", types::ETDecimal) => "builtinLeastDecimalSig",
+                        ("greatest", _) => "builtinGreatestStringSig",
+                        _ => "builtinLeastStringSig",
+                    };
+                }
+                for argument in &mut args {
+                    *argument = match eval_type {
+                        types::ETInt => crate::WrapWithCastAsInt(ctx, argument.CloneExpr(), None),
+                        types::ETDecimal => crate::WrapWithCastAsDecimal(ctx, argument.CloneExpr()),
+                        _ => crate::WrapWithCastAsString(ctx, argument.CloneExpr()),
+                    };
+                }
+                if eval_type == types::ETDecimal {
+                    for (argument, source) in args.iter_mut().zip(&inputs) {
+                        if source.EvalType() != types::ETDecimal
+                            && argument.ConstLevel() == crate::ConstStrict
+                        {
+                            if let Ok((value, false)) =
+                                argument.EvalDecimal(ctx.GetEvalCtx(), chunk::Row::default())
+                            {
+                                let (precision, fraction) = value.PrecisionAndFrac();
+                                argument.GetTypeMut().SetFlenUnderLimit(precision as isize);
+                                argument
+                                    .GetTypeMut()
+                                    .SetDecimalUnderLimit(fraction as isize);
+                            }
+                        }
+                    }
+                }
+                if name == "concat" {
+                    // Go newBaseBuiltinFuncWithTp mutates the shared argument slice.
+                    let mut flen = 0;
+                    for arg in &args {
+                        let width = arg.GetType(ctx.GetEvalCtx()).GetFlen();
+                        if width < 0 {
+                            flen = mysql::MaxBlobWidth as isize;
+                        }
+                        flen += width;
+                    }
+                    result.SetFlen(flen.min(mysql::MaxBlobWidth as isize));
+                } else {
+                    // Go fixes width/scale from the family casts in bf.args.
+                    result.SetFlenUnderLimit(
+                        args.iter()
+                            .map(|arg| arg.GetType(ctx.GetEvalCtx()).GetFlen())
+                            .fold(0, isize::max),
+                    );
+                    result.SetDecimalUnderLimit(
+                        args.iter()
+                            .map(|arg| arg.GetType(ctx.GetEvalCtx()).GetDecimal())
+                            .fold(0, isize::max),
+                    );
+                }
+                if eval_type == types::ETString {
+                    if result.GetFlen() >= mysql::MaxBlobWidth as isize {
+                        result.SetType(mysql::TypeLongBlob);
+                    } else if result.GetFlen() >= 65536 {
+                        result.SetType(mysql::TypeMediumBlob);
+                    }
+                }
+                (kind, result, signature)
             }
             "coalesce" => {
                 let refs = args.iter().map(|arg| arg.as_ref()).collect::<Vec<_>>();
@@ -6829,6 +7032,8 @@ pub mod formal_registry {
         base.collator =
             collate::GetCollatorWithCollate(ctx.NewCollationEnabled(), &default_collation);
         base.pb_code = match kind {
+            // Signature construction does not authorize new pushdown sharing.
+            CoreBuiltinKind::Concat(_) | CoreBuiltinKind::Extremum(..) => 0,
             CoreBuiltinKind::Compare(operator, eval_type) => {
                 comparison_pb_code(operator, eval_type)
             }
@@ -6973,9 +7178,15 @@ pub mod formal_registry {
                     .map(|argument| argument.as_ref())
                     .collect(),
             ),
-            CoreBuiltinKind::FindInSet => {
-                Some(base.args.iter().map(|argument| argument.as_ref()).collect())
-            }
+            CoreBuiltinKind::Concat(_) | CoreBuiltinKind::Extremum(_, types::ETString) => Some(
+                split_collation_args
+                    .as_ref()
+                    .expect("split collation inputs")
+                    .iter()
+                    .map(|arg| arg.as_ref())
+                    .collect(),
+            ),
+            CoreBuiltinKind::FindInSet => Some(base.args.iter().map(|arg| arg.as_ref()).collect()),
             CoreBuiltinKind::Trim => Some(
                 base.args[..base.args.len().min(2)]
                     .iter()
@@ -7004,6 +7215,30 @@ pub mod formal_registry {
             base.collator =
                 collate::GetCollatorWithCollate(ctx.NewCollationEnabled(), &collation.Collation);
             base.SetCharsetAndCollation(collation.Charset, collation.Collation);
+            if split_collation_args.as_ref().is_some_and(|args| {
+                args.iter()
+                    .all(|arg| arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypeNull)
+            }) {
+                base.SetCharsetAndCollation(
+                    crate::charset::CharsetBin.into(),
+                    crate::charset::CollationBin.into(),
+                );
+                base.collator = collate::GetCollatorWithCollate(
+                    ctx.NewCollationEnabled(),
+                    crate::charset::CollationBin,
+                );
+            }
+            if split_collation_args.is_some() {
+                let (charset, collation) = base.CharsetAndCollation();
+                base.return_type.SetCharset(charset);
+                base.return_type.SetCollate(collation);
+            }
+            if matches!(kind, CoreBuiltinKind::Concat(_))
+                && base.return_type.GetCharset() == crate::charset::CharsetBin
+            {
+                base.return_type.AddFlag(mysql::BinaryFlag);
+            }
+
             if matches!(kind, CoreBuiltinKind::Compare(_, types::ETString)) {
                 base.SetCoercibility(crate::CoercibilityNumeric);
                 base.SetRepertoire(crate::ASCII);
@@ -7107,6 +7342,9 @@ pub mod formal_registry {
     core_factory!(insert_factory, "insert");
     core_factory!(ifnull_factory, "ifnull");
     core_factory!(coalesce_factory, "coalesce");
+    core_factory!(concat_factory, "concat");
+    core_factory!(greatest_factory, "greatest");
+    core_factory!(least_factory, "least");
     core_factory!(like_factory, "like");
     core_factory!(ilike_factory, "ilike");
     core_factory!(is_ipv4_factory, "is_ipv4");
@@ -7192,6 +7430,9 @@ pub mod formal_registry {
         ("insert", insert_factory),
         ("ifnull", ifnull_factory),
         ("coalesce", coalesce_factory),
+        ("concat", concat_factory),
+        ("greatest", greatest_factory),
+        ("least", least_factory),
         ("like", like_factory),
         ("ilike", ilike_factory),
         ("is_ipv4", is_ipv4_factory),

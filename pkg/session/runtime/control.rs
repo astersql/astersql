@@ -2262,7 +2262,7 @@ impl ConcreteSession {
                     ));
                 }
                 let affected = select.Fields.Fields.iter().map(|field| field.Expr.as_ref().is_some_and(|expr| {
-                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring" | "coalesce" | "nullif"))
+                    matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "abs" | "round" | "substr" | "substring" | "coalesce" | "nullif" | "concat" | "greatest" | "least"))
                 })).collect::<Vec<_>>();
                 if affected.iter().any(|v| *v) {
                     let parameters = arguments

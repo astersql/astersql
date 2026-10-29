@@ -323,6 +323,14 @@ impl Scanner {
                 self.lastKeyword = keyword;
             }
         }
+        // VARIADIC is a reserved PostgreSQL argument modifier, not a column
+        // identifier. Its unsupported grammar must reject at this original
+        // token, before lookahead advances to ARRAY. Quoted identifiers remain
+        // ordinary names and MySQL retains its existing identifier grammar.
+        if self.postgres && tok == token::identifier && lit.eq_ignore_ascii_case("variadic")
+            && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`') {
+            return token::invalid;
+        }
         // TIMESTAMPTZ is unreserved. Only its unquoted typed-literal form
         // enters the timestamp-literal grammar; casts and column names keep
         // their existing identifier path and the semantic action keeps 1184.
