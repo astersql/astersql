@@ -1884,6 +1884,7 @@ impl ConcreteSession {
                         | 114
                         | 3802
                         | 3904
+                        | 3906
                         | 2950
                         | 1007
                         | 1005
@@ -1988,9 +1989,9 @@ impl ConcreteSession {
                             .and_then(|index| supplied.get(index));
                         if let Some(
                             oid @ (16 | 17 | 21 | 25 | 1042 | 1043 | 700 | 701 | 1082 | 1083 | 1114
-                            | 1184 | 1186 | 114 | 3802 | 3904 | 2950 | 1007 | 1005 | 1700
-                            | 1021 | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1185 | 1187
-                            | 2951 | 199 | 3807 | 1016 | 1000 | 1009 | 1014 | 1015),
+                            | 1184 | 1186 | 114 | 3802 | 3904 | 3906 | 2950 | 1007 | 1005
+                            | 1700 | 1021 | 1022 | 1231 | 1001 | 1182 | 1183 | 1115 | 1185
+                            | 1187 | 2951 | 199 | 3807 | 1016 | 1000 | 1009 | 1014 | 1015),
                         ) = oid
                         {
                             let mut tp = astersql_parser_types::NewFieldType(if *oid == 1700 {
@@ -2003,6 +2004,8 @@ impl ConcreteSession {
                                 astersql_parser_mysql::r#type::TypePgJsonb
                             } else if *oid == 114 {
                                 astersql_parser_mysql::r#type::TypePgJson
+                            } else if *oid == 3906 {
+                                astersql_parser_mysql::r#type::TypePgNumRange
                             } else if *oid == 3904 {
                                 astersql_parser_mysql::r#type::TypePgInt4Range
                             } else if *oid == 2950 {
@@ -2178,6 +2181,7 @@ impl ConcreteSession {
                                 | 114
                                 | 3802
                                 | 3904
+                                | 3906
                                 | 2950
                                 | 1007
                                 | 1005

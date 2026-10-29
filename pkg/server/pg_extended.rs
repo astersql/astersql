@@ -496,6 +496,13 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
             .to_string()
             .into_bytes(),
         ),
+        3906 => (
+            253,
+            text.parse::<astersql_types::pg_numrange::PgNumRange>()
+                .map_err(|e| error(e.state, &e.message))?
+                .to_string()
+                .into_bytes(),
+        ),
         2950 => (
             253,
             text.parse::<astersql_types::pg_uuid::PgUuid>()
@@ -642,6 +649,11 @@ pub(crate) fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryP
             let range = astersql_types::pg_int4range::PgInt4Range::from_binary(value)
                 .map_err(|e| error(e.state, &e.message))?;
             return parameter(3904, Some(range.to_string().as_bytes()));
+        }
+        3906 => {
+            let range = astersql_types::pg_numrange::PgNumRange::from_binary(value)
+                .map_err(|e| error(e.state, &e.message))?;
+            return parameter(3906, Some(range.to_string().as_bytes()));
         }
         2950 => {
             // uuid_recv reads exactly 16 bytes, then Bind rejects leftovers.
@@ -1257,6 +1269,7 @@ impl Extended {
                         | 1186
                         | 1700
                         | 3904
+                        | 3906
                         | 2950
                         | 3802
                         | 1005

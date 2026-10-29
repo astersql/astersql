@@ -135,3 +135,7 @@ mod pg_array_test;
 pub mod pg_int4range;
 #[cfg(test)]
 mod pg_int4range_test;
+
+pub mod pg_numrange;
+#[cfg(test)]
+mod pg_numrange_test;

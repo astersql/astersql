@@ -1476,6 +1476,9 @@ pub(super) fn relational_expression_value(
             if Tp.GetType() == astersql_parser_mysql::r#type::TypePgInt4Range {
                 return pg_int4range_cast(relational_expression_value(Expr, row)?);
             }
+            if Tp.GetType() == astersql_parser_mysql::r#type::TypePgNumRange {
+                return pg_numrange_cast(relational_expression_value(Expr, row)?);
+            }
             if Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb {
                 return super::pg_jsonb::cast_value(relational_expression_value(Expr, row)?);
             }
@@ -3028,6 +3031,7 @@ pub(super) fn relational_expression_type(
                     | astersql_parser_mysql::r#type::TypeDatetime
             ) || Tp.PostgreSQLArrayElement().is_some()
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgInt4Range
+                || Tp.GetType() == astersql_parser_mysql::r#type::TypePgNumRange
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJsonb
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgJson
                 || Tp.GetType() == astersql_parser_mysql::r#type::TypePgUuid
@@ -3146,7 +3150,7 @@ pub(super) fn relational_expression_type(
             Args,
         } if matches!(
             FnName.L.as_str(),
-            "array_length" | "cardinality" | "array_append" | "int4range"
+            "array_length" | "cardinality" | "array_append" | "int4range" | "numrange"
         ) && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && astersql_expression::formal_registry::resolve_pg_typed_signature(
                 &FnName.L,
@@ -3159,6 +3163,8 @@ pub(super) fn relational_expression_type(
         {
             let mut result = new_type(if FnName.L == "int4range" {
                 astersql_parser_mysql::r#type::TypePgInt4Range
+            } else if FnName.L == "numrange" {
+                astersql_parser_mysql::r#type::TypePgNumRange
             } else if FnName.L == "array_append" {
                 astersql_parser_mysql::r#type::TypeVarString
             } else {
@@ -4920,4 +4926,42 @@ pub(super) fn pg_int4range_error(
         error.to_string(),
         astersql_errors::SharedError::new(diagnostic),
     )
+}
+
+pub(super) fn pg_numrange_cast(value: Option<String>) -> SessionResult<Option<String>> {
+    value
+        .map(|v| {
+            v.parse::<astersql_types::pg_numrange::PgNumRange>()
+                .map(|r| r.to_string())
+                .map_err(|e| pg_int4range_error(&e))
+        })
+        .transpose()
+}
+
+pub(super) fn pg_numrange_validate_cast(
+    source: &astersql_parser_types::FieldType,
+    target: &astersql_parser_types::FieldType,
+) -> SessionResult<()> {
+    use astersql_parser_mysql::r#type::*;
+    let source_range = source.GetType() == TypePgNumRange;
+    let target_range = target.GetType() == TypePgNumRange;
+    if !source_range && !target_range {
+        return Ok(());
+    }
+    let text_source = source.PostgreSQLArrayElement().is_none()
+        && source.PostgreSQLRecordFields().is_none()
+        && (source.PostgreSQLTextOid() == Some(25)
+            || (matches!(source.GetType(), TypeVarString | TypeVarchar | TypeString)
+                && source.GetCharset() != "binary"
+                && source.PostgreSQLTextOid().is_none()));
+    if (target_range && (source_range || text_source || source.GetType() == TypeNull))
+        || (source_range && matches!(target.PostgreSQLTextOid(), Some(25 | 1042 | 1043)))
+    {
+        Ok(())
+    } else {
+        Err(pg_bytea_input_error(
+            "42846",
+            "cannot cast type to numrange",
+        ))
+    }
 }

@@ -988,3 +988,6 @@ mod pg08_22_test;
 
 #[cfg(test)]
 mod pg08_23_test;
+
+#[cfg(test)]
+mod pg08_24_test;

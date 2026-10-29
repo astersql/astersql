@@ -2,7 +2,7 @@
 
 批次：【实施批次 24】；语义依赖：23；互斥前序：批次23结束或释放资源。不安排并行；来源为拆分批次8，不等于实施批次8。
 
-状态：未开始
+状态：已完成，待回归
 
 目的：numrange(numeric,numeric[,text]) 保留连续边界。
 
@@ -97,10 +97,10 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 
 ## Progress
 
-- [ ] 局部接口取证与当前测试名注册
-- [ ] 失败验证或已有正确行为的当前补证
-- [ ] 最小生产接线及通过验证
-- [ ] 真实参考/双方言、清理与Ready交付
+- [x] 局部接口取证、授权设计与当前测试名注册
+- [x] 三项真实运行期红灯，原命令复验与当前证据
+- [x] numrange连续边界及最小类型/codec/工厂/协议接线，formal及SQL通过
+- [ ] 真实参考、清理及Ready适用检查已执行；剩余8项无关MySQL通用元数据差分待回归
 
 ## Surprises & Discoveries
 
@@ -113,3 +113,72 @@ Rust测试复用`CreateAnalyzeSession`与`start_client_server`启动同一Server
 ## Outcomes & Retrospective
 
 仅计划已生成，实施与验证尚未执行；未来在本节记录实际结果、证据路径和未决依赖，不写回只读plan.md。
+
+
+## 2026-10-30 当前依赖门槛取证与阻塞
+
+本轮为实施批次24，语义依赖23。当前完整HEAD为`8aab0d67fe4aebd77c257e69d7607ebae748e9a0`。已读取整体plan.md（仅架构、未修改）、本文件、根及server AGENTS.md、PLANS.md、testing-flow.md及仓库rustcodegraph技能。通过`rg --files pkg/expression pkg/server pkg/session pkg/types`核对未发现这些目标包的doc.go。仓库索引status成功（11800文件，7075 Rust文件），随后用explore/query/node核对接口；图未命中numrange符号后用rg补证。
+
+互斥门槛已满足：`list_threads`显示批次23会话`01a1899c-287c-77f0-a04c-3c049b9eb360`为idle，read_thread确认其最后一轮completed，已提交上述完整SHA且报告临时实例/监听/测试对象/槽位释放。当前`target/rust-slot-locks`为空。本轮未占用共享源码或参考服务。
+
+可复用接口及实际消费者：`pkg/types/pg_int4range.rs::PgInt4Range`具有OID3904/subtype23、Option<i32>端点、empty、checked构造和text/binary codec；第71–84行对排除下界及包含上界递增，有限边界统一[lower,upper)，故不能复用于numrange连续语义。`pkg/parser/mysql/type.rs:234`仅提供TypePgInt4Range=0xdf。`pkg/expression/builtin.rs::resolve_pg_typed_signature`第2802行只接int4range；正式工厂/构造实现由批次23提交保留。`pkg/server/pg_result.rs:566`使用OID3904并调用PgInt4Range，`pkg/server/pg_extended.rs:1259`只列范围OID3904。批次23独立测试/客户端已注册，但其历史结果不计本轮证据。
+
+缺失的必需接口：没有独立numrange身份（OID3906/subtype numeric1700）的类型名/FieldType映射，没有保留numeric精度及上下界开闭标志的规范载体，没有对应text/binary范围codec及typed NULL/零行/绑定/结果消费者。`rustcodegraph query PgNumRange --limit 10`及`query TypePgNumRange --limit 10`均返回No results。补充`rg -n -i 'numrange|pgnumrange|3906' pkg/types pkg/parser pkg/expression pkg/session pkg/server --glob '*.rs' --glob '*.py' --glob '!testdata/parser.rs'`只发现numrange拒绝名称/批次23 MySQL拒绝夹具；generated/main_tables.rs中的3906是解析器状态编号，不是类型身份。不能把text结果或int4range整数步长伪装成本类型。
+
+接口拥有者：上游PG范围类型/codec交接（pkg/types、pkg/parser类型身份），及其session/server协议消费接线；批次23本身仅实现int4range，不提供numrange，未将批次23待回归的MySQL通用元数据问题当作本次语义阻塞。当前请求未授权补建缺失范围类型接口，本任务“独立numrange/subtype/codec依赖”和里程碑一要求缺接口时停止，不递归扩大范围。
+
+环境门槛：仅检查环境变量是否存在，未输出值或DSN；PG18_REFERENCE_DSN、PG_LIBPQ_LIBRARY、MYSQL8_REFERENCE_HOST/PORT/USER/PASSWORD均未配置。未探测或启动用户服务；不宣称本轮真实18.6/MySQL参考验证。可选PG_LIBPQ_LIBRARY未配置本身不构成阻塞。
+
+恢复条件：上游提供可消费的numrange独立身份、保留连续边界的numeric载体及codec/普通SQL桥接，或用户明确授权本批补齐这些最小前置接口并先记录设计；提供可用真实PG18.6/MySQL参考环境（也可在授权范围内建立本任务临时参考）。然后先登记唯一case ID/预期计数，新增并注册pg08_24_formal/sql/clients和夹具，动态领取槽位、--list确认各1项，取得真实行为红灯再最小修复及原命令复验。
+
+本轮确切检查：`git status --short`、`git rev-parse HEAD`、`git show --stat --oneline HEAD`；`~/.rustcodegraph/bin/rustcodegraph status`、`explore 'numrange PgNumRange PgInt4Range resolve_pg_signature'`、上述两个query、node读取builtin.rs:2760/8830、pg_int4range.rs:1、parser/mysql/type.rs:1/215、pg_result.rs:565、pg_extended.rs:1230；上述rg搜索；`rg -n 'pg08_24' pkg/expression/lib.rs pkg/server/pg_query_test.rs pkg/server/pg_client_integration_test.rs`无匹配（退出1，尚未注册）。其他命令退出0。list_threads/read_thread完成前序状态只读核对。未运行任何Cargo命令、Cargo脚本、make lint或测试；WIP/Ready尚未进入，行为有效运行数0，不把环境缺失、未注册或编译错误当红灯。未领取Cargo槽位，实际槽位及CARGO_TARGET_DIR均不适用；无本任务进程/锁/临时服务/对象需清理。
+
+Progress：已完成局部接口与前序资源取证；测试注册、行为红灯、生产修复、真实客户端和Ready均等待前置接口。Decision：按既定依赖门槛暂停，仅更新本编号，不修改生产/测试、来源plan.md或父任务8，不提交仅编号状态/取证更新。Outcomes：状态已阻塞，保留本文件用于恢复，不宣称实现完成或当前通过。风险：连续边界、numeric精度、OID与binary兼容性尚未验证；本轮无运行时行为或性能改动。工作区原有未跟踪计划目录保持不动。
+
+
+## 2026-10-30 新授权与最小接口设计
+
+用户通过父会话明确授权突破缺失前置，覆盖此前暂停决定。仅补numrange：parser/mysql/type.rs新增TypePgNumRange=0xde（OID3906/subtype1700），parser_actions/expression.rs和types/field_type.rs添加类型名/Restore；types/pg_numrange.rs使用已有PgNumeric保留精度、display scale、NaN/Infinity及边界开闭，不用i32或f64；实现checked构造、text/binary范围codec，挂types/lib.rs。numeric比较在本范围模块通过规范十进制字符串进行精确比较，不更改通用numeric系统。独立pg_numrange_test.rs挂载载体回归。
+
+expression/builtin.rs新增两/三参签名、PgNumRange工厂/字符串求值分支，消费PgNumeric输入；builtin_threadsafe_generated.rs登记不可变签名。session/runtime/query.rs、relational_value.rs、planning.rs、control.rs按批次23相同正式消费点最小补numrange、typed NULL/零行、COALESCE、cast及错误；server/pg_result.rs、pg_extended.rs补独立OID/codec。无新依赖、Go/Bazel更改，不开放范围算子、列DDL或其他类型。上述生产变更均是本构造行为及参数/结果验收必需局部接线。
+
+测试先注册pg08_24_formal、pg08_24_sql、pg08_24_clients和pg08_24_libpq.py，复用批次23结构但将离散断言替换为连续边界及numeric wire载荷。唯一case ID直接固定于夹具CASE_IDS，并在运行前同步本文件；工厂覆盖四种flags/相同端点/无界/精度/错误，客户端覆盖参数四组合、NULL重复、range codec和真实行投影。参考实例复用PG18.6 install与mysql@8.0本地二进制，为本任务建独立临时数据目录、随机端口，finally停止wait删除，不使用用户服务。
+
+客户端唯一case IDs（预期97，当前未运行）：C-Q-empty, C-Q-equal, C-Q-bounds, C-Q-lower, C-Q-upper, C-Q-both, C-Q-null, C-Q-zero, C-Q-zero-three, C-Q-nested, C-Q-row, C-Q-row-zero, C-Q-flags-open, C-Q-flags-closed, C-Q-flags-left, C-Q-precision, C-Q-equal-open, C-Q-equal-right, C-E-reverse, C-recover-reverse, C-txn-reverse, C-E-null-flags, C-recover-null-flags, C-txn-null-flags, C-E-bad-flags, C-recover-bad-flags, C-txn-bad-flags, C-E-signature, C-recover-signature, C-txn-signature, C-bind-0-0-0-0-0, C-bind-0-0-0-0-1, C-bind-0-0-0-0-2, C-bind-0-0-0-1-0, C-bind-0-0-0-1-1, C-bind-0-0-0-1-2, C-bind-0-0-1-0-0, C-bind-0-0-1-0-1, C-bind-0-0-1-0-2, C-bind-0-0-1-1-0, C-bind-0-0-1-1-1, C-bind-0-0-1-1-2, C-bind-0-1-0-0-0, C-bind-0-1-0-0-1, C-bind-0-1-0-0-2, C-bind-0-1-0-1-0, C-bind-0-1-0-1-1, C-bind-0-1-0-1-2, C-bind-0-1-1-0-0, C-bind-0-1-1-0-1, C-bind-0-1-1-0-2, C-bind-0-1-1-1-0, C-bind-0-1-1-1-1, C-bind-0-1-1-1-2, C-bind-1-0-0-0-0, C-bind-1-0-0-0-1, C-bind-1-0-0-0-2, C-bind-1-0-0-1-0, C-bind-1-0-0-1-1, C-bind-1-0-0-1-2, C-bind-1-0-1-0-0, C-bind-1-0-1-0-1, C-bind-1-0-1-0-2, C-bind-1-0-1-1-0, C-bind-1-0-1-1-1, C-bind-1-0-1-1-2, C-bind-1-1-0-0-0, C-bind-1-1-0-0-1, C-bind-1-1-0-0-2, C-bind-1-1-0-1-0, C-bind-1-1-0-1-1, C-bind-1-1-0-1-2, C-bind-1-1-1-0-0, C-bind-1-1-1-0-1, C-bind-1-1-1-0-2, C-bind-1-1-1-1-0, C-bind-1-1-1-1-1, C-bind-1-1-1-1-2, M-Q-int4range, M-prepare-int4range, M-Q-numrange, M-prepare-numrange, M-Q-isempty, M-prepare-isempty, M-Q-lower, M-prepare-lower, M-Q-upper, M-prepare-upper, M-Q-health, M-prepared-health, I-before, I-middle, I-after, C-bind-range-0-0, C-bind-range-0-1, C-bind-range-1-0, C-bind-range-1-1。工厂预期16，SQL预期47。
+
+
+## 当前WIP里程碑（2026-10-30）
+
+red阶段三项--list各恰好1项/退出0；三项运行各退出101且均进入实际断言：formal缺工厂，SQL返回错误消息而非范围行，真实libpq首个C-Q-empty在PG18.6成功而AsterSQL为42883。原始输出保存在target/pg08-24-evidence/red-*.log；环境及编译错误未计作红灯。该阶段finally已停止wait两参考进程、关闭端口、删除独立数据目录并释放slot1（red-lifecycle.json）。
+
+WIP最小实现已完成，增加pg_numrange规范载体，精确十进制比较（复用既有pg_extremum_numeric_order算法于本模块），保留显示scale及开闭标志，已接正式工厂和独立OID。范围共用相同诊断结构PgInt4RangeError，通过模块别名PgNumRangeError复用既有错误桥；仅将既有错误new构造可见性改为pub(crate)，不改变int4range行为。测试实际需求使注册表PG_EXTENSIONS计数增加numrange。SQL补六个连续/精度用例，预期由47变为53；客户端保持97唯一case，formal16。WIP formal已1项/16场景通过，尚待最终格式化及完整复验；make lint及git diff --check退出0。具体命令、阶段、日志、退出码和动态槽位均写入commands.jsonl/delivery-commands.jsonl，不引用历史通过为本轮通过。
+
+
+## Ready证据与交付边界（2026-10-30，最终复验中）
+
+本轮已解除numrange前置和参考环境门槛，早期“已阻塞”段落为执行历史。正式生产路径为builtin.rs签名→registered factory→NewFunctionBase→EvalString(PgNumeric/PgNumRange)，query/relational_value复用此正式工厂；parser类型动作及FieldType Restore、planning参数推断、control prepared上下文、pg_result及pg_extended分别保留独立3906身份，不按值猜OID，无SQL文本替换或第二套求值器。新增生产模块仅pkg/types/pg_numrange.rs；独立测试pg_numrange_test.rs，types/lib.rs已注册。全部原PingCAP版权保留，新自建模块仅AsterSQL版权。
+
+ready阶段cargo fmt --all退出0，三项指定--list各1项/退出0，formal1项/16场景退出0，SQL1项/53场景退出0，客户端1项退出101。真实PG18.6/MySQL8.0.46客户端预期/实际/去重均97、通过89、失败8、跳过0；PG成功14、typed NULL1、零行3、绑定52、错误4、Sync后恢复4、事务E→ROLLBACK→I恢复4，共82全部通过。MySQL构造/函数拒绝6及真实健康表prepared1通过。三项独立值/OID/SQLSTATE污染自检通过，单独计数。A/B/M交错真实健康表值/列定义匹配，但额外SELECT1列定义差异使三个交错case整体仍失败，不宣称交错完全验收。
+
+8项未通过为I-before/I-middle/I-after、M-Q-health的MySQL SELECT1通用列定义差异，及M-Q-lower/M-prepare-lower/M-Q-upper/M-prepare-upper的flags/charset/length/decimals差异；lower/upper值abc/ABC正确。原始query/prepare/execute列定义、值、警告/错误均保留，不屏蔽或白名单这些差分。WIP与Ready两轮同8项差异。与本批生产修改前red阶段I-before保留观察一致，也与批次23旧问题吻合；本轮证据独立重跑确认，不引用历史为当前通过。接口拥有者是MySQL表达式返回描述及server原生列定义；恢复条件为其修复SELECT1及lower/upper通用元数据，再原命令复验97/97。不将本构造任务扩展为MySQL元数据系统修复。
+
+SQL首轮WIP在复制int4range测试时仍留“上界2147483647包含时22003”的错误预期；numrange没有离散递增，此输入合法，因此删去该整数专属错误预期（并非放宽本numrange行为断言），补充的连续四边界/精度/同端点场景保留。Ready SQL53全部通过。另一次相邻注册表命令误用不存在的过滤器，得到0测试；该输出不计通过，最终阶段使用真实builtin_registry_matches_complete_go_function_table精确名称重跑。没有将零测试当验收证据。
+
+额外检查：make lint、git diff --check、make parser、make parser_yacc、make parser_fmt、make parser_unit_test均退出0。parser单测前./tools/check/failpoint-state.sh enable go退出0，gofmt仅处理本次生成binding__failpoint_binding__.go后目标一次通过，finally disable go退出0；最终Go/y/Bazel无差异。没有Go/import/dependency/Bazel更改，未触发bazel_prepare，未运行禁止默认的bazel_lint_changed。仅选定本函数/codec、相邻int4range及注册表，未做全包广扫、RealTiKV、性能或范围列DDL测试。
+
+参考/客户端身份保留于每次独立目录reference.jsonl、mysql-reference.jsonl、build.jsonl；记录PG version/server_version_num180006、libpq版本、mysql8.0.46/client版本、真实二进制/fixture hash、HEAD/source diff hash、编码/locale/sql_mode及tzdata来源。PSQL额外实测同端点[1.00,1.0]保留scale、[-Infinity,Infinity]、[NaN,NaN]及相等不同scale半开empty，并据此补类型单测。
+
+资源：每阶段原子mkdir动态领取slot1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；red/wip/ready各自finally已terminate/wait参考进程、端口关闭、独立数据目录删除及owner/锁释放，缓存保留，见对应*-lifecycle.json。Rust客户端cleanup.json确认本任务数据库删除、PG/MySQL监听关闭；summary.json确认参考表/库删除、TimeZone/locale恢复、连接关闭。未停止任何用户服务。最终阶段同样完成后复核，不在产物进程活跃时提前释放槽位。
+
+精确命令、退出码、日志路径和Cargo槽位逐项记录在target/pg08-24-evidence/commands.jsonl；Go/Ready检查在delivery-commands.jsonl、parser-commands.jsonl。最终delivery.json将汇总文件清单与当前有效证据。范围风险：连续端点/精度/类型/codec聚焦证据已有；MySQL通用元数据兼容性仍欠8项，性能/TiKV/DDL/其他range函数未验证。只提交本批变更，排除工作区无关未跟踪计划，不修改任何plan.md或父编号8。
+
+
+## 最终结果（2026-10-30）
+
+最终状态为已完成，待回归，取代最初阻塞状态；本任务实现及聚焦PG验证已完成，只剩上节8项独立MySQL元数据回归，因此保留本编号文件且不宣称完整双方言97/97通过。所有来源plan.md/父编号8只读。
+
+final阶段cargo fmt --all退出0；三项指定--list各1项/退出0，formal1项16场景退出0，SQL1项53场景退出0，client1项退出101。额外codec、相邻int4range formal1项10场景及SQL1项48场景、真实注册表exact测试均各--list1项且运行1项退出0；此前误过滤的零测试未计入证据。最终客户端仍97实际/89通过/8失败/0跳过，原始双方观测目录为`target/pg08-24-evidence/56842-56414`。错误阶段补证在final SQL输出：逆序/NULL flags/非法flags返回tags[1,2,E,Z]，在Parse/Bind完成后的Execute错误；非法cast/混合COALESCE为[E,Z]，在Parse分析错误；ReadyForQuery E、ROLLBACK恢复I和健康SELECT均通过。
+
+最终只读复核red/wip/ready/final生命周期：参考进程全部结束、所有自有端口不可连接、数据目录已删除、slot1锁已释放；Rust cleanup.json/summary.json清理字段全部真，缓存保留。所有阶段实际CARGO_TARGET_DIR均为/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。Make lint/Parser证据覆盖未再改动的Go检查面；最终只改SQL测试日志以保留错误发生阶段，随后已格式化并重跑指定测试，不改变生产逻辑。
+
+交付清单及确切命令/退出码/有效数/风险限制汇总于target/pg08-24-evidence/delivery.json。按git-commit只提交本批生产、测试和编号取证文件，排除原有无关未跟踪计划。下一步由MySQL返回列定义拥有者修复上述8项通用元数据后，原样复验97/97；本批不扩写该系统。

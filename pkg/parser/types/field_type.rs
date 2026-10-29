@@ -772,6 +772,7 @@ impl FieldType {
             }
             mysql::TypeDate => ctx.WriteKeyWord("DATE")?,
             mysql::TypePgInt4Range => ctx.WriteKeyWord("INT4RANGE")?,
+            mysql::TypePgNumRange => ctx.WriteKeyWord("NUMRANGE")?,
             mysql::TypePgUuid => ctx.WriteKeyWord("UUID")?,
             mysql::TypePgJson => ctx.WriteKeyWord("JSON")?,
             mysql::TypePgJsonb => ctx.WriteKeyWord("JSONB")?,

@@ -57,6 +57,7 @@ fn builtin_registry_matches_complete_go_function_table() {
         "cardinality",
         "array_append",
         "int4range",
+        "numrange",
     ];
     assert_eq!(
         funcs.len(),

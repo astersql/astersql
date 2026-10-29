@@ -9,7 +9,7 @@ pub struct PgInt4RangeError {
     pub message: String,
 }
 impl PgInt4RangeError {
-    fn new(state: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(state: &'static str, message: impl Into<String>) -> Self {
         Self {
             state,
             message: message.into(),

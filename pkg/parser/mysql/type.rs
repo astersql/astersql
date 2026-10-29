@@ -233,3 +233,6 @@ pub const TypePgJsonb: u8 = 0xe0;
 
 /// Internal int4range identity (PG OID3904, subtype23); never a MySQL wire type.
 pub const TypePgInt4Range: u8 = 0xdf;
+
+/// Internal numrange identity (PG OID3906, numeric subtype1700).
+pub const TypePgNumRange: u8 = 0xde;

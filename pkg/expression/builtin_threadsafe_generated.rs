@@ -48,6 +48,7 @@ pub fn GeneratedThreadSafetyPolicyForSignature(
             | "builtinPgCardinalitySig"
             | "builtinPgArrayAppendSig"
             | "builtinPgInt4RangeSig"
+            | "builtinPgNumRangeSig"
     ) {
         return Some(GeneratedThreadSafetyPolicy::Recursive);
     }

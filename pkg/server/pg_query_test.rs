@@ -14918,3 +14918,329 @@ fn pg08_23_sql() {
     assert!(TcpStream::connect(address).is_err());
     println!("pg08_23_sql: 48 scenarios passed; listener closed");
 }
+
+#[test]
+fn pg08_24_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service.clone());
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for (sql, wanted, zero) in [
+        (
+            "SELECT numrange(4::numeric,4::numeric) AS v",
+            Some("empty"),
+            false,
+        ),
+        (
+            "SELECT numrange(4::numeric,4::numeric,'[]'::text) AS v",
+            Some("[4,4]"),
+            false,
+        ),
+        (
+            "SELECT numrange(1::numeric,4::numeric,'(]'::text) AS v",
+            Some("(1,4]"),
+            false,
+        ),
+        (
+            "SELECT numrange(NULL::numeric,4::numeric) AS v",
+            Some("(,4)"),
+            false,
+        ),
+        (
+            "SELECT numrange(1::numeric,NULL::numeric) AS v",
+            Some("[1,)"),
+            false,
+        ),
+        (
+            "SELECT numrange(NULL::numeric,NULL::numeric,'[]'::text) AS v",
+            Some("(,)"),
+            false,
+        ),
+        ("SELECT NULL::numrange AS v", None, false),
+        (
+            "SELECT numrange(1::numeric,4::numeric) AS v WHERE false",
+            None,
+            true,
+        ),
+        (
+            "SELECT numrange(1::numeric,4::numeric,'[]'::text) AS v WHERE false",
+            None,
+            true,
+        ),
+        (
+            "SELECT COALESCE(numrange(1::numeric,4::numeric),NULL::numrange) AS v",
+            Some("[1,4)"),
+            false,
+        ),
+        (
+            "SELECT numrange(1::numeric,3::numeric,'()'::text) AS v",
+            Some("(1,3)"),
+            false,
+        ),
+        (
+            "SELECT numrange(1::numeric,3::numeric,'[]'::text) AS v",
+            Some("[1,3]"),
+            false,
+        ),
+        (
+            "SELECT numrange(1::numeric,3::numeric,'[)'::text) AS v",
+            Some("[1,3)"),
+            false,
+        ),
+        (
+            "SELECT numrange(1.00000000000000000001::numeric,1.00000000000000000002::numeric,'(]'::text) AS v",
+            Some("(1.00000000000000000001,1.00000000000000000002]"),
+            false,
+        ),
+        (
+            "SELECT numrange(4::numeric,4::numeric,'()'::text) AS v",
+            Some("empty"),
+            false,
+        ),
+        (
+            "SELECT numrange(4::numeric,4::numeric,'(]'::text) AS v",
+            Some("empty"),
+            false,
+        ),
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+        let desc = &messages.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&desc[10..14], &3906u32.to_be_bytes());
+        assert_eq!(&desc[14..16], &(-1i16).to_be_bytes());
+        assert_eq!(&desc[16..20], &(-1i32).to_be_bytes());
+        if zero {
+            assert!(!messages.iter().any(|m| m.0 == b'D'));
+        } else {
+            assert_eq!(
+                messages.iter().find(|m| m.0 == b'D').unwrap().1,
+                row(&[wanted])
+            );
+        }
+    }
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    for three in [false, true] {
+        for zero in [false, true] {
+            let sql = format!(
+                "SELECT numrange($1::numeric,$2::numeric{}) AS v{}",
+                if three { ",$3::text" } else { "" },
+                if zero { " WHERE false" } else { "" }
+            );
+            send(
+                &mut socket,
+                b'P',
+                &[b"rng24\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+            );
+            send(&mut socket, b'D', b"Srng24\0");
+            send(&mut socket, b'S', &[]);
+            let ms = ready(&mut socket);
+            assert_eq!(
+                ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'1', b't', b'T', b'Z'],
+                "{ms:?}"
+            );
+            let desc = ms.iter().find(|m| m.0 == b'T').unwrap().1.clone();
+            assert_eq!(&desc[10..14], &3906u32.to_be_bytes());
+            let expected_oids = if three {
+                vec![1700u32, 1700, 25]
+            } else {
+                vec![1700u32, 1700]
+            };
+            let mut parameter_desc = (expected_oids.len() as i16).to_be_bytes().to_vec();
+            for oid in expected_oids {
+                parameter_desc.extend_from_slice(&oid.to_be_bytes());
+            }
+            assert_eq!(ms.iter().find(|m| m.0 == b't').unwrap().1, parameter_desc);
+            for infmt in [0i16, 1] {
+                for outfmt in [0i16, 1] {
+                    for null in [false, true] {
+                        let mut bind = b"\0rng24\0".to_vec();
+                        bind.extend_from_slice(&1i16.to_be_bytes());
+                        bind.extend_from_slice(&infmt.to_be_bytes());
+                        bind.extend_from_slice(&(if three { 3i16 } else { 2i16 }).to_be_bytes());
+                        for n in [1i32, 4] {
+                            let v = if null {
+                                None
+                            } else {
+                                Some(if infmt == 1 {
+                                    n.to_string()
+                                        .parse::<astersql_types::pg_numeric::PgNumeric>()
+                                        .unwrap()
+                                        .to_binary()
+                                } else {
+                                    n.to_string().into_bytes()
+                                })
+                            };
+                            bind.extend_from_slice(
+                                &v.as_ref().map_or(-1, |v| v.len() as i32).to_be_bytes(),
+                            );
+                            if let Some(v) = v {
+                                bind.extend_from_slice(&v);
+                            }
+                        }
+                        if three {
+                            bind.extend_from_slice(&2i32.to_be_bytes());
+                            bind.extend_from_slice(b"[]");
+                        }
+                        bind.extend_from_slice(&1i16.to_be_bytes());
+                        bind.extend_from_slice(&outfmt.to_be_bytes());
+                        send(&mut socket, b'B', &bind);
+                        send(&mut socket, b'D', b"P\0");
+                        send(&mut socket, b'E', &[0; 5]);
+                        send(&mut socket, b'S', &[]);
+                        let ms = ready(&mut socket);
+                        assert_eq!(
+                            ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            if zero {
+                                vec![b'2', b'T', b'C', b'Z']
+                            } else {
+                                vec![b'2', b'T', b'D', b'C', b'Z']
+                            },
+                            "{ms:?}"
+                        );
+                        let mut portal = desc.clone();
+                        let len = portal.len();
+                        portal[len - 2..].copy_from_slice(&outfmt.to_be_bytes());
+                        assert_eq!(ms.iter().find(|m| m.0 == b'T').unwrap().1, portal);
+                        if !zero {
+                            let raw = if null {
+                                if outfmt == 1 {
+                                    vec![24]
+                                } else {
+                                    b"(,)".to_vec()
+                                }
+                            } else if outfmt == 0 {
+                                if three {
+                                    b"[1,4]".to_vec()
+                                } else {
+                                    b"[1,4)".to_vec()
+                                }
+                            } else {
+                                let mut b = vec![if three { 6 } else { 2 }];
+                                for n in [1i32, 4] {
+                                    let v = n
+                                        .to_string()
+                                        .parse::<astersql_types::pg_numeric::PgNumeric>()
+                                        .unwrap()
+                                        .to_binary();
+                                    b.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                                    b.extend_from_slice(&v);
+                                }
+                                b
+                            };
+                            let expected = [
+                                1i16.to_be_bytes().as_slice(),
+                                &(raw.len() as i32).to_be_bytes(),
+                                &raw,
+                            ]
+                            .concat();
+                            assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                        }
+                    }
+                }
+            }
+            send(&mut socket, b'C', b"Srng24\0");
+            send(&mut socket, b'S', &[]);
+            assert_eq!(
+                ready(&mut socket).iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'3', b'Z']
+            );
+        }
+    }
+    for (bad, state) in [
+        ("SELECT numrange(4::numeric,1::numeric) AS v", "22000"),
+        (
+            "SELECT numrange(1::numeric,4::numeric,NULL::text) AS v",
+            "22000",
+        ),
+        (
+            "SELECT numrange(1::numeric,4::numeric,'bad'::text) AS v",
+            "42601",
+        ),
+        ("SELECT (NULL::numeric)::numrange AS v WHERE false", "42846"),
+        (
+            "SELECT COALESCE(NULL::numrange,NULL::text) AS v WHERE false",
+            "42804",
+        ),
+    ] {
+        assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+        send(
+            &mut socket,
+            b'P',
+            &[b"\0".as_slice(), bad.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut socket, b'B', &[0; 8]);
+        send(&mut socket, b'E', &[0; 5]);
+        send(&mut socket, b'S', &[]);
+        let ms = ready(&mut socket);
+        println!(
+            "pg08_24 error {bad}: tags={:?}; ReadyForQuery={:?}",
+            ms.iter().map(|m| m.0 as char).collect::<Vec<_>>(),
+            ms.last().unwrap().1
+        );
+        let error = &ms
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{bad}: {ms:?}"))
+            .1;
+        assert!(
+            error
+                .windows(7)
+                .any(|b| b == format!("C{state}\0").as_bytes()),
+            "{ms:?}"
+        );
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+        assert_eq!(ms.last().unwrap().1, b"E");
+        assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(
+            query(&mut socket, "SELECT 1::int4 AS v")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+    }
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+    println!("pg08_24_sql: 53 scenarios passed; listener closed");
+}
