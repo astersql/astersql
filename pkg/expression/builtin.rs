@@ -2614,6 +2614,10 @@ pub mod formal_registry {
         let candidates = match name {
             "date_trunc" => vec![
                 PgFunctionCandidate {
+                    arguments: vec![mysql::TypeVarString, mysql::TypePgInterval],
+                    result: mysql::TypePgInterval,
+                },
+                PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
                     result: mysql::TypeDatetime,
                 },
@@ -5111,7 +5115,7 @@ pub mod formal_registry {
 
                 CoreBuiltinKind::PgDateTrunc => {
                     use types_dependency::pg_temporal::{
-                        PgTemporalError, PgTimestamp, PgTimestampTz,
+                        PgInterval, PgTemporalError, PgTimestamp, PgTimestampTz,
                     };
                     let (unit, first_null) = self.base.args[0].EvalString(ctx, row.clone())?;
                     let (value, second_null) = self.base.args[1].EvalString(ctx, row.clone())?;
@@ -5126,7 +5130,12 @@ pub mod formal_registry {
                         return Ok((String::new(), true));
                     }
                     let result = (|| {
-                        if self.base.return_type.GetType() == mysql::TypePgTimestampTz {
+                        if self.base.return_type.GetType() == mysql::TypePgInterval {
+                            value
+                                .parse::<PgInterval>()
+                                .and_then(|value| value.truncate(&unit))
+                                .map(|value| value.to_string())
+                        } else if self.base.return_type.GetType() == mysql::TypePgTimestampTz {
                             let value = if self.base.args[1].GetType(ctx).GetType()
                                 == mysql::TypeDatetime
                             {

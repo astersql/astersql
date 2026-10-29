@@ -12,6 +12,8 @@ pub enum PgTemporalError {
     IntervalModifier,
     #[error("interval field overflow")]
     IntervalOverflow,
+    #[error("unit \"week\" not supported for type interval")]
+    IntervalWeek,
     #[error("date field out of range")]
     Range,
     #[error("time zone displacement out of range")]
@@ -38,7 +40,10 @@ impl PgTemporalError {
             Self::IntervalOverflow => "22015",
             Self::ZoneRange => "22009",
             Self::UnknownZone => "22023",
-            Self::Unsupported | Self::DurationBridge | Self::TimestampBridge => "0A000",
+            Self::Unsupported
+            | Self::DurationBridge
+            | Self::TimestampBridge
+            | Self::IntervalWeek => "0A000",
             Self::Truncated => "08P01",
             Self::Trailing => "22P03",
         }
@@ -1048,6 +1053,51 @@ impl PgInterval {
     pub const fn components(self) -> (i32, i32, i64) {
         (self.months, self.days, self.time_microseconds)
     }
+    /// Truncate interval fields independently, using signed division toward zero.
+    /// Calendar months and days never absorb elapsed hours. Unlike timestamps,
+    /// century/millennium buckets start at zero and quarters do not add a month.
+    pub fn truncate(self, unit: &str) -> Result<Self, PgTemporalError> {
+        let (months, time, clear_days) = match unit.to_ascii_lowercase().as_str() {
+            "microsecond" | "microseconds" | "usec" | "usecs" => (0, 1, false),
+            "millisecond" | "milliseconds" | "msec" | "msecs" => (0, 1_000, false),
+            "second" | "seconds" | "sec" | "secs" => (0, 1_000_000, false),
+            "minute" | "minutes" | "min" | "mins" => (0, 60_000_000, false),
+            "hour" | "hours" | "hr" | "hrs" => (0, 3_600_000_000, false),
+            "day" | "days" => (0, 0, false),
+            "month" | "months" | "mon" | "mons" => (1, 0, true),
+            "quarter" => (3, 0, true),
+            "year" | "years" | "yr" | "yrs" => (12, 0, true),
+            "decade" | "decades" => (120, 0, true),
+            "century" | "centuries" => (1_200, 0, true),
+            "millennium" | "millennia" | "millenniums" => (12_000, 0, true),
+            "week" | "weeks" => return Err(PgTemporalError::IntervalWeek),
+            "dow" | "doy" | "isodow" | "isoyear" | "timezone" | "timezone_hour"
+            | "timezone_minute" | "julian" => {
+                return Err(PgTemporalError::Unsupported);
+            }
+            _ => return Err(PgTemporalError::TruncationUnit),
+        };
+        if matches!(
+            self.components(),
+            (i32::MAX, i32::MAX, i64::MAX) | (i32::MIN, i32::MIN, i64::MIN)
+        ) {
+            return Ok(self);
+        }
+        Ok(Self::from_components(
+            if months == 0 {
+                self.months
+            } else {
+                self.months / months * months
+            },
+            if clear_days { 0 } else { self.days },
+            if time == 0 {
+                0
+            } else {
+                self.time_microseconds / time * time
+            },
+        ))
+    }
+
     /// Apply PG's trailing-field truncation, then round fractional seconds.
     /// Months and days remain independent even when only time fields are named.
     pub fn apply_typmod(self, fields: isize, precision: isize) -> Result<Self, PgTemporalError> {

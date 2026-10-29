@@ -1079,6 +1079,7 @@ impl Extended {
         }
         self.session.relation_error_position = None;
         self.session.function_error_hint = None;
+        self.session.error_detail = None;
         // PostgreSQL sends ParameterDescription before revalidating the result
         // descriptor. Its parameter contract survives a later analysis error.
         if tag == b'D' {
@@ -1123,7 +1124,9 @@ impl Extended {
                 } else {
                     None
                 };
-                if let Some(hint) = self.session.function_error_hint {
+                if let Some(detail) = self.session.error_detail {
+                    crate::pg_conn::write_error_detail(socket, state, &message, detail)?;
+                } else if let Some(hint) = self.session.function_error_hint {
                     crate::pg_conn::write_function_error(
                         socket,
                         state,
@@ -1309,6 +1312,7 @@ impl Extended {
                     &CancellationToken::new(),
                 )
                 .map_err(|error| {
+                    self.session.error_detail = crate::pg_conn::temporal_error_detail(&error);
                     if let crate::conn::ConnError::PgFunction(function) = &error {
                         self.session.function_error_hint = function.hint;
                         self.session.relation_error_position =
@@ -1865,6 +1869,7 @@ impl Extended {
                         Ok(result) => result,
                         Err(e) => {
                             context.finish_protocol_response(std::time::Duration::ZERO);
+                            self.session.error_detail = crate::pg_conn::temporal_error_detail(&e);
                             return Err(engine(e));
                         }
                     };

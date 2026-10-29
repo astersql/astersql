@@ -1402,3 +1402,37 @@ fn pg08_03_local_timestamp() {
     }
     println!("pg08_03_local_timestamp: 5 scenarios passed");
 }
+
+#[test]
+fn pg08_04_interval_components() {
+    use crate::pg_temporal::{PgInterval, PgTemporalError};
+    for (unit, input, expected) in [
+        ("year", (27, 4, 18_367_123_456), (24, 0, 0)),
+        ("quarter", (-14, -4, -18_367_123_456), (-12, 0, 0)),
+        ("century", (-1213, 4, 1), (-1200, 0, 0)),
+        ("millennium", (12013, 4, 1), (12000, 0, 0)),
+        ("hour", (27, 4, 97_567_123_456), (27, 4, 97_200_000_000)),
+        (
+            "milliseconds",
+            (-27, -4, -18_367_123_456),
+            (-27, -4, -18_367_123_000),
+        ),
+        (
+            "microseconds",
+            (i32::MIN, 0, i64::MIN),
+            (i32::MIN, 0, i64::MIN),
+        ),
+    ] {
+        let value = PgInterval::from_components(input.0, input.1, input.2);
+        assert_eq!(value.truncate(unit).unwrap().components(), expected);
+    }
+    for text in ["infinity", "-infinity"] {
+        let value: PgInterval = text.parse().unwrap();
+        assert_eq!(value.truncate("hour").unwrap(), value);
+        assert_eq!(value.truncate("week").unwrap_err().sqlstate(), "0A000");
+    }
+    assert_eq!(
+        PgInterval::from_components(1, 2, 3).truncate("nonsense"),
+        Err(PgTemporalError::TruncationUnit)
+    );
+}

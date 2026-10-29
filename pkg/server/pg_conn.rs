@@ -402,6 +402,7 @@ impl PgService {
                 if tag == b'Q' {
                     extended.session.relation_error_position = None;
                     extended.session.function_error_hint = None;
+                    extended.session.error_detail = None;
                     extended.reset_unnamed(&context);
                     let sql = body
                         .strip_suffix(&[0])
@@ -453,7 +454,16 @@ impl PgService {
                                 )?,
                                 Err(error) => {
                                     extended.session.record_error(context.as_ref());
-                                    if let crate::conn::ConnError::PgFunction(function) = &error {
+                                    if let Some(detail) = temporal_error_detail(&error) {
+                                        write_error_detail(
+                                            socket,
+                                            sqlstate(&error),
+                                            &error.to_string(),
+                                            detail,
+                                        )?;
+                                    } else if let crate::conn::ConnError::PgFunction(function) =
+                                        &error
+                                    {
                                         let position = function.position.and_then(|offset| {
                                             sql.get(..offset)
                                                 .map(|prefix| prefix.chars().count() + 1)
@@ -610,7 +620,15 @@ impl PgService {
                                     }
                                     Err(error) => {
                                         extended.session.record_error(context.as_ref());
-                                        if let crate::conn::ConnError::PgFunction(function) = &error
+                                        if let Some(detail) = temporal_error_detail(&error) {
+                                            write_error_detail(
+                                                socket,
+                                                sqlstate(&error),
+                                                &error.to_string(),
+                                                detail,
+                                            )?;
+                                        } else if let crate::conn::ConnError::PgFunction(function) =
+                                            &error
                                         {
                                             let position = function.position.and_then(|offset| {
                                                 original_sql
@@ -659,7 +677,9 @@ impl PgService {
                             }
                             Err((state, message)) => {
                                 extended.session.record_error(context.as_ref());
-                                if let Some(hint) = extended.session.function_error_hint {
+                                if let Some(detail) = extended.session.error_detail {
+                                    write_error_detail(socket, state, &message, detail)?;
+                                } else if let Some(hint) = extended.session.function_error_hint {
                                     write_function_error(
                                         socket,
                                         state,
@@ -899,7 +919,7 @@ fn write_error_position(
     message: &str,
     position: Option<usize>,
 ) -> io::Result<()> {
-    write_function_error_with_severity(socket, severity, state, message, position, None)
+    write_function_error_with_severity(socket, severity, state, message, position, None, None)
 }
 
 pub(crate) fn write_function_error(
@@ -909,8 +929,27 @@ pub(crate) fn write_function_error(
     position: Option<usize>,
     hint: Option<&str>,
 ) -> io::Result<()> {
-    write_function_error_with_severity(socket, "ERROR", state, message, position, hint)
+    write_function_error_with_severity(socket, "ERROR", state, message, position, hint, None)
 }
+/// Detail comes from a typed engine diagnostic, never from SQL text or message matching.
+pub(crate) fn temporal_error_detail(error: &crate::conn::ConnError) -> Option<&'static str> {
+    match error {
+        crate::conn::ConnError::PgTemporal(
+            astersql_types::pg_temporal::PgTemporalError::IntervalWeek,
+        ) => Some("Months usually have fractional weeks."),
+        _ => None,
+    }
+}
+
+pub(crate) fn write_error_detail(
+    socket: &mut TcpStream,
+    state: &str,
+    message: &str,
+    detail: &str,
+) -> io::Result<()> {
+    write_function_error_with_severity(socket, "ERROR", state, message, None, None, Some(detail))
+}
+
 fn write_function_error_with_severity(
     socket: &mut TcpStream,
     severity: &str,
@@ -918,6 +957,7 @@ fn write_function_error_with_severity(
     message: &str,
     position: Option<usize>,
     hint: Option<&str>,
+    detail: Option<&str>,
 ) -> io::Result<()> {
     let mut body = Vec::new();
     for (tag, text) in [
@@ -928,6 +968,11 @@ fn write_function_error_with_severity(
     ] {
         body.push(tag);
         body.extend(text.bytes().filter(|b| *b != 0));
+        body.push(0);
+    }
+    if let Some(detail) = detail {
+        body.push(b'D');
+        body.extend(detail.bytes().filter(|b| *b != 0));
         body.push(0);
     }
     if let Some(hint) = hint {
