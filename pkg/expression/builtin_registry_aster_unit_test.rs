@@ -873,3 +873,91 @@ fn pg_function_04_candidate_order() {
         );
     }
 }
+
+#[test]
+fn pg_function_05() {
+    use crate::formal_registry::{PgFunctionCandidate as C, select_pg_candidate};
+    use crate::mysql::{
+        TypeDouble as F, TypeLong as I, TypeLonglong as B, TypeNull as U, TypeString as S,
+        TypeVarString as T,
+    };
+    let category = |t| if matches!(t, T | S) { b'S' } else { b'N' };
+    let preferred = |t| matches!(t, T | F);
+    let implicit = |s, t| s == U || (s == I && t == F);
+    let c = |a: Vec<u8>| C {
+        result: a[0],
+        arguments: a,
+    };
+    for reverse in [false, true] {
+        for (inputs, signatures, expected) in [
+            (vec![U], vec![vec![I], vec![T]], vec![T]),
+            (vec![U], vec![vec![S], vec![T]], vec![T]),
+            (vec![U], vec![vec![I], vec![F]], vec![F]),
+            (
+                vec![I, U],
+                vec![vec![I, I], vec![I, T], vec![F, F]],
+                vec![I, T],
+            ),
+            (vec![I, U], vec![vec![I, I], vec![I, B]], vec![I, I]),
+            (vec![I], vec![vec![I], vec![T]], vec![I]),
+        ] {
+            let mut candidates: Vec<_> = signatures.into_iter().map(c).collect();
+            if reverse {
+                candidates.reverse();
+            }
+            let selected = select_pg_candidate(&inputs, &candidates, implicit, category, preferred);
+            assert_eq!(
+                selected.map(|v| v.arguments.clone()),
+                Ok(expected),
+                "inputs={inputs:?}, candidates={candidates:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pg_function_05_formal_substr() {
+    let eval = exprstatic::NewEvalContext(vec![exprstatic::WithSQLDialect(
+        crate::ast::SqlDialect::PostgreSQL,
+    )]);
+    let context =
+        exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(eval))]);
+    let mut position = crate::NewInt64Const(3);
+    position.RetType = Some(*crate::types::NewFieldType(crate::mysql::TypeLong));
+    for (value, expected) in [
+        (crate::NewStrConst("1234"), ("34".to_string(), false)),
+        (
+            crate::NewNullWithFieldType(*crate::types::NewFieldType(crate::mysql::TypeNull)),
+            (String::new(), true),
+        ),
+        (
+            crate::NewNullWithFieldType(*crate::types::NewFieldType(crate::mysql::TypeVarString)),
+            (String::new(), true),
+        ),
+    ] {
+        let result = crate::NewFunctionBase(
+            &context,
+            "substr",
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            vec![Box::new(value), Box::new(position.clone())],
+        )
+        .unwrap();
+        assert_eq!(
+            result
+                .EvalString(context.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap(),
+            expected
+        );
+    }
+    let typed_null =
+        crate::NewNullWithFieldType(*crate::types::NewFieldType(crate::mysql::TypeLong));
+    assert!(
+        crate::NewFunctionBase(
+            &context,
+            "substr",
+            *crate::types::NewFieldType(crate::mysql::TypeUnspecified),
+            vec![Box::new(typed_null), Box::new(position)]
+        )
+        .is_err()
+    );
+}

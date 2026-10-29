@@ -2399,17 +2399,16 @@ pub mod formal_registry {
             .iter()
             .filter(|c| {
                 c.arguments.len() == inputs.len()
-                    && inputs
-                        .iter()
-                        .zip(&c.arguments)
-                        .all(|(&source, &target)| source == target || implicit(source, target))
+                    && inputs.iter().zip(&c.arguments).all(|(&source, &target)| {
+                        source == mysql::TypeNull || source == target || implicit(source, target)
+                    })
             })
             .collect();
         let exact = |c: &&PgFunctionCandidate| {
             inputs
                 .iter()
                 .zip(&c.arguments)
-                .filter(|(s, t)| s == t)
+                .filter(|(s, t)| **s != mysql::TypeNull && s == t)
                 .count()
         };
         let maximum = viable.iter().map(exact).max().ok_or("42883")?;
@@ -2418,16 +2417,73 @@ pub mod formal_registry {
             inputs
                 .iter()
                 .zip(&c.arguments)
-                .filter(|(s, t)| s != t && category(**s) == category(**t) && preferred(**t))
+                .filter(|(s, t)| {
+                    **s != mysql::TypeNull
+                        && s != t
+                        && category(**s) == category(**t)
+                        && preferred(**t)
+                })
                 .count()
         };
         let maximum = viable.iter().map(preference).max().unwrap();
         viable.retain(|c| preference(c) == maximum);
         if viable.len() == 1 {
-            Ok(viable[0])
-        } else {
-            Err("42725")
+            return Ok(viable[0]);
         }
+        // Unknown literals have no category. Resolve each position using the
+        // surviving signatures, favoring strings, then that category's preferred
+        // type. A conflicting non-string category leaves the call ambiguous.
+        let mut unknown_choices = Vec::new();
+        for (position, source) in inputs.iter().enumerate() {
+            if *source != mysql::TypeNull {
+                continue;
+            }
+            let categories: Vec<_> = viable
+                .iter()
+                .map(|c| category(c.arguments[position]))
+                .collect();
+            let selected = if categories.contains(&b'S') {
+                b'S'
+            } else if categories.iter().all(|c| *c == categories[0]) {
+                categories[0]
+            } else {
+                return Err("42725");
+            };
+            let has_preferred = viable.iter().any(|c| {
+                category(c.arguments[position]) == selected && preferred(c.arguments[position])
+            });
+            unknown_choices.push((position, selected, has_preferred));
+        }
+        viable.retain(|c| {
+            unknown_choices
+                .iter()
+                .all(|&(position, selected, has_preferred)| {
+                    category(c.arguments[position]) == selected
+                        && (!has_preferred || preferred(c.arguments[position]))
+                })
+        });
+        if viable.len() == 1 {
+            return Ok(viable[0]);
+        }
+        // When all known inputs share one type, try that type for every unknown
+        // position, without changing the source identity of typed NULLs.
+        if let Some(known) = inputs.iter().copied().find(|t| *t != mysql::TypeNull) {
+            if inputs.iter().all(|t| *t == mysql::TypeNull || *t == known) {
+                let same: Vec<_> = viable
+                    .iter()
+                    .copied()
+                    .filter(|c| {
+                        c.arguments
+                            .iter()
+                            .all(|target| *target == known || implicit(known, *target))
+                    })
+                    .collect();
+                if same.len() == 1 {
+                    return Ok(same[0]);
+                }
+            }
+        }
+        Err("42725")
     }
 
     /// The bounded numeric_abs input eligibility, shared with function selection.
@@ -2442,8 +2498,8 @@ pub mod formal_registry {
         )
     }
 
-    /// Only the signed ABS and two-argument numeric ROUND signatures addressed
-    /// here. Other type families keep their existing owning implementations.
+    /// Bounded signed ABS, numeric ROUND and text SUBSTR signatures.
+    /// Other type families keep their existing owning implementations.
     pub fn resolve_pg_signature(
         name: &str,
         inputs: &[u8],
@@ -2459,6 +2515,14 @@ pub mod formal_registry {
                     result: mysql::TypeLonglong,
                 },
             ],
+            "substr" | "substring" if (2..=3).contains(&inputs.len()) => {
+                let mut arguments = vec![mysql::TypeVarString];
+                arguments.resize(inputs.len(), mysql::TypeLong);
+                vec![PgFunctionCandidate {
+                    arguments,
+                    result: mysql::TypeVarString,
+                }]
+            }
             "round" => vec![PgFunctionCandidate {
                 arguments: vec![mysql::TypeNewDecimal, mysql::TypeLong],
                 result: mysql::TypeNewDecimal,
@@ -2469,9 +2533,13 @@ pub mod formal_registry {
             inputs,
             &candidates,
             |source, target| {
-                name == "round"
+                (name == "round"
                     && target == mysql::TypeNewDecimal
-                    && pg_numeric_implicit_source(source)
+                    && pg_numeric_implicit_source(source))
+                    || (matches!(name, "substr" | "substring")
+                        && ((target == mysql::TypeVarString
+                            && matches!(source, mysql::TypeString | mysql::TypeVarchar))
+                            || (target == mysql::TypeLong && source == mysql::TypeShort)))
             },
             |_| b'N',
             |_| false,
@@ -5814,6 +5882,13 @@ pub mod formal_registry {
                 (CoreBuiltinKind::Sleep, return_type, "builtinSleepSig")
             }
             "substr" | "substring" | "mid" => {
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL && name != "mid" {
+                    let inputs: Vec<_> = args
+                        .iter()
+                        .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                        .collect();
+                    resolve_pg_signature(name, &inputs).map_err(errors::New)?;
+                }
                 args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
                 for argument in args.iter_mut().skip(1) {
                     *argument = crate::WrapWithCastAsInt(ctx, argument.CloneExpr(), None);

@@ -2315,9 +2315,12 @@ pub(super) fn relational_expression_value(
                     let Some(value) = relational_expression_value(&Args[0], row)? else {
                         return Ok(None);
                     };
-                    let start = relational_expression_value(&Args[1], row)?
-                        .and_then(|start| start.parse::<i64>().ok())
-                        .ok_or_else(|| SessionError::new("substring start must be an integer"))?;
+                    let Some(start) = relational_expression_value(&Args[1], row)? else {
+                        return Ok(None);
+                    };
+                    let start = start
+                        .parse::<i64>()
+                        .map_err(|_| SessionError::new("substring start must be an integer"))?;
                     let chars = value.chars().collect::<Vec<_>>();
                     let offset = if start > 0 {
                         usize::try_from(start - 1).unwrap_or(usize::MAX)

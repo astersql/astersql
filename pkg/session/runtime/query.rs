@@ -3090,6 +3090,35 @@ impl ConcreteSession {
                         ));
                     }
                 }
+                // String literals and bare NULL keep unknown provenance, while
+                // explicitly typed NULLs must participate with their declared type.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Args,
+                    Schema,
+                } = &input.Kind
+                    && matches!(FnName.L.as_str(), "substr" | "substring")
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                {
+                    let inputs: Vec<_> = Args
+                        .iter()
+                        .map(|a| self.session.pg_case_input_type(a, self.sources).GetType())
+                        .collect();
+                    if let Err(state) = astersql_expression::formal_registry::resolve_pg_signature(
+                        &FnName.L, &inputs,
+                    ) {
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            "PostgreSQL substring argument types do not match a signature",
+                            astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                                state,
+                                message:
+                                    "function substring does not exist for these argument types"
+                                        .into(),
+                                position: None,
+                            }),
+                        ));
+                    }
+                }
                 // Only implicit numeric sources satisfy float4abs(real).
                 if let ast::ExprKind::Function {
                     FnName,

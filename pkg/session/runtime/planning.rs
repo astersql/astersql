@@ -2837,6 +2837,27 @@ impl ConcreteSession {
         struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<(usize, u32)>);
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // A bare OID0 parameter acquires the fixed substring argument
+                // identity at Parse. Supplied identities remain source types.
+                if let ast::ExprKind::Function {
+                    FnName,
+                    Schema,
+                    Args,
+                } = &input.Kind
+                    && matches!(FnName.L.as_str(), "substr" | "substring")
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                    && (2..=3).contains(&Args.len())
+                {
+                    for (position, arg) in Args.iter().enumerate() {
+                        let mut source = arg;
+                        while let ast::ExprKind::Parentheses(inner) = &source.Kind {
+                            source = inner;
+                        }
+                        if let ast::ExprKind::ParamMarker { Offset } = source.Kind {
+                            self.0.push((Offset, if position == 0 { 25 } else { 23 }));
+                        }
+                    }
+                }
                 // Keep a supplied source identity when checking the one fixed
                 // bigint signature; never infer it from a later Bind value.
                 if let ast::ExprKind::Function {

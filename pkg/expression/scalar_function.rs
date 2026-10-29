@@ -686,7 +686,11 @@ pub fn newFunctionImpl(
     if !matches!(
         func_name.as_str(),
         ast::If | ast::Ifnull | ast::Nullif | ast::RowFunc
-    ) {
+    ) && !(ctx.GetEvalCtx().SQLDialect() == ast::SqlDialect::PostgreSQL
+        && matches!(func_name.as_str(), "substr" | "substring"))
+    {
+        // PostgreSQL resolves unknown arguments per signature position. Copying
+        // the int4 position type onto a NULL string argument loses its source.
         typeInferForNull(ctx.GetEvalCtx(), &mut func_args);
     }
     let function = fc.getFunction(ctx, func_args)?;
