@@ -1379,8 +1379,9 @@ impl ConcreteSession {
                 args.push(Box::new(argument));
             }
             let eval = if source_type == astersql_parser_mysql::r#type::TypePgTimestampTz
-                || candidate.arguments.get(1)
-                    == Some(&astersql_parser_mysql::r#type::TypePgTimestampTz)
+                || candidate
+                    .arguments
+                    .contains(&astersql_parser_mysql::r#type::TypePgTimestampTz)
             {
                 self.pg_temporal_eval_context()?
             } else {

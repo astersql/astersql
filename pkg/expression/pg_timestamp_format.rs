@@ -1,10 +1,44 @@
 // Copyright 2026 AsterSQL.
 //! The selected numeric timestamp templates, independently of MySQL DATE_FORMAT.
-use types_dependency::pg_temporal::{PgTemporalError, PgTimestamp};
+use types_dependency::pg_temporal::{PgTemporalError, PgTimestamp, PgTimestampTz};
 
 pub(crate) fn format_timestamp(
     timestamp: PgTimestamp,
     template: &str,
+) -> Result<Option<String>, PgTemporalError> {
+    format_wall(timestamp, template, 0)
+}
+
+/// Resolve the wall clock and its offset at Execute, including DST overlaps.
+/// The same template scanner handles timestamp and timestamptz.
+pub(crate) fn format_timestamptz(
+    timestamp: PgTimestampTz,
+    template: &str,
+    zone: chrono_tz::Tz,
+    fixed: Option<chrono::FixedOffset>,
+) -> Result<Option<String>, PgTemporalError> {
+    if template.is_empty() || matches!(timestamp.micros(), i64::MIN | i64::MAX) {
+        return Ok(None);
+    }
+    let offset: i32 = timestamp
+        .extract_numeric_in_zone("timezone", zone, fixed)?
+        .ok_or(PgTemporalError::Range)?
+        .to_string()
+        .parse()
+        .map_err(|_| PgTemporalError::Range)?;
+    let wall = PgTimestamp::from_micros(
+        timestamp
+            .micros()
+            .checked_add(i64::from(offset) * 1_000_000)
+            .ok_or(PgTemporalError::Range)?,
+    )?;
+    format_wall(wall, template, offset)
+}
+
+fn format_wall(
+    timestamp: PgTimestamp,
+    template: &str,
+    offset: i32,
 ) -> Result<Option<String>, PgTemporalError> {
     if template.is_empty() || matches!(timestamp.micros(), i64::MIN | i64::MAX) {
         return Ok(None);
@@ -46,7 +80,7 @@ pub(crate) fn format_timestamp(
         }
         // Longest tokens first; '%' is ordinary literal text in PostgreSQL.
         let token = [
-            "HH24", "IYYY", "YYYY", "IW", "MM", "DD", "MI", "SS", "US", "Y",
+            "HH24", "IYYY", "YYYY", "TZH", "TZM", "OF", "IW", "MM", "DD", "MI", "SS", "US", "Y",
         ]
         .into_iter()
         .find(|token| {
@@ -60,6 +94,25 @@ pub(crate) fn format_timestamp(
             continue;
         };
         remaining = &remaining[token.len()..];
+        if matches!(token, "TZH" | "TZM" | "OF") {
+            let magnitude = offset.unsigned_abs();
+            let hour = magnitude / 3600;
+            let minute = magnitude % 3600 / 60;
+            let sign = if offset < 0 { '-' } else { '+' };
+            let width = if fill { 0 } else { 2 };
+            match token {
+                "TZH" => result.push_str(&format!("{sign}{hour:02}")),
+                "TZM" => result.push_str(&format!("{minute:02}")),
+                "OF" => {
+                    result.push_str(&format!("{sign}{hour:0width$}"));
+                    if magnitude % 3600 != 0 {
+                        result.push_str(&format!(":{minute:02}"));
+                    }
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
         let (value, width) = match token {
             "YYYY" => (field("year")?.abs(), 4),
             "IYYY" => (field("isoyear")?.abs(), 4),

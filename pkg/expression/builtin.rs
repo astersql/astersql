@@ -2612,10 +2612,16 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
-            "to_char" => vec![PgFunctionCandidate {
-                arguments: vec![mysql::TypeDatetime, mysql::TypeVarString],
-                result: mysql::TypeVarString,
-            }],
+            "to_char" => vec![
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypeDatetime, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+                PgFunctionCandidate {
+                    arguments: vec![mysql::TypePgTimestampTz, mysql::TypeVarString],
+                    result: mysql::TypeVarString,
+                },
+            ],
             "date_part" => vec![
                 PgFunctionCandidate {
                     arguments: vec![mysql::TypeVarString, mysql::TypeDatetime],
@@ -5188,11 +5194,27 @@ pub mod formal_registry {
                     if value_null || template_null {
                         return Ok((String::new(), true));
                     }
-                    value
-                        .parse::<types_dependency::pg_temporal::PgTimestamp>()
-                        .and_then(|timestamp| {
-                            crate::pg_timestamp_format::format_timestamp(timestamp, &template)
-                        })
+                    let result = if self.base.args[0].GetType(ctx).GetType()
+                        == mysql::TypePgTimestampTz
+                    {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgTimestampTz>()
+                            .and_then(|timestamp| {
+                                crate::pg_timestamp_format::format_timestamptz(
+                                    timestamp,
+                                    &template,
+                                    ctx.Location(),
+                                    ctx.PgFixedTimeZone(),
+                                )
+                            })
+                    } else {
+                        value
+                            .parse::<types_dependency::pg_temporal::PgTimestamp>()
+                            .and_then(|timestamp| {
+                                crate::pg_timestamp_format::format_timestamp(timestamp, &template)
+                            })
+                    };
+                    result
                         .map(|value| match value {
                             Some(value) => (value, false),
                             None => (String::new(), true),

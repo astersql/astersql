@@ -503,6 +503,11 @@ fn foldConstant(ctx: &dyn BuildContext, expression: ExprBox) -> (ExprBox, bool) 
                 && function_ref.GetArgs().get(1).is_some_and(|arg| {
                     arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
                 }))
+            || (ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                && function_ref.FuncName.L == "to_char"
+                && function_ref.GetArgs().first().is_some_and(|arg| {
+                    arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypePgTimestampTz
+                }))
         {
             return (expression, false);
         }
