@@ -5967,11 +5967,19 @@ pub mod formal_registry {
                 args[0].GetType(ctx.GetEvalCtx()).clone(),
                 "builtinRowSig",
             ),
-            "json_extract" => (
-                CoreBuiltinKind::JsonExtract,
-                field_type_for_eval_type(types::ETJson),
-                "builtinJSONExtractSig",
-            ),
+            "json_extract" => {
+                // Match Go newBaseBuiltinFuncWithTp's JSON result identity.
+                let mut return_type = field_type_for_eval_type(types::ETJson);
+                return_type.SetFlag(mysql::BinaryFlag);
+                return_type.SetFlen(mysql::MaxBlobWidth as isize);
+                return_type.SetCharset(crate::charset::CharsetUTF8MB4.into());
+                return_type.SetCollate(crate::charset::CollationUTF8MB4.into());
+                (
+                    CoreBuiltinKind::JsonExtract,
+                    return_type,
+                    "builtinJSONExtractSig",
+                )
+            }
             "uuid" => {
                 let mut return_type = field_type_for_eval_type(types::ETString);
                 let (charset, collation) = ctx.GetCharsetInfo();

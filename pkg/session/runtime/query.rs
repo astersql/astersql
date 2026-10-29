@@ -2635,12 +2635,12 @@ impl ConcreteSession {
                         expression_contains_cast(expr) || has_pg_query_expression(expr)
                     })
                 })))
-            // IFNULL and DATE_FORMAT keep their formal result identity even for
+            // MySQL-only functions keep their formal result identity even for
             // constant projections and empty results, rather than the legacy
             // scalar path's untyped protocol fallback.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format")))
+                    .any(|expr| expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract")))
             || has_derived_source
             || select
                 .From
@@ -4752,7 +4752,7 @@ impl ConcreteSession {
                     result.push(result_field);
                 } else {
                     let field_type = if self.sql_dialect() == ast::SqlDialect::MySQL
-                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format"))
+                        && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract"))
                     {
                         self.mysql_function_result_type(expression, &source_fields)?
                     } else {

@@ -6299,3 +6299,361 @@ fn pg_function_19_mysql() {
     drop(server);
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn pg_function_20() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service);
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let startup = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&startup).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    fn ready(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = vec![];
+        loop {
+            let m = read(socket);
+            let end = m.0 == b'Z';
+            messages.push(m);
+            if end {
+                return messages;
+            }
+        }
+    }
+    let table = format!("json_extract_pg20_{}", address.port());
+    struct TableCleanup(TcpStream, String);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                query(&mut self.0, "ROLLBACK");
+                query(&mut self.0, &format!("DROP TABLE IF EXISTS {}", self.1));
+            }));
+        }
+    }
+    let table_cleanup = TableCleanup(socket.try_clone().unwrap(), table.clone());
+    for sql in [
+        format!("CREATE TABLE {table}(v integer)"),
+        format!("INSERT INTO {table} VALUES(1)"),
+    ] {
+        assert_eq!(
+            query(&mut socket, &sql)
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            b"CZ",
+            "{sql}"
+        );
+    }
+    for prefix in ["", "pg_catalog."] {
+        for call in [
+            r#"json_extract('{"a":1}','$.a')"#,
+            "json_extract(NULL::text,'$.a')",
+            "json_extract('{}',NULL::text)",
+            "json_extract('bad'::int4,'$InvalidPath')",
+            "json_extract('{}','$InvalidPath')",
+            "json_extract('null','$')",
+            "json_extract('{}')",
+            "json_extract($1::text,$2::text)",
+        ] {
+            for parse in [false, true] {
+                // Parameter markers belong only to the extended protocol.
+                if !parse && call.contains('$') {
+                    continue;
+                }
+                for empty in [false, true] {
+                    for transaction in [false, true] {
+                        if transaction {
+                            assert_eq!(query(&mut socket, "BEGIN").last().unwrap().1, b"T");
+                        }
+                        let sql = format!(
+                            "SELECT {prefix}{call} AS v{}",
+                            if empty { " WHERE false" } else { "" }
+                        );
+                        let messages = if parse {
+                            send(
+                                &mut socket,
+                                b'P',
+                                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()]
+                                    .concat(),
+                            );
+                            send(&mut socket, b'S', &[]);
+                            ready(&mut socket)
+                        } else {
+                            query(&mut socket, &sql)
+                        };
+                        assert_eq!(
+                            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            b"EZ",
+                            "{sql}: {messages:?}"
+                        );
+                        let fields = messages[0]
+                            .1
+                            .split(|b| *b == 0)
+                            .filter(|f| !f.is_empty())
+                            .collect::<Vec<_>>();
+                        for field in [b"SERROR".as_slice(), b"VERROR", b"C42883"] {
+                            assert!(fields.contains(&field), "{sql}: {fields:?}");
+                        }
+                        assert!(fields.iter().any(|f| f[0] == b'M' && f.len() > 1));
+                        for tag in b"DHP" {
+                            assert!(!fields.iter().any(|f| f[0] == *tag), "{sql}: {fields:?}");
+                        }
+                        assert_eq!(
+                            messages.last().unwrap().1,
+                            if transaction { b"E" } else { b"I" }
+                        );
+                        if transaction {
+                            assert_eq!(query(&mut socket, "ROLLBACK").last().unwrap().1, b"I");
+                        }
+                        let probe = query(&mut socket, "SELECT 1::int4");
+                        assert_eq!(probe.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+                        assert_eq!(probe[1].1, row(&[Some("1")]));
+                    }
+                }
+            }
+        }
+    }
+    for prefix in ["", "pg_catalog."] {
+        for parse in [false, true] {
+            let sql = format!(
+                "INSERT INTO {table} VALUES({prefix}json_extract('bad'::int4,'$InvalidPath'))"
+            );
+            let messages = if parse {
+                send(
+                    &mut socket,
+                    b'P',
+                    &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+                );
+                send(&mut socket, b'S', &[]);
+                ready(&mut socket)
+            } else {
+                query(&mut socket, &sql)
+            };
+            assert_eq!(
+                messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"EZ",
+                "{sql}: {messages:?}"
+            );
+            assert!(messages[0].1.windows(7).any(|f| f == b"C42883\0"));
+            let unchanged = query(&mut socket, &format!("SELECT v FROM {table}"));
+            assert_eq!(unchanged.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+            assert_eq!(unchanged[1].1, row(&[Some("1")]));
+            assert_eq!(unchanged.last().unwrap().1, b"I");
+        }
+    }
+    // Name rejection must not change COALESCE's independent PG behavior.
+    let coalesce = query(&mut socket, "SELECT coalesce(NULL::int4,7::int4) AS v");
+    assert_eq!(coalesce.iter().map(|m| m.0).collect::<Vec<_>>(), b"TDCZ");
+    assert_eq!(
+        coalesce[0].1,
+        [
+            &1i16.to_be_bytes()[..],
+            b"v\0",
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &23u32.to_be_bytes(),
+            &4i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(coalesce[1].1, row(&[Some("7")]));
+    drop(table_cleanup);
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(cleanup);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn pg_function_20_mysql() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, ColumnDefinition, MysqlCompatServer, TextValue, WireResponse,
+        put_lenenc_bytes,
+    };
+    let server = MysqlCompatServer::start().unwrap();
+    let mut client = server
+        .connect_root(CLIENT_DEPRECATE_EOF, Some("test"))
+        .unwrap();
+    fn description(flags: u16) -> Vec<ColumnDefinition> {
+        vec![ColumnDefinition {
+            catalog: "def".into(),
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            character_set: 46,
+            column_length: 16_777_216,
+            column_type: 245,
+            flags,
+            decimals: 31,
+            default_value: None,
+        }]
+    }
+    let cases = [
+        (r#"JSON_EXTRACT('{"a":1}', '$.a')"#, Some("1")),
+        (r#"JSON_EXTRACT('{"a":null}', '$.a')"#, Some("null")),
+        ("JSON_EXTRACT('{}', '$.missing')", None),
+        ("JSON_EXTRACT(NULL, '$.a')", None),
+        ("JSON_EXTRACT('{}', NULL)", None),
+        ("JSON_EXTRACT(NULL, NULL)", None),
+        ("JSON_EXTRACT('null', '$')", Some("null")),
+        (
+            r#"JSON_EXTRACT('{"a": [{"aa": [{"aaa": 1}]}], "aaa": 2}', '$.a[0].aa[0].aaa', '$.aaa')"#,
+            Some("[1, 2]"),
+        ),
+        ("JSON_EXTRACT(1, '$')", Some("1")),
+    ];
+    for (expression, expected) in cases {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT {expression} AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let response = client.query(&sql).unwrap();
+            let WireResponse::ResultSet(result) = response else {
+                panic!("{sql}: {response:?}")
+            };
+            assert_eq!(result.columns.len(), 1);
+            assert_eq!(result.columns[0].name, "v");
+            assert_eq!(
+                result.columns[0].column_type, 245,
+                "{sql}: {:?}",
+                result.columns
+            );
+            assert_eq!(result.columns, description(128), "{sql}");
+            assert_eq!(result.warnings, 0);
+            assert_eq!(
+                result.rows,
+                if empty {
+                    vec![]
+                } else {
+                    vec![vec![
+                        expected
+                            .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+                            .unwrap_or(TextValue::Null),
+                    ]]
+                },
+                "{sql}"
+            );
+        }
+    }
+    for expression in [
+        "JSON_EXTRACT('bad', '$.a')",
+        "JSON_EXTRACT('{}', '$InvalidPath')",
+        r#"JSON_EXTRACT('{"a":1}', '$.a', '$InvalidPath')"#,
+        "JSON_EXTRACT('{}')",
+    ] {
+        let response = client.query(&format!("SELECT {expression} AS v")).unwrap();
+        let WireResponse::Err(error) = response else {
+            panic!("{expression}: {response:?}")
+        };
+        assert_ne!(error.code, 0);
+        assert!(error.sql_state.is_some());
+        assert!(!error.message.is_empty());
+        eprintln!("JSON Query rejection {expression}: {error:?}");
+        let WireResponse::ResultSet(probe) = client.query("SELECT 1 AS v").unwrap() else {
+            panic!("recovery")
+        };
+        assert_eq!(probe.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+    }
+    for empty in [false, true] {
+        let sql = format!(
+            "SELECT JSON_EXTRACT(?, ?) AS v{}",
+            if empty { " WHERE false" } else { "" }
+        );
+        let prepared = client.prepare(&sql).unwrap();
+        assert_eq!(prepared.parameter_count, 2);
+        assert_eq!(prepared.columns, description(128), "{sql}");
+        for (document, path, expected) in [
+            (Some(r#"{"a":1}"#), Some("$.a"), Some("1")),
+            (Some(r#"{"a":null}"#), Some("$.a"), Some("null")),
+            (Some("{}"), Some("$.missing"), None),
+            (None, Some("$.a"), None),
+            (Some("{}"), None, None),
+            (Some(r#"{"a":2}"#), Some("$.a"), Some("2")),
+        ] {
+            let mut payload = prepared.statement_id.to_le_bytes().to_vec();
+            payload.push(0);
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.push(u8::from(document.is_none()) | (u8::from(path.is_none()) << 1));
+            payload.push(1);
+            payload.extend_from_slice(&[253, 0, 253, 0]);
+            for value in [document, path].into_iter().flatten() {
+                put_lenenc_bytes(&mut payload, value.as_bytes());
+            }
+            let response = client.execute_prepared(&payload).unwrap();
+            let WireResponse::ResultSet(result) = response else {
+                panic!("{sql}: {response:?}")
+            };
+            assert_eq!(result.columns, prepared.columns, "{sql}");
+            assert_eq!(
+                result.rows,
+                if empty {
+                    vec![]
+                } else {
+                    vec![vec![
+                        expected
+                            .map(|v| TextValue::Bytes(v.as_bytes().to_vec()))
+                            .unwrap_or(TextValue::Null),
+                    ]]
+                },
+                "{sql}: {document:?} {path:?}"
+            );
+        }
+        if !empty {
+            for (document, path) in [("bad", "$.a"), ("{}", "$InvalidPath")] {
+                let mut payload = prepared.statement_id.to_le_bytes().to_vec();
+                payload.push(0);
+                payload.extend_from_slice(&1u32.to_le_bytes());
+                payload.extend_from_slice(&[0, 1, 253, 0, 253, 0]);
+                for value in [document, path] {
+                    put_lenenc_bytes(&mut payload, value.as_bytes());
+                }
+                let response = client.execute_prepared(&payload).unwrap();
+                let WireResponse::Err(error) = response else {
+                    panic!("{document} {path}: {response:?}")
+                };
+                assert_ne!(error.code, 0);
+                assert!(error.sql_state.is_some());
+                assert!(!error.message.is_empty());
+                eprintln!("JSON Execute rejection {document} {path}: {error:?}");
+                let WireResponse::ResultSet(probe) = client.query("SELECT 1 AS v").unwrap() else {
+                    panic!("recovery")
+                };
+                assert_eq!(probe.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+            }
+        }
+        client.close_prepared(prepared.statement_id).unwrap();
+    }
+    drop(client);
+    let address = server.mysql_addr();
+    server.close();
+    drop(server);
+    assert!(TcpStream::connect(address).is_err());
+}
