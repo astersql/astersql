@@ -3836,6 +3836,10 @@ impl ConcreteSession {
         if statement.From.is_some() {
             return Ok(None);
         }
+        // Constant projections and predicates share the PG scalar context used
+        // by table-backed SELECTs (including CONCAT's NULL policy).
+        let _pg_cast_types =
+            (self.sql_dialect() == ast::SqlDialect::PostgreSQL).then(|| PgCastTable::enter(&[]));
         let statement_timestamp = self.state.borrow().timestamp_override.unwrap_or_else(|| {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

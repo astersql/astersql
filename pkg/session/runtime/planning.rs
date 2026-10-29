@@ -3158,7 +3158,7 @@ pub(super) fn validate_function_visibility(
     struct Visibility {
         dialect: ast::SqlDialect,
         hidden: Option<String>,
-        collation_error: Option<SessionError>,
+        validation_error: Option<SessionError>,
     }
     impl ast::Visitor for Visibility {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
@@ -3166,7 +3166,7 @@ pub(super) fn validate_function_visibility(
                 && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
                 && let Err(error) = super::relational_value::pg_conditional_collation(expr)
             {
-                self.collation_error.get_or_insert(error);
+                self.validation_error.get_or_insert(error);
             }
             if let Some(ast::ExprNode {
                 Kind:
@@ -3178,6 +3178,18 @@ pub(super) fn validate_function_visibility(
                 ..
             }) = node.as_any().downcast_ref::<ast::ExprNode>()
             {
+                // Reject empty CONCAT before row evaluation, including empty results
+                // and prepared statements. The dialect owns the error identity.
+                if FnName.L == "concat" && Args.is_empty() {
+                    if self.dialect == ast::SqlDialect::PostgreSQL {
+                        self.hidden.get_or_insert_with(|| FnName.L.clone());
+                    } else {
+                        self.validation_error.get_or_insert_with(|| SessionError::new(
+                            "[expression:1582]Incorrect parameter count in the call to native function 'concat'",
+                        ));
+                    }
+                    return true;
+                }
                 // Zero-argument calls have no input-type resolution to defer.
                 // Session-owned PostgreSQL kernels remain outside the MySQL table.
                 let unknown_zero_argument = self.dialect == ast::SqlDialect::PostgreSQL
@@ -3222,12 +3234,12 @@ pub(super) fn validate_function_visibility(
     let mut visitor = Visibility {
         dialect,
         hidden: None,
-        collation_error: None,
+        validation_error: None,
     };
     for statement in statements {
         statement.accept(&mut visitor);
     }
-    if let Some(error) = visitor.collation_error {
+    if let Some(error) = visitor.validation_error {
         return Err(error);
     }
     if let Some(name) = visitor.hidden {

@@ -447,3 +447,56 @@ pub(crate) fn run_string_vector_parity_suite() {
     vector_binary_string_matrix_matches_go();
     vector_utf8_and_variable_arity_matrix_matches_go();
 }
+
+#[test]
+fn pg_function_15_mysql_concat_packet_contract() {
+    use crate::string_vec::{EvalError, EvalWarning};
+    let mut config = EvalConfig {
+        max_allowed_packet: 5,
+        ..EvalConfig::default()
+    };
+    let boundary = vec![vec![text("ab"), text("123")]];
+    let overflow = vec![vec![text("ab"), text("1234")]];
+    let result = eval_rows(&StringBuiltin::Concat, &boundary, &config).unwrap();
+    assert_eq!(result.values, vec![text("ab123")]);
+    assert!(result.warnings.is_empty());
+    assert_eq!(
+        eval_rows(&StringBuiltin::Concat, &overflow, &config).unwrap_err(),
+        EvalError::AllowedPacketOverflow {
+            function: "concat".into(),
+            limit: 5,
+        }
+    );
+    // The vector kernel receives strings after the SQL coercion layer.
+    // Preserve its rejection of uncoerced values as well as packet handling.
+    assert_eq!(
+        eval_rows(
+            &StringBuiltin::Concat,
+            &[vec![text("ab"), Value::Int(123)]],
+            &config
+        )
+        .unwrap_err(),
+        EvalError::TypeMismatch {
+            index: 1,
+            expected: "bytes"
+        },
+    );
+    config.truncate_as_warning = true;
+    let result = eval_rows(&StringBuiltin::Concat, &overflow, &config).unwrap();
+    assert_eq!(result.values, vec![Value::Null]);
+    assert_eq!(
+        result.warnings,
+        vec![EvalWarning::AllowedPacketOverflow {
+            function: "concat".into(),
+            limit: 5,
+        }]
+    );
+    let result = eval_rows(
+        &StringBuiltin::Concat,
+        &[vec![text("a"), Value::Null, text("b")]],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(result.values, vec![Value::Null]);
+    assert!(result.warnings.is_empty());
+}

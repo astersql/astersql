@@ -225,6 +225,8 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
                 || (lower.contains("savepoint") && lower.contains("does not exist"))
             {
                 (1305, b"42000")
+            } else if lower.contains("[expression:1582]") {
+                (1582, b"42000")
             } else if lower.contains("syntax error") || lower.contains("[parser:1064]") {
                 (1064, b"42000")
             } else if lower.contains("query execution was interrupted")

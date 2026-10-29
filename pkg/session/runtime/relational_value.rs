@@ -1685,9 +1685,14 @@ pub(super) fn relational_expression_value(
                         .map(|value| value.to_lowercase()))
                 }
                 "concat" => {
+                    // PG CONCAT ignores NULL inputs; the MySQL signature remains strict.
+                    let postgres = PG_CAST_TABLE.with(|slot| slot.borrow().is_some());
                     let mut value = String::new();
                     for argument in Args {
                         let Some(part) = relational_expression_value(argument, row)? else {
+                            if postgres {
+                                continue;
+                            }
                             return Ok(None);
                         };
                         value.push_str(&part);
