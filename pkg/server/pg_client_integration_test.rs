@@ -9229,15 +9229,22 @@ fn pg_function_23() {
             (self.0)();
         }
     }
-    let cleanup = Cleanup(|| {
-        server.close();
-        let _ = native.execute(&format!("DROP DATABASE {database}"));
-    });
     let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/pg-function23-evidence")
         .join(format!("{}-{}", std::process::id(), pg.port()));
     std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
     println!("PG_FUNCTION23_EVIDENCE={}", evidence.display());
+    let database_dropped = std::cell::Cell::new(false);
+    let cleanup = Cleanup(|| {
+        server.close();
+        database_dropped.set(native.execute(&format!("DROP DATABASE {database}")).is_ok());
+        let record = serde_json::json!({
+            "database_dropped": database_dropped.get(),
+            "postgres_port_closed": TcpStream::connect(pg).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err(),
+        });
+        let _ = std::fs::write(evidence.with_extension("cleanup.json"), record.to_string());
+    });
     let mut mysql = TcpStream::connect(mysql_address).unwrap();
     mysql
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -9251,7 +9258,12 @@ fn pg_function_23() {
             pg.port().to_string(),
             database.clone(),
             evidence.display().to_string(),
+            mysql_address.port().to_string(),
         ])
+        .env(
+            "PG_FUNCTION23_RUST_BINARY",
+            std::env::current_exe().unwrap(),
+        )
         .output()
         .expect("Python3 required");
     assert_eq!(
@@ -9261,6 +9273,7 @@ fn pg_function_23() {
     mysql_packet(&mut mysql, 0, &[0x01]);
     drop(mysql);
     drop(cleanup);
+    assert!(database_dropped.get(), "test database leaked");
     assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
     assert!(
         TcpStream::connect(mysql_address).is_err(),
@@ -9272,4 +9285,23 @@ fn pg_function_23() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn pg_function_23_mysql_prepare_metadata() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, MysqlCompatServer, TextValue, WireResponse,
+    };
+    let server = MysqlCompatServer::start().unwrap();
+    for capability in [0, CLIENT_DEPRECATE_EOF] {
+        let mut client = server.connect_root(capability, None).unwrap();
+        let prepared = client.prepare("SELECT ? AS v").unwrap();
+        assert_eq!(prepared.parameter_count, 1);
+        assert_eq!(prepared.columns.len(), 1);
+        client.close_prepared(prepared.statement_id).unwrap();
+        let WireResponse::ResultSet(result) = client.query("SELECT 1 AS v").unwrap() else {
+            panic!("prepare metadata left the connection out of sync");
+        };
+        assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"1".to_vec())]]);
+    }
 }

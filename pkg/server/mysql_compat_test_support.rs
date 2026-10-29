@@ -392,7 +392,8 @@ impl MysqlTestClient {
             parse_column_definition(&packet.payload)?;
             sequence = sequence.wrapping_add(1);
         }
-        if parameter_count > 0 {
+        if parameter_count > 0 && self.handshake.negotiated_capabilities & CLIENT_DEPRECATE_EOF == 0
+        {
             let packet = self.read_expected_packet(sequence)?;
             parse_terminator(
                 &packet.payload,
@@ -406,7 +407,7 @@ impl MysqlTestClient {
             columns.push(parse_column_definition(&packet.payload)?);
             sequence = sequence.wrapping_add(1);
         }
-        if column_count > 0 {
+        if column_count > 0 && self.handshake.negotiated_capabilities & CLIENT_DEPRECATE_EOF == 0 {
             let packet = self.read_expected_packet(sequence)?;
             parse_terminator(
                 &packet.payload,

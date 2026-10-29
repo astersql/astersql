@@ -2014,13 +2014,21 @@ impl ClientConn {
                     ..empty_column_info()
                 })?;
             }
-            self.writeEOF(self.openSession()?.state().status)?;
+            // COM_STMT_PREPARE metadata omits EOF entirely for modern clients,
+            // matching Go HandleStmtPrepare (not the row-terminating OK packet).
+            if self.capability.load(Ordering::Acquire) & CLIENT_DEPRECATE_EOF == 0 {
+                self.writeEOF(self.openSession()?.state().status)?;
+            }
         }
         if column_count > 0 {
             for column in &metadata.columns {
                 self.writeColumnInfo(column)?;
             }
-            self.writeEOF(self.openSession()?.state().status)?;
+            // COM_STMT_PREPARE metadata omits EOF entirely for modern clients,
+            // matching Go HandleStmtPrepare (not the row-terminating OK packet).
+            if self.capability.load(Ordering::Acquire) & CLIENT_DEPRECATE_EOF == 0 {
+                self.writeEOF(self.openSession()?.state().status)?;
+            }
         }
         Ok(())
     }
