@@ -17,6 +17,7 @@ use crate::adapter::{
 
 enum AggregateValue {
     Count(i64),
+    FloatSum(Option<f64>),
     NumericSum(Option<astersql_types::pg_numeric::PgNumeric>),
     NumericAvg {
         sum: Option<astersql_types::pg_numeric::PgNumeric>,
@@ -94,7 +95,9 @@ impl TypedHashAgg {
                         return Err(format!("typed AVG requires {required} argument(s)"));
                     }
                 }
-                "pg_avg_numeric"
+                "pg_sum_float4"
+                | "pg_sum_float8"
+                | "pg_avg_numeric"
                 | "pg_sum_numeric"
                 | astersql_parser_ast::AggFuncSum
                 | astersql_parser_ast::AggFuncSumInt
@@ -163,6 +166,7 @@ impl TypedHashAgg {
                 .map(|function| AggregateState {
                     value: match function.Name.as_str() {
                         astersql_parser_ast::AggFuncCount => AggregateValue::Count(0),
+                        "pg_sum_float4" | "pg_sum_float8" => AggregateValue::FloatSum(None),
                         "pg_sum_numeric" => AggregateValue::NumericSum(None),
                         "pg_avg_numeric" => AggregateValue::NumericAvg { sum: None, count: 0 },
                         astersql_parser_ast::AggFuncSum
@@ -338,6 +342,28 @@ fn update_aggregate(
         }
     }
     match &mut state.value {
+        AggregateValue::FloatSum(sum) => {
+            let next = if function.Name == "pg_sum_float4" {
+                f64::from(values[0].GetFloat32())
+            } else {
+                values[0].GetFloat64()
+            };
+            let previous = sum.unwrap_or(0.0);
+            // PostgreSQL uses the input width for each transition. Infinity from
+            // finite operands is an error; pre-existing Infinity and NaN propagate.
+            let result = if sum.is_none() {
+                next
+            } else if function.Name == "pg_sum_float4" {
+                f64::from(previous as f32 + next as f32)
+            } else {
+                previous + next
+            };
+            if result.is_infinite() && previous.is_finite() && next.is_finite() {
+                return Err(astersql_errors::SharedError::new(FloatSumOverflow));
+            }
+            *sum = Some(result);
+        }
+
         AggregateValue::NumericAvg { sum, count } => {
             let next = values[0]
                 .GetString()
@@ -451,6 +477,13 @@ fn finish_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
 ) -> AdapterResult<Datum> {
     match &state.value {
+        AggregateValue::FloatSum(sum) => Ok(sum.map_or_else(Datum::default, |value| {
+            if function.Name == "pg_sum_float4" {
+                astersql_types::datum::NewFloat32Datum(value as f32)
+            } else {
+                NewFloat64Datum(value)
+            }
+        })),
         AggregateValue::CountExtrema {
             function: evaluator,
             state,
@@ -779,6 +812,20 @@ impl ExecExecutor for SumInput {
                     == astersql_parser_mysql::r#type::TypeLonglong
                 {
                     output.AppendInt64(0, value.parse().expect("signed SUM input"));
+                } else if self.schema[0].field_type.GetType()
+                    == astersql_parser_mysql::r#type::TypeFloat
+                {
+                    let value = astersql_expression::pg_cast_float4(Some(value))
+                        .map_err(astersql_errors::SharedError::new)?
+                        .unwrap();
+                    output.AppendFloat32(0, value);
+                } else if self.schema[0].field_type.GetType()
+                    == astersql_parser_mysql::r#type::TypeDouble
+                {
+                    let value = astersql_expression::pg_cast_float8(Some(value))
+                        .map_err(astersql_errors::SharedError::new)?
+                        .unwrap();
+                    output.AppendFloat64(0, value);
                 } else {
                     output.AppendString(0, value);
                 }
@@ -881,4 +928,66 @@ pub fn AvgNumeric(
     values: Vec<Option<String>>,
 ) -> AdapterResult<Option<String>> {
     NumericAggregate(context, values, "pg_avg_numeric")
+}
+
+/// Finite PostgreSQL SUM operands exceeded their transition type's range.
+#[derive(Debug)]
+pub struct FloatSumOverflow;
+impl std::fmt::Display for FloatSumOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("value out of range: overflow")
+    }
+}
+impl std::error::Error for FloatSumOverflow {}
+
+/// Evaluate a PostgreSQL floating SUM through the shared typed aggregation chain.
+pub fn SumFloat(
+    context: ContextRef,
+    values: Vec<Option<String>>,
+    single: bool,
+) -> AdapterResult<Option<f64>> {
+    let tp = if single {
+        astersql_parser_mysql::r#type::TypeFloat
+    } else {
+        astersql_parser_mysql::r#type::TypeDouble
+    };
+    let ft = *astersql_expression::types::NewFieldType(tp);
+    let input = SumInput {
+        values,
+        index: 0,
+        opened: false,
+        schema: vec![SchemaColumn {
+            field_type: ft.clone(),
+        }],
+    };
+    let mut function = astersql_expression_aggregation::NewAggFuncDesc(
+        context.GetExprCtx(),
+        astersql_parser_ast::AggFuncFirstRow,
+        vec![Box::new(astersql_expression::Column::new(ft, 1, 1, 0))],
+        false,
+    )
+    .map_err(|e| astersql_errors::New(e.to_string()))?;
+    function.Name = if single {
+        "pg_sum_float4"
+    } else {
+        "pg_sum_float8"
+    }
+    .into();
+    let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
+        .map_err(astersql_errors::New)?;
+    executor.Open()?;
+    let mut output = executor.NewChunk();
+    let result = executor.Next(&mut output).map(|()| {
+        (!output.GetRow(0).IsNull(0)).then(|| {
+            if single {
+                f64::from(output.GetRow(0).GetFloat32(0))
+            } else {
+                output.GetRow(0).GetFloat64(0)
+            }
+        })
+    });
+    let close = executor.Close();
+    let value = result?;
+    close?;
+    Ok(value)
 }

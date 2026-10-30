@@ -1220,6 +1220,66 @@ impl ConcreteSession {
                 SessionError::with_source(format!("execute numeric AVG: {error}"), error)
             });
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && name == "sum"
+            && args.first().is_some_and(|arg| {
+                matches!(
+                    self.pg_case_input_type(arg, &[]).GetType(),
+                    astersql_parser_mysql::r#type::TypeFloat
+                        | astersql_parser_mysql::r#type::TypeDouble
+                )
+            })
+        {
+            let single = self.pg_case_input_type(&args[0], &[]).GetType()
+                == astersql_parser_mysql::r#type::TypeFloat;
+            let mut values = rows
+                .iter()
+                .map(|row| self.relational_query_expression_value(&args[0], row, None))
+                .collect::<SessionResult<Vec<_>>>()?;
+            if distinct {
+                let mut seen = HashSet::new();
+                values.retain(|v| seen.insert(v.clone()));
+            }
+            return astersql_executor::typed_hash_agg::SumFloat(
+                self.AdapterPlanContext(),
+                values,
+                single,
+            )
+            .map(|v| {
+                v.map(|v| {
+                    if v.is_nan() {
+                        "NaN".into()
+                    } else if v == f64::INFINITY {
+                        "Infinity".into()
+                    } else if v == f64::NEG_INFINITY {
+                        "-Infinity".into()
+                    } else if single {
+                        (v as f32).to_string()
+                    } else {
+                        v.to_string()
+                    }
+                })
+            })
+            .map_err(|error| {
+                if error
+                    .downcast_ref::<astersql_executor::typed_hash_agg::FloatSumOverflow>()
+                    .is_some()
+                {
+                    let diagnostic = PgFunctionError {
+                        state: "22003",
+                        message: error.to_string(),
+                        hint: None,
+                        position: None,
+                    };
+                    SessionError::with_source(
+                        diagnostic.to_string(),
+                        astersql_errors::SharedError::new(diagnostic),
+                    )
+                } else {
+                    SessionError::with_source(error.to_string(), error)
+                }
+            });
+        }
         if name == "count" && args.is_empty() {
             return Ok(Some(rows.len().to_string()));
         }
@@ -5502,6 +5562,19 @@ impl ConcreteSession {
                         | astersql_parser_mysql::r#type::TypeLonglong
                 ) {
                     return source;
+                }
+            }
+            if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
+                && Name.eq_ignore_ascii_case("sum")
+                && let Some(arg) = Args.first()
+            {
+                let tp = self.pg_case_input_type(arg, source_fields);
+                if matches!(
+                    tp.GetType(),
+                    astersql_parser_mysql::r#type::TypeFloat
+                        | astersql_parser_mysql::r#type::TypeDouble
+                ) {
+                    return tp;
                 }
             }
             if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
