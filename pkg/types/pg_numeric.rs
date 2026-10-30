@@ -189,6 +189,75 @@ impl PgNumeric {
         out
     }
 
+    /// Exact addition for numeric accumulators, retaining the larger display scale.
+    pub fn add(&self, other: &Self) -> Result<Self, PgNumericError> {
+        use NumericKind::*;
+        if self.kind != Finite || other.kind != Finite {
+            return match (self.kind, other.kind) {
+                (NaN, _)
+                | (_, NaN)
+                | (Infinity, NegativeInfinity)
+                | (NegativeInfinity, Infinity) => "NaN".parse(),
+                (Infinity, _) | (_, Infinity) => "Infinity".parse(),
+                _ => "-Infinity".parse(),
+            };
+        }
+        let scale = self.scale.max(other.scale);
+        let digits = |n: &Self| {
+            let mut d = n.coefficient.as_bytes().to_vec();
+            d.extend(std::iter::repeat_n(b'0', scale - n.scale));
+            let first = d.iter().position(|v| *v != b'0').unwrap_or(d.len() - 1);
+            d.drain(..first);
+            d
+        };
+        let mut a = digits(self);
+        let mut b = digits(other);
+        let subtract = self.negative != other.negative;
+        let mut negative = self.negative;
+        if subtract && (a.len(), &a) < (b.len(), &b) {
+            std::mem::swap(&mut a, &mut b);
+            negative = other.negative;
+        }
+        let mut out = Vec::new();
+        let mut carry = 0i16;
+        for i in 0..a.len().max(b.len()) {
+            let left = a
+                .len()
+                .checked_sub(i + 1)
+                .map_or(0, |i| i16::from(a[i] - b'0'));
+            let right = b
+                .len()
+                .checked_sub(i + 1)
+                .map_or(0, |i| i16::from(b[i] - b'0'));
+            let v = if subtract {
+                left - right + carry
+            } else {
+                left + right + carry
+            };
+            out.push(b'0' + v.rem_euclid(10) as u8);
+            carry = if subtract { -i16::from(v < 0) } else { v / 10 };
+        }
+        if carry > 0 {
+            out.push(b'0' + carry as u8);
+        }
+        out.reverse();
+        let coefficient = String::from_utf8(out).expect("decimal sum digits");
+        let coefficient = coefficient.trim_start_matches('0');
+        if coefficient.len() as isize - scale as isize > 131072 {
+            return Err(PgNumericError::OutOfRange);
+        }
+        Ok(Self {
+            kind: Finite,
+            negative: negative && !coefficient.is_empty(),
+            coefficient: if coefficient.is_empty() {
+                "0".into()
+            } else {
+                coefficient.into()
+            },
+            scale,
+        })
+    }
+
     /// PostgreSQL numeric division: select a base-10000 significant-digit scale,
     /// then divide decimal coefficients exactly and round ties away from zero.
     /// This keeps the numeric domain independent of float8 and MySQL DECIMAL.

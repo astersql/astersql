@@ -268,3 +268,31 @@ fn pg08_36_numeric_domain() {
         "0.00000000000000000000"
     );
 }
+
+#[test]
+fn pg09_03_numeric_add() {
+    for (left, right, expected) in [
+        ("-123.45", "2.5", "-120.95"),
+        ("1", "-10", "-9"),
+        ("-1", "10", "9"),
+        ("-0.00", "0", "0.00"),
+        ("Infinity", "1", "Infinity"),
+        ("-Infinity", "-Infinity", "-Infinity"),
+        ("NaN", "Infinity", "NaN"),
+        ("0.001", "0.099", "0.100"),
+    ] {
+        assert_eq!(
+            left.parse::<PgNumeric>()
+                .unwrap()
+                .add(&right.parse().unwrap())
+                .unwrap()
+                .to_string(),
+            expected
+        );
+    }
+    let max = "9".repeat(131072).parse::<PgNumeric>().unwrap();
+    assert_eq!(
+        max.add(&"1".parse().unwrap()),
+        Err(PgNumericError::OutOfRange)
+    );
+}

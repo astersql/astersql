@@ -309,3 +309,51 @@ fn pg09_02_execution() {
         );
     }
 }
+
+#[test]
+fn pg09_03_execution() {
+    use crate::typed_hash_agg::SumNumeric;
+    for (values, expected) in [
+        (vec![], None),
+        (vec![None], None),
+        (vec![Some("0"), None], Some("0")),
+        (
+            vec![Some("9223372036854775807"); 2],
+            Some("18446744073709551614"),
+        ),
+        (
+            vec![
+                Some("999999999999999999999999999999999999.999"),
+                Some("0.001"),
+            ],
+            Some("1000000000000000000000000000000000000.000"),
+        ),
+        (vec![Some("1.20"), Some("-1.2")], Some("0.00")),
+        (vec![Some("Infinity"), Some("-Infinity")], Some("NaN")),
+        (vec![Some("NaN"), Some("1")], Some("NaN")),
+        (vec![Some("-Infinity"), Some("1")], Some("-Infinity")),
+    ] {
+        assert_eq!(
+            SumNumeric(
+                context(),
+                values.into_iter().map(|v| v.map(str::to_owned)).collect()
+            )
+            .unwrap()
+            .as_deref(),
+            expected
+        );
+    }
+    assert_eq!(
+        SumNumeric(context(), vec![Some("0.01".into()); 2050])
+            .unwrap()
+            .as_deref(),
+        Some("20.50")
+    );
+    assert!(SumNumeric(context(), vec![Some("invalid".into())]).is_err());
+    assert_eq!(
+        SumNumeric(context(), vec![Some("1".into())])
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+}

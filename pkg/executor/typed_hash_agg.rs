@@ -17,6 +17,7 @@ use crate::adapter::{
 
 enum AggregateValue {
     Count(i64),
+    NumericSum(Option<astersql_types::pg_numeric::PgNumeric>),
     Sum {
         value: Datum,
         count: i64,
@@ -89,7 +90,8 @@ impl TypedHashAgg {
                         return Err(format!("typed AVG requires {required} argument(s)"));
                     }
                 }
-                astersql_parser_ast::AggFuncSum
+                "pg_sum_numeric"
+                | astersql_parser_ast::AggFuncSum
                 | astersql_parser_ast::AggFuncSumInt
                 | astersql_parser_ast::AggFuncFirstRow
                 | astersql_parser_ast::AggFuncMax
@@ -156,6 +158,7 @@ impl TypedHashAgg {
                 .map(|function| AggregateState {
                     value: match function.Name.as_str() {
                         astersql_parser_ast::AggFuncCount => AggregateValue::Count(0),
+                        "pg_sum_numeric" => AggregateValue::NumericSum(None),
                         astersql_parser_ast::AggFuncSum
                         | astersql_parser_ast::AggFuncSumInt
                         | astersql_parser_ast::AggFuncAvg => AggregateValue::Sum {
@@ -329,6 +332,18 @@ fn update_aggregate(
         }
     }
     match &mut state.value {
+        AggregateValue::NumericSum(sum) => {
+            let next = values[0]
+                .GetString()
+                .parse::<astersql_types::pg_numeric::PgNumeric>()
+                .map_err(astersql_errors::SharedError::new)?;
+            *sum = Some(match sum.as_ref() {
+                Some(previous) => previous
+                    .add(&next)
+                    .map_err(astersql_errors::SharedError::new)?,
+                None => next,
+            });
+        }
         AggregateValue::CountExtrema { .. } => unreachable!(),
         AggregateValue::Count(count) => {
             let increment = if matches!(
@@ -420,6 +435,9 @@ fn finish_aggregate(
             state,
         } => Ok(NewIntDatum(evaluator.result_count(state))),
         AggregateValue::Count(count) => Ok(NewIntDatum(*count)),
+        AggregateValue::NumericSum(value) => Ok(value.as_ref().map_or_else(Datum::default, |v| {
+            astersql_types::datum::NewStringDatum(v.to_string())
+        })),
         AggregateValue::Sum { value, count }
             if function.Name == astersql_parser_ast::AggFuncAvg =>
         {
@@ -664,7 +682,10 @@ pub fn SumSmallInt(context: ContextRef, values: Vec<Option<i64>>) -> AdapterResu
     let field_type =
         astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeLonglong);
     let input = SumInput {
-        values,
+        values: values
+            .into_iter()
+            .map(|v| v.map(|v| v.to_string()))
+            .collect(),
         index: 0,
         opened: false,
         schema: vec![SchemaColumn {
@@ -697,7 +718,7 @@ pub fn SumSmallInt(context: ContextRef, values: Vec<Option<i64>>) -> AdapterResu
 }
 
 struct SumInput {
-    values: Vec<Option<i64>>,
+    values: Vec<Option<String>>,
     index: usize,
     opened: bool,
     schema: Vec<SchemaColumn>,
@@ -719,8 +740,14 @@ impl ExecExecutor for SumInput {
             return Err(astersql_errors::New("SUM input is not open"));
         }
         while !output.IsFull() && self.index < self.values.len() {
-            if let Some(value) = self.values[self.index] {
-                output.AppendInt64(0, value);
+            if let Some(value) = &self.values[self.index] {
+                if self.schema[0].field_type.GetType()
+                    == astersql_parser_mysql::r#type::TypeLonglong
+                {
+                    output.AppendInt64(0, value.parse().expect("signed SUM input"));
+                } else {
+                    output.AppendString(0, value);
+                }
             } else {
                 output.AppendNull(0);
             }
@@ -762,4 +789,46 @@ impl ExecExecutor for SumInput {
     fn Detach(&mut self) -> Option<Box<dyn ExecExecutor>> {
         None
     }
+}
+
+/// PostgreSQL exact SUM uses numeric values across input chunks; the string
+/// chunk representation transports their lossless text through the shared executor.
+pub fn SumNumeric(
+    context: ContextRef,
+    values: Vec<Option<String>>,
+) -> AdapterResult<Option<String>> {
+    let field_type =
+        astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString);
+    let input = SumInput {
+        values,
+        index: 0,
+        opened: false,
+        schema: vec![SchemaColumn {
+            field_type: (*field_type).clone(),
+        }],
+    };
+    let mut function = astersql_expression_aggregation::NewAggFuncDesc(
+        context.GetExprCtx(),
+        astersql_parser_ast::AggFuncFirstRow,
+        vec![Box::new(astersql_expression::Column::new(
+            *field_type,
+            1,
+            1,
+            0,
+        ))],
+        false,
+    )
+    .map_err(|e| astersql_errors::New(e.to_string()))?;
+    function.Name = "pg_sum_numeric".into();
+    let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
+        .map_err(astersql_errors::New)?;
+    executor.Open()?;
+    let mut output = executor.NewChunk();
+    let result = executor
+        .Next(&mut output)
+        .map(|()| (!output.GetRow(0).IsNull(0)).then(|| output.GetRow(0).GetString(0)));
+    let close = executor.Close();
+    let value = result?;
+    close?;
+    Ok(value)
 }
