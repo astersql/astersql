@@ -725,3 +725,46 @@ fn encode_type_requires_chunk_flag_and_records_system_endian() {
     production::SetEncodeType(&disabled, &mut request);
     assert_eq!(request.encode_type, production::EncodeType::Default);
 }
+
+#[test]
+fn port_74dc8d6e87_analyze_uses_backend_scan_bytes() {
+    let _config = CollectConfigGuard::set(true);
+    for (keys, processed, bytes) in [(10, 2, 6), (10, 0, 0)] {
+        let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+        let mut context = test_context(Arc::new(TestClient { responses: vec![] }));
+        context.runtime_stats = Some(coll.clone());
+        let mut evidence = analyze_evidence(processed, keys, bytes, Duration::ZERO);
+        evidence.details.ScanDetail.as_mut().unwrap().TotalKeysSize = 123;
+        let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = AnalyzeClient {
+            source: Mutex::new(Some(AnalyzeSource {
+                subset: Some(SelectResponse {
+                    raw_data: Some(b"analyze payload!".to_vec()),
+                    cop_stats: Some(evidence),
+                    ..Default::default()
+                }),
+                error: None,
+                unconsumed: Vec::new(),
+                closed: closed.clone(),
+            })),
+            request: Mutex::new(None),
+            options: Mutex::new(None),
+        };
+        let mut result = production::Analyze(
+            &client,
+            &production_request(RequestType::Analyze),
+            true,
+            &context,
+            42,
+        )
+        .unwrap();
+        assert_eq!(
+            result.NextRaw().unwrap(),
+            Some(b"analyze payload!".to_vec())
+        );
+        result.Close().unwrap();
+        result.Close().unwrap();
+        assert_eq!(closed.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(coll.lock().unwrap().GetAnalyzeScanBytes(42), Some(123.0));
+    }
+}

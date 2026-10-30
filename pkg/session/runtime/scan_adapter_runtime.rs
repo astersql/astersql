@@ -1686,6 +1686,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             total_keys: point.total_keys,
             processed_keys: point.processed_keys,
             processed_bytes: point.processed_bytes,
+            total_bytes: point.total_bytes,
             payload_bytes: point.payload_bytes,
             valid: point.is_valid(),
             payload_complete: point.payload_complete(),
@@ -1711,6 +1712,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 TotalKeys: i64::try_from(reader.total_keys).unwrap_or(i64::MAX),
                 ProcessedKeys: i64::try_from(reader.processed_keys).unwrap_or(i64::MAX),
                 ProcessedKeysSize: i64::try_from(reader.processed_bytes).unwrap_or(i64::MAX),
+                TotalKeysSize: reader.total_bytes as i64,
                 ..Default::default()
             };
             if let Some(plan) = evidence

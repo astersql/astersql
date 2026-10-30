@@ -80,6 +80,9 @@ TopSQL、runaway checker、prepared pending cache、FK savepoint、statement sta
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：StatementRURuntimeEvidence 将 client-rust v0.4.2-aster.16 的 point.total_bytes 复制到 StatementRUPointSnapshot，并将 reader.total_bytes 转换为 TotalKeysSize；高位无符号值保留负哨兵，交给统一分类拒绝。
+
+
 Rust 版本的结构差异是显式 trait 化：Go 可直接调用 session/txn manager，而 Rust executor 通过 `AdapterRuntime` 反向调用 session owner；同时 Rust 使用 `Rc<RefCell<_>>`、`Arc<Mutex<_>>` 和 `Option::take` 表达线程归属与一次性清理。
 
 ## 扩展指南

@@ -75,6 +75,9 @@
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：fetch_response 逐响应累加 CopRuntimeEvidence.total_bytes，与现有三种扫描计数一起发布到 shared_evidence；上层 reader 快照才能保留后端总字节而非退回旧估算。这是该 Go reader 参数变化不可缺少的最后一段本地接线。空输出响应也可包含过滤掉的扫描工作，因此不能按结果行数清零扫描字节。
+
+
 Rust 当前只覆盖 Go 实现的受控子集：单个 TiKV TableScan/可下推子树、最多一个 leaf range 组、leader read、global txn scope、无 stale read。Go 版本还处理 signed/unsigned range 分段与有序合并、分区、TiFlash/MPP/batch cop、dummy 临时或缓存表、相关列重建、虚拟列、索引使用报告、内存 tracker、detach 等；这些能力不能据此文件声称已支持，Rust 入口会在形状不匹配时走其他 typed executor 路径。
 
 Go 的 `Next` 由 `tableResultHandler`/`distsql.SelectResult` 解码并填充 chunk，Rust 则直接迭代 `kv::Response`、解析 `tipb::SelectResponse` 与 `DecodeOne`。Rust 额外把同一 subset 上的 `CopRuntimeEvidence` 放入会话共享槽，以适配当前 Rust 语句 RU 汇总链；相关最终行为由 `pkg/session/runtime/scan_adapter_runtime.rs::StatementRURuntimeEvidence` 消费。

@@ -896,6 +896,7 @@ impl kv::Getter for Snapshot {
                 .read_entry_at(key.as_ref(), self.version)
                 .map(|(value, commit_ts)| value_entry(value, commit_ts))
         };
+        self.record_point_response(key.as_ref(), value.as_ref());
         self.cache
             .borrow_mut()
             .insert(key.as_ref().to_vec(), value.clone());
@@ -904,6 +905,42 @@ impl kv::Getter for Snapshot {
 }
 
 impl Snapshot {
+    // Reuse the same mock producer and client response recorder as the real RPC path.
+    // Cache hits return before this hook because they do not visit the backend.
+    fn record_point_response(&self, key: &[u8], value: Option<&kv::ValueEntry>) {
+        use astersql_store_mockstore_unistore::tikv::{
+            mvcc::KvPair, server::mock_point_read_exec_details,
+        };
+        use tikv_client::proto::kvrpcpb;
+        let Some(stats) = self
+            .options
+            .get(&kv::CollectRuntimeStats)
+            .and_then(|value| value.downcast_ref::<std::sync::Arc<tikv_client::ReadStats>>())
+        else {
+            return;
+        };
+        let bytes = value.map(|value| value.Value.clone()).unwrap_or_default();
+        let detail = mock_point_read_exec_details(&[KvPair {
+            key: key.to_vec(),
+            value: bytes.clone(),
+            error: None,
+        }]);
+        stats.record_response(&kvrpcpb::GetResponse {
+            value: bytes,
+            not_found: value.is_none(),
+            exec_details_v2: detail.map(|detail| kvrpcpb::ExecDetailsV2 {
+                scan_detail_v2: Some(kvrpcpb::ScanDetailV2 {
+                    total_versions: detail.total_versions,
+                    processed_versions: detail.processed_versions,
+                    total_versions_size: detail.total_versions_size,
+                    processed_versions_size: detail.processed_versions_size,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
     fn rpc_priority(&self) -> i32 {
         self.options
             .get(&kv::Priority)

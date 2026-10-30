@@ -509,6 +509,7 @@ pub struct StatementRUPointSnapshot {
     pub total_keys: i64,
     pub processed_keys: i64,
     pub processed_bytes: i64,
+    pub total_bytes: i64,
     pub payload_bytes: u64,
     pub valid: bool,
     pub payload_complete: bool,
@@ -516,7 +517,11 @@ pub struct StatementRUPointSnapshot {
 }
 impl StatementRUPointSnapshot {
     pub fn state(&self) -> StatementRUOperatorState {
-        if !self.valid || self.total_keys < 0 || self.processed_keys < 0 || self.processed_bytes < 0
+        if !self.valid
+            || self.total_keys < 0
+            || self.processed_keys < 0
+            || self.processed_bytes < 0
+            || self.total_bytes < 0
         {
             return StatementRUOperatorState::Invalid;
         }
@@ -525,6 +530,7 @@ impl StatementRUPointSnapshot {
                 || self.total_keys != 0
                 || self.processed_keys != 0
                 || self.processed_bytes != 0
+                || self.total_bytes != 0
             {
                 StatementRUOperatorState::Invalid
             } else {
@@ -538,6 +544,7 @@ impl StatementRUPointSnapshot {
             self.total_keys,
             self.processed_keys,
             self.processed_bytes,
+            self.total_bytes,
         ) {
             crate::statement_ru_result::ScanEvidence::Invalid => StatementRUOperatorState::Invalid,
             _ => StatementRUOperatorState::Complete,
@@ -1406,7 +1413,7 @@ fn calculate_statement_ru_plan_child_first(
     }
 }
 
-/// Scan ratios belong to request roots at the reader boundary, once per branch.
+/// Backend totals are additive; legacy ratios remain estimates at each reader request root.
 pub fn collect_statement_ru_reader_scan_bytes(
     tree: &[astersql_planner_core::TypedFlatOperator<'_>],
     operator: &astersql_planner_core::TypedFlatOperator<'_>,
@@ -1443,6 +1450,7 @@ pub fn collect_statement_ru_reader_scan_bytes(
             detail.TotalKeys,
             detail.ProcessedKeys,
             detail.ProcessedKeysSize,
+            detail.TotalKeysSize,
         ) {
             ScanEvidence::Unavailable => {}
             ScanEvidence::Valid(bytes) => {
@@ -1476,6 +1484,7 @@ pub fn collect_statement_ru_point_lookup_evidence(
             snapshot.total_keys,
             snapshot.processed_keys,
             snapshot.processed_bytes,
+            snapshot.total_bytes,
         )
     {
         if !add_statement_ru_scan_bytes(&mut calculator.units, bytes) {

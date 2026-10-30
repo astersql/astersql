@@ -3428,3 +3428,120 @@ fn canonical_adapter_topru_v2_reports_finalized_statement_total() {
     assert!(stats.MergeRUInto().is_empty());
     stats.SetFinished();
 }
+
+#[test]
+fn port_74dc8d6e87_sql_point_backend_bytes_and_classic_gate() {
+    use astersql_executor::adapter::{
+        AdapterRuntime, PlanInfo, PlanKind, SchemaColumn, StatementKind, StatementNode,
+    };
+    use astersql_infoschema::infoschema::CiString;
+    use astersql_kv::{Getter, Storage};
+    let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    session
+        .execute("create table ru_backend_bytes (id int primary key, v varchar(30))")
+        .unwrap();
+    session
+        .execute("insert into ru_backend_bytes values (1, 'abc'), (2, 'longer value')")
+        .unwrap();
+    let table = domain
+        .info_schema()
+        .ModelTableInfoByName(&CiString::new("test"), &CiString::new("ru_backend_bytes"))
+        .unwrap();
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    for handle in [1, 2, 999] {
+        let mut point = astersql_planner_core_operator_physicalop::PointGetPlan::New(
+            owner.session.AdapterPlanContext(),
+        );
+        point.TblInfo = Some(table.as_ref().clone());
+        point.Handle = Some(handle);
+        point.Columns = table.Columns.clone();
+        let id = astersql_planner_core_base::Plan::id(&point);
+        let version = domain
+            .storage()
+            .with_storage(|store| store.CurrentVersion("global"))
+            .unwrap();
+        let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+            table.ID,
+            Box::new(astersql_kv::IntHandle(handle)),
+        );
+        let snapshot = domain
+            .storage()
+            .with_storage(|store| store.GetSnapshot(version));
+        let row = snapshot
+            .Get(
+                &astersql_kv::Context::todo(),
+                astersql_kv::Key(key.0.clone()),
+                &[],
+            )
+            .ok();
+        let expected = row
+            .as_ref()
+            .map(|value| key.0.len() + value.Value.len())
+            .unwrap_or_default() as f64;
+        owner
+            .BindTypedPhysicalPlan(Box::new(point), vec![], version, 32, 1024)
+            .unwrap();
+        let sql = format!("select * from ru_backend_bytes where id={handle}");
+        let mut stmt = owner
+            .BuildExecStmt(
+                PlanInfo {
+                    kind: PlanKind::PointGet,
+                    id,
+                    schema: table
+                        .Columns
+                        .iter()
+                        .map(|col| SchemaColumn {
+                            field_type: col.FieldType.clone(),
+                        })
+                        .collect(),
+                    calculate_no_delay: false,
+                    projection_child: None,
+                    encoded: String::new(),
+                    binary: String::new(),
+                    hints: String::new(),
+                },
+                StatementNode {
+                    kind: StatementKind::Select,
+                    text: sql.clone(),
+                    original_text: sql.clone(),
+                    secure_text: sql,
+                    prepared_text: None,
+                },
+                vec![],
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            stmt.StatementCtx.statement_ru_owner.is_some(),
+            astersql_config_kerneltype::IsNextGen()
+        );
+        let mut result = stmt.Exec().unwrap().unwrap();
+        let mut chunk = result.NewChunk();
+        result.Next(&mut chunk).unwrap();
+        assert_eq!(chunk.NumRows(), if handle == 999 { 0 } else { 1 });
+        if handle != 999 {
+            result.Next(&mut chunk).unwrap();
+            assert_eq!(chunk.NumRows(), 0);
+        }
+        let evidence = owner.StatementRURuntimeEvidence(&[]);
+        let point = evidence.point.unwrap();
+        if astersql_config_kerneltype::IsNextGen() {
+            assert!(point.payload_complete && point.scan_detail_complete);
+            assert_eq!(point.total_bytes as f64, expected);
+        }
+        stmt.RecordStatementRUFinalOutcome(true);
+        result.Close().unwrap();
+        if astersql_config_kerneltype::IsNextGen() {
+            let frozen = owner.StatementContext().statement_ru_finalized.unwrap();
+            assert_eq!(frozen.units.scan_bytes, expected);
+            result.Close().unwrap();
+            assert!(Arc::ptr_eq(
+                &frozen,
+                &owner.StatementContext().statement_ru_finalized.unwrap()
+            ));
+        } else {
+            assert!(owner.StatementContext().statement_ru_finalized.is_none());
+        }
+    }
+    domain.close();
+}

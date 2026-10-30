@@ -41,17 +41,26 @@ fn statement_ru_finalize_uses_current_config_weights() {
 
 #[test]
 fn go_merge_197_scan_evidence_matches_go_validity_contract() {
-    assert_eq!(classify_scan_evidence(0, 0, 0), ScanEvidence::Valid(0.0));
-    assert_eq!(classify_scan_evidence(9, 0, 0), ScanEvidence::Valid(0.0));
-    assert_eq!(classify_scan_evidence(9, 0, 1), ScanEvidence::Invalid);
-    assert_eq!(classify_scan_evidence(-1, 1, 1), ScanEvidence::Invalid);
-    assert_eq!(classify_scan_evidence(9, -1, 1), ScanEvidence::Invalid);
-    assert_eq!(classify_scan_evidence(9, 1, -1), ScanEvidence::Invalid);
-    assert_eq!(classify_scan_evidence(0, 1, 10), ScanEvidence::Unavailable);
-    assert_eq!(classify_scan_evidence(9, 1, 0), ScanEvidence::Unavailable);
-    assert_eq!(classify_scan_evidence(9, 3, 12), ScanEvidence::Valid(36.0));
+    assert_eq!(classify_scan_evidence(0, 0, 0, 0), ScanEvidence::Valid(0.0));
+    assert_eq!(classify_scan_evidence(9, 0, 0, 0), ScanEvidence::Valid(0.0));
+    assert_eq!(classify_scan_evidence(9, 0, 1, 0), ScanEvidence::Invalid);
+    assert_eq!(classify_scan_evidence(-1, 1, 1, 0), ScanEvidence::Invalid);
+    assert_eq!(classify_scan_evidence(9, -1, 1, 0), ScanEvidence::Invalid);
+    assert_eq!(classify_scan_evidence(9, 1, -1, 0), ScanEvidence::Invalid);
     assert_eq!(
-        classify_scan_evidence(i64::MAX, 1, i64::MAX),
+        classify_scan_evidence(0, 1, 10, 0),
+        ScanEvidence::Unavailable
+    );
+    assert_eq!(
+        classify_scan_evidence(9, 1, 0, 0),
+        ScanEvidence::Unavailable
+    );
+    assert_eq!(
+        classify_scan_evidence(9, 3, 12, 0),
+        ScanEvidence::Valid(36.0)
+    );
+    assert_eq!(
+        classify_scan_evidence(i64::MAX, 1, i64::MAX, 0),
         ScanEvidence::Valid((i64::MAX as f64) * (i64::MAX as f64))
     );
 }
@@ -627,4 +636,21 @@ fn go_merge_195_197_publish_snapshot() {
         sink.events.borrow().last().unwrap(),
         "skipped:unsupported_plan"
     );
+}
+
+#[test]
+fn port_74dc8d6e87_backend_scan_bytes() {
+    for (keys, processed, bytes, total, expected) in [
+        (10, 2, 6, 123, ScanEvidence::Valid(123.0)),
+        (10, 2, 6, 0, ScanEvidence::Valid(30.0)),
+        (10, 0, 0, 123, ScanEvidence::Valid(123.0)),
+        (0, 0, 0, 123, ScanEvidence::Valid(123.0)),
+        (10, 2, 6, -1, ScanEvidence::Invalid),
+        (-1, 2, 6, 123, ScanEvidence::Invalid),
+    ] {
+        assert_eq!(
+            classify_scan_evidence(keys, processed, bytes, total),
+            expected
+        );
+    }
 }

@@ -72,6 +72,9 @@
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：CopProtocolResponse.total_bytes 保存 ScanDetailV2.total_versions_size 原值。该字段仅传递后端证据，不用分页计费 read_bytes 或 processed_bytes 替代。
+
+
 冻结 Go `buildTiDBMemCopTasks` 的 `IsDisableRPC` 过滤对应 Rust 的 `TiDBRPCServer::disable_rpc`；Rust 额外显式排除空地址。
 
 Rust 将 Go 的 context/channel/goroutine 改为 `AtomicBool`、标准线程和 `std::sync::mpsc`，并通过 `CopBackend` 把 Region cache 与 transport 隔离；因此 API 形状不是逐行翻译。Go 文件还包含更丰富的日志、内存 tracker、execution detail 收集与 TiDB 专用错误处理；本 Rust 文件当前没有等价的全部细节，文档不将这些 Go 能力宣称为 Rust 已支持。

@@ -155,6 +155,8 @@ pub mod util {
         pub ProcessedKeys: i64,
         pub ProcessedKeysSize: i64,
         pub TotalKeys: i64,
+        /// Backend-reported total key/value bytes; zero means unavailable.
+        pub TotalKeysSize: i64,
         pub GetSnapshotDuration: Duration,
         pub RocksdbDeleteSkippedCount: u64,
         pub RocksdbKeySkippedCount: u64,
@@ -173,6 +175,7 @@ pub mod util {
             self.ProcessedKeys += other.ProcessedKeys;
             self.ProcessedKeysSize += other.ProcessedKeysSize;
             self.TotalKeys += other.TotalKeys;
+            self.TotalKeysSize = self.TotalKeysSize.wrapping_add(other.TotalKeysSize);
             self.GetSnapshotDuration += other.GetSnapshotDuration;
             self.RocksdbDeleteSkippedCount += other.RocksdbDeleteSkippedCount;
             self.RocksdbKeySkippedCount += other.RocksdbKeySkippedCount;

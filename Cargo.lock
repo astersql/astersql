@@ -10286,6 +10286,7 @@ dependencies = [
  "fs2",
  "serde_json",
  "tempfile",
+ "tikv-client",
 ]
 
 [[package]]
@@ -10403,6 +10404,7 @@ dependencies = [
 name = "astersql-store-mockstore-unistore-tikv"
 version = "0.1.0"
 dependencies = [
+ "astersql-config-kerneltype",
  "astersql-kv",
  "astersql-store-mockstore-unistore-client",
  "astersql-store-mockstore-unistore-config",
@@ -20161,7 +20163,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.2"
-source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.13#cb3dd5fee57a52636364f332703951de9827ec56"
+source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.16#abb1d1c88daa89733f61e44d21b08a26c9b108d4"
 dependencies = [
  "async-recursion",
  "async-trait",

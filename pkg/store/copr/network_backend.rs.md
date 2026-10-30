@@ -67,6 +67,9 @@ grpcio server stream 在同步 API 上用 `block_on(StreamExt::next)` 拉取；�
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：response_scan_evidence_v2 返回四元组，父响应和 store-batch 子响应都读取 total_versions_size；无明细仍返回四个零。pb_response 的真实 protobuf 转换保留原错误/锁/网络字节顺序。
+
+
 本文件没有同名 Go 文件；它把 Go `pkg/store/copr/coprocessor.go` 依赖的 client-go 能力拆成 Rust 可注入边界。Go 的 request context 由 client-go 组装，Rust 在 `protobuf_request` 中显式镜像 priority、isolation、replica/stale read、resource group、lock hints、paging 和 store-batch 字段。
 
 Go `copIteratorWorker.handleLockErr` 对 `shared_lock_infos` 展开为多个 `txnlock.Lock`，然后用 `ResolveLocksWithOpts` 一次解析；Rust `NetworkBackend::resolve_lock` 保持这一语义，且 `TransactionLock` 保留 Go resolver 需要的完整字段。

@@ -90,6 +90,9 @@ Raw 的单次读写在 `RwLock` 临界区完成；`raw_scan` 持有读锁完成�
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：mock_point_read_exec_details 仅在 NextGen 返回 Some(ScanDetail)，忽略失败或空值 pair；空响应保留 Some(零值) 表示覆盖已知。kv_get、kv_batch_get 和 kv_buffer_batch_get 均在成功响应上附 scan_detail；后者复用既有 read_buffer_from_lock。Rust 服务为进程内泛型 RpcResponse，使用现有 cophandler::ScanDetail 表达 Go ExecDetailsV2.ScanDetailV2 的四个计数，不声称新增 gRPC 序列化。
+
+
 - Go `Server` 嵌入 `tikvpb.UnimplementedTikvServer` 并实现 protobuf RPC；Rust 暴露进程内类型，协议适配位于 `rpc.rs`。
 - Go `Stop` 设置 stopped 后等待 `refCount == 0`，并记录各关闭错误；Rust 使用 `AtomicBool` 幂等，不等待在途引用，只向上传播 `InnerServer::stop` 错误。
 - Go 悲观锁路径还包含 write-conflict failpoint、lock waiter、等待图清理和唤醒重试；这些逻辑没有出现在本文件的 `kv_pessimistic_lock` 中，Rust 仅注入 deadlock 后委托 `MvccStore`。

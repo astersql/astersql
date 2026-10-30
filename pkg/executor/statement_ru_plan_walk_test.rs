@@ -763,6 +763,7 @@ fn go_merge_187_runtime_evidence_bridge() {
         total_keys: 6,
         processed_keys: 2,
         processed_bytes: 8,
+        total_bytes: 0,
         payload_bytes: 3,
         valid: true,
         payload_complete: true,
@@ -952,6 +953,7 @@ fn go_merge_187_tree_read_path_point_and_forest() {
         total_keys: 10,
         processed_keys: 2,
         processed_bytes: 8,
+        total_bytes: 0,
         payload_bytes: 7,
         valid: true,
         payload_complete: true,
@@ -3627,4 +3629,79 @@ fn statement_ru_join_candidates_flow_from_executor_through_runtime_snapshot() {
     assert_eq!(calculator.units.join_output_rows, 6.0);
     // ru_join_base has 3 input expressions and 3 residual conditions.
     assert_eq!(calculator.units.cpu_work, 5.0 * 3.0 + 6.0 * 3.0);
+}
+
+#[test]
+fn port_74dc8d6e87_reader_and_point_backend_scan_bytes() {
+    use crate::statement_ru_plan_walk::*;
+    for (keys, processed, bytes, total, expected) in [
+        (10, 2, 6, 123, Some(123.0)),
+        (10, 2, 6, 0, Some(30.0)),
+        (10, 0, 0, 123, Some(123.0)),
+        (0, 0, 0, 123, Some(123.0)),
+        (10, 2, 6, -1, None),
+    ] {
+        let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+            AtomicI32::new(0),
+            Default::default(),
+            Default::default(),
+        ));
+        let mut reader = physicalop::PhysicalTableReader::New(context.clone());
+        reader.TablePlan = Some(Box::new(physicalop::PhysicalTableScan::New(
+            context.clone(),
+        )));
+        let point = physicalop::PointGetPlan::New(context.clone());
+        let batch = physicalop::BatchPointGetPlan::New(context);
+        for plan in [&reader as &dyn base::Plan, &point, &batch] {
+            let forest = astersql_planner_core::FlattenTypedPhysicalPlanForest(plan, &[]).unwrap();
+            let stats = astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None);
+            let ids = forest
+                .Main
+                .iter()
+                .map(|op| op.Origin.id())
+                .collect::<Vec<_>>();
+            let mut evidence =
+                snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
+            if ids.len() > 1 {
+                evidence.plans[1].scan =
+                    Some(astersql_util_execdetails::execdetails::util::ScanDetail {
+                        TotalKeys: keys,
+                        ProcessedKeys: processed,
+                        ProcessedKeysSize: bytes,
+                        TotalKeysSize: total,
+                        ..Default::default()
+                    });
+            } else {
+                evidence.point = Some(StatementRUPointSnapshot {
+                    total_keys: keys,
+                    processed_keys: processed,
+                    processed_bytes: bytes,
+                    total_bytes: total,
+                    payload_bytes: 1,
+                    valid: true,
+                    payload_complete: true,
+                    scan_detail_complete: true,
+                });
+            }
+            let result = calculate_statement_ru_forest(
+                &forest,
+                &evidence,
+                StatementRUCalculationSetup::default(),
+                true,
+            );
+            match expected {
+                Some(bytes) => assert_eq!(result.unwrap().units.scan_bytes, bytes),
+                None => assert_eq!(result.unwrap_err(), StatementRUOperatorState::Invalid),
+            }
+        }
+    }
+    assert_eq!(
+        StatementRUPointSnapshot {
+            valid: true,
+            total_bytes: 1,
+            ..Default::default()
+        }
+        .state(),
+        StatementRUOperatorState::Invalid
+    );
 }

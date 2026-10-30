@@ -49,7 +49,7 @@
 
 `GetExtraIter` 克隆 reader 的范围边界并把非空边界的首字节做 wrapping 加一，再创建正向迭代器。它对应 Go 中首字节 `++` 的额外键空间映射；空边界保持为空。该变换只作用于副本，不修改 `DBReader::StartKey/EndKey`。
 
-扫描计数只在非空 item 成功交给处理器后增加。由 Go 对齐测试可见，`limit` 为负数时第一条成功处理后 `count >= limit` 即成立，因此仍会返回一条；这不是“无限制”的哨兵。删除占位（`IsEmpty`）不计数，也不交给处理器。
+限制行数的局部 count 只在非空 item 成功交给处理器后增加；可选 ScanDetail 的键值工作计数在 Process 前增加，因此 ScanBreak 的当前项也保留。由 Go 对齐测试可见，`limit` 为负数时第一条成功处理后 `count >= limit` 即成立，因此仍会返回一条；这不是“无限制”的哨兵。删除占位（`IsEmpty`）不计数，也不交给处理器。
 
 ## 依赖与调用关系
 
@@ -88,6 +88,9 @@ Go 主链对照证据：`tikv/server.go::requestCtx.getDBReader` 创建 reader�
 `DBItem` 以 `Box<dyn DBItem>` 从事务或迭代器移交所有权；扫描处理器只获得借用，并由 `ScanFunc`/`ScanProcessor` 注释明确约束不得持久保存 key/value 引用。`Backend` 错误内部使用 `Arc` 只是为了克隆错误值，不代表 reader 的事务或迭代器可共享。
 
 ## 与 Go 版本的对应关系
+
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：DBReader.ScanDetail 为可选 ScanDetailV2，只在正向 Scan 对可见非空条目、调用 Process 前累计版本和键值字节，因此 ScanBreak 那一项也计入；不计被引擎隐藏的 MVCC 版本。SkipValue 时通过 DBItem::ValueSize 仍统计值长度；该 trait 方法读取迭代器元数据，避免加载值或引入额外读取错误。ReverseScan 不新增此统计。
+
 
 Rust 文件逐项保留了 Go `db_reader.go` 的公开概念和主要控制流：`DBReader` 字段、三个迭代器、`RcCheckTS`、额外 reader provider、点查/批查/扫描/MVCC 辅助方法以及关闭顺序均有对应实现。
 

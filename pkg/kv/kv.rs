@@ -647,6 +647,8 @@ pub struct CopRuntimeEvidence {
     pub total_keys: u64,
     pub processed_keys: u64,
     pub processed_bytes: u64,
+    /// Backend total scan bytes, independent of the processed-byte ratio.
+    pub total_bytes: u64,
     pub tikv_response_bytes: Option<u64>,
 }
 

@@ -39,7 +39,7 @@
 7. `PlanTrace` 返回数据时，digest 经 `hexEncode` 编码；非空 normalized plan 按 `redactLog` 处理，再连同语句类型和 connection ID 发出 trace。
 8. 有 prepared 对象时调用 `ReusePointGetPlan`，它可以原地替换 `optimized.plan`。无 prepared 对象则复用结果为 `false`。
 9. 对最终计划执行 `WarmUpTransaction`，再将 `Box<dyn Plan>` 转为共享的 `Arc<dyn Plan>`，用 `ExecStmtBuildInput` 构建语句。只有复用成功时，`preparedCacheForExec` 才附加缓存。
-10. 对 `EXECUTE` 语句，若 typed plan 本身不是 `RuntimeExecute`，则包装为 `RuntimeExecute::New`；其他情况直接保存原 typed plan。最后安装 statement RU owner 并返回。
+10. 对 `EXECUTE` 语句，若 typed plan 本身不是 `RuntimeExecute`，则包装为 `RuntimeExecute::New`；其他情况直接保存原 typed plan。最后仅在 NextGen 安装 statement RU owner 并返回。
 
 ## 数据与状态
 
@@ -71,9 +71,12 @@ panic 并非全部转成错误：只有 `RecoverCompilePanic` 明确认可的 pa
 
 `CompilerContext` 和 `CompilerSession` 的内部值要求 `Send + Sync`，typed plan 由 `Arc` 共享；但 `CompilerDependencies` 本身未要求 `Send`/`Sync`，且所有有副作用方法接收 `&mut self`。因此单个 `Compiler` 的一次编译是顺序可变流程，本文件没有线程创建、锁、channel 或异步任务，也不承诺同一实例可并发调用。
 
-region 生命周期由 RAII 守卫限定为整个 `Compile` 调用。info schema 与 prepared cache 由 `Box` 独占并在成功时转移给构建输入；计划由 `Box` 经 PointGet 改写、事务预热后转换成 `Arc`，避免在最终执行语句和 `TypedPlan` 之间复制计划。statement RU owner 在返回前安装，其后续消费和终结由 `adapter.rs`/`statement_ru_result.rs` 负责，不在本文件内完成。
+region 生命周期由 RAII 守卫限定为整个 `Compile` 调用。info schema 与 prepared cache 由 `Box` 独占并在成功时转移给构建输入；计划由 `Box` 经 PointGet 改写、事务预热后转换成 `Arc`，避免在最终执行语句和 `TypedPlan` 之间复制计划。statement RU owner 仅在 NextGen 返回前安装，其后续消费和终结由 `adapter.rs`/`statement_ru_result.rs` 负责，不在本文件内完成。
 
 ## 与 Go 版本的对应关系
+
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：Compile 仅在 astersql_config_kerneltype::IsNextGen() 时安装 statement RU owner；Classic 返回正常执行语句而不启动该统计生命周期。
+
 
 Rust `Compile` 保留了 Go 的 tracing region、选择性 panic 恢复、只读判定、preprocess、事务断言、事务 info schema、prepared EXECUTE、optimizer、staleness 断言、计数、低优先级判定、statement context 计划、计划 digest trace、PointGet 缓存复用、事务预热和最终 `ExecStmt` 构建顺序。
 

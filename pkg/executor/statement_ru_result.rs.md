@@ -76,6 +76,9 @@
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：classify_scan_evidence 先拒绝四个输入中的任何负数；total_bytes > 0 直接返回 Valid(total_bytes)，否则维持零样本、矛盾数据、Unavailable 和比例估算的既有顺序。
+
+
 Rust 命名改为 snake_case/PascalCase，但主要数据形状和分支保持一一对应：`statementRUPlanKind`/`statementRUPlanInfo`、`statementRUCalculationSetup`、`statementRUCalculator`、扫描证据三态、TTL 三字段身份、当前权重读取和最终快照均有对应实现。
 
 终结公式保持 Go 注释中的关键不变量：总结果先含原始 TiFlash RU，只额外增加倍率减一的部分；分引擎 TiFlash 再乘完整倍率。

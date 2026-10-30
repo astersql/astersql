@@ -518,7 +518,9 @@ impl SessionBoundAdapterOwner {
                 ..Default::default()
             },
         };
-        astersql_executor::statement_ru_result::install_statement_ru_owner(&mut stmt);
+        if astersql_config_kerneltype::IsNextGen() {
+            astersql_executor::statement_ru_result::install_statement_ru_owner(&mut stmt);
+        }
         Ok(stmt)
     }
 

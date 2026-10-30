@@ -486,3 +486,66 @@ fn port_0766a90d52_named_store_exposes_its_actual_backfill_keyspace_id() {
         u32::MAX
     );
 }
+
+#[test]
+fn port_74dc8d6e87_snapshot_stats_follow_real_rows_cache_and_misses() {
+    use kv::{Mutator, Storage};
+    let mut store = new_storage();
+    let storage: &mut dyn kv::Storage = &mut store;
+    let ctx = kv::Context::todo();
+    let mut txn = storage.Begin(&[]).unwrap();
+    txn.Set(kv::Key(b"k1".to_vec()), b"abc".to_vec()).unwrap();
+    txn.Set(kv::Key(b"k2".to_vec()), b"abcdef".to_vec())
+        .unwrap();
+    txn.Commit(&ctx).unwrap();
+    let mut snapshot = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+    let stats = Arc::new(tikv_client::ReadStats::default());
+    snapshot.SetOption(kv::CollectRuntimeStats, Some(Box::new(stats.clone())));
+    assert_eq!(
+        snapshot
+            .Get(&ctx, kv::Key(b"k1".to_vec()), &[])
+            .unwrap()
+            .Value,
+        b"abc"
+    );
+    let first = stats.point_response_stats();
+    assert_eq!(first.payload_bytes, 3);
+    assert!(first.payload_complete());
+    assert_eq!(
+        first.total_bytes,
+        if astersql_store_mockstore_unistore::tikv::server::mock_point_read_exec_details(&[])
+            .is_some()
+        {
+            5
+        } else {
+            0
+        }
+    );
+    snapshot.Get(&ctx, kv::Key(b"k1".to_vec()), &[]).unwrap();
+    assert_eq!(
+        stats.point_response_stats(),
+        first,
+        "cache hit has no backend response"
+    );
+    let rows = snapshot
+        .BatchGet(
+            &ctx,
+            &[
+                kv::Key(b"k1".to_vec()),
+                kv::Key(b"k2".to_vec()),
+                kv::Key(b"missing".to_vec()),
+            ],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    let final_stats = stats.point_response_stats();
+    assert_eq!(final_stats.payload_bytes, 9);
+    if first.scan_detail_complete() {
+        assert!(final_stats.scan_detail_complete());
+        assert_eq!(final_stats.total_bytes, 13);
+    } else {
+        assert_eq!(final_stats.total_bytes, 0);
+    }
+    assert_eq!(first.payload_bytes, 3, "prior snapshot remains frozen");
+}

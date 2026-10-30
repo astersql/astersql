@@ -70,6 +70,7 @@ pub struct RpcResponse<T> {
     pub value: Option<T>,
     pub key_error: Option<KeyError>,
     pub region_error: Option<RegionError>,
+    pub scan_detail: Option<astersql_store_mockstore_unistore_cophandler::cop_handler::ScanDetail>,
 }
 
 impl<T> RpcResponse<T> {
@@ -79,6 +80,7 @@ impl<T> RpcResponse<T> {
             value: Some(value),
             key_error: None,
             region_error: None,
+            scan_detail: None,
         }
     }
     /// 将 MVCC 错误转为键错误响应。
@@ -87,6 +89,7 @@ impl<T> RpcResponse<T> {
             value: None,
             key_error: Some(convert_to_key_error(error)),
             region_error: None,
+            scan_detail: None,
         }
     }
     /// 将 Region 错误转为 Region 错误响应。
@@ -95,6 +98,7 @@ impl<T> RpcResponse<T> {
             value: None,
             key_error: None,
             region_error: Some(error),
+            scan_detail: None,
         }
     }
 }
@@ -215,7 +219,16 @@ impl Server {
             return RpcResponse::from_region(error);
         }
         match self.store.get(&key, version, &context.resolved_locks) {
-            Ok(value) => RpcResponse::ok(value),
+            Ok(value) => {
+                let scan_detail = mock_point_read_exec_details(&[KvPair {
+                    key,
+                    value: value.clone().unwrap_or_default(),
+                    error: None,
+                }]);
+                let mut response = RpcResponse::ok(value);
+                response.scan_detail = scan_detail;
+                response
+            }
             Err(error) => RpcResponse::from_mvcc(error),
         }
     }
@@ -383,7 +396,27 @@ impl Server {
         if let Err(error) = self.request_region(context) {
             return RpcResponse::from_region(error);
         }
-        RpcResponse::ok(self.store.batch_get(keys, version, &context.resolved_locks))
+        let pairs = self.store.batch_get(keys, version, &context.resolved_locks);
+        let scan_detail = mock_point_read_exec_details(&pairs);
+        let mut response = RpcResponse::ok(pairs);
+        response.scan_detail = scan_detail;
+        response
+    }
+    /// Read the transaction lock buffer with the same point-response accounting.
+    pub fn kv_buffer_batch_get(
+        &self,
+        context: &RpcContext,
+        keys: &[Vec<u8>],
+        version: u64,
+    ) -> RpcResponse<Vec<KvPair>> {
+        if let Err(error) = self.request_region(context) {
+            return RpcResponse::from_region(error);
+        }
+        let pairs = self.store.read_buffer_from_lock(version, keys);
+        let scan_detail = mock_point_read_exec_details(&pairs);
+        let mut response = RpcResponse::ok(pairs);
+        response.scan_detail = scan_detail;
+        response
     }
     /// 批量回滚。
     pub fn kv_batch_rollback(
@@ -590,6 +623,7 @@ impl Server {
                     ..KeyError::default()
                 }),
                 region_error: None,
+                scan_detail: None,
             };
         };
         match handler.handle(request, start_ts, &region) {
@@ -602,6 +636,7 @@ impl Server {
                     ..KeyError::default()
                 }),
                 region_error: None,
+                scan_detail: None,
             },
         }
     }
@@ -777,4 +812,26 @@ pub fn injected_pessimistic_deadlock(first_key: Option<&[u8]>, start_ts: u64) ->
         lock_ts: start_ts.wrapping_add(1),
         deadlock_key_hash: keys_to_hash_values(&[key.to_vec()])[0],
     })
+}
+
+/// Count successful returned pairs; a miss retains an empty, present detail.
+pub fn mock_point_read_exec_details(
+    pairs: &[KvPair],
+) -> Option<astersql_store_mockstore_unistore_cophandler::cop_handler::ScanDetail> {
+    if !astersql_config_kerneltype::IsNextGen() {
+        return None;
+    }
+    let mut detail =
+        astersql_store_mockstore_unistore_cophandler::cop_handler::ScanDetail::default();
+    for pair in pairs {
+        if pair.error.is_some() || pair.value.is_empty() {
+            continue;
+        }
+        let size = (pair.key.len() + pair.value.len()) as u64;
+        detail.total_versions += 1;
+        detail.processed_versions += 1;
+        detail.total_versions_size += size;
+        detail.processed_versions_size += size;
+    }
+    Some(detail)
 }

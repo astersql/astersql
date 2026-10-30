@@ -91,6 +91,8 @@ RustCodeGraph 的文件关系显示 `canonical_storage.rs` 直接使用 `storage
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：Snapshot::Get 在真实可见行读取成功后、缓存前，通过 record_point_response 复用 unistore 的 mock_point_read_exec_details 生产器和 client-rust 的公开响应记录入口。真实 miss 记录 Some(零明细)，缓存命中不产生新后端响应；BatchGet 原来逐键 Get 的行为不变，因此统计自然累计。该接线使规范内存 mock 与 Go mock Get 的后端字节证据保持一致，不引入网络或新存储子系统。
+
 Rust 将可独立运行的内存 MVCC 放在 `storage.rs`，再由本文件显式为内部对象实现同类 `kv` traits；这是结构差异，不应把 Rust 的默认 coprocessor/MPP 占位误认为 Go `copr.Store` 的完整等价实现。
 
 已对齐的顶层行为包括：`Name` 为 `mock-storage`、`Describe` 为空、`ShowStatus` 返回未实现、`Begin` 支持事务选项、`GetSnapshot` 返回指定版本视图、`CurrentVersion` 经 oracle 获取版本、`GetMinSafeTS`、锁等待、cluster ID、keyspace、mem cache 和可设置选项。Rust 测试还固定了 Go 语义：事务 Getter 的 `CommitTs` 为 0、写冲突可由 `IsTxnRetryableError` 识别、显式 start-ts 被保留、回滚写不可见。

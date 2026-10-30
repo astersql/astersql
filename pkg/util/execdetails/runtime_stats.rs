@@ -717,9 +717,17 @@ pub fn NewRuntimeStatsColl(reuse: Option<RuntimeStatsColl>) -> RuntimeStatsColl 
     }
 }
 
-pub fn EstimateScanBytes(totalKeys: i64, processedKeys: i64, processedBytes: i64) -> (f64, bool) {
-    if totalKeys < 0 || processedKeys < 0 || processedBytes < 0 {
+pub fn EstimateScanBytes(
+    totalKeys: i64,
+    processedKeys: i64,
+    processedBytes: i64,
+    totalBytes: i64,
+) -> (f64, bool) {
+    if totalKeys < 0 || processedKeys < 0 || processedBytes < 0 || totalBytes < 0 {
         return (0.0, false);
+    }
+    if totalBytes > 0 {
+        return (totalBytes as f64, true);
     }
     if processedKeys == 0 {
         return (0.0, processedBytes == 0);
@@ -1032,13 +1040,17 @@ impl RuntimeStatsColl {
     }
 
     pub fn GetCopScanDetail(&self, planID: i32) -> Option<util::ScanDetail> {
-        self.copStats.get(&planID).map(|stats| stats.scanDetail.clone())
+        self.copStats
+            .get(&planID)
+            .map(|stats| stats.scanDetail.clone())
     }
 
     /// Presence-aware bridge snapshot; legacy Go-compatible getters keep their
     /// best-effort zero value when only a runtime summary was recorded.
     pub fn GetObservedCopScanDetail(&self, planID: i32) -> Option<util::ScanDetail> {
-        self.copStats.get(&planID).filter(|stats| stats.scanDetailObserved)
+        self.copStats
+            .get(&planID)
+            .filter(|stats| stats.scanDetailObserved)
             .map(|stats| stats.scanDetail.clone())
     }
 

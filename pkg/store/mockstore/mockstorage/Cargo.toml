@@ -12,6 +12,7 @@ go-package = "pkg/store/mockstore/mockstorage"
 legacy-tasks = ["task-819"]
 
 [dependencies]
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.16", default-features = false }
 astersql-ingestor-ingestcli = { path = "../../../ingestor/ingestcli" }
 fs2 = "0.4"
 serde_json = "1"

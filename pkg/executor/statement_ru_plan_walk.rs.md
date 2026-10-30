@@ -67,6 +67,11 @@ owner 状态被特意拆成三部分：`final_outcome` 用 Acquire/AcqRel CAS �
 
 计算本身是单个 `&mut StatementRUCalculator` 的同步深度优先遍历，不创建线程、task 或 channel。递归 `depth` 上限与 tree length 相同，配合 canonical-tree 验证防止环和无界递归。快照设计确保 cleanup 可在终结后释放 runtime collector、RPC response 和 commit details，calculator/finalized snapshot 不延长它们的生命周期。CTE definition 在 flatten 阶段按 storage ID 去重，forest 只遍历共享生产者一次，消费者 occurrence 仍在各自所属树中保留行数。
 
+## 与 Go 版本的对应关系
+
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：Reader 与 point 从值快照读取总字节（TotalKeysSize / total_bytes），统一调用四参数扫描分类。Point 的负总字节和 payload 未覆盖却携带总字节均为 Invalid；完整零值与 legacy 比例回退保持原语义。总字节可相加，响应覆盖仍未证明，校准保持 Incomplete。
+
+
 ## 扩展指南
 
 - 新增可计费物理算子时，首先在 `calculate_statement_ru_plan_child_first` 增加明确的 downcast 分支，规定支持 site、child 数量/标签、输出行证据和 units 公式；同时在 `statement_ru_reporting.rs::StatementRUOperator` 中确认分类，并在 Go 同路径保持逻辑对齐。

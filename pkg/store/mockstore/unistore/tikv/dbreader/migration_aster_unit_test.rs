@@ -52,6 +52,10 @@ impl DBItem for FjallItem {
         Ok(self.value.clone())
     }
 
+    fn ValueSize(&self) -> usize {
+        self.value.len()
+    }
+
     fn UserMeta(&self) -> &[u8] {
         &self.meta.0
     }
@@ -299,6 +303,10 @@ impl DBItem for ValueErrorItem {
 
     fn Value(&self) -> Result<Vec<u8>, DbReaderError> {
         Err(DbReaderError::backend("value failed"))
+    }
+
+    fn ValueSize(&self) -> usize {
+        0
     }
 
     fn UserMeta(&self) -> &[u8] {
@@ -573,4 +581,37 @@ fn all_versions_feed_mvcc_info_and_start_ts_lookup() {
         reader.GetKeyByStartTs(b"a", b"z", 5).unwrap(),
         Some(b"key".to_vec())
     );
+}
+
+#[test]
+fn port_74dc8d6e87_visible_scan_bytes_before_break_and_skip_value() {
+    let store = TestStore::new();
+    store.put(b"k1", b"old", 1, 2);
+    store.put(b"k1", b"abc", 3, 4);
+    store.put(b"k2", b"abcdef", 3, 4);
+    for skip_value in [false, true] {
+        for break_after in [None, Some(1)] {
+            let mut reader = store.reader(b"", b"");
+            reader.ScanDetail = Some(kvrpcpb::ScanDetailV2::new());
+            let mut proc = CollectProcessor {
+                skip_value,
+                break_after,
+                ..Default::default()
+            };
+            reader.Scan(b"", b"", 100, 10, &mut proc).unwrap();
+            let detail = reader.ScanDetail.unwrap();
+            let (keys, bytes) = if break_after.is_some() {
+                (1, 5)
+            } else {
+                (2, 13)
+            };
+            assert_eq!(detail.get_total_versions(), keys);
+            assert_eq!(detail.get_processed_versions(), keys);
+            assert_eq!(detail.get_total_versions_size(), bytes);
+            assert_eq!(detail.get_processed_versions_size(), bytes);
+            if skip_value {
+                assert!(proc.rows.iter().all(|row| row.1.is_empty()));
+            }
+        }
+    }
 }

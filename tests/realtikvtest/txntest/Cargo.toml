@@ -43,7 +43,7 @@ name = "txn_test"
 path = "txn_test.rs"
 
 [dev-dependencies]
-tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.13", default-features = false, features = ["integration-tests"] }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.16", default-features = false, features = ["integration-tests"] }
 tonic = "0.12"
 "astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
 "astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }

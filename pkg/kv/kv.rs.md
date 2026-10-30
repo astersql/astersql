@@ -117,6 +117,9 @@ SST limiter 要求实现 `Send + Sync`，同一 `Arc` 可跨 store 写 RPC 使�
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：CopRuntimeEvidence.total_bytes 携带后端报告的总键值扫描字节；零表示缺失。它与 processed_bytes 和网络响应字节分开，不改变事务或存储接口的读写语义。
+
+
 需要明确的 Rust 差异/扩展如下：
 
 - Go 的 `map[string]ValueEntry` 可用 string 无损承载任意字节，Rust 暂以 UTF-8 `String` 为键，所以增加 `KeyMapName` 的十六进制编码约定（`kv.rs:47-57`）；调用方与实现必须统一使用它。

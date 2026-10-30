@@ -18,7 +18,7 @@
 // 定义 Datum/表达式/执行计划树、KV 读取抽象、DAG/Analyze/Checksum 请求分派，
 // 以及锁检查、Region 范围裁剪与响应组装。
 
-use crate::analyze::{AnalyzeRequest, analyze};
+use crate::analyze::{AnalyzeRequest, analyze_with_scan_detail};
 use crate::mpp_exec::{ExecutionOutput, execute_executor};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -768,16 +768,20 @@ pub fn handle_cop_request(reader: &dyn KvReader, request: &Request) -> Response 
         };
     }
     let started = Instant::now();
+    let mut analyze_detail = ScanDetail::default();
     let result = match &request.payload {
         RequestPayload::Dag(dag) => handle_dag(reader, request, dag),
-        RequestPayload::Analyze(analyze_request) => {
-            analyze(reader, &request.ranges, request.start_ts, analyze_request).map(|data| {
-                Response {
-                    data,
-                    ..Response::default()
-                }
-            })
-        }
+        RequestPayload::Analyze(analyze_request) => analyze_with_scan_detail(
+            reader,
+            &request.ranges,
+            request.start_ts,
+            analyze_request,
+            astersql_config_kerneltype::IsNextGen().then_some(&mut analyze_detail),
+        )
+        .map(|data| Response {
+            data,
+            ..Response::default()
+        }),
         RequestPayload::Checksum => {
             // The unistore Go mock returns a fixed checksum response rather
             // than reading the backing DB; keep the Rust mock wire behavior identical.
@@ -791,7 +795,7 @@ pub fn handle_cop_request(reader: &dyn KvReader, request: &Request) -> Response 
             })
         }
     };
-    match result {
+    let mut response = match result {
         Ok(mut response) => {
             if response.summaries.is_empty() {
                 response.summaries.push(ExecutionSummary {
@@ -810,7 +814,13 @@ pub fn handle_cop_request(reader: &dyn KvReader, request: &Request) -> Response 
             other_error: Some(error.to_string()),
             ..Response::default()
         },
+    };
+    if matches!(request.payload, RequestPayload::Analyze(_))
+        && astersql_config_kerneltype::IsNextGen()
+    {
+        response.scan_detail = analyze_detail;
     }
+    response
 }
 
 /// 处理 DAG：组装根执行器、投影输出列、可选分页截断。

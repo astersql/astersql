@@ -440,7 +440,9 @@ impl Compiler {
                 typed_plan
             },
         );
-        crate::statement_ru_result::install_statement_ru_owner(&mut exec_stmt);
+        if astersql_config_kerneltype::IsNextGen() {
+            crate::statement_ru_result::install_statement_ru_owner(&mut exec_stmt);
+        }
         Ok(exec_stmt)
     }
 }

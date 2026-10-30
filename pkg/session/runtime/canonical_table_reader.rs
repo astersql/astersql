@@ -129,6 +129,10 @@ impl CanonicalTableReaderExecutor {
                 .evidence
                 .processed_bytes
                 .saturating_add(evidence.processed_bytes);
+            self.evidence.total_bytes = self
+                .evidence
+                .total_bytes
+                .saturating_add(evidence.total_bytes);
             if let Some(bytes) = evidence.tikv_response_bytes {
                 self.evidence.tikv_response_bytes = Some(
                     self.evidence
@@ -302,3 +306,7 @@ impl ExecExecutor for CanonicalTableReaderExecutor {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "canonical_table_reader_test.rs"]
+mod tests;

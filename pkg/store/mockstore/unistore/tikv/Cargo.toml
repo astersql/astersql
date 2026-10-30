@@ -15,7 +15,6 @@ legacy-tasks = ["task-820", "task-821", "task-822", "task-823", "task-824", "tas
 "astersql-kv" = { package = "astersql-kv", path = "../../../../kv" }
 "astersql-store-mockstore-unistore-client" = { package = "astersql-store-mockstore-unistore-client", path = "../client" }
 "astersql-store-mockstore-unistore-config" = { package = "astersql-store-mockstore-unistore-config", path = "../config" }
-"astersql-store-mockstore-unistore-cophandler" = { package = "astersql-store-mockstore-unistore-cophandler", path = "../cophandler" }
 "astersql-store-mockstore-unistore-lockstore" = { package = "astersql-store-mockstore-unistore-lockstore", path = "../lockstore" }
 "astersql-store-mockstore-unistore-metrics" = { package = "astersql-store-mockstore-unistore-metrics", path = "../metrics" }
 "astersql-store-mockstore-unistore-pd" = { package = "astersql-store-mockstore-unistore-pd", path = "../pd" }
@@ -34,4 +33,6 @@ legacy-tasks = ["task-820", "task-821", "task-822", "task-823", "task-824", "tas
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
 
 [dependencies]
+astersql-config-kerneltype = { path = "../../../../config/kerneltype" }
 fail = { version = "0.5", features = ["failpoints"] }
+astersql-store-mockstore-unistore-cophandler = { path = "../cophandler" }

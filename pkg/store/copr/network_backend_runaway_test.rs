@@ -97,3 +97,21 @@ fn paging_response_mvcc_bytes_cover_go_cases() {
         0
     );
 }
+
+#[test]
+fn port_74dc8d6e87_parent_and_batch_backend_scan_bytes() {
+    let mut scan = kvrpcpb::ScanDetailV2::new();
+    scan.set_total_versions_size(123);
+    let mut detail = kvrpcpb::ExecDetailsV2::new();
+    detail.set_scan_detail_v2(scan);
+    let mut child = coprocessor::StoreBatchTaskResponse::new();
+    child.set_task_id(12);
+    child.set_exec_details_v2(detail.clone());
+    let mut response = coprocessor::Response::new();
+    response.set_exec_details_v2(detail);
+    response.set_batch_responses(protobuf::RepeatedField::from_vec(vec![child]));
+    let protocol = super::pb_response(response, &super::KeyCodec::v1()).unwrap();
+    assert_eq!(protocol.total_bytes, 123);
+    assert_eq!(protocol.batch_responses[&12].total_bytes, 123);
+    assert_eq!(protocol.processed_bytes, 0);
+}

@@ -93,6 +93,9 @@ RustCodeGraph 的 `query` 精确定位了 `handle_cop_request`（`cop_handler.rs
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：NextGen Analyze 请求把局部 ScanDetail 传入 analyze_with_scan_detail，并在成功或错误映射之后附回 Response；Classic 不收集。原有 DAG、锁错误、缓存命中和摘要生成保留。
+
+
 已对齐的核心意图包括：请求按 DAG/Analyze/Checksum 分派、执行器列表转树、每 chunk 64 行、Region 范围裁剪与倒序、锁信息结构、时区缓存的读写锁，以及 checksum mock 固定返回 `(1,1,1)`。
 
 当前 Rust 实现有以下明确差异，扩展时不能忽略：

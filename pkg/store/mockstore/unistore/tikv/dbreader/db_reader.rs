@@ -104,6 +104,9 @@ pub trait DBItem: Send {
     fn Version(&self) -> u64;
     fn IsEmpty(&self) -> bool;
 
+    /// Encoded value length from iterator metadata, without loading the value.
+    fn ValueSize(&self) -> usize;
+
     fn KeyCopy(&self) -> Vec<u8> {
         self.Key().to_vec()
     }
@@ -190,6 +193,7 @@ pub fn NewDBReader(startKey: Vec<u8>, endKey: Vec<u8>, txn: Box<dyn ReadTxn>) ->
         revIter: None,
         RcCheckTS: false,
         ExtraDbReaderProvider: None,
+        ScanDetail: None,
     }
 }
 
@@ -224,6 +228,8 @@ pub struct DBReader {
     pub RcCheckTS: bool,
     /// IndexLookUp 额外 Region 读取提供者。
     pub ExtraDbReaderProvider: Option<Box<dyn ExtraDbReaderProvider>>,
+    /// Visible pairs visited by Scan; hidden MVCC versions are excluded.
+    pub ScanDetail: Option<kvrpcpb::ScanDetailV2>,
 }
 
 impl DBReader {
@@ -428,6 +434,20 @@ impl DBReader {
                 continue;
             }
             let value = if skipValue { Vec::new() } else { item.Value()? };
+            if let Some(detail) = &mut self.ScanDetail {
+                let size = (item.Key().len()
+                    + if skipValue {
+                        item.ValueSize()
+                    } else {
+                        value.len()
+                    }) as u64;
+                detail.set_total_versions(detail.get_total_versions().wrapping_add(1));
+                detail.set_processed_versions(detail.get_processed_versions().wrapping_add(1));
+                detail.set_total_versions_size(detail.get_total_versions_size().wrapping_add(size));
+                detail.set_processed_versions_size(
+                    detail.get_processed_versions_size().wrapping_add(size),
+                );
+            }
             match proc.Process(item.Key(), &value, item.Version()) {
                 Ok(()) => {}
                 Err(DbReaderError::ScanBreak) => break,

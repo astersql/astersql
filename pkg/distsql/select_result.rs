@@ -438,6 +438,7 @@ impl<S: ResponseSource + 'static> SelectResult for selectResult<S> {
                             self.raw_scan.TotalKeys,
                             self.raw_scan.ProcessedKeys,
                             self.raw_scan.ProcessedKeysSize,
+                            self.raw_scan.TotalKeysSize,
                         );
                         if valid {
                             collection.RecordAnalyzeScanBytes(context.root_plan_id, scan_bytes);

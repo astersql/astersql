@@ -12,7 +12,7 @@ go-package = "pkg/store/mockstore/unistore/cophandler"
 legacy-tasks = ["task-802", "task-803", "task-804", "task-810", "task-814"]
 
 [dependencies]
-"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../../config/kerneltype" , optional = true }
+astersql-config-kerneltype = { path = "../../../../config/kerneltype" }
 "astersql-expression" = { package = "astersql-expression", path = "../../../../expression" , optional = true }
 "astersql-expression-aggregation" = { package = "astersql-expression-aggregation", path = "../../../../expression/aggregation" , optional = true }
 "astersql-kv" = { package = "astersql-kv", path = "../../../../kv" , optional = true }

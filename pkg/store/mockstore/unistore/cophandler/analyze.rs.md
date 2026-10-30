@@ -87,6 +87,9 @@ Rust 的直接类型依赖只有 `cop_handler` 模块与标准库集合类型；
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：新增 analyze_with_scan_detail，在同一次 KvReader::scan 的可见键值上调用 ScanDetail::record，然后执行原来的五种分析分派与编码。analyze 保留原入口并传 None；实际请求由 cop_handler 在 NextGen 传入统计，分析失败时已有扫描证据仍由调用者拥有。
+
+
 - Go 从 key 解码 index/common handle、从 value 解码列；Rust 对已经解码为 `Row` 的 `KvPair.value` 统一按列偏移处理，索引路径甚至不读取 key。
 - Go 使用 tipb protobuf 请求/响应以及 `statistics.SortedBuilder`、`SampleBuilder`、`RowSampleBuilder`、`CMSketch`、`FMSketch`；Rust 使用自有结构、FNV 风格哈希和自定义部分响应编码。
 - Go 处理 flags、时区、field type、collation、主键 handle、column groups、sample rate、统计版本、TopN 和 API V2 key；Rust 均未实现。

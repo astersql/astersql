@@ -26,7 +26,7 @@
 - `RegisterStats`/`RegisterStatsShared`：按 `(planID, Tp())` 找同类对象合并，否则追加；`GetRootStats` 会把 shared 暂存项移入 owned root，`GetRootStatsStringShared` 则在不消费 shared 项的情况下克隆并组合展示。
 - `RecordCopStats`/`RecordOneCopTask`：远端统计入口。前者还合并扫描、时间与 read-pool；两者都可用 summary 的 executor id 尾段重定向 `planID`，更新摘要证据、Cop 基础统计和语句级 TiFlash 网络统计。
 - `RootRowsSnapshot`/`CopRowsSnapshot`：区分“真实零行”“尚未观察”“摘要不完整/矛盾”。Cop 的 `Observed` 要求期望数与已见数均为正且已见数不超过期望数；`Complete` 还要求两者相等。
-- `EstimateScanBytes`：按 `processedBytes / processedKeys * totalKeys` 对单个逻辑请求估算扫描字节，拒绝负值、无样本但有字节、零 total/bytes 及非有限结果。比例必须在各请求扫描明细被合并前计算。
+- `EstimateScanBytes`：优先采用后端 `totalBytes`，缺失时按 `processedBytes / processedKeys * totalKeys` 对单个逻辑请求估算扫描字节，拒绝负值、无样本但有字节、零 total/bytes 及非有限结果。比例必须在各请求扫描明细被合并前计算。
 - `WriteRuntimeStats` 与 `HashStateRuntimeStats`：分别保存写入 CPU work 和 hash-state 行数。后者用 CAS 累加；转换/加法溢出后写 `-1` 并永久视为无效。
 - `RuntimeStatsWithConcurrencyInfo`：保存并发项，非正并发数格式化为 `OFF`；其 `Merge` 当前为空，因此同类型重复注册不会累计。
 - `RuntimeStatsWithCommit`：合并并格式化 commit、普通 lock keys、shared lock keys。退避类型会去重排序；锁保护的最慢 RPC/退避列表与原子 resolve-lock/region 计数分别按其同步机制读取。
@@ -90,6 +90,9 @@ RustCodeGraph 将本文件标记为被 12 个文件引用，并能精确定位 `
 对象生命周期以语句为主。`NewRuntimeStatsColl(Some(old))` 复用已分配的 maps 并清空语句状态；调用方不得在复用后继续把旧 plan id 的引用或快照视为有效。trait object 的克隆仅用于组合 shared/owned 展示，`BasicRuntimeStats` 不允许进入这条克隆路径。
 
 ## 与 Go 版本的对应关系
+
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：EstimateScanBytes 新增 totalBytes 参数：先校验全部计数非负，优先使用非零后端总字节，零值才走 processedBytes / processedKeys * totalKeys。独立请求仍须先估算后汇总，避免非线性回退误差。
+
 
 Rust 采用 `Option` 代替 nil、`Box<dyn RuntimeStats>` 代替 Go interface、`AtomicI*` 代替 `atomic.Int*`、RAII mutex guard 代替手动 Lock/Unlock。
 

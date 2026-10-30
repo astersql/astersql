@@ -1607,6 +1607,7 @@ impl From<copr::CopResponse> for CopResultSubset {
                 total_keys: response.total_keys,
                 processed_keys: response.processed_keys,
                 processed_bytes: response.processed_bytes,
+                total_bytes: response.total_bytes,
                 tikv_response_bytes: response.tikv_response_bytes,
             });
         Self {

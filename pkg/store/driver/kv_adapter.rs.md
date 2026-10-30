@@ -72,6 +72,9 @@ store 的 `ClientRuntime` 被 `Arc<RwLock<_>>` 共享；事务和快照 handle �
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：CopResultSubset 从 CopProtocolResponse 将 total_bytes 与其他扫描计数一并复制到 kv::CopRuntimeEvidence，不从 payload 或 processed_bytes 推导。
+
+
 Rust 没有同名 `kv_adapter.go`；语义来源分散在 `pkg/store/driver/tikv_driver.go` 与 `pkg/store/driver/txn/{txn_driver.go,snapshot.go,scanner.go,unionstore_driver.go}`。Go `tikvStore.Begin` 由 client-go `KVStore.Begin` 后包装 `txn_driver.NewTiKVTxn`，`GetSnapshot` 包装 client-go snapshot；Rust 则在本文件直接用 client-rust handle 实现相同 canonical traits。
 
 并非所有 Go 能力已经等价：Go `GetMPPClient` 返回真实 copr MPP client，而 Rust 返回 `UnsupportedMppClient`；Go store option 使用 `sync.Map`，Rust storage option 仍为空；Rust 的部分 checkpoint/pipelined API 是显式桩。

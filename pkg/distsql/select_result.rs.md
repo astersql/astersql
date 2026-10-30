@@ -105,6 +105,9 @@ RustCodeGraph 对公开串行/排序构造函数没有找到生产调用者；�
 
 ## 与 Go 版本的对应关系
 
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：Analyze Close 将 raw_scan.TotalKeysSize 传给 EstimateScanBytes：非零后端总字节优先，零才使用旧比例；仍在请求边界记录并保持 Close 幂等。
+
+
 仍存在重要语义差异：
 
 - Go 消费真实 `kv.Response`/protobuf `tipb.SelectResponse`，并按 Default/Chunk 两种编码解码到 TiDB `chunk.Chunk`；Rust 接收已简化的字符串行或 `raw_data`，所有行转为 `Scalar::String`。

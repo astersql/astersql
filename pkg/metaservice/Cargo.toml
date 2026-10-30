@@ -15,7 +15,7 @@ astersql-config = { path = "../config" }
 astersql-util = { path = "../util" }
 etcd-client = { version = "0.19", features = ["tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
-tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.13", default-features = false }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.16", default-features = false }
 tonic = "0.12"
 
 [dev-dependencies]

@@ -1852,15 +1852,16 @@ fn response_read_bytes_v2(details: &kvrpcpb::ExecDetailsV2) -> u64 {
     }
 }
 
-fn response_scan_evidence_v2(details: &kvrpcpb::ExecDetailsV2) -> (u64, u64, u64) {
+fn response_scan_evidence_v2(details: &kvrpcpb::ExecDetailsV2) -> (u64, u64, u64, u64) {
     if !details.has_scan_detail_v2() {
-        return (0, 0, 0);
+        return (0, 0, 0, 0);
     }
     let scan = details.get_scan_detail_v2();
     (
         scan.get_total_versions(),
         scan.get_processed_versions(),
         scan.get_processed_versions_size(),
+        scan.get_total_versions_size(),
     )
 }
 
@@ -1924,7 +1925,7 @@ fn pb_response(
         } else {
             None
         };
-        let (total_keys, processed_keys, processed_bytes) = batch
+        let (total_keys, processed_keys, processed_bytes, total_bytes) = batch
             .has_exec_details_v2()
             .then(|| response_scan_evidence_v2(batch.get_exec_details_v2()))
             .unwrap_or_default();
@@ -1947,6 +1948,7 @@ fn pb_response(
             total_keys,
             processed_keys,
             processed_bytes,
+            total_bytes,
             tikv_response_bytes: batch
                 .has_exec_details_v2()
                 .then(|| response_tikv_response_bytes_v2(batch.get_exec_details_v2()))
@@ -1982,7 +1984,7 @@ fn pb_response(
         .has_exec_details_v2()
         .then(|| response_kv_cpu_ms_v2(response.get_exec_details_v2()))
         .unwrap_or_default();
-    let (total_keys, processed_keys, processed_bytes) = response
+    let (total_keys, processed_keys, processed_bytes, total_bytes) = response
         .has_exec_details_v2()
         .then(|| response_scan_evidence_v2(response.get_exec_details_v2()))
         .unwrap_or_default();
@@ -2002,6 +2004,7 @@ fn pb_response(
         total_keys,
         processed_keys,
         processed_bytes,
+        total_bytes,
         tikv_response_bytes: response
             .has_exec_details_v2()
             .then(|| response_tikv_response_bytes_v2(response.get_exec_details_v2()))

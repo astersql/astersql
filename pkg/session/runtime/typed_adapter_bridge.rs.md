@@ -26,7 +26,7 @@ executor 的 `ExecStmt.Ctx` 持有其 `Arc`，从而通过同一会话状态实�
 - `encode_index_ranges`：调用 `RebuildRangesForPlanCache`，按开闭端点用 `EncodeKey`、`PrefixNext` 和 `EncodeIndexSeekKey` 生成索引 KV 范围。
 - `encode_table_record_ranges`：仅接受非 common handle 的整数主键范围，验证单列上下界和 `KindInt64` 后用 `EncodeRowKeyWithHandle` 编码。
 - `BuildPreparedExecStmt`：从 bound prepared 计划生成 schema、输出名和 plan summary，再委托 `BuildExecStmt`。
-- `BuildExecStmt`：克隆真实物理树，构造 `ExecStmt` 和 `StatementContext`，并调用 `install_statement_ru_owner`。
+- `BuildExecStmt`：克隆真实物理树，构造 `ExecStmt` 和 `StatementContext`，并仅在 NextGen 调用 `install_statement_ru_owner`。
 - `BindDMLStatement`/`BindAnalyzeStatement`：按当前 SQL mode 重新解析并严格验证单条语句类型，只接受 INSERT/UPDATE/DELETE 或 ANALYZE TABLE。
 - `BindPreparedPlannedKVSelect`：经 `ConcreteSession::PlanPreparedPlannedKVSelect` 获取规范计划和缓存状态，重建范围、固定当前版本、绑定计划并记录重建参数。
 - `ConcreteSession::OpenTypedPhysicalPlan*`/`OpenTypedKVSnapshotScan`：建立 owned snapshot source，并调用 executor builder 或直接构造 `TypedKVScan`。
@@ -109,6 +109,8 @@ RU scope 采用 RAII 恢复嵌套状态：构造时取走先前 pending 并增�
 快照 source 每次操作临时进入 storage registry；迭代器由 storage snapshot 返回并继续拥有后端所需资源。物理执行器、record set 和 deadline 都依赖显式 `Close`/scope Drop 终结，新增早退路径必须维持这些 RAII 边界。
 
 ## 与 Go 版本的对应关系
+
+对齐来源 `74dc8d6e8722608c8067d975a9dea84662c60a5d`：BuildExecStmt 是绕过 Compiler::Compile 的真实会话编译边界，必须同样只在 IsNextGen 时安装 statement RU owner；计划克隆、prepared 包装和执行接线保持原行为。
 
 将已有 table/index/common-handle range encoder 暴露给同级 MV source，复用真实物理 scan 的范围编码，避免为 MV 复制存储读实现。
 

@@ -103,8 +103,24 @@ pub fn analyze(
     start_ts: u64,
     request: &AnalyzeRequest,
 ) -> Result<Vec<u8>, CopError> {
+    analyze_with_scan_detail(reader, ranges, start_ts, request, None)
+}
+
+/// Collect visible key/value work before analysis, including error paths.
+pub fn analyze_with_scan_detail(
+    reader: &dyn KvReader,
+    ranges: &[KeyRange],
+    start_ts: u64,
+    request: &AnalyzeRequest,
+    detail: Option<&mut crate::cop_handler::ScanDetail>,
+) -> Result<Vec<u8>, CopError> {
     // MVCC：仅可见 commit_ts <= start_ts 的版本（由 reader 保证）。
     let pairs = reader.scan(ranges, start_ts, false)?;
+    if let Some(detail) = detail {
+        for pair in &pairs {
+            detail.record(&pair.key, &pair.value);
+        }
+    }
     let rows = pairs.into_iter().map(|pair| pair.value).collect::<Vec<_>>();
     let result = match request.analyze_type {
         AnalyzeType::Index => analyze_index(&rows, request)?,

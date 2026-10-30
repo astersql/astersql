@@ -91,12 +91,12 @@ fn go_merge_14_scan_and_cop_summary_snapshots() {
 
 #[test]
 fn go_merge_14_analyze_scan_estimates_and_root_rows() {
-    assert_eq!(exec::EstimateScanBytes(10, 1, 100), (1000.0, true));
-    assert_eq!(exec::EstimateScanBytes(10, 0, 0), (0.0, true));
-    assert_eq!(exec::EstimateScanBytes(10, 0, 1), (0.0, false));
-    assert_eq!(exec::EstimateScanBytes(-1, 1, 1), (0.0, false));
-    assert_eq!(exec::EstimateScanBytes(0, 1, 1), (0.0, false));
-    assert_eq!(exec::EstimateScanBytes(1, 1, 0), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(10, 1, 100, 0), (1000.0, true));
+    assert_eq!(exec::EstimateScanBytes(10, 0, 0, 0), (0.0, true));
+    assert_eq!(exec::EstimateScanBytes(10, 0, 1, 0), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(-1, 1, 1, 0), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(0, 1, 1, 0), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(1, 1, 0, 0), (0.0, false));
     let mut coll = exec::NewRuntimeStatsColl(None);
     coll.RecordAnalyzeScanBytes(1, 1000.0);
     coll.RecordAnalyzeScanBytes(1, 9.0);
@@ -962,4 +962,25 @@ fn port_37a4cd4f43_refresh_stats_type_ids_follow_joined_rows() {
         exec::TpMViewCompleteDeltaApplyRuntimeStats,
         exec::TpMViewDeltaMergeAggRuntimeStats + 1
     );
+}
+
+#[test]
+fn port_74dc8d6e87_reported_bytes_and_merge() {
+    for (total, processed, bytes) in [(10, 2, 6), (10, 0, 0), (0, 0, 0)] {
+        assert_eq!(
+            exec::EstimateScanBytes(total, processed, bytes, 123),
+            (123.0, true)
+        );
+    }
+    assert_eq!(exec::EstimateScanBytes(10, 2, 6, -1), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(10, 2, 6, 0), (30.0, true));
+    let mut first = exec::util::ScanDetail {
+        TotalKeysSize: 123,
+        ..Default::default()
+    };
+    first.Merge(&exec::util::ScanDetail {
+        TotalKeysSize: 77,
+        ..Default::default()
+    });
+    assert_eq!(first.TotalKeysSize, 200);
 }

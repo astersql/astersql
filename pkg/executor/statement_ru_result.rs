@@ -207,16 +207,20 @@ pub enum ScanEvidence {
     Valid(f64),
 }
 
-/// Estimate scan bytes from total keys and bytes per processed key.
+/// Prefer backend total scan bytes; fall back to bytes per processed key.
 /// Mirrors Go `classifyStatementRUScanEvidence` without retaining runtime
 /// statistics or scan-detail pointers after statement finalization.
 pub fn classify_scan_evidence(
     total_keys: i64,
     processed_keys: i64,
     processed_bytes: i64,
+    total_bytes: i64,
 ) -> ScanEvidence {
-    if total_keys < 0 || processed_keys < 0 || processed_bytes < 0 {
+    if total_keys < 0 || processed_keys < 0 || processed_bytes < 0 || total_bytes < 0 {
         return ScanEvidence::Invalid;
+    }
+    if total_bytes > 0 {
+        return ScanEvidence::Valid(total_bytes as f64);
     }
     if processed_keys == 0 {
         return if processed_bytes == 0 {
