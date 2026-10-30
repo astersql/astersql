@@ -46,7 +46,21 @@ impl crate::kv::Client for PushdownCapabilityClient {
 fn builtin_registry_matches_complete_go_function_table() {
     const GO_BUILTIN_COUNT: usize = 310;
     const SQL_OPERATOR_ALIASES: &[&str] = &[
-        "=", "!=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/", "%",
+        "=",
+        "!=",
+        "<>",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "||",
+        "is distinct from",
+        "is not distinct from",
     ];
     // Keep the Go inventory separate from the bounded PostgreSQL extensions.
     const PG_EXTENSIONS: &[&str] = &[
@@ -59,6 +73,10 @@ fn builtin_registry_matches_complete_go_function_table() {
         "int4range",
         "numrange",
         "isempty",
+        "current_database",
+        "current_schema",
+        "pg_typeof",
+        "pg_backend_pid",
     ];
     assert_eq!(
         funcs.len(),
