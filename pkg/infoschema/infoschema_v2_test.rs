@@ -436,3 +436,252 @@ fn pg_dialect_15_exact_snapshot_identity() {
         12
     );
 }
+
+/// Source d0665b0713 TestBundles: dropping a schema returns every physical ID,
+/// even after the backing metadata reader no longer contains that database.
+#[test]
+fn port_d0665b0713_drop_schema_physical_ids() {
+    use crate::infoschema::{PartitionDefinition, PartitionInfo};
+    struct DeletedMeta;
+    impl MetadataReader for DeletedMeta {
+        fn database(&self, _: i64) -> Result<Option<DBInfo>, String> {
+            Ok(None)
+        }
+        fn table(&self, _: i64, _: i64) -> Result<Option<TableInfo>, String> {
+            panic!("DROP must read its previous schema snapshot")
+        }
+    }
+    for v2 in [false, true] {
+        for action_type in [ActionType::DropSchema, ActionType::RefreshMeta] {
+            let data = NewData();
+            let mut builder = NewBuilder(0, data.clone(), v2);
+            let tables = vec![
+                Arc::new(TableInfo {
+                    id: 10,
+                    db_id: 1,
+                    name: ci("partitioned"),
+                    partition: Some(PartitionInfo {
+                        definitions: vec![
+                            PartitionDefinition {
+                                id: 11,
+                                name: ci("p0"),
+                            },
+                            PartitionDefinition {
+                                id: 12,
+                                name: ci("p1"),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                }),
+                Arc::new(TableInfo {
+                    id: 20,
+                    db_id: 1,
+                    name: ci("plain"),
+                    ..Default::default()
+                }),
+            ];
+            builder.InitWithDBInfos(
+                &mut [DBInfo {
+                    id: 1,
+                    name: ci("db"),
+                    tables,
+                    ..Default::default()
+                }],
+                Vec::new(),
+                Vec::new(),
+                1,
+            );
+            let old = builder.Build(100);
+            let mut builder = NewBuilder(0, data.clone(), v2);
+            builder.InitWithOldInfoSchema(old.as_ref());
+            let ids = builder
+                .ApplyDiff(
+                    &DeletedMeta,
+                    &SchemaDiff {
+                        version: 2,
+                        schema_id: 1,
+                        action_type,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(ids, vec![10, 11, 12, 20]);
+            let dropped = builder.Build(200);
+            assert!(dropped.SchemaByID(1).is_none());
+            for id in [10, 20] {
+                assert!(dropped.TableByID(id).is_none());
+                assert!(old.TableByID(id).is_some());
+            }
+            assert!(dropped.FindTableByPartitionID(11).is_none());
+            assert!(old.FindTableByPartitionID(11).is_some());
+            assert!(dropped.AllPlacementBundles().is_empty());
+        }
+    }
+}
+
+struct PortD0665Context(std::sync::atomic::AtomicBool);
+impl crate::RequestContext for PortD0665Context {
+    fn deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+    fn is_done(&self) -> bool {
+        self.error().is_some()
+    }
+    fn error(&self) -> Option<crate::ContextError> {
+        self.0
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then_some(crate::ContextError::Cancelled)
+    }
+    fn value(
+        &self,
+        _: &(dyn std::any::Any + Send + Sync),
+    ) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        None
+    }
+}
+
+#[test]
+fn port_d0665b0713_stream_visit_errors_context_and_specials() {
+    let error = crate::InfoSchemaError {
+        code: "visit",
+        message: "stop".into(),
+    };
+    for name in ["db", "information_schema"] {
+        let db = DBInfo {
+            id: 1,
+            name: ci(name),
+            ..Default::default()
+        };
+        let tables: Vec<_> = ["foo", "Foo"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                Table::new(TableInfo {
+                    id: i as i64 + 10,
+                    db_id: 1,
+                    name: ci(name),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let mut v1 = crate::infoSchema::new(2);
+        v1.add_schema(db.clone(), tables.clone());
+        let data = NewData();
+        data.addDB(1, db.clone());
+        if name == "db" {
+            for table in &tables {
+                data.add(&db, table.clone(), 2);
+            }
+        } else {
+            data.addSpecialDB(db.clone(), tables.clone());
+        }
+        let v2 = NewInfoSchemaV2(data, 2, 100);
+        for schema in [&v1 as &dyn InfoSchema, &v2 as &dyn InfoSchema] {
+            let mut ids = Vec::new();
+            schema
+                .IterSchemaTableInfos(crate::Background(), &db.name, &mut |t| {
+                    ids.push(t.id);
+                    Ok(())
+                })
+                .unwrap();
+            ids.sort_unstable();
+            assert_eq!(ids, [10, 11], "{name}: preserve case-distinct tables");
+            let mut visited = 0;
+            assert_eq!(
+                schema.IterSchemaTableInfos(crate::Background(), &db.name, &mut |_| {
+                    visited += 1;
+                    Err(error.clone())
+                }),
+                Err(error.clone())
+            );
+            assert_eq!(visited, 1);
+            let ctx = PortD0665Context(false.into());
+            visited = 0;
+            let result = schema.IterSchemaTableInfos(&ctx, &db.name, &mut |_| {
+                visited += 1;
+                ctx.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            });
+            assert_eq!(result.unwrap_err().message, "context canceled");
+            assert_eq!(visited, 1);
+            schema
+                .IterSchemaTableInfos(&ctx, &ci("missing"), &mut |_| panic!("missing schema"))
+                .unwrap();
+        }
+        let listed = v2.SchemaTableInfos(&db.name).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .all(|t| tables.iter().any(|original| Arc::ptr_eq(t, &original.0)))
+        );
+    }
+}
+
+#[test]
+fn port_d0665b0713_collect_ids_propagates_partial_iteration_error() {
+    let first = Arc::new(TableInfo {
+        id: 1,
+        ..Default::default()
+    });
+    let second = Arc::new(TableInfo {
+        id: 2,
+        partition: Some(crate::PartitionInfo {
+            definitions: vec![crate::PartitionDefinition {
+                id: 3,
+                name: ci("p"),
+            }],
+        }),
+        ..Default::default()
+    });
+    let result = crate::infoschema_v2::collectPhysicalTableIDs(|visit| {
+        visit(&first)?;
+        visit(&second)?;
+        Err("context canceled")
+    });
+    assert_eq!(result, Err("context canceled"));
+}
+
+#[test]
+fn port_d0665b0713_flashback_retry_fresh_results_and_cancellation() {
+    use crate::infoschema_v2::retryOnFlashbackInProgress;
+    let flashback = crate::InfoSchemaError {
+        code: "read",
+        message: "is in flashback progress".into(),
+    };
+    let mut attempts = 0;
+    let result = retryOnFlashbackInProgress(crate::Background(), || {
+        attempts += 1;
+        let mut result = vec![attempts];
+        if attempts == 1 {
+            result.push(99);
+            return Err(flashback.clone());
+        }
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(result, [2]);
+    assert_eq!(attempts, 2);
+    attempts = 0;
+    let other = crate::InfoSchemaError {
+        code: "read",
+        message: "unrelated".into(),
+    };
+    assert_eq!(
+        retryOnFlashbackInProgress::<()>(crate::Background(), || {
+            attempts += 1;
+            Err(other.clone())
+        }),
+        Err(other)
+    );
+    assert_eq!(attempts, 1);
+    let ctx = PortD0665Context(true.into());
+    attempts = 0;
+    let result = retryOnFlashbackInProgress::<()>(&ctx, || {
+        attempts += 1;
+        Err(flashback.clone())
+    });
+    assert_eq!(result.unwrap_err().message, "context canceled");
+    assert_eq!(attempts, 1);
+}

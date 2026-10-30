@@ -98,6 +98,8 @@ RustCodeGraph 对目标符号的精确查询确认：`load_info_schema` 与 `loa
 
 ## 与 Go 版本的对应关系
 
+本提交仅接线 Go d0665b0713432cb7a38d283885d61a6c252f56f3 的 schema.go Public 扫描和 TTL 摘要：`drop_database_with_ttl` 在现有事务目录上逐表借用，筛选并提取 `astersql_ddl::schema::DropSchemaTTLTableInfo`，不再为了 before_drop 回调复制所有表元数据。回调成功前不移除数据库或表；原 old_tables 所有权转移仍供统计发布/TiFlash 清理，未把这些已有消费者替换为桩。该现有 canonical 路径可复用，不能因 persistent_actions 缺少 action 2 就扩建完整 DROP DATABASE worker。
+
 - Go `meta.NewMutator` 在事务上设置 `AllowedOnAlmostFull`，并通过 `NextGlobalID`、`SchemaVersionKey`、`DBs`、`DB:<id>` 维护元数据；Rust `mutate_with_kv` 和 key helper 保留这些键与磁盘满策略。
 - Go `GenSchemaVersion`/`GenGlobalID` 使用结构化事务的原子 `Inc`；Rust 在本地 writer mutex 下读取、计算并 `Set`，跨进程串行能力较弱，不能据此推断已等价实现完整分布式 DDL owner 协议。
 - Go Domain 依赖 `issyncer` loader/builder 应用精细 `SchemaDiff`；Rust 当前发布 `regenerate_schema_map=true` 的通用 diff并从完整目录重建，以正确性优先换取更多加载成本。
@@ -116,3 +118,7 @@ Go `pkg/domain/domain_test.go` 覆盖 Domain reload、关闭和外部 workload �
 - 新增 keyspace 支持需要同时改变 `keyspace_exists`、加载时的 storage/version 选择、Domain runtime 接线和隔离测试；不能只接受新的字符串。
 - 修改锁范围或 storage 关闭顺序时，需验证写者串行、读快照一致性、关闭等待和 Domain drop 后拒绝新事务。若支持多个 writer 实例/进程，还必须依靠 KV 冲突或 owner 机制，而非当前进程内 mutex。
 - 重点回归文件为 `pkg/domain/canonical_domain_test.rs`；按功能还应同步 `pkg/domain/domain_test.rs`、session DDL 独立测试或 InfoSchema loader 测试。兼容风险集中在 Go 元数据键/模型编码和错误语义，性能风险集中在全目录扫描/编码及全量 schema 重建。
+
+## 验证依据
+
+`canonical_domain_test::port_d0665b0713_drop_schema_external_ttl_failure_restores_registrations_and_metadata` 使用真实内存 KV 事务和生产 Domain，外部 Manager 是边界替身。覆盖启用/禁用/无 TTL，原删除错误及补偿失败，逆序恢复、错误时元数据保留，以及随后成功删除与统计目录清理。修复前原同名无前缀用例通过，摘要改造后保持原断言并扩展成功分支；命令和数量保存在独立提交正文。

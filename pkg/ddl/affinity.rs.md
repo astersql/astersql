@@ -75,6 +75,8 @@ codec 在组名及范围构造期间以共享借用存在；构造出的 key 拥
 
 ## 与 Go 版本的对应关系
 
+来源 d0665b0713432cb7a38d283885d61a6c252f56f3：`collect_table_affinity_group_ids` 在逐表扫描时向既有集合追加组 ID；`batch_delete_affinity_group_ids` 只接收去重后的集合，空集合不调用 PD，后端错误原样交给调用者决定是否继续。既有 `batch_delete_table_affinity_groups` 复用这两个入口，保留调用方兼容性，不要求保存全部表才能删除。扫描失败前已收集的集合由调用者丢弃，失败表本身不追加部分组。它们复用原真实组编码逻辑，manager 抽象的生产适配边界保持原状。
+
 有几处需要明确的表示或接线差异：
 
 - Go 直接使用 `model.TableInfo`、`model.PartitionDefinition`、`tikv.Codec` 和 `pdhttp.AffinityGroupKeyRange`；Rust 使用本地简化结构与 trait，尚无这些生产类型的转换层。
@@ -92,3 +94,7 @@ Go 测试 `pkg/ddl/affinity_test.go` 同时包含算法测试和经 mock store/d
 修改组名或 key 编码时，应同时更新 `get_*_group_id`、`encode_table_prefix`/`build_affinity_group_key_range` 及独立测试，并验证已存在 PD 组的向后兼容与清理可达性。修改分区选择规则时，应保持 `None` 回退与显式空 slice 报缺少分区的区别，并覆盖部分分区、重复 ID、TRUNCATE 替换 ID。引入异步或并发 manager 前应定义幂等键、重试可见性、超时/取消和同一组并发创建删除的顺序语义。
 
 测试仍应放在独立的 `pkg/ddl/affinity_test.rs`，不要内嵌回生产源文件。生产适配器落地后还需要新增独立集成测试，覆盖后端错误、重试、owner/job 重放、CREATE 失败回滚以及删除失败继续策略；现有 `MemoryGroups` 测试不足以验证这些行为。
+
+## 验证依据
+
+本提交独立测试：`port_d0665b0713_` 前缀，分别位于 `affinity_test.rs`、`events_test.rs` 和 `infoschema_v2_test.rs`，按所属 crate 聚焦执行。物理 ID 回归修复前断言得到 [10,20]，修复后得到 [10,11,12,20]；其它新增 API 使用当前绿灯验证。测试与实现分文件；最终命令和有效数量保存在本提交正文。

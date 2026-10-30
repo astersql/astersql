@@ -419,33 +419,33 @@ pub fn NewFlashbackClusterEvent() -> SchemaChangeEvent {
         }),
     }
 }
-/// 构造删库事件：把库与其下表/分区压缩为 Mini* 结构写入事件。
+/// Extract the ID/name/partition payload while visiting one complete table.
+pub fn NewMiniTableInfoForSchemaEvent(
+    table: &model::TableInfo,
+) -> Box<MiniTableInfoForSchemaEvent> {
+    Box::new(MiniTableInfoForSchemaEvent {
+        ID: table.ID,
+        Name: table.Name.clone(),
+        Partitions: table.Partition.as_ref().map_or_else(Vec::new, |partition| {
+            partition
+                .Definitions
+                .iter()
+                .map(|definition| {
+                    Box::new(MiniPartitionInfoForSchemaEvent {
+                        ID: definition.ID,
+                        Name: definition.Name.clone(),
+                    })
+                })
+                .collect()
+        }),
+    })
+}
+
+/// Build a drop-schema event without retaining complete table metadata.
 pub fn NewDropSchemaEvent(
     db: &model::DBInfo,
-    tables: Vec<Box<model::TableInfo>>,
+    tables: Vec<Box<MiniTableInfoForSchemaEvent>>,
 ) -> SchemaChangeEvent {
-    // 只保留 ID/名称/分区列表，降低通知通道上的元数据体积。
-    let tables = tables
-        .into_iter()
-        .map(|table| {
-            Box::new(MiniTableInfoForSchemaEvent {
-                ID: table.ID,
-                Name: table.Name.clone(),
-                Partitions: table.Partition.as_ref().map_or_else(Vec::new, |partition| {
-                    partition
-                        .Definitions
-                        .iter()
-                        .map(|definition| {
-                            Box::new(MiniPartitionInfoForSchemaEvent {
-                                ID: definition.ID,
-                                Name: definition.Name.clone(),
-                            })
-                        })
-                        .collect()
-                }),
-            })
-        })
-        .collect();
     SchemaChangeEvent {
         inner: Some(JsonSchemaChangeEvent {
             Tp: model::ACTION_DROP_SCHEMA,

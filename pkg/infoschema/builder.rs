@@ -211,7 +211,7 @@ impl Builder {
         let mut affected = Vec::new();
         match diff.action_type {
             ActionType::CreateSchema => self.applyCreateSchema(metadata, diff)?,
-            ActionType::DropSchema => affected.extend(self.applyDropSchema(diff)),
+            ActionType::DropSchema => affected.extend(self.applyDropSchema(diff)?),
             ActionType::RecoverSchema => affected.extend(self.applyRecoverSchema(metadata, diff)?),
             ActionType::ModifySchemaCharsetAndCollate
             | ActionType::ModifySchemaDefaultPlacement => {
@@ -423,15 +423,47 @@ impl Builder {
         Ok(())
     }
     /// 删除库及其表，返回受影响表 ID。
-    fn applyDropSchema(&mut self, diff: &SchemaDiff) -> Vec<i64> {
-        let Some(db) = self.databases.remove(&diff.schema_id) else {
-            return Vec::new();
+    fn applyDropSchema(&mut self, diff: &SchemaDiff) -> Result<Vec<i64>, String> {
+        let Some(db) = self.databases.get(&diff.schema_id) else {
+            return Ok(Vec::new());
         };
-        let affected: Vec<i64> = db.tables.keys().copied().collect();
+        // Finish the fallible scan before changing bundles or versioned indexes.
+        let affected = if self.enable_v2 {
+            let snapshot = infoschemaV2::new(
+                self.info_data.clone(),
+                diff.version.saturating_sub(1),
+                self.schema_ts,
+            );
+            crate::infoschema_v2::retryOnFlashbackInProgress(crate::Background(), || {
+                crate::infoschema_v2::collectPhysicalTableIDs(|visit| {
+                    snapshot.IterSchemaTableInfos(crate::Background(), &db.info.name, visit)
+                })
+            })
+            .map_err(|error| error.to_string())?
+        } else {
+            crate::infoschema_v2::collectPhysicalTableIDs::<String>(|visit| {
+                for table in db.tables.values() {
+                    visit(&table.0)?;
+                }
+                Ok(())
+            })?
+        };
+        for id in &affected {
+            self.bundle_cache.remove(id);
+            self.temporary_table_ids.remove(id);
+            self.info_data.removeTemporaryTable(*id);
+            if self.enable_v2 {
+                self.info_data.remove_by_id(*id, diff.version);
+            }
+        }
+        let db = self
+            .databases
+            .remove(&diff.schema_id)
+            .expect("scanned database");
         if self.enable_v2 {
             self.info_data.deleteDB(db.info, diff.version);
         }
-        affected
+        Ok(affected)
     }
     /// 恢复库后，按 affected_options 逐表恢复。
     fn applyRecoverSchema(
@@ -484,7 +516,7 @@ impl Builder {
     ) -> Result<Vec<i64>, String> {
         if diff.table_id == 0 {
             if metadata.database(diff.schema_id)?.is_none() {
-                return Ok(self.applyDropSchema(diff));
+                return self.applyDropSchema(diff);
             }
             if self.databases.contains_key(&diff.schema_id) {
                 self.refresh_schema(metadata, diff.schema_id)?;

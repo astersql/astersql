@@ -305,3 +305,65 @@ fn test_affinity_drop_database() {
         "drop database batches the PD delete"
     );
 }
+
+#[test]
+fn port_d0665b0713_stream_affinity_ids() {
+    use crate::affinity::{batch_delete_affinity_group_ids, collect_table_affinity_group_ids};
+    let mut ids = std::collections::BTreeSet::new();
+    let t = table(10, AffinityLevel::Partition, vec![11, 12]);
+    collect_table_affinity_group_ids(None, &t, &mut ids).unwrap();
+    collect_table_affinity_group_ids(None, &t, &mut ids).unwrap();
+    assert_eq!(ids.len(), 2);
+    let previous = ids.clone();
+    assert!(
+        collect_table_affinity_group_ids(
+            None,
+            &table(20, AffinityLevel::Partition, vec![]),
+            &mut ids
+        )
+        .is_err()
+    );
+    assert_eq!(ids, previous);
+    let mut manager = MemoryGroups::default();
+    batch_delete_affinity_group_ids(&mut manager, &ids).unwrap();
+    assert_eq!(manager.delete_calls, 1);
+    batch_delete_affinity_group_ids(&mut manager, &Default::default()).unwrap();
+    assert_eq!(manager.delete_calls, 1);
+}
+
+#[test]
+fn port_d0665b0713_append_physical_table_ids() {
+    let mut ids = vec![1];
+    crate::schema::append_physical_table_ids(
+        &mut ids,
+        &crate::schema::SchemaTable {
+            id: 100,
+            partition_ids: vec![101, 102],
+        },
+    );
+    assert_eq!(ids, vec![1, 100, 101, 102]);
+}
+
+#[test]
+fn port_d0665b0713_batch_affinity_error_propagates() {
+    struct FailingPd;
+    impl AffinityGroupManager for FailingPd {
+        fn create_groups_if_not_exists(
+            &mut self,
+            _: &BTreeMap<String, Vec<AffinityGroupKeyRange>>,
+        ) -> Result<(), String> {
+            unreachable!()
+        }
+        fn delete_groups_with_retry(&mut self, ids: &[String]) -> Result<(), String> {
+            assert_eq!(ids, &["group".to_owned()]);
+            Err("PD unavailable".to_owned())
+        }
+    }
+    assert_eq!(
+        crate::affinity::batch_delete_affinity_group_ids(
+            &mut FailingPd,
+            &std::collections::BTreeSet::from(["group".to_owned()])
+        ),
+        Err(AffinityError::Backend("PD unavailable".to_owned()))
+    );
+}

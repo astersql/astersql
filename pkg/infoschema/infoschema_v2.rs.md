@@ -63,6 +63,8 @@
 
 ## 并发与资源生命周期
 
+新增 `IterSchemaTableInfos` 在扫描及 callback 期间持有 Data 的读锁；callback 应只提取元数据、收集摘要，不得重入写入同一 Data。当前 Builder/list 消费者均只追加 ID 或 Arc，错误返回会立即释放读 guard。迭代器不创建线程或长寿命资源。
+
 `Arc<Data>` 定义共享生命周期：只要任一快照、Builder 或 loader 持有它，历史与缓存就继续存在。`inner` 的读操作可并发，所有版本写入、重置与 GC 串行占用写锁。`Data::add` 在写缓存前显式 `drop(data)`，`TableByName` 也在访问缓存前释放读锁，减少索引锁与 SIEVE 内部同步重叠；`TableByID` 的临时读 guard 则在语句结束后释放。
 
 `temporary_table_ids` 使用独立 `RwLock<HashSet<i64>>`，不会为临时表状态阻塞全部版本索引。`recent_min_ts` 用 Acquire/AcqRel 的 CAS 循环无锁更新最小值。表缓存容量调整由 `SetCapacityAndWaitEvict` 完成，函数名及 `infoschemav2_cache_test.rs` 的事件断言表明调用会等待淘汰完成。
@@ -70,6 +72,8 @@
 当前 Rust 实现采用单个 `RwLock<VersionedData>`；Go 对照采用多个原子指针指向的泛型 BTree，并对缺页加载使用全局 `singleflight.Group`。因此 Rust 的正确性边界是锁保护的进程内历史和已携带的 `Table`，不能假定具备 Go 版的无锁读、按需从 meta 加载或同等并发伸缩特性。
 
 ## 与 Go 版本的对应关系
+
+来源 d0665b0713432cb7a38d283885d61a6c252f56f3：V2 `IterSchemaTableInfos` 处理普通/特殊库、keep-alive、版本可见性、每表上下文与 callback 错误；不先分配完整表列表。`SchemaTableInfos` 基于迭代器收集 Arc，保留原 TableInfo 身份。`collectPhysicalTableIDs` 丢弃失败扫描的部分结果；`retryOnFlashbackInProgress` 每次重新创建结果，仅对包含 in flashback progress 的错误重试，间隔 200ms，等待中检查取消。Builder 的 V2 DropSchema 已使用两个辅助函数。Rust 当前 reader 为内存版本索引，没有 Go loadTableInfo/singleflight 存储读取入口，未为此扩建懒加载子系统。
 
 概念映射如下：Go 的 `Data`、`infoschemaV2`、`tableItem`/`schemaItem`/`partitionItem`/`referredForeignKeyItem` 分别对应 Rust 的 `Data`、`infoschemaV2` 与四类 `*Record`；Go 的多个 BTree 比较器和 `search` 在 Rust 中由按版本降序的 `Vec` 加 `visible_*` 线性选择替代。
 
@@ -85,3 +89,7 @@
 - 增加 `InfoSchema` 能力时，应先更新 `pkg/infoschema/infoschema.rs` 的 trait，再在 V1/V2 分别实现；V2 专属方法则应评估是否需要通过 `pkg/infoschema/lib.rs` 再导出。
 - Rust 测试必须继续放在独立测试文件：核心版本行为放 `pkg/infoschema/infoschema_v2_test.rs`，缓存事件放 `pkg/infoschema/infoschemav2_cache_test.rs`，跨 loader/DDL 的场景放 `pkg/infoschema/test/infoschemav2test/v2_test.rs`；同时对照对应 Go 测试，不能用简化断言替代 Go 的实际语义。
 - 性能风险集中在单一 `RwLock`、历史向量线性扫描和 `HashMap` 全量遍历；任何优化都需保留快照隔离、tomb 遮蔽、双索引一致性及旧快照在 reset/GC 前后的可读性。
+
+## 验证依据
+
+本提交独立测试：`port_d0665b0713_` 前缀，分别位于 `affinity_test.rs`、`events_test.rs` 和 `infoschema_v2_test.rs`，按所属 crate 聚焦执行。物理 ID 回归修复前断言得到 [10,20]，修复后得到 [10,11,12,20]；其它新增 API 使用当前绿灯验证。测试与实现分文件；最终命令和有效数量保存在本提交正文。

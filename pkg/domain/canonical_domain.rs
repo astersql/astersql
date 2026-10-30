@@ -283,7 +283,9 @@ impl DdlMetadataService {
         store: &dyn kv::Storage,
         database: &str,
         if_exists: bool,
-        before_drop: impl FnOnce(&[(String, TableInfo)]) -> Result<(), kv::errors::SharedError>,
+        before_drop: impl FnOnce(
+            &[astersql_ddl::schema::DropSchemaTTLTableInfo],
+        ) -> Result<(), kv::errors::SharedError>,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let database = database.to_ascii_lowercase();
         self.mutate(store, move |catalog| {
@@ -291,7 +293,9 @@ impl DdlMetadataService {
                 .tables
                 .iter()
                 .filter(|((schema, _), _)| schema == &database)
-                .map(|((schema, _), table)| (schema.clone(), table.clone()))
+                .filter_map(|(_, table)| {
+                    astersql_ddl::schema::DropSchemaTTLTableInfo::from_table(table)
+                })
                 .collect::<Vec<_>>();
             before_drop(&existing)?;
             let database_existed = catalog.databases.remove(&database).is_some();

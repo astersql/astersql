@@ -74,6 +74,8 @@ Builder 本身通过 `&mut self` 顺序变更，不包含内部并行执行；�
 
 ## 与 Go 版本的对应关系
 
+来源 d0665b0713432cb7a38d283885d61a6c252f56f3：`applyDropSchema` 返回 Result；DropSchema 和库级 RefreshMeta 都传播它。V2 在旧版本快照上通过 `IterSchemaTableInfos` 收集所有物理 ID，扫描完整成功后才删除 bundle、临时表及版本索引，再追加库 tomb；V1 从本地表集合收集同样的逻辑表/分区 ID。失败扫描不会带出部分 ID 或先删除库。已有 metadata reader 中数据库已消失也不影响旧快照的收集。范围仅为既有 Builder 接线，未引入新存储 reader。
+
 Rust 并非 Go 的完整等价实现。Go 的 `ApplyDiff` 将更多 action 分派给细粒度 helper，并维护 allocator、外键反向引用、排序桶、临时表等完整状态；Rust 用较紧凑的 `HashMap` 替代。Go 的 masking invalidation 还包含 DropColumn/ModifyColumn，而 Rust `ActionType` 当前没有对应显式项。Go 会扫描引用 placement policy 的表，Rust 当前返回空。Go 的 charset/collation 与旧 UTF8 兼容函数会根据版本和全局配置改写真实字符集字段，Rust 对应功能尚未移植。Go `NewBuilder` 还接收 autoid requirement、resource factory 与 store，Rust 接口已简化。
 
 ## 扩展指南
@@ -83,3 +85,7 @@ Rust 并非 Go 的完整等价实现。Go 的 `ApplyDiff` 将更多 action 分�
 扩展 v1/v2 行为必须同时维护两条路径：本地 `databases` 是 v1 构建依据，`Data::addDB/add/remove_by_id/deleteDB/resetBeforeFullLoad` 是 v2 可见性的依据。新增初始化状态还应在 `InitWithDBInfos` 的全量清理、`InitWithOldInfoSchema` 的继承和 `Build` 的终态注入三处检查生命周期闭环。
 
 测试应放在独立文件而非 `builder.rs` 内。核心回归优先扩展 `pkg/infoschema/builder_test.rs`；涉及 Go 新提交移植、物化视图、storage class 或 v1/v2 双路径时扩展 `pkg/infoschema/go_merge_45_test.rs`；生产 loader 集成边界可在 `pkg/infoschema/issyncer` 的独立测试中验证。兼容风险主要是旧版本元数据转换和 Go/Rust action 覆盖差异；正确性风险是旧表残留、版本不同步、漏报分区 ID和缓存未失效；性能风险集中在全库 bundle 扫描、克隆大块 DB/Table metadata 和不必要的 v2 全量 reset。
+
+## 验证依据
+
+本提交独立测试：`port_d0665b0713_` 前缀，分别位于 `affinity_test.rs`、`events_test.rs` 和 `infoschema_v2_test.rs`，按所属 crate 聚焦执行。物理 ID 回归修复前断言得到 [10,20]，修复后得到 [10,11,12,20]；其它新增 API 使用当前绿灯验证。测试与实现分文件；最终命令和有效数量保存在本提交正文。

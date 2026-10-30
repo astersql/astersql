@@ -3579,7 +3579,7 @@ impl Domain {
             .with_storage(|store| {
                 self.ddl_metadata
                     .drop_database_with_ttl(store, database, if_exists, |tables| {
-                        self.drop_schema_ttl_tables(tables)
+                        self.drop_schema_ttl_tables(database, tables)
                             .map_err(|error| astersql_kv::errors::New(error.to_string()))
                     })
             })
@@ -3592,7 +3592,8 @@ impl Domain {
     /// in reverse deletion order, and preserve the initiating controller error.
     fn drop_schema_ttl_tables(
         &self,
-        tables: &[(String, astersql_meta_model::TableInfo)],
+        database: &str,
+        tables: &[astersql_ddl::schema::DropSchemaTTLTableInfo],
     ) -> Result<(), DomainError> {
         let Some(manager) = self.external_workload_manager() else {
             return Ok(());
@@ -3601,31 +3602,40 @@ impl Domain {
             .lock()
             .expect("external workload manager lock poisoned");
         let context = astersql_extworkload::context::Background();
-        let mut restore: Vec<(&str, &astersql_meta_model::TableInfo)> = Vec::new();
-        for (database, table) in tables {
-            let Some(ttl) = &table.TTLInfo else {
-                continue;
-            };
-            if let Err(error) = manager.DeleteTTLTableInfo(&context, table.ID) {
-                for (database, table) in restore.into_iter().rev() {
-                    if let Err(compensation) = manager.RegisterTTLTableInfo(
+        let mut restore: Vec<&astersql_ddl::schema::DropSchemaTTLTableInfo> = Vec::new();
+        for table in tables {
+            if let Err(error) = manager.DeleteTTLTableInfo(&context, table.id) {
+                for table in restore.into_iter().rev() {
+                    if let Err(compensation) = Self::register_ttl_table_id_to_external_workload(
+                        manager.as_mut(),
                         &context,
-                        table.ID,
-                        astersql_sessionctx_vardef::EnableTTLJob.Load(),
+                        table.id,
                     ) {
                         astersql_util_logutil::log::background_logger().warn(format!(
                             "drop_schema_ttl_restore_registrations_failed dbName={} tableID={} tableName={} compensation={} deleteTTLTableErr={}",
-                            database, table.ID, table.Name.O, compensation, error
+                            database, table.id, table.name, compensation, error
                         ));
                     }
                 }
                 return Err(DomainError::Ddl(error.to_string()));
             }
-            if ttl.Enable {
-                restore.push((database, table));
+            if table.enabled {
+                restore.push(table);
             }
         }
         Ok(())
+    }
+
+    fn register_ttl_table_id_to_external_workload(
+        manager: &mut dyn astersql_extworkload::Manager,
+        context: &astersql_extworkload::context::Context,
+        table_id: i64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        manager.RegisterTTLTableInfo(
+            context,
+            table_id,
+            astersql_sessionctx_vardef::EnableTTLJob.Load(),
+        )
     }
 
     /// Read canonical database names directly from KV so empty schemas remain
@@ -3707,11 +3717,7 @@ impl Domain {
             .expect("external workload manager lock poisoned");
         let context = astersql_extworkload::context::Background();
         let result = if table.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
-            manager.RegisterTTLTableInfo(
-                &context,
-                table.ID,
-                astersql_sessionctx_vardef::EnableTTLJob.Load(),
-            )
+            Self::register_ttl_table_id_to_external_workload(manager.as_mut(), &context, table.ID)
         } else {
             manager.DeleteTTLTableInfo(&context, table.ID)
         };

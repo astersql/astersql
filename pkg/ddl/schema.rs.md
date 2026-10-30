@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-提供两个无状态辅助函数：校验有限字符集/排序规则组合，以及按稳定顺序展开表 ID 与分区物理 ID（`validate_charset_and_collation`、`schema_physical_ids`）。
+提供字符集/排序规则校验、物理 ID 追加/展开，以及外部 TTL 注册所需的精简表摘要。
 
 ## 核心职责
 
@@ -10,11 +10,13 @@
 2. 在创建和修改入口执行局部输入校验，并保持“先解析目标库、再校验新值”的 Go 错误优先级（`create_schema`、`modify_charset_and_collation`、`modify_placement`）。
 3. 显式推进删库状态机，并在最终 `None` 阶段把完整 `DatabaseInfo` 从活动目录转入恢复缓存（`drop_schema_step`）。
 4. 恢复时保留原 ID、名称、字符集、排序规则、Placement Policy 和表摘要，只把状态重置为 `Public`（`recover_schema`）。
-5. 提供两个无状态辅助函数：校验有限字符集/排序规则组合，以及按稳定顺序展开表 ID 与分区物理 ID（`validate_charset_and_collation`、`schema_physical_ids`）。
+5. 提供字符集/排序规则校验、物理 ID 追加/展开，以及外部 TTL 注册所需的精简表摘要。
 
 职责边界非常窄：这里不解析 SQL，不构造或提交 DDL job，不读写 TiDB meta KV，不更新全局 schema version，也不验证真实 Placement Policy 是否存在。
 
 ## 主要符号
+
+- `DropSchemaTTLTableInfo::from_table`：只提取带 TTL 表的 id/name/enabled；禁用 TTL 仍有摘要，未配置 TTL 返回 None。真实生产调用为 canonical Domain 的删库前置扫描，避免为 TTL 克隆完整表元数据。
 
 - `SchemaState { Public, WriteOnly, DeleteOnly, None }`：本地 schema 可见性状态。删除方向按枚举注释中的四阶段推进；本文件没有 Go 恢复路径的 `None -> WriteOnly -> Public` 两步状态机。
 - `DatabaseInfo`：目录中的数据库快照，包含 `id`、保留原始大小写的 `name`、规范化后的 `charset`/`collation`、可选 `placement_policy`、`state` 与 `tables`。字段均公开，调用方可直接修改，因此不变量主要依靠方法约定而非类型封装。
@@ -117,6 +119,8 @@ Go 运行时关系则是 [`job_worker.go`](job_worker.go) 的 action 分派调�
 
 ## 与 Go 版本的对应关系
 
+来源 d0665b0713432cb7a38d283885d61a6c252f56f3 的 `appendPhysicalTableIDs` 对应 `append_physical_table_ids`：向已有 Vec 追加逻辑表 ID，再追加分区 ID，不覆盖已有前缀。`schema_physical_ids` 逐表调用该辅助函数；独立测试使用原 Go 输入 [1] + table 100 / partitions 101、102，得到 [1,100,101,102]。本地 SchemaCatalog 仍是内存目录，不将它误称为持久化 worker。
+
 - Rust `create_schema` 对照 Go `onCreateSchema` 的重复检查和最终 `Public` 状态；Rust 自行分配内存 ID，而 Go 使用 job 已分配的 `SchemaID`、检查名称和 ID 冲突、更新 schema version，并通过 meta mutator 持久化。
 - Rust `modify_charset_and_collation` 保留 Go `onModifySchemaCharsetAndCollate` 的“先确认库存在”和相同值无实际变更语义，但 Rust 额外做简化字符串校验；Go 的请求值在更上游解析，并会更新 meta/schema version、完成 job。
 - Rust `modify_placement` 对照 Go `onModifySchemaDefaultPlacement` 的查库、无变化判断、设置/清除默认策略；Rust 只拒绝空白名称，不会二次确认 policy 引用存在，也不表达 Go 的完整 placement 引用结构。
@@ -138,3 +142,7 @@ Go [`schema_test.go`](schema_test.go) 还验证 job 历史、实际 meta 状态�
 - 扩展物理 ID 收集：修改 `SchemaTable`/`schema_physical_ids` 时明确是否排序、去重以及是否包含其他物理对象，并同步 drop/delete-range 的 Go 语义。
 
 兼容性风险集中在错误顺序、名称折叠、ID 稳定性与状态可见性；正确性风险集中在恢复冲突时的数据保留和最终删除时的所有权转移；性能上当前操作为 `BTreeMap` 的对数查找，`schema_physical_ids` 为表及分区总数的线性扫描。若未来存入大量 dropped 元数据，需要定义淘汰/持久化策略，避免无界内存增长。
+
+## 验证依据
+
+本提交独立测试：`port_d0665b0713_` 前缀，分别位于 `affinity_test.rs`、`events_test.rs` 和 `infoschema_v2_test.rs`，按所属 crate 聚焦执行。物理 ID 回归修复前断言得到 [10,20]，修复后得到 [10,11,12,20]；其它新增 API 使用当前绿灯验证。测试与实现分文件；最终命令和有效数量保存在本提交正文。

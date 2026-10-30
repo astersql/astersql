@@ -250,8 +250,31 @@ pub fn validate_placement_policy(policy: Option<&str>) -> Result<(), SchemaError
 pub fn schema_physical_ids(tables: &[SchemaTable]) -> Vec<i64> {
     let mut ids = Vec::new();
     for table in tables {
-        ids.push(table.id);
-        ids.extend(table.partition_ids.iter().copied());
+        append_physical_table_ids(&mut ids, table);
     }
     ids
+}
+
+/// Append into an existing accumulator, preserving the table-before-partitions order.
+pub fn append_physical_table_ids(ids: &mut Vec<i64>, table: &SchemaTable) {
+    ids.push(table.id);
+    ids.extend(table.partition_ids.iter().copied());
+}
+
+/// Only the metadata required to delete/restore an external TTL registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DropSchemaTTLTableInfo {
+    pub id: i64,
+    pub name: String,
+    pub enabled: bool,
+}
+
+impl DropSchemaTTLTableInfo {
+    pub fn from_table(table: &astersql_meta_model::TableInfo) -> Option<Self> {
+        table.TTLInfo.as_ref().map(|ttl| Self {
+            id: table.ID,
+            name: table.Name.O.clone(),
+            enabled: ttl.Enable,
+        })
+    }
 }

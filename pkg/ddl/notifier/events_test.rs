@@ -291,3 +291,55 @@ fn materialized_view_alter_event_constructors_preserve_old_and_new_tables() {
         assert_eq!(json["old_table_info"]["id"], 41);
     }
 }
+
+#[test]
+fn port_d0665b0713_drop_schema_mini_table_info() {
+    let table = model::TableInfo {
+        ID: 101,
+        Name: ast::NewCIStr("partitioned"),
+        Partition: Some(model::PartitionInfo {
+            Definitions: vec![
+                model::PartitionDefinition {
+                    ID: 201,
+                    Name: ast::NewCIStr("p0"),
+                    ..Default::default()
+                },
+                model::PartitionDefinition {
+                    ID: 202,
+                    Name: ast::NewCIStr("p1"),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mini = crate::NewMiniTableInfoForSchemaEvent(&table);
+    assert_eq!(mini.ID, 101);
+    assert_eq!(mini.Name, table.Name);
+    assert_eq!(
+        mini.Partitions
+            .iter()
+            .map(|p| (p.ID, p.Name.O.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(201, "p0"), (202, "p1")]
+    );
+    let db = model::DBInfo {
+        ID: 1,
+        Name: ast::NewCIStr("test"),
+        ..Default::default()
+    };
+    let event = crate::NewDropSchemaEvent(&db, vec![mini.clone()]);
+    let actual = event.GetDropSchemaInfo().unwrap();
+    assert_eq!((actual.ID, actual.Name), (1, db.Name));
+    assert_eq!(actual.Tables, vec![mini]);
+    let bytes = event.MarshalJSON().unwrap();
+    let mut roundtrip = SchemaChangeEvent::default();
+    roundtrip.UnmarshalJSON(&bytes).unwrap();
+    assert_eq!(event, roundtrip);
+    assert!(
+        crate::NewMiniTableInfoForSchemaEvent(&model::TableInfo::default())
+            .Partitions
+            .is_empty()
+    );
+}

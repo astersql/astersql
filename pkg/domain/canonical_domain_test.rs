@@ -1882,7 +1882,7 @@ fn embedding_config_changes_invalidate_all_providers_but_identical_values_keep_c
 }
 
 #[test]
-fn drop_schema_external_ttl_failure_restores_registrations_and_metadata() {
+fn port_d0665b0713_drop_schema_external_ttl_failure_restores_registrations_and_metadata() {
     for compensation_fails in [false, true] {
         let storage = Arc::try_unwrap(
             astersql_store_mockstore_mockstorage::NewMockStorage(
@@ -1910,6 +1910,16 @@ fn drop_schema_external_ttl_failure_restores_registrations_and_metadata() {
             };
             ids.push(domain.ddl_create_table("test", table, false).unwrap().ID);
         }
+        domain
+            .ddl_create_table(
+                "test",
+                astersql_meta_model::TableInfo {
+                    Name: astersql_parser_ast::NewCIStr("no_ttl"),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
         domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
             role: "master".into(),
@@ -1944,6 +1954,37 @@ fn drop_schema_external_ttl_failure_restores_registrations_and_metadata() {
                 ("register", ids[2]),
                 ("register", ids[0])
             ]
+        );
+        drop(calls);
+        events.lock().unwrap().clear();
+        domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+            role: "master".into(),
+            updated: Default::default(),
+            ttl_events: events.clone(),
+            delete_error: None,
+            register_error: None,
+        })));
+        domain.ddl_drop_database("test", false).unwrap();
+        assert!(
+            !domain
+                .ddl_database_names()
+                .unwrap()
+                .iter()
+                .any(|name| name == "test")
+        );
+        for name in ["a", "b", "c", "d", "no_ttl"] {
+            assert!(domain.stats_table("test", name).is_none());
+        }
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(op, id, _)| (op.clone(), *id))
+                .collect::<Vec<_>>(),
+            ids.iter()
+                .map(|id| ("delete".to_owned(), *id))
+                .collect::<Vec<_>>()
         );
     }
 }

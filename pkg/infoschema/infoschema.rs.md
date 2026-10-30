@@ -84,6 +84,8 @@ RustCodeGraph 对 `add_schema` 给出的被调用边为 `tableBucketIdx`、`addR
 
 ## 与 Go 版本的对应关系
 
+来源 d0665b0713432cb7a38d283885d61a6c252f56f3：InfoSchema 新增对象安全 `IterSchemaTableInfos(ctx,schema,visit)`，返回 callback 错误且在每张表前检查取消/超时；缺库仍返回成功。V1 直接借用 DBInfo 的 Arc<TableInfo> 列表，避免另建表列表，并保留 PostgreSQL 大小写不同但折叠名称相同的对象。其它 InfoSchema 实现通过默认适配保留兼容，V2 有独立流式实现。
+
 直接对照文件是 `pkg/infoschema/infoschema.go`，Rust 保留了以下核心语义：大小写不敏感名称索引；表 ID 分桶和二分查找；`SchemaByTable` 的 DBID/表 ID 回退；分区扫描；全局临时表标记；placement/resource group 查询；脱敏策略首次加载、系统表未就绪处理、1024 条分批、过滤 ID 去重排序和结果稳定排序；本地临时表优先与 MDL 元数据保留。
 
 已确认的实现差异与迁移边界：
@@ -101,3 +103,7 @@ RustCodeGraph 对 `add_schema` 给出的被调用边为 `tableBucketIdx`、`addR
 - 修改脱敏策略加载时需同步核对 `loadMaskingPoliciesIfNeeded`、`loadMaskingPoliciesWithTableIDs`、三类字符串解析器和 Go 同名函数；保留“nil/空即无过滤”“非空但全非法即匹配空集”、1024 分批与稳定排序契约。
 - 修改临时表覆盖顺序或 detach 语义时，应同时覆盖按名、按 ID、schema ID、MDL 表与 `HasTemporaryTable`；生产接线在 `pkg/session/runtime/session.rs`，独立测试应继续放在 `pkg/infoschema/infoschema_test.rs` 或对应 session 测试文件，不能内嵌回生产源文件。
 - 性能扩展的重点是 `FindTableByPartitionID`、按 ID 扫描策略/资源组以及首次 masking loader 的锁持有时间；任何新索引都要说明构建成本、快照内存和更新一致性。
+
+## 验证依据
+
+本提交独立测试：`port_d0665b0713_` 前缀，分别位于 `affinity_test.rs`、`events_test.rs` 和 `infoschema_v2_test.rs`，按所属 crate 聚焦执行。物理 ID 回归修复前断言得到 [10,20]，修复后得到 [10,11,12,20]；其它新增 API 使用当前绿灯验证。测试与实现分文件；最终命令和有效数量保存在本提交正文。

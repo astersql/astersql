@@ -282,12 +282,30 @@ pub fn batch_delete_table_affinity_groups(
     // 用 BTreeSet 汇总所有表的组 ID，天然去重且保持有序。
     let mut ids = BTreeSet::new();
     for table in tables {
-        ids.extend(build_affinity_group_definitions(codec, Some(table), None)?.into_keys());
+        collect_table_affinity_group_ids(codec, table, &mut ids)?;
     }
+    batch_delete_affinity_group_ids(manager, &ids)
+}
+
+/// Collect a single table while streaming; do not issue PD requests until the scan succeeds.
+pub fn collect_table_affinity_group_ids(
+    codec: Option<&dyn AffinityCodec>,
+    table: &AffinityTable,
+    ids: &mut BTreeSet<String>,
+) -> Result<(), AffinityError> {
+    ids.extend(build_affinity_group_definitions(codec, Some(table), None)?.into_keys());
+    Ok(())
+}
+
+/// Delete an already-collected set, leaving the continue/fail policy to the caller.
+pub fn batch_delete_affinity_group_ids(
+    manager: &mut dyn AffinityGroupManager,
+    ids: &BTreeSet<String>,
+) -> Result<(), AffinityError> {
     if ids.is_empty() {
         return Ok(());
     }
     manager
-        .delete_groups_with_retry(&ids.into_iter().collect::<Vec<_>>())
+        .delete_groups_with_retry(&ids.iter().cloned().collect::<Vec<_>>())
         .map_err(AffinityError::Backend)
 }

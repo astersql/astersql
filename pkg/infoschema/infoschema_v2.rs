@@ -659,14 +659,14 @@ impl infoschemaV2 {
         &self,
         schema: &CiString,
     ) -> Result<Vec<Arc<TableInfo>>, InfoSchemaError> {
-        let data = self.Data.inner.read().expect("infoschema v2 lock poisoned");
-        Ok(data
-            .by_id
-            .values()
-            .filter_map(|history| visible_table(Some(history), self.schema_meta_version))
-            .filter(|record| record.db_name.lower == schema.lower)
-            .filter_map(|record| record.table.map(|table| table.0))
-            .collect())
+        retryOnFlashbackInProgress(crate::Background(), || {
+            let mut tables = Vec::new();
+            self.IterSchemaTableInfos(crate::Background(), schema, &mut |table| {
+                tables.push(table.clone());
+                Ok(())
+            })?;
+            Ok(tables)
+        })
     }
     /// 当前版本可见的全部 schema 名。
     pub fn AllSchemaNames(&self) -> Vec<CiString> {
@@ -755,6 +755,41 @@ impl InfoSchema for infoschemaV2 {
                 .get(&name.lower)
                 .map(|special| special.0.clone())
         })
+    }
+    fn IterSchemaTableInfos(
+        &self,
+        ctx: &dyn crate::RequestContext,
+        schema: &CiString,
+        visit: &mut dyn FnMut(&Arc<TableInfo>) -> Result<(), InfoSchemaError>,
+    ) -> Result<(), InfoSchemaError> {
+        self.Data.keep_alive(self.start_ts);
+        let data = self.Data.inner.read().expect("infoschema v2 lock poisoned");
+        if let Some((_, tables)) = data.specials.get(&schema.lower) {
+            for table in tables {
+                crate::infoschema::check_iteration_context(ctx)?;
+                visit(&table.0)?;
+            }
+            return Ok(());
+        }
+        if visible_schema(
+            data.schema_by_name.get(&schema.lower),
+            self.schema_meta_version,
+        )
+        .is_none()
+        {
+            return Ok(());
+        }
+        for history in data.by_id.values() {
+            if let Some(record) = visible_table(Some(history), self.schema_meta_version) {
+                if record.db_name.lower == schema.lower {
+                    if let Some(table) = record.table {
+                        crate::infoschema::check_iteration_context(ctx)?;
+                        visit(&table.0)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     fn TableByName(&self, schema: &CiString, table: &CiString) -> Result<Table, InfoSchemaError> {
         self.Data.keep_alive(self.start_ts);
@@ -961,4 +996,38 @@ pub struct RefillOption(pub bool);
 /// 构造 RefillOption。
 pub fn WithRefillOption(refill: bool) -> RefillOption {
     RefillOption(refill)
+}
+
+/// Each attempt owns its result, so a flashback never reuses a partial scan.
+pub(crate) fn retryOnFlashbackInProgress<T>(
+    ctx: &dyn crate::RequestContext,
+    mut attempt: impl FnMut() -> Result<T, InfoSchemaError>,
+) -> Result<T, InfoSchemaError> {
+    loop {
+        match attempt() {
+            Err(error) if error.to_string().contains("in flashback progress") => {
+                let until = std::time::Instant::now() + std::time::Duration::from_millis(200);
+                loop {
+                    crate::infoschema::check_iteration_context(ctx)?;
+                    let now = std::time::Instant::now();
+                    if now >= until {
+                        break;
+                    }
+                    std::thread::sleep((until - now).min(std::time::Duration::from_millis(5)));
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
+pub(crate) fn collectPhysicalTableIDs<E>(
+    iter: impl FnOnce(&mut dyn FnMut(&Arc<TableInfo>) -> Result<(), E>) -> Result<(), E>,
+) -> Result<Vec<i64>, E> {
+    let mut ids = Vec::new();
+    iter(&mut |table| {
+        ids = crate::builder::appendAffectedIDs(std::mem::take(&mut ids), table);
+        Ok(())
+    })?;
+    Ok(ids)
 }

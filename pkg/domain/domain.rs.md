@@ -77,6 +77,8 @@ DDL/统计复合变更包含补偿与故障注入点，扩展时必须维持“�
 
 ## 与 Go 版本的对应关系
 
+本提交接线来源 d0665b0713432cb7a38d283885d61a6c252f56f3 的 schema.go/ttl.go：`drop_schema_ttl_tables(database, summaries)` 消费 id/name/enabled 摘要，删除所有配置 TTL 的表，失败时逆序重新注册先前启用的表；禁用表被删除但不补偿。`register_ttl_table_id_to_external_workload` 复用真实 Manager 与 EnableTTLJob 开关，补偿和正常同步注册共用，不重建完整 TableInfo。外部原始删除错误优先，补偿失败只记录原日志。成功后仍走原事务提交与 publish/reconcile 链路；SQL、方言及会话协议处理未改。
+
 Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、channel、WaitGroup、etcd session 和大量后台 loop；Rust 当前以 trait 注入、原子状态、命名线程、内存事件队列及规范 KV 服务表达已移植路径。Go 的系统 session pool 由 Domain 直接拥有，Rust 则由 session 层注册 `AutoAnalyzeExecutor` 等边界，因此不能把 Go 的所有 loop 宣称为 Rust 已完整实现。
 
 测试对应关系也不同：`pkg/domain/domain_test.go` 覆盖 Go 的 info、panic 恢复、TTL/external workload、sysvar loop 和 ANALYZE 识别；Rust 的 `pkg/domain/domain_test.rs` 目前只直接覆盖 `is_analyze_table_sql`。
@@ -89,3 +91,7 @@ Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、ch
 - 修改 keyspace、server-id 或连接 ID 时必须维持租约唯一性、generation 防 ABA、低 48 位掩码和 `0` 表示无 server-id 的约定。
 - 新测试必须放在独立 `*_test.rs` 文件。文件内基础单元行为可扩展 `pkg/domain/domain_test.rs`；持久化 schema/DDL/生命周期应扩展 `pkg/domain/canonical_domain_test.rs`；跨 session 的实际接线应放在 `pkg/session/**_test.rs`。不要把测试模块内嵌回 `domain.rs`。
 - 兼容风险主要是 Go 行为差异和持久化格式；性能风险主要是扩大锁临界区、在周期线程执行阻塞 I/O，以及无界增长目录历史/事件队列。改动前应重新核对同路径 Go 符号和真实上游调用者。
+
+## 验证依据
+
+`canonical_domain_test::port_d0665b0713_drop_schema_external_ttl_failure_restores_registrations_and_metadata` 使用真实内存 KV 事务和生产 Domain，外部 Manager 是边界替身。覆盖启用/禁用/无 TTL，原删除错误及补偿失败，逆序恢复、错误时元数据保留，以及随后成功删除与统计目录清理。修复前原同名无前缀用例通过，摘要改造后保持原断言并扩展成功分支；命令和数量保存在独立提交正文。

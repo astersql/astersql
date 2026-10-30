@@ -44,7 +44,7 @@
 
 `overwrite_from` 专为 `Store::List` 的缓冲区复用服务：源事件为 `None` 时清空目标；否则，只用源中 `Some` 的对象字段和非空向量覆盖目标，而布尔、旧表 ID 与 action 总是覆盖。这个行为会有意保留目标槽位中源事件未提供的对象或向量残留，`store.rs` 的注释也明确称其为“合并”；使用复用槽位的代码不能把未被当前 action getter选中的字段当作当前事件事实。
 
-删库精简结构仅包含库/表/分区的 ID 与 `CIStr` 名称。`NewDropSchemaEvent` 遍历输入表以及可选 `Partition.Definitions` 生成新向量，不保留列、索引、TTL 等其它表属性。
+删库精简结构仅包含库/表/分区的 ID 与 `CIStr` 名称。`NewMiniTableInfoForSchemaEvent` 遍历单张表的可选 `Partition.Definitions` 生成精简载荷；`NewDropSchemaEvent` 直接接收精简表向量，不保留列、索引、TTL 等其它表属性。
 
 ## 依赖与调用关系
 
@@ -75,6 +75,8 @@
 
 ## 与 Go 版本的对应关系
 
+来源 d0665b0713432cb7a38d283885d61a6c252f56f3：`NewMiniTableInfoForSchemaEvent(&TableInfo)` 提取一张表的 ID、CIStr 名称及分区 ID/名称；`NewDropSchemaEvent` 现在直接消费 `Vec<Box<MiniTableInfoForSchemaEvent>>`，不会持有完整 TableInfo。调用者可以扫描一张、提取一张，然后释放完整元数据。JSON 字段、action、空集合省略及 getter 契约不变。构造器和真实序列化已验证；现有 canonical SQL 路径不发布该事件，本次不补建完整 notifier worker 链路。
+
 主要语言差异如下：
 
 - Go 使用 `*SchemaChangeEvent`/内部指针，Rust 用拥有型 `SchemaChangeEvent` 与 `Option<JsonSchemaChangeEvent>`；Go nil receiver 的 `String`/`GetType` 对应 Rust 默认空包装的同类行为，但 Rust 的方法不存在 nil receiver。
@@ -97,3 +99,7 @@ Rust 测试额外覆盖 JSON 往返、完整模型载荷、null/空切片和模�
 6. 评估兼容性与成本：修改现有 JSON 字段名或 action 映射会破坏持久化记录；把完整大对象加入高频事件会增加 clone、JSON 和系统表空间开销；错误使用 getter 会 panic；复用槽位若未更新 `overwrite_from` 可能残留旧字段或丢失新字段。
 
 对于现有但尚未在 Rust 生产 worker 中直接找到调用点的构造器，应先搜索真实 DDL action 接线并补最小调用链，不能仅以 API 已存在宣称功能完成。
+
+## 验证依据
+
+本提交独立测试：`port_d0665b0713_` 前缀，分别位于 `affinity_test.rs`、`events_test.rs` 和 `infoschema_v2_test.rs`，按所属 crate 聚焦执行。物理 ID 回归修复前断言得到 [10,20]，修复后得到 [10,11,12,20]；其它新增 API 使用当前绿灯验证。测试与实现分文件；最终命令和有效数量保存在本提交正文。

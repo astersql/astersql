@@ -322,6 +322,22 @@ impl InfoSchemaError {
     }
 }
 
+pub(crate) fn check_iteration_context(
+    ctx: &dyn crate::RequestContext,
+) -> Result<(), InfoSchemaError> {
+    match ctx.error() {
+        None => Ok(()),
+        Some(error) => Err(InfoSchemaError {
+            code: "ErrContext",
+            message: match error {
+                crate::ContextError::Cancelled => "context canceled",
+                crate::ContextError::DeadlineExceeded => "context deadline exceeded",
+            }
+            .to_owned(),
+        }),
+    }
+}
+
 /// InfoSchema 对外查询接口：按名/ID 查库表、分区、特殊属性列表等。
 pub trait InfoSchema: Send + Sync {
     fn SchemaMetaVersion(&self) -> i64;
@@ -358,6 +374,19 @@ pub trait InfoSchema: Send + Sync {
     fn TableItemByID(&self, id: i64) -> Option<TableItem>;
     /// Return all tables in a schema; a missing schema yields an empty list.
     fn SchemaTableInfos(&self, schema: &CiString) -> Result<Vec<Arc<TableInfo>>, InfoSchemaError>;
+    /// One metadata pass. Returning an error stops before the next table.
+    fn IterSchemaTableInfos(
+        &self,
+        ctx: &dyn crate::RequestContext,
+        schema: &CiString,
+        visit: &mut dyn FnMut(&Arc<TableInfo>) -> Result<(), InfoSchemaError>,
+    ) -> Result<(), InfoSchemaError> {
+        for table in self.SchemaTableInfos(schema)? {
+            check_iteration_context(ctx)?;
+            visit(&table)?;
+        }
+        Ok(())
+    }
     fn SchemaSimpleTableInfos(
         &self,
         schema: &CiString,
@@ -902,6 +931,21 @@ impl InfoSchema for infoSchema {
     }
     fn SchemaTableInfos(&self, schema: &CiString) -> Result<Vec<Arc<TableInfo>>, InfoSchemaError> {
         self.SchemaTableInfos(schema)
+    }
+    fn IterSchemaTableInfos(
+        &self,
+        ctx: &dyn crate::RequestContext,
+        schema: &CiString,
+        visit: &mut dyn FnMut(&Arc<TableInfo>) -> Result<(), InfoSchemaError>,
+    ) -> Result<(), InfoSchemaError> {
+        if let Some(tables) = self.schema_map.get(&schema.lower) {
+            // DBInfo retains case-distinct PostgreSQL tables that share a folded name.
+            for table in &tables.db_info.tables {
+                check_iteration_context(ctx)?;
+                visit(table)?;
+            }
+        }
+        Ok(())
     }
     fn HasTemporaryTable(&self) -> bool {
         self.HasTemporaryTable()
