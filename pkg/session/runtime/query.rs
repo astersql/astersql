@@ -4586,6 +4586,20 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::MySQL {
             return false;
         }
+        // Keep signed integer negation on the formal projection path so both
+        // Query and Prepare/Execute retain the operator's numeric descriptor.
+        if let ast::ExprKind::Unary { Op, V } = &expression.Kind
+            && Op == "-"
+        {
+            let source = self.signed_abs_argument_type(V, sources);
+            return matches!(
+                source.GetType(),
+                astersql_parser_mysql::r#type::TypeLong
+                    | astersql_parser_mysql::r#type::TypeLonglong
+            ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+                && !relational_expression_has_aggregate(expression)
+                && !relational_expression_has_subquery(expression);
+        }
         // LIKE shares the native formal projection path so its collation and
         // integer descriptor survive both Query and prepared execution.
         if matches!(expression.Kind, ast::ExprKind::Like { .. }) {
@@ -4989,6 +5003,49 @@ impl ConcreteSession {
                     // Native LIKE is a numeric, binary-charset predicate even
                     // when constant folding selects NULL or a non-NULL result.
                     tp.AddFlag(astersql_parser_mysql::r#type::BinaryFlag);
+                }
+                if self.sql_dialect() == ast::SqlDialect::MySQL {
+                    fn unparenthesized(mut expr: &ast::ExprNode) -> &ast::ExprNode {
+                        while let ast::ExprKind::Parentheses(inner) = &expr.Kind {
+                            expr = inner;
+                        }
+                        expr
+                    }
+                    fn integer_literal(expr: &ast::ExprNode) -> Option<i128> {
+                        match &unparenthesized(expr).Kind {
+                            ast::ExprKind::Value(value) => match &value.Datum {
+                                ast::ValueDatum::Int64(n) => Some(i128::from(*n)),
+                                ast::ValueDatum::Uint64(n) => Some(i128::from(*n)),
+                                _ => None,
+                            },
+                            ast::ExprKind::Unary { Op, V } if Op == "-" => {
+                                integer_literal(V)?.checked_neg()
+                            }
+                            ast::ExprKind::Unary { Op, V } if Op == "+" => integer_literal(V),
+                            _ => None,
+                        }
+                    }
+                    if let ast::ExprKind::Unary { Op, V } = &expression.Kind
+                        && Op == "-"
+                        && let ast::ExprKind::Cast { Expr, Tp, .. } = &unparenthesized(V).Kind
+                        && Tp.GetType() == astersql_parser_mysql::r#type::TypeLonglong
+                        && Tp.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+                    {
+                        // Native MySQL reserves the full SIGNED domain plus its
+                        // sign. A statically negative cast operand uses DECIMAL
+                        // metadata; this identity is independent of returned rows.
+                        let decimal = integer_literal(Expr).is_some_and(|n| n < 0);
+                        tp.SetType(if decimal {
+                            astersql_parser_mysql::r#type::TypeNewDecimal
+                        } else {
+                            astersql_parser_mysql::r#type::TypeLonglong
+                        });
+                        tp.SetFlen(
+                            astersql_parser_mysql::r#const::MaxIntWidth as isize
+                                + isize::from(!decimal),
+                        );
+                        tp.SetDecimal(0);
+                    }
                 }
                 if self.sql_dialect() == ast::SqlDialect::MySQL
                     && let ast::ExprKind::Value(value) = &expression.Kind
