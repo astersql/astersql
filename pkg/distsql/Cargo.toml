@@ -12,6 +12,8 @@ go-package = "pkg/distsql"
 legacy-tasks = ["task-897", "task-898", "task-902", "task-904", "task-905"]
 
 [dependencies]
+protobuf = "=2.8.0"
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "59b678398b175538bba2599a1aefd3b4ecb1fd3d", default-features = false, features = ["protobuf-codec"] }
 "astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-kv" = { package = "astersql-kv", path = "../kv" }
 "astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../util/execdetails" }

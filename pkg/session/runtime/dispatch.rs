@@ -1290,6 +1290,8 @@ impl ConcreteSession {
         statement_read_ts: Option<u64>,
         access_path: &str,
         request_count: usize,
+        index_access: Option<&RelationalSecondaryIndexAccess>,
+        limit: Option<u64>,
     ) -> SessionResult<()> {
         let (start_ts, configured_replica_read, txn_scope, stale_read) = {
             let state = self.state.borrow();
@@ -1331,13 +1333,16 @@ impl ConcreteSession {
                     stale_read,
                     self.connection_id(),
                 )
-                .map(|mut request| {
+                .and_then(|mut request| {
+                    if let Some(access) = index_access {
+                        configure_covering_index_request(table, access, limit, &mut request)?;
+                    }
                     request.NotFillCache = not_fill_cache;
                     request.RunawayChecker = runaway_checker.clone();
                     request.ResourceGroupName = resource_group_name.clone();
                     request.Paging.PagingSizeBytes =
                         self.cop_paging_size_bytes(&resource_group_name);
-                    Arc::new(request)
+                    Ok(Arc::new(request))
                 })
             })
             .collect::<SessionResult<Vec<_>>>()?;

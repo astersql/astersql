@@ -19,6 +19,8 @@ go-package = "pkg/session"
 legacy-tasks = ["task-1257", "task-1258", "task-1261", "task-1267", "task-1268"]
 
 [dependencies]
+"astersql-distsql" = { path = "../distsql" }
+"astersql-util-ranger" = { path = "../util/ranger" }
 astersql-ingestor-ingestcli = { path = "../ingestor/ingestcli" }
 astersql-dxf-framework-dxfmetric = { path = "../dxf/framework/dxfmetric" }
 astersql-ingestor-errdef = { path = "../ingestor/errdef" }

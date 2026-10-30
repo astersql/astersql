@@ -128,3 +128,6 @@ mod ranger_test;
 #[cfg(test)]
 #[path = "types_test.rs"]
 mod types_test;
+
+mod row_count_bound;
+pub use row_count_bound::RowCountUpperBoundByUniqueKey;

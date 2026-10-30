@@ -334,3 +334,76 @@ fn build_table_ranges_contains_record_and_index_prefixes() {
     assert!(ranges[0].start.starts_with(b"t"));
     assert!(ranges[1].start.windows(2).any(|window| window == b"_i"));
 }
+
+fn port_e48ac5fef1_dag(limit: u64, lookup: bool) -> tipb::DagRequest {
+    let mut scan = tipb::Executor::new();
+    scan.set_tp(tipb::ExecType::TypeIndexScan);
+    let mut limit_exec = tipb::Executor::new();
+    limit_exec.set_tp(tipb::ExecType::TypeLimit);
+    let mut bound = tipb::Limit::new();
+    bound.set_limit(limit);
+    limit_exec.set_limit(bound);
+    let mut executors = vec![scan, limit_exec];
+    if lookup {
+        executors[1].set_parent_idx(3);
+        let mut table = tipb::Executor::new();
+        table.set_tp(tipb::ExecType::TypeTableScan);
+        let mut lookup = tipb::Executor::new();
+        lookup.set_tp(tipb::ExecType::TypeIndexLookUp);
+        executors.extend([table, lookup]);
+    }
+    let mut dag = tipb::DagRequest::new();
+    dag.set_executors(executors.into());
+    dag
+}
+
+#[test]
+fn port_e48ac5fef1_scan_limit_upper_bound() {
+    use crate::request_builder::{RequestBuilder, ScanLimitWithMinimalConcurrency, SessionVars};
+    use protobuf::Message;
+    for (bound, expected) in [(None, 1), (Some(35), 15), (Some(100), 15), (Some(101), 1)] {
+        let dag = port_e48ac5fef1_dag(100, false);
+        assert_eq!(ScanLimitWithMinimalConcurrency(Some(&dag)), (100, true));
+        let bytes = dag.write_to_bytes().unwrap();
+        let mut builder = RequestBuilder::new();
+        if let Some(bound) = bound {
+            builder.SetDAGRequestWithRowCountUpperBound(bytes.clone(), bound);
+        } else {
+            builder.SetDAGRequest(bytes.clone());
+        }
+        let request = builder
+            .SetFromSessionVars(&SessionVars::default())
+            .Build()
+            .unwrap();
+        assert_eq!(request.concurrency, expected);
+        assert_eq!(
+            request.payload,
+            crate::request_builder::RequestPayload::Dag(bytes)
+        );
+    }
+    let dag = port_e48ac5fef1_dag(100, true);
+    assert_eq!(ScanLimitWithMinimalConcurrency(Some(&dag)), (0, false));
+    assert_eq!(
+        RequestBuilder::new()
+            .SetDAGRequestWithRowCountUpperBound(dag.write_to_bytes().unwrap(), 1)
+            .SetFromSessionVars(&SessionVars::default())
+            .Build()
+            .unwrap()
+            .concurrency,
+        1
+    );
+}
+
+#[test]
+fn port_e48ac5fef1_scan_limit_shapes() {
+    use crate::request_builder::ScanLimitWithMinimalConcurrency;
+    assert_eq!(ScanLimitWithMinimalConcurrency(None), (0, false));
+    let mut dag = port_e48ac5fef1_dag(100000, false);
+    assert_eq!(ScanLimitWithMinimalConcurrency(Some(&dag)), (0, false));
+    dag.mut_executors().pop();
+    assert_eq!(ScanLimitWithMinimalConcurrency(Some(&dag)), (0, false));
+    let mut selection = tipb::Executor::new();
+    selection.set_tp(tipb::ExecType::TypeSelection);
+    dag.mut_executors().push(selection);
+    assert_eq!(ScanLimitWithMinimalConcurrency(Some(&dag)), (0, false));
+}

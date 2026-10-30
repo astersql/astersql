@@ -112,3 +112,8 @@
 - 改动一致性检查时，不应停留在 checksum 近似，应对照 Go `tableWorker::compareData` 的逐列类型/collation/截断语义和报告内容。
 - 测试必须继续放在独立文件。直接单元测试优先扩展 `pkg/executor/distsql_test.rs`；执行器构造、关闭和并发行为可扩展 `pkg/executor/executor_pkg_test.rs`、`pkg/executor/table_readers_required_rows_test.rs`；Go 对照回归位于 `pkg/executor/distsql_test.go`。不要把 `#[cfg(test)]` 测试内嵌进本源文件。
 - 若要接入真实生产主链，还需在 executor builder/adapter 层提供具体 `DistSqlBackend` 并验证真实存储请求；当前仓库没有该接线证据，应作为独立实现任务处理。
+
+
+### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
+
+IndexReaderScan 保存调用方 TypeCtx、逻辑范围、表和列元数据及 DAG；元数据必须对应本次实际扫描范围。buildKVReq 仅对普通小 Scan→Limit 且无 partition range map 的范围推导唯一键上界，再调用 DistSQL RequestBuilder 决定真实 backend.select 请求并发。没有扫描元数据时保持原调用行为。Open 的有序多范围分发只推导一次并发，再复制轻量请求字段到各范围，避免逐范围重做完整证明。

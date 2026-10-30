@@ -7535,7 +7535,13 @@ impl ConcreteSession {
         let secondary_index_access = primary_key_access_ranges
             .is_none()
             .then(|| self.relational_secondary_index_access(&table, statement))
-            .flatten();
+            .flatten()
+            .map(|mut access| {
+                if has_lock {
+                    access.covering = false;
+                }
+                access
+            });
         let index_merge_access =
             if primary_key_access_ranges.is_none() && secondary_index_access.is_none() {
                 self.relational_index_merge_access(&table, statement)?
@@ -7544,6 +7550,11 @@ impl ConcreteSession {
             };
         let (request_access_path, request_count) = if index_merge_access.is_some() {
             ("IndexMerge", 3)
+        } else if secondary_index_access
+            .as_ref()
+            .is_some_and(|access| access.covering)
+        {
+            ("IndexReader", 1)
         } else if secondary_index_access.is_some() {
             ("IndexLookup", 2)
         } else {
@@ -7554,6 +7565,15 @@ impl ConcreteSession {
             statement_read_ts,
             request_access_path,
             request_count,
+            secondary_index_access
+                .as_ref()
+                .filter(|access| access.covering),
+            statement
+                .Limit
+                .as_ref()
+                .and_then(|limit| limit.Count.as_ref())
+                .and_then(|count| literal(count).ok())
+                .and_then(|count| count.parse::<u64>().ok()),
         )?;
         // 对齐 Go `attach2Task4PhysicalLimit` 的安全条件。自动提交快照可以进一步
         // 在 KV 游标层消费 OFFSET，只解码最终 count 行。整数聚簇主键 ORDER BY

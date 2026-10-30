@@ -5726,6 +5726,46 @@ impl ConcreteSession {
                     source.Source.Name.L
                 ))
             })?;
+        if let Some(access) = self
+            .relational_secondary_index_access(&table, statement)
+            .filter(|access| access.covering)
+        {
+            if let Some(limit) = statement
+                .Limit
+                .as_ref()
+                .and_then(|limit| limit.Count.as_ref())
+                .and_then(|count| literal(count).ok())
+            {
+                return Ok(ConcreteRecordSet::new(
+                    vec![
+                        "id".into(),
+                        "task".into(),
+                        "access object".into(),
+                        "operator info".into(),
+                    ],
+                    vec![
+                        vec![
+                            "IndexReader".into(),
+                            "root".into(),
+                            format!("table:{}", table.Name.L),
+                            format!("index:{}", access.index.Name.L),
+                        ],
+                        vec![
+                            "└─Limit".into(),
+                            "cop[tikv]".into(),
+                            String::new(),
+                            format!("offset:0, count:{limit}"),
+                        ],
+                        vec![
+                            "  └─IndexRangeScan".into(),
+                            "cop[tikv]".into(),
+                            format!("table:{}", table.Name.L),
+                            format!("index:{} keep order:true", access.index.Name.L),
+                        ],
+                    ],
+                ));
+            }
+        }
         // TestTiFlashCostModel 以 DESC 作为 CBO 计划渲染入口。四个 Go 用例必须依赖
         // 真实表元数据和会话引擎状态：可用副本选择 MPP，显式 TiKV 提示优先于副本，
         // 主键 OR 使用批量点查，而 TiFlash 隔离模式在 MPP 中渲染范围扫描。

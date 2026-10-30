@@ -12,7 +12,7 @@
 2. `SetFromSessionVars` 把 `SessionVars` 中与 DistSQL 有关的字段复制到构造器；并发字段采用“未设置则填入，否则取较小值”的上限语义。
 3. `TxnScopeChecker`、`SetFromInfoSchema`、`verifyTxnScope` 和独立函数 `VerifyTxnScope` 提供事务作用域校验边界。
 4. `TableRangesToKVRanges`、`TableHandlesToKVRanges`、`PartitionHandlesToKVRanges`、`IndexRangesToKVRanges`、`CommonHandleRangesToKVRanges`、`BuildTableRanges` 把表/索引逻辑范围编码成 TiDB key 的半开区间。
-5. `SplitRangesAcrossInt64Boundary` 保留有序扫描时 signed/unsigned 两组的返回顺序；`estimatedRegionRowCount` 保留 Go 侧小 limit 并发优化所用常量，但当前 Rust 文件没有消费它。
+5. `SplitRangesAcrossInt64Boundary` 保留有序扫描时 signed/unsigned 两组的返回顺序；`estimatedRegionRowCount` 保留 Go 侧 100000 行阈值；本来源实现了对应的小 Limit DAG 并发规则。
 
 ## 主要符号
 
@@ -77,7 +77,7 @@ range 编码是另一条独立流程：`encode_i64` 翻转符号位后使用大�
 
 当前 Rust 并非 Go 的等价完整移植，重要差异包括：
 
-- Rust 载荷 setter 接收已经序列化的 `Vec<u8>`；Go 接收 tipb protobuf 并在 builder 内 Marshal，还会分析 DAG executor、limit 和默认并发。
+- Rust 载荷 setter 保留已经序列化的 `Vec<u8>` 接口，并解析 tipb 分析本来源涉及的 executor/Limit 并发规则；Go 接收 tipb protobuf 并在 builder 内 Marshal。
 - Go 的 `kv.Request` 包含 replica read、store labels、paging 大小、task ID、cacheable、schema version、memory tracker、runaway checker、超时/读键配额等更多字段；Rust 的 `SessionVars` 与 `KvRequest` 仅覆盖其中一部分。
 - Go `verifyTxnScope` 从 key ranges 解码全部访问的物理表并查询 placement bundle；Rust 仅遍历显式 `partition_ranges`，以 trait checker 代替 InfoSchema。
 - Go 索引/common-handle 编码处理 datum、collation、timezone、错误上下文、内存追踪和中断信号；Rust 只拼接调用方提供的端点字节。
@@ -91,5 +91,10 @@ range 编码是另一条独立流程：`encode_i64` 翻转符号位后使用大�
 - 扩充 `SessionVars` 时，明确字段是覆盖、默认填充还是上限约束，并在 `request_builder_test.rs` 增加独立测试；不要把测试内嵌到生产 `.rs`。
 - 扩充 txn scope 时，应决定是否继续只看 `partition_ranges`，或补齐 Go 的 key 解码语义；新增 checker 实现必须满足 `Send + Sync`，错误消息应保留物理表/scope 诊断信息。
 - 修改 key 编码前必须同步核对 `request_builder.go` 中 `encodeHandleKey`、`TableHandlesToKVRanges`、`PartitionHandlesToKVRanges`、`EncodeIndexKey` 和 `BuildTableRanges`；重点回归开闭端点、空区间、`i64::MAX`、跨分区连续值、common handle、多表展开和 prefix-next 全 `0xff` 情况。
-- 启用 `estimatedRegionRowCount` 相关优化时，应复刻 Go 对 DAG executor/Limit/IndexLookup 的判定，而不是仅凭 range 数量简化。
-- 需要补测试时优先扩展同目录独立文件 `request_builder_test.rs`；跨发送边界的字段再扩展 `distsql_test.rs`。Go 对照回归在 `request_builder_test.go`，但本纯文档任务未运行这些测试。
+- 扩展小 Limit 并发优化时，保留现有 DAG executor/Limit/IndexLookup 判定；只有唯一键证明成功才能消费范围数量上界。
+- 需要补测试时优先扩展同目录独立文件 `request_builder_test.rs`；跨发送边界的字段再扩展 `distsql_test.rs`。Go 对照回归在 `request_builder_test.go`；本来源的独立 Rust 行为回归使用 `port_e48ac5fef1_` 前缀。
+
+
+### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
+
+保留序列化 DAG 字节接口；通过真实 tipb 解析识别两执行器小 Limit，SetDAGRequestWithRowCountUpperBound 仅在证明行数不超过 Limit 时保留会话并发。IndexLookUp 下推 Limit 保持最小并发。ScanLimitFromPayload 供执行器复用同一形状判断。

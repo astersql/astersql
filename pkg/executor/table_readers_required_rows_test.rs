@@ -179,6 +179,7 @@ pub(crate) fn required_rows_reader(
 ) -> IndexReaderExecutor<RequiredRowsBackend> {
     let backend = Arc::new(backend);
     IndexReaderExecutor {
+        scan: None,
         context: newIndexReaderExecutorContext(Arc::clone(&backend), 4, false),
         table_id: 7,
         index_id: 9,

@@ -151,3 +151,8 @@ EXECUTE 的 hint/binding 分析复用该记录的原始 AST，避免重新用默
 ### f137844d4f 读时间戳迁移增量
 
 来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db 的必要局部接线：复用既有 ShowStmtType::SessionStates 和 SetSessionStatesStmt AST，将本来源要求的系统变量迁移片段路由到 migration 模块；其他语句、PostgreSQL 协议/portal/SQLSTATE 和事务执行分派保持原路径。
+
+
+### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
+
+来源 e48ac5fef1 的必要局部接线：在 Arc 冻结之前把覆盖索引 DAG、键范围和并发放入本次 SELECT 请求，序列化或构造错误向上传播，资源组和副本作用域字段继续由现有流程设置。

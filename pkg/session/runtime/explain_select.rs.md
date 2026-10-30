@@ -81,3 +81,8 @@ SQL 普通比较遇到 NULL 在顶层 `WHERE` 为 UNKNOWN，`comparison_has_null
 新增分区裁剪时，从 `range_extract_partition_names`、`equality_partition_name`、`hash_partition_names` 或 `list_partition_names` 扩展，保持“无法证明则不裁剪”的保守性，同时检查 NULL、MAXVALUE、非单调函数、FSP、负时间、组合列和空分区集。新增索引/点查时必须检查 index visibility、covering projection、unique composite key 完整性、排序方向和分区模式。
 
 回归测试优先扩展独立文件 `pkg/session/runtime/explain_select_test.rs`，不将测试内联到生产文件；如果行为对应特定 Go golden，同步核对相应 `pkg/planner/core/casetest/**`/`tests/**` 用例。每个新分支至少应覆盖命中形状、近似但不应命中的 SQL、format 差异、统计/catalog 状态和回退路径。主要正确性风险是分支顺序导致错误截获、过度分区裁剪或计划与实际执行分叉；兼容风险是 Go 计划文本/warning 改变；性能风险是反复规范化 SQL、遍历大量表/索引/分区或过早进入完整优化器。
+
+
+### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
+
+复用真实二级索引访问选择器，对实际覆盖路径展示 IndexReader、cop Limit 和索引扫描。使用本地四列 EXPLAIN ABI，不按 SQL 字符串匹配计划。

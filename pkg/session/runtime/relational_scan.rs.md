@@ -103,3 +103,8 @@ Index merge 是本文件唯一显式多线程区域：`std::thread::scope` 让 w
 ### 2026-10-26 浮点文本持久化（任务20）
 
 按PostgreSQLFloatText标记将浮点列的物理解码视图设为VARCHAR；查询描述仍为声明float4/8。
+
+
+### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
+
+来源 e48ac5fef1 的必要局部接线：复用既有索引与顺序选择，只对非 PostgreSQL、无事务或锁、无分区、无 JOIN/聚合/DISTINCT/窗口、零 OFFSET 的有序 LIMIT 且完整整数索引覆盖投影的扫描，补 IN/NULL 点前缀、编码键去重和直接索引 KV 解码。行读取继续使用既有快照索引游标。configure_covering_index_request 在既有请求构造边界生成对应的 tipb Scan→Limit DAG 和键范围，调用 Ranger 证明及 DistSQL 构造器确定并发；NULL 仍不能证明唯一。本增量没有新增完整 coprocessor transport 或优化器。

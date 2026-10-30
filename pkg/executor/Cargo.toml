@@ -204,6 +204,8 @@ legacy-tasks = ["task-1219", "task-1220", "task-1221", "task-1222", "task-1223",
 fail = { version = "0.5.1", features = ["failpoints"] }
 
 [dev-dependencies]
+protobuf = "=2.8.0"
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "59b678398b175538bba2599a1aefd3b4ecb1fd3d", default-features = false, features = ["protobuf-codec"] }
 "astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../expression/exprstatic" }
 "astersql-objstore-s3like" = { package = "astersql-objstore-s3like", path = "../objstore/s3like" }
 "astersql-planner-property" = { package = "astersql-planner-property", path = "../planner/property" }

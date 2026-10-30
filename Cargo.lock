@@ -2547,6 +2547,8 @@ dependencies = [
  "astersql-util-topsql-stmtstats",
  "astersql-util-tracing",
  "astersql-util-trxevents",
+ "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
+ "tipb",
 ]
 
 [[package]]
@@ -3612,6 +3614,8 @@ dependencies = [
  "astersql-util-tracing",
  "fail 0.5.1",
  "libc",
+ "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
+ "tipb",
 ]
 
 [[package]]
@@ -8588,6 +8592,7 @@ dependencies = [
  "astersql-ddl-session",
  "astersql-ddl-systable",
  "astersql-ddl-util",
+ "astersql-distsql",
  "astersql-distsql-context",
  "astersql-domain",
  "astersql-domain-affinity",
@@ -8741,6 +8746,7 @@ dependencies = [
  "astersql-util-memory",
  "astersql-util-metricsutil",
  "astersql-util-parser",
+ "astersql-util-ranger",
  "astersql-util-ranger-context",
  "astersql-util-redact",
  "astersql-util-replayer",

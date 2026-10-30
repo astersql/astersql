@@ -1,6 +1,6 @@
 # Rust 文件说明文档新增清单
 
-计划为 2589 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
+计划为 2591 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
 
 维护规则：修改含实际业务逻辑的合格生产 `.rs` 文件时，必须同步更新同目录的同名 `.rs.md`；新增合格生产 `.rs` 文件时，必须新建同目录说明并加入本清单。
 
@@ -2679,8 +2679,10 @@
 - [ ] [`pkg/util/ranger/checker.rs.md`](../pkg/util/ranger/checker.rs.md)
 - [ ] [`pkg/util/ranger/context/context.rs.md`](../pkg/util/ranger/context/context.rs.md)
 - [ ] [`pkg/util/ranger/detacher.rs.md`](../pkg/util/ranger/detacher.rs.md)
+- [ ] [`pkg/util/ranger/lib.rs.md`](../pkg/util/ranger/lib.rs.md)
 - [ ] [`pkg/util/ranger/points.rs.md`](../pkg/util/ranger/points.rs.md)
 - [ ] [`pkg/util/ranger/ranger.rs.md`](../pkg/util/ranger/ranger.rs.md)
+- [ ] [`pkg/util/ranger/row_count_bound.rs.md`](../pkg/util/ranger/row_count_bound.rs.md)
 - [ ] [`pkg/util/ranger/types.rs.md`](../pkg/util/ranger/types.rs.md)
 - [ ] [`pkg/util/redact/redact.rs.md`](../pkg/util/redact/redact.rs.md)
 - [ ] [`pkg/util/regexpr-router/regexpr_router.rs.md`](../pkg/util/regexpr-router/regexpr_router.rs.md)

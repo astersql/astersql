@@ -1388,13 +1388,15 @@ pub(super) fn consume_relational_row_iterator(
 
 pub(crate) type RelationalRowScanRange = (kv::Key, kv::Key, bool);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct RelationalSecondaryIndexAccess {
+    pub(crate) covering: bool,
+    pub(crate) logical_ranges: Vec<astersql_util_ranger::Range>,
     pub(crate) index: astersql_meta_model::IndexInfo,
     pub(crate) ranges: Vec<RelationalRowScanRange>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct RelationalIndexMergeAccess {
     pub(crate) branches: Vec<RelationalSecondaryIndexAccess>,
     pub(crate) intersection: bool,
@@ -1891,11 +1893,12 @@ pub(super) fn scan_relational_secondary_index_window(
     if count == 0 || access.ranges.is_empty() {
         return Ok(Vec::new());
     }
+    let mut covered_rows = Vec::new();
     let mut remaining_offset = offset;
     let mut handles =
         Vec::<(i64, Box<dyn astersql_tablecodec::kv::Handle>)>::with_capacity(count.min(1024));
     for (lower, upper, reverse) in &access.ranges {
-        if handles.len() >= count {
+        if handles.len() + covered_rows.len() >= count {
             break;
         }
         let mut iterator = if *reverse {
@@ -1911,11 +1914,36 @@ pub(super) fn scan_relational_secondary_index_window(
                     .map_err(|error| session_error("advance secondary-index OFFSET", error))?;
                 remaining_offset -= 1;
             }
-            while iterator.Valid() && handles.len() < count {
+            while iterator.Valid() && handles.len() + covered_rows.len() < count {
                 let index_key = iterator.Key();
                 let physical_id = astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(
                     index_key.0.clone(),
                 ));
+                if access.covering {
+                    let columns = astersql_tablecodec::DecodeIndexKV(
+                        index_key.0.clone(),
+                        iterator.Value().to_vec(),
+                        access.index.Columns.len(),
+                        astersql_tablecodec::HandleNotNeeded,
+                        Vec::new(),
+                    )
+                    .map_err(|error| session_error("decode covering index", error))?;
+                    let mut row = HashMap::new();
+                    for (indexed, bytes) in access.index.Columns.iter().zip(columns) {
+                        let (_, datum) = astersql_tablecodec::codec::DecodeOne(&bytes)
+                            .map_err(|error| session_error("decode covering index datum", error))?;
+                        let column = &table.Columns[indexed.Offset as usize];
+                        row.insert(
+                            column.Name.L.clone(),
+                            datum_to_runtime_value(&datum, Some(column))?,
+                        );
+                    }
+                    covered_rows.push((0, row));
+                    iterator
+                        .Next()
+                        .map_err(|error| session_error("advance covering index", error))?;
+                    continue;
+                }
                 handles.push((
                     physical_id,
                     astersql_tablecodec::DecodeIndexHandle(
@@ -1936,6 +1964,9 @@ pub(super) fn scan_relational_secondary_index_window(
         })();
         iterator.Close();
         result?;
+    }
+    if access.covering {
+        return Ok(covered_rows);
     }
     if handles.is_empty() {
         return Ok(Vec::new());
@@ -2317,11 +2348,85 @@ impl ConcreteSession {
                 .then_with(|| left.ID.cmp(&right.ID))
         });
         for index in candidates {
+            let integer_index = index.Columns.iter().all(|indexed| {
+                table
+                    .Columns
+                    .get(indexed.Offset as usize)
+                    .is_some_and(|column| {
+                        matches!(
+                            column.GetType(),
+                            astersql_parser_mysql::r#type::TypeLonglong
+                                | astersql_parser_mysql::r#type::TypeLong
+                                | astersql_parser_mysql::r#type::TypeShort
+                                | astersql_parser_mysql::r#type::TypeTiny
+                                | astersql_parser_mysql::r#type::TypeInt24
+                        )
+                    })
+            });
+            let projection_covered = statement.Fields.Fields.iter().all(|field| {
+                field.Expr.as_ref().is_some_and(|expr| {
+                    matches!(&expr.Kind, ast::ExprKind::Column(column) if index.Columns.iter().any(|indexed| indexed.Name.L == column.Name.L))
+                })
+            });
+            let unlocked = statement.lock_info.as_ref().is_none_or(|lock| {
+                lock.LockType == ast::SelectLockType::None
+                    && lock.lock_type == ast::SelectLockType::None
+            });
+            let zero_offset = statement.Limit.as_ref().is_some_and(|limit| {
+                limit
+                    .Offset
+                    .as_ref()
+                    .is_none_or(|offset| literal(offset).is_ok_and(|offset| offset == "0"))
+            });
+            // The local covering adapter is only a row-preserving single-table
+            // scan. Joins, grouping and DISTINCT need their existing row source.
+            let plain_scan = statement.From.as_ref().is_some_and(|from| {
+                from.TableRefs.Right.is_none()
+                    && matches!(from.TableRefs.Left.as_deref(), Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none())
+            }) && !statement.Distinct && statement.GroupBy.is_empty()
+                && statement.Having.is_none() && statement.WindowSpecs.is_empty();
+            let covering = plain_scan
+                && self.sql_dialect() != ast::SqlDialect::PostgreSQL
+                && !statement.OrderBy.is_empty()
+                && zero_offset
+                && self.state.borrow().transaction.is_none()
+                && unlocked
+                && table.GetPartitionInfo().is_none()
+                && !table.ExactName
+                && projection_covered
+                && integer_index;
             let mut ranges = Vec::new();
             let mut supported = true;
             for physical_table_id in local_secondary_index_table_ids(table) {
                 let mut physical_table = table.clone();
                 physical_table.ID = physical_table_id;
+                if let Some(predicate) = predicate.filter(|_| covering) {
+                    if let Some(points) = secondary_index_point_values(
+                        &physical_table,
+                        &index,
+                        predicate,
+                        self.dml_type_flags(),
+                    ) {
+                        for value in points {
+                            let encoded = astersql_tablecodec::codec::EncodeKey(
+                                astersql_tablecodec::time::UTC,
+                                Vec::new(),
+                                vec![value],
+                            )
+                            .ok()?;
+                            let lower = kv::Key(
+                                astersql_tablecodec::EncodeIndexSeekKey(
+                                    physical_table_id,
+                                    index.ID,
+                                    Some(encoded),
+                                )
+                                .0,
+                            );
+                            ranges.push((lower.clone(), lower.PrefixNext(), descending));
+                        }
+                        continue;
+                    }
+                }
                 let bounds = if let Some(predicate) = predicate {
                     let Ok(Some(bounds)) = secondary_index_predicate_bounds(
                         &physical_table,
@@ -2345,7 +2450,33 @@ impl ConcreteSession {
             if !supported {
                 continue;
             }
-            return Some(RelationalSecondaryIndexAccess { index, ranges });
+            ranges.sort_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));
+            ranges.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+            if descending {
+                ranges.reverse();
+            }
+            let logical_ranges = predicate
+                .and_then(|predicate| {
+                    secondary_index_point_values(table, &index, predicate, self.dml_type_flags())
+                })
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .map(|value| astersql_util_ranger::Range {
+                            LowVal: vec![value.clone()],
+                            HighVal: vec![value],
+                            Collators: astersql_util_ranger::collate::GetBinaryCollatorSlice(1),
+                            ..Default::default()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Some(RelationalSecondaryIndexAccess {
+                index,
+                ranges,
+                covering,
+                logical_ranges,
+            });
         }
         None
     }
@@ -2422,6 +2553,8 @@ impl ConcreteSession {
                 }
             }
             Ok::<_, SessionError>(Some(RelationalSecondaryIndexAccess {
+                covering: false,
+                logical_ranges: Vec::new(),
                 index: index.clone(),
                 ranges,
             }))
@@ -3190,4 +3323,148 @@ impl ConcreteSession {
             }
         })
     }
+}
+
+// Point prefixes are used for access only when every value can be encoded using
+// the real column type; NULL is a point for scanning but never proves uniqueness.
+fn secondary_index_point_values(
+    table: &astersql_meta_model::TableInfo,
+    index: &astersql_meta_model::IndexInfo,
+    predicate: &ast::ExprNode,
+    flags: astersql_types::Flags,
+) -> Option<Vec<astersql_types::datum::Datum>> {
+    let first = index.Columns.first()?;
+    let column = table.Columns.get(first.Offset as usize)?;
+    if !matches!(
+        column.GetType(),
+        astersql_parser_mysql::r#type::TypeLonglong
+            | astersql_parser_mysql::r#type::TypeLong
+            | astersql_parser_mysql::r#type::TypeShort
+            | astersql_parser_mysql::r#type::TypeTiny
+            | astersql_parser_mysql::r#type::TypeInt24
+    ) {
+        return None;
+    }
+    let values: Vec<astersql_types::datum::Datum> = match &predicate.Kind {
+        ast::ExprKind::InList {
+            Expr,
+            List,
+            Not: false,
+            ..
+        } if matches!(&Expr.Kind, ast::ExprKind::Column(name) if name.Name.L == first.Name.L) => {
+            List.iter()
+                .map(|expr| runtime_value_to_datum(Some(&literal(expr).ok()?), column, flags).ok())
+                .collect()
+        }
+        ast::ExprKind::IsNull { Expr, Not: false } if matches!(&Expr.Kind, ast::ExprKind::Column(name) if name.Name.L == first.Name.L) => {
+            Some(vec![astersql_types::datum::Datum::default()])
+        }
+        _ => None,
+    }?;
+    let mut unique = std::collections::BTreeMap::new();
+    for value in values {
+        let key = astersql_tablecodec::codec::EncodeKey(
+            astersql_tablecodec::time::UTC,
+            Vec::new(),
+            vec![value.clone()],
+        )
+        .ok()?;
+        unique.insert(key, value);
+    }
+    Some(unique.into_values().collect())
+}
+
+/// Construct the same serialized Scan -> Limit request as the covering iterator's
+/// selected access path; keep the unique-key proof separate from encoded keys.
+pub(super) fn configure_covering_index_request(
+    table: &astersql_meta_model::TableInfo,
+    access: &RelationalSecondaryIndexAccess,
+    limit: Option<u64>,
+    request: &mut kv::Request,
+) -> SessionResult<()> {
+    use astersql_distsql::request_builder::{RequestBuilder, SessionVars};
+    let mut scan = tipb::IndexScan::new();
+    scan.set_table_id(table.ID);
+    scan.set_index_id(access.index.ID);
+    scan.set_columns(
+        access
+            .index
+            .Columns
+            .iter()
+            .map(|column| relational_scan_column(table, &table.Columns[column.Offset as usize]))
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    scan.set_desc(access.ranges.first().is_some_and(|range| range.2));
+    let mut executor = tipb::Executor::new();
+    executor.set_tp(tipb::ExecType::TypeIndexScan);
+    executor.set_idx_scan(scan);
+    let mut executors = vec![executor];
+    if let Some(limit) = limit {
+        let mut executor = tipb::Executor::new();
+        executor.set_tp(tipb::ExecType::TypeLimit);
+        let mut bound = tipb::Limit::new();
+        bound.set_limit(limit);
+        executor.set_limit(bound);
+        executors.push(executor);
+    }
+    let mut dag = tipb::DagRequest::new();
+    dag.set_executors(executors.into());
+    dag.set_output_offsets((0..access.index.Columns.len() as u32).collect());
+    let data = protobuf::Message::write_to_bytes(&dag)
+        .map_err(|error| session_error("encode covering IndexReader DAG", error))?;
+    let columns = access
+        .index
+        .Columns
+        .iter()
+        .map(|indexed| {
+            let mut column = astersql_expression::Column::default();
+            column.ID = table.Columns[indexed.Offset as usize].ID;
+            column
+        })
+        .collect::<Vec<_>>();
+    let lengths = access
+        .index
+        .Columns
+        .iter()
+        .map(|column| column.Length as isize)
+        .collect::<Vec<_>>();
+    let bound = if limit
+        .is_some_and(|limit| limit < 100000 && access.logical_ranges.len() as u64 <= limit)
+    {
+        astersql_util_ranger::RowCountUpperBoundByUniqueKey(
+            astersql_util_ranger::types::DefaultStmtNoWarningContext.clone(),
+            Some(table),
+            &columns,
+            &lengths,
+            &access.logical_ranges,
+        )
+    } else {
+        (0, false)
+    };
+    let mut builder = RequestBuilder::new();
+    if bound.1 {
+        builder.SetDAGRequestWithRowCountUpperBound(data.clone(), bound.0);
+    } else {
+        builder.SetDAGRequest(data.clone());
+    }
+    request.Concurrency = builder
+        .SetFromSessionVars(&SessionVars::default())
+        .Build()
+        .map_err(|error| session_error("build covering IndexReader request", error))?
+        .concurrency as i32;
+    request.KeepOrder = true;
+    request.Desc = access.ranges.first().is_some_and(|range| range.2);
+    request.Data = data;
+    request.KeyRanges = Some(kv::NewNonPartitionedKeyRanges(
+        access
+            .ranges
+            .iter()
+            .map(|(lower, upper, _)| kv::KeyRange {
+                StartKey: lower.clone(),
+                EndKey: upper.clone(),
+            })
+            .collect(),
+    ));
+    Ok(())
 }

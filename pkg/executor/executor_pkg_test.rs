@@ -123,6 +123,7 @@ fn index_reader_partition_ranges_use_index_join_memory_tracker() {
     let backend = RequiredRowsBackend::new(Vec::new(), Duration::ZERO);
     let tracker = Arc::new(Tracker::new(1, -1));
     let mut reader = IndexReaderExecutor {
+        scan: None,
         context: newIndexReaderExecutorContext(Arc::new(backend), 1, false),
         table_id: 101,
         index_id: 1,

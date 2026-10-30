@@ -409,3 +409,252 @@ fn test_cut_binary_string_prefix_inside_utf8_code_point() {
     assert_eq!(value.Kind(), types::KindString);
     assert_eq!(value.GetBytes(), vec![0xc3]);
 }
+
+#[test]
+fn port_e48ac5fef1_unique_key_row_count_bound() {
+    use model::{ColumnInfo, IndexColumn, IndexInfo, StatePublic, TableInfo};
+    let columns = vec![column(1, 0), column(2, 1), column(3, 2)];
+    let key = |ids: &[usize]| IndexInfo {
+        Unique: true,
+        State: StatePublic,
+        Columns: ids
+            .iter()
+            .map(|i| IndexColumn {
+                Offset: *i as isize,
+                Length: -1,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let table = |index: Option<IndexInfo>| TableInfo {
+        Columns: (1..=3)
+            .map(|id| ColumnInfo {
+                ID: id,
+                ..Default::default()
+            })
+            .collect(),
+        Indices: index.into_iter().collect(),
+        ..Default::default()
+    };
+    let point = |values: Vec<types::Datum>| Range {
+        LowVal: values.clone(),
+        HighVal: values.clone(),
+        Collators: collate::GetBinaryCollatorSlice(values.len()),
+        ..Default::default()
+    };
+    let one = point(vec![types::NewIntDatum(1)]);
+    let null = point(vec![types::Datum::default()]);
+    let mut interval = point(vec![types::NewIntDatum(1), types::NewIntDatum(5)]);
+    interval.HighVal[1] = types::MaxValueDatum();
+    interval.LowExclude = true;
+    let mut exclusive = one.clone();
+    exclusive.LowExclude = true;
+    let mut non_public = key(&[0]);
+    non_public.State = model::StateWriteReorganization;
+    let mut partial = key(&[0]);
+    partial.ConditionExprString = "a > 0".into();
+    let mut mv = key(&[0]);
+    mv.MVIndex = true;
+    let mut prefix = key(&[0]);
+    prefix.Columns[0].Length = 4;
+    let cases = vec![
+        (
+            table(Some(key(&[0]))),
+            vec![-1, -1],
+            vec![one.clone(), one.clone(), one.clone()],
+            (3, true),
+        ),
+        (
+            table(Some(key(&[0]))),
+            vec![-1, -1],
+            vec![interval],
+            (1, true),
+        ),
+        (
+            table(Some(key(&[0]))),
+            vec![-1, -1],
+            vec![one.clone(), null],
+            (0, false),
+        ),
+        (
+            table(Some(key(&[0]))),
+            vec![-1, -1],
+            vec![exclusive],
+            (0, false),
+        ),
+        (table(None), vec![-1, -1], vec![one.clone()], (0, false)),
+        (
+            table(Some(non_public)),
+            vec![-1, -1],
+            vec![one.clone()],
+            (0, false),
+        ),
+        (
+            table(Some(partial)),
+            vec![-1, -1],
+            vec![one.clone()],
+            (0, false),
+        ),
+        (table(Some(mv)), vec![-1, -1], vec![one.clone()], (0, false)),
+        (
+            table(Some(prefix)),
+            vec![-1, -1],
+            vec![one.clone()],
+            (0, false),
+        ),
+        (
+            table(Some(key(&[0]))),
+            vec![4, -1],
+            vec![one.clone()],
+            (0, false),
+        ),
+        (
+            table(Some(key(&[0, 1]))),
+            vec![-1, -1],
+            vec![one],
+            (0, false),
+        ),
+        (
+            table(Some(key(&[0, 1]))),
+            vec![-1, -1],
+            vec![point(vec![types::NewIntDatum(1), types::NewIntDatum(2)])],
+            (1, true),
+        ),
+    ];
+    for (i, (table, lengths, ranges, expected)) in cases.into_iter().enumerate() {
+        assert_eq!(
+            crate::RowCountUpperBoundByUniqueKey(
+                types::DefaultStmtNoWarningContext.clone(),
+                Some(&table),
+                &columns[..2],
+                &lengths,
+                &ranges
+            ),
+            expected,
+            "case {i}"
+        );
+    }
+    // Preserve the Go string/prefix and mixed composite-key inputs, too.
+    let name_column = expression::Column::new(field_type(mysql::TypeVarchar), 3, 3, 0);
+    let name_point = point(vec![types::NewStringDatum("abcd".to_owned())]);
+    let mut prefix_name = key(&[2]);
+    prefix_name.Columns[0].Length = 4;
+    let mut partial_name = key(&[2]);
+    partial_name.ConditionExprString = "a > 0".into();
+    let mut mv_name = key(&[2]);
+    mv_name.MVIndex = true;
+    for (index, length) in [
+        (key(&[2]), 4),
+        (prefix_name, -1),
+        (partial_name, -1),
+        (mv_name, -1),
+    ] {
+        assert_eq!(
+            crate::RowCountUpperBoundByUniqueKey(
+                types::DefaultStmtNoWarningContext.clone(),
+                Some(&table(Some(index))),
+                std::slice::from_ref(&name_column),
+                &[length],
+                std::slice::from_ref(&name_point)
+            ),
+            (0, false)
+        );
+    }
+    assert_eq!(
+        crate::RowCountUpperBoundByUniqueKey(
+            types::DefaultStmtNoWarningContext.clone(),
+            Some(&table(Some(key(&[0, 2])))),
+            &[columns[0].clone(), name_column],
+            &[-1, -1],
+            &[point(vec![
+                types::NewIntDatum(1),
+                types::NewStringDatum("x".to_owned())
+            ])]
+        ),
+        (1, true)
+    );
+}
+
+#[test]
+fn port_e48ac5fef1_handle_and_range_boundaries() {
+    let mut pk = model::ColumnInfo {
+        ID: 2,
+        ..Default::default()
+    };
+    pk.FieldType.AddFlag(mysql::PriKeyFlag | mysql::NotNullFlag);
+    let table = model::TableInfo {
+        Columns: vec![
+            model::ColumnInfo {
+                ID: 1,
+                ..Default::default()
+            },
+            pk,
+        ],
+        PKIsHandle: true,
+        ..Default::default()
+    };
+    let columns = vec![column(1, 0), column(2, 1)];
+    let point = |low: Vec<types::Datum>, high: Vec<types::Datum>| Range {
+        Collators: collate::GetBinaryCollatorSlice(low.len()),
+        LowVal: low,
+        HighVal: high,
+        ..Default::default()
+    };
+    let ints = |a, b| vec![types::NewIntDatum(a), types::NewIntDatum(b)];
+    let check = |ranges: &[Range], lens: &[isize]| {
+        crate::RowCountUpperBoundByUniqueKey(
+            types::DefaultStmtNoWarningContext.clone(),
+            Some(&table),
+            &columns,
+            lens,
+            ranges,
+        )
+    };
+    assert_eq!(
+        check(
+            &[
+                point(ints(1, 10), ints(1, 10)),
+                point(ints(1, 11), ints(1, 11))
+            ],
+            &[-1, -1]
+        ),
+        (2, true)
+    );
+    assert_eq!(
+        check(
+            &[point(
+                vec![types::MinNotNullDatum(), types::NewIntDatum(10)],
+                vec![types::MaxValueDatum(), types::NewIntDatum(10)]
+            )],
+            &[-1, -1]
+        ),
+        (0, false)
+    );
+    assert_eq!(
+        check(&[point(ints(1, 10), ints(1, 10))], &[4, -1]),
+        (1, true)
+    );
+    assert_eq!(
+        check(
+            &[point(
+                vec![types::Datum::default(), types::NewIntDatum(10)],
+                vec![types::Datum::default(), types::NewIntDatum(10)]
+            )],
+            &[-1, -1]
+        ),
+        (1, true)
+    );
+    assert_eq!(check(&[], &[-1, -1]), (0, false));
+    assert_eq!(check(&[point(ints(1, 10), ints(1, 10))], &[-1]), (0, false));
+    assert_eq!(
+        crate::RowCountUpperBoundByUniqueKey(
+            types::DefaultStmtNoWarningContext.clone(),
+            None,
+            &columns,
+            &[-1, -1],
+            &[]
+        ),
+        (0, false)
+    );
+}

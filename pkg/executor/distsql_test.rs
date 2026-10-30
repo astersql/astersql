@@ -398,3 +398,92 @@ mod split_region_routing {
         assert_eq!(routed[1].start, split);
     }
 }
+
+#[test]
+fn port_e48ac5fef1_index_reader_request_uses_unique_key_bound() {
+    use crate::distsql::IndexReaderScan;
+    use crate::table_readers_required_rows_test::{RequiredRowsBackend, required_rows_reader};
+    use astersql_meta_model::{ColumnInfo, IndexColumn, IndexInfo, StatePublic, TableInfo};
+    use astersql_util_ranger::{Range, collate, types};
+    use protobuf::Message;
+    let mut scan = tipb::Executor::new();
+    scan.set_tp(tipb::ExecType::TypeIndexScan);
+    let mut limit = tipb::Executor::new();
+    limit.set_tp(tipb::ExecType::TypeLimit);
+    let mut n = tipb::Limit::new();
+    n.set_limit(100);
+    limit.set_limit(n);
+    let mut dag = tipb::DagRequest::new();
+    dag.set_executors(vec![scan, limit].into());
+    for (unique, null, points, partition_map, expected) in [
+        (true, false, 35, false, 4),
+        (true, false, 100, false, 4),
+        (true, false, 101, false, 1),
+        (false, false, 35, false, 1),
+        (true, true, 1, false, 1),
+        (true, false, 35, true, 1),
+    ] {
+        let mut reader = required_rows_reader(RequiredRowsBackend::new(
+            Vec::new(),
+            std::time::Duration::ZERO,
+        ));
+        let mut column = astersql_expression::Column::default();
+        column.ID = 1;
+        reader.scan = Some(IndexReaderScan {
+            type_context: types::DefaultStmtNoWarningContext.clone(),
+            dag: dag.write_to_bytes().unwrap(),
+            table: Some(TableInfo {
+                Columns: vec![ColumnInfo {
+                    ID: 1,
+                    ..Default::default()
+                }],
+                Indices: vec![IndexInfo {
+                    Unique: unique,
+                    State: StatePublic,
+                    Columns: vec![IndexColumn {
+                        Offset: 0,
+                        Length: -1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            columns: vec![column],
+            lengths: vec![-1],
+            ranges: (0..points)
+                .map(|i| {
+                    let value = if null {
+                        types::Datum::default()
+                    } else {
+                        types::NewIntDatum(i)
+                    };
+                    Range {
+                        LowVal: vec![value.clone()],
+                        HighVal: vec![value],
+                        Collators: collate::GetBinaryCollatorSlice(1),
+                        ..Default::default()
+                    }
+                })
+                .collect(),
+            partition_range_map: partition_map,
+        });
+        assert_eq!(
+            reader
+                .buildKVReq(reader.ranges.clone())
+                .unwrap()
+                .concurrency,
+            expected
+        );
+        if points == 35 {
+            reader.ranges.push(reader.ranges[0].clone());
+            reader.by_items.push(crate::distsql::ByItem {
+                offset: 0,
+                descending: false,
+            });
+        }
+        reader.Open().unwrap();
+        assert!(reader.Next(100).unwrap().is_empty());
+        reader.Close().unwrap();
+    }
+}

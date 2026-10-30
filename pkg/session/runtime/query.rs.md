@@ -307,3 +307,8 @@ SELECT分析把Jsonb数组交给共享pg_array消费者，保留结果身份。 
 ## Task 42: typed text to bytea
 
 Typed text→bytea evaluation uses the shared strict scalar input helper. COALESCE analysis rejects typed text/bytea mixing with 42804 before row evaluation, including typed NULL and zero rows.
+
+
+### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
+
+来源 e48ac5fef1 的必要局部接线：选中覆盖索引访问时传递真实访问元数据和 Limit 至请求构造，访问标识为 IndexReader；其他访问仍沿用原分支。

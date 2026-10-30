@@ -270,8 +270,21 @@ pub fn newIndexReaderExecutorContext<B: DistSqlBackend>(
     }
 }
 
+/// Logical scan metadata retained until request construction; encoded KV ranges alone
+/// cannot prove uniqueness (in particular for NULL and prefix indexes).
+pub struct IndexReaderScan {
+    pub type_context: astersql_util_ranger::types::Context,
+    pub dag: Vec<u8>,
+    pub table: Option<astersql_meta_model::TableInfo>,
+    pub columns: Vec<astersql_expression::Column>,
+    pub lengths: Vec<isize>,
+    pub ranges: Vec<astersql_util_ranger::Range>,
+    pub partition_range_map: bool,
+}
+
 /// 索引读执行器：Open 时建 KV 请求，Next 拉行；多 range 有序时可能本地 merge sort。
 pub struct IndexReaderExecutor<B: DistSqlBackend> {
+    pub scan: Option<IndexReaderScan>,
     pub context: indexReaderExecutorContext<B>,
     pub table_id: i64,
     pub index_id: i64,
@@ -348,11 +361,44 @@ impl<B: DistSqlBackend> IndexReaderExecutor<B> {
     }
     /// 组装下推 Request。
     pub fn buildKVReq(&self, ranges: Vec<KeyRange>) -> Result<Request, DistSqlError> {
+        let mut concurrency = self.context.dist_sql_concurrency;
+        if let Some(scan) = &self.scan {
+            use astersql_distsql::request_builder::{
+                RequestBuilder, ScanLimitFromPayload, SessionVars,
+            };
+            let (limit, eligible) = ScanLimitFromPayload(&scan.dag);
+            let bound =
+                if eligible && scan.ranges.len() as u64 <= limit && !scan.partition_range_map {
+                    astersql_util_ranger::RowCountUpperBoundByUniqueKey(
+                        scan.type_context.clone(),
+                        scan.table.as_ref(),
+                        &scan.columns,
+                        &scan.lengths,
+                        &scan.ranges,
+                    )
+                } else {
+                    (0, false)
+                };
+            let mut builder = RequestBuilder::new();
+            if bound.1 {
+                builder.SetDAGRequestWithRowCountUpperBound(scan.dag.clone(), bound.0);
+            } else {
+                builder.SetDAGRequest(scan.dag.clone());
+            }
+            concurrency = builder
+                .SetFromSessionVars(&SessionVars {
+                    concurrency,
+                    ..Default::default()
+                })
+                .Build()
+                .map_err(|error| DistSqlError::InvalidPlan(error.to_string()))?
+                .concurrency;
+        }
         Ok(Request {
             ranges,
             descending: self.descending,
             keep_order: self.keep_order,
-            concurrency: self.context.dist_sql_concurrency,
+            concurrency,
             plan_ids: self.plans.clone(),
             collect_stats: true,
         })
@@ -368,9 +414,13 @@ impl<B: DistSqlBackend> IndexReaderExecutor<B> {
         }
         // 多段 range 且需要保序时，逐段拉取后统一排序，结果放入 merged_rows。
         if needMergeSort(&self.by_items, ranges.len()) {
+            let request = self.buildKVReq(Vec::new())?;
             let mut all = Vec::new();
             for range in ranges {
-                let mut result = self.context.backend.select(self.buildKVReq(vec![range])?)?;
+                let mut result = self.context.backend.select(Request {
+                    ranges: vec![range],
+                    ..request.clone()
+                })?;
                 loop {
                     let rows = result.next(1024)?;
                     if rows.is_empty() {

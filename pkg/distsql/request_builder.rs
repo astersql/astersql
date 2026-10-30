@@ -260,8 +260,35 @@ impl RequestBuilder {
             execute_batch_tasks_serially: self.execute_batch_tasks_serially,
         })
     }
-    /// 设置为 DAG 请求并保存 payload。
+    /// Sets the serialized DAG, retaining the conservative scan-limit concurrency rule.
     pub fn SetDAGRequest(&mut self, payload: Vec<u8>) -> &mut Self {
+        self.set_dag_request(payload, None)
+    }
+    /// A proven row bound relaxes only a plain Scan -> Limit DAG.
+    pub fn SetDAGRequestWithRowCountUpperBound(
+        &mut self,
+        payload: Vec<u8>,
+        bound: u64,
+    ) -> &mut Self {
+        self.set_dag_request(payload, Some(bound))
+    }
+    fn set_dag_request(&mut self, payload: Vec<u8>, bound: Option<u64>) -> &mut Self {
+        if let Ok(dag) = protobuf::parse_from_bytes::<tipb::DagRequest>(&payload) {
+            let executors = dag.get_executors();
+            if executors.len() >= 2 && executors[1].has_limit() {
+                let limit = executors[1].get_limit().get_limit();
+                let minimal = if executors.len() == 2 {
+                    bound.is_none_or(|bound| bound > limit)
+                } else {
+                    executors
+                        .get(executors[1].get_parent_idx() as usize)
+                        .is_some_and(|parent| parent.get_tp() == tipb::ExecType::TypeIndexLookUp)
+                };
+                if limit < 100000 && minimal {
+                    self.concurrency = 1;
+                }
+            }
+        }
         self.request_type = Some(RequestType::Dag);
         self.payload = Some(RequestPayload::Dag(payload));
         self
@@ -659,3 +686,26 @@ pub fn BuildTableRanges(table_id: i64, index_ids: &[i64]) -> Vec<KeyRange> {
 }
 /// 估算单 Region 行数常量，用于小 limit 时调整并发（对齐 Go）。
 pub const estimatedRegionRowCount: usize = 100_000;
+
+/// Returns the limit only for the plain small Scan -> Limit shape affected by the proof.
+pub fn ScanLimitWithMinimalConcurrency(dag: Option<&tipb::DagRequest>) -> (u64, bool) {
+    let Some(dag) = dag else { return (0, false) };
+    let executors = dag.get_executors();
+    if executors.len() != 2 || !executors[1].has_limit() {
+        return (0, false);
+    }
+    let limit = executors[1].get_limit().get_limit();
+    if limit >= 100000 {
+        (0, false)
+    } else {
+        (limit, true)
+    }
+}
+
+/// Inspects the existing serialized request without changing its encoding.
+pub fn ScanLimitFromPayload(payload: &[u8]) -> (u64, bool) {
+    protobuf::parse_from_bytes::<tipb::DagRequest>(payload)
+        .ok()
+        .as_ref()
+        .map_or((0, false), |dag| ScanLimitWithMinimalConcurrency(Some(dag)))
+}

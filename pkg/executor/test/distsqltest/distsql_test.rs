@@ -284,3 +284,97 @@ fn TestDistSQLSharedKVRequestRace() {
     drop(tk);
     assert_eq!(store.active_session_count(), 0);
 }
+
+/// Go e48ac5fef1: an ordered covering index reader must carry the unique-key
+/// proof into the real SELECT request, including the conservative fallbacks.
+#[test]
+fn port_e48ac5fef1_index_reader_limit_concurrency_with_unique_key_points() {
+    crate::main_test::setup_test_main();
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut tk = NewTestKit(store.clone());
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table t (object_id bigint primary key clustered, listing_id bigint default null, key idx_lo (listing_id, object_id), unique key uk_l (listing_id))", Vec::new());
+    tk.MustExec("create table t_no_uk (object_id bigint primary key clustered, listing_id bigint default null, key idx_lo (listing_id, object_id))", Vec::new());
+    for i in 0..200 {
+        for table in ["t", "t_no_uk"] {
+            tk.MustExec(
+                &format!("insert into {table} values ({i}, {})", i * 10),
+                Vec::new(),
+            );
+        }
+    }
+    let in_list = |n: usize| {
+        (0..n)
+            .map(|i| (i * 10).to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    for (table, points, expected_rows, expected_concurrency) in [
+        ("t", 35, 35, DefDistSQLScanConcurrency as i32),
+        ("t", 101, 100, 1),
+        ("t_no_uk", 35, 35, 1),
+        ("t", 0, 0, 1),
+    ] {
+        let predicate = if points == 0 {
+            "listing_id is null".to_owned()
+        } else {
+            format!("listing_id in ({})", in_list(points))
+        };
+        let sql = format!(
+            "select listing_id, object_id from {table} force index(idx_lo) where {predicate} order by listing_id, object_id limit 100"
+        );
+        if table == "t" && points == 35 {
+            let explain = tk.MustQuery(&format!("explain format='brief' {sql}"), Vec::new());
+            assert!(
+                explain
+                    .Rows()
+                    .iter()
+                    .any(|row| row[0].contains("IndexReader")),
+                "{explain:?}"
+            );
+            assert!(
+                explain.Rows().iter().any(|row| row[0].contains("Limit")
+                    && row[1] == "cop[tikv]"
+                    && row[3] == "offset:0, count:100"),
+                "{explain:?}"
+            );
+        }
+        let rows = tk.MustQuery(&sql, Vec::new()).Rows();
+        assert_eq!(rows.len(), expected_rows, "{sql}");
+        assert_eq!(
+            rows,
+            (0..expected_rows)
+                .map(|i| vec![(i * 10).to_string(), i.to_string()])
+                .collect::<Vec<_>>(),
+            "covering index values: {sql}"
+        );
+        let observed = store
+            .last_select_request_for_test()
+            .expect("read SELECT request")
+            .expect("SELECT must emit a request");
+        assert_eq!(
+            observed.access_path, "IndexReader",
+            "covering scan required: {sql}"
+        );
+        assert!(observed.request.KeepOrder);
+        assert!(!observed.request.Desc);
+        assert_eq!(observed.request.Concurrency, expected_concurrency, "{sql}");
+    }
+    let duplicates = std::iter::repeat_n("0", 101).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "select listing_id, object_id from t force index(idx_lo) where listing_id in ({duplicates}) order by listing_id, object_id limit 100"
+    );
+    assert_eq!(
+        tk.MustQuery(&sql, Vec::new()).Rows(),
+        vec![vec!["0".to_owned(), "0".to_owned()]]
+    );
+    assert_eq!(
+        store
+            .last_select_request_for_test()
+            .unwrap()
+            .unwrap()
+            .request
+            .Concurrency,
+        DefDistSQLScanConcurrency as i32
+    );
+}
