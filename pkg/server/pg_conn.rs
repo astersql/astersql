@@ -33,6 +33,7 @@ fn cancel_key_length(protocol_version: u32) -> usize {
 }
 
 struct Active {
+    connection_id: u64,
     protocol_version: u32,
     key: Vec<u8>,
     context: Arc<dyn TiDBContext>,
@@ -110,11 +111,15 @@ impl PgService {
                                             &error.to_string(),
                                         );
                                     }
-                                    if let Ok(pid) = u32::try_from(id) {
-                                        if let Some(active) =
-                                            connection_owner.active.lock().unwrap().remove(&pid)
+                                    if let Some(pid) = astersql_expression::pg_backend_pid(id) {
+                                        let mut registry = connection_owner.active.lock().unwrap();
+                                        if registry
+                                            .get(&(pid as u32))
+                                            .is_some_and(|entry| entry.connection_id == id)
                                         {
-                                            let _ = active.context.close();
+                                            if let Some(active) = registry.remove(&(pid as u32)) {
+                                                let _ = active.context.close();
+                                            }
                                         }
                                     }
                                     let _ = socket.shutdown(Shutdown::Both);
@@ -252,8 +257,9 @@ impl PgService {
                 return Ok(());
             }
         }
-        let pid =
-            u32::try_from(id).map_err(|_| invalid("connection id exceeds PostgreSQL width"))?;
+        let pid = astersql_expression::pg_backend_pid(id)
+            .ok_or_else(|| invalid("missing PostgreSQL connection identity"))?
+            as u32;
         // Open without a database, then select it only after authentication.
         let context = match driver.open_ctx_with_dialect(
             id,
@@ -341,16 +347,28 @@ impl PgService {
                 .secure_random
                 .fill(&mut key)
                 .map_err(|_| invalid("secure random unavailable"))?;
-            self.active.lock().unwrap().insert(
-                pid,
-                Active {
-                    protocol_version: startup.protocol_version,
-                    key: key.clone(),
-                    context: context.clone(),
-                    executing: false,
-                    catalog_cancel: Arc::new(CancellationToken::new()),
-                },
-            );
+            {
+                let mut registry = self.active.lock().unwrap();
+                if let std::collections::hash_map::Entry::Vacant(entry) = registry.entry(pid) {
+                    entry.insert(Active {
+                        connection_id: id,
+                        protocol_version: startup.protocol_version,
+                        key: key.clone(),
+                        context: context.clone(),
+                        executing: false,
+                        catalog_cancel: Arc::new(CancellationToken::new()),
+                    });
+                } else {
+                    let _ = context.close();
+                    write_error(
+                        socket,
+                        "FATAL",
+                        "53300",
+                        "PostgreSQL backend identity is in use",
+                    )?;
+                    return Ok(false);
+                }
+            }
             write_message(socket, b'R', &0u32.to_be_bytes())?;
             // PG protocol compatibility baseline; retain the product identity.
             for (name, value) in [
@@ -745,7 +763,16 @@ impl PgService {
                 }
             }
         })();
-        self.active.lock().unwrap().remove(&pid);
+        {
+            // A rejected wrapped identity must not unregister its live owner.
+            let mut registry = self.active.lock().unwrap();
+            if registry
+                .get(&pid)
+                .is_some_and(|entry| entry.connection_id == id)
+            {
+                registry.remove(&pid);
+            }
+        }
         let _ = context.close();
         result.map(|_| ())
     }

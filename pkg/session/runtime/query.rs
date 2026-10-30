@@ -1009,6 +1009,30 @@ pub(super) fn pg_returning_expression_type(
     })
 }
 
+// Keep connection-owned facts on the session-aware recursion path when nested
+// in an existing conditional expression. This only recognizes AST identity;
+// signature resolution and evaluation remain in the formal factory below.
+fn pg_backend_identity_in_expression(expression: &ast::ExprNode) -> bool {
+    struct Calls(bool);
+    impl ast::ExprNodeVisitor for Calls {
+        fn Enter(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            if let ast::ExprKind::Function { FnName, Schema, .. } = &node.Kind
+                && FnName.L == "pg_backend_pid"
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+            {
+                self.0 = true;
+            }
+            (node.clone(), self.0)
+        }
+        fn Leave(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            (node.clone(), true)
+        }
+    }
+    let mut calls = Calls(false);
+    let _ = expression.Accept(&mut calls);
+    calls.0
+}
+
 impl ConcreteSession {
     /// 将 SELECT 条件值转换成 Go executor 的 WHERE 真值语义。
     pub(super) fn insert_select_predicate(
@@ -1301,13 +1325,14 @@ impl ConcreteSession {
             && let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind
             && FnName.L == "coalesce"
             && Args.iter().any(|arg| {
-                matches!(
-                    self.pg_case_input_type(arg, &[]).GetType(),
-                    astersql_parser_mysql::r#type::TypePgInt4Range
-                        | astersql_parser_mysql::r#type::TypePgNumRange
-                        | astersql_parser_mysql::r#type::TypePgName
-                        | astersql_parser_mysql::r#type::TypePgRegtype
-                )
+                pg_backend_identity_in_expression(arg)
+                    || matches!(
+                        self.pg_case_input_type(arg, &[]).GetType(),
+                        astersql_parser_mysql::r#type::TypePgInt4Range
+                            | astersql_parser_mysql::r#type::TypePgNumRange
+                            | astersql_parser_mysql::r#type::TypePgName
+                            | astersql_parser_mysql::r#type::TypePgRegtype
+                    )
             })
         {
             for arg in Args {
@@ -1457,6 +1482,7 @@ impl ConcreteSession {
                     | "current_database"
                     | "current_schema"
                     | "pg_typeof"
+                    | "pg_backend_pid"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && (!matches!(FnName.L.as_str(), "lower" | "upper")
@@ -1496,6 +1522,9 @@ impl ConcreteSession {
                     astersql_expression_exprstatic::NewEvalContext(vec![
                         astersql_expression_exprstatic::WithSQLDialect(self.sql_dialect()),
                         astersql_expression_exprstatic::WithCurrentDB(self.current_database()),
+                        astersql_expression_exprstatic::WithPgBackendPid(
+                            astersql_expression::pg_backend_pid(self.connection_id()),
+                        ),
                         astersql_expression_exprstatic::WithPgCurrentSchema(
                             if FnName.L == "current_schema" {
                                 self.pg_effective_path()?.into_iter().next()
@@ -2884,6 +2913,7 @@ impl ConcreteSession {
                                 | "current_database"
                                 | "current_schema"
                                 | "pg_typeof"
+                                | "pg_backend_pid"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
@@ -3662,6 +3692,7 @@ impl ConcreteSession {
                             | "current_database"
                             | "current_schema"
                             | "pg_typeof"
+                            | "pg_backend_pid"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4937,6 +4968,7 @@ impl ConcreteSession {
                         | "current_database"
                         | "current_schema"
                         | "pg_typeof"
+                        | "pg_backend_pid"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {

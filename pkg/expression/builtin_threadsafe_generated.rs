@@ -58,7 +58,8 @@ pub fn GeneratedThreadSafetyPolicyForSignature(
     }
     if matches!(
         signature,
-        "builtinPgCurrentDatabaseSig"
+        "builtinPgBackendPidSig"
+            | "builtinPgCurrentDatabaseSig"
             | "builtinPgCurrentSchemaSig"
             | "builtinPgTimestampTruncSig"
             | "builtinPgTimestampExtractSig"

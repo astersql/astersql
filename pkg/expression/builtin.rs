@@ -2616,6 +2616,10 @@ pub mod formal_registry {
                 arguments: inputs.to_vec(),
                 result: mysql::TypePgRegtype,
             }],
+            "pg_backend_pid" => vec![PgFunctionCandidate {
+                arguments: vec![],
+                result: mysql::TypeLong,
+            }],
             "current_database" | "current_schema" => vec![PgFunctionCandidate {
                 arguments: vec![],
                 result: mysql::TypePgName,
@@ -2871,6 +2875,7 @@ pub mod formal_registry {
                 | "isempty"
                 | "current_database"
                 | "current_schema"
+                | "pg_backend_pid"
         ) {
             if inputs.iter().any(|tp| {
                 tp.PostgreSQLArrayElement().is_some()
@@ -4392,6 +4397,7 @@ pub mod formal_registry {
         PgRangeLower,
         PgRangeUpper,
         PgRangeIsEmpty,
+        PgBackendPid,
         PgCurrentDatabase,
         PgCurrentSchema,
         PgTypeOf,
@@ -4749,6 +4755,11 @@ pub mod formal_registry {
         }
         fn evalInt(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<(i64, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgBackendPid => ctx
+                    .PgBackendPid()
+                    .filter(|pid| *pid > 0)
+                    .map(|pid| (i64::from(pid), false))
+                    .ok_or_else(|| errors::New("missing PostgreSQL backend identity")),
                 CoreBuiltinKind::PgRangeIsEmpty => {
                     let (text, null) = self.base.args[0].EvalString(ctx, row)?;
                     if null {
@@ -6755,6 +6766,21 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "pg_backend_pid" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                resolve_pg_signature(
+                    name,
+                    &args
+                        .iter()
+                        .map(|a| a.GetType(ctx.GetEvalCtx()).GetType())
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(errors::New)?;
+                (
+                    CoreBuiltinKind::PgBackendPid,
+                    *types::NewFieldType(mysql::TypeLong),
+                    "builtinPgBackendPidSig",
+                )
+            }
             "pg_typeof" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -8058,7 +8084,10 @@ pub mod formal_registry {
                 )));
             }
         };
-        let mut base = if matches!(kind, CoreBuiltinKind::Sleep | CoreBuiltinKind::Rand) {
+        let mut base = if matches!(
+            kind,
+            CoreBuiltinKind::Sleep | CoreBuiltinKind::Rand | CoreBuiltinKind::PgBackendPid
+        ) {
             RegistryBuiltinBase::new_never(args, return_type)
         } else {
             RegistryBuiltinBase::new_recursive(args, return_type)
@@ -8389,6 +8418,7 @@ pub mod formal_registry {
     core_factory!(pg_current_database_factory, "current_database");
     core_factory!(pg_current_schema_factory, "current_schema");
     core_factory!(pg_typeof_factory, "pg_typeof");
+    core_factory!(pg_backend_pid_factory, "pg_backend_pid");
     core_factory!(sleep_factory, "sleep");
     core_factory!(substr_factory, "substr");
     core_factory!(substring_factory, "substring");
@@ -8490,6 +8520,7 @@ pub mod formal_registry {
         ("current_database", pg_current_database_factory),
         ("current_schema", pg_current_schema_factory),
         ("pg_typeof", pg_typeof_factory),
+        ("pg_backend_pid", pg_backend_pid_factory),
         ("sleep", sleep_factory),
         ("substr", substr_factory),
         ("substring", substring_factory),
@@ -8882,6 +8913,7 @@ pub mod formal_registry {
         ("current_database", 0, 0),
         ("current_schema", 0, 0),
         ("pg_typeof", 1, 1),
+        ("pg_backend_pid", 0, 0),
         ("from_days", 1, 1),
         ("from_unixtime", 1, 2),
         ("get_format", 2, 2),

@@ -743,3 +743,10 @@ fn format_scaled(value: f64, divisor: f64, unit: &str) -> String {
         format!("{scaled:.2} {unit}")
     }
 }
+
+/// Map the full native connection identity into PostgreSQL's positive int4
+/// namespace. The server rejects live collisions before emitting BackendKeyData;
+/// MySQL continues to expose the original u64 identity.
+pub fn pg_backend_pid(connection_id: u64) -> Option<i32> {
+    (connection_id != 0).then(|| ((connection_id - 1) % i32::MAX as u64 + 1) as i32)
+}

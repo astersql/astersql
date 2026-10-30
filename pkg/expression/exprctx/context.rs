@@ -87,6 +87,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     fn PgCurrentSchema(&self) -> Option<String> {
         None
     }
+    /// Positive BackendKeyData identity supplied by the connection owner.
+    fn PgBackendPid(&self) -> Option<i32> {
+        None
+    }
     fn GetMaxAllowedPacket(&self) -> u64;
     fn GetTiDBRedactLog(&self) -> String;
     fn GetDefaultWeekFormatMode(&self) -> String;
@@ -414,6 +418,9 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
 
     fn PgCurrentSchema(&self) -> Option<String> {
         self.inner.PgCurrentSchema()
+    }
+    fn PgBackendPid(&self) -> Option<i32> {
+        self.inner.PgBackendPid()
     }
     fn GetMaxAllowedPacket(&self) -> u64 {
         self.inner.GetMaxAllowedPacket()

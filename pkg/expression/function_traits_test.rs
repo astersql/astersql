@@ -30,6 +30,7 @@ use crate::function_traits_kernel::{
 #[test]
 fn optimizer_function_trait_queries_cover_every_go_classification_branch() {
     assert!(is_uncacheable("database"));
+    assert!(is_uncacheable("pg_backend_pid"));
     assert!(is_uncacheable("aes_decrypt"));
     assert!(!is_uncacheable("abs"));
 
@@ -67,7 +68,14 @@ fn optimizer_function_trait_queries_cover_every_go_classification_branch() {
 /// 有状态/非确定性内置应不可折叠；纯函数应可折叠。
 #[test]
 fn unfoldable_functions_cover_stateful_and_nondeterministic_builtins() {
-    for name in ["sysdate", "rand", "uuid", "sleep", "getvar"] {
+    for name in [
+        "sysdate",
+        "rand",
+        "uuid",
+        "sleep",
+        "getvar",
+        "pg_backend_pid",
+    ] {
         assert!(is_unfoldable(name), "{name} must not be constant-folded");
     }
     for name in ["abs", "concat", "json_extract"] {
@@ -86,6 +94,7 @@ fn generated_columns_reject_explicit_stateful_function_set() {
         "uuid",
         "current_timestamp",
         "connection_id",
+        "pg_backend_pid",
         "get_lock",
         "sleep",
         "setvar",

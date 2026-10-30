@@ -34,10 +34,11 @@ fn logical_operator_set_matches_go_util_table() {
 
 #[test]
 fn function_trait_sets_match_go_exactly() {
-    // Preserve the 18 Go entries plus two PostgreSQL connection-local functions.
-    assert_eq!(unFoldableFunctions.len(), 20);
+    // Preserve the 18 Go entries plus three PostgreSQL connection-local functions.
+    assert_eq!(unFoldableFunctions.len(), 21);
     assert!(unFoldableFunctions.contains_key("current_database"));
     assert!(unFoldableFunctions.contains_key("current_schema"));
+    assert!(unFoldableFunctions.contains_key("pg_backend_pid"));
     assert_eq!(
         DisableFoldFunctions.keys().copied().collect::<Vec<_>>(),
         [ast::Benchmark]
