@@ -14,7 +14,13 @@ use crate::physical_plan_runtime_test::{MemoryRetriever, context, encode_row};
 use crate::typed_kv_scan::KeyRange;
 
 fn hash_agg_plan(grouped: bool) -> PhysicalHashAgg {
-    let context = context();
+    hash_agg_plan_context(grouped, context())
+}
+
+fn hash_agg_plan_context(
+    grouped: bool,
+    context: astersql_planner_core_base::ContextRef,
+) -> PhysicalHashAgg {
     let column = astersql_expression::Column::new(
         *astersql_expression::types::NewFieldType(TypeLonglong),
         1,
@@ -855,5 +861,468 @@ fn pg09_09_execution() {
             assert_eq!(out.NumRows(), 0);
             e.Close().unwrap();
         }
+    }
+}
+
+#[test]
+fn pg09_10_execution_rejects_lossy_partial_states() {
+    use astersql_expression_aggregation::AggFunctionMode::*;
+    for mode in [Partial1Mode, Partial2Mode, FinalMode] {
+        for name in ["pg_avg_float4", "pg_avg_float8", "pg_avg_numeric", "avg"] {
+            let mut p = hash_agg_plan_context(
+                false,
+                crate::physical_plan_runtime_test::context_with_dialect(
+                    astersql_parser_ast::SqlDialect::PostgreSQL,
+                ),
+            );
+            p.BasePhysicalAgg.AggFuncs[0].Name = name.into();
+            p.BasePhysicalAgg.AggFuncs[0].Mode = mode;
+            assert!(
+                crate::builder::BuildTypedPhysicalPlan(
+                    &p,
+                    Arc::new(MemoryRetriever::default()),
+                    ranges(),
+                    1,
+                    1
+                )
+                .is_err(),
+                "{name}: {mode:?} must not consume a scalar as float AVG state"
+            );
+        }
+        for ordered in [false, true] {
+            let mut p = hash_agg_plan_context(
+                false,
+                crate::physical_plan_runtime_test::context_with_dialect(
+                    astersql_parser_ast::SqlDialect::PostgreSQL,
+                ),
+            );
+            let f = &mut p.BasePhysicalAgg.AggFuncs[0];
+            f.Mode = mode;
+            if ordered {
+                f.OrderByItems = vec![astersql_planner_util::ByItems {
+                    Expr: f.Args[0].clone(),
+                    Desc: false,
+                }];
+            } else {
+                f.HasDistinct = true;
+            }
+            assert!(
+                crate::builder::BuildTypedPhysicalPlan(
+                    &p,
+                    Arc::new(MemoryRetriever::default()),
+                    ranges(),
+                    1,
+                    1
+                )
+                .is_err(),
+                "local deduplication/order must not masquerade as global state"
+            );
+        }
+    }
+}
+
+// Real typed KV scan, one row per page. No aggregate values are mocked.
+fn pg10_run(
+    functions: Vec<astersql_expression_aggregation::AggFuncDesc>,
+    fields: Vec<astersql_expression::types::FieldType>,
+    rows: Vec<Vec<astersql_types::datum::Datum>>,
+) -> Vec<astersql_types::datum::Datum> {
+    let source = Arc::new(MemoryRetriever::default());
+    for (index, values) in rows.into_iter().enumerate() {
+        let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+            98,
+            Box::new(astersql_tablecodec::kv::IntHandle(index as i64 + 1)),
+        );
+        let encoded = astersql_tablecodec::EncodeRow(
+            Some(astersql_tablecodec::time::UTC),
+            values,
+            (1..=fields.len() as i64).collect(),
+            Vec::new(),
+            None,
+            None,
+            astersql_tablecodec::rowcodec::Encoder::new(true),
+        )
+        .unwrap();
+        source.Put(astersql_kv::Key(key.0), encoded);
+    }
+    let mut p = hash_agg_plan(false);
+    let mut scan = PhysicalTableScan::New(p.s_ctx().clone());
+    scan.Table = Some(astersql_meta_model::TableInfo {
+        ID: 98,
+        Name: NewCIStr("t"),
+        ..Default::default()
+    });
+    scan.Columns = fields
+        .into_iter()
+        .enumerate()
+        .map(|(index, field)| ColumnInfo {
+            ID: index as i64 + 1,
+            Name: NewCIStr(&format!("c{index}")),
+            FieldType: field,
+            ..Default::default()
+        })
+        .collect();
+    let expected_types = functions
+        .iter()
+        .map(|f| f.RetTp.clone().unwrap())
+        .collect::<Vec<_>>();
+    p.BasePhysicalAgg.AggFuncs = functions;
+    p.set_children(vec![Box::new(scan)]);
+    let mut e = crate::builder::BuildTypedPhysicalPlan(&p, source, ranges(), 1, 1).unwrap();
+    assert_eq!(
+        e.Schema()
+            .iter()
+            .map(|c| c.field_type.clone())
+            .collect::<Vec<_>>(),
+        expected_types
+    );
+    let mut result = vec![];
+    for _ in 0..2 {
+        e.Open().unwrap();
+        let mut out = e.NewChunk();
+        e.Next(&mut out).unwrap();
+        assert_eq!(out.NumRows(), 1);
+        result = out.GetRow(0).GetDatumRow(&expected_types);
+        e.Next(&mut out).unwrap();
+        assert_eq!(out.NumRows(), 0);
+        e.Close().unwrap();
+    }
+    result
+}
+
+#[test]
+fn pg09_10_execution_numeric_state_and_identity() {
+    use astersql_expression_aggregation::{NewAggFuncDesc, Partial2Mode};
+    use astersql_types::datum::{NewIntDatum, NewStringDatum};
+    let ctx = context();
+    let mut numeric =
+        *astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString);
+    let mut count = NewAggFuncDesc(
+        ctx.GetExprCtx(),
+        "count",
+        vec![Box::new(astersql_expression::Column::new(
+            numeric.clone(),
+            1,
+            1,
+            0,
+        ))],
+        false,
+    )
+    .unwrap();
+    let mut sum = count.Clone();
+    sum.Name = "pg_sum_numeric".into();
+    sum.RetTp = Some(numeric.clone());
+    let mut avg = sum.Clone();
+    avg.Name = "pg_avg_numeric".into();
+    let mut plan = hash_agg_plan(false);
+    plan.BasePhysicalAgg.AggFuncs = vec![count.Clone(), sum.Clone(), avg.Clone()];
+    let (partial, final_info) =
+        astersql_planner_core_operator_physicalop::BuildFinalModeAggregation(
+            &plan.BasePhysicalAgg,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        partial.AggFuncs.len(),
+        4,
+        "AVG must carry count and sum, never a finalized mean"
+    );
+    assert_eq!(final_info.AggFuncs[2].Args.len(), 2);
+    assert_eq!(final_info.AggFuncs[2].RetTp, avg.RetTp);
+    let partial_fields = partial
+        .Schema
+        .Columns
+        .iter()
+        .map(|c| c.RetType.clone().unwrap())
+        .collect::<Vec<_>>();
+    for (shards, expected) in [
+        (
+            vec![
+                vec![Some("1")],
+                vec![Some("2"), Some("3"), Some("4")],
+                vec![],
+            ],
+            [Some("4"), Some("10"), Some("2.5000000000000000")],
+        ),
+        (vec![vec![], vec![]], [Some("0"), None, None]),
+        (vec![vec![None], vec![None]], [Some("0"), None, None]),
+        (
+            vec![
+                vec![Some("9223372036854775807")],
+                vec![Some("9223372036854775807")],
+            ],
+            [
+                Some("2"),
+                Some("18446744073709551614"),
+                Some("9223372036854775807"),
+            ],
+        ),
+    ] {
+        let rows = shards
+            .iter()
+            .flat_map(|s| s.iter())
+            .map(|v| vec![v.map_or_else(Default::default, |v| NewStringDatum(v.to_owned()))])
+            .collect::<Vec<_>>();
+        let complete = pg10_run(
+            plan.BasePhysicalAgg.AggFuncs.clone(),
+            vec![numeric.clone()],
+            rows,
+        );
+        assert_eq!(
+            complete
+                .iter()
+                .map(|v| if v.IsNull() {
+                    None
+                } else {
+                    Some(v.ToString().unwrap())
+                })
+                .collect::<Vec<_>>(),
+            expected.map(|v| v.map(str::to_owned))
+        );
+        let partial_rows = shards
+            .into_iter()
+            .map(|shard| {
+                pg10_run(
+                    partial.AggFuncs.clone(),
+                    vec![numeric.clone()],
+                    shard
+                        .into_iter()
+                        .map(|v| {
+                            vec![v.map_or_else(Default::default, |v| NewStringDatum(v.to_owned()))]
+                        })
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let final_values = pg10_run(
+            final_info.AggFuncs.clone(),
+            partial_fields.clone(),
+            partial_rows.clone(),
+        );
+        let repr = |values: &[astersql_types::datum::Datum]| {
+            values
+                .iter()
+                .map(|v| {
+                    (
+                        v.Kind(),
+                        if v.IsNull() {
+                            None
+                        } else {
+                            Some(v.ToString().unwrap())
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(repr(&final_values), repr(&complete));
+        // Exercise the real planner again for Final -> Partial2 -> Final.
+        let mut merge_plan = hash_agg_plan(false);
+        merge_plan.BasePhysicalAgg.AggFuncs = vec![final_info.AggFuncs[2].Clone()];
+        let (intermediate, final_again) =
+            astersql_planner_core_operator_physicalop::BuildFinalModeAggregation(
+                &merge_plan.BasePhysicalAgg,
+                false,
+            )
+            .unwrap();
+        assert!(intermediate.AggFuncs.iter().all(|f| f.Mode == Partial2Mode));
+        let state = pg10_run(intermediate.AggFuncs, partial_fields.clone(), partial_rows);
+        let fields = intermediate
+            .Schema
+            .Columns
+            .iter()
+            .map(|c| c.RetType.clone().unwrap())
+            .collect();
+        assert_eq!(
+            repr(&pg10_run(final_again.AggFuncs, fields, vec![state])),
+            repr(&complete[2..])
+        );
+    }
+    // Count is checked independently of nullable sum/AVG state.
+    assert_eq!(
+        pg10_run(
+            vec![count],
+            vec![numeric],
+            vec![vec![NewStringDatum("1".into())]]
+        )[0]
+        .GetInt64(),
+        1
+    );
+}
+
+#[test]
+fn pg09_10_execution_global_distinct_and_filter() {
+    use astersql_types::datum::NewStringDatum;
+    let ctx = crate::physical_plan_runtime_test::context_with_dialect(
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let numeric =
+        *astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString);
+    let mut count = astersql_expression_aggregation::NewAggFuncDesc(
+        ctx.GetExprCtx(),
+        "count",
+        vec![Box::new(astersql_expression::Column::new(
+            numeric.clone(),
+            1,
+            1,
+            0,
+        ))],
+        true,
+    )
+    .unwrap();
+    let mut sum = count.Clone();
+    sum.Name = "pg_sum_numeric".into();
+    sum.RetTp = Some(numeric.clone());
+    let mut avg = sum.Clone();
+    avg.Name = "pg_avg_numeric".into();
+    // Shards [1], [1,2], [] feed raw rows to a single complete DISTINCT.
+    let rows = ["1", "1", "2"]
+        .into_iter()
+        .map(|v| vec![NewStringDatum(v.into())])
+        .collect();
+    let result = pg10_run(
+        vec![count.Clone(), sum.Clone(), avg.Clone()],
+        vec![numeric.clone()],
+        rows,
+    );
+    assert_eq!(result[0].GetInt64(), 2);
+    assert_eq!(result[1].GetString(), "3");
+    assert_eq!(result[2].GetString(), "1.5000000000000000");
+    let mut p = hash_agg_plan_context(false, ctx);
+    for ordered in [false, true] {
+        let mut f = avg.Clone();
+        if ordered {
+            f.HasDistinct = false;
+            f.OrderByItems = vec![astersql_planner_util::ByItems {
+                Expr: f.Args[0].clone(),
+                Desc: true,
+            }];
+        }
+        assert!(!f.CanSplitForPostgreSQL());
+        p.BasePhysicalAgg.AggFuncs = vec![f.Clone()];
+        assert!(
+            astersql_planner_core_operator_physicalop::BuildFinalModeAggregation(
+                &p.BasePhysicalAgg,
+                false
+            )
+            .is_err()
+        );
+        assert!(f.Equal(p.s_ctx().GetExprCtx().GetEvalCtx(), &f.Clone()));
+    }
+    avg.HasDistinct = false;
+    avg.Filter = Some(Box::new(astersql_expression::NewInt64Const(0)));
+    p.BasePhysicalAgg.AggFuncs = vec![avg.Clone()];
+    let (partial, final_info) =
+        astersql_planner_core_operator_physicalop::BuildFinalModeAggregation(
+            &p.BasePhysicalAgg,
+            false,
+        )
+        .unwrap();
+    assert!(partial.AggFuncs.iter().all(|f| f.Filter.is_some()));
+    assert!(final_info.AggFuncs.iter().all(|f| f.Filter.is_none()));
+    let state = pg10_run(
+        partial.AggFuncs,
+        vec![numeric.clone()],
+        vec![vec![NewStringDatum("999".into())]],
+    );
+    assert_eq!(state[0].GetInt64(), 0);
+    assert!(state[1].IsNull());
+    let fields = partial
+        .Schema
+        .Columns
+        .iter()
+        .map(|c| c.RetType.clone().unwrap())
+        .collect();
+    assert!(pg10_run(final_info.AggFuncs, fields, vec![state])[0].IsNull());
+    assert!(pg10_run(vec![avg], vec![numeric], vec![])[0].IsNull());
+    // The legacy MySQL distinct descriptor split remains available.
+    count.HasDistinct = true;
+    let mut mysql = hash_agg_plan(false);
+    mysql.BasePhysicalAgg.AggFuncs = vec![count];
+    assert!(
+        astersql_planner_core_operator_physicalop::BuildFinalModeAggregation(
+            &mysql.BasePhysicalAgg,
+            false
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn pg09_10_execution_count_and_smallint_sum_states() {
+    use astersql_types::datum::NewIntDatum;
+    let field = *astersql_expression::types::NewFieldType(TypeLonglong);
+    let mut p = hash_agg_plan_context(
+        false,
+        crate::physical_plan_runtime_test::context_with_dialect(
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        ),
+    );
+    p.BasePhysicalAgg.AggFuncs = ["count", "sum_int"]
+        .into_iter()
+        .map(|name| {
+            astersql_expression_aggregation::NewAggFuncDesc(
+                p.s_ctx().GetExprCtx(),
+                name,
+                vec![Box::new(astersql_expression::Column::new(
+                    field.clone(),
+                    1,
+                    1,
+                    0,
+                ))],
+                false,
+            )
+            .unwrap()
+        })
+        .collect();
+    let (partial, final_info) =
+        astersql_planner_core_operator_physicalop::BuildFinalModeAggregation(
+            &p.BasePhysicalAgg,
+            false,
+        )
+        .unwrap();
+    assert!(
+        final_info
+            .AggFuncs
+            .iter()
+            .all(|f| f.RetTp.as_ref().unwrap().PostgreSQLTypeOid() == Some(20))
+    );
+    let state_fields = partial
+        .Schema
+        .Columns
+        .iter()
+        .map(|c| c.RetType.clone().unwrap())
+        .collect::<Vec<_>>();
+    for (shards, expected_count, expected_sum) in [
+        (
+            vec![vec![Some(1)], vec![Some(2), Some(3), Some(4)], vec![]],
+            4,
+            Some(10),
+        ),
+        (
+            vec![vec![Some(i32::MAX as i64)], vec![Some(i32::MAX as i64)]],
+            2,
+            Some(4294967294),
+        ),
+        (vec![vec![], vec![None]], 0, None),
+    ] {
+        let states = shards
+            .into_iter()
+            .map(|shard| {
+                pg10_run(
+                    partial.AggFuncs.clone(),
+                    vec![field.clone()],
+                    shard
+                        .into_iter()
+                        .map(|v| vec![v.map_or_else(Default::default, NewIntDatum)])
+                        .collect(),
+                )
+            })
+            .collect();
+        let actual = pg10_run(final_info.AggFuncs.clone(), state_fields.clone(), states);
+        assert_eq!(actual[0].GetInt64(), expected_count);
+        assert_eq!(
+            (!actual[1].IsNull()).then(|| actual[1].GetInt64()),
+            expected_sum
+        );
     }
 }

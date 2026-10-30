@@ -957,6 +957,7 @@ fn aggregate(ctx: base::ContextRef, plan_type: &str, unique_id: i64) -> BasePhys
         },
         Mode: aggregation::CompleteMode,
         HasDistinct: true,
+        Filter: None,
         OrderByItems: vec![planner_util::ByItems {
             Expr: Box::new(column(unique_id)),
             Desc: true,

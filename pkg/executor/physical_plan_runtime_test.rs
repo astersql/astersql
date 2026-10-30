@@ -79,10 +79,22 @@ impl PlanContext for TestPlanContext {
 
 /// 构造默认测试 PlanContext。
 pub(crate) fn context() -> astersql_planner_core_base::ContextRef {
+    context_with_dialect(astersql_parser_ast::SqlDialect::MySQL)
+}
+
+pub(crate) fn context_with_dialect(
+    dialect: astersql_parser_ast::SqlDialect,
+) -> astersql_planner_core_base::ContextRef {
     Arc::new(TestPlanContext {
         plan_id: AtomicI32::new(0),
         vars: Default::default(),
-        expr: astersql_expression_exprstatic::NewExprContext(Vec::new()),
+        expr: astersql_expression_exprstatic::NewExprContext(vec![
+            astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+                astersql_expression_exprstatic::NewEvalContext(vec![
+                    astersql_expression_exprstatic::WithSQLDialect(dialect),
+                ]),
+            )),
+        ]),
         usage: Default::default(),
     })
 }

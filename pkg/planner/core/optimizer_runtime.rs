@@ -2812,6 +2812,8 @@ fn push_aggregation_across_union(
                 vec![argument],
                 false,
             )?;
+            count.Filter = function.Filter.clone();
+            sum.Filter = function.Filter.clone();
             count.Mode = aggregation::Partial1Mode;
             sum.Mode = aggregation::Partial1Mode;
             partial_functions.push(count);
@@ -2877,6 +2879,7 @@ fn push_aggregation_across_union(
                 .into_iter()
                 .map(&substitute)
                 .collect();
+            function.Filter = function.Filter.take().map(&substitute);
         }
         let groups = partial_group_by
             .iter()

@@ -7116,6 +7116,27 @@ fn attach_canonical_aggregation(
     {
         return Ok(None);
     }
+    // Decline only the two-stage candidate; the root Complete candidate remains.
+    let aggregate = physical
+        .as_any()
+        .downcast_ref::<crate::PhysicalHashAgg>()
+        .map(|hash| &hash.BasePhysicalAgg)
+        .or_else(|| {
+            physical
+                .as_any()
+                .downcast_ref::<crate::PhysicalStreamAgg>()
+                .map(|stream| &stream.BasePhysicalAgg)
+        });
+    if aggregate.is_some_and(|agg| {
+        agg.AggFuncs.iter().any(|function| {
+            function.UsesPostgreSQLSemantics(physical.s_ctx().GetExprCtx().GetEvalCtx())
+                && (!function.CanSplitForPostgreSQL()
+                    || function.Filter.is_some()
+                    || function.Name.starts_with("pg_"))
+        })
+    }) {
+        return Ok(None);
+    }
     let Some(child) = child_tasks.first() else {
         return Ok(None);
     };

@@ -78,6 +78,30 @@ impl TypedHashAgg {
         context: ContextRef,
     ) -> Result<Self, String> {
         for function in &functions {
+            if function.Mode != AggFunctionMode::CompleteMode
+                && function.UsesPostgreSQLSemantics(context.GetExprCtx().GetEvalCtx())
+                && (!function.CanSplitForPostgreSQL()
+                    || (matches!(
+                        function.Name.as_str(),
+                        "pg_avg_numeric" | astersql_parser_ast::AggFuncAvg
+                    ) && function.Mode != AggFunctionMode::FinalMode)
+                    || (function.Filter.is_some()
+                        && matches!(
+                            function.Mode,
+                            AggFunctionMode::FinalMode | AggFunctionMode::Partial2Mode
+                        )))
+            {
+                return Err(
+                    "PostgreSQL aggregate requires complete mode or a canonical merge state"
+                        .to_owned(),
+                );
+            }
+            if function.Name == "pg_avg_numeric"
+                && function.Mode == AggFunctionMode::FinalMode
+                && function.Args.len() != 2
+            {
+                return Err("final numeric AVG requires count and sum arguments".to_owned());
+            }
             match function.Name.as_str() {
                 astersql_parser_ast::AggFuncCount => {
                     if function.Args.is_empty()
@@ -585,7 +609,16 @@ fn update_values(
         }
 
         AggregateValue::NumericAvg { sum, count } => {
-            let next = values[0]
+            // Canonical partial AVG is expanded into count and exact sum.
+            // Merge those states, never the per-shard finalized average.
+            let merging = function.Mode == AggFunctionMode::FinalMode;
+            let increment = if merging { values[0].GetInt64() } else { 1 };
+            if increment < 0 {
+                return Err(astersql_errors::New(
+                    "AVG partial count must be nonnegative",
+                ));
+            }
+            let next = values[usize::from(merging)]
                 .GetString()
                 .parse::<astersql_types::pg_numeric::PgNumeric>()
                 .map_err(astersql_errors::SharedError::new)?;
@@ -596,7 +629,7 @@ fn update_values(
                 None => next,
             });
             *count = count
-                .checked_add(1)
+                .checked_add(increment)
                 .ok_or_else(|| astersql_errors::New("AVG bigint count out of range"))?;
         }
         AggregateValue::NumericSum(sum) => {

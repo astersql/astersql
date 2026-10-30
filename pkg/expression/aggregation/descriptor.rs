@@ -217,6 +217,23 @@ impl AggFuncDesc {
         }
     }
 
+    /// PostgreSQL states without a global merge representation stay in one stage.
+    pub fn CanSplitForPostgreSQL(&self) -> bool {
+        !self.HasDistinct
+            && self.OrderByItems.is_empty()
+            && !matches!(self.Name.as_str(), "pg_avg_float4" | "pg_avg_float8")
+    }
+
+    /// Relational adapters can carry PG identities with a static build context.
+    pub fn UsesPostgreSQLSemantics(&self, eval: &dyn expression::EvalContext) -> bool {
+        eval.SQLDialect() == ast::SqlDialect::PostgreSQL
+            || self.Name.starts_with("pg_")
+            || self
+                .RetTp
+                .as_ref()
+                .is_some_and(|tp| tp.PostgreSQLTextOid().is_some())
+    }
+
     /// 将聚合拆成局部与最终两段；`ordinal` 为局部输出列在 schema 中的下标。
     pub fn Split(&self, ordinal: &[isize]) -> (AggFuncDesc, AggFuncDesc) {
         let mut partial = self.Clone();
@@ -244,7 +261,7 @@ impl AggFuncDesc {
         };
         // AVG Final 需要 (count, sum) 两列；其余多数聚合 Final 只读一列局部结果。
         match self.Name.as_str() {
-            ast::AggFuncAvg => {
+            ast::AggFuncAvg | "pg_avg_numeric" => {
                 final_desc.Args.push(column(
                     ordinal[0],
                     *types::NewFieldType(mysql::TypeLonglong),

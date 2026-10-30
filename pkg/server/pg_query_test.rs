@@ -21062,3 +21062,210 @@ fn pg09_09_sql() {
         row(&[Some("1")])
     );
 }
+
+#[test]
+fn pg09_10_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    fn ready10(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity10(ms: &[(u8, Vec<u8>)], fmt: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[..2], &3i16.to_be_bytes());
+        let mut offset = 2;
+        for (name, oid, len) in [("c", 20u32, 8i16), ("s", 20, 8), ("a", 1700, -1)] {
+            let end = offset + d[offset..].iter().position(|b| *b == 0).unwrap();
+            assert_eq!(&d[offset..end], name.as_bytes());
+            offset = end + 1;
+            assert_eq!(&d[offset + 6..offset + 10], &oid.to_be_bytes());
+            assert_eq!(&d[offset + 10..offset + 12], &len.to_be_bytes());
+            assert_eq!(&d[offset + 12..offset + 16], &(-1i32).to_be_bytes());
+            assert_eq!(&d[offset + 16..offset + 18], &fmt.to_be_bytes());
+            offset += 18;
+        }
+        assert_eq!(offset, d.len());
+    }
+    for (input, distinct, expected) in [
+        (
+            "SELECT 1::int4 AS x UNION ALL SELECT 2::int4 UNION ALL SELECT 3::int4 UNION ALL SELECT 4::int4 UNION ALL SELECT 0::int4 WHERE false",
+            "",
+            [Some("4"), Some("10"), Some("2.5000000000000000")],
+        ),
+        (
+            "SELECT 1::int4 AS x UNION ALL SELECT 1::int4 UNION ALL SELECT 2::int4 UNION ALL SELECT 0::int4 WHERE false",
+            "DISTINCT ",
+            [Some("2"), Some("3"), Some("1.5000000000000000")],
+        ),
+        (
+            "SELECT NULL::int4 AS x UNION ALL SELECT NULL::int4",
+            "",
+            [Some("0"), None, None],
+        ),
+        (
+            "SELECT 1::int4 AS x WHERE false",
+            "DISTINCT ",
+            [Some("0"), None, None],
+        ),
+    ] {
+        let sql = format!(
+            "SELECT count({distinct}x) AS c, sum({distinct}x) AS s, avg({distinct}x) AS a FROM ({input}) t"
+        );
+        let ms = query(&mut s, &sql);
+        identity10(&ms, 0);
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&expected)],
+            "{sql}"
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    let empty = query(
+        &mut s,
+        "SELECT count(x) AS c, sum(x) AS s, avg(x) AS a FROM (SELECT 1::int4 AS x WHERE false) t GROUP BY x",
+    );
+    identity10(&empty, 0);
+    assert_eq!(empty.iter().filter(|m| m.0 == b'D').count(), 0);
+    send(&mut s,b'P',b"merge10\0SELECT count(DISTINCT x) FILTER (WHERE $1::bool) AS c, sum(DISTINCT x) FILTER (WHERE $1::bool) AS s, avg(DISTINCT x) FILTER (WHERE $1::bool) AS a FROM (SELECT 1::int4 AS x UNION ALL SELECT 1::int4 UNION ALL SELECT 2::int4 UNION ALL SELECT NULL::int4) t\0\0\0");
+    send(&mut s, b'D', b"Smerge10\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready10(&mut s);
+    identity10(&ms, 0);
+    assert_eq!(ms.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
+    for input_fmt in [0i16, 1] {
+        for output_fmt in [0i16, 1] {
+            for keep in [Some(true), Some(false), None] {
+                let mut bind = b"\0merge10\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                if let Some(keep) = keep {
+                    let value = if input_fmt == 0 {
+                        if keep {
+                            b"true".to_vec()
+                        } else {
+                            b"false".to_vec()
+                        }
+                    } else {
+                        vec![u8::from(keep)]
+                    };
+                    bind.extend((value.len() as i32).to_be_bytes());
+                    bind.extend(value);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(output_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready10(&mut s);
+                identity10(&ms, output_fmt);
+                assert_eq!(ms.iter().map(|m| m.0).collect::<Vec<_>>(), b"2TDCZ");
+                let expected = if output_fmt == 0 {
+                    row(&if keep == Some(true) {
+                        [Some("2"), Some("3"), Some("1.5000000000000000")]
+                    } else {
+                        [Some("0"), None, None]
+                    })
+                } else {
+                    let mut expected = 3i16.to_be_bytes().to_vec();
+                    let values = if keep == Some(true) {
+                        vec![
+                            Some(2i64.to_be_bytes().to_vec()),
+                            Some(3i64.to_be_bytes().to_vec()),
+                            Some(
+                                "1.5000000000000000"
+                                    .parse::<astersql_types::pg_numeric::PgNumeric>()
+                                    .unwrap()
+                                    .to_binary(),
+                            ),
+                        ]
+                    } else {
+                        vec![Some(0i64.to_be_bytes().to_vec()), None, None]
+                    };
+                    for value in values {
+                        if let Some(v) = value {
+                            expected.extend((v.len() as i32).to_be_bytes());
+                            expected.extend(v);
+                        } else {
+                            expected.extend((-1i32).to_be_bytes());
+                        }
+                    }
+                    expected
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+    let bad = query(
+        &mut s,
+        "SELECT sum(DISTINCT x ORDER BY x + 1) AS s FROM (SELECT 1::int4 AS x) t",
+    );
+    assert!(
+        bad.iter()
+            .find(|m| m.0 == b'E')
+            .unwrap()
+            .1
+            .windows(7)
+            .any(|w| w == b"C42P10\0")
+    );
+    assert_eq!(bad.last().unwrap(), &(b'Z', vec![b'I']));
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4 AS c")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+    send(&mut s, b'X', &[]);
+    drop(s);
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+}

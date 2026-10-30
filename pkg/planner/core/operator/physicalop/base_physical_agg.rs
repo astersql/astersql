@@ -679,6 +679,14 @@ pub fn BuildFinalModeAggregation(
         }
     }
     let context = agg.PhysicalSchemaProducer.BasePhysicalPlan.s_ctx().clone();
+    if agg.AggFuncs.iter().any(|function| {
+        function.UsesPostgreSQLSemantics(context.GetExprCtx().GetEvalCtx())
+            && !function.CanSplitForPostgreSQL()
+    }) {
+        return Err(expression::errors::New(
+            "PostgreSQL aggregate requires complete mode; no merge state for DISTINCT, ORDER BY or floating AVG",
+        ));
+    }
     let mut partial_schema_columns = Vec::new();
     let mut partial_funcs = Vec::with_capacity(agg.AggFuncs.len());
     let mut final_funcs = Vec::with_capacity(agg.AggFuncs.len());
@@ -759,7 +767,11 @@ pub fn BuildFinalModeAggregation(
             function.Name.as_str(),
             parser_ast::AggFuncMaxCount | parser_ast::AggFuncMinCount
         );
-        let output_count = if function.Name == parser_ast::AggFuncAvg || count_extrema {
+        let output_count = if matches!(
+            function.Name.as_str(),
+            parser_ast::AggFuncAvg | "pg_avg_numeric"
+        ) || count_extrema
+        {
             2
         } else {
             1
@@ -817,7 +829,10 @@ pub fn BuildFinalModeAggregation(
         if is_mpp && function.Name == parser_ast::AggFuncCount && !function.HasDistinct {
             final_desc.Name = parser_ast::AggFuncSum.to_owned();
         }
-        if function.Name == parser_ast::AggFuncAvg {
+        if matches!(
+            function.Name.as_str(),
+            parser_ast::AggFuncAvg | "pg_avg_numeric"
+        ) {
             let mut count = function.Clone();
             count.Name = parser_ast::AggFuncCount.to_owned();
             count.Mode = partial.Mode;
@@ -825,8 +840,23 @@ pub fn BuildFinalModeAggregation(
                 expression::mysql::TypeLonglong,
             ));
             let mut sum = function.Clone();
-            sum.Name = parser_ast::AggFuncSum.to_owned();
+            sum.Name = if function.Name == "pg_avg_numeric" {
+                "pg_sum_numeric".to_owned()
+            } else {
+                parser_ast::AggFuncSum.to_owned()
+            };
             sum.Mode = partial.Mode;
+            if function.Name == "pg_avg_numeric"
+                && matches!(function.Mode, FinalMode | aggregation::Partial2Mode)
+            {
+                let [count_arg, sum_arg] = function.Args.as_slice() else {
+                    return Err(expression::errors::New(
+                        "numeric AVG merge requires count and sum",
+                    ));
+                };
+                count.Args = vec![count_arg.CloneExpr()];
+                sum.Args = vec![sum_arg.CloneExpr()];
+            }
             partial_funcs.push(count);
             partial_funcs.push(sum);
         } else {
@@ -906,7 +936,9 @@ pub fn CheckAggCanPushCop(
             .iter()
             .map(|item| item.Expr.CloneExpr())
             .collect::<Vec<_>>();
-        !expression::ContainVirtualColumn(&function.Args)
+        !(function.UsesPostgreSQLSemantics(ctx.GetExprCtx().GetEvalCtx())
+            && (!function.CanSplitForPostgreSQL() || function.Filter.is_some()))
+            && !expression::ContainVirtualColumn(&function.Args)
             && !expression::ContainCorrelatedColumn(&function.Args)
             && !expression::ContainVirtualColumn(&order_by)
             && !expression::ContainCorrelatedColumn(&order_by)
