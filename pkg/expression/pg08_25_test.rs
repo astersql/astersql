@@ -91,3 +91,55 @@ fn pg08_25_formal() {
     }
     println!("pg08_25_formal: {count} scenarios passed");
 }
+
+#[test]
+fn pg08_25_mysql_case_factory() {
+    let context = exprstatic::NewExprContext(vec![]);
+    let mut count = 0;
+    for (name, expected) in [("lower", "abc"), ("upper", "ABC")] {
+        for (binary, null, flagged) in [
+            (false, false, true),
+            (true, false, true),
+            (false, true, true),
+            (false, false, false),
+        ] {
+            let mut argument = if null {
+                crate::NewNull()
+            } else {
+                crate::NewStrConst("AbC")
+            };
+            let mut tp = *crate::types::NewFieldType(crate::mysql::TypeVarString);
+            tp.SetFlen(3);
+            tp.SetCharset(if binary { "binary" } else { "utf8mb4" }.into());
+            tp.SetCollate(if binary { "binary" } else { "utf8mb4_bin" }.into());
+            if flagged {
+                tp.AddFlag(crate::mysql::BinaryFlag);
+            }
+            argument.RetType = Some(tp);
+            let expression = crate::NewFunctionBase(
+                &context,
+                name,
+                *crate::types::NewFieldType(crate::mysql::TypeVarString),
+                vec![Box::new(argument)],
+            )
+            .expect("MySQL case conversion formal factory");
+            let tp = expression.GetType(context.GetEvalCtx());
+            assert_eq!(tp.GetFlen(), 3);
+            assert_eq!(tp.GetCharset(), if binary { "binary" } else { "utf8mb4" });
+            assert_eq!(
+                tp.GetCollate(),
+                if binary { "binary" } else { "utf8mb4_bin" }
+            );
+            assert_eq!(tp.GetFlag(), crate::mysql::BinaryFlag);
+            let (value, is_null) = expression
+                .EvalString(context.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap();
+            assert_eq!(is_null, null);
+            if !null {
+                assert_eq!(value, if binary { "AbC" } else { expected });
+            }
+            count += 1;
+        }
+    }
+    println!("pg08_25_mysql_case_factory: {count} cases passed");
+}

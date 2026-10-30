@@ -4464,6 +4464,7 @@ pub mod formal_registry {
         PgArrayAppend,
         PgInt4Range,
         PgNumRange,
+        StringCase(bool, bool),
         PgRangeLower,
         PgRangeUpper,
         PgRangeIsEmpty,
@@ -5759,6 +5760,22 @@ pub mod formal_registry {
                     DateFormatOutput(ctx, time, mask)
                 }
 
+                CoreBuiltinKind::StringCase(upper, binary) => {
+                    let (value, null) = self.base.args[0].EvalString(ctx, row)?;
+                    if null || binary {
+                        return Ok((value, null));
+                    }
+                    let encoding =
+                        crate::charset::FindEncoding(self.base.args[0].GetType(ctx).GetCharset());
+                    Ok((
+                        if upper {
+                            encoding.ToUpper(&value)
+                        } else {
+                            encoding.ToLower(&value)
+                        },
+                        false,
+                    ))
+                }
                 CoreBuiltinKind::PgRangeLower => {
                     let (text, null) = self.base.args[0].EvalString(ctx, row)?;
                     if null {
@@ -6991,8 +7008,11 @@ pub mod formal_registry {
             let datetime_type = *types::NewFieldType(mysql::TypeDatetime);
             args[0] = BuildCastFunction(ctx, &args[0], &datetime_type);
         }
-        let split_collation_args = matches!(name, "||" | "concat" | "greatest" | "least")
-            .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
+        let split_collation_args = matches!(
+            name,
+            "||" | "concat" | "greatest" | "least" | "lower" | "upper"
+        )
+        .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
             "is distinct from" | "is not distinct from"
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
@@ -7104,7 +7124,14 @@ pub mod formal_registry {
                     "builtinPgRangeIsEmptySig",
                 )
             }
-            "lower" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+            "lower"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                    && args.len() == 1
+                    && matches!(
+                        args[0].GetType(ctx.GetEvalCtx()).GetType(),
+                        mysql::TypePgInt4Range | mysql::TypePgNumRange
+                    ) =>
+            {
                 let inputs = args
                     .iter()
                     .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
@@ -7116,7 +7143,14 @@ pub mod formal_registry {
                     "builtinPgRangeLowerSig",
                 )
             }
-            "upper" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+            "upper"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                    && args.len() == 1
+                    && matches!(
+                        args[0].GetType(ctx.GetEvalCtx()).GetType(),
+                        mysql::TypePgInt4Range | mysql::TypePgNumRange
+                    ) =>
+            {
                 let inputs = args
                     .iter()
                     .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
@@ -8086,6 +8120,34 @@ pub mod formal_registry {
                 return_type.SetFlen(21);
                 (CoreBuiltinKind::Sleep, return_type, "builtinSleepSig")
             }
+            "lower" | "upper" => {
+                // Go lower/upperFunctionClass retain argument width and binary
+                // string identity; nonbinary evaluation uses its charset codec.
+                let source = args[0].GetType(ctx.GetEvalCtx()).clone();
+                args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
+                let binary = types::IsBinaryStr(&source);
+                let mut result = field_type_for_eval_type(types::ETString);
+                result.SetFlen(source.GetFlen());
+                result.SetDecimal(-1);
+                let non_enum_or_set = !matches!(source.GetType(), mysql::TypeEnum | mysql::TypeSet);
+                if binary {
+                    types_dependency::field::SetBinChsClnFlag(&mut result);
+                } else if mysql::HasBinaryFlag(source.GetFlag())
+                    || (!types_dependency::metadata::IsNonBinaryStr(&source) && non_enum_or_set)
+                {
+                    result.AddFlag(mysql::BinaryFlag);
+                }
+                (
+                    CoreBuiltinKind::StringCase(name == "upper", binary),
+                    result,
+                    match (name, binary) {
+                        ("lower", true) => "builtinLowerSig",
+                        ("lower", false) => "builtinLowerUTF8Sig",
+                        (_, true) => "builtinUpperSig",
+                        _ => "builtinUpperUTF8Sig",
+                    },
+                )
+            }
             "substr" | "substring" | "mid" => {
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL && name != "mid" {
                     let inputs: Vec<_> = args
@@ -8675,7 +8737,9 @@ pub mod formal_registry {
                     .map(|argument| argument.as_ref())
                     .collect(),
             ),
-            CoreBuiltinKind::Concat(_) | CoreBuiltinKind::Extremum(_, types::ETString) => Some(
+            CoreBuiltinKind::Concat(_)
+            | CoreBuiltinKind::Extremum(_, types::ETString)
+            | CoreBuiltinKind::StringCase(..) => Some(
                 split_collation_args
                     .as_ref()
                     .expect("split collation inputs")
@@ -8725,10 +8789,18 @@ pub mod formal_registry {
                     crate::charset::CollationBin,
                 );
             }
-            if split_collation_args.is_some() {
+            if split_collation_args.is_some() || matches!(kind, CoreBuiltinKind::StringCase(..)) {
                 let (charset, collation) = base.CharsetAndCollation();
                 base.return_type.SetCharset(charset);
                 base.return_type.SetCollate(collation);
+            }
+            if matches!(kind, CoreBuiltinKind::StringCase(..))
+                && ctx.SQLDialect() == crate::ast::SqlDialect::MySQL
+                && collate::IsBinCollation(base.return_type.GetCollate())
+            {
+                // Native MySQL reports BINARY_FLAG for case conversion under
+                // binary collations, including nonbinary UTF-8 strings.
+                base.return_type.AddFlag(mysql::BinaryFlag);
             }
             if matches!(kind, CoreBuiltinKind::Concat(_))
                 && base.return_type.GetCharset() == crate::charset::CharsetBin
@@ -8819,6 +8891,8 @@ pub mod formal_registry {
     core_factory!(pg_int4range_factory, "int4range");
     core_factory!(pg_numrange_factory, "numrange");
     core_factory!(pg_range_lower_factory, "lower");
+    core_factory!(lower_string_factory, "lower");
+    core_factory!(upper_string_factory, "upper");
     core_factory!(pg_range_upper_factory, "upper");
     core_factory!(pg_range_isempty_factory, "isempty");
     core_factory!(pg_current_database_factory, "current_database");
@@ -8926,6 +9000,8 @@ pub mod formal_registry {
         ("int4range", pg_int4range_factory),
         ("numrange", pg_numrange_factory),
         ("__pg_range_lower", pg_range_lower_factory),
+        ("lower", lower_string_factory),
+        ("upper", upper_string_factory),
         ("__pg_range_upper", pg_range_upper_factory),
         ("isempty", pg_range_isempty_factory),
         ("current_database", pg_current_database_factory),

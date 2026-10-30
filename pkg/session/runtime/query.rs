@@ -4609,7 +4609,7 @@ impl ConcreteSession {
         !self.is_mysql_signed_abs(expression, sources)
             && Schema.L.is_empty()
             && match FnName.L.as_str() {
-                "abs" => Args.len() == 1,
+                "abs" | "lower" | "upper" => Args.len() == 1,
                 "concat" => !Args.is_empty(),
                 "ifnull" | "date_format" | "extract" => Args.len() == 2,
                 "json_extract" => Args.len() >= 2,
@@ -5082,7 +5082,7 @@ impl ConcreteSession {
         // Native descriptors retain the formal signature even when the current
         // constant input folds to a non-NULL value with a shorter display width.
         let preserve_native_descriptor = self.sql_dialect() == ast::SqlDialect::MySQL
-            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "extract" | "date_format" | "format"));
+            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "extract" | "date_format" | "format" | "lower" | "upper"));
         astersql_planner_core::PlannerBuildSimpleExpr(
             &context,
             expression,
