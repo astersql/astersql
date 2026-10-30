@@ -1533,6 +1533,35 @@ impl ConcreteSession {
                 statement_sql.unwrap_or_default().trim_end_matches(';')
             )));
         }
+        if statement.as_any().is::<ast::ShutdownStmt>() {
+            // A direct consumer avoids constructing the unrelated generic SimpleBackend.
+            if !astersql_config::get_global_config()
+                .security
+                .skip_grant_table
+                && let (Some(user), Some(host)) = (
+                    self.login_user.as_deref(),
+                    self.authenticated_host.as_deref(),
+                )
+                && !runtime_privilege_handle(&self.domain)
+                    .Get()
+                    .RequestVerification(
+                        &self.active_roles.borrow(),
+                        user,
+                        host,
+                        "",
+                        "",
+                        "",
+                        astersql_privilege_privileges::ShutdownPriv,
+                    )
+            {
+                return Err(SessionError::new(
+                    "[planner:1227]Access denied; you need (at least one of) the SHUTDOWN privilege(s) for this operation",
+                ));
+            }
+            astersql_executor::simple::scheduleProcessShutdown(std::time::Duration::from_secs(1))
+                .map_err(|error| session_error("schedule SQL shutdown", error))?;
+            return Ok(None);
+        }
         if let Some(sql) = statement_sql {
             self.refresh_session_stale_read_ts(sql)?;
             self.record_replica_read_request(statement, sql);

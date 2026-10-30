@@ -12,7 +12,7 @@
 - 事务路径处理 `BEGIN`、`COMMIT`、`ROLLBACK` 和 savepoint，并对会隐式提交的账户/角色/`FLUSH` 语句先结束旧事务。
 - 管理路径处理刷新/删除统计信息、TLS reload、计划缓存、BDR role、资源组、range placement、会话状态恢复和关闭实例。
 
-这不是通用行执行器：接口没有输出 chunk，成功只返回 `()`；它也不解析 SQL，而是消费已归一化的 `Statement`。真正的 IO 和共享状态语义由后端决定。
+这不是通用行执行器：接口没有输出 chunk，成功只返回 `()`；它也不解析 SQL，而是消费已归一化的 `Statement`。generic 操作的 IO 和共享状态语义由后端决定；`scheduleProcessShutdown` 是 canonical runtime 直接调用的真实进程信号消费者。
 
 ## 主要符号
 
@@ -62,6 +62,8 @@
 
 ## 错误处理与边界
 
+进程关闭的线程创建错误同步返回；运行中信号错误输出上下文并 abort 整个进程，对齐 Go goroutine panic 的进程失败语义（独立 sequence 返回 I/O 错误供断言）。等待秒数及纳秒换算使用 wrapping 算术对齐 Go int/time.Duration 溢出，最终非正的 duration 按 Go Sleep 规则变成零等待。正常退出会由操作系统回收尚在等待的 watchdog；进程未退出则最终 SIGKILL。
+
 - 后端返回的 `SimpleError` 大多用 `?` 原样传播。批量账户事务失败时会尝试 rollback，但 rollback 错误被丢弃，以保留原始业务错误。
 - `executeCommit` 是特例：commit 错误只交给 `backend.warn`，`Next` 仍返回成功，这与其他事务动作的传播方式不同。
 - `IF NOT EXISTS` / `IF EXISTS` 把重复或缺失用户转换为 warning 并继续处理；没有该修饰时返回 `InvalidOption` 或 `UserNotFound`。
@@ -73,22 +75,22 @@
 
 ## 并发与资源生命周期
 
-`SimpleBackend: Send + Sync + 'static` 与 `Arc<B>` 允许后端跨线程共享，但 `Next` 需要 `&mut self`，同一执行器实例的 `done` 和 stale TS 不依赖内部锁。文件不启动任务、不持有通道、不管理响应流或显式锁；并发安全与资源关闭均由后端契约承担。
+`SimpleBackend: Send + Sync + 'static` 与 `Arc<B>` 允许后端跨线程共享，但 `Next` 需要 `&mut self`，同一执行器实例的 `done` 和 stale TS 不依赖内部锁。generic 执行器不启动任务、不持有通道、不管理响应流或显式锁；其并发与资源关闭由后端契约承担。`scheduleProcessShutdown` 单独持有一个分离的进程 watchdog 线程；进程正常退出时由 OS 回收，否则超时发 SIGKILL，不延长正常退出。
 
 账户修改的生命周期是“旧事务隐式提交 -> 后端开启悲观事务 -> 逐项写入 -> commit/rollback -> 权限通知”。注意 `Next` 的旧事务提交与方法内文本 `BEGIN PESSIMISTIC` 是两个不同阶段，且 `pessimistic_transaction` / `is_starter_deployment` trait 方法当前未被本文件使用。
 
-`asyncDelayShutdown` 的名字不代表本文件自行异步：它立即发送携带 `Duration` 的 `Operation::Shutdown`。是否延迟、是否优雅关闭及是否产生后台任务由后端实现决定。类似地，Rust `killRemoteConn` 只设置 `remote: true`，没有像 Go 版本那样创建并消费 DistSQL response，因此本文件本身不存在需要 close 的远程响应资源。
+generic `asyncDelayShutdown` 保留立即发送 `Operation::Shutdown` 的抽象入口。生产 canonical session 直接调用 `scheduleProcessShutdown`，不依赖 generic 后端。该函数创建命名后台线程，以当前进程 PID 运行 `runProcessShutdown`：先等待响应刷新 delay，发送 SIGTERM，随后读取一次全局配置，等待 grace + drain + 10 秒，最后发送 SIGKILL。只有时钟与进程信号在独立测试中替换。类似地，Rust `killRemoteConn` 只设置 `remote: true`，没有像 Go 版本那样创建并消费 DistSQL response，因此本文件本身不存在需要 close 的远程响应资源。
 
 ## 与 Go 版本的对应关系
 
 Rust 版本不是逐能力等价的完整接线，主要差异如下：
 
-- Go `SimpleExec` 嵌入真实 `BaseExecutor`、AST 节点、InfoSchema 和 resolve context；Rust 使用自定义 `Statement`、`Operation` 与 trait 后端，且目前没有生产实现。
+- Go `SimpleExec` 嵌入真实 `BaseExecutor`、AST 节点、InfoSchema 和 resolve context；Rust 使用自定义 `Statement`、`Operation` 与 trait 后端，generic 后端目前没有生产实现；SQL SHUTDOWN 另由 canonical AST 分发直接接线真实信号消费者。
 - Go 的隐式提交走 `sessiontxn.NewTxnInStmt` 并维护 session `InTxn`；Rust只发送 `Operation::Commit`。Go 账户写入使用受限系统会话和真实内部 SQL；Rust生成简化字符串协议。
 - Go CREATE/ALTER USER 处理 TLS、资源限制、账户属性、认证令牌等更多字段。Rust虽定义部分 option 辅助函数，但 `Statement::{CreateUser,AlterUser}` 未携带这些集合，主执行路径没有消费 `loadResourceOptions` / `loadOptions`。
 - Go KILL 解析 global connection ID、区分本地/远端、产生 warning，并确保消费和关闭远程 response；Rust只把 ID、query 与 remote 标志转发给后端。
 - Go REFRESH/FLUSH STATS 根据 AST、当前实例与 cluster-wide 标志执行或广播；Rust的 `Flush.stats_delta` 总是广播 stats delta，`RefreshStats.current_instance=false` 也直接广播。
-- Go shutdown 创建 goroutine，先 SIGTERM、等待 grace period 后可 SIGKILL；Rust仅把一秒 delay 交给后端。Go session states 用 JSON decoder 和 `UseNumber`；Rust只做外层花括号检查。
+- Go shutdown 的异步信号序列由 Unix `scheduleProcessShutdown` 对齐；非 Unix 返回 Unsupported。generic 后端抽象仍保留，生产消费者通过 canonical session 直接接入。Go session states 用 JSON decoder 和 `UseNumber`；Rust只做外层花括号检查。
 - Go plan-cache flush会检查开关、记录时间戳并清缓存；Rust封装成 `Operation::FlushPlanCache`。Go ALTER RANGE 还验证 placement option 类型并生成 bundle；Rust只验证 range 名和 policy 是否存在。
 
 所以扩展时应以 Go 行为和测试为兼容基线，但必须先决定是扩充当前抽象协议，还是完成真实生产后端接线，不能把已有函数名当作能力已落地的证据。

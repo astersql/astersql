@@ -30,6 +30,8 @@
 
 ## 执行流程
 
+`ShutdownStmt` 在既有 SEM 检查之后走最小直接分发：除 skip-grant-table 和无登录身份的内部会话外，用现有权限缓存及 active roles 检查 `ShutdownPriv`；失败返回1227，成功调用 `astersql_executor::simple::scheduleProcessShutdown(1s)` 并立即返回无结果集。消费者发送真实 SIGTERM，最终走 cmd 的 canonical server 清理；不接管其他 generic SimpleBackend 能力，不改变 PostgreSQL 解析、事务或协议分支。
+
 诊断模式在每条已解析 AST 进入语句循环后首先检查：仅非 restricted SQL 调用 `diagnostic_sql::is_diagnostic_sql_allowed`，传入当前库和 InfoSchema 的 view 判定；拒绝时立即返回只读模式错误。该检查早于 scalar-subquery registry 清理、过期事务处理、告警重置、tracker 与语句 guard 建立，因此拒绝分支没有进入后续正常语句收尾链。
 
 1. `ConcreteSession::execute(sql)` 调用 `execute_with_logger(sql, None)`，再进入 `execute_with_logger_and_hook`。入口先恢复未完成的 ADD INDEX 任务，并处理请求局部 `mockGetTSFail` 注入。
@@ -103,6 +105,8 @@ RustCodeGraph 的文件节点报告 `dispatch.rs` 被 11 个文件使用，并�
 会话析构时 `ConcreteSessionInner::drop` 清理 MDL，按两套 prepared 容器计数释放全局配额，回滚仍存活事务，释放该 row-lock owner 的所有锁，并从 `RUNTIME_TXN_INFOS` 删除记录。析构中的事务回滚错误被忽略，因为此时已经无法向调用者报告。
 
 ## 与 Go 版本的对应关系
+
+这是 `b173173724615ea630d54a253dd160f05052c2a4` 的必要局部生产接线：使 SQL SHUTDOWN 消费同一 drain 配置，而不是只构造未执行 Operation。原有 statement/SEM/权限设施复用，未补建整个 SimpleBackend。
 
 - Rust `execute`/`execute_with_logger_and_hook` 对应 Go `(*session).Execute` 的文本解析入口，以及 `ExecuteStmt`/`executeStmtImpl` 的逐语句生命周期；Rust 当前支持多语句列表，而 Go 注释标明的旧 `Execute` API只接受单语句。
 - Rust `execute_statement` 将一部分 Go `executeStmtImpl` 中的前置/收尾职责与具体 AST 分发集中在同一文件；Go 主路径通过 compile 后的 `executor.ExecStmt` 统一执行，因此两者是契约对齐而非结构一一对应。

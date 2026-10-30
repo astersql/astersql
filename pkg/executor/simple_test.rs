@@ -235,3 +235,85 @@ fn password_verification_skips_reuse_checks_when_both_policies_are_disabled() {
         Ok((true, 2))
     );
 }
+
+#[test]
+fn port_b173173724_shutdown_signal_order_and_config_snapshot() {
+    use std::cell::RefCell;
+    use std::time::Duration;
+    let original = (*astersql_config::get_global_config()).clone();
+    struct Restore(astersql_config::Config);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    let _restore = Restore(original.clone());
+    for (grace, drain, expected) in [(0, 15, 25), (0, 0, 10), (7, 120, 137), (0, i64::MAX, 9)] {
+        let trace = RefCell::new(Vec::new());
+        crate::simple::runProcessShutdown(
+            Duration::from_secs(1),
+            |delay| {
+                trace
+                    .borrow_mut()
+                    .push(format!("sleep:{}", delay.as_secs()));
+            },
+            |force| {
+                trace
+                    .borrow_mut()
+                    .push(if force { "kill" } else { "term" }.into());
+                if !force {
+                    // SIGTERM precedes the single configuration read.
+                    let mut cfg = original.clone();
+                    cfg.graceful_wait_before_shutdown = grace;
+                    cfg.graceful_close_connections_timeout = drain;
+                    astersql_config::store_global_config(cfg);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            *trace.borrow(),
+            [
+                "sleep:1".into(),
+                "term".into(),
+                format!("sleep:{expected}"),
+                "kill".into()
+            ]
+        );
+    }
+}
+
+#[test]
+fn port_b173173724_shutdown_signal_errors_stop_sequence() {
+    use std::cell::RefCell;
+    let sleeps = RefCell::new(Vec::new());
+    let result = crate::simple::runProcessShutdown(
+        std::time::Duration::from_secs(1),
+        |delay| sleeps.borrow_mut().push(delay),
+        |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+    );
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(sleeps.borrow().len(), 1);
+    let mut signals = 0;
+    let result = crate::simple::runProcessShutdown(
+        std::time::Duration::ZERO,
+        |_| {},
+        |force| {
+            signals += 1;
+            if force {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(signals, 2);
+}

@@ -1229,3 +1229,155 @@ fn diagnostic_mode_reopens_real_metadata_and_restricts_workers_and_sql() {
         "diagnostic startup and queries must not write storage"
     );
 }
+
+#[test]
+fn port_b173173724_config_file_and_cleanup_share_timeout() {
+    let _g = stubs::test_guard();
+    stubs::reset_all_for_test();
+    let original = (*astersql_config::get_global_config()).clone();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shutdown.toml");
+    registerStoresWithTiKVDriver(TiKVDriver::with_backend(Arc::new(WiringBackend::default())))
+        .unwrap();
+    config::UpdateGlobal(|cfg| {
+        cfg.Store = config::StoreTypeTiKV.into();
+        cfg.Path = "pd-a:2379".into();
+    });
+    let (storage, dom) = createStoreDDLOwnerMgrAndDomain("").unwrap();
+    for seconds in [15, 0, 120] {
+        std::fs::write(&path, format!("graceful-close-connections-timeout = {seconds}\ngraceful-wait-before-shutdown = 3\n")).unwrap();
+        crate::entry::initializeShutdownConfig(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            astersql_config::get_global_config().graceful_close_connections_timeout,
+            seconds
+        );
+        assert_eq!(
+            astersql_config::get_global_config().graceful_wait_before_shutdown,
+            3
+        );
+        stubs::clear_events();
+        cleanup(&server::Server::new(), &storage, &dom);
+        assert!(stubs::take_events().contains(&format!(
+            "server.DrainClients drain_ms={} cancel_ms=1000",
+            seconds * 1000
+        )));
+    }
+    kerneltype::set_nextgen_for_test(true);
+    deploymode::Set(deploymode::Starter).unwrap();
+    let server = server::Server::new();
+    server.set_force_shutdown(true);
+    cleanup(&server, &storage, &dom);
+    assert!(
+        stubs::take_events().contains(&"server.DrainClients drain_ms=0 cancel_ms=1000".to_owned())
+    );
+    for input in [
+        "graceful-close-connections-timeout = -1",
+        "graceful-close-connections-timeout = 'invalid'",
+    ] {
+        std::fs::write(&path, input).unwrap();
+        assert!(
+            crate::entry::initializeShutdownConfig(path.to_str().unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("graceful-close-connections-timeout")
+        );
+        assert_eq!(
+            astersql_config::get_global_config().graceful_close_connections_timeout,
+            120
+        );
+    }
+    crate::entry::initializeShutdownConfig("").unwrap();
+    assert_eq!(
+        astersql_config::get_global_config().graceful_close_connections_timeout,
+        15
+    );
+    astersql_config::store_global_config(original);
+    stubs::reset_all_for_test();
+}
+
+#[cfg(unix)]
+#[test]
+fn port_b173173724_canonical_sql_shutdown_reaches_process_cleanup() {
+    const CHILD: &str = "ASTERSQL_PORT_B173173724_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "main_test::port_b173173724_canonical_sql_shutdown_reaches_process_cleanup",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "{status}");
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("SQL shutdown child did not exit");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        return;
+    }
+    let _g = stubs::test_guard();
+    stubs::reset_all_for_test();
+    let mut cfg = (*astersql_config::get_global_config()).clone();
+    cfg.graceful_close_connections_timeout = 120;
+    astersql_config::store_global_config(cfg);
+    config::UpdateGlobal(|cfg| {
+        cfg.Store = config::StoreTypeTiKV.into();
+        cfg.Path = "pd-a:2379".into();
+        cfg.Host = "127.0.0.1".into();
+        cfg.Port = 0;
+        cfg.Socket.clear();
+        cfg.Status.ReportStatus = false;
+    });
+    registerStoresWithTiKVDriver(TiKVDriver::with_backend(Arc::new(WiringBackend::default())))
+        .unwrap();
+    let (storage, dom) = createStoreDDLOwnerMgrAndDomain("").unwrap();
+    let (canonical_domain, mut session) =
+        astersql_session::runtime::CreateUnbootstrappedRootSessionForTest().unwrap();
+    session.SetAuthenticatedUser("root".into(), true);
+    let session_driver = Arc::new(ConcreteSessionDriver::from_initialized_domain(
+        Arc::clone(&canonical_domain),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let canonical_config = crate::entry::canonicalServerConfig(&config::GetGlobalConfig()).unwrap();
+    let server =
+        crate::entry::assembleCanonicalServer(canonical_config, canonical_domain, session_driver)
+            .unwrap();
+    let run_server = server.clone();
+    let run_domain = dom.clone();
+    let run = thread::spawn(move || run_server.Run(&run_domain));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while server.canonical_listener_addr().is_none() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+    stubs::signal::SetupSignalHandler(move |_| {
+        server.Close();
+        cleanup(&server, &storage, &dom);
+    });
+    // In unit tests the cmd adapter deliberately disables OS handlers; install the
+    // same canonical handler used by the production adapter in this isolated process.
+    astersql_util_signal::SetupSignalHandler(|sig| {
+        assert_eq!(sig, 15);
+        stubs::signal::deliver(Signal::SIGTERM);
+    });
+    let started = Instant::now();
+    session.execute("SHUTDOWN").unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "SQL response must precede SIGTERM"
+    );
+    stubs::signal::wait_exited();
+    run.join().unwrap().unwrap();
+    let events = stubs::take_events();
+    assert!(events.contains(&"server.DrainClients drain_ms=120000 cancel_ms=1000".to_owned()));
+    assert!(events.contains(&"canonical.server.closed".to_owned()));
+}

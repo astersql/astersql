@@ -1103,3 +1103,30 @@ fn starter_rg_fallback_is_cli_only_and_defaults_to_disabled() {
             .contains("enable-rg-fallback")
     );
 }
+
+#[test]
+fn port_b173173724_shutdown_defaults_and_validation() {
+    let mut config = new_config();
+    let json = serde_json::to_value(&config).unwrap();
+    assert_eq!(json["graceful-close-connections-timeout"], 15);
+    config = load_config("graceful-close-connections-timeout = 0").unwrap();
+    config.valid().unwrap();
+    config = load_config("graceful-close-connections-timeout = -1").unwrap();
+    assert!(
+        config
+            .valid()
+            .unwrap_err()
+            .to_string()
+            .contains("graceful-close-connections-timeout")
+    );
+}
+
+#[test]
+fn port_b173173724_shutdown_load_and_serialize() {
+    let mut config = load_config("graceful-close-connections-timeout = 120").unwrap();
+    config.valid().unwrap();
+    assert_eq!(
+        serde_json::to_value(&config).unwrap()["graceful-close-connections-timeout"],
+        120
+    );
+}

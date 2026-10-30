@@ -43,6 +43,8 @@ starter 安全覆盖是独立流程：`adjust_starter_config(false)` 直接返�
 
 ## 数据与状态
 
+`graceful_close_connections_timeout: i64` 是运行中语句与未结束事务的 drain 秒数，默认 15、允许 0，负值由 `valid` 拒绝；TOML/JSON 键为 `graceful-close-connections-timeout`。`graceful_wait_before_shutdown` 默认 0，是复用关闭流程必需的既有 Go grace 字段。两个字段随 canonical 全局快照发布，cleanup 与 SQL SHUTDOWN 读取同一来源。
+
 `Config` 是值语义的配置快照。普通字符串、数字、集合和子结构在快照克隆时深拷贝；`Instance` 中 `tidb_enable_ddl` 与 `enable_collect_execution_info`、`PessimisticTxn` 中 `pessimistic_auto_commit` 使用 `AtomicBool`，但其 `Clone` 读取旧原子值并创建新原子，因此不同 `Config` 快照不会共享可变原子单元。`extra` 只承载反序列化阶段的未知顶层键；成功的 `Config::load` 要求它为空。
 
 `GLOBAL_CONFIG: Lazy<RwLock<Arc<Config>>>` 是规范全局快照。锁只保护 `Arc` 指针的获取或替换，业务读取在克隆 `Arc` 后脱锁运行。`PREPARED_EXTENSIONS` 以相同形式存储已编译错误正则，但 `get_error_message_extensions` 返回元素深拷贝，调用方不能通过修改结果污染缓存。两个锁是独立的，发布顺序为先扩展缓存、后配置；因此这不是把两者封装为单一原子事务，要求新增跨缓存不变量时谨慎处理可观察窗口。
@@ -81,6 +83,8 @@ starter 安全覆盖是独立流程：`adjust_starter_config(false)` 直接返�
 环境变量与文件句柄都是短生命周期资源：`fs::read_to_string` 完成后释放文件，`adjust_starter_config` 每次调用即时读取六个环境变量，不缓存环境视图。临时目录函数只生成字符串，不创建目录，也不负责清理落盘文件。`restore_func` 捕获一份 `Arc` 指向的旧值，但恢复时会克隆其 `Config` 并重新编译扩展；测试用 `pkg/config/config_test.rs::GLOBAL_TEST_LOCK` 串行化会修改全局状态的用例，避免相互污染。
 
 ## 与 Go 版本的对应关系
+
+来源 `b173173724615ea630d54a253dd160f05052c2a4` 的字段、默认15、负值错误和文件加载120已对齐；两个 Go 样例保持原值，独立 `config_test.rs` 覆盖默认、零、负值及加载/序列化。
 
 主要语义直接对应 `pkg/config/config.go`：Rust `Config::default` 对应 Go `defaultConf`/`NewConfig`；`get_global_config`、`store_global_config`、`update_global`、`restore_func` 对应 `GetGlobalConfig`、`StoreGlobalConfig`、`UpdateGlobal`、`RestoreFunc`；`Config::load`/`valid`/`adjust_starter_config` 对应 `Load`/`Valid`/`AdjustStarterConfig`；临时目录、JSON 过滤、隐藏项判断、错误扩展准备和 max packet 也保留相同规则。`AtomicBool` 对应 Go `atomicutil.Bool`，`NullableBool` 对应 Go `nullableBool`；Rust 的 Serde 显式标签用于保持 Go TOML/JSON 公共键名。
 

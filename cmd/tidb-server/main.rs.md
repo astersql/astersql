@@ -27,6 +27,8 @@
 
 ## 执行流程
 
+关闭时间经 `initializeShutdownConfig` 从文件接入 canonical 配置；该窄适配只接管两个关闭字段，其他命令配置保持原适配器所有权。真实信号回调先关闭 listener，再等待配置的 shutdown grace，随后执行 cleanup。SQL SHUTDOWN 由 canonical session 分发到 executor 的进程关闭消费者，发送 SIGTERM 后复用此回调。
+
 冻结增量：`createStoreDDLOwnerMgrAndDomain` 在 `initRegisteredStorage` 后取得 codec；仅当 `deploymode::IsStarter()` 且 `codec.IsAPIV2()` 时调用 `metricsutil::SetKeyspaceID(codec.GetKeyspaceID())`，随后才进行 PD kernel 校验、MPP prober/coordinator、owner manager 和 bootstrap。该调用经过入口适配层，不能由此推断所有指标消费者已使用该标签。冻结版本没有 diagnosticmode 初始化或 `start_diagnostic` 调用，诊断 API 的存在不代表此入口已选择诊断启动。关闭仍由 `cleanup` 先停自动分析、drain 客户端、kill 系统进程，再停 plugin/repository/TopSQL，然后关闭 Domain、owner manager、MPP 组件与 storage，最后清理磁盘等进程资源。
 
 `bin_main.rs::main -> lib.rs::main -> entry::main -> run_main -> run_main_inner`。主流程如下：
@@ -46,7 +48,7 @@
 - storage registry 同时注册 `tikv`、`mocktikv`、`unistore`。nextgen 用户 keyspace 会另开并保存 SYSTEM storage；关闭用户 keyspace 时 `closeDDLOwnerMgrDomainAndStorage` 也会回收它（`main.rs:1010-1035,2037-2059`）。
 - server 实际跨越两套 Domain：`stubs::domain::Domain` 保留 Go 对齐的外围 handle；canonical `astersql_domain::Domain` 驱动真实 session/listener/TTL。`createServer` 将二者装配进同一 `server::Server` 适配器（`main.rs:1838-1942`）。
 - `exit_code: Arc<Mutex<i32>>` 在主线程与信号闭包之间共享；`activationMetadata`、`external_mgr`、standby controller 只活到一次启动生命周期。
-- `gracefulCloseConnectionsTimeout` 固定 15 秒；Starter 强制关闭将 drain 时间改为 0，取消阶段固定 1 秒（`main.rs:2061-2082`）。
+- `initializeShutdownConfig` 从命令配置文件读取两个关闭时间整数并发布到 canonical `astersql_config` 快照：`graceful-wait-before-shutdown` 默认 0，`graceful-close-connections-timeout` 默认 15 且拒绝负值。`cleanup` 从同一快照取 drain 超时；Starter 强制关闭仍改为 0，取消阶段固定 1 秒。
 
 ## 依赖与调用关系
 
@@ -60,6 +62,8 @@
 `Cargo.toml` 注释也明确“local stubs continue to cover server/session/domain/config/signal/metrics”，而 production TiKV path 已连到 canonical store registry；扩展时应按这个边界判断新逻辑属于 canonical crate 还是入口适配层。
 
 ## 错误处理与边界
+
+关闭配置文件读取、TOML 解析和非整数值返回错误；负 drain 超时拒绝发布，已有快照不变。错误不回显配置内容。负 graceful-wait 时间与 Go Sleep 一样按零等待处理。
 
 - 返回 `Result` 的初始化步骤多数经 `must_nil_result`/fatal 转成启动失败；外围能力有意降级：外部 workload manager 初始化/关闭与语句摘要持久化失败只记录告警或错误，Prometheus push 失败会继续重试。
 - 配置硬边界包括：端口必须落在 `u16`；SQL/status TLS 证书与私钥必须成对；secure/insecure 初始化互斥；Starter 参数不得有空项、空 key/value、重复/未知 key，布尔值仅接受 Go `ParseBool` 等价形式；manager notifier 必须获得地址或 namespace 以及 pod 三元组。

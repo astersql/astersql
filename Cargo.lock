@@ -1801,6 +1801,7 @@ dependencies = [
  "rpprof",
  "tempfile",
  "tikv-client",
+ "toml",
 ]
 
 [[package]]
@@ -3610,6 +3611,7 @@ dependencies = [
  "astersql-util-traceevent",
  "astersql-util-tracing",
  "fail 0.5.1",
+ "libc",
 ]
 
 [[package]]

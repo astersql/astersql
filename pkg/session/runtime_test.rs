@@ -397,3 +397,15 @@ fn alter_database_emits_crucial_operation_without_general_log() {
         );
     }
 }
+
+#[test]
+fn port_b173173724_shutdown_requires_privilege() {
+    let mut session = concrete_session();
+    session.SetAuthenticatedUser("no_shutdown_privilege".into(), false);
+    let error = session
+        .execute("SHUTDOWN")
+        .err()
+        .expect("SHUTDOWN must require privilege");
+    assert!(error.to_string().contains("SHUTDOWN privilege"), "{error}");
+    session.execute("SELECT 1").unwrap();
+}

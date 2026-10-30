@@ -226,3 +226,6 @@ fail = { version = "0.5.1", features = ["failpoints"] }
 "astersql-util-paging" = { package = "astersql-util-paging", path = "../util/paging" }
 "astersql-util-tableutil" = { package = "astersql-util-tableutil", path = "../util/tableutil" }
 "astersql-util-topsql-collector-mock" = { package = "astersql-util-topsql-collector-mock", path = "../util/topsql/collector/mock" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

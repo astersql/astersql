@@ -1083,6 +1083,10 @@ pub struct Config {
     pub index_limit: i64,
     /// 单表列数上限。
     pub table_column_count_limit: u32,
+    /// Seconds before shutdown starts after the server becomes unhealthy.
+    pub graceful_wait_before_shutdown: i64,
+    /// Seconds to drain running statements and open transactions before killing connections.
+    pub graceful_close_connections_timeout: i64,
     /// 是否启用表锁（LOCK TABLES 语法）。
     pub enable_table_lock: bool,
     /// 是否限制 ENUM/SET 单个成员的编码长度。
@@ -1155,6 +1159,8 @@ impl Default for Config {
             max_index_length: DEF_MAX_INDEX_LENGTH,
             index_limit: DEF_INDEX_LIMIT,
             table_column_count_limit: DEF_TABLE_COLUMN_COUNT_LIMIT,
+            graceful_wait_before_shutdown: 0,
+            graceful_close_connections_timeout: 15,
             enable_table_lock: false,
             enable_enum_length_limit: true,
             delay_clean_table_lock: 0,
@@ -1451,6 +1457,11 @@ impl Config {
             return Err(message(format!(
                 "index-limit should be [{DEF_INDEX_LIMIT}, {DEF_MAX_OF_INDEX_LIMIT}]"
             )));
+        }
+        if self.graceful_close_connections_timeout < 0 {
+            return Err(message(
+                "graceful-close-connections-timeout should not be negative",
+            ));
         }
         if self.store == "mocktikv" && !self.instance.tidb_enable_ddl.load() {
             return Err(message("can't disable DDL on mocktikv"));

@@ -734,6 +734,62 @@ pub fn asyncDelayShutdown<B: SimpleBackend>(
     backend.execute(Operation::Shutdown { delay })
 }
 
+/// Run the Go shutdown sequence, replacing only clock/process boundaries in tests.
+/// Read one configuration snapshot after SIGTERM, just as asyncDelayShutdown does in Go.
+pub(crate) fn runProcessShutdown(
+    delay: Duration,
+    mut sleep: impl FnMut(Duration),
+    mut signal: impl FnMut(bool) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    sleep(delay);
+    signal(false)?;
+    let cfg = astersql_config::get_global_config();
+    let seconds = cfg
+        .graceful_wait_before_shutdown
+        .wrapping_add(cfg.graceful_close_connections_timeout)
+        .wrapping_add(10);
+    // Go int/time.Duration arithmetic wraps before Sleep ignores nonpositive values.
+    sleep(Duration::from_nanos(
+        seconds.wrapping_mul(1_000_000_000).max(0) as u64,
+    ));
+    signal(true)
+}
+
+/// Production consumer for canonical SQL SHUTDOWN. The initial delay lets the response flush.
+pub fn scheduleProcessShutdown(delay: Duration) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let pid = std::process::id() as libc::pid_t;
+        std::thread::Builder::new()
+            .name("sql-shutdown".into())
+            .spawn(move || {
+                let result = runProcessShutdown(delay, std::thread::sleep, |force| {
+                    // SAFETY: pid is this process; both constants are valid POSIX signals.
+                    if unsafe { libc::kill(pid, if force { libc::SIGKILL } else { libc::SIGTERM }) }
+                        == 0
+                    {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+                if let Err(error) = result {
+                    eprintln!("SQL shutdown signal failed: {error}");
+                    std::process::abort();
+                }
+            })
+            .map(|_| ())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = delay;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "SQL shutdown requires POSIX process signals",
+        ))
+    }
+}
+
 impl<B: SimpleBackend> SimpleExec<B> {
     /// 执行一次 Simple 语句（完成后置 done，重复调用直接返回）。
     pub fn Next(&mut self) -> Result<(), SimpleError> {

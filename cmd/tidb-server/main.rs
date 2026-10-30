@@ -655,6 +655,7 @@ pub fn run_main_inner(argv: &[String], exit_process: bool) -> i32 {
         overrideConfig,
         &fset,
     );
+    stubs::must_nil_result(initializeShutdownConfig(&fv.configPath));
     stubs::must_nil_result(
         astersql_config::diagnosticmode::Initialize(fv.diagnosticMode)
             .map_err(|error| Error::new(error.to_string())),
@@ -821,6 +822,12 @@ pub fn run_main_inner(argv: &[String], exit_process: bool) -> i32 {
     signal::SetupSignalHandler(move |sig| {
         // 信号处理遵循“先拒绝新流量，再停后台模块，再做底层资源清理”的顺序。
         svr_h.Close();
+        std::thread::sleep(Duration::from_nanos(
+            astersql_config::get_global_config()
+                .graceful_wait_before_shutdown
+                .wrapping_mul(1_000_000_000)
+                .max(0) as u64,
+        ));
         resourcemanager::InstanceResourceManager.Stop();
         cleanup(&svr_h, &storage_h, &dom_h);
         cpuprofile::StopCPUProfiler();
@@ -2097,9 +2104,43 @@ pub fn closeDDLOwnerMgrDomainAndStorage(storage: &kv::Storage, dom: &domain::Dom
     }
 }
 
-// 优雅关闭默认给 15 秒 drain 连接时间。
-// 这是入口级超时，不是 SQL 层单个查询的超时配置。
-pub static gracefulCloseConnectionsTimeout: Duration = Duration::from_secs(15);
+/// Bridge shutdown settings from the command configuration file to the canonical snapshot.
+/// Other command configuration adapters retain their existing ownership.
+pub fn initializeShutdownConfig(path: &str) -> Result<()> {
+    let mut cfg = (*astersql_config::get_global_config()).clone();
+    let defaults = astersql_config::new_config();
+    cfg.graceful_wait_before_shutdown = defaults.graceful_wait_before_shutdown;
+    cfg.graceful_close_connections_timeout = defaults.graceful_close_connections_timeout;
+    if !path.is_empty() {
+        let text = std::fs::read_to_string(path)
+            .map_err(|_| Error::new("failed to read shutdown configuration"))?;
+        let document: toml::Table = toml::from_str(&text)
+            .map_err(|_| Error::new("failed to parse shutdown configuration"))?;
+        for (name, output) in [
+            (
+                "graceful-wait-before-shutdown",
+                &mut cfg.graceful_wait_before_shutdown,
+            ),
+            (
+                "graceful-close-connections-timeout",
+                &mut cfg.graceful_close_connections_timeout,
+            ),
+        ] {
+            if let Some(value) = document.get(name) {
+                *output = value
+                    .as_integer()
+                    .ok_or_else(|| Error::new(format!("{name} must be an integer")))?;
+            }
+        }
+    }
+    if cfg.graceful_close_connections_timeout < 0 {
+        return Err(Error::new(
+            "graceful-close-connections-timeout should not be negative",
+        ));
+    }
+    astersql_config::store_global_config(cfg);
+    Ok(())
+}
 
 /// 收敛 server 相关的所有清理动作。
 ///
@@ -2109,7 +2150,12 @@ pub fn cleanup(svr: &server::Server, storage: &kv::Storage, dom: &domain::Domain
     // 自动分析会继续调度后台 SQL，清理时要尽早停止。
     dom.StopAutoAnalyze();
 
-    let mut drainClientWait = gracefulCloseConnectionsTimeout;
+    let mut drainClientWait = Duration::from_nanos(
+        astersql_config::get_global_config()
+            .graceful_close_connections_timeout
+            .wrapping_mul(1_000_000_000)
+            .max(0) as u64,
+    );
     if deploymode::IsStarter() && svr.GetForceShutdown() {
         // Starter 强制关闭场景不等待客户端主动断开，直接把 drain 时间降为 0。
         drainClientWait = Duration::from_secs(0);
