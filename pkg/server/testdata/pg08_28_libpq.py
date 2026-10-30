@@ -151,9 +151,16 @@ def run(port, database, evidence, mysql_port):
                     else:assert peers['reference']==peers['aster'],peers
                 else:
                     # Values are connection/build facts; compare all column definitions and diagnostics.
+                    if fn == 'version':
+                        for observations in peers.values():
+                            phases = [observations] if mode == 'Q' else observations
+                            width = len(bytes.fromhex(phases[-1]['rows'][0][0])) * 4
+                            for phase in phases:
+                                assert phase['metadata'][0][4] == width, phase
                     a,b=copy.deepcopy(peers['reference']),copy.deepcopy(peers['aster'])
                     for left,right in zip([a] if mode=='Q' else a,[b] if mode=='Q' else b):
                         left['rows']=right['rows']=[]
+                        if fn == 'version':left['metadata'][0][4]=right['metadata'][0][4]=0
                     assert a==b,(case,a,b)
                 passed.append(case)
             except AssertionError as error:

@@ -3372,6 +3372,30 @@ pub(super) fn binary_cast_literal_value(
     ))
 }
 
+/// Native connection functions keep their descriptor before any row is produced.
+pub(super) fn mysql_connection_function_type(
+    name: &str,
+) -> Option<astersql_parser_types::FieldType> {
+    use astersql_parser_mysql::r#type::*;
+    let mut tp = astersql_parser_types::NewFieldType(match name {
+        "database" => TypeVarString,
+        "connection_id" => TypeLonglong,
+        _ => return None,
+    });
+    if name == "database" {
+        tp.SetFlen(64);
+        tp.SetCharset("utf8mb4".into());
+        tp.SetCollate("utf8mb4_bin".into());
+    } else {
+        tp.SetFlen(21);
+        tp.SetDecimal(0);
+        tp.AddFlag(UnsignedFlag | NotNullFlag | BinaryFlag);
+        tp.SetCharset("binary".into());
+        tp.SetCollate("binary".into());
+    }
+    Some(tp)
+}
+
 pub(super) fn relational_expression_type(
     expression: &ast::ExprNode,
     table: &astersql_meta_model::TableInfo,
@@ -3645,6 +3669,9 @@ pub(super) fn relational_expression_type(
             result
         }
         ast::ExprKind::Function { FnName, Args, .. } => match FnName.L.as_str() {
+            "database" | "connection_id" if Args.is_empty() => {
+                mysql_connection_function_type(&FnName.L).unwrap()
+            }
             "coalesce" | "ifnull" | "nullif" => Args
                 .iter()
                 .map(|argument| relational_expression_type(argument, table))

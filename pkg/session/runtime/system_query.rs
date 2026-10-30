@@ -4179,6 +4179,23 @@ impl ConcreteSession {
                 let ast::ExprKind::Function { FnName, Args, .. } = &expr.Kind else {
                     return None;
                 };
+                if self.sql_dialect() == ast::SqlDialect::MySQL
+                    && Args.is_empty()
+                    && let Some(tp) =
+                        super::relational_value::mysql_connection_function_type(&FnName.L)
+                {
+                    return Some(ConcreteResultField {
+                        column: astersql_meta_model::ColumnInfo {
+                            FieldType: tp,
+                            ..Default::default()
+                        },
+                        column_as_name: ast::NewCIStr(name),
+                        table_name: Default::default(),
+                        table_as_name: Default::default(),
+                        db_name: Default::default(),
+                        column_origin: None,
+                    });
+                }
                 if FnName.L != "abs" || Args.len() != 1 {
                     return None;
                 }
