@@ -12,6 +12,7 @@ go-package = "pkg/ddl/tests/partition"
 legacy-tasks = ["task-1548", "task-1549", "task-1550", "task-1551", "task-1552", "task-1553"]
 
 [dev-dependencies]
+"astersql-ddl-placement" = { path = "../../placement" }
 serde_json = "1"
 "astersql-meta" = { package = "astersql-meta", path = "../../../meta" }
 "astersql-config" = { package = "astersql-config", path = "../../../config" }

@@ -2379,6 +2379,7 @@ dependencies = [
  "astersql-config-kerneltype",
  "astersql-ddl",
  "astersql-ddl-logutil",
+ "astersql-ddl-placement",
  "astersql-ddl-testutil",
  "astersql-ddl-util",
  "astersql-domain",

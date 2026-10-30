@@ -1447,3 +1447,281 @@ pub fn rollback_persisted_partition(
     }
     Ok(version)
 }
+
+/// Whether a durable reorganization can resume its final metadata publication.
+/// Earlier online phases are owned by the reorganization executor; admitting a
+/// Public job here must not advertise support for starting an unfinished action.
+pub fn can_finish_persisted_partition(job: &astersql_meta_model::group_3::Job) -> bool {
+    use astersql_meta_model::group_3::*;
+    matches!(
+        job.tp,
+        ACTION_REORGANIZE_PARTITION | ACTION_ALTER_TABLE_PARTITIONING | ACTION_REMOVE_PARTITIONING
+    ) && job.schema_state == astersql_meta_model::SchemaState::Public
+        && matches!(job.state, JobState::Running | JobState::Cancelling)
+}
+
+/// Go removeReplacedPartitionIndexes: collect first, then remove retired indexes
+/// and their hidden columns, retaining old table/index IDs for delete-range GC.
+pub fn remove_replaced_partition_indexes(
+    table: &mut astersql_meta_model::TableInfo,
+    args: &mut astersql_meta_model::group_2::TablePartitionArgs,
+) {
+    use astersql_meta_model::SchemaState;
+    let removed: Vec<_> = table
+        .Indices
+        .iter()
+        .filter(|i| i.State == SchemaState::DeleteOnly)
+        .map(|i| i.ID)
+        .collect();
+    for id in removed {
+        // Removing one expression column shifts the remaining live offsets.
+        let mut index = table.Indices.iter().find(|i| i.ID == id).unwrap().clone();
+        index.State = SchemaState::None;
+        crate::index::drop_model_index_column_flag(table, &index);
+        crate::index::remove_model_dependent_hidden_columns(table, &index);
+        table.Indices.retain(|i| i.ID != index.ID);
+        if index.Global {
+            args.OldGlobalIndexes
+                .push(astersql_meta_model::group_2::TableIDIndexID {
+                    TableID: table.ID,
+                    IndexID: index.ID,
+                });
+        }
+    }
+}
+
+/// Go finishReorganizePartition. All metadata and the notification use the
+/// caller's active transaction. Keep the incoming job unchanged on failure so
+/// retry resumes Public with the original definitions and cleanup arguments.
+pub fn finish_persisted_partition(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<i64, String> {
+    use astersql_meta_model::{
+        SchemaState as S,
+        group_2::{JobArgsCompat, TablePartitionArgs},
+        group_3::*,
+    };
+    if !can_finish_persisted_partition(job) {
+        return Err("partition finalization requires a Public reorganization job".into());
+    }
+    let raw: serde_json::Value =
+        serde_json::from_slice(&job.raw_args).map_err(|e| e.to_string())?;
+    let value = if job.version == JobVersion::V1 {
+        raw.get(1)
+    } else {
+        raw.get("part_info")
+    }
+    .ok_or("partition finalization arguments missing")?;
+    let requested: astersql_meta_model::PartitionInfo =
+        serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    let mut table = None;
+    context.with_transaction(&mut |txn| {
+        table = Some(crate::persistent_actions::public_table(
+            &astersql_meta::TransactionMutator::new(txn),
+            job,
+        )?);
+        Ok(Vec::new())
+    })?;
+    let mut table = table.ok_or("partition finalization table missing")?;
+    let pi = table
+        .Partition
+        .as_mut()
+        .ok_or("partition metadata missing")?;
+    let added = astersql_meta_model::PartitionInfo {
+        Definitions: pi.AddingDefinitions.clone(),
+        ..Default::default()
+    };
+    let dropped = astersql_meta_model::PartitionInfo {
+        Definitions: pi.DroppingDefinitions.clone(),
+        ..Default::default()
+    };
+    let mut args = TablePartitionArgs::default();
+    args.OldPhysicalTblIDs = dropped.Definitions.iter().map(|d| d.ID).collect();
+    args.NewPartitionIDs = requested.Definitions.iter().map(|d| d.ID).collect();
+    pi.DroppingDefinitions.clear();
+    pi.AddingDefinitions.clear();
+    pi.DDLState = S::None;
+    pi.DDLAction = 0;
+    pi.OriginalPartitionIDsOrder.clear();
+    remove_replaced_partition_indexes(&mut table, &mut args);
+    let old_table_id = table.ID;
+    let replacing_table = job.tp != ACTION_REORGANIZE_PARTITION;
+    if replacing_table {
+        if requested.NewTableID == 0 || args.OldPhysicalTblIDs.is_empty() {
+            return Err("partition replacement IDs missing".into());
+        }
+        table.ID = requested.NewTableID;
+        if args.OldPhysicalTblIDs.first() != Some(&old_table_id) {
+            args.OldPhysicalTblIDs.push(old_table_id);
+        }
+        if job.tp == ACTION_REMOVE_PARTITIONING {
+            table.Partition = None;
+        } else {
+            table
+                .Partition
+                .as_mut()
+                .unwrap()
+                .ClearReorgIntermediateInfo();
+        }
+    }
+    let mut bundles = Vec::new();
+    context.with_transaction(&mut |txn| {
+        if replacing_table {
+            // Go recreates the table, with persisted counters, before applying
+            // final placement. None of these writes commit independently.
+            let hash = format!("DB:{}", job.schema_id);
+            let mut counters = Vec::new();
+            for prefix in ["TID", "IID", "TARID"] {
+                let key = astersql_meta::transaction_meta_hash_key(
+                    hash.as_bytes(),
+                    format!("{prefix}:{old_table_id}").as_bytes(),
+                );
+                let value = match txn.Get(&astersql_kv::Context::default(), key, &[]) {
+                    Ok(entry) => entry.Value,
+                    Err(e) if astersql_kv::IsErrNotFound(&e) => b"0".to_vec(),
+                    Err(e) => return Err(e.to_string()),
+                };
+                counters.push((prefix, value));
+            }
+            astersql_meta::TransactionMutator::new(txn)
+                .drop_table_and_auto_ids(job.schema_id, old_table_id)?;
+            for (prefix, value) in counters {
+                txn.Set(
+                    astersql_meta::transaction_meta_hash_key(
+                        hash.as_bytes(),
+                        format!("{prefix}:{}", table.ID).as_bytes(),
+                    ),
+                    value,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            astersql_meta::TransactionMutator::new(txn).create_table(job.schema_id, &table)?;
+        }
+        let meta = astersql_meta::TransactionMutator::new(txn);
+        let projected =
+            serde_json::from_value(serde_json::to_value(&table).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        bundles = astersql_ddl_placement::NewFullTableBundles(
+            &crate::persistent_create_table::Policies(&meta),
+            &projected,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Vec::new())
+    })?;
+    context.put_create_table_bundles(&bundles)?;
+    let mut next =
+        Job::decode(&job.encode(false).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    next.multi_schema_info = job.multi_schema_info.clone();
+    next.schema_state = S::None;
+    let mut version = 0;
+    context.with_transaction(&mut |txn| {
+        let mut meta = astersql_meta::TransactionMutator::new(txn);
+        version =
+            crate::persistent_actions::update_version_and_table(&mut meta, &next, &mut table)?;
+        // The final step must carry the paired physical IDs used by follower
+        // InfoSchema and placement reloads, including zero padding (Go
+        // SetSchemaDiffForReorganizePartition/SetSchemaDiffForPartitionModify).
+        let affected: Vec<_> = if args.NewPartitionIDs.is_empty() {
+            Vec::new()
+        } else {
+            (0..args.OldPhysicalTblIDs.len().max(args.NewPartitionIDs.len()))
+                .map(|i| {
+                    serde_json::json!({
+                        "schema_id": 0, "old_schema_id": 0,
+                        "table_id": args.NewPartitionIDs.get(i).copied().unwrap_or(0),
+                        "old_table_id": args.OldPhysicalTblIDs.get(i).copied().unwrap_or(0),
+                    })
+                })
+                .collect()
+        };
+        let diff = serde_json::json!({"version":version,"type":job.tp,"schema_id":job.schema_id,
+            "table_id":table.ID,"old_table_id":if replacing_table {old_table_id} else {0},
+            "old_schema_id":0,"regenerate_schema_map":false,"affected_options":affected});
+        if version > 0 {
+            txn.Set(
+                astersql_meta::transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(Vec::new())
+    })?;
+    let event = match job.tp {
+        ACTION_REORGANIZE_PARTITION => astersql_ddl_notifier::NewReorganizePartitionEvent(
+            Some(Box::new(table.clone())),
+            Some(Box::new(added)),
+            Some(Box::new(dropped)),
+        ),
+        ACTION_ALTER_TABLE_PARTITIONING => astersql_ddl_notifier::NewAddPartitioningEvent(
+            old_table_id,
+            Some(Box::new(table.clone())),
+            Some(Box::new(added)),
+        ),
+        ACTION_REMOVE_PARTITIONING => astersql_ddl_notifier::NewRemovePartitioningEvent(
+            old_table_id,
+            Some(Box::new(table.clone())),
+            Some(Box::new(dropped)),
+        ),
+        _ => unreachable!(),
+    };
+    crate::persistent_actions::async_notify_event(context, &next, -1, event)?;
+    next.finish_table_job(JobState::Done, S::None, version, std::sync::Arc::new(table));
+    // V2 finished args retain the original PartNames and complete canonical
+    // PartInfo. The compatibility adapter's smaller model must not erase them.
+    let mut finished_raw = raw;
+    if next.version != JobVersion::V1 {
+        finished_raw["old_physical_tbl_ids"] =
+            serde_json::to_value(&args.OldPhysicalTblIDs).map_err(|e| e.to_string())?;
+        if args.OldGlobalIndexes.is_empty() {
+            finished_raw
+                .as_object_mut()
+                .unwrap()
+                .remove("old_global_indexes");
+        } else {
+            finished_raw["old_global_indexes"] =
+                serde_json::to_value(&args.OldGlobalIndexes).map_err(|e| e.to_string())?;
+        }
+    }
+    next.FillFinishedArgs(args);
+    next.encode(true).map_err(|e| e.to_string())?;
+    if next.version != JobVersion::V1 {
+        next.raw_args = serde_json::to_vec(&finished_raw).map_err(|e| e.to_string())?;
+        next.args.clear();
+    }
+    *job = next;
+    Ok(version)
+}
+
+/// Stage the checked replacement definitions without removing the originals.
+/// Go prepareReorganizePartition collects dropping definitions in table order,
+/// even when a LIST request names nonadjacent partitions in a different order.
+/// Schema/type/value validation and external placement changes belong to the
+/// caller; this helper does not publish a schema version or pretend to backfill.
+pub fn stage_reorganize_partition_definitions(
+    table: &mut astersql_meta_model::TableInfo,
+    names: &[String],
+    requested: &astersql_meta_model::PartitionInfo,
+) -> Result<(), String> {
+    let partition = table
+        .Partition
+        .as_mut()
+        .ok_or("partition metadata missing")?;
+    let names: BTreeSet<_> = names.iter().map(|name| name.to_lowercase()).collect();
+    let dropped: Vec<_> = partition
+        .Definitions
+        .iter()
+        .filter(|d| names.contains(&d.Name.L))
+        .cloned()
+        .collect();
+    if names.is_empty() || dropped.len() != names.len() {
+        return Err("unknown partition in reorganization".into());
+    }
+    partition.NewTableID = requested.NewTableID;
+    partition.DDLType = requested.Type;
+    partition.DDLExpr = requested.Expr.clone();
+    partition.DDLColumns = requested.Columns.clone();
+    partition.AddingDefinitions = requested.Definitions.clone();
+    partition.DroppingDefinitions = dropped;
+    Ok(())
+}

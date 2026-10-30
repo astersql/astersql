@@ -195,6 +195,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                     | astersql_meta_model::group_3::ACTION_REMOVE_PARTITIONING
             ) && matches!(job.state, JobState::Cancelling | JobState::Rollingback);
         if !partition_rollback
+            && !crate::partition::can_finish_persisted_partition(job)
             && !crate::persistent_actions::handler_available(job.tp)
             && !matches!(
                 job.state,

@@ -104,3 +104,7 @@ schema version、diff、DB/Table 元数据和重新编码的 job 行属于一次
 ## 验证依据
 
 `cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。
+
+### 9453792437：仅Public分区最终化恢复
+
+新增 `partition::can_finish_persisted_partition` 的精确状态准入：三类分区重组作业只有已持久化的 Public 阶段可进入 `finish_persisted_partition`。这是验证来源最终元数据发布/统计通知顺序所需的局部生产接线，不将64等动作整体加入handler_available，也不补建初始/写入/回填阶段。失败时依靠现有statement stage恢复事务，原job保留Public和原参数；取消作业的既有回滚分发优先保留。详见同目录 `partition.rs.md`。

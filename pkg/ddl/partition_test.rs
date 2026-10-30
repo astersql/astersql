@@ -139,3 +139,111 @@ fn partition_add_drop_and_exchange_preserve_physical_ids() {
     )
     .unwrap();
 }
+
+#[test]
+fn port_9453792437_staging_keeps_table_order_and_full_definitions() {
+    use astersql_meta_model::{PartitionDefinition, PartitionInfo, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    let defs: Vec<_> = (0..3)
+        .map(|i| PartitionDefinition {
+            ID: i + 10,
+            Name: NewCIStr(&format!("p{i}")),
+            InValues: vec![vec![format!("{}", i + 1)]],
+            ..Default::default()
+        })
+        .collect();
+    let mut table = TableInfo {
+        Partition: Some(PartitionInfo {
+            Definitions: defs.clone(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let requested = PartitionInfo {
+        Definitions: vec![PartitionDefinition {
+            ID: 99,
+            Name: NewCIStr("new"),
+            InValues: vec![vec!["1".into()], vec!["3".into()]],
+            Comment: "retain the full definition".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    crate::partition::stage_reorganize_partition_definitions(
+        &mut table,
+        &["p2".into(), "p0".into()],
+        &requested,
+    )
+    .unwrap();
+    let pi = table.Partition.as_ref().unwrap();
+    assert_eq!(
+        serde_json::to_value(&pi.Definitions).unwrap(),
+        serde_json::to_value(&defs).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&pi.DroppingDefinitions).unwrap(),
+        serde_json::to_value([&defs[0], &defs[2]]).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&pi.AddingDefinitions).unwrap(),
+        serde_json::to_value(&requested.Definitions).unwrap()
+    );
+    let before = serde_json::to_value(&table).unwrap();
+    assert!(
+        crate::partition::stage_reorganize_partition_definitions(
+            &mut table,
+            &["absent".into()],
+            &requested
+        )
+        .is_err()
+    );
+    assert_eq!(serde_json::to_value(&table).unwrap(), before);
+}
+
+#[test]
+fn port_9453792437_retired_indexes_keep_cleanup_ids_and_adjust_hidden_offsets() {
+    use astersql_meta_model::{ColumnInfo, IndexColumn, IndexInfo, SchemaState as S, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    let column = |name: &str, offset, hidden| ColumnInfo {
+        Name: NewCIStr(name),
+        Offset: offset,
+        Hidden: hidden,
+        ..Default::default()
+    };
+    let index = |id, offset, hidden: &str, global, state| IndexInfo {
+        ID: id,
+        Name: NewCIStr(&format!("i{id}")),
+        Global: global,
+        State: state,
+        Columns: vec![IndexColumn {
+            Name: NewCIStr(hidden),
+            Offset: offset,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut table = TableInfo {
+        ID: 42,
+        Columns: vec![
+            column("a", 0, false),
+            column("h1", 1, true),
+            column("h2", 2, true),
+        ],
+        Indices: vec![
+            index(1, 1, "h1", true, S::DeleteOnly),
+            index(2, 2, "h2", false, S::DeleteOnly),
+            index(3, 0, "a", false, S::Public),
+        ],
+        ..Default::default()
+    };
+    let mut args = astersql_meta_model::group_2::TablePartitionArgs::default();
+    crate::partition::remove_replaced_partition_indexes(&mut table, &mut args);
+    assert_eq!(table.Columns.len(), 1);
+    assert_eq!(table.Columns[0].Name.L, "a");
+    assert_eq!(table.Indices.len(), 1);
+    assert_eq!(table.Indices[0].ID, 3);
+    assert_eq!(table.Indices[0].Columns[0].Offset, 0);
+    assert_eq!(args.OldGlobalIndexes.len(), 1);
+    assert_eq!(args.OldGlobalIndexes[0].TableID, 42);
+    assert_eq!(args.OldGlobalIndexes[0].IndexID, 1);
+}

@@ -612,3 +612,685 @@ fn reorg_partition_backfills_only_nonclustered_primary_index_entries() {
         ]));
     }
 }
+
+// Source 9453792437: restore the final stage from durable metadata rather than
+// inventing an in-memory reorganization state machine.
+#[test]
+fn port_9453792437_public_finalization_publishes_metadata_before_one_notification() {
+    use astersql_ddl::job_worker::{DurableJobSession, JobLease, JobWorker, WorkerType};
+    use astersql_ddl::table_mode::{DdlJobPolicy, DdlSchemaBarrier, NormalDdlExecutor};
+    use astersql_meta_model::group_3::{Job, JobState, JobVersion};
+    use std::sync::{Arc, atomic::AtomicI64};
+    struct Lease;
+    impl JobLease for Lease {
+        fn is_owner(&self) -> bool {
+            true
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+        fn owner_epoch(&self) -> u64 {
+            1
+        }
+    }
+    struct Barrier;
+    impl DdlSchemaBarrier for Barrier {
+        fn recover(&mut self, _: &Job, _: &dyn JobLease) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, _: &Job, _: i64, _: &dyn JobLease) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Policy;
+    impl DdlJobPolicy for Policy {
+        fn runnable(&mut self, _: &mut dyn DurableJobSession, _: &Job) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn error_limit(&self) -> i64 {
+            3
+        }
+        fn mdl_owner(&self) -> Option<String> {
+            None
+        }
+    }
+    let store = CreateAnalyzeStatsStore();
+    let domain = store.domain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("create table finalize_reorg(a int unsigned primary key, b varchar(255), c int, key(b), key(c,b)) partition by range(a) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30), partition pMax values less than(maxvalue))", vec![]);
+    tk.MustExec(
+        "insert into finalize_reorg values(1,'1',1),(12,'12',21),(23,'23',32)",
+        vec![],
+    );
+    let original = domain.table_by_name("test", "finalize_reorg").unwrap();
+    tk.MustExec("alter table finalize_reorg reorganize partition p1,p2 into (partition p1 values less than(17), partition p1b values less than(24), partition p2 values less than(30))", vec![]);
+    let mut table = (*domain.table_by_name("test", "finalize_reorg").unwrap()).clone();
+    let final_definitions = table.Partition.as_ref().unwrap().Definitions.clone();
+    let pi = table.Partition.as_mut().unwrap();
+    pi.DroppingDefinitions = original.Partition.as_ref().unwrap().Definitions[1..3].to_vec();
+    pi.AddingDefinitions = final_definitions[1..4].to_vec();
+    pi.DDLState = StatePublic;
+    pi.DDLAction = ACTION_REORGANIZE_PARTITION;
+    pi.OriginalPartitionIDsOrder = original
+        .Partition
+        .as_ref()
+        .unwrap()
+        .Definitions
+        .iter()
+        .map(|d| d.ID)
+        .collect();
+    let db = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|d| d.name.lower == "test")
+        .unwrap()
+        .id;
+    let mut job = Job {
+        id: table.ID + 945379,
+        schema_id: db,
+        table_id: table.ID,
+        schema_name: "test".into(),
+        table_name: "finalize_reorg".into(),
+        tp: ACTION_REORGANIZE_PARTITION,
+        state: JobState::Running,
+        schema_state: StatePublic,
+        version: JobVersion::V2,
+        ..Default::default()
+    };
+    job.raw_args = serde_json::to_vec(&serde_json::json!({"part_names":["p1","p2"],"part_info":{"definitions":final_definitions[1..4]}})).unwrap();
+    let pool = astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+    let mut session = pool.acquire().unwrap();
+    session.begin().unwrap();
+    session
+        .with_execution_context(Box::new(move |context| {
+            context.with_transaction(&mut |txn| {
+                let mut meta = astersql_meta::TransactionMutator::new(txn);
+                meta.update_table(db, &mut table)?;
+                let version = meta.gen_schema_version()?;
+                meta.set_table_schema_diff(
+                    &Job {
+                        schema_id: db,
+                        table_id: table.ID,
+                        tp: ACTION_REORGANIZE_PARTITION,
+                        ..Default::default()
+                    },
+                    version,
+                )?;
+                Ok(vec![])
+            })
+        }))
+        .unwrap();
+    session.commit().unwrap();
+    let expected = job.encode(false).unwrap();
+    let hex: String = expected.iter().map(|b| format!("{b:02x}")).collect();
+    session.query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},1,'{}','{}',X'{}',{},0)",job.id,db,job.table_id,hex,job.tp)).unwrap();
+    // Inject at the real context boundary immediately before the final
+    // metadata operation. Neither the KV transaction nor the notifier is mocked.
+    let initial_version = port945_snapshot(&domain)
+        .get_schema_version_with_non_empty_diff()
+        .unwrap();
+    let mut retry_job = astersql_meta::decode_go_history_job(&expected).unwrap();
+    session.begin().unwrap();
+    let failure = session
+        .with_execution_context(Box::new(move |inner| {
+            let mut context = Port945FinalUpdateFailure {
+                inner,
+                transaction_calls: 0,
+                notification: false,
+                replacement: None,
+            };
+            let error =
+                astersql_ddl::partition::finish_persisted_partition(&mut context, &mut retry_job)
+                    .unwrap_err();
+            assert_eq!(error, "injected final metadata failure");
+            assert_eq!(context.transaction_calls, 3);
+            assert_eq!(retry_job.schema_state, StatePublic);
+            assert_eq!(retry_job.state, JobState::Running);
+            Err(error)
+        }))
+        .unwrap_err();
+    assert_eq!(failure, "injected final metadata failure");
+    session.rollback();
+    assert_eq!(
+        port945_snapshot(&domain)
+            .get_schema_version_with_non_empty_diff()
+            .unwrap(),
+        initial_version
+    );
+    assert!(
+        session
+            .query(format!(
+                "SELECT ddl_job_id FROM mysql.tidb_ddl_notifier WHERE ddl_job_id={}",
+                job.id
+            ))
+            .unwrap()
+            .is_empty()
+    );
+    domain.reload().unwrap();
+    assert_eq!(
+        domain
+            .table_by_name("test", "finalize_reorg")
+            .unwrap()
+            .Partition
+            .as_ref()
+            .unwrap()
+            .DDLState,
+        StatePublic
+    );
+    let mut executor = NormalDdlExecutor {
+        barrier: Barrier,
+        policy: Policy,
+        sequence: Arc::new(AtomicI64::new(0)),
+    };
+    JobWorker::new(WorkerType::General)
+        .transit_persisted_job_step(&mut session, &Lease, &mut executor, &mut job, &expected)
+        .expect("persisted Public reorganization must finalize");
+    assert_eq!(job.state, JobState::Done, "{:?}", job.error);
+    assert_eq!(job.schema_state, StateNone);
+    domain.reload().unwrap();
+    let actual = domain.table_by_name("test", "finalize_reorg").unwrap();
+    let pi = actual.Partition.as_ref().unwrap();
+    assert_eq!(
+        serde_json::to_value(&pi.Definitions).unwrap(),
+        serde_json::to_value(&final_definitions).unwrap()
+    );
+    assert!(pi.AddingDefinitions.is_empty() && pi.DroppingDefinitions.is_empty());
+    assert_eq!(pi.DDLState, StateNone);
+    let events = session
+        .query(format!(
+            "SELECT schema_change FROM mysql.tidb_ddl_notifier WHERE ddl_job_id={}",
+            job.id
+        ))
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        port945_snapshot(&domain)
+            .get_schema_version_with_non_empty_diff()
+            .unwrap(),
+        initial_version + 1,
+        "only the successful final update may advance schema version"
+    );
+    let event: serde_json::Value = serde_json::from_str(&events[0][0]).unwrap();
+    assert_eq!(event["type"], ACTION_REORGANIZE_PARTITION);
+    assert_eq!(event["table_info"], serde_json::to_value(&*actual).unwrap());
+    let diff = port945_diff(&domain, job.last_schema_version);
+    assert_eq!(diff["table_id"], job.table_id);
+    let dropped = &original.Partition.as_ref().unwrap().Definitions[1..3];
+    let expected_affected: Vec<_> = (0..3).map(|i| serde_json::json!({"schema_id":0,"old_schema_id":0,"old_table_id":dropped.get(i).map(|d|d.ID).unwrap_or(0),"table_id":final_definitions[i+1].ID})).collect();
+    assert_eq!(
+        diff["affected_options"],
+        serde_json::json!(expected_affected)
+    );
+    tk.MustExec("admin check table finalize_reorg", vec![]);
+    assert_eq!(
+        tk.MustQuery("select a,b from finalize_reorg order by a", vec![])
+            .Rows()
+            .len(),
+        3
+    );
+}
+
+/// Fault injection at a context boundary; all successful operations still use
+/// the pooled session's real active MVCC transaction and real SQL notifier.
+struct Port945FinalUpdateFailure<'a> {
+    inner: &'a mut dyn astersql_ddl::job_worker::JobExecutionContext,
+    transaction_calls: usize,
+    notification: bool,
+    replacement: Option<(i64, i64, i64)>,
+}
+impl astersql_ddl::job_worker::JobExecutionContext for Port945FinalUpdateFailure<'_> {
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
+        if label == "publish-schema-change" {
+            if self.notification {
+                return Err("injected notifier SQL failure".into());
+            }
+            panic!("notification preceded final metadata update");
+        }
+        self.inner.query(sql, label)
+    }
+    fn put_create_table_bundles(
+        &mut self,
+        bundles: &[astersql_ddl_placement::Bundle],
+    ) -> Result<(), String> {
+        if let Some((db, old_id, new_id)) = self.replacement {
+            self.inner.with_transaction(&mut |txn| {
+                let meta = astersql_meta::TransactionMutator::new(txn);
+                assert!(
+                    meta.get_table(db, old_id)?.is_none(),
+                    "old table must be retired before placement publication"
+                );
+                assert!(
+                    meta.get_table(db, new_id)?.is_some(),
+                    "new metadata must be staged before placement publication"
+                );
+                Ok(vec![])
+            })?;
+        }
+        self.inner.put_create_table_bundles(bundles)
+    }
+    fn with_transaction(
+        &mut self,
+        operation: &mut dyn FnMut(&mut dyn astersql_kv::Transaction) -> Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, String> {
+        self.transaction_calls += 1;
+        if self.transaction_calls == 3 && !self.notification {
+            return Err("injected final metadata failure".into());
+        }
+        self.inner.with_transaction(operation)
+    }
+}
+
+#[test]
+fn port_9453792437_list_staging_is_durable_and_rolls_back_without_losing_rows() {
+    astersql_domain_infosync::GlobalInfoSyncerInit(
+        "port945379".into(),
+        std::sync::Arc::new(|| 1),
+        None,
+        None,
+        None,
+        astersql_domain_infosync::Codec::default(),
+        false,
+        None,
+    )
+    .unwrap();
+    use astersql_ddl::job_worker::DurableJobSession;
+    use astersql_meta_model::group_3::{Job, JobState, JobVersion};
+    let store = CreateAnalyzeStatsStore();
+    let domain = store.domain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("create table stage_list(a int unsigned primary key nonclustered global, b int not null, c varchar(255), unique index(c) global) partition by list(b) (partition p0 values in(1,2,3), partition p1 values in(4,5,6), partition p2 values in(7,8,9))", vec![]);
+    tk.MustExec(
+        "insert into stage_list values(1,1,'1'),(4,4,'4'),(9,9,'9')",
+        vec![],
+    );
+    let original = (*domain.table_by_name("test", "stage_list").unwrap()).clone();
+    let original_pi = original.Partition.as_ref().unwrap();
+    let requested = PartitionInfo {
+        Type: original_pi.Type,
+        Expr: original_pi.Expr.clone(),
+        Definitions: (0..3)
+            .map(|i| PartitionDefinition {
+                ID: original.ID + 90000 + i,
+                Name: NewCIStr(&format!("pNone{}", i + 1)),
+                InValues: vec![vec![(i + 1).to_string()], vec![(9 - i).to_string()]],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut staged = original.clone();
+    astersql_ddl::partition::stage_reorganize_partition_definitions(
+        &mut staged,
+        &["p2".into(), "p0".into()],
+        &requested,
+    )
+    .unwrap();
+    // This fixture represents a genuinely committed DeleteOnly boundary, not
+    // a manually produced expected result. The helper produced both sets.
+    staged.Partition.as_mut().unwrap().DDLState = StateDeleteOnly;
+    staged.Partition.as_mut().unwrap().DDLAction = ACTION_REORGANIZE_PARTITION;
+    let db = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|d| d.name.lower == "test")
+        .unwrap()
+        .id;
+    let pool = astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+    let mut session = pool.acquire().unwrap();
+    session.begin().unwrap();
+    session
+        .with_execution_context(Box::new(move |c| {
+            c.with_transaction(&mut |txn| {
+                let mut meta = astersql_meta::TransactionMutator::new(txn);
+                meta.update_table(db, &mut staged)?;
+                let version = meta.gen_schema_version()?;
+                meta.set_table_schema_diff(
+                    &Job {
+                        schema_id: db,
+                        table_id: staged.ID,
+                        tp: ACTION_REORGANIZE_PARTITION,
+                        ..Default::default()
+                    },
+                    version,
+                )?;
+                Ok(vec![])
+            })
+        }))
+        .unwrap();
+    session.commit().unwrap();
+    domain.reload().unwrap();
+    let actual = domain.table_by_name("test", "stage_list").unwrap();
+    let pi = actual.Partition.as_ref().unwrap();
+    assert_eq!(
+        serde_json::to_value(&pi.Definitions).unwrap(),
+        serde_json::to_value(&original_pi.Definitions).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&pi.DroppingDefinitions).unwrap(),
+        serde_json::to_value([&original_pi.Definitions[0], &original_pi.Definitions[2]]).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&pi.AddingDefinitions).unwrap(),
+        serde_json::to_value(&requested.Definitions).unwrap()
+    );
+    assert_eq!(pi.DDLState, StateDeleteOnly);
+    let mut job = Job {
+        id: original.ID + 945380,
+        schema_id: db,
+        table_id: original.ID,
+        schema_name: "test".into(),
+        table_name: "stage_list".into(),
+        tp: ACTION_REORGANIZE_PARTITION,
+        state: JobState::Cancelling,
+        schema_state: StateDeleteOnly,
+        version: JobVersion::V2,
+        ..Default::default()
+    };
+    job.raw_args =
+        serde_json::to_vec(&serde_json::json!({"part_names":["p2","p0"],"part_info":requested}))
+            .unwrap();
+    // Reuse the actual persistent cancellation/rollback stages in independent
+    // transactions; no test code edits the helper's results after publication.
+    for _ in 0..2 {
+        session.begin().unwrap();
+        let bytes = session
+            .with_execution_context(Box::new(move |c| {
+                astersql_ddl::partition::rollback_persisted_partition(c, &mut job)?;
+                job.encode(false).map_err(|e| e.to_string())
+            }))
+            .unwrap();
+        session.commit().unwrap();
+        job = astersql_meta::decode_go_history_job(&bytes).unwrap();
+    }
+    assert_eq!(job.state, JobState::RollbackDone);
+    domain.reload().unwrap();
+    let after = domain.table_by_name("test", "stage_list").unwrap();
+    assert_eq!(
+        serde_json::to_value(&after.Partition.as_ref().unwrap().Definitions).unwrap(),
+        serde_json::to_value(&original_pi.Definitions).unwrap()
+    );
+    assert!(
+        after
+            .Partition
+            .as_ref()
+            .unwrap()
+            .AddingDefinitions
+            .is_empty()
+    );
+    assert!(
+        after
+            .Partition
+            .as_ref()
+            .unwrap()
+            .DroppingDefinitions
+            .is_empty()
+    );
+    tk.MustExec("alter table stage_list reorganize partition p2,p0 into (partition pNone1 values in(1,9), partition pNone2 values in(2,8), partition pNone3 values in(3,7))", vec![]);
+    let final_table = domain.table_by_name("test", "stage_list").unwrap();
+    let final_pi = final_table.Partition.as_ref().unwrap();
+    assert_eq!(
+        final_pi
+            .Definitions
+            .iter()
+            .map(|d| d.Name.L.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pnone1", "pnone2", "pnone3", "p1"]
+    );
+    assert_eq!(
+        final_pi.GetPartitionIDByName("p1"),
+        original_pi.GetPartitionIDByName("p1")
+    );
+    tk.MustExec("admin check table stage_list", vec![]);
+    let rows = tk
+        .MustQuery("select a,b,c from stage_list order by a", vec![])
+        .Rows()
+        .clone();
+    assert_eq!(
+        rows.iter().map(|r| r.join(" ")).collect::<Vec<_>>(),
+        vec!["1 1 1", "4 4 4", "9 9 9"]
+    );
+}
+
+fn port945_snapshot(domain: &astersql_domain::Domain) -> astersql_meta::SnapshotReader {
+    domain.storage_handle().with_storage(|storage| {
+        astersql_meta::SnapshotReader::new(
+            storage.GetSnapshot(storage.CurrentVersion("global").unwrap()),
+        )
+    })
+}
+
+#[test]
+fn port_9453792437_partitioning_finalization_transfers_counters_and_old_cleanup_ids() {
+    use astersql_ddl::job_worker::DurableJobSession;
+    use astersql_meta_model::{
+        ACTION_ALTER_TABLE_PARTITIONING, ACTION_REMOVE_PARTITIONING,
+        group_3::{Job, JobState, JobVersion},
+    };
+    for action in [ACTION_ALTER_TABLE_PARTITIONING, ACTION_REMOVE_PARTITIONING] {
+        for version in [JobVersion::V1, JobVersion::V2] {
+            let store = CreateAnalyzeStatsStore();
+            let domain = store.domain();
+            let mut tk = TestKit::new(store);
+            let range = " partition by range(a) (partition p0 values less than(10), partition pmax values less than(maxvalue))";
+            let source_suffix = if action == ACTION_REMOVE_PARTITIONING {
+                range
+            } else {
+                ""
+            };
+            let target_suffix = if action == ACTION_ALTER_TABLE_PARTITIONING {
+                range
+            } else {
+                ""
+            };
+            tk.MustExec(&format!("create table convert_source(a int auto_increment primary key, b int, key idx(b)){source_suffix}"), vec![]);
+            tk.MustExec(&format!("create table copied_target(a int auto_increment primary key, b int, key idx(b)){target_suffix}"), vec![]);
+            tk.MustExec("insert into convert_source values(1,10),(12,20)", vec![]);
+            // These are actual destination records and local index entries,
+            // as they exist after backfill. Fixture setup only changes metadata.
+            tk.MustExec("insert into copied_target values(1,10),(12,20)", vec![]);
+            let mut source = (*domain.table_by_name("test", "convert_source").unwrap()).clone();
+            let target = domain.table_by_name("test", "copied_target").unwrap();
+            let old_id = source.ID;
+            let new_id = target.ID;
+            let old_defs = source
+                .Partition
+                .as_ref()
+                .map(|p| p.Definitions.clone())
+                .unwrap_or_else(|| {
+                    vec![PartitionDefinition {
+                        ID: old_id,
+                        Name: NewCIStr("p0"),
+                        ..Default::default()
+                    }]
+                });
+            let mut requested = target.Partition.clone().unwrap_or_else(|| PartitionInfo {
+                Definitions: vec![PartitionDefinition {
+                    ID: new_id,
+                    Name: NewCIStr("p0"),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            requested.NewTableID = new_id;
+            source.Partition = Some(PartitionInfo {
+                DDLState: StatePublic,
+                DDLAction: action,
+                AddingDefinitions: requested.Definitions.clone(),
+                DroppingDefinitions: old_defs.clone(),
+                ..requested.clone()
+            });
+            let db = domain
+                .info_schema()
+                .AllSchemas()
+                .into_iter()
+                .find(|d| d.name.lower == "test")
+                .unwrap()
+                .id;
+            let pool =
+                astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+            let mut session = pool.acquire().unwrap();
+            session.begin().unwrap();
+            session
+                .with_execution_context(Box::new(move |c| {
+                    c.with_transaction(&mut |txn| {
+                        let mut meta = astersql_meta::TransactionMutator::new(txn);
+                        meta.drop_table_only(db, new_id)?;
+                        meta.update_table(db, &mut source)?;
+                        for (prefix, value) in [("TID", 101), ("IID", 202), ("TARID", 303)] {
+                            txn.Set(
+                                astersql_meta::transaction_meta_hash_key(
+                                    format!("DB:{db}").as_bytes(),
+                                    format!("{prefix}:{old_id}").as_bytes(),
+                                ),
+                                value.to_string().into_bytes(),
+                            )
+                            .map_err(|e| e.to_string())?;
+                        }
+                        Ok(vec![])
+                    })
+                }))
+                .unwrap();
+            session.commit().unwrap();
+            let mut job = Job {
+                id: old_id + 945381,
+                schema_id: db,
+                table_id: old_id,
+                schema_name: "test".into(),
+                table_name: "convert_source".into(),
+                tp: action,
+                state: JobState::Running,
+                schema_state: StatePublic,
+                version,
+                ..Default::default()
+            };
+            job.raw_args = serde_json::to_vec(&if version == JobVersion::V1 {
+                serde_json::json!([[], requested])
+            } else {
+                serde_json::json!({"part_names":[],"part_info":requested})
+            })
+            .unwrap();
+            // A notifier insert error is late enough that metadata/counters
+            // have been staged. Roll back the real transaction and verify that
+            // neither table-ID replacement nor allocator transfer escaped it.
+            let mut failed_job =
+                astersql_meta::decode_go_history_job(&job.encode(false).unwrap()).unwrap();
+            session.begin().unwrap();
+            let error = session
+                .with_execution_context(Box::new(move |c| {
+                    let error = astersql_ddl::partition::finish_persisted_partition(
+                        &mut Port945FinalUpdateFailure {
+                            inner: c,
+                            transaction_calls: 0,
+                            notification: true,
+                            replacement: Some((db, old_id, new_id)),
+                        },
+                        &mut failed_job,
+                    )
+                    .unwrap_err();
+                    assert_eq!(failed_job.schema_state, StatePublic);
+                    assert_eq!(failed_job.state, JobState::Running);
+                    Err(error)
+                }))
+                .unwrap_err();
+            assert_eq!(error, "injected notifier SQL failure");
+            session.rollback();
+            let failed_reader = port945_snapshot(&domain);
+            assert!(failed_reader.get_table(db, old_id).unwrap().is_some());
+            assert!(failed_reader.get_table(db, new_id).unwrap().is_none());
+            session.begin().unwrap();
+            let bytes = session
+                .with_execution_context(Box::new(move |c| {
+                    astersql_ddl::partition::finish_persisted_partition(c, &mut job)?;
+                    job.encode(false).map_err(|e| e.to_string())
+                }))
+                .unwrap();
+            session.commit().unwrap();
+            let mut job = astersql_meta::decode_go_history_job(&bytes).unwrap();
+            assert_eq!(job.state, JobState::Done);
+            if version == JobVersion::V2 {
+                let finished: serde_json::Value = serde_json::from_slice(&job.raw_args).unwrap();
+                assert_eq!(
+                    finished["part_info"],
+                    serde_json::to_value(&requested).unwrap()
+                );
+                assert_eq!(finished["part_names"], serde_json::json!([]));
+            }
+            let args =
+                astersql_meta_model::group_2::GetFinishedTablePartitionArgs(&mut job).unwrap();
+            let mut expected_ids: Vec<_> = old_defs.iter().map(|d| d.ID).collect();
+            if expected_ids[0] != old_id {
+                expected_ids.push(old_id);
+            }
+            assert_eq!(args.OldPhysicalTblIDs, expected_ids);
+            let reader = port945_snapshot(&domain);
+            assert!(reader.get_table(db, old_id).unwrap().is_none());
+            let final_table = reader.get_table(db, new_id).unwrap().unwrap();
+            assert_eq!(final_table.Name.L, "convert_source");
+            let diff = port945_diff(
+                &domain,
+                reader.get_schema_version_with_non_empty_diff().unwrap(),
+            );
+            assert_eq!(diff["table_id"], new_id);
+            assert_eq!(diff["old_table_id"], old_id);
+            assert_eq!(
+                diff["affected_options"].as_array().unwrap().len(),
+                expected_ids.len().max(requested.Definitions.len())
+            );
+            assert_eq!(
+                final_table.Partition.is_none(),
+                action == ACTION_REMOVE_PARTITIONING
+            );
+            domain.storage_handle().with_storage(|storage| {
+                let snap = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+                for (prefix, value) in [("TID", 101), ("IID", 202), ("TARID", 303)] {
+                    let key = astersql_meta::transaction_meta_hash_key(
+                        format!("DB:{db}").as_bytes(),
+                        format!("{prefix}:{new_id}").as_bytes(),
+                    );
+                    assert_eq!(
+                        snap.Get(&astersql_kv::Context::default(), key, &[])
+                            .unwrap()
+                            .Value,
+                        value.to_string().into_bytes()
+                    );
+                }
+            });
+            let events = session
+                .query(format!(
+                    "SELECT schema_change FROM mysql.tidb_ddl_notifier WHERE ddl_job_id={}",
+                    job.id
+                ))
+                .unwrap();
+            assert_eq!(events.len(), 1);
+            let event: serde_json::Value = serde_json::from_str(&events[0][0]).unwrap();
+            assert_eq!(event["type"], action);
+            assert_eq!(event["old_table_id_for_partition"], old_id);
+            domain.reload().unwrap();
+            tk.MustExec("admin check table convert_source", vec![]);
+            let rows = tk
+                .MustQuery("select a,b from convert_source order by a", vec![])
+                .Rows()
+                .clone();
+            assert_eq!(
+                rows.iter().map(|r| r.join(" ")).collect::<Vec<_>>(),
+                vec!["1 10", "12 20"]
+            );
+        }
+    }
+}
+
+fn port945_diff(domain: &astersql_domain::Domain, version: i64) -> serde_json::Value {
+    domain.storage_handle().with_storage(|storage| {
+        let snapshot = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+        let value = snapshot
+            .Get(
+                &astersql_kv::Context::default(),
+                astersql_meta::transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                &[],
+            )
+            .unwrap();
+        serde_json::from_slice(&value.Value).unwrap()
+    })
+}

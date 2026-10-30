@@ -127,12 +127,29 @@ data_type!(
     ID: i64,
     Name: ast::CIStr
 });
-data_type!(
-    /// 单个分区定义：ID、名称与 RANGE 上界表达式列表。
-    PartitionDefinition { ID: i64, Name: ast::CIStr, LessThan: Vec<String> });
-data_type!(
-    /// 表分区信息：分区类型与定义列表。
-    PartitionInfo { ID: i64, Type: i32, Definitions: Vec<PartitionDefinition> });
+/// Partition argument view accepting both the legacy DTO and canonical Go JSON.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PartitionDefinition {
+    #[serde(alias = "id")]
+    pub ID: i64,
+    #[serde(alias = "name")]
+    pub Name: ast::CIStr,
+    #[serde(alias = "less_than")]
+    pub LessThan: Vec<String>,
+}
+
+/// Canonical PartitionInfo has no top-level ID; the legacy identity defaults.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PartitionInfo {
+    #[serde(alias = "id")]
+    pub ID: i64,
+    #[serde(alias = "type")]
+    pub Type: i32,
+    #[serde(alias = "definitions")]
+    pub Definitions: Vec<PartitionDefinition>,
+}
 data_type!(
     /// 资源组元信息桩。
     ResourceGroupInfo {

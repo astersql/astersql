@@ -273,3 +273,34 @@ fn columnar_index_type_keeps_backward_compatibility() {
     let general = IndexArg::default();
     assert_eq!(ColumnarIndexTypeNA, general.GetColumnarIndexType());
 }
+
+#[test]
+fn port_9453792437_finished_partition_args_decode_canonical_go_fields() {
+    let mut job = Job {
+        version: JobVersion2,
+        tp: ActionReorganizePartition,
+        raw_args: serde_json::to_vec(&serde_json::json!({
+            "part_names": ["p2", "p0"],
+            "part_info": {"type": 1, "definitions": [
+                {"id": 91, "name": {"O": "new", "L": "new"}, "less_than": ["100"], "in_values": [["1"]]}
+            ]},
+            "old_physical_tbl_ids": [11, 13]
+        })).unwrap(),
+        ..Default::default()
+    };
+    let raw = job.raw_args.clone();
+    let args = GetFinishedTablePartitionArgs(&mut job).unwrap();
+    assert_eq!(args.PartNames, vec!["p2", "p0"]);
+    let info = args.PartInfo.unwrap();
+    assert_eq!(info.Type, 1);
+    assert_eq!(info.Definitions[0].ID, 91);
+    assert_eq!(info.Definitions[0].Name.O, "new");
+    assert_eq!(info.Definitions[0].LessThan, vec!["100"]);
+    assert_eq!(args.OldPhysicalTblIDs, vec![11, 13]);
+    assert_eq!(
+        job.raw_args, raw,
+        "decoding must preserve full canonical JSON"
+    );
+    let legacy: PartitionInfo = serde_json::from_value(serde_json::json!({"ID":0,"Type":1,"Definitions":[{"ID":91,"Name":{"O":"new","L":"new"},"LessThan":["100"]}]})).unwrap();
+    assert_eq!(legacy.Definitions, info.Definitions);
+}

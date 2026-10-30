@@ -70,6 +70,9 @@ pub fn step(
     {
         return crate::partition::rollback_persisted_partition(context, job);
     }
+    if crate::partition::can_finish_persisted_partition(job) {
+        return crate::partition::finish_persisted_partition(context, job);
+    }
     if job.tp == 60 {
         return crate::persistent_create_table::batch_step(context, job);
     }

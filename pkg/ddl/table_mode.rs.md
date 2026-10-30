@@ -89,3 +89,7 @@
 - 新增普通 DDL action 时，应在 `persistent_actions::handler_available`/`step` 建立明确分派，而不是让 `NormalDdlExecutor` 默认成功；涉及 schema 版本时还要验证 MDL table IDs、barrier wait 和 history 收尾。
 - 修改暂停、取消、upgrade admission 或 schema sync 时分别进入 `NormalDdlExecutor::step`、[`normal_policy.rs`](./normal_policy.rs) 和 [`schema_version.rs`](./schema_version.rs)，避免把集群协议塞进 TableMode handler。
 - 性能风险主要在每步 Go wire 深拷贝、SQL/MDL 查询与 history 编码，不在精简权限 match；兼容风险集中于 job raw args、错误码、action 75、schema diff 和 history wire；正确性风险集中于 stage 释放/清理、owner fence、no-op 版本语义和非法迁移。
+
+### 9453792437：仅Public分区最终化恢复
+
+新增 `partition::can_finish_persisted_partition` 的精确状态准入：三类分区重组作业只有已持久化的 Public 阶段可进入 `finish_persisted_partition`。这是验证来源最终元数据发布/统计通知顺序所需的局部生产接线，不将64等动作整体加入handler_available，也不补建初始/写入/回填阶段。失败时依靠现有statement stage恢复事务，原job保留Public和原参数；取消作业的既有回滚分发优先保留。详见同目录 `partition.rs.md`。

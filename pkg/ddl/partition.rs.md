@@ -82,3 +82,17 @@ RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开�
 增强 SQL 表达式语义时，应优先接入 parser/AST/type context，而不是继续扩大字符串 token 启发式；需要核对 unsigned、collation、日期时间、生成列、常量折叠及 MySQL 错误兼容。增强 ADD/DROP/TRUNCATE/REORGANIZE 时，先判断需求属于轻量模型还是 owner job 主链；若是后者，必须同时考虑 `job.SchemaState`、schema diff、global index 清理/回填、delete-range、placement/TiFlash 和跨节点同步，不能仅修改本文件的内存向量。
 
 修改回填阶段时必须保持三个不变量：当前最后一个分区也要执行；只允许 global index element；索引写和 checkpoint 均成功后才能发布新游标。新增 element 类型、batch 字段或 checkpoint 列时要同步真实集成测试，并评估重试幂等性、事务大小、每批延迟和 SQL mode/resource group 透传。
+
+### 9453792437：准备定义与最终化恢复
+
+`stage_reorganize_partition_definitions` 对应来源 `prepareReorganizePartition` 中保留原 Definitions、按原表顺序收集 DroppingDefinitions 的增量，复制完整 AddingDefinitions 和目标分区设置。它接收已经校验类型/边界的请求，不承担表达式校验、索引重建、PD副作用或中间状态推进；当前仅由真实事务回归fixture使用，不应据此声称完整正常SQL重组已接线。
+
+`remove_replaced_partition_indexes` 对应同名Go辅助函数，先收集 DeleteOnly 索引，再清除列flag/依赖隐藏列并删除索引元信息；全局索引的旧table/index ID进入finished args，局部索引随物理分区清理。
+
+`can_finish_persisted_partition`/`finish_persisted_partition` 为来源 `finishReorganizePartition` 提供真实持久化入口，仅接受三类分区重组动作的 Public 阶段。`persistent_actions::step` 与 `NormalDdlExecutor` 接通该阶段恢复，未将这些动作整体登记为可从初始状态执行。它先保存 added/dropped 通知快照及GC物理ID，清空中间态、清理旧索引；改变表ID时迁移三个持久化autoID字段并重建表元信息；使用既有placement和schema/table更新入口，复用已有update_version_and_table（保留multi-schema skip_version）完成最终元数据后才调用事务内notifier并完成作业。新job快照只在全部成功后替换旧job，失败保留Public和原参数，可从持久状态重试。
+
+事务由调用方 SystemSession/JobWorker 拥有，本函数不独立提交；正常worker的statement stage把元数据、schema diff和notifier错误一起回滚。PD placement仍是外部可重试副作用，先于最终元数据更新。完整前置双写/回填状态机仍为已有缺口，不能用轻量模型或手工结果替代。测试在独立 `partition_test.rs` 和 `tests/partition/reorg_partition_test.rs`，包括真实Public fixture恢复、更新前失败无通知、重试唯一通知、LIST暂存表序与真实事务回滚。
+
+最终schema diff保留新旧table ID及按Go规则零填充配对的物理分区ID，供InfoSchema/placement重载。V1/V2真实事务fixture分别覆盖增加/移除分区：先准备真实目标行与local index，再恢复最终化；检查三种持久化counter迁移、旧表和旧物理ID、事件旧表ID及最终SQL行/索引。在真实notifier SQL入口注入错误，事务回滚后旧表仍在、新表元数据未发布，重试成功后通知唯一。隐藏列回归验证先清理一个索引后继续使用剩余索引的实时offset，避免将Go指针集合机械翻译成过期深拷贝。
+
+表ID/持久化counter迁移与新表元数据暂存先于最终PD placement，随后才发布schema/table版本；两阶段仍属于同一个调用方事务，PD或通知失败会回滚内部元数据。V2完成参数在新增GC字段时保留原PartNames和完整canonical PartInfo，不经过精简compatibility PartInfo投影丢失字段；V1保持原来的两项finished数组布局。
