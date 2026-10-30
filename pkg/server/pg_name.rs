@@ -200,6 +200,15 @@ impl Resolver<'_> {
     fn word(&self, i: usize, name: &str) -> bool {
         self.tokens.get(i).is_some_and(|t| t.word(name))
     }
+    // DISTINCT FROM belongs to the comparison predicate, not a relation list.
+    // Token words exclude comments and quoted identifiers.
+    fn relation_from(&self, i: usize) -> bool {
+        let predicate = i >= 2
+            && self.word(i - 1, "distinct")
+            && (self.word(i - 2, "is")
+                || (i >= 3 && self.word(i - 2, "not") && self.word(i - 3, "is")));
+        self.word(i, "from") && !predicate
+    }
     fn symbol(&self, i: usize, c: u8) -> bool {
         self.tokens.get(i).is_some_and(|t| t.symbol == Some(c))
     }
@@ -423,7 +432,7 @@ impl Resolver<'_> {
                                 cursor = self.close(cursor, union)? + 1;
                                 continue;
                             }
-                            if (self.word(cursor, "from") || self.word(cursor, "join"))
+                            if (self.relation_from(cursor) || self.word(cursor, "join"))
                                 && self.tokens.get(cursor + 1).and_then(|t| t.name.as_ref())
                                     == Some(name)
                                 && !self.symbol(cursor + 2, b'.')
@@ -493,7 +502,7 @@ impl Resolver<'_> {
             {
                 list = false;
             }
-            if (select || delete || insert) && self.word(i, "from") || self.word(i, "join") {
+            if (select || delete || insert) && self.relation_from(i) || self.word(i, "join") {
                 expect = true;
                 list = true;
             } else if delete && self.word(i, "using") {

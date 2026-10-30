@@ -1249,6 +1249,18 @@ impl ConcreteSession {
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
+            && matches!(Op.as_str(), "is distinct from" | "is not distinct from")
+        {
+            return super::relational_value::pg_distinct_value(
+                Op,
+                [
+                    self.relational_query_expression_value(L, row, group_rows)?,
+                    self.relational_query_expression_value(R, row, group_rows)?,
+                ],
+            );
+        }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
             && Op == "||"
         {
             return super::relational_value::pg_text_concat_value([
@@ -3471,6 +3483,42 @@ impl ConcreteSession {
                     }
                 }
                 if let ast::ExprKind::Binary { Op, L, R } = &input.Kind
+                    && (Op == "<=>"
+                        || matches!(Op.as_str(), "is distinct from" | "is not distinct from"))
+                {
+                    let types = [L.as_ref(), R.as_ref()]
+                        .map(|operand| self.session.pg_case_input_type(operand, self.sources));
+                    if Op == "<=>"
+                        || types
+                            .iter()
+                            .any(|tp| tp.GetType() != astersql_parser_mysql::r#type::TypeLong)
+                    {
+                        let names = types.each_ref().map(|tp| match tp.PostgreSQLTypeOid() {
+                            Some(23) => "integer",
+                            Some(25) => "text",
+                            Some(16) => "boolean",
+                            _ => "unknown",
+                        });
+                        let diagnostic = super::function_diagnostics::PgFunctionError {
+                            state: "42883",
+                            message: format!(
+                                "operator does not exist: {} {} {}",
+                                names[0],
+                                if Op == "<=>" { "<=>" } else { "=" },
+                                names[1]
+                            ),
+                            hint: Some(
+                                "No operator matches the given name and argument types. You might need to add explicit type casts.",
+                            ),
+                            position: Some(input.node_text.OriginTextPosition() as usize),
+                        };
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            diagnostic.to_string(),
+                            astersql_errors::SharedError::new(diagnostic),
+                        ));
+                    }
+                }
+                if let ast::ExprKind::Binary { Op, L, R } = &input.Kind
                     && Op == "||"
                 {
                     let types = [L.as_ref(), R.as_ref()]
@@ -4538,6 +4586,18 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::MySQL {
             return false;
         }
+        // Native comparisons retain their formal identity on the constant SELECT path.
+        // Keep this local to NULL-safe equality and its ordinary NULL control.
+        if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind {
+            if relational_expression_has_aggregate(expression) {
+                return false;
+            }
+            return Op == "<=>"
+                || (Op == "="
+                    && [L.as_ref(), R.as_ref()].iter().any(|arg| {
+                        matches!(&arg.Kind, ast::ExprKind::Value(value) if matches!(value.Datum, ast::ValueDatum::Null))
+                    }));
+        }
         let ast::ExprKind::Function {
             FnName,
             Schema,
@@ -5249,6 +5309,22 @@ impl ConcreteSession {
                 if source.GetType() == astersql_parser_mysql::r#type::TypeLong {
                     return source;
                 }
+            }
+            if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
+                && (matches!(Op.as_str(), "is distinct from" | "is not distinct from")
+                    || (Op == "="
+                        && [L.as_ref(), R.as_ref()].iter().all(|arg| {
+                            self.pg_case_input_type(arg, source_fields).GetType()
+                                == astersql_parser_mysql::r#type::TypeLong
+                        })))
+            {
+                let mut tp =
+                    astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeTiny);
+                tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                if Op != "=" {
+                    tp.AddFlag(astersql_parser_mysql::r#type::NotNullFlag);
+                }
+                return tp;
             }
             if let ast::ExprKind::Binary { Op, .. } = &expression.Kind
                 && Op == "||"

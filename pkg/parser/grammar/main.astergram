@@ -1794,6 +1794,7 @@ BoolPri : BoolPri CompareOp PredicateExpr %prec eq @action;
 BoolPri : BoolPri CompareOp AnyOrAll SubSelect %prec eq @action;
 BoolPri : BoolPri CompareOp singleAtIdentifier assignmentEq PredicateExpr %prec assignmentEq @action;
 BoolPri : PredicateExpr;
+BoolPri : BoolPri IsOrNotOp "DISTINCT" "FROM" PredicateExpr %prec is @action;
 CompareOp : ">=" @action;
 CompareOp : ">" @action;
 CompareOp : "<=" @action;

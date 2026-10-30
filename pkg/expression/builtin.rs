@@ -4416,6 +4416,7 @@ pub mod formal_registry {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum CoreBuiltinKind {
         Compare(&'static str, types::EvalType),
+        PgDistinct(bool),
         In(types::EvalType),
         IsNull,
         Logic(&'static str),
@@ -4573,6 +4574,31 @@ pub mod formal_registry {
             Ok((value, false))
         }
 
+        // Share int4 equality's signed/unsigned comparison and evaluate each operand once.
+        fn compare_int(
+            &self,
+            ctx: &dyn EvalContext,
+            row: chunk::Row,
+            left: usize,
+            right: usize,
+        ) -> Result<(i32, bool, bool), Error> {
+            let lhs = &self.base.args[left];
+            let rhs = &self.base.args[right];
+            let (lhs_value, lhs_null) = lhs.EvalInt(ctx, row.clone())?;
+            let (rhs_value, rhs_null) = rhs.EvalInt(ctx, row)?;
+            let lhs_unsigned = mysql::HasUnsignedFlag(lhs.GetType(ctx).GetFlag());
+            let rhs_unsigned = mysql::HasUnsignedFlag(rhs.GetType(ctx).GetFlag());
+            let comparison = match (lhs_unsigned, rhs_unsigned) {
+                (false, false) => ordering(lhs_value.cmp(&rhs_value)),
+                (true, true) => ordering((lhs_value as u64).cmp(&(rhs_value as u64))),
+                (true, false) if rhs_value < 0 => 1,
+                (true, false) => ordering((lhs_value as u64).cmp(&(rhs_value as u64))),
+                (false, true) if lhs_value < 0 => -1,
+                (false, true) => ordering((lhs_value as u64).cmp(&(rhs_value as u64))),
+            };
+            Ok((comparison, lhs_null, rhs_null))
+        }
+
         fn compare(
             &self,
             ctx: &dyn EvalContext,
@@ -4585,22 +4611,16 @@ pub mod formal_registry {
             let rhs = &self.base.args[right];
             match eval_type {
                 types::ETInt => {
-                    let (lhs_value, lhs_null) = lhs.EvalInt(ctx, row.clone())?;
-                    let (rhs_value, rhs_null) = rhs.EvalInt(ctx, row)?;
-                    if lhs_null || rhs_null {
-                        return Ok((0, true));
-                    }
-                    let lhs_unsigned = mysql::HasUnsignedFlag(lhs.GetType(ctx).GetFlag());
-                    let rhs_unsigned = mysql::HasUnsignedFlag(rhs.GetType(ctx).GetFlag());
-                    let comparison = match (lhs_unsigned, rhs_unsigned) {
-                        (false, false) => ordering(lhs_value.cmp(&rhs_value)),
-                        (true, true) => ordering((lhs_value as u64).cmp(&(rhs_value as u64))),
-                        (true, false) if rhs_value < 0 => 1,
-                        (true, false) => ordering((lhs_value as u64).cmp(&(rhs_value as u64))),
-                        (false, true) if lhs_value < 0 => -1,
-                        (false, true) => ordering((lhs_value as u64).cmp(&(rhs_value as u64))),
-                    };
-                    Ok((comparison, false))
+                    let (comparison, left_null, right_null) =
+                        self.compare_int(ctx, row, left, right)?;
+                    Ok((
+                        if left_null || right_null {
+                            0
+                        } else {
+                            comparison
+                        },
+                        left_null || right_null,
+                    ))
                 }
                 types::ETReal => {
                     let (lhs_value, lhs_null) = lhs.EvalReal(ctx, row.clone())?;
@@ -4700,6 +4720,15 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(i64, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgDistinct(negate) => {
+                    let (comparison, left_null, right_null) = self.compare_int(ctx, row, 0, 1)?;
+                    let equal = if left_null || right_null {
+                        left_null && right_null
+                    } else {
+                        Self::compare_result("eq", comparison)
+                    };
+                    Ok((i64::from(equal ^ negate), false))
+                }
                 CoreBuiltinKind::Compare(operator, eval_type) => {
                     if operator == "nulleq" {
                         let left = self.base.args[0].Eval(ctx, row.clone())?;
@@ -4863,6 +4892,7 @@ pub mod formal_registry {
                     Ok((selected, false))
                 }
                 CoreBuiltinKind::Compare(..)
+                | CoreBuiltinKind::PgDistinct(..)
                 | CoreBuiltinKind::In(..)
                 | CoreBuiltinKind::IsNull
                 | CoreBuiltinKind::Logic(..)
@@ -6886,6 +6916,29 @@ pub mod formal_registry {
         let split_collation_args = matches!(name, "||" | "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "is distinct from" | "is not distinct from"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL =>
+            {
+                if args.len() != 2
+                    || args.iter().any(|arg| {
+                        let tp = arg.GetType(ctx.GetEvalCtx());
+                        tp.GetType() != mysql::TypeLong
+                            || tp.GetFlag() & (mysql::UnsignedFlag | mysql::IsBooleanFlag) != 0
+                    })
+                {
+                    return Err(errors::New(
+                        "42883: int4 equality required for DISTINCT predicate",
+                    ));
+                }
+                let mut result = boolean_field_type();
+                result.AddFlag(mysql::NotNullFlag);
+                (
+                    CoreBuiltinKind::PgDistinct(name == "is distinct from"),
+                    result,
+                    "builtinEQIntSig",
+                )
+            }
+
             "||" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 let inputs = args
                     .iter()
@@ -7322,9 +7375,18 @@ pub mod formal_registry {
                         *argument = BuildCastFunction(ctx, argument, &cast_type);
                     }
                 }
+                let mut result = boolean_field_type();
+                if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL
+                    && matches!(name, "eq" | "nulleq")
+                {
+                    result.AddFlag(mysql::BinaryFlag);
+                    if name == "nulleq" {
+                        result.AddFlag(mysql::NotNullFlag);
+                    }
+                }
                 (
                     CoreBuiltinKind::Compare(name, eval_type),
-                    boolean_field_type(),
+                    result,
                     comparison_signature(name, eval_type),
                 )
             }
@@ -8689,6 +8751,8 @@ pub mod formal_registry {
     core_factory!(symbol_divide_factory, "/");
     core_factory!(symbol_modulo_factory, "%");
     core_factory!(pg_text_concat_factory, "||");
+    core_factory!(pg_distinct_factory, "is distinct from");
+    core_factory!(pg_not_distinct_factory, "is not distinct from");
 
     const CORE_BUILTIN_FACTORIES: &[(&str, BuiltinFactory)] = &[
         ("abs", abs_factory),
@@ -8793,6 +8857,8 @@ pub mod formal_registry {
         ("/", symbol_divide_factory),
         ("%", symbol_modulo_factory),
         ("||", pg_text_concat_factory),
+        ("is distinct from", pg_distinct_factory),
+        ("is not distinct from", pg_not_distinct_factory),
     ];
 
     static BUILTIN_FACTORIES: LazyLock<RwLock<HashMap<String, BuiltinFactory>>> =
@@ -9319,6 +9385,8 @@ pub mod formal_registry {
         ("/", 2, 2),
         ("%", 2, 2),
         ("||", 2, 2),
+        ("is distinct from", 2, 2),
+        ("is not distinct from", 2, 2),
         ("in", 2, -1),
         ("istrue", 1, 1),
         ("istrue_with_null", 1, 1),
@@ -9423,11 +9491,14 @@ pub mod formal_registry {
         match dialect {
             crate::ast::SqlDialect::PostgreSQL => !matches!(
                 name,
-                "ifnull" | "date_format" | "json_extract" | "tidb_version"
+                "nulleq" | "ifnull" | "date_format" | "json_extract" | "tidb_version"
             ),
             crate::ast::SqlDialect::MySQL => !matches!(
                 name,
-                "||" | "to_char"
+                "is distinct from"
+                    | "is not distinct from"
+                    | "||"
+                    | "to_char"
                     | "date_trunc"
                     | "array_length"
                     | "cardinality"

@@ -97,6 +97,7 @@ enum ExpressionRule {
     BoolPriAlt02,
     BoolPriAlt03,
     BoolPriAlt04,
+    PgDistinct,
     CompareOpAlt01,
     CompareOpAlt02,
     CompareOpAlt03,
@@ -535,6 +536,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "boolpri_boolpri_compareop_singleatidentifier_ass--b7ecec2d97e8ab75" => {
             Some(ExpressionRule::BoolPriAlt04)
         }
+        "boolpri_boolpri_isornotop_distinct_from_predicat--67fa6e5dd1dc2cdc" => Some(ExpressionRule::PgDistinct),
         "compareop--44a802ae026aae75" => Some(ExpressionRule::CompareOpAlt01),
         "compareop--d4799b8be039d198" => Some(ExpressionRule::CompareOpAlt02),
         "compareop--3449b8adf96a8ddb" => Some(ExpressionRule::CompareOpAlt03),
@@ -3715,6 +3717,31 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     .unwrap_or_default(),
             )]))
         }
+        ExpressionRule::PgDistinct => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("IS DISTINCT FROM requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            let (Some(left), Some(right)) = (
+                rhs[rhs_len - 4].expr.clone(),
+                rhs[rhs_len].expr.clone(),
+            ) else {
+                return Ok(false);
+            };
+            let positive = rhs[rhs_len - 3]
+                .item
+                .as_deref()
+                .and_then(|value| value.downcast_ref::<bool>())
+                .copied()
+                .unwrap_or(false);
+            // Retain a predicate/operator node, rather than a callable nulleq function.
+            let operator = if positive { "is distinct from" } else { "is not distinct from" };
+            let mut expression = parser_ast::ExprNode::Binary(
+                operator.to_owned(), Box::new(left), Box::new(right),
+            );
+            expression.node_text.SetOriginTextPosition(rhs[rhs_len - 3].offset);
+            out.expr = Some(expression);
+        }
         ExpressionRule::BoolPriAlt02 => {
             let Some(left) = rhs[rhs_len - (2)].expr.clone() else {
                 return Ok(false);
@@ -3728,11 +3755,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .and_then(|item| item.downcast_ref::<String>())
                 .cloned()
                 .unwrap_or_default();
+            let position = (operator == "<=>").then_some(rhs[rhs_len - 1].offset);
             out.expr = Some(parser_ast::ExprNode::Binary(
                 operator,
                 Box::new(left),
                 Box::new(right),
             ));
+            if let Some(position) = position {
+                out.expr.as_mut().unwrap().node_text.SetOriginTextPosition(position);
+            }
         }
         ExpressionRule::BoolPriAlt03 => {
             let Some(subquery) = rhs[rhs_len - (0)]

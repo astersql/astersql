@@ -1142,3 +1142,21 @@ fn pg_dialect_25_behavior() {
         "pg_dialect_25_behavior: same Statement Describe invalidation/restoration; original Unicode position, typed parameter/literal, recovery and listener cleanup"
     );
 }
+
+#[test]
+fn pg08_38_relation_boundaries() {
+    for sql in [
+        "SELECT NULL::int4 IS DISTINCT FROM NULL::int4 AS v",
+        "SELECT NULL::int4 IS NOT DISTINCT /* predicate */ FROM NULL::int4 AS v",
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap(), sql);
+    }
+    assert_eq!(
+        rewrite("SELECT a IS DISTINCT FROM b AS v FROM public.t", "db", true).unwrap(),
+        "SELECT a IS DISTINCT FROM b AS v FROM `db`.t"
+    );
+    assert_eq!(
+        rewrite("SELECT 1 AS distinct FROM public.t", "db", true).unwrap(),
+        "SELECT 1 AS distinct FROM `db`.t"
+    );
+}

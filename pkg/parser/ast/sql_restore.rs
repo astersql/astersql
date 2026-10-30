@@ -88,7 +88,10 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
         ExprKind::Column(col) => Ok(restore_column_name(col)),
         ExprKind::Variable { Name, .. } => Ok(format!("@{}", quote(Name))),
         ExprKind::Binary { Op, L, R } => {
-            if Op.eq_ignore_ascii_case("and") || Op.eq_ignore_ascii_case("or") {
+            if Op.eq_ignore_ascii_case("and")
+                || Op.eq_ignore_ascii_case("or")
+                || matches!(Op.as_str(), "is distinct from" | "is not distinct from")
+            {
                 Ok(format!(
                     "{} {} {}",
                     restore_expr(L)?,

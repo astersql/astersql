@@ -1033,6 +1033,52 @@ fn pg_extremum_numeric_order(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
+/// Consume the analyzed int4 equality predicate through its formal factory.
+pub(super) fn pg_distinct_value(
+    operator: &str,
+    values: [Option<String>; 2],
+) -> SessionResult<Option<String>> {
+    use astersql_expression::BuildContext;
+    let args = values
+        .into_iter()
+        .map(|value| {
+            let parsed = value
+                .as_deref()
+                .map(|v| v.parse::<i32>())
+                .transpose()
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            let mut a = parsed
+                .map(|v| astersql_expression::NewInt64Const(i64::from(v)))
+                .unwrap_or_else(astersql_expression::NewNull);
+            a.RetType = Some(astersql_parser_types::NewFieldType(
+                astersql_parser_mysql::r#type::TypeLong,
+            ));
+            Ok(Box::new(a) as Box<dyn astersql_expression::Expression>)
+        })
+        .collect::<SessionResult<Vec<_>>>()?;
+    let context = astersql_expression_exprstatic::NewExprContext(vec![
+        astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+            astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(ast::SqlDialect::PostgreSQL),
+            ]),
+        )),
+    ]);
+    let f = astersql_expression::NewFunctionBase(
+        &context,
+        operator,
+        astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeTiny),
+        args,
+    )
+    .map_err(|e| session_error("build PG DISTINCT predicate", e))?;
+    let (value, null) = f
+        .EvalInt(
+            context.GetEvalCtx(),
+            astersql_expression::chunk::Row::default(),
+        )
+        .map_err(|e| SessionError::with_source(e.to_string(), e.into_shared()))?;
+    Ok(relational_boolean_value((!null).then_some(value != 0)))
+}
+
 /// Consume the bound strict text || text signature through its formal factory.
 pub(super) fn pg_text_concat_value(values: [Option<String>; 2]) -> SessionResult<Option<String>> {
     use astersql_expression::BuildContext;
@@ -1299,6 +1345,17 @@ pub(super) fn relational_expression_value(
                 (Some(false), Some(false)) => Some(false),
                 _ => None,
             }))
+        }
+        ast::ExprKind::Binary { Op, L, R }
+            if matches!(Op.as_str(), "is distinct from" | "is not distinct from") =>
+        {
+            pg_distinct_value(
+                Op,
+                [
+                    relational_expression_value(L, row)?,
+                    relational_expression_value(R, row)?,
+                ],
+            )
         }
         ast::ExprKind::Binary { Op, L, R } if Op == "<=>" => {
             let left = relational_expression_value(L, row)?;
@@ -3397,6 +3454,16 @@ pub(super) fn relational_expression_type(
         }
         ast::ExprKind::Unary { Op, .. } if Op.eq_ignore_ascii_case("not") || Op == "!" => {
             new_type(astersql_parser_mysql::r#type::TypeLonglong)
+        }
+        ast::ExprKind::Binary { Op, .. }
+            if matches!(Op.as_str(), "is distinct from" | "is not distinct from") =>
+        {
+            let mut tp = new_type(astersql_parser_mysql::r#type::TypeTiny);
+            tp.AddFlag(
+                astersql_parser_mysql::r#type::IsBooleanFlag
+                    | astersql_parser_mysql::r#type::NotNullFlag,
+            );
+            tp
         }
         ast::ExprKind::Binary { Op, .. }
             if matches!(
