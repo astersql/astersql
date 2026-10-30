@@ -262,3 +262,204 @@ fn pg_core_integer_cast_syntax_split_boundary() {
     assert!(SplitSQLStatements(sql).is_err());
     assert!(SplitSQLStatementsWithDialect("SELECT 1::", SqlDialect::PostgreSQL).is_err());
 }
+
+fn port_f137844d4f_rows(session: &crate::runtime::ConcreteSession, sql: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    for mut result in session
+        .execute(sql)
+        .unwrap_or_else(|error| panic!("{sql}: {error}"))
+    {
+        while let Some(row) = result.next_row().unwrap() {
+            rows.push(row);
+        }
+        result.close().unwrap();
+    }
+    rows
+}
+
+#[test]
+fn port_f137844d4f_real_session_state_migration() {
+    use crate::runtime::ConcreteSession;
+    let (domain, writer) = CreateAnalyzeSession().unwrap();
+    writer
+        .execute("create table test.migration_snapshot (a int)")
+        .unwrap();
+    writer
+        .execute("insert into test.migration_snapshot values (1)")
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    writer.execute("begin").unwrap();
+    assert_eq!(
+        port_f137844d4f_rows(&writer, "select a from test.migration_snapshot"),
+        vec![vec!["1".to_string()]]
+    );
+    let tso = port_f137844d4f_rows(&writer, "select @@tidb_current_ts")[0][0]
+        .parse::<u64>()
+        .unwrap();
+    assert_ne!(tso, 0, "capture a real transaction timestamp");
+    writer.execute("rollback").unwrap();
+    let snap = chrono::DateTime::from_timestamp_millis((tso >> 18) as i64)
+        .unwrap()
+        .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+        .format("%Y-%m-%d %H:%M:%S%.6f")
+        .to_string();
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("snapshot", &["set tidb_snapshot=@snap"], "1", "1"),
+        (
+            "snapshot timezone changed",
+            &["set tidb_snapshot=@snap", "set time_zone='+00:00'"],
+            "1",
+            "1",
+        ),
+        (
+            "pending read",
+            &["set tx_read_ts=@snap", "set time_zone='+00:00'"],
+            "1",
+            "2",
+        ),
+        (
+            "snapshot replaces read",
+            &["set tx_read_ts=@snap", "set tidb_snapshot=@snap"],
+            "1",
+            "1",
+        ),
+        (
+            "read replaces snapshot",
+            &["set tidb_snapshot=@snap", "set tx_read_ts=@snap"],
+            "1",
+            "2",
+        ),
+        (
+            "consumed read",
+            &[
+                "set tx_read_ts=@snap",
+                "select a from test.migration_snapshot",
+            ],
+            "2",
+            "2",
+        ),
+        (
+            "cleared snapshot",
+            &["set tidb_snapshot=@snap", "set tidb_snapshot=''"],
+            "2",
+            "2",
+        ),
+    ];
+    let mut exports = Vec::new();
+    for (name, statements, first, second) in cases {
+        let src = ConcreteSession::new(domain.clone());
+        src.execute("set time_zone='+08:00'").unwrap();
+        src.execute(&format!("set @snap='{snap}'")).unwrap();
+        for stmt in *statements {
+            port_f137844d4f_rows(&src, stmt);
+        }
+        let expected = src.StaleReadStateForTest();
+        let json = port_f137844d4f_rows(&src, "show session_states")[0][0].clone();
+        if *name == "snapshot" {
+            let exported: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                exported["sys-vars"]["tidb_snapshot"], snap,
+                "unchanged timezone must preserve the client's datetime spelling"
+            );
+        }
+        exports.push((
+            *name,
+            json,
+            expected.snapshot_ts,
+            expected.pending_read_ts,
+            *first,
+            *second,
+        ));
+    }
+    writer
+        .execute("update test.migration_snapshot set a=2")
+        .unwrap();
+    for (name, json, snapshot, pending, first, second) in exports {
+        for _ in 0..20 {
+            let dst = ConcreteSession::new(domain.clone());
+            dst.execute("set time_zone='-07:00'").unwrap();
+            dst.execute(&format!(
+                "set session_states '{}'",
+                json.replace('\'', "''")
+            ))
+            .unwrap();
+            let restored = dst.StaleReadStateForTest();
+            assert_eq!(restored.snapshot_ts, snapshot, "{name}");
+            assert_eq!(restored.pending_read_ts, pending, "{name}");
+            assert_eq!(
+                port_f137844d4f_rows(&dst, "select a from test.migration_snapshot"),
+                vec![vec![first.to_owned()]],
+                "{name}"
+            );
+            assert_eq!(
+                port_f137844d4f_rows(&dst, "select a from test.migration_snapshot"),
+                vec![vec![second.to_owned()]],
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn port_f137844d4f_real_dst_and_system_variables() {
+    use crate::runtime::ConcreteSession;
+    let (domain, src) = CreateAnalyzeSession().unwrap();
+    src.execute("set time_zone='+08:00'").unwrap();
+    src.execute("set tx_read_ts='2024-03-10 02:30:00'").unwrap();
+    let expected = src.StaleReadStateForTest().pending_read_ts;
+    let json = port_f137844d4f_rows(&src, "show session_states")[0][0].clone();
+    let dst = ConcreteSession::new(domain.clone());
+    dst.execute("set time_zone='America/New_York'").unwrap();
+    dst.execute(&format!(
+        "set session_states '{}'",
+        json.replace('\'', "''")
+    ))
+    .unwrap();
+    assert_eq!(dst.StaleReadStateForTest().pending_read_ts, expected);
+    // The second occurrence in a rollback cannot be replayed losslessly.
+    src.execute("set time_zone='+00:00'").unwrap();
+    src.execute("set tx_read_ts='2020-11-01 06:30:00'").unwrap();
+    src.execute("set time_zone='America/New_York'").unwrap();
+    let error = src
+        .execute("show session_states")
+        .err()
+        .expect("ambiguous timestamp must reject migration");
+    assert!(
+        error
+            .to_string()
+            .contains("tx_read_ts cannot be represented")
+    );
+    src.execute("set tx_read_ts=''").unwrap();
+    for kind in ["connection", "database", "server"] {
+        src.execute(&format!("set character_set_{kind}='utf8mb4'"))
+            .unwrap();
+        src.execute(&format!("set collation_{kind}='utf8mb4_general_ci'"))
+            .unwrap();
+    }
+    src.execute("set tidb_skip_isolation_level_check=1")
+        .unwrap();
+    src.execute("set transaction_isolation='SERIALIZABLE'")
+        .unwrap();
+    let json = port_f137844d4f_rows(&src, "show session_states")[0][0].clone();
+    for _ in 0..20 {
+        let dst = ConcreteSession::new(domain.clone());
+        dst.execute(&format!(
+            "set session_states '{}'",
+            json.replace('\'', "''")
+        ))
+        .unwrap();
+        for kind in ["connection", "database", "server"] {
+            assert_eq!(
+                port_f137844d4f_rows(&dst, &format!("select @@collation_{kind}")),
+                vec![vec!["utf8mb4_general_ci".to_string()]]
+            );
+        }
+        assert_eq!(
+            port_f137844d4f_rows(&dst, "select @@transaction_isolation"),
+            vec![vec!["SERIALIZABLE".to_string()]]
+        );
+        let states: serde_json::Value =
+            serde_json::from_str(&port_f137844d4f_rows(&dst, "show session_states")[0][0]).unwrap();
+        assert!(states["sys-vars"].get("tx_read_ts").is_none());
+    }
+}

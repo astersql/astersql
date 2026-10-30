@@ -276,3 +276,10 @@ prepared声明2951参数和typed NULL映射到Uuid数组FieldType，现有绑定
 ## Task 42: typed text to bytea
 
 INSERT VALUES, INSERT SELECT and UPDATE preparation reject typed text assignment to bytea with 42804. Only explicit casts enter the bytea input function; source text identity is preserved.
+
+
+### f137844d4f 读时间戳迁移增量
+
+来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db 的必要局部接线：读时间戳与 snapshot 的 datetime 解析调用 migration::parse_session_read_datetime，使用当前会话时区而非进程时区，保证同一 SET SESSION_STATES 内先恢复时区即生效。三个字符集/排序规则及隔离级别依赖开关通过原规范变量 setter 保留重置副作用；数字 snapshot、既有事务和一次性读消费仍使用原运行时。
+
+同一增量在 tidb_snapshot 的真实 SET 完成后保留规范变量缓存中的原始字符串，使有效 TSO 未因时区变化而改变解释时，SHOW SESSION_STATES 可保留客户端 datetime 拼写；缓存不负责实际历史读取或一次性消费。

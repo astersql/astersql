@@ -67,6 +67,7 @@ mod mlog;
 mod mlog_purge;
 pub(crate) use mlog_purge::purge_mlog_snapshot_batch;
 pub(crate) use mlog_purge::run_mlog_purge_tick;
+mod migration;
 mod mview_ddl;
 pub mod mview_refresh;
 #[cfg(test)]

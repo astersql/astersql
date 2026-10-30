@@ -9212,6 +9212,7 @@ dependencies = [
  "astersql-util-tls",
  "astersql-util-traceevent",
  "chrono",
+ "chrono-tz",
  "crc",
  "serde_json",
  "serial_test",

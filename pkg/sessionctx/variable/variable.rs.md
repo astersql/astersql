@@ -124,3 +124,8 @@ Rust 保留了 Go 的 `SysVar` 元数据布局、hook 调用次序、作用域�
 修改注册表并发模型时，要保持大小写不敏感、读后持有对象有效、`GetSysVars` 返回独立快照这三个外部契约，并关注 `SHOW VARIABLES` 和扩展注册路径。修改 duration/TIME 时应与 `variable.go` 逐边界对照，至少覆盖空值、非法单位、正负号、上下界、精度、时区偏移和宽松校验不污染警告。
 
 主要风险：错误/规范化差异会影响 MySQL 兼容性；默认值或作用域差异会改变新会话行为；全局锁粒度和全表深拷贝影响高频查询性能；公开字段或钩子签名变化会影响 crate 内建变量、扩展 API 和执行路径。
+
+
+### f137844d4f 读时间戳迁移增量
+
+来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db 的最小接线：规范变量 SessionVars::GetSessionStatesSystemVar 返回 Result<(String,bool),VariableError>，优先调用 SysVar::GetStateValue 并传播错误，否则读取已加载系统变量字符串；避免复用旧 session::SessionVars 的无错误缓存接口吞掉 DST 迁移拒绝。

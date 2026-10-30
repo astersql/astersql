@@ -1,5 +1,5 @@
-// Copyright 2016 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2016 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -399,7 +399,16 @@ pub fn parseTSFromNumberOrTime(vars: &SessionVars, value: &str) -> Result<u64, V
 fn parseTSFromTime(vars: &SessionVars, value: &str) -> Result<u64, VariableError> {
     let parsed = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .map_err(|error| VariableError::new(VariableErrorKind::WrongType, error.to_string()))?;
-    let timestamp = match vars.location().from_local_datetime(&parsed) {
+    let local = if let Some(zone) = vars
+        .system("time_zone")
+        .and_then(|name| name.parse::<chrono_tz::Tz>().ok())
+    {
+        zone.from_local_datetime(&parsed)
+            .map(|time| time.fixed_offset())
+    } else {
+        vars.location().from_local_datetime(&parsed)
+    };
+    let timestamp = match local {
         LocalResult::Single(timestamp) => timestamp,
         LocalResult::Ambiguous(first, _) => first,
         LocalResult::None => {
@@ -607,4 +616,45 @@ pub fn expression_index_function_map() -> HashMap<&'static str, ()> {
         .copied()
         .map(|name| (name, ()))
         .collect()
+}
+
+/// Export the effective snapshot, preserving its spelling only while it still denotes that TSO.
+pub fn getSnapshotTSState(vars: &mut SessionVars) -> Result<(String, bool), VariableError> {
+    if vars.SnapshotTS == 0 {
+        return Ok((String::new(), false));
+    }
+    if let Some(value) = vars.system(vardef::TiDBSnapshot)
+        && parseTSFromNumberOrTime(vars, value).ok() == Some(vars.SnapshotTS)
+    {
+        return Ok((value.to_owned(), true));
+    }
+    Ok((vars.SnapshotTS.to_string(), true))
+}
+
+/// A consumed one-shot read must not be replayed; ambiguous wall clocks refuse migration.
+pub fn getTxnReadTSState(vars: &mut SessionVars) -> Result<(String, bool), VariableError> {
+    if vars.TxnReadTS == 0 {
+        return Ok((String::new(), false));
+    }
+    let utc = chrono::DateTime::from_timestamp_millis((vars.TxnReadTS >> 18) as i64)
+        .ok_or_else(|| VariableError::wrong_value("tx_read_ts", "out of range"))?;
+    let value = if let Some(zone) = vars
+        .system("time_zone")
+        .and_then(|name| name.parse::<chrono_tz::Tz>().ok())
+    {
+        utc.with_timezone(&zone)
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string()
+    } else {
+        utc.with_timezone(&vars.location())
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string()
+    };
+    if parseTSFromNumberOrTime(vars, &value)? != vars.TxnReadTS {
+        return Err(VariableError::new(
+            VariableErrorKind::InvalidValue,
+            "tx_read_ts cannot be represented in the session time zone",
+        ));
+    }
+    Ok((value, true))
 }

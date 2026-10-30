@@ -118,3 +118,10 @@ Rust 的独立测试没有嵌入生产文件，而位于 [`sysvar_builtins_test.
 5. 兼容项应优先完整实现；只有无运行效果的变量才进入 noop 元数据。不要让 noop 后注册覆盖真实定义。
 6. 同步修改独立测试 `sysvar_builtins_test.rs`；若行为来自 Go，还应核对 `sysvar.go` 与 `sysvar_test.go` 的默认值、warning、钳制和 hook 顺序。测试全局状态时必须恢复原值，必要时串行执行。
 7. 性能风险主要来自高频 session getter/setter 中的分配、锁或配置读取；正确性风险主要来自字符串 map 与强类型字段不一致、全局 hook 与持久化非原子、别名定义漂移及跨变量不变量失配。
+
+
+### f137844d4f 读时间戳迁移增量
+
+来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db：register_migration_sysvars 在通用默认值之后安装 tidb_snapshot/tx_read_ts 的生产 setter 与 GetStateValue hook；time_zone、三个字符集和 tidb_skip_isolation_level_check 标为 Depended。字符集 setter 使用既有元数据重置配对 collation，恢复顺序必须先字符集后 collation。time_zone 接受 chrono-tz 既有命名时区集合，实际时间戳解析读取命名区域以处理 DST；外部时钟/存储逻辑没有替换。
+
+时区从显式偏移切回 SYSTEM 时，规范变量对象按现有 RuntimeTimeZone::parse 的 UTC 系统解释重置固定偏移，避免旧偏移污染后续时间戳导出/恢复。本增量没有引入另一套宿主机时区探测。

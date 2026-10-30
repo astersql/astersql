@@ -1229,3 +1229,56 @@ fn go_test_relaxed_validation_time_and_dependency_order() {
                 .unwrap()
     );
 }
+
+#[test]
+fn port_f137844d4f_order_by_dependency() {
+    use astersql_sessionctx_variable::{OrderByDependency, register_builtin_sysvars};
+    use std::collections::HashMap;
+    register_builtin_sysvars();
+    let pairs = [
+        ("character_set_connection", "collation_connection"),
+        ("character_set_database", "collation_database"),
+        ("character_set_server", "collation_server"),
+        ("time_zone", "tx_read_ts"),
+        ("tidb_skip_isolation_level_check", "tx_isolation"),
+        ("tidb_skip_isolation_level_check", "transaction_isolation"),
+        ("tidb_enable_noop_functions", "tx_read_only"),
+        ("tidb_enable_noop_functions", "sql_auto_is_null"),
+        ("tidb_allow_mpp", "tidb_enforce_mpp"),
+        (
+            "tidb_enable_historical_stats",
+            "tidb_enable_plan_replayer_continuous_capture",
+        ),
+    ];
+    let mut values: HashMap<String, String> = pairs
+        .iter()
+        .flat_map(|(a, b)| [((*a).into(), "1".into()), ((*b).into(), "1".into())])
+        .chain([("unknown".into(), "1".into())])
+        .collect();
+    for (name, value) in [
+        ("time_zone", "+08:00"),
+        ("tx_read_ts", "2020-01-02 03:04:05"),
+        ("tx_isolation", "SERIALIZABLE"),
+        ("transaction_isolation", "SERIALIZABLE"),
+        ("character_set_connection", "utf8mb4"),
+        ("character_set_database", "utf8mb4"),
+        ("character_set_server", "utf8mb4"),
+        ("collation_connection", "utf8mb4_general_ci"),
+        ("collation_database", "utf8mb4_general_ci"),
+        ("collation_server", "utf8mb4_general_ci"),
+        ("tidb_enable_local_txn", "1"),
+    ] {
+        values.insert(name.into(), value.into());
+    }
+    for _ in 0..100 {
+        let names = OrderByDependency(&values);
+        assert_eq!(names.len(), values.len());
+        assert!(names.iter().any(|name| name == "unknown"));
+        for (before, after) in pairs {
+            assert!(
+                names.iter().position(|n| n == before) < names.iter().position(|n| n == after),
+                "{before} before {after}"
+            );
+        }
+    }
+}

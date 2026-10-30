@@ -96,3 +96,8 @@ RustCodeGraph 对精确同名符号能够区分 Rust/Go 节点（例如 Rust `pa
 - 扩展 `GAFunction4ExpressionIndex` 时，应同步展示字符串和查找映射的测试，并核对 Go AST 常量对应的稳定名称；扩展 ANALYZE 类型时同时更新校验器和宽容解析器。
 - 新增全局副作用应延续“外部写入成功后再发布进程内状态”的顺序，并评估失败原子性、重试和启动恢复；不要在本文件中实现 owner 的具体生命周期。
 - 若修改公共符号，应检查 `lib.rs` 的整体再导出所形成的跨 crate API 面，以及 RustCodeGraph/全仓搜索列出的 `pkg/session/runtime`、`pkg/expression`、`pkg/server`、`pkg/ddl` 等调用方。
+
+
+### f137844d4f 读时间戳迁移增量
+
+来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db：getSnapshotTSState 以有效 SnapshotTS 为准，仅在缓存串仍解析到同一 TSO 时保留客户端拼写；getTxnReadTSState 忽略已消费/清除的零值，以会话时区输出毫秒 datetime，再解析校验精确等价，DST 回拨第二次出现或逻辑位无法表达时拒绝迁移。parseTSFromTime 使用 systems 中的命名时区，未命名则复用 FixedOffset；数字仅由 snapshot 的 parseTSFromNumberOrTime 接受，tx_read_ts setter 仍只接受 datetime。

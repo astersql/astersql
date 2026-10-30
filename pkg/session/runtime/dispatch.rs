@@ -2225,6 +2225,13 @@ impl ConcreteSession {
                 .map_err(|error| session_error("create view", error))?;
             return Ok(None);
         }
+        if let Some(states) = statement
+            .as_any()
+            .downcast_ref::<ast::SetSessionStatesStmt>()
+        {
+            self.restore_migration_system_vars(&states.SessionStates)?;
+            return Ok(None);
+        }
         if let Some(set) = statement.as_any().downcast_ref::<ast::SetStmt>() {
             self.execute_set(set)?;
             return Ok(None);
@@ -2364,6 +2371,9 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(show) = statement.as_any().downcast_ref::<ast::ShowStmt>() {
+            if show.Tp == ast::ShowStmtType::SessionStates {
+                return Ok(Some(self.show_migration_system_vars()?));
+            }
             if show.Tp == ast::ShowStmtType::StorageClassTransitions {
                 if !astersql_config::get_global_config().enable_storage_class {
                     return Err(SessionError::new(

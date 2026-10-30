@@ -139,3 +139,8 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ## 2026-10-27 JSONB显式转换接线
 
 挂载pg_jsonb转换模块及独立pg_jsonb_test测试；复用PgJsonCastError传递结构化错误。
+
+
+### f137844d4f 局部迁移接线
+
+新增 migration 模块装配，以既有 RuntimeTimeZone、SessionState 历史读状态、SessionStates JSON 和 execute_set 实现本来源系统变量与读时间戳迁移片段；未改变其他 runtime 模块装配、PostgreSQL 分派或事务生命周期。

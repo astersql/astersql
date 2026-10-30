@@ -129,3 +129,8 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并点名 `p
 - 扩展 `SET_VAR`：维持“首次旧值”“尽力恢复全部项”“binding 标记推进”的不变量，并在 [`session_hint_bridge_aster_unit_test.rs`](./session_hint_bridge_aster_unit_test.rs) 增加独立回归测试。
 - 扩展计划 ID、标量子查询、耗时或选择率：分别同步 [`session_planner_ids_aster_unit_test.rs`](./session_planner_ids_aster_unit_test.rs)、[`scalar_subquery_registry_aster_unit_test.rs`](./scalar_subquery_registry_aster_unit_test.rs)、[`slow_log_test.rs`](./slow_log_test.rs)；普通本文件状态行为放在 [`session_test.rs`](./session_test.rs)。测试逻辑保持在独立 `*_test.rs`，不要嵌入生产文件。
 - 修改 Go 对齐行为时，应逐项记录 Go `session.go` 的对应增量；不要顺手补齐 Go 文件中与该增量无关的完整子系统。
+
+
+### f137844d4f 读时间戳迁移增量
+
+来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db：GetEffectiveSessionStateSystemVars 复用 hint_system_vars 中的规范变量对象；调用者传入实际 snapshot 与尚未消费的一次性读 TSO，以及当前时区。该桥只在导出时同步权威有效状态，随后通过规范状态 hook 导出变量；缓存 SET 字符串不能复活已消费时间戳。旧双元组 API 保留给既有调用者，真实 runtime 迁移使用可传播错误的新桥。

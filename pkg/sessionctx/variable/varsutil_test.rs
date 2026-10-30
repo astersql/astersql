@@ -1210,3 +1210,139 @@ fn test_assertion_level() {
         AssertionLevel::AssertionLevelOff
     );
 }
+
+#[test]
+fn port_f137844d4f_timestamp_state_hooks() {
+    let mut vars = session();
+    vars.SetSystemVar("time_zone", "+08:00").unwrap();
+    let snapshot = GetSysVar("tidb_snapshot").unwrap();
+    let export = snapshot
+        .GetStateValue
+        .as_ref()
+        .expect("effective snapshot export hook");
+    assert_eq!(export(&mut vars).unwrap(), (String::new(), false));
+    vars.SetSystemVar("tidb_snapshot", "2020-01-02 03:04:05.123456")
+        .unwrap();
+    let effective = vars.SnapshotTS;
+    assert_ne!(effective, 0);
+    assert_eq!(
+        export(&mut vars).unwrap(),
+        ("2020-01-02 03:04:05.123456".into(), true)
+    );
+    vars.SetSystemVar("time_zone", "+00:00").unwrap();
+    assert_eq!(export(&mut vars).unwrap(), (effective.to_string(), true));
+    vars.SetSystemVar("tidb_snapshot", "420000000000000123")
+        .unwrap();
+    assert_eq!(
+        export(&mut vars).unwrap(),
+        ("420000000000000123".into(), true)
+    );
+    vars.SetSystemVar("tx_read_ts", "2020-01-02 03:04:05.123456")
+        .unwrap();
+    assert_eq!(export(&mut vars).unwrap(), (String::new(), false));
+    let read = GetSysVar("tx_read_ts").unwrap();
+    let export_read = read
+        .GetStateValue
+        .as_ref()
+        .expect("effective read timestamp hook");
+    assert_eq!(
+        export_read(&mut vars).unwrap(),
+        ("2020-01-02 03:04:05.123".into(), true)
+    );
+    vars.TxnReadTS = 0; // The transaction owner consumes the one-shot timestamp.
+    assert_eq!(export_read(&mut vars).unwrap(), (String::new(), false));
+    assert!(
+        vars.SetSystemVar("tx_read_ts", "420000000000000123")
+            .is_err()
+    );
+}
+
+#[test]
+fn port_f137844d4f_ambiguous_timestamp_rejects_migration() {
+    let mut vars = session();
+    vars.SetSystemVar("time_zone", "+00:00").unwrap();
+    vars.SetSystemVar("tx_read_ts", "2020-11-01 06:30:00")
+        .unwrap();
+    vars.SetSystemVar("time_zone", "America/New_York").unwrap();
+    let read = GetSysVar("tx_read_ts").unwrap();
+    let error = read.GetStateValue.as_ref().unwrap()(&mut vars).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tx_read_ts cannot be represented")
+    );
+}
+
+#[test]
+fn port_f137844d4f_dependency_order() {
+    let pairs = [
+        ("character_set_connection", "collation_connection"),
+        ("character_set_database", "collation_database"),
+        ("character_set_server", "collation_server"),
+        ("time_zone", "tx_read_ts"),
+        ("tidb_skip_isolation_level_check", "tx_isolation"),
+        ("tidb_skip_isolation_level_check", "transaction_isolation"),
+    ];
+    register_builtin_sysvars();
+    for (before, after) in pairs {
+        for _ in 0..100 {
+            let names = OrderByDependency(&HashMap::from([
+                (before.into(), "1".into()),
+                (after.into(), "1".into()),
+            ]));
+            assert!(
+                names.iter().position(|n| n == before) < names.iter().position(|n| n == after),
+                "{before} before {after}"
+            );
+        }
+    }
+}
+
+#[test]
+fn port_f137844d4f_variable_state_replay() {
+    for (name, value, changed_zone) in [
+        ("tidb_snapshot", "2020-01-02 03:04:05.123456", true),
+        ("tidb_snapshot", "420000000000000123", false),
+        ("tx_read_ts", "2020-01-02 03:04:05.123456", true),
+    ] {
+        let mut source = session();
+        source.SetSystemVar("time_zone", "+08:00").unwrap();
+        source.SetSystemVar(name, value).unwrap();
+        if changed_zone {
+            source.SetSystemVar("time_zone", "+00:00").unwrap();
+        }
+        let mut values = HashMap::new();
+        for name in ["time_zone", "tidb_snapshot", "tx_read_ts"] {
+            let (value, keep) = source.GetSessionStatesSystemVar(name).unwrap();
+            if keep {
+                values.insert(name.to_owned(), value);
+            }
+        }
+        for _ in 0..20 {
+            let mut dst = session();
+            dst.SetSystemVar("time_zone", "-07:00").unwrap();
+            for name in OrderByDependency(&values) {
+                dst.SetSystemVar(&name, &values[&name]).unwrap();
+            }
+            assert_eq!(dst.SnapshotTS, source.SnapshotTS);
+            assert_eq!(dst.TxnReadTS, source.TxnReadTS);
+        }
+    }
+}
+
+#[test]
+fn port_f137844d4f_system_timezone_replay_after_offset_change() {
+    let mut source = session();
+    source.SetSystemVar("time_zone", "+08:00").unwrap();
+    source
+        .SetSystemVar("tx_read_ts", "2020-01-02 03:04:05.123456")
+        .unwrap();
+    source.SetSystemVar("time_zone", "SYSTEM").unwrap();
+    let (value, keep) = source.GetSessionStatesSystemVar("tx_read_ts").unwrap();
+    assert!(keep);
+    let mut destination = session();
+    destination.SetSystemVar("time_zone", "-07:00").unwrap();
+    destination.SetSystemVar("time_zone", "SYSTEM").unwrap();
+    destination.SetSystemVar("tx_read_ts", &value).unwrap();
+    assert_eq!(destination.TxnReadTS, source.TxnReadTS);
+}

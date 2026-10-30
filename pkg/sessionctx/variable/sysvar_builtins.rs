@@ -1342,8 +1342,9 @@ fn register_sql_and_session_vars() {
     RegisterSysVar(default_collation);
 
     let mut timezone = string_var("time_zone", "SYSTEM", scope_both());
+    timezone.Depended = true;
     timezone.Validation = Some(Arc::new(|_, _, original, _| {
-        let valid_named = matches!(original, "UTC" | "SYSTEM" | "America/Edmonton");
+        let valid_named = original == "SYSTEM" || original.parse::<chrono_tz::Tz>().is_ok();
         let valid_offset = original
             .strip_prefix(['+', '-'])
             .and_then(|value| value.split_once(':'))
@@ -1358,7 +1359,7 @@ fn register_sql_and_session_vars() {
         }
     }));
     timezone.SetSession = Some(Arc::new(|vars, value| {
-        if value == "UTC" || value == "+00:00" {
+        if matches!(value, "UTC" | "+00:00" | "SYSTEM") {
             vars.set_location(chrono::FixedOffset::east_opt(0).unwrap());
         } else if let Some((sign, rest)) = value.split_at_checked(1)
             && matches!(sign, "+" | "-")
@@ -1391,11 +1392,9 @@ fn register_sql_and_session_vars() {
     isolation.Name = "transaction_isolation".to_owned();
     isolation.Aliases.clear();
     RegisterSysVar(isolation);
-    RegisterSysVar(bool_var(
-        "tidb_skip_isolation_level_check",
-        false,
-        scope_both(),
-    ));
+    let mut skip_isolation = bool_var("tidb_skip_isolation_level_check", false, scope_both());
+    skip_isolation.Depended = true;
+    RegisterSysVar(skip_isolation);
 
     let mut multi = enum_var(
         "tidb_multi_statement_mode",
@@ -2575,6 +2574,7 @@ pub fn register_builtin_sysvars() {
         register_mem_arbitrator_vars();
         register_compatibility_vars();
         register_noop_compatibility_vars();
+        register_migration_sysvars();
     });
 }
 
@@ -2591,4 +2591,35 @@ pub fn set_global_system_var(
     vars.GlobalVarsAccessor
         .set_global_sys_var_only(&Context, name, &normalized, true)?;
     Ok(normalized)
+}
+
+/// Read-timestamp migration hooks and charset ordering are installed after generic defaults.
+fn register_migration_sysvars() {
+    let mut snapshot = string_var("tidb_snapshot", "", vardef::ScopeSession);
+    snapshot.SetSession = Some(Arc::new(crate::setSnapshotTS));
+    snapshot.GetStateValue = Some(Arc::new(crate::getSnapshotTSState));
+    RegisterSysVar(snapshot);
+    let mut read = string_var("tx_read_ts", "", vardef::ScopeSession);
+    read.Hidden = true;
+    read.SetSession = Some(Arc::new(crate::setTxnReadTS));
+    read.GetStateValue = Some(Arc::new(crate::getTxnReadTSState));
+    RegisterSysVar(read);
+    for (charset, collation) in [
+        ("character_set_connection", "collation_connection"),
+        ("character_set_database", "collation_database"),
+        ("character_set_server", "collation_server"),
+    ] {
+        let mut variable = string_var(charset, "utf8mb4", scope_both());
+        variable.Depended = true;
+        variable.Validation = Some(Arc::new(move |_, value, _, _| {
+            crate::checkCharacterSet(value, charset)
+        }));
+        variable.SetSession = Some(Arc::new(move |vars, value| {
+            let info = parser_charset::charset::GetCharsetInfo(value)
+                .map_err(|_| VariableError::wrong_value(charset, value))?;
+            vars.set_system(collation, info.DefaultCollation);
+            Ok(())
+        }));
+        RegisterSysVar(variable);
+    }
 }

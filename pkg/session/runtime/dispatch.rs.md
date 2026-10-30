@@ -146,3 +146,8 @@ EXECUTE 的 hint/binding 分析复用该记录的原始 AST，避免重新用默
 正常parse与既有date常量恢复后调用apply_pg_float4_constants，再做真实ARRAY语义分析与共享执行；不绕开分析器或结果消费者。
 
 验证与兼容性范围见 `docs/postgresql-pg05-array-float4-evidence.md`；测试位于对应独立测试文件，生产文件不嵌入单元测试。
+
+
+### f137844d4f 读时间戳迁移增量
+
+来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db 的必要局部接线：复用既有 ShowStmtType::SessionStates 和 SetSessionStatesStmt AST，将本来源要求的系统变量迁移片段路由到 migration 模块；其他语句、PostgreSQL 协议/portal/SQLSTATE 和事务执行分派保持原路径。

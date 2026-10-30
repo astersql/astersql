@@ -1457,6 +1457,31 @@ impl SessionVars {
             None => (String::new(), false),
         }
     }
+    /// Read effective runtime timestamps through the canonical migration hooks.
+    /// The runtime owns consumption; cached SET strings must never resurrect it.
+    pub fn GetEffectiveSessionStateSystemVars(
+        &self,
+        snapshot: u64,
+        pending: u64,
+        time_zone: &str,
+    ) -> Result<HashMap<String, String>, crate::VariableError> {
+        let mut vars = self
+            .hint_system_vars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        vars.SetSystemVar("time_zone", time_zone)?;
+        vars.SnapshotTS = snapshot;
+        vars.TxnReadTS = pending;
+        let mut values = HashMap::new();
+        for name in crate::GetSysVars().keys() {
+            let (value, keep) = vars.GetSessionStatesSystemVar(name)?;
+            if keep {
+                values.insert(name.clone(), value);
+            }
+        }
+        Ok(values)
+    }
+
     /// 不额外校验地设置系统变量（当前仍走 SetSystemVar）。
     pub fn SetSystemVarWithoutValidation(&mut self, name: &str, value: &str) -> Result<(), String> {
         self.SetSystemVar(name, value)

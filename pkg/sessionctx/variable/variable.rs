@@ -1,5 +1,5 @@
-// Copyright 2021 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2021 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -370,6 +370,21 @@ impl SessionVars {
     /// 设置会话时区。
     pub fn set_location(&mut self, location: FixedOffset) {
         self.location = location;
+    }
+
+    /// Export through the registered state hook, so errors cannot silently drop a timestamp.
+    pub fn GetSessionStatesSystemVar(
+        &mut self,
+        name: &str,
+    ) -> Result<(String, bool), VariableError> {
+        let variable = GetSysVar(name).ok_or_else(|| VariableError::unknown(name))?;
+        if let Some(hook) = &variable.GetStateValue {
+            return hook(self);
+        }
+        Ok(self
+            .system(name)
+            .map(|value| (value.to_owned(), true))
+            .unwrap_or_default())
     }
 
     /// SELECT 语句下返回 MaxKeysRead；其它语句返回 0。

@@ -4977,8 +4977,7 @@ impl ConcreteSession {
             if let Ok(timestamp) = value.parse::<u64>() {
                 return observe_stale_tso(timestamp);
             }
-            let micros = parse_stale_datetime_micros(value)
-                .map_err(|error| session_error("parse stale read timestamp", error))?;
+            let micros = self.parse_session_read_datetime(value)?;
             return observe_stale_tso(((micros.max(0) as u64) / 1_000) << 18);
         }
 
@@ -5023,8 +5022,7 @@ impl ConcreteSession {
             }
             return observe_stale_tso(timestamp);
         }
-        let micros = parse_stale_datetime_micros(text)
-            .map_err(|error| session_error("parse stale read timestamp", error))?;
+        let micros = self.parse_session_read_datetime(text)?;
         let now_micros = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -7295,8 +7293,7 @@ impl ConcreteSession {
                         (Some(version), catalog_version)
                     } else {
                         let micros =
-                            parse_stale_datetime_micros(value.trim_matches(['\'', '"']))
-                                .map_err(|error| session_error("parse tidb_snapshot", error))?;
+                            self.parse_session_read_datetime(value.trim_matches(['\'', '"']))?;
                         let snapshot_time = UNIX_EPOCH
                             + std::time::Duration::from_nanos(micros.max(0) as u64 * 1_000 + 999);
                         let catalog_version = self
@@ -7317,6 +7314,12 @@ impl ConcreteSession {
                     if snapshot_read_ts.is_some() {
                         state.pending_stale_read_ts = None;
                     }
+                    drop(state);
+                    // Preserve the client's snapshot spelling for the migration hook;
+                    // the runtime remains the owner of the effective timestamp.
+                    self.session_vars
+                        .SetHintSystemVarWithOldState(&name, &value)
+                        .map_err(|error| session_error("cache snapshot system variable", error))?;
                 }
                 "tx_read_ts" => {
                     if self.state.borrow().transaction.is_some() {
@@ -7423,7 +7426,12 @@ impl ConcreteSession {
                         .map_err(|error| SessionError::new(error.to_string()))?;
                     self.state.borrow_mut().sql_mode = formatted;
                 }
-                astersql_sessionctx_vardef::CharacterSetServer
+                astersql_sessionctx_vardef::CharacterSetConnection
+                | astersql_sessionctx_vardef::CharsetDatabase
+                | astersql_sessionctx_vardef::CollationConnection
+                | astersql_sessionctx_vardef::CollationDatabase
+                | astersql_sessionctx_vardef::TiDBSkipIsolationLevelCheck
+                | astersql_sessionctx_vardef::CharacterSetServer
                 | astersql_sessionctx_vardef::CollationServer => {
                     self.session_vars
                         .SetHintSystemVarWithOldState(&name, &value)
