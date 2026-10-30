@@ -25,6 +25,9 @@
 use crate::calculator::{NewPriorityCalculator, PriorityCalculator};
 use crate::heap::{NewHeap, PqHeapImpl};
 use crate::job::{AnalysisJob, AnalysisJobJSON, FailureJobHook, Indicators, SuccessJobHook};
+use crate::{
+    AnalysisJobFactory, GetPartitionStats, PartitionDefinition, PartitionStatsProvider, TableInfo,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, Weak};
@@ -46,6 +49,16 @@ pub const SLOW_LOG_THRESHOLD: Duration = Duration::from_millis(150);
 pub trait QueueSource: Send + Sync + 'static {
     /// 全量扫描表并构建初始分析作业列表。
     fn build_analysis_jobs(&self) -> Result<Vec<Box<dyn AnalysisJob>>, String>;
+    /// Serially emit jobs during a scan. Existing sources retain their batch adapter.
+    fn visit_analysis_jobs(
+        &self,
+        visit: &mut dyn FnMut(Box<dyn AnalysisJob>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for job in self.build_analysis_jobs()? {
+            visit(job)?;
+        }
+        Ok(())
+    }
     /// 根据 DML 变更与当前运行中作业集合，返回需更新的作业。
     fn changed_analysis_jobs(
         &self,
@@ -60,6 +73,115 @@ pub trait QueueSource: Send + Sync + 'static {
     /// 刷新指定作业的 Indicators（尤其是 LastAnalysisDuration）。
     fn refreshed_indicators(&self, _table_id: i64) -> Result<Option<Indicators>, String> {
         Ok(None)
+    }
+}
+
+/// Metadata required by the scan callback; one table is retained at a time.
+pub struct AnalysisScanTable {
+    pub info: TableInfo,
+    /// None means the schema no longer exists in the current InfoSchema.
+    pub schema_name: Option<String>,
+    pub is_view: bool,
+    /// None is non-partitioned; Some(empty) is still a partitioned table.
+    pub partitions: Option<Vec<PartitionDefinition>>,
+}
+
+/// Session/lock snapshot obtained once before scanning, matching Go CallWithSCtx.
+pub struct AnalysisScanParameters {
+    pub factory: AnalysisJobFactory,
+    pub locked_tables: HashSet<i64>,
+    pub static_prune: bool,
+}
+
+/// Boundary to existing metadata iteration and physical statistics. The visitor must
+/// run serially and its error (including cancellation) must stop the scan.
+pub trait AnalysisTableSource: PartitionStatsProvider + Send + Sync + 'static {
+    fn parameters(&self) -> Result<AnalysisScanParameters, String>;
+    fn visit_tables(
+        &self,
+        visit: &mut dyn FnMut(AnalysisScanTable) -> Result<(), String>,
+    ) -> Result<(), String>;
+}
+
+/// Streaming adapter for the existing queue and analysis job factory. Runtime
+/// ownership and DML cursors remain with the caller's existing source adapter.
+pub struct TableScanQueueSource<S: AnalysisTableSource>(pub S);
+
+impl<S: AnalysisTableSource> QueueSource for TableScanQueueSource<S> {
+    fn build_analysis_jobs(&self) -> Result<Vec<Box<dyn AnalysisJob>>, String> {
+        // Compatibility for callers explicitly requesting a list. Initialize and
+        // Rebuild use visit_analysis_jobs directly and never collect this list.
+        let mut jobs = Vec::new();
+        self.visit_analysis_jobs(&mut |job| {
+            jobs.push(job);
+            Ok(())
+        })?;
+        Ok(jobs)
+    }
+
+    fn visit_analysis_jobs(
+        &self,
+        visit: &mut dyn FnMut(Box<dyn AnalysisJob>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let parameters = self.0.parameters()?;
+        let factory = &parameters.factory;
+        let start = std::time::Instant::now();
+        let mut table_count = 0;
+        self.0.visit_tables(&mut |table| {
+            let Some(schema) = table.schema_name else {
+                return Ok(());
+            };
+            if astersql_meta_metadef::IsMemOrSysDB(&schema.to_ascii_lowercase()) {
+                return Ok(());
+            }
+            table_count += 1;
+            if parameters.locked_tables.contains(&table.info.id) || table.is_view {
+                return Ok(());
+            }
+            let Some(definitions) = table.partitions else {
+                let stats = self.0.get_non_pseudo_physical_table_stats(table.info.id);
+                if let Some(job) =
+                    factory.CreateNonPartitionedTableAnalysisJob(&table.info, stats.as_ref())
+                {
+                    visit(job)?;
+                }
+                return Ok(());
+            };
+            let definitions = definitions
+                .into_iter()
+                .filter(|definition| !parameters.locked_tables.contains(&definition.id))
+                .collect::<Vec<_>>();
+            let partitions = GetPartitionStats(&self.0, &definitions);
+            if parameters.static_prune {
+                for (partition, stats) in partitions {
+                    if let Some(job) = factory.CreateStaticPartitionAnalysisJob(
+                        &table.info,
+                        partition.id,
+                        Some(&stats),
+                    ) {
+                        visit(job)?;
+                    }
+                }
+            } else {
+                let global = self.0.get_non_pseudo_physical_table_stats(table.info.id);
+                if let Some(job) = factory.CreateDynamicPartitionedTableAnalysisJob(
+                    &table.info,
+                    global.as_ref(),
+                    &partitions,
+                ) {
+                    visit(job)?;
+                }
+            }
+            Ok(())
+        })?;
+        use astersql_statistics_handle_logutil::{StatsLogger, log::LogField};
+        StatsLogger()
+            .with_fields([
+                LogField::U64("tableCount".into(), table_count),
+                LogField::String("duration".into(), format!("{:?}", start.elapsed())),
+            ])
+            .info("Fetched all tables");
+        Ok(())
     }
 }
 
@@ -131,8 +253,7 @@ impl AnalysisPriorityQueue {
                 return Ok(());
             }
         }
-        let jobs = self.FetchAllTablesAndBuildAnalysisJobs()?;
-        self.RebuildWithoutLock(jobs)?;
+        self.rebuild_from_scan()?;
         self.start_worker();
         Ok(())
     }
@@ -143,13 +264,24 @@ impl AnalysisPriorityQueue {
             let state = self.lock_state();
             Self::require_initialized(&state)?;
         }
-        let jobs = self.FetchAllTablesAndBuildAnalysisJobs()?;
-        self.RebuildWithoutLock(jobs)
+        self.rebuild_from_scan()
     }
 
     /// 委托 QueueSource 构建全部分析作业。
     pub fn FetchAllTablesAndBuildAnalysisJobs(&self) -> Result<Vec<Box<dyn AnalysisJob>>, String> {
         self.source.build_analysis_jobs()
+    }
+
+    fn rebuild_from_scan(&self) -> Result<(), String> {
+        let mut state = self.lock_state();
+        state.heap = NewHeap();
+        state.running_jobs.clear();
+        state.must_retry_jobs.clear();
+        self.source.visit_analysis_jobs(&mut |job| {
+            Self::push_locked(&self.state, &self.calculator, &mut state, job)
+        })?;
+        state.initialized = true;
+        Ok(())
     }
 
     /// 用给定作业列表重置堆与运行/重试集合，并标记已初始化。

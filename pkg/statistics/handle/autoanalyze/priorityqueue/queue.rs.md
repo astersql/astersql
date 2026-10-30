@@ -15,13 +15,13 @@
 
 ## 主要符号
 
-- 常量 `NOT_INITIALIZED_ERR_MSG`：需要初始化的 API 的统一错误文本。三个刷新间隔分别是 `LAST_ANALYSIS_DURATION_REFRESH_INTERVAL`（10 分钟）、`DML_CHANGES_FETCH_INTERVAL`（2 分钟）和 `MUST_RETRY_JOB_REQUEUE_INTERVAL`（5 分钟）；`SLOW_LOG_THRESHOLD` 只为与 Go 常量对齐，本文件没有日志计时逻辑。
-- trait `QueueSource: Send + Sync + 'static`：把完整 TiDB 统计元数据访问隔离到队列外。`build_analysis_jobs` 是唯一必需实现；`changed_analysis_jobs`、`recreate_job`、`refreshed_indicators` 默认返回空结果，便于测试和渐进接线。
+- 常量 `NOT_INITIALIZED_ERR_MSG`：需要初始化的 API 的统一错误文本。三个刷新间隔分别是 `LAST_ANALYSIS_DURATION_REFRESH_INTERVAL`（10 分钟）、`DML_CHANGES_FETCH_INTERVAL`（2 分钟）和 `MUST_RETRY_JOB_REQUEUE_INTERVAL`（5 分钟）；`SLOW_LOG_THRESHOLD` 的慢操作阈值尚未启用；逐表扫描完成日志单独记录数量和耗时。
+- trait `QueueSource: Send + Sync + 'static`：把完整 TiDB 统计元数据访问隔离到队列外。`build_analysis_jobs` 是兼容批量入口；`visit_analysis_jobs` 默认适配旧入口，新扫描适配器直接逐项发出作业；`changed_analysis_jobs`、`recreate_job`、`refreshed_indicators` 默认返回空结果，便于测试和渐进接线。
 - `QueueState`：由 `Mutex` 保护的可变数据，包括 `heap`、`initialized`、`running_jobs` 和 `must_retry_jobs`。其 `Default` 创建空堆并保持未初始化。
 - `WorkerControl`：保存退出信道 `Sender<()>` 和 `JoinHandle<()>`，二者共同决定 worker 是否已经启动以及如何等待退出。
 - `AnalysisPriorityQueue`：外部可克隆句柄。`source`、`calculator`、`state`、`worker` 均由 `Arc` 共享；克隆句柄操作的是同一队列和同一个 worker。
 - `NewAnalysisPriorityQueue(Arc<dyn QueueSource>)`：只构造空队列，不加载作业；调用方仍须调用 `Initialize`，或在明确已完成状态构建后调用 `Run`。
-- 初始化 API：`Initialize` 幂等地拉取全量作业、调用 `RebuildWithoutLock` 并启动 worker；`Rebuild` 只允许在已初始化状态全量替换；`FetchAllTablesAndBuildAnalysisJobs` 直接委托数据源。
+- 初始化 API：`Initialize` 幂等地调用 `rebuild_from_scan` 并启动 worker；`Rebuild` 只允许在已初始化状态全量替换；`FetchAllTablesAndBuildAnalysisJobs` 保留显式批量兼容入口；初始化和重建使用 `rebuild_from_scan` 直接消费串行回调。
 - 入队 API：`Push`、`PushWithoutLock`、`TryCreateJob`、`TryUpdateJob`、`ProcessTableStats` 最终汇聚到 `push_locked`。尽管命名保留 Go 形状，`PushWithoutLock` 在 Rust 中仍会自行加锁。
 - 后台刷新 API：`ProcessDMLChanges` 获取 running 快照后请求增量作业；`RequeueMustRetryJobs` 消耗重试 ID 并尝试重建；`RefreshLastAnalysisDuration` 仅替换现有指标的 `LastAnalysisDuration` 后重算权重。
 - 调度与观察 API：`Pop`、`GetRunningJobs`、`Len`、`Snapshot`，以及测试用途的 `PeekForTest`、`IsEmptyForTest`。
@@ -31,7 +31,7 @@
 ## 执行流程
 
 1. 调用方用 `NewAnalysisPriorityQueue` 注入 `QueueSource`。此时 `initialized == false`，堆和两个 ID 集合为空。
-2. `Initialize` 先在锁内检查幂等条件，然后在锁外调用 `QueueSource::build_analysis_jobs`。成功后 `RebuildWithoutLock` 获取状态锁，重置旧堆和集合，并对每个作业执行 `push_locked`：计算权重、设置权重、注册成功/失败钩子、交给 `PqHeapImpl::AddOrUpdate`。全部成功后才写入 `initialized = true`，最后启动 worker。
+2. `Initialize` 先检查幂等条件，随后 `rebuild_from_scan` 持有状态锁，重置堆和两个集合，调用 `QueueSource::visit_analysis_jobs` 在扫描过程中直接 `push_locked`。成功才标记初始化并启动 worker；`Rebuild` 采用同一入口。`TableScanQueueSource` 一次读取会话参数与锁快照，逐表过滤缺失/系统 schema、锁表及视图。非分区表直接调用现有工厂；分区先排除锁分区，再复用 `GetPartitionStats`，按静态/动态模式调用现有作业工厂。只保留当前表及其分区统计，不保留全部 TableInfo 或作业 Vec。成功后用现有 StatsLogger 记录用户表数量与耗时。
 3. `start_worker` 在 `WorkerControl` 锁下防止重复启动，建立 MPSC 退出信道，并每秒通过 `recv_timeout` 醒来累计三组 elapsed 时间。到期时分别调用 DML 增量、失败重试和时长刷新；这些后台调用的错误当前被显式丢弃。
 4. 调度方调用 `Pop`：在状态锁内验证初始化、从最大堆取最高权重作业、把 ID 加入 `running_jobs`，再返回拥有作业的 `Box`。作业在入堆时已装好钩子；成功结束会清除 running ID，失败结束会清除 running ID，并按 `must_retry` 参数决定是否加入重试集合。
 5. `ProcessDMLChanges` 先复制运行集合，再让数据源构造增量作业；重新持锁并确认仍处于初始化状态后，只把不在 running 集合中的作业交给 `push_locked`。相同 key 的待执行作业由堆的 `AddOrUpdate` 覆盖更新。
@@ -70,12 +70,12 @@
 - RustCodeGraph 的精确查询确认 `NewAnalysisPriorityQueue`、`ProcessDMLChanges`、`RecreateAndPushJob` 等符号位于本文件；其 caller 图查询在本次检查中未在 30 秒内返回结果，因此上游 Rust 接线另以仓库 `rg` 搜索和 Cargo 声明交叉核验。
 - 当前 `refresher` crate 对 priorityqueue 的依赖被 `cfg(any())` 禁用，且 `refresher.rs` 使用自己的队列类型；所以不能宣称本文件已被自动 ANALYZE 生产循环调用。
 
-`priorityqueue/Cargo.toml` 仅声明一个常规依赖 `astersql-statistics-handle-logutil`，但本文件本身未直接引用它；本文件直接使用的业务类型都来自 crate 内模块和标准库。Cargo 元数据把 Go 对照包标为 `pkg/statistics/handle/autoanalyze/priorityqueue`。
+`priorityqueue/Cargo.toml` 声明 `astersql-statistics-handle-logutil` 用于扫描完成日志，以及 `astersql-meta-metadef` 用于复用系统/内存 schema 判定；作业与统计类型复用 crate 内实现。Cargo 元数据把 Go 对照包标为 `pkg/statistics/handle/autoanalyze/priorityqueue`。
 
 ## 错误处理与边界
 
 - `Rebuild`、`Push`、`ProcessDMLChanges`（取回数据后）、`RequeueMustRetryJobs`、`RefreshLastAnalysisDuration`、`Pop`、`PeekForTest`、`IsEmptyForTest`、`Len`、`Snapshot` 和删除 API 在未初始化时返回 `NOT_INITIALIZED_ERR_MSG`。`IsInitialized` 与 `GetRunningJobs` 可在未初始化时读取空/当前快照。
-- `Initialize` 在数据源全量构建或任一入堆动作失败时返回 `String` 错误；由于 `RebuildWithoutLock` 会先清空状态，入队到一半失败会留下部分堆但 `initialized` 仍为 false。调用方不能把失败后的内部内容视为可用队列。
+- `Initialize` 在数据源全量构建或任一入堆动作失败时返回 `String` 错误；由于 `rebuild_from_scan`/`RebuildWithoutLock` 会先清空状态，入队到一半失败会留下部分堆但 `initialized` 仍为 false。调用方不能把失败后的内部内容视为可用队列。
 - `ProcessDMLChanges` 在调用数据源时不持有状态锁，减少外部工作占锁时间；随后会重新检查初始化。其 running 快照可能在外部调用期间过时，但入队前还会以锁内最新集合再检查一次。
 - `RequeueMustRetryJobs` 对一个 ID 的数据源错误会立即中止剩余循环，且该 ID 已从集合删除；这与源码注释所述 Go 的“先消费标记”一致，但意味着错误不会自动重试。
 - `RefreshLastAnalysisDuration` 对数据源返回 `None`、或并发状态变化导致 `DeleteByKey` 失败的项直接跳过；`Update` 失败则向上传播。数据源调用发生在未持锁阶段，删除、修改和恢复在锁内完成。
@@ -85,7 +85,7 @@
 
 ## 并发与资源生命周期
 
-`AnalysisPriorityQueue` 可跨线程克隆，`QueueSource` 被要求 `Send + Sync + 'static`。一个 `Mutex<QueueState>` 串行化堆与两个集合的所有状态转换，另一个 `Mutex<WorkerControl>` 串行化线程启停。外部数据源操作通常放在状态锁外；实际堆修改在状态锁内。
+`AnalysisPriorityQueue` 可跨线程克隆，`QueueSource` 被要求 `Send + Sync + 'static`。一个 `Mutex<QueueState>` 串行化堆与两个集合的所有状态转换，另一个 `Mutex<WorkerControl>` 串行化线程启停。初始化/重建期间扫描和入堆一起持有状态锁，与 Go 的重建契约一致；数据源回调不得反向调用队列 API。DML/指标查询仍通常放在状态锁外。
 
 `Initialize` 的“检查 initialized”与后续全量拉取/重建不是由同一次持锁覆盖，因此它对顺序重复调用幂等，但不能据此推断并发 `Initialize` 与 `Close` 已被完整串行化。若生产层允许这两类生命周期操作并发，需要在调用层互斥或为本类型增加专门的生命周期状态；Go 源码也明确警告避免 `Initialize`/`Close` 并发。
 
@@ -98,7 +98,7 @@ worker 使用 1 秒 tick 累计时间，而不是三个独立 ticker。退出有
 ## 与 Go 版本的对应关系
 
 - Go 持有真实 `StatsHandle`、session context 和 DML 版本游标；Rust 把全量构建、增量选择、单项重建、指标刷新抽象为 `QueueSource`，自身没有 `lastDMLUpdateFetchTimestamp`，是否漏/重放 DML 由适配器负责。
-- Go `Initialize(ctx)` 检查取消、保存可取消 context 并在出错时 Close；Rust `Initialize()` 没有 context 或取消传播，只在数据源错误时返回。
+- Go `Initialize(ctx)` 保存可取消 context；Rust 的 context 仍由扫描源持有，但 visit_tables 的取消、元数据错误与作业回调错误通过 Result 传播到 Initialize/Rebuild。
 - Go 在 `Pop` 时注册完成钩子；Rust 在每次 `push_locked` 时注册。Rust 的钩子使用 `Weak` 处理队列释放，达到 Go 在 owner switch 后允许运行中作业结束的相似安全目标。
 - Go `pushWithoutLock` 遇到 running ID 时还会写入 `mustRetryJobs`，并会跳过已在 must-retry 集合的作业；Rust `Push`/`ProcessDMLChanges` 只跳过 running ID，不新增重试标记，也不因 ID 已在 must-retry 集合而拒绝普通入队。这是实际行为差异，不应由文档掩盖。
 - Go DML 处理扫描统计缓存、过滤版本/锁表并逐项记录错误；Rust 只消费 `QueueSource::changed_analysis_jobs` 的结果，首个入堆错误会终止本批。
@@ -118,3 +118,7 @@ worker 使用 1 秒 tick 累计时间，而不是三个独立 ticker。退出有
 - 修改 DDL 行为时，接入点是 `DeleteByTableID`/`RecreateAndPushJob` 与 `queue_ddl_handler.rs`；需同步 `queue_ddl_handler_test.rs`，并验证未初始化时 DDL 事件的 readiness 语义。
 - 修改线程生命周期时，必须保持“等待 worker 时不持有 worker/state 锁”、钩子只持有 `Weak`、重复 `Close` 不 panic、Close 后可再初始化等不变量。相关测试仍放在 `queue_test.rs`；Go 注释中的并发 Close 用例目前不可执行，若补齐应转成真正的 Rust 测试而不是据注释宣称已覆盖。
 - 正式把本 crate 接入 `refresher` 时，需要先处理当前两套优先队列的职责重叠，并移除或替换 `cfg(any())` 依赖门。此工作超出本单文件文档任务，不能仅靠调用 `NewAnalysisPriorityQueue` 视为完成。
+
+本文件对齐 Go `da76b94491e935de3d9fed575b574123c988b682` 的逐表扫描增量。`AnalysisScanTable` 携带 schema/视图/分区元数据；`AnalysisScanParameters` 固定本次扫描的锁、工厂和裁剪模式；`AnalysisTableSource` 是串行元数据迭代/统计查询边界，`TableScanQueueSource` 已接入真实队列 Initialize/Rebuild 和真实工厂。测试提供元数据/统计快照，不替换过滤、作业创建或堆逻辑。meta 的流式扫描、JSON 与取消契约另由 meta_test.rs 的独立测试验证。
+
+运行时 owner、SQL LOCK STATS、DML 统计游标与远程存储适配属于既有系统边界；本次未将该 crate 接入 refresher 生产循环，也未声称完成服务级 SQL/真实 TiKV 集成。Go intest 的第二次 InfoSchema 全量枚举断言依赖该运行时边界，Rust 当前无等价全量 InfoSchema 接口；测试通过实际遍历 ID、过滤后队列 ID 和统计读取记录验证无遗漏/无锁项。已有批量数据源仍可通过默认回调适配继续使用，但只有覆盖 visit_analysis_jobs 的源具备流式内存优势。显式 FetchAllTablesAndBuildAnalysisJobs/build_analysis_jobs 仍会收集 Vec，生产扫描调用者应采用初始化/重建入口。

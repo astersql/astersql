@@ -9547,6 +9547,8 @@ dependencies = [
 name = "astersql-statistics-handle-autoanalyze-priorityqueue"
 version = "0.1.0"
 dependencies = [
+ "astersql-meta",
+ "astersql-meta-metadef",
  "astersql-statistics-handle-logutil",
 ]
 

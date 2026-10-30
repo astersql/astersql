@@ -1062,3 +1062,320 @@ fn complete_job_hooks_clear_running_and_requeue_failures() {
     drop(queue);
     succeeded.Analyze(&Runtime(true)).unwrap();
 }
+
+#[test]
+fn port_da76b94491_rebuild_consumes_stream_without_batch_collection() {
+    use crate::{AnalysisJob, NewAnalysisPriorityQueue, QueueSource};
+    use std::sync::Arc;
+    struct Streaming;
+    impl QueueSource for Streaming {
+        fn build_analysis_jobs(&self) -> Result<Vec<Box<dyn AnalysisJob>>, String> {
+            Err("batch collection must not be used".into())
+        }
+        fn visit_analysis_jobs(
+            &self,
+            _visit: &mut dyn FnMut(Box<dyn AnalysisJob>) -> Result<(), String>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let queue = NewAnalysisPriorityQueue(Arc::new(Streaming));
+    assert_eq!(queue.Initialize(), Ok(()));
+    assert_eq!(queue.Rebuild(), Ok(()));
+    queue.Close();
+}
+
+// Fixtures provide metadata/stat snapshots; all filtering, job construction,
+// heap mutation and hooks under test are the actual queue implementation.
+struct PortDa76Source {
+    metadata: astersql_meta::Mutator,
+    locked: std::sync::Mutex<std::collections::HashSet<i64>>,
+    static_prune: bool,
+    failure: std::sync::Mutex<Option<&'static str>>,
+    reads: std::sync::Mutex<Vec<i64>>,
+}
+impl crate::PartitionStatsProvider for std::sync::Arc<PortDa76Source> {
+    fn get_non_pseudo_physical_table_stats(&self, id: i64) -> Option<crate::TableStats> {
+        self.reads.lock().unwrap().push(id);
+        if id == 8 || id == 9 {
+            return None;
+        }
+        Some(crate::TableStats {
+            realtime_count: 10,
+            column_count: 1,
+            eligible: true,
+            ..Default::default()
+        })
+    }
+}
+impl crate::AnalysisTableSource for std::sync::Arc<PortDa76Source> {
+    fn parameters(&self) -> Result<crate::AnalysisScanParameters, String> {
+        if *self.failure.lock().unwrap() == Some("parameters") {
+            return Err("parameters".into());
+        }
+        Ok(crate::AnalysisScanParameters {
+            factory: crate::NewAnalysisJobFactory(
+                crate::SessionContext { analyze_version: 2 },
+                0.5,
+                0,
+            ),
+            locked_tables: self.locked.lock().unwrap().clone(),
+            static_prune: self.static_prune,
+        })
+    }
+    fn visit_tables(
+        &self,
+        visit: &mut dyn FnMut(crate::AnalysisScanTable) -> Result<(), String>,
+    ) -> Result<(), String> {
+        // Real metadata JSON/hash iteration drives the callback, not a list of jobs.
+        self.metadata
+            .iter_tables(1, |table| {
+                let id = table.id;
+                if let Some(error @ ("cancelled" | "scan error")) = *self.failure.lock().unwrap() {
+                    return Err(astersql_meta::errors::new(error));
+                }
+                visit(crate::AnalysisScanTable {
+                    info: crate::TableInfo {
+                        id,
+                        ..Default::default()
+                    },
+                    schema_name: match id {
+                        4 => None,
+                        5 => Some("INFORMATION_SCHEMA".into()),
+                        6 => Some("mysql".into()),
+                        _ => Some("test".into()),
+                    },
+                    is_view: id == 7,
+                    partitions: (id == 3 || id == 8).then(|| {
+                        vec![
+                            crate::PartitionDefinition {
+                                id: id * 10,
+                                name: "p0".into(),
+                            },
+                            crate::PartitionDefinition {
+                                id: id * 10 + 1,
+                                name: "p1".into(),
+                            },
+                        ]
+                    }),
+                })
+                .map_err(astersql_meta::errors::new)?;
+                // An eligible unlocked first table must be built before scanning t2.
+                if id == 1 && !self.locked.lock().unwrap().contains(&1) {
+                    assert!(
+                        self.reads.lock().unwrap().contains(&1),
+                        "jobs were deferred until scan completion"
+                    );
+                }
+                Ok(())
+            })
+            .map_err(|error| error.to_string())
+    }
+}
+fn port_da76_source(static_prune: bool) -> std::sync::Arc<PortDa76Source> {
+    let mut metadata =
+        astersql_meta::new_mutator(astersql_meta::kv::Transaction::default(), Vec::new());
+    metadata
+        .create_database(&astersql_meta::model::DbInfo {
+            id: 1,
+            name: astersql_meta::ast::CiString::new("test"),
+            ..Default::default()
+        })
+        .unwrap();
+    for id in 1..=9 {
+        metadata
+            .create_table_or_view(
+                1,
+                &astersql_meta::model::TableInfo {
+                    id,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    std::sync::Arc::new(PortDa76Source {
+        metadata,
+        locked: std::sync::Mutex::new([1, 3, 80, 81].into_iter().collect()),
+        static_prune,
+        failure: std::sync::Mutex::new(None),
+        reads: std::sync::Mutex::new(Vec::new()),
+    })
+}
+fn port_da76_ids(queue: &crate::AnalysisPriorityQueue) -> Vec<i64> {
+    let mut ids = queue
+        .Snapshot()
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|job| job.TableID)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids
+}
+#[test]
+fn port_da76b94491_rebuild_locked_tables() {
+    let source = port_da76_source(false);
+    let queue = crate::NewAnalysisPriorityQueue(std::sync::Arc::new(crate::TableScanQueueSource(
+        source.clone(),
+    )));
+    queue.Initialize().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2]);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2]);
+    let entries = astersql_statistics_handle_logutil::StatsLogger().entries();
+    let scan = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.message == "Fetched all tables")
+        .unwrap();
+    assert!(
+        scan.fields
+            .contains(&astersql_statistics_handle_logutil::log::LogField::U64(
+                "tableCount".into(),
+                6
+            ))
+    );
+    // Unlock t1: a subsequent rebuild must see the new lock snapshot.
+    source.locked.lock().unwrap().remove(&1);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [1, 2]);
+    // Missing schema, system schemas, views and locked tables never fetch stats.
+    assert!(
+        !source
+            .reads
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|id| [3, 4, 5, 6, 7, 30, 31, 80, 81].contains(id))
+    );
+    queue.Close();
+}
+#[test]
+fn port_da76b94491_rebuild_dynamic_locked_partitions() {
+    let source = port_da76_source(false);
+    let queue = crate::NewAnalysisPriorityQueue(std::sync::Arc::new(crate::TableScanQueueSource(
+        source.clone(),
+    )));
+    queue.Initialize().unwrap();
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2]);
+    source.locked.lock().unwrap().remove(&3);
+    source.locked.lock().unwrap().insert(30);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2, 3]);
+    let mut found = false;
+    while queue.Len().unwrap() > 0 {
+        let job = queue.Pop().unwrap();
+        if job.GetTableID() == 3 {
+            let dynamic = job
+                .as_any()
+                .downcast_ref::<crate::DynamicPartitionedTableAnalysisJob>()
+                .unwrap();
+            assert_eq!(
+                dynamic.PartitionIDs.keys().copied().collect::<Vec<_>>(),
+                [31]
+            );
+            found = true;
+        }
+    }
+    assert!(found);
+    source.locked.lock().unwrap().insert(3);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2]);
+    queue.Close();
+}
+#[test]
+fn port_da76b94491_rebuild_static_locked_partitions() {
+    let source = port_da76_source(true);
+    let queue = crate::NewAnalysisPriorityQueue(std::sync::Arc::new(crate::TableScanQueueSource(
+        source.clone(),
+    )));
+    queue.Initialize().unwrap();
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2]);
+    source.locked.lock().unwrap().remove(&80);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2, 80]);
+    source.locked.lock().unwrap().remove(&81);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2, 80, 81]);
+    source.locked.lock().unwrap().insert(8);
+    queue.Rebuild().unwrap();
+    assert_eq!(port_da76_ids(&queue), [2]);
+    queue.Close();
+}
+#[test]
+fn port_da76b94491_scan_errors_and_cancellation_propagate() {
+    for error in ["parameters", "cancelled", "scan error"] {
+        let source = port_da76_source(false);
+        *source.failure.lock().unwrap() = Some(error);
+        let queue = crate::NewAnalysisPriorityQueue(std::sync::Arc::new(
+            crate::TableScanQueueSource(source.clone()),
+        ));
+        assert_eq!(queue.Initialize(), Err(error.into()));
+        assert!(!queue.IsInitialized());
+        *source.failure.lock().unwrap() = None;
+        queue.Initialize().unwrap();
+        *source.failure.lock().unwrap() = Some(error);
+        assert_eq!(queue.Rebuild(), Err(error.into()));
+        queue.Close();
+    }
+    let source = port_da76_source(false);
+    let adapter = crate::TableScanQueueSource(source);
+    let mut emitted = 0;
+    assert_eq!(
+        crate::QueueSource::visit_analysis_jobs(&adapter, &mut |_| {
+            emitted += 1;
+            Err("push failed".into())
+        }),
+        Err("push failed".into())
+    );
+    assert_eq!(emitted, 1, "callback error must stop scanning immediately");
+}
+
+#[test]
+fn port_da76b94491_partial_scan_error_keeps_only_emitted_jobs() {
+    use crate::QueueSource;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Partial {
+        source: crate::TableScanQueueSource<Arc<PortDa76Source>>,
+        fail: AtomicBool,
+    }
+    impl QueueSource for Partial {
+        fn build_analysis_jobs(&self) -> Result<Vec<Box<dyn crate::AnalysisJob>>, String> {
+            unreachable!("streaming queue must not collect")
+        }
+        fn visit_analysis_jobs(
+            &self,
+            visit: &mut dyn FnMut(Box<dyn crate::AnalysisJob>) -> Result<(), String>,
+        ) -> Result<(), String> {
+            self.source.visit_analysis_jobs(&mut |job| {
+                visit(job)?;
+                if self.fail.load(Ordering::Relaxed) {
+                    Err("scan stopped".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+    let data = port_da76_source(false);
+    data.locked.lock().unwrap().remove(&1);
+    let source = Arc::new(Partial {
+        source: crate::TableScanQueueSource(data),
+        fail: AtomicBool::new(true),
+    });
+    let queue = crate::NewAnalysisPriorityQueue(source.clone());
+    assert_eq!(queue.Initialize(), Err("scan stopped".into()));
+    assert!(!queue.IsInitialized());
+    source.fail.store(false, Ordering::Relaxed);
+    queue.Initialize().unwrap();
+    assert_eq!(port_da76_ids(&queue), [1, 2]);
+    source.fail.store(true, Ordering::Relaxed);
+    assert_eq!(queue.Rebuild(), Err("scan stopped".into()));
+    assert_eq!(port_da76_ids(&queue), [1]);
+    queue.Close();
+}

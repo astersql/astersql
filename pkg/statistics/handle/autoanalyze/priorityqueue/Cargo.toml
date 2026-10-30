@@ -9,7 +9,11 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+astersql-meta-metadef = { path = "../../../../meta/metadef" }
 astersql-statistics-handle-logutil = { path = "../../logutil" }
+
+[dev-dependencies]
+astersql-meta = { path = "../../../../meta" }
 
 [package.metadata.porting]
 go-package = "pkg/statistics/handle/autoanalyze/priorityqueue"

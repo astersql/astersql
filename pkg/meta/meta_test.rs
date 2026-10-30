@@ -465,3 +465,88 @@ fn test_must_load_and_name_info_hot_paths() {
         let _ = fast_unmarshal_table_name_info(br#"{"id":1,"name":{"O":"t","L":"t"}}"#).unwrap();
     }
 }
+
+#[test]
+fn port_da76b94491_metadata_scan_serial_callback_and_errors() {
+    use std::sync::{Arc, Mutex};
+    let transaction = kv::Transaction::default();
+    let store = kv::Storage {
+        state: transaction.state.clone(),
+    };
+    let mut m = new_mutator(transaction, Vec::new());
+    m.create_database(&model::DbInfo {
+        id: 1,
+        name: ast::CiString::new("test"),
+        ..Default::default()
+    })
+    .unwrap();
+    for id in 1..=3 {
+        m.create_table_or_view(
+            1,
+            &model::TableInfo {
+                id,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_callback = seen.clone();
+    futures::executor::block_on(iter_all_tables(
+        context::Context::default(),
+        store.clone(),
+        0,
+        15,
+        move |table| {
+            // try_lock asserts that the callback can mutate shared state serially.
+            let mut seen = seen_callback
+                .try_lock()
+                .expect("overlapping metadata callbacks");
+            assert_eq!(table.db_id, 1);
+            seen.push(table.id);
+            Ok(())
+        },
+    ))
+    .unwrap();
+    let mut ids = seen.lock().unwrap().clone();
+    ids.sort_unstable();
+    assert_eq!(ids, [1, 2, 3]);
+    let seen = Arc::new(Mutex::new(0));
+    let callback_seen = seen.clone();
+    let error = futures::executor::block_on(iter_all_tables(
+        context::Context::default(),
+        store.clone(),
+        0,
+        1,
+        move |_| {
+            *callback_seen.lock().unwrap() += 1;
+            Err(errors::new("job push failed"))
+        },
+    ))
+    .unwrap_err();
+    assert_eq!(error.to_string(), "job push failed");
+    assert_eq!(*seen.lock().unwrap(), 1);
+    let ctx = context::Context::default();
+    let callback_ctx = ctx.clone();
+    let seen = Arc::new(Mutex::new(0));
+    let callback_seen = seen.clone();
+    let error = futures::executor::block_on(iter_all_tables(ctx, store.clone(), 0, 1, move |_| {
+        *callback_seen.lock().unwrap() += 1;
+        callback_ctx.cancel();
+        Ok(())
+    }))
+    .unwrap_err();
+    assert_eq!(error.to_string(), "context canceled");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        1,
+        "cancellation must stop the next table"
+    );
+    let ctx = context::Context::default();
+    ctx.cancel();
+    let error = futures::executor::block_on(iter_all_tables(ctx, store, 0, 1, |_| {
+        panic!("cancelled scan must not emit a table")
+    }))
+    .unwrap_err();
+    assert_eq!(error.to_string(), "context canceled");
+}
