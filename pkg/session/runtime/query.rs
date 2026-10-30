@@ -4586,6 +4586,17 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::MySQL {
             return false;
         }
+        // LIKE shares the native formal projection path so its collation and
+        // integer descriptor survive both Query and prepared execution.
+        if matches!(expression.Kind, ast::ExprKind::Like { .. }) {
+            return !relational_expression_has_aggregate(expression)
+                && !relational_expression_has_subquery(expression)
+                && sources.first().is_none_or(|first| {
+                    sources
+                        .iter()
+                        .all(|source| source.table_as_name == first.table_as_name)
+                });
+        }
         // Native comparisons retain their formal identity on the constant SELECT path.
         // Keep this local to NULL-safe equality and its ordinary NULL control.
         if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind {
@@ -4972,6 +4983,13 @@ impl ConcreteSession {
     ) -> SessionResult<astersql_parser_types::types::FieldType> {
         self.mysql_function_type_and_cache_reason(expression, source_fields)
             .map(|(mut tp, _, _)| {
+                if self.sql_dialect() == ast::SqlDialect::MySQL
+                    && matches!(expression.Kind, ast::ExprKind::Like { .. })
+                {
+                    // Native LIKE is a numeric, binary-charset predicate even
+                    // when constant folding selects NULL or a non-NULL result.
+                    tp.AddFlag(astersql_parser_mysql::r#type::BinaryFlag);
+                }
                 if self.sql_dialect() == ast::SqlDialect::MySQL
                     && let ast::ExprKind::Value(value) = &expression.Kind
                     && let ast::ValueDatum::Int64(number) = &value.Datum

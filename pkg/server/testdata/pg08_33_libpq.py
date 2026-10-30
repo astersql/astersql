@@ -63,6 +63,11 @@ def run(port,database,evidence,mysql_port):
     def interleave(label):
         case='I-'+label
         paired(case,"SELECT 'Ab'::text ILIKE 'a%'::text AS v",'t')
+        # The native LIKE result must remain case-sensitive at every PG A/B
+        # checkpoint under this connection's explicit utf8mb4_bin collation.
+        native=[save('mysql-'+side,case,m.query("SELECT 'Ab' LIKE 'a%' AS v"),'native-like') for side,m in mysqls.items()]
+        assert all(x['code']==0 and x['rows']==[['30']] and x['metadata']==[['v',8,32897,63,1,0]] for x in native),native
+        mysql_compare(*native)
         peers=[save('mysql-'+side,case,m.query('SELECT v FROM health')) for side,m in mysqls.items()]
         assert all(x['code']==0 and x['rows']==[['37']] for x in peers),peers
         mysql_compare(*peers)
