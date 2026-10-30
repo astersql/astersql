@@ -19843,3 +19843,321 @@ fn pg09_05_sql() {
     }
     send(&mut s, b'X', &[]);
 }
+
+// UNION ALL is the authorized equivalent of the task's derived VALUES fixture.
+#[test]
+fn pg09_06_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    for (ty, oid, width) in [("float4", 700u32, 4i16), ("float8", 701, 8)] {
+        for (input, expected) in [
+            (
+                format!("(SELECT 1::{ty} AS x UNION ALL SELECT 2::{ty}) t"),
+                Some("1.5"),
+            ),
+            (format!("(SELECT NULL::{ty} AS x) t"), None),
+            (format!("(SELECT 1::{ty} AS x WHERE false) t"), None),
+            (
+                format!("(SELECT 'Infinity'::{ty} AS x UNION ALL SELECT '-Infinity'::{ty}) t"),
+                Some("NaN"),
+            ),
+            (
+                format!("(SELECT 'NaN'::{ty} AS x UNION ALL SELECT 1::{ty}) t"),
+                Some("NaN"),
+            ),
+            (
+                format!("(SELECT 'Infinity'::{ty} AS x UNION ALL SELECT 1::{ty}) t"),
+                Some("Infinity"),
+            ),
+            (
+                format!("(SELECT '-Infinity'::{ty} AS x UNION ALL SELECT 1::{ty}) t"),
+                Some("-Infinity"),
+            ),
+            (
+                format!(
+                    "(SELECT '{}'::{ty} AS x UNION ALL SELECT 1::{ty} UNION ALL SELECT '-{}'::{ty}) t",
+                    if width == 4 {
+                        "16777216"
+                    } else {
+                        "9007199254740992"
+                    },
+                    if width == 4 {
+                        "16777216"
+                    } else {
+                        "9007199254740992"
+                    }
+                ),
+                Some(if width == 4 {
+                    "0.3333333333333333"
+                } else {
+                    "0"
+                }),
+            ),
+        ] {
+            let sql = format!("SELECT avg(x) AS c FROM {input}");
+            let ms = query(&mut s, &sql);
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+            assert_eq!(
+                ms.iter()
+                    .filter(|m| m.0 == b'D')
+                    .map(|m| m.1.clone())
+                    .collect::<Vec<_>>(),
+                vec![row(&[expected])],
+                "{sql}"
+            );
+            let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+            assert_eq!(&d[10..14], &701u32.to_be_bytes(), "{sql}");
+            assert_eq!(&d[14..16], &8i16.to_be_bytes());
+            assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        }
+        for value in if width == 4 {
+            vec!["bad"]
+        } else {
+            vec!["1e308", "1e154", "bad"]
+        } {
+            let sql = format!(
+                "SELECT avg(x) AS c FROM (SELECT '{value}'::{ty} AS x UNION ALL SELECT '{}'::{ty}) t",
+                if value == "1e154" { "-1e154" } else { value }
+            );
+            let ms = query(&mut s, &sql);
+            let e = &ms
+                .iter()
+                .find(|m| m.0 == b'E')
+                .expect("overflow or invalid input")
+                .1;
+            assert!(
+                e.windows(6).any(|w| w
+                    == if value == "bad" {
+                        b"22P02\0"
+                    } else {
+                        b"22003\0"
+                    }),
+                "{ms:?}"
+            );
+            if value != "bad" {
+                assert!(
+                    e.windows(b"value out of range: overflow\0".len())
+                        .any(|w| w == b"value out of range: overflow\0"),
+                    "{ms:?}"
+                );
+            }
+            let ms = query(&mut s, "SELECT 1::int4 AS c");
+            assert_eq!(
+                ms.iter().find(|m| m.0 == b'D').unwrap().1,
+                row(&[Some("1")])
+            );
+            assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        }
+    }
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity(ms: &[(u8, Vec<u8>)], oid: u32, width: i16, fmt: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[2..4], b"c\0");
+        assert_eq!(&d[10..14], &oid.to_be_bytes());
+        assert_eq!(&d[14..16], &width.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &fmt.to_be_bytes());
+    }
+    for (ty, oid, width) in [("float4", 700u32, 4i16), ("float8", 701, 8)] {
+        let sql =
+            format!("SELECT avg(x) AS c FROM (SELECT $1::{ty} AS x UNION ALL SELECT $2::{ty}) t");
+        send(
+            &mut s,
+            b'P',
+            &[
+                b"avg06\0".as_slice(),
+                sql.as_bytes(),
+                &[0],
+                &2i16.to_be_bytes(),
+                &oid.to_be_bytes(),
+                &oid.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut s, b'D', b"Savg06\0");
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        identity(&ms, 701, 8, 0);
+        assert_eq!(
+            ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'1', b't', b'T', b'Z']
+        );
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b't').unwrap().1,
+            [
+                2i16.to_be_bytes().as_slice(),
+                &oid.to_be_bytes(),
+                &oid.to_be_bytes()
+            ]
+            .concat()
+        );
+        for input_fmt in [0i16, 1] {
+            for result_fmt in [0i16, 1] {
+                for nonnull in [true, false] {
+                    let binary = if width == 4 {
+                        7f32.to_be_bytes().to_vec()
+                    } else {
+                        7f64.to_be_bytes().to_vec()
+                    };
+                    let mut bind = b"\0avg06\0".to_vec();
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(input_fmt.to_be_bytes());
+                    bind.extend(2i16.to_be_bytes());
+                    if nonnull {
+                        let bytes = if input_fmt == 0 {
+                            b"7".to_vec()
+                        } else {
+                            binary.clone()
+                        };
+                        bind.extend((bytes.len() as i32).to_be_bytes());
+                        bind.extend(bytes);
+                    } else {
+                        bind.extend((-1i32).to_be_bytes());
+                    }
+                    bind.extend((-1i32).to_be_bytes());
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(result_fmt.to_be_bytes());
+                    send(&mut s, b'B', &bind);
+                    send(&mut s, b'D', b"P\0");
+                    send(&mut s, b'E', &[0; 5]);
+                    send(&mut s, b'S', &[]);
+                    let ms = ready(&mut s);
+                    identity(&ms, 701, 8, result_fmt);
+                    assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                    let expected = if !nonnull {
+                        row(&[None])
+                    } else if result_fmt == 0 {
+                        row(&[Some("7")])
+                    } else {
+                        [
+                            1i16.to_be_bytes().as_slice(),
+                            &8i32.to_be_bytes(),
+                            &7f64.to_be_bytes(),
+                        ]
+                        .concat()
+                    };
+                    assert_eq!(
+                        ms.iter()
+                            .filter(|m| m.0 == b'D')
+                            .map(|m| m.1.clone())
+                            .collect::<Vec<_>>(),
+                        vec![expected]
+                    );
+                    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+                }
+            }
+        }
+        if width == 8 {
+            // Parameters are valid at Bind; overflow must be diagnosed at Execute.
+            let v = if width == 4 {
+                b"3e38".as_slice()
+            } else {
+                b"1e308".as_slice()
+            };
+            let mut bind = b"\0avg06\0".to_vec();
+            bind.extend([0, 0, 0, 2]);
+            for _ in 0..2 {
+                bind.extend((v.len() as i32).to_be_bytes());
+                bind.extend(v);
+            }
+            bind.extend([0, 0]);
+            send(&mut s, b'B', &bind);
+            send(&mut s, b'E', &[0; 5]);
+            send(&mut s, b'S', &[]);
+            let ms = ready(&mut s);
+            assert_eq!(
+                ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                [b'2', b'E', b'Z']
+            );
+            let e = &ms.iter().find(|m| m.0 == b'E').unwrap().1;
+            assert!(e.windows(7).any(|w| w == b"C22003\0"));
+            assert!(
+                e.windows(b"value out of range: overflow\0".len())
+                    .any(|w| w == b"value out of range: overflow\0")
+            );
+            let ms = query(&mut s, "SELECT 1::int4 AS c");
+            assert_eq!(
+                ms.iter().find(|m| m.0 == b'D').unwrap().1,
+                row(&[Some("1")])
+            );
+            assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        }
+        send(&mut s, b'C', b"Savg06\0");
+        send(&mut s, b'S', &[]);
+        assert!(!ready(&mut s).iter().any(|m| m.0 == b'E'));
+
+        let sql = format!("SELECT avg(x) AS c FROM (SELECT 1::{ty} AS x) t WHERE false GROUP BY x");
+        send(
+            &mut s,
+            b'P',
+            &[b"empty06\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut s, b'D', b"Sempty06\0");
+        send(&mut s, b'S', &[]);
+        identity(&ready(&mut s), 701, 8, 0);
+        for fmt in [0i16, 1] {
+            send(
+                &mut s,
+                b'B',
+                &[
+                    b"\0empty06\0".as_slice(),
+                    &[0, 0, 0, 0, 0, 1],
+                    &fmt.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(&mut s, b'D', b"P\0");
+            send(&mut s, b'E', &[0; 5]);
+            send(&mut s, b'S', &[]);
+            let ms = ready(&mut s);
+            identity(&ms, 701, 8, fmt);
+            assert!(!ms.iter().any(|m| m.0 == b'D'));
+        }
+        send(&mut s, b'C', b"Sempty06\0");
+        send(&mut s, b'S', &[]);
+        assert!(!ready(&mut s).iter().any(|m| m.0 == b'E'));
+    }
+    send(&mut s, b'X', &[]);
+}

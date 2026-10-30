@@ -18,6 +18,11 @@ use crate::adapter::{
 enum AggregateValue {
     Count(i64),
     FloatSum(Option<f64>),
+    FloatAvg {
+        count: f64,
+        sum: f64,
+        squares: f64,
+    },
     NumericSum(Option<astersql_types::pg_numeric::PgNumeric>),
     NumericAvg {
         sum: Option<astersql_types::pg_numeric::PgNumeric>,
@@ -95,7 +100,9 @@ impl TypedHashAgg {
                         return Err(format!("typed AVG requires {required} argument(s)"));
                     }
                 }
-                "pg_sum_float4"
+                "pg_avg_float4"
+                | "pg_avg_float8"
+                | "pg_sum_float4"
                 | "pg_sum_float8"
                 | "pg_avg_numeric"
                 | "pg_sum_numeric"
@@ -167,6 +174,7 @@ impl TypedHashAgg {
                     value: match function.Name.as_str() {
                         astersql_parser_ast::AggFuncCount => AggregateValue::Count(0),
                         "pg_sum_float4" | "pg_sum_float8" => AggregateValue::FloatSum(None),
+                        "pg_avg_float4" | "pg_avg_float8" => AggregateValue::FloatAvg { count: 0.0, sum: 0.0, squares: 0.0 },
                         "pg_sum_numeric" => AggregateValue::NumericSum(None),
                         "pg_avg_numeric" => AggregateValue::NumericAvg { sum: None, count: 0 },
                         astersql_parser_ast::AggFuncSum
@@ -342,6 +350,35 @@ fn update_aggregate(
         }
     }
     match &mut state.value {
+        AggregateValue::FloatAvg {
+            count,
+            sum,
+            squares,
+        } => {
+            let next = if function.Name == "pg_avg_float4" {
+                f64::from(values[0].GetFloat32())
+            } else {
+                values[0].GetFloat64()
+            };
+            let previous_count = *count;
+            let previous_sum = *sum;
+            *count += 1.0;
+            *sum += next;
+            // Match PostgreSQL float[48]_accum, including the Sxx overflow
+            // check even though AVG finalization only consumes N and Sx.
+            if previous_count > 0.0 {
+                let delta = next * *count - *sum;
+                *squares += delta * delta / (*count * previous_count);
+                if sum.is_infinite() || squares.is_infinite() {
+                    if !previous_sum.is_infinite() && !next.is_infinite() {
+                        return Err(astersql_errors::SharedError::new(FloatSumOverflow));
+                    }
+                    *squares = f64::NAN;
+                }
+            } else if !next.is_finite() {
+                *squares = f64::NAN;
+            }
+        }
         AggregateValue::FloatSum(sum) => {
             let next = if function.Name == "pg_sum_float4" {
                 f64::from(values[0].GetFloat32())
@@ -477,6 +514,11 @@ fn finish_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
 ) -> AdapterResult<Datum> {
     match &state.value {
+        AggregateValue::FloatAvg { count, sum, .. } => Ok(if *count == 0.0 {
+            Datum::default()
+        } else {
+            NewFloat64Datum(*sum / *count)
+        }),
         AggregateValue::FloatSum(sum) => Ok(sum.map_or_else(Datum::default, |value| {
             if function.Name == "pg_sum_float4" {
                 astersql_types::datum::NewFloat32Datum(value as f32)
@@ -946,6 +988,24 @@ pub fn SumFloat(
     values: Vec<Option<String>>,
     single: bool,
 ) -> AdapterResult<Option<f64>> {
+    FloatingAggregate(context, values, single, false)
+}
+
+/// PostgreSQL floating average, with float8 transition and result for both inputs.
+pub fn AvgFloat(
+    context: ContextRef,
+    values: Vec<Option<String>>,
+    single: bool,
+) -> AdapterResult<Option<f64>> {
+    FloatingAggregate(context, values, single, true)
+}
+
+fn FloatingAggregate(
+    context: ContextRef,
+    values: Vec<Option<String>>,
+    single: bool,
+    average: bool,
+) -> AdapterResult<Option<f64>> {
     let tp = if single {
         astersql_parser_mysql::r#type::TypeFloat
     } else {
@@ -967,19 +1027,28 @@ pub fn SumFloat(
         false,
     )
     .map_err(|e| astersql_errors::New(e.to_string()))?;
-    function.Name = if single {
+    function.Name = if average && single {
+        "pg_avg_float4"
+    } else if average {
+        "pg_avg_float8"
+    } else if single {
         "pg_sum_float4"
     } else {
         "pg_sum_float8"
     }
     .into();
+    if average {
+        function.RetTp = Some(*astersql_expression::types::NewFieldType(
+            astersql_parser_mysql::r#type::TypeDouble,
+        ));
+    }
     let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
         .map_err(astersql_errors::New)?;
     executor.Open()?;
     let mut output = executor.NewChunk();
     let result = executor.Next(&mut output).map(|()| {
         (!output.GetRow(0).IsNull(0)).then(|| {
-            if single {
+            if single && !average {
                 f64::from(output.GetRow(0).GetFloat32(0))
             } else {
                 output.GetRow(0).GetFloat64(0)

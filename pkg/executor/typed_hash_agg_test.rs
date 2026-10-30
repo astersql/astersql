@@ -537,3 +537,146 @@ fn pg09_05_execution_boundaries() {
         );
     }
 }
+
+#[test]
+fn pg09_06_execution() {
+    for (tp, name, values, expected) in [
+        (
+            astersql_parser_mysql::r#type::TypeFloat,
+            "pg_avg_float4",
+            vec![16777216.0, 1.0, -16777216.0],
+            1.0 / 3.0,
+        ),
+        (
+            astersql_parser_mysql::r#type::TypeDouble,
+            "pg_avg_float8",
+            vec![9007199254740992.0, 1.0, -9007199254740992.0],
+            0.0,
+        ),
+    ] {
+        let source = Arc::new(MemoryRetriever::default());
+        for (i, v) in values.into_iter().enumerate() {
+            let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+                98,
+                Box::new(astersql_tablecodec::kv::IntHandle(i as i64 + 1)),
+            );
+            let value = astersql_tablecodec::EncodeRow(
+                Some(astersql_tablecodec::time::UTC),
+                vec![astersql_types::datum::NewFloat64Datum(v)],
+                vec![1],
+                Vec::new(),
+                None,
+                None,
+                astersql_tablecodec::rowcodec::Encoder::new(true),
+            )
+            .unwrap();
+            source.Put(astersql_kv::Key(key.0), value);
+        }
+        let mut p = hash_agg_plan(false);
+        let ft = astersql_parser_types::NewFieldType(tp);
+        let mut scan = PhysicalTableScan::New(context());
+        scan.Table = Some(astersql_meta_model::TableInfo {
+            ID: 98,
+            Name: NewCIStr("t"),
+            ..Default::default()
+        });
+        scan.Columns = vec![ColumnInfo {
+            ID: 1,
+            Name: NewCIStr("a"),
+            FieldType: ft.clone(),
+            ..Default::default()
+        }];
+        p.set_children(vec![Box::new(scan)]);
+        let mut f = p.BasePhysicalAgg.AggFuncs[0].clone();
+        f.Name = name.into();
+        f.Args = vec![Box::new(astersql_expression::Column::new(
+            ft.clone(),
+            1,
+            1,
+            0,
+        ))];
+        f.RetTp = Some(astersql_parser_types::NewFieldType(
+            astersql_parser_mysql::r#type::TypeDouble,
+        ));
+        p.BasePhysicalAgg.AggFuncs = vec![f];
+        let mut e = crate::builder::BuildTypedPhysicalPlan(&p, source, ranges(), 1, 1).unwrap();
+        e.Open().unwrap();
+        let mut out = e.NewChunk();
+        e.Next(&mut out).unwrap();
+        assert_eq!(out.NumRows(), 1);
+        let actual = out.GetRow(0).GetFloat64(0);
+        assert_eq!(actual, expected);
+        e.Next(&mut out).unwrap();
+        assert_eq!(out.NumRows(), 0);
+        e.Close().unwrap();
+    }
+}
+
+#[test]
+fn pg09_06_execution_boundaries() {
+    use crate::typed_hash_agg::AvgFloat;
+    for single in [true, false] {
+        assert_eq!(AvgFloat(context(), vec![], single).unwrap(), None);
+        assert_eq!(AvgFloat(context(), vec![None; 2050], single).unwrap(), None);
+        assert_eq!(
+            AvgFloat(context(), vec![Some("2".into()); 2050], single).unwrap(),
+            Some(2.0)
+        );
+        assert_eq!(
+            AvgFloat(
+                context(),
+                vec![Some("1".into()), None, Some("2".into())],
+                single
+            )
+            .unwrap(),
+            Some(1.5)
+        );
+        assert_eq!(
+            AvgFloat(context(), vec![Some("-0".into())], single)
+                .unwrap()
+                .unwrap()
+                .to_bits(),
+            0f64.to_bits()
+        );
+        for (a, b) in [("NaN", "1"), ("Infinity", "-Infinity")] {
+            assert!(
+                AvgFloat(context(), vec![Some(a.into()), Some(b.into())], single)
+                    .unwrap()
+                    .unwrap()
+                    .is_nan()
+            );
+        }
+        for (value, expected) in [
+            ("Infinity", f64::INFINITY),
+            ("-Infinity", f64::NEG_INFINITY),
+        ] {
+            assert_eq!(
+                AvgFloat(
+                    context(),
+                    vec![Some(value.into()), Some("1".into())],
+                    single
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+        assert!(AvgFloat(context(), vec![Some("invalid".into())], single).is_err());
+    }
+    for values in [
+        vec![Some("1e308".into()); 2],
+        vec![Some("1e154".into()), Some("-1e154".into())],
+    ] {
+        let error = AvgFloat(context(), values, false).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::typed_hash_agg::FloatSumOverflow>()
+                .is_some()
+        );
+    }
+    assert!(
+        AvgFloat(context(), vec![Some("3e38".into()); 2], true)
+            .unwrap()
+            .unwrap()
+            .is_finite()
+    );
+}

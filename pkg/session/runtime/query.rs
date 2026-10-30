@@ -1221,7 +1221,7 @@ impl ConcreteSession {
             });
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && name == "sum"
+            && matches!(name.as_str(), "sum" | "avg")
             && args.first().is_some_and(|arg| {
                 matches!(
                     self.pg_case_input_type(arg, &[]).GetType(),
@@ -1240,45 +1240,54 @@ impl ConcreteSession {
                 let mut seen = HashSet::new();
                 values.retain(|v| seen.insert(v.clone()));
             }
-            return astersql_executor::typed_hash_agg::SumFloat(
-                self.AdapterPlanContext(),
-                values,
-                single,
-            )
-            .map(|v| {
-                v.map(|v| {
-                    if v.is_nan() {
-                        "NaN".into()
-                    } else if v == f64::INFINITY {
-                        "Infinity".into()
-                    } else if v == f64::NEG_INFINITY {
-                        "-Infinity".into()
-                    } else if single {
-                        (v as f32).to_string()
-                    } else {
-                        v.to_string()
-                    }
+            let result = if name == "avg" {
+                astersql_executor::typed_hash_agg::AvgFloat(
+                    self.AdapterPlanContext(),
+                    values,
+                    single,
+                )
+            } else {
+                astersql_executor::typed_hash_agg::SumFloat(
+                    self.AdapterPlanContext(),
+                    values,
+                    single,
+                )
+            };
+            return result
+                .map(|v| {
+                    v.map(|v| {
+                        if v.is_nan() {
+                            "NaN".into()
+                        } else if v == f64::INFINITY {
+                            "Infinity".into()
+                        } else if v == f64::NEG_INFINITY {
+                            "-Infinity".into()
+                        } else if single && name == "sum" {
+                            (v as f32).to_string()
+                        } else {
+                            v.to_string()
+                        }
+                    })
                 })
-            })
-            .map_err(|error| {
-                if error
-                    .downcast_ref::<astersql_executor::typed_hash_agg::FloatSumOverflow>()
-                    .is_some()
-                {
-                    let diagnostic = PgFunctionError {
-                        state: "22003",
-                        message: error.to_string(),
-                        hint: None,
-                        position: None,
-                    };
-                    SessionError::with_source(
-                        diagnostic.to_string(),
-                        astersql_errors::SharedError::new(diagnostic),
-                    )
-                } else {
-                    SessionError::with_source(error.to_string(), error)
-                }
-            });
+                .map_err(|error| {
+                    if error
+                        .downcast_ref::<astersql_executor::typed_hash_agg::FloatSumOverflow>()
+                        .is_some()
+                    {
+                        let diagnostic = PgFunctionError {
+                            state: "22003",
+                            message: error.to_string(),
+                            hint: None,
+                            position: None,
+                        };
+                        SessionError::with_source(
+                            diagnostic.to_string(),
+                            astersql_errors::SharedError::new(diagnostic),
+                        )
+                    } else {
+                        SessionError::with_source(error.to_string(), error)
+                    }
+                });
         }
         if name == "count" && args.is_empty() {
             return Ok(Some(rows.len().to_string()));
@@ -5576,6 +5585,20 @@ impl ConcreteSession {
                 ) {
                     return tp;
                 }
+            }
+            if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
+                && Name.eq_ignore_ascii_case("avg")
+                && Args.first().is_some_and(|arg| {
+                    matches!(
+                        self.pg_case_input_type(arg, source_fields).GetType(),
+                        astersql_parser_mysql::r#type::TypeFloat
+                            | astersql_parser_mysql::r#type::TypeDouble
+                    )
+                })
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDouble,
+                );
             }
             if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
                 && Name.eq_ignore_ascii_case("sum")
