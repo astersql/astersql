@@ -262,7 +262,7 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             Args,
             Distinct,
             Filter,
-            ..
+            Order,
         } => {
             let args = Args
                 .iter()
@@ -275,7 +275,19 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 .map(|f| restore_expr(f).map(|s| format!(" FILTER (WHERE {s})")))
                 .transpose()?
                 .unwrap_or_default();
-            Ok(format!("{Name}({distinct}{args}){filter}"))
+            let order = if Order.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ORDER BY {}",
+                    Order
+                        .iter()
+                        .map(restore_by_item)
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(",")
+                )
+            };
+            Ok(format!("{Name}({distinct}{args}{order}){filter}"))
         }
         ExprKind::WindowFunction {
             Name, Args, Spec, ..

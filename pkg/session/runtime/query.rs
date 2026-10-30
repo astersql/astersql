@@ -1102,6 +1102,7 @@ impl ConcreteSession {
         name: &str,
         args: &[ast::ExprNode],
         distinct: bool,
+        order: &[ast::ByItem],
         filter: Option<&ast::ExprNode>,
         rows: &[HashMap<String, Option<String>>],
     ) -> SessionResult<Option<String>> {
@@ -1129,6 +1130,85 @@ impl ConcreteSession {
                 })
                 .collect::<SessionResult<Vec<_>>>()?;
             filtered.as_slice()
+        } else {
+            rows
+        };
+        // Derived-table aggregation already feeds the shared TypedHashAgg
+        // adapters. Preserve each aggregate's local input order at that boundary.
+        let sorted;
+        let rows = if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !order.is_empty() {
+            let specs = order
+                .iter()
+                .map(|item| (self.pg_case_input_type(&item.Expr, &[]), item.Desc))
+                .collect::<Vec<_>>();
+            let mut inputs = rows
+                .iter()
+                .map(|row| {
+                    let keys = order
+                        .iter()
+                        .zip(&specs)
+                        .map(|(item, (tp, _))| {
+                            use astersql_types::datum::*;
+                            let value =
+                                self.relational_query_expression_value(&item.Expr, row, None)?;
+                            let Some(value) = value else {
+                                return Ok(Datum::default());
+                            };
+                            match tp.PostgreSQLTypeOid() {
+                                Some(1700) => Ok(NewStringDatum(value)),
+                                Some(700) => astersql_expression::pg_cast_float4(Some(&value))
+                                    .map(|value| value.map(NewFloat32Datum).unwrap_or_default())
+                                    .map_err(|error| {
+                                        SessionError::with_source(
+                                            error.to_string(),
+                                            astersql_errors::SharedError::new(error),
+                                        )
+                                    }),
+                                Some(701) => astersql_expression::pg_cast_float8(Some(&value))
+                                    .map(|value| value.map(NewFloat64Datum).unwrap_or_default())
+                                    .map_err(|error| {
+                                        SessionError::with_source(
+                                            error.to_string(),
+                                            astersql_errors::SharedError::new(error),
+                                        )
+                                    }),
+                                _ => {
+                                    let value = if tp.GetFlag()
+                                        & astersql_parser_mysql::r#type::IsBooleanFlag
+                                        != 0
+                                    {
+                                        astersql_expression::pg_boolean_cast(
+                                            Some(&value),
+                                            astersql_expression::PgBooleanCast::TextToBool,
+                                        )
+                                        .map_err(pg_bool_session_error)?
+                                        .unwrap()
+                                    } else {
+                                        value
+                                    };
+                                    runtime_value_to_datum(
+                                        Some(&value),
+                                        &astersql_meta_model::ColumnInfo {
+                                            FieldType: tp.clone(),
+                                            ..Default::default()
+                                        },
+                                        astersql_types::DefaultStmtFlags,
+                                    )
+                                }
+                            }
+                        })
+                        .collect::<SessionResult<Vec<_>>>()?;
+                    Ok((row.clone(), keys))
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            astersql_executor::typed_hash_agg::SortAggregateInput(
+                self.AdapterPlanContext(),
+                &mut inputs,
+                &specs,
+            )
+            .map_err(|error| SessionError::with_source(error.to_string(), error))?;
+            sorted = inputs.into_iter().map(|(row, _)| row).collect::<Vec<_>>();
+            sorted.as_slice()
         } else {
             rows
         };
@@ -2208,11 +2288,12 @@ impl ConcreteSession {
                 Args,
                 Distinct,
                 Filter,
-                ..
+                Order,
             } => self.relational_aggregate_value(
                 Name,
                 Args,
                 *Distinct,
+                Order,
                 Filter.as_deref(),
                 group_rows
                     .ok_or_else(|| SessionError::new("aggregate expression has no input group"))?,
@@ -3762,6 +3843,77 @@ impl ConcreteSession {
                                 "42803",
                                 "aggregate and window functions are not allowed in FILTER",
                             ));
+                    }
+                }
+                if let ast::ExprKind::AggregateFunction {
+                    Args,
+                    Distinct: true,
+                    Order,
+                    ..
+                } = &input.Kind
+                {
+                    // Compare AST structure after removing source locations: an
+                    // ORDER BY expression must itself be an aggregate argument.
+                    fn same(
+                        left: &ast::ExprNode,
+                        right: &ast::ExprNode,
+                        sources: &[ConcreteResultField],
+                    ) -> bool {
+                        struct Normalize<'a>(&'a [ConcreteResultField]);
+                        impl ast::ExprNodeVisitor for Normalize<'_> {
+                            fn Enter(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                                let mut expr = expr;
+                                while let ast::ExprKind::Parentheses(inner) = &expr.Kind {
+                                    expr = inner;
+                                }
+                                let mut expr = expr.clone();
+                                if let ast::ExprKind::Column(column) = &mut expr.Kind {
+                                    let matches = self
+                                        .0
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, source)| {
+                                            (source.column.Name.L == column.Name.L
+                                                || source.column_as_name.L == column.Name.L)
+                                                && (column.Table.L.is_empty()
+                                                    || source.table_as_name.L == column.Table.L
+                                                    || source.table_name.L == column.Table.L)
+                                                && (column.Schema.L.is_empty()
+                                                    || source.db_name.L == column.Schema.L)
+                                        })
+                                        .map(|(index, _)| index)
+                                        .collect::<Vec<_>>();
+                                    if let [index] = matches.as_slice() {
+                                        *column = ast::ColumnName {
+                                            Name: ast::NewCIStr(format!(
+                                                "aggregate_source_{index}"
+                                            )),
+                                            ..Default::default()
+                                        };
+                                    }
+                                }
+                                expr.OriginTextPosition = 0;
+                                expr.node_text = Default::default();
+                                (expr, false)
+                            }
+                            fn Leave(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                                (expr.clone(), true)
+                            }
+                        }
+                        let (left, _) = left.Accept(&mut Normalize(sources));
+                        let (right, _) = right.Accept(&mut Normalize(sources));
+                        left.Kind == right.Kind
+                    }
+                    if Order
+                        .iter()
+                        .any(|item| !Args.iter().any(|arg| same(arg, &item.Expr, self.sources)))
+                    {
+                        self.scalar_cast_error = Some(
+                            super::relational_value::pg_bytea_input_error(
+                                "42P10",
+                                "in an aggregate with DISTINCT, ORDER BY expressions must appear in argument list",
+                            ),
+                        );
                     }
                 }
                 // MySQL permits a DISTINCT argument tuple; PostgreSQL COUNT

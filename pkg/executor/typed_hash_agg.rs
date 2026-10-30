@@ -46,6 +46,7 @@ enum AggregateValue {
 struct AggregateState {
     value: AggregateValue,
     distinct: Option<HashSet<Vec<u8>>>,
+    ordered: Vec<(Vec<Datum>, Vec<Datum>)>,
 }
 
 struct GroupState {
@@ -53,7 +54,8 @@ struct GroupState {
 }
 
 /// Typed HashAgg consumes child chunks incrementally and retains only one
-/// aggregate state per group. Input rows and their lock keys are never retained.
+/// aggregate state per group. Ordered aggregates additionally retain evaluated
+/// arguments and sort keys until the child is exhausted; lock keys are discarded.
 pub struct TypedHashAgg {
     child: Box<dyn ExecExecutor>,
     functions: Vec<AggFuncDesc>,
@@ -203,6 +205,7 @@ impl TypedHashAgg {
                         _ => unreachable!("aggregate names are validated by new"),
                     },
                     distinct: function.HasDistinct.then(HashSet::new),
+                    ordered: Vec::new(),
                 })
                 .collect(),
         }
@@ -240,6 +243,22 @@ impl TypedHashAgg {
         }
         if self.groups.is_empty() && self.group_by.is_empty() {
             self.groups.push(self.new_group());
+        }
+        let eval = self.context.GetExprCtx().GetEvalCtx();
+        for group in &mut self.groups {
+            for (function, state) in self.functions.iter().zip(&mut group.aggregates) {
+                let mut inputs = std::mem::take(&mut state.ordered);
+                let order = function
+                    .OrderByItems
+                    .iter()
+                    .map(|item| (item.Expr.GetType(eval).clone(), item.Desc))
+                    .collect::<Vec<_>>();
+                SortAggregateInput(self.context.clone(), &mut inputs, &order)?;
+                for (values, _) in inputs {
+                    Self::check_cancel(context)?;
+                    update_values(function, state, eval, values)?;
+                }
+            }
         }
         self.prepared = true;
         Ok(())
@@ -358,6 +377,86 @@ pub fn NumericDistinctKey(value: &str, oid: u32) -> AdapterResult<Vec<u8>> {
     .to_vec())
 }
 
+/// Sort already evaluated aggregate input with the same typed comparison used
+/// by HashAgg. Relational row adapters call this after FILTER and before feeding
+/// their existing typed transition executor; no SQL evaluation occurs here.
+pub fn SortAggregateInput<T>(
+    context: ContextRef,
+    inputs: &mut [(T, Vec<Datum>)],
+    order: &[(astersql_expression::types::FieldType, bool)],
+) -> AdapterResult {
+    let eval = context.GetExprCtx().GetEvalCtx();
+    let mut comparison_error = None;
+    inputs.sort_by(|left, right| {
+        for (index, (tp, desc)) in order.iter().enumerate() {
+            let ordering = match aggregate_order(eval, tp, &left.1[index], &right.1[index]) {
+                Ok(ordering) => ordering,
+                Err(error) => {
+                    comparison_error = Some(error);
+                    return std::cmp::Ordering::Equal;
+                }
+            };
+            if !ordering.is_eq() {
+                return if *desc { ordering.reverse() } else { ordering };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    if let Some(error) = comparison_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Compare typed keys; PostgreSQL's default NULL position is the reverse of
+/// MySQL's, while DESC reverses the complete ordering at the caller.
+fn aggregate_order(
+    eval: &dyn astersql_expression_exprctx::EvalContext,
+    tp: &astersql_expression::types::FieldType,
+    left: &Datum,
+    right: &Datum,
+) -> AdapterResult<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    let pg = eval.SQLDialect() == astersql_parser_ast::SqlDialect::PostgreSQL;
+    if left.IsNull() || right.IsNull() {
+        let order = left.IsNull().cmp(&right.IsNull());
+        return Ok(if pg { order } else { order.reverse() });
+    }
+    if pg {
+        match tp.PostgreSQLTypeOid() {
+            Some(1700) => {
+                let left = left
+                    .GetString()
+                    .parse::<astersql_types::pg_numeric::PgNumeric>()
+                    .map_err(astersql_errors::SharedError::new)?;
+                let right = right
+                    .GetString()
+                    .parse::<astersql_types::pg_numeric::PgNumeric>()
+                    .map_err(astersql_errors::SharedError::new)?;
+                return Ok(astersql_types::pg_numrange::numeric_order(&left, &right));
+            }
+            Some(700 | 701) => {
+                let (left, right) = if tp.PostgreSQLTypeOid() == Some(700) {
+                    (f64::from(left.GetFloat32()), f64::from(right.GetFloat32()))
+                } else {
+                    (left.GetFloat64(), right.GetFloat64())
+                };
+                return Ok(match (left.is_nan(), right.is_nan()) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => Ordering::Greater,
+                    (false, true) => Ordering::Less,
+                    _ => left.partial_cmp(&right).unwrap(),
+                });
+            }
+            _ => {}
+        }
+    }
+    let collator = astersql_util_collate::GetCollator(tp.GetCollate());
+    left.Compare(eval.TypeCtx(), right, collator.as_ref())
+        .map(|order| order.cmp(&0))
+        .map_err(|error| astersql_errors::New(error.to_string()))
+}
+
 fn update_aggregate(
     function: &AggFuncDesc,
     state: &mut AggregateState,
@@ -381,7 +480,29 @@ fn update_aggregate(
             .map_err(|error| astersql_errors::New(error.to_string()))?;
         return Ok(());
     }
-    let values = evaluated_arguments(function, eval, row)?;
+    let values = evaluated_arguments(function, eval, row.clone())?;
+    if !function.OrderByItems.is_empty() {
+        let keys = function
+            .OrderByItems
+            .iter()
+            .map(|item| {
+                item.Expr
+                    .Eval(eval, row.clone())
+                    .map_err(|error| astersql_errors::New(error.to_string()))
+            })
+            .collect::<AdapterResult<Vec<_>>>()?;
+        state.ordered.push((values, keys));
+        return Ok(());
+    }
+    update_values(function, state, eval, values)
+}
+
+fn update_values(
+    function: &AggFuncDesc,
+    state: &mut AggregateState,
+    eval: &dyn astersql_expression_exprctx::EvalContext,
+    values: Vec<Datum>,
+) -> AdapterResult {
     if function.Name != astersql_parser_ast::AggFuncFirstRow && values.iter().any(Datum::IsNull) {
         return Ok(());
     }

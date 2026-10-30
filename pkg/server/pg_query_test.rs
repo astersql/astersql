@@ -20748,3 +20748,317 @@ fn pg09_08_sql() {
         row(&[Some("1")])
     );
 }
+
+#[test]
+fn pg09_09_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    let sql = "SELECT sum(x ORDER BY k ASC) AS s FROM (SELECT 1e16::float8 AS x, 1::int4 AS k UNION ALL SELECT 1::float8, 3::int4 UNION ALL SELECT '-1e16'::float8, 2::int4) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("1")])]
+    );
+
+    for (sql, expected, oid) in [
+        (
+            "SELECT sum(DISTINCT x ORDER BY x DESC) FILTER (WHERE keep) AS c FROM (SELECT 1::int4 AS x, true AS keep UNION ALL SELECT 1::int4, false UNION ALL SELECT 2::int4, true UNION ALL SELECT NULL::int4, true UNION ALL SELECT 9::int4, NULL::bool) t",
+            Some("3"),
+            20u32,
+        ),
+        (
+            "SELECT count(DISTINCT x ORDER BY x DESC) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 1::int4 UNION ALL SELECT NULL::int4) t",
+            Some("1"),
+            20,
+        ),
+        (
+            "SELECT sum(x ORDER BY x) AS c FROM (SELECT NULL::int4 AS x UNION ALL SELECT NULL::int4) t",
+            None,
+            20,
+        ),
+        (
+            "SELECT sum(x ORDER BY x) AS c FROM (SELECT 1::int4 AS x WHERE false) t",
+            None,
+            20,
+        ),
+        (
+            "SELECT sum(x ORDER BY x) FILTER (WHERE false) AS c FROM (SELECT 1::int4 AS x) t",
+            None,
+            20,
+        ),
+        (
+            "SELECT avg(x ORDER BY x DESC) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4) t",
+            Some("1.5000000000000000"),
+            1700,
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[expected])],
+            "{sql}"
+        );
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &oid.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    let sql = "SELECT sum(x ORDER BY k ASC) AS a, sum(x ORDER BY k DESC) AS b FROM (SELECT 1e16::float8 AS x, 1::int4 AS k UNION ALL SELECT 1::float8, 3::int4 UNION ALL SELECT '-1e16'::float8, 2::int4) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1"), Some("0")])
+    );
+    for sql in [
+        "SELECT sum(DISTINCT x ORDER BY (x)) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4) t",
+        "SELECT sum(DISTINCT x ORDER BY t.x) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4) t",
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b'D').unwrap().1,
+            row(&[Some("3")])
+        );
+    }
+    let sql = "SELECT sum(x ORDER BY 1 / k) FILTER (WHERE keep) AS c FROM (SELECT 1::int4 AS x, 0::int4 AS k, false AS keep UNION ALL SELECT 2::int4, 1::int4, true) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("2")])
+    );
+    let sql = "SELECT sum(x ORDER BY k ASC) AS c FROM (SELECT 16777216::float4 AS x, 1::int4 AS k UNION ALL SELECT 1::float4, 3::int4 UNION ALL SELECT '-16777216'::float4, 2::int4) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1")])
+    );
+    let sql = "SELECT count(DISTINCT x ORDER BY x DESC) AS c FROM (SELECT 'NaN'::float8 AS x UNION ALL SELECT 'NaN'::float8 UNION ALL SELECT 'Infinity'::float8 UNION ALL SELECT '-Infinity'::float8 UNION ALL SELECT 0::float8 UNION ALL SELECT '-0'::float8) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("4")])
+    );
+    // Moving the NULL-keyed +1 between the two large cancelling values
+    // distinguishes PostgreSQL's NULL defaults in both directions.
+    for (direction, expected) in [("ASC", "1"), ("DESC", "0")] {
+        let sql = format!(
+            "SELECT sum(x ORDER BY k {direction}) AS c FROM (SELECT 1e16::float8 AS x, 1::int4 AS k UNION ALL SELECT 1::float8, NULL::int4 UNION ALL SELECT '-1e16'::float8, 2::int4) t"
+        );
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some(expected)])],
+            "{sql}"
+        );
+    }
+    let sql = "SELECT sum(x ORDER BY k) AS c FROM (SELECT 1e16::float8 AS x, '1.00000000000000000001'::numeric AS k UNION ALL SELECT 1::float8, '1.00000000000000000003'::numeric UNION ALL SELECT '-1e16'::float8, '1.00000000000000000002'::numeric) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1")])
+    );
+    for sql in [
+        "SELECT sum(DISTINCT x ORDER BY k) AS c FROM (SELECT 1::int4 AS x, 2::int4 AS k) t",
+        "SELECT sum(DISTINCT x ORDER BY x + 1) AS c FROM (SELECT 1::int4 AS x) t",
+    ] {
+        let ms = query(&mut s, sql);
+        let e = &ms
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("reject illegal DISTINCT order")
+            .1;
+        assert!(e.windows(7).any(|w| w == b"C42P10\0"), "{ms:?}");
+        assert!(e.windows(7).any(|w| w == b"SERROR\0"));
+        let primary =
+            b"Min an aggregate with DISTINCT, ORDER BY expressions must appear in argument list\0";
+        assert!(e.windows(primary.len()).any(|w| w == primary), "{ms:?}");
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        assert_eq!(
+            query(&mut s, "SELECT 1::int4 AS c")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+    }
+    // Group reduction and outer output order do not change either local sort.
+    let sql = "SELECT g AS g, sum(x ORDER BY k ASC) AS a, sum(x ORDER BY k DESC) AS b FROM (SELECT 1::int4 AS g, 1e16::float8 AS x, 1::int4 AS k UNION ALL SELECT 1::int4, 1::float8, 3::int4 UNION ALL SELECT 1::int4, '-1e16'::float8, 2::int4 UNION ALL SELECT 2::int4, 4::float8, 1::int4) t GROUP BY g ORDER BY g DESC";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            row(&[Some("2"), Some("4"), Some("4")]),
+            row(&[Some("1"), Some("1"), Some("0")])
+        ]
+    );
+    fn ready09(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity09(ms: &[(u8, Vec<u8>)], format: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &20u32.to_be_bytes());
+        assert_eq!(&d[14..16], &8i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &format.to_be_bytes());
+    }
+    for sql in [
+        "SELECT count(DISTINCT x ORDER BY x DESC) FILTER (WHERE true) AS c FROM (SELECT 1::int4 AS x) t",
+        "SELECT count(DISTINCT x ORDER BY x DESC) FILTER (WHERE false) AS c FROM (SELECT 1::int4 AS x WHERE false) t GROUP BY x",
+    ] {
+        let ms = query(&mut s, sql);
+        identity09(&ms, 0);
+        assert_eq!(
+            ms.iter().filter(|m| m.0 == b'D').count(),
+            usize::from(!sql.contains("GROUP BY"))
+        );
+    }
+    send(&mut s, b'P', &[b"order09\0SELECT count(DISTINCT x ORDER BY x DESC) FILTER (WHERE $1::bool) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4 UNION ALL SELECT 2::int4) t\0".as_slice(), &1i16.to_be_bytes(), &16u32.to_be_bytes()].concat());
+    send(&mut s, b'D', b"Sorder09\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready09(&mut s);
+    identity09(&ms, 0);
+    assert_eq!(
+        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [b'1', b't', b'T', b'Z']
+    );
+    for input_fmt in [0i16, 1] {
+        for output_fmt in [0i16, 1] {
+            for keep in [Some(true), Some(false), None] {
+                let mut bind = b"\0order09\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                if let Some(keep) = keep {
+                    let value = if input_fmt == 0 {
+                        if keep {
+                            b"true".to_vec()
+                        } else {
+                            b"false".to_vec()
+                        }
+                    } else {
+                        vec![u8::from(keep)]
+                    };
+                    bind.extend((value.len() as i32).to_be_bytes());
+                    bind.extend(value);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(output_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready09(&mut s);
+                identity09(&ms, output_fmt);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                assert_eq!(
+                    ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    [b'2', b'T', b'D', b'C', b'Z']
+                );
+                let n = if keep == Some(true) { 2i64 } else { 0 };
+                let expected = if output_fmt == 0 {
+                    row(&[Some(if n == 2 { "2" } else { "0" })])
+                } else {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &8i32.to_be_bytes(),
+                        &n.to_be_bytes(),
+                    ]
+                    .concat()
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+
+    send(
+        &mut s,
+        b'P',
+        b"badorder09\0SELECT sum(DISTINCT x ORDER BY k) AS c FROM (SELECT 1::int4 AS x, 2::int4 AS k) t\0\0\0",
+    );
+    send(&mut s, b'S', &[]);
+    let ms = ready09(&mut s);
+    let e = &ms
+        .iter()
+        .find(|m| m.0 == b'E')
+        .expect("Parse must reject nonargument DISTINCT ORDER BY")
+        .1;
+    assert!(e.windows(7).any(|w| w == b"C42P10\0"), "{ms:?}");
+    assert!(e.windows(7).any(|w| w == b"SERROR\0"), "{ms:?}");
+    let primary =
+        b"Min an aggregate with DISTINCT, ORDER BY expressions must appear in argument list\0";
+    assert!(e.windows(primary.len()).any(|w| w == primary), "{ms:?}");
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4 AS c")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+}

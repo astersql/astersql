@@ -234,7 +234,8 @@ impl FromStr for PgNumRange {
     }
 }
 
-fn numeric_order(left: &PgNumeric, right: &PgNumeric) -> std::cmp::Ordering {
+/// Compare normalized PostgreSQL numerics, including infinities and NaN.
+pub fn numeric_order(left: &PgNumeric, right: &PgNumeric) -> std::cmp::Ordering {
     let l = left.to_string();
     let r = right.to_string();
     let left = l.as_str();

@@ -820,3 +820,40 @@ fn pg09_08_numeric_keys() {
     );
     assert_eq!(key("1e10000", 1700).unwrap(), key("10e9999", 1700).unwrap());
 }
+
+#[test]
+fn pg09_09_execution() {
+    // A page per input proves ORDER BY is applied across child chunks.
+    for desc in [false, true] {
+        let source = Arc::new(MemoryRetriever::default());
+        for (handle, value) in [(1, 10), (2, 30), (3, 20)] {
+            let (key, row) = encode_row(98, handle, value, "unused");
+            source.Put(key, row);
+        }
+        let mut p = hash_agg_plan(false);
+        let mut first = p.BasePhysicalAgg.AggFuncs[0].clone();
+        first.Name = "firstrow".into();
+        first.Args = vec![Box::new(astersql_expression::Column::new(
+            *astersql_expression::types::NewFieldType(TypeLonglong),
+            1,
+            1,
+            0,
+        ))];
+        first.OrderByItems = vec![astersql_planner_util::ByItems {
+            Expr: first.Args[0].clone(),
+            Desc: desc,
+        }];
+        p.BasePhysicalAgg.AggFuncs = vec![first];
+        let mut e = crate::builder::BuildTypedPhysicalPlan(&p, source, ranges(), 1, 1).unwrap();
+        for _ in 0..2 {
+            e.Open().unwrap();
+            let mut out = e.NewChunk();
+            e.Next(&mut out).unwrap();
+            assert_eq!(out.NumRows(), 1);
+            assert_eq!(out.GetRow(0).GetInt64(0), if desc { 30 } else { 10 });
+            e.Next(&mut out).unwrap();
+            assert_eq!(out.NumRows(), 0);
+            e.Close().unwrap();
+        }
+    }
+}

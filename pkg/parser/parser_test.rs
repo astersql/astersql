@@ -6213,3 +6213,47 @@ fn pg09_07_filter_ast() {
         .is_err()
     );
 }
+
+#[test]
+fn pg09_09_order_ast() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let mut mysql = parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    for (name, quantifier) in [
+        ("sum", "DISTINCT "),
+        ("avg", "DISTINCT "),
+        ("count", "DISTINCT "),
+        ("sum", ""),
+        ("avg", ""),
+        ("count", ""),
+        ("count", "ALL "),
+    ] {
+        let sql = format!("SELECT {name}({quantifier}x ORDER BY x DESC) FILTER (WHERE keep) AS c");
+        let stmt = pg.ParseOneStmt(&sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let parser_ast::ExprKind::AggregateFunction {
+            Name,
+            Args,
+            Distinct,
+            Order,
+            Filter,
+        } = &expr.Kind
+        else {
+            panic!("{sql}");
+        };
+        assert_eq!(Name.to_ascii_lowercase(), name);
+        assert_eq!(Args.len(), 1);
+        assert_eq!(*Distinct, quantifier == "DISTINCT ");
+        assert_eq!(Order.len(), 1);
+        assert!(Order[0].Desc);
+        assert!(Filter.is_some());
+        let restored = parser_ast::sql_restore::restore_expr(expr).unwrap();
+        assert!(restored.contains("ORDER BY"));
+        pg.ParseOneStmt(&format!("SELECT {restored}"), "", "")
+            .unwrap();
+        assert!(mysql.ParseOneStmt(&sql, "", "").is_err());
+    }
+}

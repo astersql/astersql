@@ -20,6 +20,7 @@ use super::{Context, Rhs};
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
     PgAggregateFilter,
+    PgAggregateOrder,
     PgExtractField,
     PgRow,
     RowFieldFirst,
@@ -339,6 +340,11 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        "sumexpr_builtinsum_buggydefaultfalsedistinctopt--87ebf3ac0fd2824c"
+        | "sumexpr_avg_buggydefaultfalsedistinctopt_express--31cf4978a2696032"
+        | "sumexpr_builtincount_all_expression_pgaggregateo--a258b1343534106e"
+        | "sumexpr_builtincount_distinctkwd_expressionlist--0458f0f19f8b7199"
+        | "sumexpr_builtincount_expression_pgaggregateorder--88332d57268b95a3" => Some(ExpressionRule::PgAggregateOrder),
         id if id.starts_with("simpleexpr_sumexpr_pgfilter_") => Some(ExpressionRule::PgAggregateFilter),
         id if id.starts_with("pgcasttype_pgcasttype--") || id.starts_with("pgcasttype_pgpostfixfloat--") || id.starts_with("pgcasttype_pgpostfixtext--") || id.starts_with("pgcasttype_pgpostfixdate--") || id.starts_with("pgcasttype_pgpostfixjson--") || id.starts_with("pgcasttype_pgtimetype--") || id.starts_with("pgcasttype_pgtimestamptype--") => Some(ExpressionRule::PgArrayType),
         id if id.starts_with("pgcasttype_pginterval_pgintervalopt--") || id.starts_with("pgcasttype_pginterval_prec_empty--") => Some(ExpressionRule::PgIntervalType),
@@ -1172,6 +1178,30 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 },
                 OriginTextPosition: start as i32,
                 Flag: Default::default(),
+            });
+        }
+        ExpressionRule::PgAggregateOrder => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("aggregate ORDER BY requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            let name = rhs[1].ident.to_ascii_lowercase();
+            // COUNT follows its existing expression-list/ALL/plain prefixes so
+            // adding ORDER BY does not create an empty-DISTINCT shift conflict.
+            let plain_count = name == "count" && rhs_len == 5;
+            let argument = if plain_count { 3 } else { 4 };
+            let args = rhs[argument].item.as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
+                .cloned().unwrap_or_else(|| vec![rhs[argument].expr.clone().unwrap()]);
+            let order = rhs[argument + 1].item.as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::ByItem>>())
+                .cloned().unwrap_or_default();
+            let distinct = !plain_count && (rhs[3].ident.eq_ignore_ascii_case("distinct")
+                || rhs[3].item.as_deref().and_then(|item| item.downcast_ref::<bool>()).copied().unwrap_or(false));
+            out.expr = Some(parser_ast::ExprNode {
+                Kind: parser_ast::ExprKind::AggregateFunction {
+                    Name: name, Args: args, Distinct: distinct, Order: order, Filter: None,
+                }, ..Default::default()
             });
         }
         ExpressionRule::PgAggregateFilter => {

@@ -4395,3 +4395,11 @@ PgCastType : PgTimeType '[' ']' @action;
 PgCastType : PgTimestampType '[' ']' @action;
 
 BitExpr : BitExpr pgCatalogDivide BitExpr %prec pgCatalogDivide @action;
+
+// PG ordinary aggregate ordering uses the existing ByItem carrier.
+PgAggregateOrder : OrderBy;
+SumExpr : builtinSum "(" BuggyDefaultFalseDistinctOpt Expression PgAggregateOrder ")" @action;
+SumExpr : "AVG" "(" BuggyDefaultFalseDistinctOpt Expression PgAggregateOrder ")" @action;
+SumExpr : builtinCount "(" DistinctKwd ExpressionList PgAggregateOrder ")" @action;
+SumExpr : builtinCount "(" Expression PgAggregateOrder ")" @action;
+SumExpr : builtinCount "(" "ALL" Expression PgAggregateOrder ")" @action;
