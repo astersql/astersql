@@ -4094,8 +4094,9 @@ impl ConcreteSession {
             );
         }
         drop(state);
-        let mut statements = parse_with_dialect(&normalized_sql, sql_mode, self.sql_dialect())
-            .map_err(|error| self.normalize_mysql_function_parse_error(error))?;
+        let (mut statements, parser_warnings) =
+            parse_with_dialect_and_warnings(&normalized_sql, sql_mode, self.sql_dialect())
+                .map_err(|error| self.normalize_mysql_function_parse_error(error))?;
         self.apply_pg_date_constants(&mut statements);
         self.apply_pg_float4_constants(&mut statements);
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
@@ -4105,6 +4106,7 @@ impl ConcreteSession {
         // 多语句按分号拆分后逐条执行，保留各自 hint/binding 生命周期。
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();
+        let single_statement = statements.len() == 1;
         for (index, statement) in statements.into_iter().enumerate() {
             if astersql_config::diagnosticmode::Enabled()
                 && !self.state.borrow().in_restricted_sql
@@ -4171,6 +4173,15 @@ impl ConcreteSession {
             if !is_show_warnings {
                 self.state.borrow_mut().current_warnings.clear();
                 self.session_vars.StmtCtx.SetWarnings(Vec::new());
+                if self.sql_dialect() == ast::SqlDialect::MySQL {
+                    let warnings = if single_statement {
+                        parser_warnings.clone()
+                    } else {
+                        parse_with_dialect_and_warnings(current_sql, sql_mode, self.sql_dialect())?
+                            .1
+                    };
+                    self.state.borrow_mut().current_warnings.extend(warnings);
+                }
             }
             // Reset per-statement sync-load results before planning the next SQL.
             self.session_vars

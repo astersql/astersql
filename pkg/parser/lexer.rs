@@ -393,6 +393,9 @@ impl Scanner {
             return token::pgCatalogDivide;
         }
         if tok == token::pipes && !self.sqlMode.HasPipesAsConcatMode() {
+            self.AppendWarn(ErrWarnDeprecatedSyntax.GenWithStackByArgs(&[
+                "|| as a synonym for OR".into(), "OR".into(),
+            ]));
             return token::pipesAsOr;
         }
         // PostgreSQL logical NOT keeps its grammar precedence regardless of

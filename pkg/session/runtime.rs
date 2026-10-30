@@ -1331,6 +1331,16 @@ fn parse_with_dialect(
     mode: astersql_parser_mysql::r#const::SQLMode,
     dialect: ast::SqlDialect,
 ) -> SessionResult<Vec<Box<dyn ast::Node>>> {
+    parse_with_dialect_and_warnings(sql, mode, dialect).map(|(statements, _)| statements)
+}
+
+/// Keep parser diagnostics for the command boundary; metadata-only parses still
+/// use the existing wrapper so they cannot publish duplicate warnings.
+fn parse_with_dialect_and_warnings(
+    sql: &str,
+    mode: astersql_parser_mysql::r#const::SQLMode,
+    dialect: ast::SqlDialect,
+) -> SessionResult<(Vec<Box<dyn ast::Node>>, Vec<SessionWarning>)> {
     let normalized = sql.trim_start().to_ascii_lowercase();
     if normalized.starts_with("declare ") && normalized.contains(" cursor ") {
         return Err(SessionError::new("unsupported SQL cursor statement"));
@@ -1341,7 +1351,6 @@ fn parse_with_dialect(
     PARSED_DIALECTS.with(|observed| observed.borrow_mut().push(parser.sql_dialect()));
     parser
         .ParseSQL(sql, &[])
-        .map(|(statements, _warnings)| statements)
         .map_err(|error| {
             if dialect == ast::SqlDialect::PostgreSQL
                 && error.to_string() == "PostgreSQL float precision must be between 1 and 53"
@@ -1356,9 +1365,12 @@ fn parse_with_dialect(
                 "[parser:1064]You have an error in your SQL syntax; {error}"
             ))
         })
-        .and_then(|statements| {
+        .and_then(|(statements, warnings)| {
             planning::validate_function_visibility(&statements, dialect)?;
-            Ok(statements)
+            Ok((
+                statements,
+                warnings.iter().map(SessionWarning::from_error).collect(),
+            ))
         })
 }
 

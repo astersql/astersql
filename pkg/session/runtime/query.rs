@@ -4611,13 +4611,18 @@ impl ConcreteSession {
                         .all(|source| source.table_as_name == first.table_as_name)
                 });
         }
-        // Native comparisons retain their formal identity on the constant SELECT path.
-        // Keep this local to NULL-safe equality and its ordinary NULL control.
+        // Native OR and comparisons retain their formal result identity on the
+        // constant SELECT path, including NULL-safe equality's NULL control.
         if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind {
             if relational_expression_has_aggregate(expression) {
                 return false;
             }
             return Op == "<=>"
+                || (Op.eq_ignore_ascii_case("or")
+                    && !relational_expression_has_subquery(expression)
+                    && sources.first().is_none_or(|first| {
+                        sources.iter().all(|source| source.table_as_name == first.table_as_name)
+                    }))
                 || (Op == "="
                     && [L.as_ref(), R.as_ref()].iter().any(|arg| {
                         matches!(&arg.Kind, ast::ExprKind::Value(value) if matches!(value.Datum, ast::ValueDatum::Null))
@@ -4998,6 +5003,13 @@ impl ConcreteSession {
         self.mysql_function_type_and_cache_reason(expression, source_fields)
             .map(|(mut tp, _, _)| {
                 if self.sql_dialect() == ast::SqlDialect::MySQL
+                    && matches!(&expression.Kind, ast::ExprKind::Binary { Op, .. } if Op.eq_ignore_ascii_case("or"))
+                {
+                    tp.AddFlag(astersql_parser_mysql::r#type::BinaryFlag);
+                    tp.SetFlen(1);
+                    tp.SetDecimal(0);
+                }
+                if self.sql_dialect() == ast::SqlDialect::MySQL
                     && matches!(expression.Kind, ast::ExprKind::Like { .. })
                 {
                     // Native LIKE is a numeric, binary-charset predicate even
@@ -5157,7 +5169,7 @@ impl ConcreteSession {
         // Native descriptors retain the formal signature even when the current
         // constant input folds to a non-NULL value with a shorter display width.
         let preserve_native_descriptor = self.sql_dialect() == ast::SqlDialect::MySQL
-            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "extract" | "date_format" | "format" | "lower" | "upper"));
+            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "extract" | "date_format" | "format" | "lower" | "upper" | "concat"));
         astersql_planner_core::PlannerBuildSimpleExpr(
             &context,
             expression,

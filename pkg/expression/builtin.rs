@@ -7801,7 +7801,16 @@ pub mod formal_registry {
                 if name == "concat" {
                     // Go newBaseBuiltinFuncWithTp mutates the shared argument slice.
                     let mut flen = 0;
-                    for arg in &args {
+                    for ((arg, source), original) in args.iter().zip(&inputs).zip(
+                        split_collation_args
+                            .as_ref()
+                            .expect("CONCAT original arguments"),
+                    ) {
+                        if source.GetType() == mysql::TypeNull
+                            && original.ConstLevel() == crate::ConstStrict
+                        {
+                            continue;
+                        }
                         let width = arg.GetType(ctx.GetEvalCtx()).GetFlen();
                         if width < 0 {
                             flen = mysql::MaxBlobWidth as isize;
@@ -8803,7 +8812,9 @@ pub mod formal_registry {
                 base.return_type.AddFlag(mysql::BinaryFlag);
             }
             if matches!(kind, CoreBuiltinKind::Concat(_))
-                && base.return_type.GetCharset() == crate::charset::CharsetBin
+                && (base.return_type.GetCharset() == crate::charset::CharsetBin
+                    || (ctx.SQLDialect() == crate::ast::SqlDialect::MySQL
+                        && collate::IsBinCollation(base.return_type.GetCollate())))
             {
                 base.return_type.AddFlag(mysql::BinaryFlag);
             }

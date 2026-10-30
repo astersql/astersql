@@ -16,9 +16,9 @@ from pg_function_25_libpq import mysql_compare
 
 CASES=(('basic',"'a'::text || 'b'::text",'ab'),('null-left',"NULL::text || 'b'::text",None),('null-right',"'a'::text || NULL::text",None),('null-both',"NULL::text || NULL::text",None),('empty-left',"''::text || 'b'::text",'b'),('empty-right',"'a'::text || ''::text",'a'),('empty-both',"''::text || ''::text",''),('unicode',"'你好'::text || '🌍'::text",'你好🌍'),('qualified',"'a'::text OPERATOR(pg_catalog.||) 'b'::text",'ab'),('nested',"coalesce(NULL::text || 'x'::text,'a'::text || 'b'::text)",'ab'),('chain',"'a'::text || 'b'::text || 'c'::text",'abc'),('collation',"('a'::text COLLATE \"C\") || 'b'::text",'ab'),('row','a || b','ab'),('rowzero','a || b',None),('zero','NULL::text || NULL::text',None))
 ERRORS=(("no-signature","SELECT 1::int4 || 2::int4 AS v",'42883',None),)
-MYSQL_CASES=(('or','SELECT 1 || 0 AS v'),('null','SELECT NULL || 0 AS v'),('concat',"SELECT 'a' || 'b' AS v"),('concat-null',"SELECT 'a' || NULL AS v"),('unicode',"SELECT '你好' || '🌍' AS v"),('health','SELECT v AS v FROM health'))
+MYSQL_CASES=(('or','SELECT 1 || 0 AS v'),('null','SELECT NULL || 0 AS v'),('concat',"SELECT 'a' || 'b' AS v"),('concat-null',"SELECT 'a' || NULL AS v"),('concat-typed-null',"SELECT 'a' || CAST(NULL AS CHAR(10)) AS v"),('unicode',"SELECT '你好' || '🌍' AS v"),('health','SELECT v AS v FROM health'))
 CASE_IDS=tuple(['Q-'+label for label,*_ in CASES]+[f'bind-{op}-{i}-{o}-{k}' for op in ('ordinary','qualified') for i in (0,1) for o in (0,1) for k in range(4)]+[f'bind-zero-{i}-{o}' for i in (0,1) for o in (0,1)]+[f'error-{label}-{phase}' for label,*_ in ERRORS for phase in ('Q','P','txn')]+[f'M-{label}-{mode}' for label,_ in MYSQL_CASES for mode in ('Q','P')]+['I-before','I-middle','I-after'])
-assert len(CASE_IDS)==len(set(CASE_IDS))==69
+assert len(CASE_IDS)==len(set(CASE_IDS))==71
 
 def run(port,database,evidence,mysql_port):
     evidence.mkdir(parents=True,exist_ok=False)
@@ -139,7 +139,7 @@ def run(port,database,evidence,mysql_port):
                 for m in mysqls.values():
                     assert m.query("SET sql_mode='"+('PIPES_AS_CONCAT' if label.startswith('concat') or label=='unicode' else '')+"'")['code']==0
                 peers=[save('mysql-'+side,case,m.query(sql) if mode=='Q' else m.prepared(sql,[()]),mode) for side,m in mysqls.items()]
-                wanted={'or':'1','null':None,'concat':'ab','concat-null':None,'unicode':'你好🌍','health':'7'}[label]
+                wanted={'or':'1','null':None,'concat':'ab','concat-null':None,'concat-typed-null':None,'unicode':'你好🌍','health':'7'}[label]
                 for obs in peers:
                     actual=obs if mode=='Q' else obs[-1]
                     assert actual['code']==0 and actual['rows']==[[None if wanted is None else wanted.encode().hex()]],actual
@@ -165,10 +165,10 @@ def run(port,database,evidence,mysql_port):
                 cleanup['mysql-'+side+'-settings-restored']=(m.query("SET sql_mode='"+mode+"'")['code']==0 and m.query(f'SET NAMES {charset} COLLATE {collation}')['code']==0)
             m.close()
         category=lambda x:'binding' if x.startswith('bind-') else 'error-recovery' if x.startswith('error-') else 'mysql' if x.startswith('M-') else 'interleaved' if x.startswith('I-') else 'zero' if x in ('Q-zero','Q-rowzero') else 'null' if x.startswith('Q-null') else 'success'
-        summary=dict(expected=69,actual=len(attempted),unique=len(attempted),passed=len(passed),failed=len(attempted-set(passed)),skipped=len(set(CASE_IDS)-attempted),failures=failures,negative_self_checks=3,connections_closed=True,reference_database_dropped=cleanup.get('reference_database_dropped',False),cleanup=cleanup,case_ids=passed,expected_case_ids=CASE_IDS,counts={key:sum(category(x)==key for x in passed) for key in set(map(category,CASE_IDS))})
+        summary=dict(expected=71,actual=len(attempted),unique=len(attempted),passed=len(passed),failed=len(attempted-set(passed)),skipped=len(set(CASE_IDS)-attempted),failures=failures,negative_self_checks=3,connections_closed=True,reference_database_dropped=cleanup.get('reference_database_dropped',False),cleanup=cleanup,case_ids=passed,expected_case_ids=CASE_IDS,counts={key:sum(category(x)==key for x in passed) for key in set(map(category,CASE_IDS))})
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert all(cleanup.values()),cleanup
-    assert len(passed)==69 and not failures,summary
+    assert len(passed)==71 and not failures,summary
     print(json.dumps(summary))
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda *_:sys.exit(143))

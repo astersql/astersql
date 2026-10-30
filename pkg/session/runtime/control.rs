@@ -1736,6 +1736,17 @@ impl ConcreteSession {
         self.state.borrow().last_write_sql_resp_duration
     }
 
+    // Protocol analysis and ordinary execution must interpret pipes under the
+    // same connection mode. The returned warnings belong to Prepare, not Describe.
+    fn parse_protocol_sql(
+        &self,
+        sql: &str,
+    ) -> SessionResult<(Vec<Box<dyn ast::Node>>, Vec<SessionWarning>)> {
+        let mode = astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
+            .map_err(|error| session_error("parse protocol sql_mode", error))?;
+        parse_with_dialect_and_warnings(sql, mode, self.sql_dialect())
+    }
+
     /// Resolve original engine result types without executing or registering a
     /// statement. This uses the same AST/catalog resolver as prepared metadata.
     pub fn describe_result_fields(&self, sql: &str) -> SessionResult<Vec<ConcreteResultField>> {
@@ -1747,7 +1758,7 @@ impl ConcreteSession {
         sql: &str,
         execution: bool,
     ) -> SessionResult<Vec<ConcreteResultField>> {
-        let statements = parse_in_dialect(sql, self.sql_dialect())?;
+        let (statements, _) = self.parse_protocol_sql(sql)?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             super::pg_array::analyze(sql, &statements, None)?;
             super::pg_record::analyze_in_session(self, &statements, None)?;
@@ -1838,7 +1849,7 @@ impl ConcreteSession {
         supplied: &[u32],
     ) -> SessionResult<(u64, usize, Vec<ConcreteResultField>)> {
         self.begin_pg_date_statement();
-        let statements = parse_in_dialect(sql, self.sql_dialect()).map_err(|error| {
+        let (statements, parser_warnings) = self.parse_protocol_sql(sql).map_err(|error| {
             let hidden_mysql_function = error.mysql_hidden_function().is_some();
             let error = self.normalize_mysql_function_parse_error(error);
             // Unknown functions retain the normalized 1305 diagnostic for
@@ -2215,6 +2226,23 @@ impl ConcreteSession {
                 },
             },
         );
+        if self.sql_dialect() == ast::SqlDialect::MySQL {
+            // Syntax deprecations are emitted once at Prepare. Discard the
+            // previous command's syntax warning before publishing this parse.
+            if !parser_warnings.is_empty()
+                || state
+                    .current_warnings
+                    .iter()
+                    .chain(&state.last_warnings)
+                    .any(|warning| warning.code == 1287)
+            {
+                state
+                    .current_warnings
+                    .retain(|warning| warning.code != 1287);
+                state.current_warnings.extend(parser_warnings);
+                state.last_warnings = state.current_warnings.clone();
+            }
+        }
         Ok((statement_id, parameter_count, fields))
     }
 
@@ -2279,12 +2307,14 @@ impl ConcreteSession {
         let mut dual_cache_rejection = None;
         let mut mysql_analysis_warnings = Vec::new();
         let mut mysql_analysis_cache_warning = false;
+        let mut mysql_pipes_syntax_warning = false;
         let mut signed_abs_diagnostics = None;
         let mut mysql_function_fields = None;
         let mut mysql_execution_parameters = None;
         let mut mysql_execution_projections = None;
         if dialect == ast::SqlDialect::MySQL {
-            let statements = parse_in_dialect(&sql, dialect)?;
+            let (statements, parser_warnings) = self.parse_protocol_sql(&sql)?;
+            mysql_pipes_syntax_warning = parser_warnings.iter().any(|warning| warning.code == 1287);
             if let Some(select) = statements
                 .first()
                 .and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
@@ -2417,7 +2447,7 @@ impl ConcreteSession {
         // These MySQL function projections have one prepared result identity.
         // Binding literals must not replace it with folded or fallback metadata.
         let legacy_mysql_function_fields = if dialect == ast::SqlDialect::MySQL {
-            let statements = parse_in_dialect(&sql, dialect)?;
+            let (statements, _) = self.parse_protocol_sql(&sql)?;
             if let Some(select) = statements
                 .first()
                 .and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
@@ -2751,6 +2781,13 @@ impl ConcreteSession {
         }
         state.last_plan_from_cache = from_plan_cache && dual_cache_rejection.is_none();
         if execution.is_ok() {
+            // Bound SQL is reparsed by this adapter, while native Execute uses
+            // the already-parsed statement and does not repeat syntax warnings.
+            if dialect == ast::SqlDialect::MySQL {
+                state
+                    .current_warnings
+                    .retain(|warning| warning.code != 1287);
+            }
             let mut prefix = mysql_analysis_warnings;
             if let Some(reason) = &dual_cache_rejection
                 && !mysql_analysis_cache_warning

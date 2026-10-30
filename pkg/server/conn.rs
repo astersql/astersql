@@ -2029,7 +2029,7 @@ impl ClientConn {
         packet.extend_from_slice(&column_count.to_le_bytes());
         packet.extend_from_slice(&parameter_count.to_le_bytes());
         packet.push(0);
-        packet.extend_from_slice(&0_u16.to_le_bytes());
+        packet.extend_from_slice(&self.openSession()?.state().warning_count.to_le_bytes());
         self.writePacket(&packet)?;
         if parameter_count > 0 {
             for index in 0..parameter_count {

@@ -704,9 +704,12 @@ pub fn newFunctionImpl(
         ast::If | ast::Ifnull | ast::Nullif | ast::RowFunc
     ) && !(ctx.GetEvalCtx().SQLDialect() == ast::SqlDialect::PostgreSQL
         && matches!(func_name.as_str(), "substr" | "substring"))
+        && !(ctx.GetEvalCtx().SQLDialect() == ast::SqlDialect::MySQL && func_name == ast::Concat)
     {
         // PostgreSQL resolves unknown arguments per signature position. Copying
         // the int4 position type onto a NULL string argument loses its source.
+        // MySQL CONCAT also needs the original NULL width; copying another
+        // operand's type would make NULL contribute that operand's length.
         typeInferForNull(ctx.GetEvalCtx(), &mut func_args);
     }
     let function = fc.getFunction(ctx, func_args)?;

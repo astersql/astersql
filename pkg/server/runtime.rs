@@ -886,7 +886,7 @@ pub(crate) enum SessionRequest {
     Prepare {
         sql: String,
         parameter_oids: Vec<u32>,
-        response: mpsc::SyncSender<ConnResult<PreparedMetadata>>,
+        response: mpsc::SyncSender<ConnResult<(PreparedMetadata, ConcreteProtocolState)>>,
     },
     ExecutePrepared {
         statement_id: u32,
@@ -1250,6 +1250,7 @@ fn run_session_worker(
                             })
                         },
                     )
+                    .map(|metadata| (metadata, session.protocol_state()))
                     .map_err(session_protocol_error);
                 let _ = response.send(result);
             }
@@ -2210,7 +2211,12 @@ impl TiDBContext for ConcreteTiDBContext {
             parameter_oids: parameter_oids.to_vec(),
             response: response_tx,
         })?;
-        response_rx.recv().map_err(packet_error)?
+        let (metadata, state) = response_rx.recv().map_err(packet_error)??;
+        *self
+            .state
+            .lock()
+            .map_err(|_| ConnError::Poisoned("session state"))? = map_protocol_state(state);
+        Ok(metadata)
     }
 
     fn execute_prepared_statement(
