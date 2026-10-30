@@ -118,41 +118,67 @@ pub fn calculateConnectionLimit(global_limit: u32, user_limit: u32) -> u32 {
 }
 
 /// 建连成功后递增该用户连接数；若已达上限则返回 `TooManyUserConnections`。
-pub fn increaseUserConnectionsCount(cc: &ClientConn) -> Result<(), ConnectionError> {
+pub fn increaseUserConnectionsCount(
+    cc: &ClientConn,
+) -> Result<ReleaseUserConnection, ConnectionError> {
     let target_user = cc.user.String();
+    let global_limit = cc.runtime.global_limit();
     let user_limit = cc
         .runtime
         .user_limit(&cc.user.auth_username, &cc.user.auth_hostname)?;
-    let limit = calculateConnectionLimit(cc.runtime.global_limit(), user_limit);
-    let mut counts = cc
-        .registry
-        .counts
-        .lock()
-        .map_err(|_| ConnectionError::LockPoisoned)?;
-    let count = counts.entry(target_user.clone()).or_insert(0);
-    // 限额大于 0 且当前计数已达上限时拒绝再建连。
-    if limit > 0 && *count >= limit as usize {
-        return Err(ConnectionError::TooManyUserConnections(target_user));
-    }
-    *count += 1;
-    Ok(())
+    let limit = calculateConnectionLimit(global_limit, user_limit);
+    cc.registry.acquire(target_user, limit)
 }
 
-/// 连接关闭时递减计数；减至 0 则从注册表移除该用户条目。
-pub fn decreaseUserConnectionCount(cc: &ClientConn) -> Result<(), ConnectionError> {
-    let target_user = cc.user.String();
-    let mut counts = cc
-        .registry
-        .counts
-        .lock()
-        .map_err(|_| ConnectionError::LockPoisoned)?;
-    if let Some(count) = counts.get_mut(&target_user) {
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            counts.remove(&target_user);
+/// A successful acquisition returns a one-shot release bound to its original account.
+pub type ReleaseUserConnection = Box<dyn FnOnce() -> Result<(), ConnectionError> + Send>;
+
+/// Server scope guard mirrors Go's deferred release, including unwinding.
+pub(crate) struct UserConnectionGuard(pub Option<ReleaseUserConnection>);
+impl Drop for UserConnectionGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            let _ = release();
         }
     }
-    Ok(())
+}
+
+impl UserConnectionRegistry {
+    /// Atomically check the limit and return a release only after counting succeeds.
+    pub fn acquire(
+        &self,
+        target_user: String,
+        limit: u32,
+    ) -> Result<ReleaseUserConnection, ConnectionError> {
+        let mut counts = self
+            .counts
+            .lock()
+            .map_err(|_| ConnectionError::LockPoisoned)?;
+        let count = counts.entry(target_user.clone()).or_insert(0);
+        if limit > 0 && *count >= limit as usize {
+            return Err(ConnectionError::TooManyUserConnections(target_user));
+        }
+        *count += 1;
+        let registry = self.clone();
+        Ok(Box::new(move || {
+            registry.decreaseUserConnectionCount(&target_user)
+        }))
+    }
+
+    /// Release one counted connection for the captured authentication account.
+    pub fn decreaseUserConnectionCount(&self, target_user: &str) -> Result<(), ConnectionError> {
+        let mut counts = self
+            .counts
+            .lock()
+            .map_err(|_| ConnectionError::LockPoisoned)?;
+        if let Some(count) = counts.get_mut(target_user) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(target_user);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// 查询指定用户当前已建立的连接数。

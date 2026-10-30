@@ -85,6 +85,11 @@ pub trait ResultSet: Send {
     fn next(&mut self) -> Result<Option<Vec<Vec<u8>>>, Error>;
     fn close(&mut self) -> Result<(), Error>;
     fn exhausted(&self) -> bool;
+    /// Detachment and its error are independent: only (false, Ok) may fall back.
+    /// On a detached error the source has transferred ownership and must not close again.
+    fn try_detach(&mut self) -> (bool, Result<(), Error>) {
+        (self.supports_lazy_cursor(), Ok(()))
+    }
     /// 是否支持不物化全量行的懒游标；默认否。
     fn supports_lazy_cursor(&self) -> bool {
         false
@@ -206,21 +211,33 @@ impl PreparedStatement {
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
         self.long_data
             .release(&mut self.bound_params, &mut self.bound_params_too_large)?;
+        self.close_cursor()
+    }
+
+    /// Take ownership before cleanup, so reset/close/error paths cannot release twice.
+    pub(crate) fn close_cursor(&mut self) -> Result<(), Error> {
+        let protocol_cursor = self.protocol_cursor.take();
+        let cursor = self.cursor.take();
         self.cursor_active = false;
-        if let Some(cursor) = self.protocol_cursor.take() {
-            if let Some(source) = &cursor.result_set {
+        let protocol_result = if let Some(cursor) = protocol_cursor {
+            let result = cursor.result_set.as_ref().map_or(Ok(()), |source| {
                 source
                     .close()
-                    .map_err(|error| Error::Runtime(error.to_string()))?;
-            }
+                    .map_err(|error| Error::Runtime(error.to_string()))
+            });
             if let Some(lifecycle) = cursor.response_lifecycle {
                 lifecycle.finish();
             }
-        }
-        if let Some(mut cursor) = self.cursor.take() {
-            cursor.close()?;
-        }
-        Ok(())
+            result
+        } else {
+            Ok(())
+        };
+        let cursor_result = if let Some(mut cursor) = cursor {
+            cursor.close()
+        } else {
+            Ok(())
+        };
+        protocol_result.and(cursor_result)
     }
 }
 
@@ -432,6 +449,13 @@ pub fn executePreparedStmtAndWriteResult(
     result_set: Option<Box<dyn ResultSet>>,
     use_cursor: bool,
 ) -> Result<bool, Error> {
+    if let Some(statement) = cc.statements.get_mut(&statement_id) {
+        if statement.cursor_active {
+            if let Err(error) = statement.close_cursor() {
+                log_cursor_close_error("before executing statement", &error);
+            }
+        }
+    }
     let Some(result_set) = result_set else {
         if let Some(statement) = cc.statements.get_mut(&statement_id) {
             statement.bound_params.fill(None);
@@ -470,16 +494,40 @@ pub fn executePreparedStmtAndWriteResult(
     Ok(false)
 }
 
+fn log_cursor_close_error(stage: &str, error: &Error) {
+    use astersql_util_logutil::log::{LogField, LogLevel, background_logger};
+    background_logger().log(
+        LogLevel::Error,
+        "Fail to close cursor",
+        vec![
+            LogField::String("stage".into(), stage.into()),
+            LogField::String("error".into(), error.to_string()),
+        ],
+    );
+}
+
 /// 游标执行：懒游标直接挂载，否则物化全部行后再挂载 MaterializedResultSet。
 pub fn executeWithCursor(
     cc: &mut clientConn,
     statement_id: u32,
     result_set: Box<dyn ResultSet>,
 ) -> Result<bool, Error> {
-    if result_set.supports_lazy_cursor() {
-        return executeWithLazyCursor(cc, statement_id, result_set);
-    }
     let mut source = result_set;
+    let (detached, detach_result) = source.try_detach();
+    if let Err(error) = detach_result {
+        if !detached {
+            let _ = source.close();
+        }
+        if let Some(statement) = cc.statements.get_mut(&statement_id) {
+            if let Err(close_error) = statement.close_cursor() {
+                log_cursor_close_error("after execution error", &close_error);
+            }
+        }
+        return Err(error);
+    }
+    if detached {
+        return executeWithLazyCursor(cc, statement_id, source);
+    }
     let columns = source.columns().to_vec();
     let mut rows = Vec::new();
     loop {

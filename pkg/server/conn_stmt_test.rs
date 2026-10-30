@@ -1449,3 +1449,205 @@ fn long_data_quota_boundaries_share_session_consumption_and_preserve_packet_prio
     handleStmtClose(&mut cc, &[7, 0, 0, 0]).unwrap();
     assert_eq!(memory.tracker.BytesConsumed(), 20);
 }
+
+#[test]
+fn port_592082dee7_non_cursor_execution_closes_previous_cursor() {
+    let mut cc = connection(Arc::new(Runtime::default()));
+    install_statement(&mut cc, 9);
+    let closed = Arc::new(AtomicBool::new(false));
+    let statement = cc.statements.get_mut(&9).unwrap();
+    statement.cursor_active = true;
+    statement.cursor = Some(Box::new(FailingResultSet {
+        closed: closed.clone(),
+        lazy: true,
+    }));
+    executePreparedStmtAndWriteResult(&mut cc, 9, None, false).unwrap();
+    assert!(closed.load(Ordering::SeqCst));
+    assert!(!cc.statements[&9].cursor_active);
+    assert!(cc.statements[&9].cursor.is_none());
+}
+
+#[test]
+fn port_592082dee7_detach_errors_preserve_ownership_without_eager_fallback() {
+    struct Source {
+        detached: bool,
+        closed: Arc<Mutex<usize>>,
+    }
+    impl ResultSet for Source {
+        fn columns(&self) -> &[ColumnInfo] {
+            &[]
+        }
+        fn next(&mut self) -> Result<Option<Vec<Vec<u8>>>, Error> {
+            panic!("detach error must not fall back");
+        }
+        fn close(&mut self) -> Result<(), Error> {
+            *self.closed.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn exhausted(&self) -> bool {
+            false
+        }
+        fn try_detach(&mut self) -> (bool, Result<(), Error>) {
+            (
+                self.detached,
+                Err(Error::Runtime("cannot detach cursor".into())),
+            )
+        }
+    }
+    for detached in [false, true] {
+        let mut cc = connection(Arc::new(Runtime::default()));
+        install_statement(&mut cc, 9);
+        let closed = Arc::new(Mutex::new(0));
+        assert_eq!(
+            executeWithCursor(
+                &mut cc,
+                9,
+                Box::new(Source {
+                    detached,
+                    closed: closed.clone()
+                })
+            ),
+            Err(Error::Runtime("cannot detach cursor".into()))
+        );
+        assert_eq!(*closed.lock().unwrap(), usize::from(!detached));
+        assert!(!cc.statements[&9].cursor_active);
+        assert!(cc.statements[&9].cursor.is_none());
+    }
+}
+
+#[test]
+fn port_592082dee7_protocol_metadata_failures_release_and_reset_once() {
+    use crate::conn::{CancellationToken, Command};
+    let (cc, _peer, fault) = sql_response_connection();
+    fault.lock().unwrap().packets.clear();
+    cc.handleStmt(
+        Command::StmtPrepare,
+        b"select * from response_t",
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let id = u32::from_le_bytes(fault.lock().unwrap().packets[0][1..5].try_into().unwrap());
+    let ctx = cc.getCtx().unwrap().unwrap();
+    // Real executor/serialization; only network writes and flush are faulted.
+    for at in [1, 2, 3, 0] {
+        ctx.result_fault_for_test("", 0, std::time::Duration::ZERO, false);
+        {
+            let mut f = fault.lock().unwrap();
+            f.writes = 0;
+            f.fail_on = at;
+            f.fail_flush = at == 0;
+        }
+        let mut execute = id.to_le_bytes().to_vec();
+        execute.extend_from_slice(&[1, 1, 0, 0, 0]);
+        assert!(
+            cc.handleStmt(Command::StmtExecute, &execute, &CancellationToken::new())
+                .is_err()
+        );
+        let before = ctx.result_events_for_test();
+        assert_eq!(
+            before.iter().filter(|e| e.as_str() == "Close").count(),
+            1,
+            "{before:?}"
+        );
+        {
+            let mut f = fault.lock().unwrap();
+            f.fail_on = 0;
+            f.fail_flush = false;
+        }
+        cc.handleStmt(
+            Command::StmtReset,
+            &id.to_le_bytes(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(ctx.result_events_for_test(), before);
+    }
+    cc.Close().unwrap();
+}
+
+#[test]
+fn port_592082dee7_successful_lazy_cursor_remains_open_until_one_release() {
+    struct Source(Arc<Mutex<usize>>);
+    impl ResultSet for Source {
+        fn columns(&self) -> &[ColumnInfo] {
+            &[]
+        }
+        fn next(&mut self) -> Result<Option<Vec<Vec<u8>>>, Error> {
+            Ok(None)
+        }
+        fn close(&mut self) -> Result<(), Error> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn exhausted(&self) -> bool {
+            false
+        }
+        fn supports_lazy_cursor(&self) -> bool {
+            true
+        }
+    }
+    let mut cc = connection(Arc::new(Runtime::default()));
+    install_statement(&mut cc, 9);
+    let closed = Arc::new(Mutex::new(0));
+    assert!(executeWithCursor(&mut cc, 9, Box::new(Source(closed.clone()))).unwrap());
+    assert_eq!(*closed.lock().unwrap(), 0);
+    let stmt = cc.statements.get_mut(&9).unwrap();
+    stmt.bound_params = vec![Some(b"long data".to_vec())];
+    stmt.close_cursor().unwrap();
+    assert_eq!(stmt.bound_params, vec![Some(b"long data".to_vec())]);
+    stmt.close_cursor().unwrap();
+    stmt.reset().unwrap();
+    handleStmtClose(&mut cc, &9u32.to_le_bytes()).unwrap();
+    assert_eq!(*closed.lock().unwrap(), 1);
+}
+
+#[test]
+fn port_592082dee7_wire_reexecute_and_parameter_reset_match_go() {
+    use crate::conn::{CancellationToken, Command};
+    let (cc, _peer, fault) = sql_response_connection();
+    let prepare = |sql: &[u8]| {
+        fault.lock().unwrap().packets.clear();
+        cc.handleStmt(Command::StmtPrepare, sql, &CancellationToken::new())
+            .unwrap();
+        u32::from_le_bytes(fault.lock().unwrap().packets[0][1..5].try_into().unwrap())
+    };
+    let execute = |id: u32, cursor: u8, params: &[u8]| {
+        let mut data = id.to_le_bytes().to_vec();
+        data.extend_from_slice(&[cursor, 1, 0, 0, 0]);
+        data.extend_from_slice(params);
+        cc.handleStmt(Command::StmtExecute, &data, &CancellationToken::new())
+            .unwrap();
+    };
+    let fetch = |id: u32, value: i64| {
+        fault.lock().unwrap().packets.clear();
+        fetch_response(&cc, id, 1).unwrap();
+        let mut expected = vec![0, 0];
+        expected.extend_from_slice(&value.to_le_bytes());
+        assert_eq!(fault.lock().unwrap().packets[0], expected);
+    };
+    let id=prepare(b"select * from (select 1 as id union all select 2 as id union all select 3 as id) t order by id");
+    execute(id, 1, &[]);
+    fetch(id, 1);
+    fetch(id, 2);
+    execute(id, 1, &[]);
+    fetch(id, 1);
+    execute(id, 0, &[]);
+    assert!(fetch_response(&cc, id, 1).is_err());
+    for sql in [
+        "create table port_reset_t(id_1 BIGINT,id_2 BIGINT)",
+        "insert into port_reset_t values (1,1),(1,2)",
+    ] {
+        cc.dispatch(&[&[3], sql.as_bytes()].concat()).unwrap();
+    }
+    let id = prepare(b"select id_1 from port_reset_t where id_1 = ?");
+    execute(id, 1, &[0, 1, 3, 0, 1, 0, 0, 0]);
+    fetch(id, 1);
+    cc.handleStmt(
+        Command::StmtReset,
+        &id.to_le_bytes(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert!(fetch_response(&cc, id, 1).is_err());
+    cc.Close().unwrap();
+}

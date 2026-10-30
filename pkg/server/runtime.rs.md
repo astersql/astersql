@@ -148,3 +148,8 @@ prepared_argument只对内部标签0xf0/0xf1生成Float4Bits/Float4Array，不�
 私有Float8Bits/Float8Array标签映射到ConcretePreparedArgument，不影响MySQL TypeDouble参数。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+
+## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
+
+`SessionRequest::UserConnectionQuota` 由 ConcreteTiDBContext::user_connection_quota 同步发送，在同一会话 worker 中调用 ConcreteSession::user_connection_quota，返回认证账号键和已有权限资源限额，错误通过 ConnError 原样承载。请求只在 MySQL 建连配额接线使用，不改变 PostgreSQL 会话/事务请求。

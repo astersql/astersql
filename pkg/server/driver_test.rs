@@ -72,6 +72,10 @@ impl PreparedStatement for TestStatement {
         Ok(())
     }
 
+    fn CloseCursor(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
     fn Close(&mut self) -> Result<(), Error> {
         Ok(())
     }

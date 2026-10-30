@@ -243,30 +243,28 @@ impl TiDBStatement {
         self.long_data
             .release(&mut self.bound_params, &mut self.bound_params_too_large)
             .map_err(|error| Error(error.to_string()))?;
+        self.CloseCursor()
+    }
+    /// Release owned cursor resources once, without clearing long-data bindings.
+    pub fn CloseCursor(&mut self) -> Result<(), Error> {
+        let result_set = self.result_set.take();
+        let container = self.row_container.take();
         self.has_active_cursor = false;
-        if let Some(mut result_set) = self.result_set.take() {
+        if let Some(mut result_set) = result_set {
             result_set.report_ru_delta();
             result_set.close_iterator();
         }
-        if let Some(mut container) = self.row_container.take() {
-            container.detach_trackers();
+        if let Some(mut container) = container {
             container.close()?;
         }
         Ok(())
     }
-    /// 释放长参数、关闭游标与行容器，再从会话侧 drop；保留游标状态。
+    /// Release bindings and cursor resources before dropping the prepared statement.
     pub fn Close(&mut self) -> Result<(), Error> {
         self.long_data
             .release(&mut self.bound_params, &mut self.bound_params_too_large)
             .map_err(|error| Error(error.to_string()))?;
-        if let Some(result_set) = self.result_set.as_mut() {
-            result_set.report_ru_delta();
-            result_set.close_iterator();
-        }
-        if let Some(container) = self.row_container.as_mut() {
-            container.detach_trackers();
-            container.close()?;
-        }
+        self.CloseCursor()?;
         self.runtime.drop_prepared(self.id)
     }
     /// 是否存在未取完的游标。

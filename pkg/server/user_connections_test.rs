@@ -60,8 +60,8 @@ fn connection(global: u32, per_user: u32) -> (ClientConn, Arc<Runtime>) {
 #[test]
 fn per_user_limit_overrides_global_and_decrease_releases_slot() {
     let (connection, _) = connection(10, 2);
-    increaseUserConnectionsCount(&connection).unwrap();
-    increaseUserConnectionsCount(&connection).unwrap();
+    let release = increaseUserConnectionsCount(&connection).unwrap();
+    let release_second = increaseUserConnectionsCount(&connection).unwrap();
     assert!(matches!(
         increaseUserConnectionsCount(&connection),
         Err(ConnectionError::TooManyUserConnections(_))
@@ -70,15 +70,17 @@ fn per_user_limit_overrides_global_and_decrease_releases_slot() {
         getUserConnectionCount(&connection, &connection.user).unwrap(),
         2
     );
-    decreaseUserConnectionCount(&connection).unwrap();
-    increaseUserConnectionsCount(&connection).unwrap();
+    release().unwrap();
+    let release_third = increaseUserConnectionsCount(&connection).unwrap();
+    release_second().unwrap();
+    release_third().unwrap();
 }
 
 /// 预检超限时应按匹配后的登录串记录日志。
 #[test]
 fn precheck_logs_the_matched_login_when_limit_is_reached() {
     let (connection, runtime) = connection(1, 0);
-    increaseUserConnectionsCount(&connection).unwrap();
+    let _release = increaseUserConnectionsCount(&connection).unwrap();
     assert!(checkUserConnectionCount(&connection, "127.0.0.1").is_err());
     assert_eq!(
         runtime.exceeded.lock().unwrap().as_slice(),
@@ -91,7 +93,7 @@ fn precheck_logs_the_matched_login_when_limit_is_reached() {
 fn zero_limits_are_unlimited() {
     let (connection, _) = connection(0, 0);
     for _ in 0..100 {
-        increaseUserConnectionsCount(&connection).unwrap();
+        let _release = increaseUserConnectionsCount(&connection).unwrap();
     }
     assert_eq!(
         getUserConnectionCount(&connection, &connection.user).unwrap(),
@@ -117,7 +119,7 @@ fn identity_string_falls_back_to_login_identity() {
 fn global_limit_and_higher_per_user_override_match_go() {
     let (global_only, _) = connection(3, 0);
     for _ in 0..3 {
-        increaseUserConnectionsCount(&global_only).unwrap();
+        let _release = increaseUserConnectionsCount(&global_only).unwrap();
     }
     assert!(matches!(
         increaseUserConnectionsCount(&global_only),
@@ -126,7 +128,7 @@ fn global_limit_and_higher_per_user_override_match_go() {
 
     let (per_user_override, _) = connection(2, 3);
     for _ in 0..3 {
-        increaseUserConnectionsCount(&per_user_override).unwrap();
+        let _release = increaseUserConnectionsCount(&per_user_override).unwrap();
     }
     assert!(increaseUserConnectionsCount(&per_user_override).is_err());
 }
@@ -146,14 +148,53 @@ fn authenticated_identity_shares_count_across_client_hosts() {
         registry: first.registry.clone(),
     };
 
-    increaseUserConnectionsCount(&first).unwrap();
-    increaseUserConnectionsCount(&first).unwrap();
-    increaseUserConnectionsCount(&second).unwrap();
+    let release_first = increaseUserConnectionsCount(&first).unwrap();
+    let release_second = increaseUserConnectionsCount(&first).unwrap();
+    let release_third = increaseUserConnectionsCount(&second).unwrap();
     assert!(increaseUserConnectionsCount(&second).is_err());
     assert_eq!(getUserConnectionCount(&first, &first.user).unwrap(), 3);
 
-    decreaseUserConnectionCount(&second).unwrap();
-    decreaseUserConnectionCount(&first).unwrap();
-    decreaseUserConnectionCount(&first).unwrap();
+    release_third().unwrap();
+    release_second().unwrap();
+    release_first().unwrap();
     assert_eq!(getUserConnectionCount(&first, &first.user).unwrap(), 0);
+}
+
+#[test]
+fn port_592082dee7_release_retains_original_account_and_failed_acquire_has_no_release() {
+    for (global, per_user, limit) in [(0, 0, 3), (0, 2, 2), (3, 0, 3), (2, 3, 3), (3, 2, 2)] {
+        let (mut cc, _) = connection(global, per_user);
+        let original = cc.user.clone();
+        let mut releases = Vec::new();
+        for _ in 0..limit {
+            releases.push(increaseUserConnectionsCount(&cc).unwrap());
+        }
+        if global != 0 || per_user != 0 {
+            assert!(matches!(
+                increaseUserConnectionsCount(&cc),
+                Err(ConnectionError::TooManyUserConnections(_))
+            ));
+        }
+        cc.user.auth_username = "other".into();
+        let release_other = increaseUserConnectionsCount(&cc).unwrap();
+        for release in releases {
+            release().unwrap();
+        }
+        assert_eq!(getUserConnectionCount(&cc, &original).unwrap(), 0);
+        assert_eq!(getUserConnectionCount(&cc, &cc.user).unwrap(), 1);
+        release_other().unwrap();
+        assert_eq!(getUserConnectionCount(&cc, &cc.user).unwrap(), 0);
+    }
+}
+
+#[test]
+fn port_592082dee7_server_guard_releases_successful_quota_on_unwind() {
+    let (cc, _) = connection(1, 0);
+    let release = increaseUserConnectionsCount(&cc).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = UserConnectionGuard(Some(release));
+        panic!("connection worker failed");
+    }));
+    assert!(result.is_err());
+    assert_eq!(getUserConnectionCount(&cc, &cc.user).unwrap(), 0);
 }

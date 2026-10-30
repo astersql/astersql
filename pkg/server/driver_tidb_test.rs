@@ -131,7 +131,7 @@ fn context_close_ignores_cleanup_errors_like_go_terror_call() {
 }
 
 #[test]
-fn statement_close_releases_long_data_without_resetting_cursor() {
+fn port_592082dee7_statement_close_releases_long_data_and_cursor() {
     let runtime = Arc::new(Runtime::default());
     let context = context(runtime.clone());
     let (statement, _, _) = context.Prepare("select ?").unwrap();
@@ -142,7 +142,7 @@ fn statement_close_releases_long_data_without_resetting_cursor() {
     statement.Close().unwrap();
 
     assert_eq!(statement.BoundParams(), &[None]);
-    assert!(statement.GetCursorActive());
+    assert!(!statement.GetCursorActive());
     assert_eq!(*runtime.dropped.lock().unwrap(), vec![7]);
 }
 
@@ -322,4 +322,50 @@ fn statement_long_data_mem_quota_releases_on_reset_empty_and_close() {
     statement.Close().unwrap();
     assert_eq!(memory.tracker.BytesConsumed(), 0);
     statement.CheckLongDataSize().unwrap();
+}
+
+#[test]
+fn port_592082dee7_close_cursor_preserves_binding_and_takes_resources_before_error() {
+    struct Cursor(Arc<Mutex<Vec<&'static str>>>);
+    impl ResultSet for Cursor {
+        fn close(&mut self) -> Result<(), Error> {
+            unreachable!()
+        }
+    }
+    impl crate::driver_tidb::CursorResultSet for Cursor {
+        fn close_iterator(&mut self) {
+            self.0.lock().unwrap().push("iterator");
+        }
+        fn report_ru_delta(&mut self) {
+            self.0.lock().unwrap().push("ru");
+        }
+    }
+    struct Container(Arc<Mutex<Vec<&'static str>>>);
+    impl crate::driver_tidb::RowContainer for Container {
+        fn detach_trackers(&mut self) {
+            panic!("container owns its trackers");
+        }
+        fn close(&mut self) -> Result<(), Error> {
+            self.0.lock().unwrap().push("container");
+            Err(Error("close failed".into()))
+        }
+    }
+    let context = context(Arc::new(Runtime::default()));
+    let (statement, _, _) = context.Prepare("select ?").unwrap();
+    let mut stmt = statement.lock().unwrap();
+    stmt.AppendParam(0, b"long data").unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    stmt.StoreResultSet(Box::new(Cursor(events.clone())));
+    stmt.StoreRowContainer(Box::new(Container(events.clone())));
+    stmt.SetCursorActive(true);
+    assert_eq!(stmt.CloseCursor(), Err(Error("close failed".into())));
+    assert_eq!(stmt.BoundParams(), &[Some(b"long data".to_vec())]);
+    assert!(!stmt.GetCursorActive());
+    assert!(stmt.GetResultSet().is_none());
+    assert!(stmt.GetRowContainer().is_none());
+    stmt.CloseCursor().unwrap();
+    stmt.Reset().unwrap();
+    stmt.Close().unwrap();
+    assert_eq!(stmt.BoundParams(), &[None]);
+    assert_eq!(*events.lock().unwrap(), ["ru", "iterator", "container"]);
 }

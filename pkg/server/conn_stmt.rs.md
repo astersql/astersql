@@ -155,3 +155,8 @@ RustCodeGraph 对目标文件报告 88 个符号并显示被 `conn.rs`、`conn_s
 - 改重试/TiFlash 策略时，应实现或扩展 `StatementRuntime` 方法，并与 Go `executePlanCacheStmt` 的重试资格、warning 时序和引擎恢复语义逐项核对；不要在精简层硬编码某个 Session 实现。
 - 改诊断输出时必须先决定它是否用于日志。若用于生产日志，应补齐 Go 的 Normalize/redaction 语义，不能直接扩展当前 `render_param` 后宣称安全。
 - 性能风险集中在 eager 游标全量物化、参数/行的多次 clone 和诊断字符串分配；兼容风险集中在包长度、游标标志、类型复用、EOF/OK 差异和错误码文本。
+
+
+## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
+
+重复执行在处理新结果之前调用 `PreparedStatement::close_cursor`，不再依赖本次是否请求 cursor。`reset` 先释放 long-data，再复用该关闭入口；入口先 take 两类 cursor、清 active，再清理并保留第一个错误，协议 lifecycle 即使 close 失败仍结束。`ResultSet::try_detach` 将是否移交与错误分别返回，只有 `(false, Ok(()))` 进入 eager 物化；detached 错误不重复 close 原所有者。成功 lazy cursor 保持到 FETCH/RESET/CLOSE。实际 MySQL 传输的 metadata 错误清理由 `conn.rs` 负责，事件向量不模拟网络失败。

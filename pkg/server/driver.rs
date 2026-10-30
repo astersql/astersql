@@ -122,6 +122,8 @@ pub trait PreparedStatement: Send {
     fn StoreResultSet(&mut self, result_set: Option<Box<dyn CursorResultSet>>);
     fn GetResultSet(&mut self) -> Option<&mut (dyn CursorResultSet + '_)>;
     fn Reset(&mut self) -> Result<(), Error>;
+    /// Release cursor resources while retaining bound parameters.
+    fn CloseCursor(&mut self) -> Result<(), Error>;
     fn Close(&mut self) -> Result<(), Error>;
     fn GetCursorActive(&self) -> bool;
     fn SetCursorActive(&mut self, active: bool);

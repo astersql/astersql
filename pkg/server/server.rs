@@ -740,6 +740,7 @@ pub struct Server {
     status_addr: RwLock<Option<SocketAddr>>,
     clients: RwLock<HashMap<u64, Arc<dyn ManagedConnection>>>,
     pending_clients: RwLock<HashMap<u64, Arc<ClientConn>>>,
+    user_connections: crate::user_connections::UserConnectionRegistry,
     clients_changed: Condvar,
     clients_wait_lock: Mutex<()>,
     connection_driver: RwLock<Option<Arc<dyn SessionDriver>>>,
@@ -806,6 +807,7 @@ impl Server {
             status_addr: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
             pending_clients: RwLock::new(HashMap::new()),
+            user_connections: crate::user_connections::UserConnectionRegistry::default(),
             clients_changed: Condvar::new(),
             clients_wait_lock: Mutex::new(()),
             connection_driver: RwLock::new(None),
@@ -1308,6 +1310,46 @@ impl Server {
                         .expect("pending clients lock poisoned")
                         .remove(&connection_id);
                 } else {
+                    let quota = (|| {
+                        let global = astersql_sessionctx_vardef::MaxUserConnectionsValue.Load();
+                        let context = connection.getCtx()?.ok_or_else(|| {
+                            ConnError::Session("missing connection context".into())
+                        })?;
+                        let (owner, user_limit) = context.user_connection_quota()?;
+                        server
+                            .user_connections
+                            .acquire(
+                                owner,
+                                crate::user_connections::calculateConnectionLimit(
+                                    global, user_limit,
+                                ),
+                            )
+                            .map_err(|error| ConnError::Session(error.to_string()))
+                    })();
+                    let release = match quota {
+                        Ok(release) => release,
+                        Err(error) => {
+                            use astersql_util_logutil::log::{
+                                LogField, LogLevel, background_logger,
+                            };
+                            background_logger().log(
+                                LogLevel::Warn,
+                                "failed to increase the count of connections",
+                                vec![
+                                    LogField::U64("conn".into(), connection_id),
+                                    LogField::String("error".into(), error.to_string()),
+                                ],
+                            );
+                            let _ = connection.Close();
+                            server
+                                .pending_clients
+                                .write()
+                                .expect("pending clients lock poisoned")
+                                .remove(&connection_id);
+                            return;
+                        }
+                    };
+                    let _quota_guard = crate::user_connections::UserConnectionGuard(Some(release));
                     connection.log_connection_event("login_success");
                     server
                         .pending_clients

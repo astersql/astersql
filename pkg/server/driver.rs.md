@@ -117,3 +117,8 @@ Go 的 `TiDBStatement::Reset`/`Close` 会报告游标 RU、关闭迭代器、分
 - 长数据实现应复现 Go 的延迟错误、单参数上限、会话内存记账和 RESET/EXECUTE/CLOSE 释放不变量；重点回归 `pkg/server/conn_stmt_test.go` 中相应场景，并在 Rust 的独立测试文件中添加等价测试。
 - 游标实现应保证结果集、迭代器、行容器和资源计量按一致顺序完成，且错误路径不会泄漏；需要评估物化行的内存/磁盘占用和每行 `Vec<Expression>` 分配开销。
 - 若改变线程安全界限（例如要求共享结果集），应审慎考虑是否从 `Send` 提升到 `Send + Sync`，并用锁策略和并发测试证明 `next`/`finish`/`close` 的互斥与幂等性。
+
+
+## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
+
+`PreparedStatement::CloseCursor` 是本来源新增的显式生命周期契约：仅释放 cursor，不清绑定。`Reset` 与 `Close` 各自保留参数清理职责。此 trait 的独立测试实现位于 `driver_test.rs`；TiDBStatement 的实际资源实现使用 `driver_tidb.rs` 自身同名方法，不能把 trait 声明当作生产调用证据。

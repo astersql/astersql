@@ -917,6 +917,10 @@ pub trait TiDBContext: Send + Sync {
     fn user_identity(&self) -> ConnResult<String> {
         Ok(String::new())
     }
+    /// Contexts without per-account resource limits use the global limit.
+    fn user_connection_quota(&self) -> ConnResult<(String, u32)> {
+        self.user_identity().map(|owner| (owner, 0))
+    }
     /// Read-only canonical schema metadata, independent of client protocol.
     fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
         None
@@ -1918,11 +1922,24 @@ impl ClientConn {
                     if use_cursor && !result.columns.is_empty() {
                         result.state.status |= SERVER_STATUS_CURSOR_EXISTS;
                         let lifecycle = result.response_lifecycle.clone();
-                        {
-                            let _timer = WriteSQLResponseTimer::begin(&lifecycle);
-                            self.write_binary_result_metadata(&result)?;
+                        // Metadata errors occur before cursor installation; release the local
+                        // owner explicitly, just as RESET/CLOSE release installed cursors.
+                        let metadata_result = (|| {
+                            {
+                                let _timer = WriteSQLResponseTimer::begin(&lifecycle);
+                                self.write_binary_result_metadata(&result)?;
+                            }
+                            self.flush_response(&lifecycle)
+                        })();
+                        if let Err(error) = metadata_result {
+                            if let Some(source) = &result.result_set {
+                                let _ = source.close();
+                            }
+                            if let Some(lifecycle) = &lifecycle {
+                                lifecycle.finish();
+                            }
+                            return Err(error);
                         }
-                        self.flush_response(&lifecycle)?;
                         let mut statements = self
                             .prepared_statements
                             .lock()

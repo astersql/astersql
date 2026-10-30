@@ -955,6 +955,22 @@ impl ConcreteSession {
             .unwrap_or_default()
     }
 
+    /// Snapshot the authenticated quota owner and its existing privilege resource limit.
+    pub fn user_connection_quota(&self) -> SessionResult<(String, u32)> {
+        let user = self
+            .login_user
+            .as_deref()
+            .ok_or_else(|| SessionError::new("missing authenticated user"))?;
+        let host = self.authenticated_host.as_deref().unwrap_or("%");
+        let privileges = astersql_privilege_privileges::NewUserPrivileges(
+            runtime_privilege_handle(&self.domain),
+        );
+        let limit = privileges
+            .GetUserResources(user, host)
+            .map_err(|error| SessionError::new(error.to_string()))?;
+        Ok((self.authenticated_user_string(), limit as u32))
+    }
+
     /// 鉴权完成后写入 Go `SessionVars.User` 及 PROCESS 权限判断结果。
     pub fn SetAuthenticatedUser(&mut self, username: String, has_process_privilege: bool) {
         self.login_user = Some(username);

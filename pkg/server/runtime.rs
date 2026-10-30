@@ -866,6 +866,9 @@ pub(crate) enum SessionRequest {
     MaxAllowedPacket {
         response: mpsc::SyncSender<u64>,
     },
+    UserConnectionQuota {
+        response: mpsc::SyncSender<ConnResult<(String, u32)>>,
+    },
     UserIdentity {
         response: mpsc::SyncSender<String>,
     },
@@ -1071,6 +1074,9 @@ fn run_session_worker(
                         .unwrap_or(astersql_sessionctx_vardef::DefMaxAllowedPacket)
                 });
                 let _ = response.send(max);
+            }
+            SessionRequest::UserConnectionQuota { response } => {
+                let _ = response.send(session.user_connection_quota().map_err(packet_error));
             }
             SessionRequest::UserIdentity { response } => {
                 let _ = response.send(session.authenticated_user_string());
@@ -1946,6 +1952,12 @@ impl TiDBContext for ConcreteTiDBContext {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::UserIdentity { response: tx })?;
         rx.recv().map_err(packet_error)
+    }
+
+    fn user_connection_quota(&self) -> ConnResult<(String, u32)> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::UserConnectionQuota { response: tx })?;
+        rx.recv().map_err(packet_error)?
     }
 
     fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {

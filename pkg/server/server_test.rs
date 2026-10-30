@@ -81,23 +81,10 @@ fn start_real_server() -> Arc<Server> {
 }
 
 fn start_real_server_without_bootstrap() -> Arc<Server> {
-    let mut domain_config = astersql_domain::DomainConfig::default();
-    domain_config.schema_lease = Duration::ZERO;
-    domain_config.stats_lease = Duration::ZERO;
-    let storage = Arc::try_unwrap(
-        astersql_store_mockstore_mockstorage::NewMockStorage(
-            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
-            None,
-        )
-        .expect("create mock storage"),
-    )
-    .unwrap_or_else(|_| panic!("mock storage retained an unexpected owner"));
-    let domain = Arc::new(astersql_domain::Domain::new(
-        storage,
-        Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
-        domain_config,
-    ));
-    domain.init().expect("initialize canonical domain");
+    // The listener now reads the authenticated account's real quota resources.
+    // Install existing canonical root grants without bootstrapping system tables.
+    let (domain, _) = astersql_session::runtime::CreateUnbootstrappedRootSessionForTest()
+        .expect("initialize unbootstrapped root quota owner");
     start_real_server_with_domain(domain)
 }
 
@@ -604,5 +591,63 @@ fn connection_events_log_success_and_quit_but_not_rejected_handshakes() {
                     disabled_remote.clone()
                 )))
     );
+    server.close();
+}
+
+#[test]
+fn port_592082dee7_listener_rejects_quota_without_releasing_another_connection() {
+    use std::io::ErrorKind;
+    struct Restore(u32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::MaxUserConnectionsValue.Store(self.0);
+        }
+    }
+    let _restore = Restore(astersql_sessionctx_vardef::MaxUserConnectionsValue.Load());
+    astersql_sessionctx_vardef::MaxUserConnectionsValue.Store(1);
+    let server = start_real_server();
+    let address = server.listener_addr().unwrap();
+    let connect = || {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        root_handshake(&mut stream);
+        stream
+    };
+    let query = |stream: &mut TcpStream| {
+        write_packet(stream, 0, b"\x03select 1");
+        assert_eq!(read_packet(stream), [1]);
+        for _ in 0..4 {
+            read_packet(stream);
+        }
+    };
+    let mut first = connect();
+    query(&mut first);
+    for _ in 0..2 {
+        let mut rejected = connect();
+        let mut byte = [0];
+        match rejected.read(&mut byte) {
+            Ok(0) => (),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+                ) =>
+            {
+                ()
+            }
+            other => panic!("quota rejection must close transport: {other:?}"),
+        }
+        // Failed acquisition must never release the first connection's quota.
+        query(&mut first);
+    }
+    write_packet(&mut first, 0, b"\x01");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while server.connection_count() != 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    // Client removal precedes quota guard destruction; allow the worker to exit.
     server.close();
 }

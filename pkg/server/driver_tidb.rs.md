@@ -33,7 +33,7 @@
 2. 文本执行：`ExecuteStmt` 先调用 `checkSandBoxMode`，通过后把 SQL 文本和 `non_transactional` 标志交给 `execute_statement`。此文件不解析 AST，只做带词边界的大写前缀比较。
 3. Prepare：`TiDBContext::Prepare` 从运行时取得 `PrepareResult`，按 `param_count` 生成 MySQL BLOB 类型字节 `252` 的参数占位列，初始化等长 `bound_params`、`LongDataState`和语句状态，最后按 ID 登记到 `stmts`。
 4. 参数与执行：`AppendParam` 将 COM_STMT_SEND_LONG_DATA 交给 [`pkg/server/conn_stmt.rs`](conn_stmt.rs) 的 `LongDataState::append`；`CheckLongDataSize` 在 EXECUTE 前检查延迟错误与当前 packet 上限；`Execute` 按 ID 调用 `execute_prepared`。
-5. RESET/CLOSE：两者都先 `LongDataState::release`、上报 RU、关闭游标迭代器，然后分离 tracker 并关闭行容器。`Reset` 会清除活跃游标标志并 `take` 出两类资源；`Close` 保留字段和游标标志，最后调用 `drop_prepared`。
+5. RESET/CLOSE：两者先 `LongDataState::release`，再复用 CloseCursor：先 take 两类资源、清活跃标志，再上报 RU、关闭迭代器并关闭行容器（容器自己清 tracker）。Close 成功清理后调用 drop_prepared。
 6. 编码迁移状态：`EncodeSessionStates` 先从运行时取完整 prepare 元数据，再遍历本地二进制语句；任一参数槽为 `Some` 或游标活跃都拒绝迁移，否则把 `params_type` 写回对应 ID。
 7. 解码迁移状态：空快照立即返回且不改动 next ID。非空快照先保存 next ID 和 current DB，逐项将 next ID 设为 `id.wrapping_sub(1)` 并切换到原库：无名语句调用本地 `Prepare` 后恢复参数类型，有名语句委托 `prepare_named`。闭包无论成功失败结束后都恢复库名，并用 `saved_id.wrapping_sub(1)` 调用 setter。
 8. 关闭连接：`TiDBContext::Close` 先在锁内 drain 本地语句表，然后逐个尝试加锁和关闭，最后关闭会话；语句锁毒化、语句关闭和会话关闭的清理错误均被忽略，唯有语句表锁毒化会返回错误。
@@ -67,13 +67,13 @@ trait 边界的业务错误通过 `Result<_, Error>` 原样传播；`LongDataSta
 
 `TiDBStore` 和 `TiDBSessionRuntime` 必须 `Send + Sync`，共享所有权使用 `Arc`。语句 map 和每个语句分别使用 `Mutex`，因此 map 锁只负责定位/更新句柄，语句可在其后独立加锁。`Close` 先 drain 再逐句关闭，避免在执行运行时清理时长期持有 map 锁。
 
-资源释放顺序是重要契约：先释放长数据及内存记账，再上报游标 RU 增量并关闭迭代器，然后分离行容器 tracker 并关闭容器，最后才 drop prepared statement。`Reset` 使用 `take` 确保已取走资源不再被访问；`Close` 没有 `take` ，重复调用是否安全取决于下游实现，本文件未提供幂等保证。
+资源释放顺序是重要契约：先释放长数据及内存记账，先通过 CloseCursor 取走两类所有权并清 active，再上报游标 RU 增量、关闭迭代器和容器，最后才 drop prepared statement。Reset/Close 共享取走所有权的保证，关闭报错也不重复释放 cursor。
 
 本文件没有自建线程、异步任务或通道。所有 API 是同步的，也没有为 `TiDBContext`/`TiDBStatement` 实现 `Drop`；调用方必须显式调用 `Close`/`Reset`。
 
 ## 与 Go 版本的对应关系
 
-`Prepare` 的 BLOB 参数占位、长数据延迟报错、RESET 清空游标、CLOSE 保留游标标志、Close 忽略清理错误以及会话迁移的基本不变量均保留。
+`Prepare` 的 BLOB 参数占位、长数据延迟报错、RESET 清空游标、CLOSE 清空游标标志、Close 忽略清理错误以及会话迁移的基本不变量均保留。
 
 已确认的简化/差异有：
 
@@ -90,7 +90,12 @@ trait 边界的业务错误通过 `Result<_, Error>` 原样传播；`LongDataSta
 - 要把此实现接入生产主链，首先需明确它与 [`pkg/server/driver.rs`](driver.rs) 及 [`pkg/server/conn.rs`](conn.rs) 的重叠契约；不应只添加一个 trait impl 就假定类型可互换，因为错误、表达式、结果集、TLS/extensions 参数和取行 API 均不同。
 - 新增会话功能应先扩展 `TiDBSessionRuntime`，再在 `TiDBContext` 中保持“检查—委托—错误传播”边界，同时在独立的 [`pkg/server/driver_tidb_test.rs`](driver_tidb_test.rs) 中用 mock runtime 验证，不要把测试内嵌到源文件。
 - 修改长数据行为时必须同步检查 [`pkg/server/conn_stmt.rs`](conn_stmt.rs) 与其独立测试 [`pkg/server/conn_stmt_test.rs`](conn_stmt_test.rs)，覆盖空分片、非法参数 ID、packet 上限、内存配额、RESET 和 CLOSE 退还记账。
-- 修改 RESET/CLOSE 时要保留 RU 上报在 iterator close 之前、tracker detach 在 container close 之前的顺序，并决定是否需要保持当前 `Reset` 清游标而 `Close` 不清标志的 Go 语义。
+- 修改 RESET/CLOSE 时要保留 RU 上报在 iterator close 之前、由 container close 自己管理 tracker 的顺序，保持 Reset/Close 通过 CloseCursor 清空所有权与 active 的本来源语义。
 - 修改迁移时应添加编码成功、绑定参数/活跃游标拒绝、元数据缺 ID、有名/无名恢复、中途失败以及 next ID/current DB 恢复测试；当前 Rust 测试只直接覆盖空快照 no-op。
 - 修改 Go 对齐语义时，要同时对照 `driver_tidb.go` 和 `driver_tidb_test.go`，但应注意 Go 测试目前仅直接覆盖 `column.ConvertColumnInfo`，不能当作本文件所有边界的回归保障。
 - 性能敏感点包括每次 `WarningCount` 克隆整个警告向量、Prepare 的参数占位分配、迁移时的全表锁定/克隆和 Close 的全表 drain；优化前应保留上述一致性语义。
+
+
+## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
+
+`CloseCursor` 先 take result_set 与 row_container 并清 active，再报告 RU、关闭 iterator、关闭 container；container 自有 tracker 清理由其 close 承担。即使 container 关闭报错，后续 Reset/Close 不会再次取到它。`Reset` 清 long-data 后调用 CloseCursor；`Close` 同样清参数，再 CloseCursor，成功后才 drop_prepared。直接 CloseCursor 保留绑定参数。StoreResultSet 的调用方必须先释放旧 cursor。

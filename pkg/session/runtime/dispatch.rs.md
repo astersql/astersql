@@ -156,3 +156,8 @@ EXECUTE 的 hint/binding 分析复用该记录的原始 AST，避免重新用默
 ### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
 
 来源 e48ac5fef1 的必要局部接线：在 Arc 冻结之前把覆盖索引 DAG、键范围和并发放入本次 SELECT 请求，序列化或构造错误向上传播，资源组和副本作用域字段继续由现有流程设置。
+
+
+## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
+
+`ConcreteSession::user_connection_quota` 在现有会话 worker 中读取 login_user 与 authenticated_host，以 NewUserPrivileges(runtime_privilege_handle(domain)).GetUserResources 查询既有账户资源，并返回 authenticated_user_string 与 u32 用户限额。缺身份或权限查询失败返回 SessionError；不建新权限子系统、不改变鉴权、SQL分发、PostgreSQL类型或事务逻辑。它仅为来源 server.go/user_connections.go 的建连配额提供必要的局部接线。
