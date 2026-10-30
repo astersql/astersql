@@ -678,6 +678,125 @@ fn readBatch<R: BufRead>(
     Ok(Some(lines))
 }
 
+// Borrow the final plain digest without decoding any unrelated values. Unknown
+// shapes fall back to the full decoder; this deliberately is not a JSON validator.
+pub(crate) fn extractDigest(line: &[u8]) -> Option<&str> {
+    let mut i = skipJSONSpace(line, 0);
+    if line.get(i) != Some(&b'{') {
+        return None;
+    }
+    i = skipJSONSpace(line, i + 1);
+    let mut digest = None;
+    loop {
+        if *line.get(i)? == b'}' {
+            return digest;
+        }
+        let (key, next) = scanJSONString(line, i)?;
+        if key.contains(&b'\\') {
+            return None;
+        }
+        i = skipJSONSpace(line, next);
+        if line.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skipJSONSpace(line, i + 1);
+        if digestKey(key) {
+            let (value, next) = scanJSONString(line, i)?;
+            if value.contains(&b'\\') {
+                return None;
+            }
+            digest = Some(std::str::from_utf8(value).ok()?);
+            i = next;
+        } else {
+            i = skipJSONValue(line, i)?;
+        }
+        i = skipJSONSpace(line, i);
+        match line.get(i)? {
+            b',' => i = skipJSONSpace(line, i + 1),
+            b'}' => {}
+            _ => return None,
+        }
+    }
+}
+
+// Go bytes.EqualFold also folds the Unicode long s to ASCII s.
+fn digestKey(key: &[u8]) -> bool {
+    key.eq_ignore_ascii_case(b"digest")
+        || std::str::from_utf8(key).is_ok_and(|key| {
+            key.chars()
+                .map(|c| {
+                    if c == 'ſ' {
+                        's'
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .eq("digest".chars())
+        })
+}
+
+fn skipJSONSpace(line: &[u8], mut i: usize) -> usize {
+    while line
+        .get(i)
+        .is_some_and(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r'))
+    {
+        i += 1;
+    }
+    i
+}
+
+fn scanJSONString(line: &[u8], mut i: usize) -> Option<(&[u8], usize)> {
+    if line.get(i) != Some(&b'"') {
+        return None;
+    }
+    i += 1;
+    let start = i;
+    while let Some(c) = line.get(i) {
+        match c {
+            b'\\' => i += 2,
+            b'"' => return Some((&line[start..i], i + 1)),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skipJSONValue(line: &[u8], mut i: usize) -> Option<usize> {
+    match *line.get(i)? {
+        b'"' => scanJSONString(line, i).map(|(_, next)| next),
+        opening @ (b'{' | b'[') => {
+            let closing = if opening == b'{' { b'}' } else { b']' };
+            let mut depth = 0;
+            while let Some(&c) = line.get(i) {
+                if c == b'"' {
+                    i = scanJSONString(line, i)?.1;
+                    continue;
+                }
+                if c == opening {
+                    depth += 1;
+                } else if c == closing {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                i += 1;
+            }
+            None
+        }
+        _ => {
+            let start = i;
+            while line
+                .get(i)
+                .is_some_and(|c| !matches!(c, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r'))
+            {
+                i += 1;
+            }
+            (i > start).then_some(i)
+        }
+    }
+}
+
 /// 持久化 JSON 行：完整 StmtRecord + 可选 evicted 标记。
 #[derive(Deserialize)]
 struct stmtPersistedRecord {
@@ -685,6 +804,47 @@ struct stmtPersistedRecord {
     record: StmtRecord,
     #[serde(default, rename = "evicted")]
     evicted: bool,
+}
+
+// The source regression requires encoding/json's last case-folded digest and
+// replacement of invalid UTF-8. Keep the normal typed path for ordinary records;
+// normalize only exceptional shapes at this historical-log boundary.
+fn decodePersistedRecord(
+    line: &[u8],
+    digest: Option<&str>,
+) -> Result<stmtPersistedRecord, serde_json::Error> {
+    if let Ok(record) = serde_json::from_slice::<stmtPersistedRecord>(line) {
+        if digest.is_some_and(|digest| digest == record.record.Digest) {
+            return Ok(record);
+        }
+    }
+    struct LogObject;
+    impl<'de> serde::de::Visitor<'de> for LogObject {
+        type Value = serde_json::Value;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a statement log object")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut input: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut values = serde_json::Map::new();
+            while let Some((key, value)) = input.next_entry::<String, serde_json::Value>()? {
+                let key = if digestKey(key.as_bytes()) {
+                    "digest".into()
+                } else {
+                    key
+                };
+                values.insert(key, value);
+            }
+            Ok(serde_json::Value::Object(values))
+        }
+    }
+    let text = String::from_utf8_lossy(line);
+    let mut decoder = serde_json::Deserializer::from_str(&text);
+    let value = serde::Deserializer::deserialize_map(&mut decoder, LogObject)?;
+    decoder.end()?;
+    serde_json::from_value(value)
 }
 
 /// 解析行批次，过滤后经列工厂生成 ColumnValue 行。
@@ -703,7 +863,13 @@ fn parseWorker(
         };
         let mut rows = Vec::with_capacity(lines.len());
         for line in lines {
-            let Ok(persisted) = serde_json::from_slice::<stmtPersistedRecord>(&line) else {
+            let digest = extractDigest(&line);
+            if checker.digests.is_some()
+                && digest.is_some_and(|digest| !checker.isDigestValid(digest))
+            {
+                continue;
+            }
+            let Ok(persisted) = decodePersistedRecord(&line, digest) else {
                 continue;
             };
             // 历史查询跳过淘汰汇总行，仅保留真实 digest 记录。

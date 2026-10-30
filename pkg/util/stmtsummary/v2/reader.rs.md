@@ -29,7 +29,7 @@
 
 历史路径从 `NewHistoryReader` 开始：`StmtFiles::new` 先打开活动文件以钉住 inode，再枚举同目录中扩展名相同且 stem 等于配置 stem 或以 `stem-` 开头的文件，去重相同 inode 并按路径排序。构造器把并发度提升到至少 2，创建容量为并发度的 rows/error 通道，并生成共享 `StmtChecker`、列工厂、取消标志和调度线程。
 
-`scheduleTasks` 将 `concurrent / 2` 个线程先作为 scan worker，扫描结束后再转为 parse worker；其余线程从一开始只解析。管理循环延迟打开轮转候选，重新检查 inode 去重和文件级时间交集，然后经零容量 `files` 通道交给 scanner。scanner 用 `readBatch` 跳过损坏的批首 JSON，遇到 `needStop` 或 EOF 结束文件，并以 64 行为上限发送原始字节批次。所有 scanner 报告完成后，调度器关闭 lines 发送端；parser 排空剩余批次，反序列化 `stmtPersistedRecord`，跳过损坏行和 `evicted=true` 行，应用停止/时间/digest/权限条件，并经 `buildValues` 产生行。全部 worker join 后发送端析构，前台 `HistoryReader::Rows` 最终观察到通道关闭并返回 `None`。
+`scheduleTasks` 将 `concurrent / 2` 个线程先作为 scan worker，扫描结束后再转为 parse worker；其余线程从一开始只解析。管理循环延迟打开轮转候选，重新检查 inode 去重和文件级时间交集，然后经零容量 `files` 通道交给 scanner。scanner 用 `readBatch` 跳过损坏的批首 JSON，遇到 `needStop` 或 EOF 结束文件，并以 64 行为上限发送原始字节批次。所有 scanner 报告完成后，调度器关闭 lines 发送端；parser 排空剩余批次，先以 `extractDigest` 借用原行字节预扫描顶层键，存在 digest 白名单且确定不匹配时跳过完整解码；其余行经 `decodePersistedRecord` 反序列化 `stmtPersistedRecord`，跳过损坏行和 `evicted=true` 行，应用停止/时间/digest/权限条件，并经 `buildValues` 产生行。全部 worker join 后发送端析构，前台 `HistoryReader::Rows` 最终观察到通道关闭并返回 `None`。
 
 ## 数据与状态
 
@@ -64,6 +64,12 @@ crate 内部依赖中，`StmtRecord` 来自 [`record.rs`](record.rs)，`ColumnCo
 内存路径本身不创建线程，也不跨调用保留窗口锁；并发一致性边界由 `MemorySummarySource` 负责。当前 `StmtSummary` 实现在一个窗口锁作用域中复制窗口 begin、LRU 记录和淘汰聚合，因此一次 `Rows` 使用自洽的值快照，但它的 end 是快照之后读取的当前 Unix 秒。
 
 ## 与 Go 版本的对应关系
+
+来源 `44538075bdf9de826fedb403cb640a708d4c4b1f` 的预过滤对应 `extractDigest`、`skipJSONSpace`、`scanJSONString`、`skipJSONValue` 和 `parseWorker` 中完整解码之前的白名单判断。扫描借用字节、不分配无关字段，取最后一个大小写折叠的 digest（含 Unicode 长 s）；转义键、转义 digest、缺失/非字符串 digest、截断或非法 UTF-8 返回未知，交完整解码判断。扫描不是 JSON 验证器，命中行始终完整解码。
+
+`decodePersistedRecord` 是保留来源新增读取器测试意图所必需的局部兼容接线：普通记录走原 typed serde 解码；重复 digest、大小写折叠不一致或未知形状回退到按输入顺序归一化顶层 digest 键，并按 Go 的方式替换非法 UTF-8。完整解码仍校验尾部，权限、时间、evicted、列工厂及线程生命周期保持既有路径。其他字段的大小写兼容不在本增量范围。
+
+独立 `port_44538075bd_` 测试覆盖所有来源提取分支、原行输出、重复键/转义/非法 UTF-8、时间组合，以及原基准的 200 行、1/32 KiB 文本、窄列/全部文本列、0/1/50/100% 命中和无过滤输出断言。它们是正确性回归，未声称计时性能数据。此改动已接入本文件真实历史 parse worker，不涉及 PostgreSQL 方言或协议路径。
 
 [`reader_test.rs`](reader_test.rs) 也对应 Go 的时间区间、文件解析、文件枚举、checker、内存读取、历史过滤和非法行用例，并额外覆盖开放区间、轮转竞态、文件描述符上界与 `ia_exec_count` 保存。
 

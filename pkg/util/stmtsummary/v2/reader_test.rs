@@ -594,3 +594,149 @@ fn TestHistoryReaderInvalidLine() {
     let rows = history_digests(&columns, None, vec![]);
     assert_eq!(rows, ["digest2", "digest3"]);
 }
+
+#[test]
+fn port_44538075bd_extract_digest() {
+    use crate::reader::extractDigest;
+    for (raw, expected) in [
+        (r#"{"begin":1,"digest":"d1","end":2}"#, "d1"),
+        (r#"{ "digest" : "d2" }"#, "d2"),
+        (r#"{"schema_name":"a\"b\u4e2d","digest":"d3"}"#, "d3"),
+        (
+            r#"{"arr":[1,2,{"x":"y"}],"obj":{"k":"v"},"digest":"d4"}"#,
+            "d4",
+        ),
+        (r#"{"digest":"miss","digest":"target"}"#, "target"),
+        (r#"{"digest":"miss","DIGEST":"target"}"#, "target"),
+        (r#"{"digest":"miss","digeſt":"target"}"#, "target"),
+    ] {
+        assert_eq!(extractDigest(raw.as_bytes()), Some(expected), "{raw}");
+    }
+    let large = format!(
+        r#"{{"begin":1,"end":2,"digest":"target","sample_sql":"{}"}}"#,
+        "s".repeat(4096)
+    );
+    assert_eq!(extractDigest(large.as_bytes()), Some("target"));
+    for raw in [
+        r#"{"begin":1}"#,
+        r#"{"digest":"miss","di\u0067est":"target"}"#,
+        r#"{"digest":"a\"b"}"#,
+        r#"{"digest":null}"#,
+        r#"{"digest" "d"}"#,
+        r#""digest""#,
+        r#"{"begin":1,"end":2"#,
+        r#"{"arr":[1,2"#,
+    ] {
+        assert_eq!(extractDigest(raw.as_bytes()), None, "{raw}");
+    }
+    assert_eq!(extractDigest(b"{\"digest\":\"a\xffb\"}"), None);
+}
+
+#[test]
+fn port_44538075bd_history_digest_filter() {
+    let _guard = FILE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let active = dir.path().join("tidb-statements.log");
+    setStmtSummaryFilename(&active);
+    let lines = concat!(
+        "{\"begin\":1,\"end\":2,\"digest\":\"original\",\"exec_count\":1}\n",
+        "{\"begin\":1,\"end\":2,\"digest\":\"miss\",\"digest\":\"target\",\"exec_count\":50}\n",
+        "{\"begin\":1,\"end\":2,\"digest\":\"miss\",\"DIGEST\":\"target\",\"exec_count\":7}\n",
+        "{\"begin\":1,\"end\":2,\"digest\":\"miss\",\"di\\u0067est\":\"target\"}\n",
+        "{\"begin\":1,\"end\":2,\"digest\":\"tar\\u0067et\"}\n",
+        "invalid line\n",
+    );
+    let mut bytes = lines.as_bytes().to_vec();
+    bytes.extend_from_slice(b"{\"begin\":1,\"end\":2,\"digest\":\"a\xffb\",\"exec_count\":8}\n");
+    fs::write(&active, bytes).unwrap();
+    let columns = [column(DigestStr)];
+    assert_eq!(
+        history_digests(&columns, Some(HashSet::from(["target".into()])), vec![]),
+        vec!["target"; 4]
+    );
+    assert_eq!(
+        history_digests(&columns, Some(HashSet::from(["original".into()])), vec![]),
+        ["original"]
+    );
+    assert_eq!(
+        history_digests(&columns, Some(HashSet::from(["a�b".into()])), vec![]),
+        ["a�b"]
+    );
+    assert!(
+        history_digests(
+            &columns,
+            Some(HashSet::from(["target".into()])),
+            vec![StmtTimeRange { Begin: 3, End: 4 }]
+        )
+        .is_empty()
+    );
+    assert_eq!(history_digests(&columns, None, vec![]).len(), 6);
+}
+
+#[test]
+fn port_44538075bd_history_workload() {
+    let _guard = FILE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let active = dir.path().join("tidb-statements.log");
+    setStmtSummaryFilename(&active);
+    for size in [1024, 32768] {
+        for all_text in [false, true] {
+            for percent in [0, 1, 50, 100] {
+                let mut contents = String::new();
+                for i in 0..200 {
+                    let digest = if i % 100 < percent {
+                        "target".into()
+                    } else {
+                        format!("digest_{i:06}")
+                    };
+                    let line = serde_json::json!({"begin":1672128520,"end":1672128580,
+                        "digest":digest,"exec_count":10,"stmt_type":"Select",
+                        "normalized_sql":"select ? from t","sample_sql":"s".repeat(size),
+                        "sample_binary_plan":"p".repeat(size)});
+                    contents.push_str(&line.to_string());
+                    contents.push('\n');
+                }
+                fs::write(&active, contents).unwrap();
+                let mut columns = vec![column(DigestStr), column(ExecCountStr)];
+                if all_text {
+                    columns.extend(
+                        [
+                            DigestTextStr,
+                            BindingDigestTextStr,
+                            QuerySampleTextStr,
+                            PrevSampleTextStr,
+                            PlanStr,
+                            BinaryPlan,
+                            PlanHint,
+                            PlanCacheUnqualifiedLastReasonStr,
+                        ]
+                        .map(column),
+                    );
+                }
+                for filter in [true, false] {
+                    let mut reader = NewHistoryReader(
+                        &columns,
+                        "",
+                        chrono_tz::UTC,
+                        None,
+                        false,
+                        filter.then(|| HashSet::from(["target".into()])),
+                        vec![],
+                        2,
+                    )
+                    .unwrap();
+                    let rows = read_all_rows(&mut reader);
+                    assert_eq!(rows.len(), if filter { 200 * percent / 100 } else { 200 });
+                    assert!(
+                        rows.iter()
+                            .all(|row| row.len() == columns.len() && row[1].GetInt64() == 10)
+                    );
+                    if filter {
+                        assert!(rows.iter().all(|row| row[0].GetString() == "target"));
+                    }
+                    reader.Close().unwrap();
+                }
+            }
+        }
+    }
+}
