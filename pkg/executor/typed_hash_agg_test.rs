@@ -172,3 +172,115 @@ fn typed_hash_agg_count_extrema_real_scan_and_empty_input() {
         executor.Close().unwrap();
     }
 }
+
+#[test]
+fn pg09_01_execution() {
+    typed_hash_agg_scalar_empty_input_emits_count_zero();
+    typed_hash_agg_groups_across_input_pages_and_pages_output();
+    let mut e = crate::builder::BuildTypedPhysicalPlan(
+        &hash_agg_plan(true),
+        Arc::new(MemoryRetriever::default()),
+        ranges(),
+        1,
+        1,
+    )
+    .unwrap();
+    e.Open().unwrap();
+    let mut out = e.NewChunk();
+    e.Next(&mut out).unwrap();
+    assert_eq!(out.NumRows(), 0);
+    e.Close().unwrap();
+}
+
+#[test]
+fn pg09_01_count_overflow() {
+    let source = Arc::new(MemoryRetriever::default());
+    for (h, v) in [(1, i64::MAX), (2, 1)] {
+        let (k, r) = encode_row(98, h, v, "unused");
+        source.Put(k, r);
+    }
+    let mut p = hash_agg_plan(false);
+    p.BasePhysicalAgg.AggFuncs[0].Mode =
+        astersql_expression_aggregation::AggFunctionMode::FinalMode;
+    p.BasePhysicalAgg.AggFuncs[0].Args = vec![Box::new(astersql_expression::Column::new(
+        *astersql_expression::types::NewFieldType(TypeLonglong),
+        1,
+        1,
+        0,
+    ))];
+    let mut e = crate::builder::BuildTypedPhysicalPlan(&p, source, ranges(), 1, 1).unwrap();
+    e.Open().unwrap();
+    let mut out = e.NewChunk();
+    let result = e.Next(&mut out);
+    e.Close().unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("COUNT bigint out of range")
+    );
+}
+
+#[test]
+fn pg09_01_null_groups_and_pages() {
+    let source = Arc::new(MemoryRetriever::default());
+    for (index, value) in [None, Some(7), None, Some(7), Some(9)].iter().enumerate() {
+        let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+            98,
+            Box::new(astersql_tablecodec::kv::IntHandle(index as i64 + 1)),
+        );
+        let value = astersql_tablecodec::EncodeRow(
+            Some(astersql_tablecodec::time::UTC),
+            vec![value.map_or_else(Default::default, astersql_types::datum::NewIntDatum)],
+            vec![1],
+            Vec::new(),
+            None,
+            None,
+            astersql_tablecodec::rowcodec::Encoder::new(true),
+        )
+        .unwrap();
+        source.Put(astersql_kv::Key(key.0), value);
+    }
+    for grouped in [false, true] {
+        let mut p = hash_agg_plan(grouped);
+        let mut count = p.BasePhysicalAgg.AggFuncs[0].clone();
+        count.Args = vec![Box::new(astersql_expression::Column::new(
+            *astersql_expression::types::NewFieldType(TypeLonglong),
+            1,
+            1,
+            0,
+        ))];
+        p.BasePhysicalAgg.AggFuncs.push(count);
+        let mut e =
+            crate::builder::BuildTypedPhysicalPlan(&p, source.clone(), ranges(), 1, 1).unwrap();
+        e.Open().unwrap();
+        let mut out = e.NewChunk();
+        let mut actual = vec![];
+        loop {
+            e.Next(&mut out).unwrap();
+            if out.NumRows() == 0 {
+                break;
+            }
+            assert_eq!(out.NumRows(), 1);
+            actual.push((out.GetRow(0).GetInt64(0), out.GetRow(0).GetInt64(1)));
+        }
+        e.Close().unwrap();
+        assert_eq!(
+            actual,
+            if grouped {
+                vec![(2, 0), (2, 2), (1, 1)]
+            } else {
+                vec![(5, 3)]
+            }
+        );
+    }
+    assert_eq!(
+        crate::typed_hash_agg::CountNonNull(context(), vec![false; 2050]).unwrap(),
+        0
+    );
+    assert_eq!(
+        crate::typed_hash_agg::CountNonNull(context(), (0..2050).map(|i| i % 2 == 0).collect())
+            .unwrap(),
+        1025
+    );
+}

@@ -18505,3 +18505,278 @@ fn pg08_38_sql() {
     assert!(TcpStream::connect(addr).is_err());
     println!("pg08_38_sql: 28 scenarios passed; listener closed");
 }
+
+#[test]
+fn pg09_01_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+    for (sql, expected) in [
+        ("SELECT count(*) AS c", vec![row(&[Some("1")])]),
+        ("SELECT count(NULL::int4) AS c", vec![row(&[Some("0")])]),
+        (
+            "SELECT count(*) AS n,count(x) AS c FROM (SELECT NULL::int4 AS x UNION ALL SELECT NULL::int4) t",
+            vec![row(&[Some("2"), Some("0")])],
+        ),
+        (
+            "SELECT count(*) AS n,count(x) AS c FROM (SELECT 1::int4 AS x) t WHERE false",
+            vec![row(&[Some("0"), Some("0")])],
+        ),
+        (
+            "SELECT count(*) AS n FROM (SELECT 1::int4 AS x) t WHERE false GROUP BY x",
+            vec![],
+        ),
+        (
+            "SELECT count(*) AS n,count(x) AS c FROM (SELECT NULL::int4 AS x UNION ALL SELECT NULL::int4) t GROUP BY x",
+            vec![row(&[Some("2"), Some("0")])],
+        ),
+        (
+            "SELECT count(x) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT NULL::int4 UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("2")])],
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "{sql}"
+        );
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        let mut pos = 2;
+        for _ in 0..i16::from_be_bytes(d[..2].try_into().unwrap()) {
+            pos += d[pos..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&d[pos + 6..pos + 10], &20u32.to_be_bytes(), "{sql}: {d:?}");
+            assert_eq!(&d[pos + 10..pos + 12], &8i16.to_be_bytes());
+            assert_eq!(&d[pos + 12..pos + 16], &(-1i32).to_be_bytes());
+            pos += 18;
+        }
+    }
+    let ms = query(&mut s, "SELECT count(1,2) AS n");
+    assert!(ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    let ms = query(&mut s, "SELECT 1::int4 AS v");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1")])
+    );
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity(ms: &[(u8, Vec<u8>)], fmt: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[2..4], b"c\0");
+        assert_eq!(&d[10..14], &20u32.to_be_bytes());
+        assert_eq!(&d[14..16], &8i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &fmt.to_be_bytes());
+    }
+    let sql = "SELECT count(x) AS c FROM (SELECT $1::int4 AS x UNION ALL SELECT $2::int4) t";
+    send(
+        &mut s,
+        b'P',
+        &[b"count09\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+    );
+    send(&mut s, b'D', b"Scount09\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready(&mut s);
+    identity(&ms, 0);
+    assert_eq!(
+        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [b'1', b't', b'T', b'Z']
+    );
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b't').unwrap().1,
+        [
+            2i16.to_be_bytes().as_slice(),
+            &23u32.to_be_bytes(),
+            &23u32.to_be_bytes()
+        ]
+        .concat()
+    );
+    for input_fmt in [0i16, 1] {
+        for result_fmt in [0i16, 1] {
+            for nonnull in [true, false] {
+                let mut bind = b"\0count09\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(2i16.to_be_bytes());
+                if nonnull {
+                    let bytes = if input_fmt == 0 {
+                        b"7".to_vec()
+                    } else {
+                        7i32.to_be_bytes().to_vec()
+                    };
+                    bind.extend((bytes.len() as i32).to_be_bytes());
+                    bind.extend(bytes);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend((-1i32).to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(result_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready(&mut s);
+                identity(&ms, result_fmt);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'D').count(), 1);
+                let count = i64::from(nonnull);
+                let expected = if result_fmt == 0 {
+                    row(&[Some(if nonnull { "1" } else { "0" })])
+                } else {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &8i32.to_be_bytes(),
+                        &count.to_be_bytes(),
+                    ]
+                    .concat()
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+    let sql = "SELECT count(*) AS c FROM (SELECT 1::int4 AS x) t WHERE false GROUP BY x";
+    send(
+        &mut s,
+        b'P',
+        &[b"empty09\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+    );
+    send(&mut s, b'D', b"Sempty09\0");
+    send(&mut s, b'S', &[]);
+    identity(&ready(&mut s), 0);
+    for fmt in [0i16, 1] {
+        send(
+            &mut s,
+            b'B',
+            &[
+                b"\0empty09\0".as_slice(),
+                &[0, 0, 0, 0, 0, 1],
+                &fmt.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut s, b'D', b"P\0");
+        send(&mut s, b'E', &[0; 5]);
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        identity(&ms, fmt);
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+    }
+    let ms = query(&mut s, "SELECT count(DISTINCT 1,2) AS c");
+    assert!(
+        ms.iter().any(|m| m.0 == b'E'),
+        "PG must reject multiple COUNT arguments: {ms:?}"
+    );
+
+    let error = &ms.iter().find(|m| m.0 == b'E').unwrap().1;
+    assert!(error.windows(7).any(|w| w == b"C42883\0"));
+    assert!(error.windows(7).any(|w| w == b"SERROR\0"));
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    send(&mut s, b'P', b"\0SELECT count(DISTINCT 1,2) AS c\0\0\0");
+    send(&mut s, b'D', b"S\0");
+    send(&mut s, b'B', &[0; 8]);
+    send(&mut s, b'E', &[0; 5]);
+    send(&mut s, b'S', &[]);
+    let ms = ready(&mut s);
+    assert!(
+        ms.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42883\0")),
+        "{ms:?}"
+    );
+    assert!(!ms.iter().any(|m| m.0 == b'D'));
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    let ms = query(&mut s, "SELECT 1::int4 AS v");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1")])
+    );
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    send(&mut s, b'X', &[]);
+    drop(s);
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+}
+
+#[test]
+fn pg09_01_mysql() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, MysqlCompatServer, TextValue, WireResponse,
+    };
+    let server = MysqlCompatServer::start().unwrap();
+    let mut client = server
+        .connect_root(CLIENT_DEPRECATE_EOF, Some("test"))
+        .unwrap();
+    for (sql, expected) in [
+        (
+            "SELECT count(*) AS n,count(x) AS c FROM (SELECT NULL AS x UNION ALL SELECT NULL) t",
+            vec![vec![
+                TextValue::Bytes(b"2".to_vec()),
+                TextValue::Bytes(b"0".to_vec()),
+            ]],
+        ),
+        (
+            "SELECT count(*) AS n FROM (SELECT 1 AS x) t WHERE false",
+            vec![vec![TextValue::Bytes(b"0".to_vec())]],
+        ),
+        (
+            "SELECT count(*) AS n FROM (SELECT 1 AS x) t WHERE false GROUP BY x",
+            vec![],
+        ),
+    ] {
+        let WireResponse::ResultSet(result) = client.query(sql).unwrap() else {
+            panic!("{sql}");
+        };
+        assert_eq!(result.rows, expected, "{sql}");
+        assert!(
+            result.columns.iter().all(|c| c.column_type == 8),
+            "{:?}",
+            result.columns
+        );
+    }
+}

@@ -331,14 +331,17 @@ fn update_aggregate(
     match &mut state.value {
         AggregateValue::CountExtrema { .. } => unreachable!(),
         AggregateValue::Count(count) => {
-            if matches!(
+            let increment = if matches!(
                 function.Mode,
                 AggFunctionMode::FinalMode | AggFunctionMode::Partial2Mode
             ) {
-                *count = count.wrapping_add(values[0].GetInt64());
+                values[0].GetInt64()
             } else {
-                *count = count.wrapping_add(1);
-            }
+                1
+            };
+            *count = count
+                .checked_add(increment)
+                .ok_or_else(|| astersql_errors::New("COUNT bigint out of range"))?;
         }
         AggregateValue::Sum { value, count } => {
             if function.Name == astersql_parser_ast::AggFuncAvg
@@ -531,6 +534,114 @@ impl ExecExecutor for TypedHashAgg {
     fn ScannedRows(&self) -> usize {
         self.child.ScannedRows()
     }
+    fn Detach(&mut self) -> Option<Box<dyn ExecExecutor>> {
+        None
+    }
+}
+
+/// Feed the already-bound relational COUNT argument into the canonical typed
+/// transition/finalization path. Only nullness is relevant to non-DISTINCT COUNT.
+/// The caller evaluates every argument before handing over this owned input.
+pub fn CountNonNull(context: ContextRef, present: Vec<bool>) -> AdapterResult<i64> {
+    let field_type =
+        astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeLonglong);
+    let input = CountInput {
+        present,
+        index: 0,
+        opened: false,
+        schema: vec![SchemaColumn {
+            field_type: (*field_type).clone(),
+        }],
+    };
+    let function = astersql_expression_aggregation::NewAggFuncDesc(
+        context.GetExprCtx(),
+        astersql_parser_ast::AggFuncCount,
+        vec![Box::new(astersql_expression::Column::new(
+            *field_type,
+            1,
+            1,
+            0,
+        ))],
+        false,
+    )
+    .map_err(|e| astersql_errors::New(e.to_string()))?;
+    let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
+        .map_err(astersql_errors::New)?;
+    executor.Open()?;
+    let mut output = executor.NewChunk();
+    let result = executor
+        .Next(&mut output)
+        .map(|()| output.GetRow(0).GetInt64(0));
+    let close = executor.Close();
+    let count = result?;
+    close?;
+    Ok(count)
+}
+
+// This adapter owns no SQL semantics; it pages parameter nullness into HashAgg.
+struct CountInput {
+    present: Vec<bool>,
+    index: usize,
+    opened: bool,
+    schema: Vec<SchemaColumn>,
+}
+impl ExecExecutor for CountInput {
+    fn Open(&mut self) -> AdapterResult {
+        self.index = 0;
+        self.opened = true;
+        Ok(())
+    }
+    fn Close(&mut self) -> AdapterResult {
+        self.opened = false;
+        self.present.clear();
+        Ok(())
+    }
+    fn Next(&mut self, output: &mut chunk::Chunk) -> AdapterResult {
+        output.Reset();
+        if !self.opened {
+            return Err(astersql_errors::New("COUNT input is not open"));
+        }
+        while !output.IsFull() && self.index < self.present.len() {
+            if self.present[self.index] {
+                output.AppendInt64(0, 1);
+            } else {
+                output.AppendNull(0);
+            }
+            self.index += 1;
+        }
+        Ok(())
+    }
+    fn ChunkConfig(&self) -> ChunkConfig {
+        ChunkConfig {
+            fields: self.schema.iter().map(|c| c.field_type.clone()).collect(),
+            initial_capacity: 32,
+            maximum_chunk_size: 1024,
+        }
+    }
+    fn NewChunk(&self) -> chunk::Chunk {
+        let c = self.ChunkConfig();
+        *chunk::New(c.fields, c.initial_capacity, c.maximum_chunk_size)
+    }
+    fn Schema(&self) -> &[SchemaColumn] {
+        &self.schema
+    }
+    fn CalculateNoDelay(&self) -> bool {
+        false
+    }
+    fn IsWriteExecutor(&self) -> bool {
+        false
+    }
+    fn CheckForeignKeys(&mut self) -> AdapterResult {
+        Ok(())
+    }
+    fn TakeForeignKeyCascades(&mut self) -> Vec<Box<dyn CascadeBatch>> {
+        vec![]
+    }
+    fn HasForeignKeyCascades(&self) -> bool {
+        false
+    }
+    fn PrepareFKCascadeContext(&mut self) {}
+    fn AddFKCheckLockDuration(&mut self, _: Duration) {}
     fn Detach(&mut self) -> Option<Box<dyn ExecExecutor>> {
         None
     }

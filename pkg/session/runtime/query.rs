@@ -1105,6 +1105,23 @@ impl ConcreteSession {
         rows: &[HashMap<String, Option<String>>],
     ) -> SessionResult<Option<String>> {
         let name = name.to_ascii_lowercase();
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL && name == "count" && !distinct {
+            let present = rows
+                .iter()
+                .map(|row| {
+                    args.first().map_or(Ok(true), |arg| {
+                        self.relational_query_expression_value(arg, row, None)
+                            .map(|value| value.is_some())
+                    })
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            return astersql_executor::typed_hash_agg::CountNonNull(
+                self.AdapterPlanContext(),
+                present,
+            )
+            .map(|count| Some(count.to_string()))
+            .map_err(|error| session_error("execute COUNT", error));
+        }
         if name == "count" && args.is_empty() {
             return Ok(Some(rows.len().to_string()));
         }
@@ -3039,7 +3056,10 @@ impl ConcreteSession {
                     .as_deref()
                     .is_some_and(result_set_node_has_derived_source)
         });
-        let scalar_count = is_scalar_count_non_null_constant(select);
+        // PG COUNT needs bound int8 metadata and the typed aggregate path,
+        // including constant-only queries and empty inputs.
+        let scalar_count = self.sql_dialect() != ast::SqlDialect::PostgreSQL
+            && is_scalar_count_non_null_constant(select);
         (self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && select.Kind == ast::SelectStmtKind::Values)
             || select.With.is_some()
@@ -3472,6 +3492,25 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // MySQL permits a DISTINCT argument tuple; PostgreSQL COUNT
+                // has only the star and single-expression signatures.
+                if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &input.Kind
+                    && Name.eq_ignore_ascii_case("count")
+                    && Args.len() > 1
+                {
+                    let error = super::function_diagnostics::PgFunctionError {
+                        state: "42883",
+                        message: "function count with multiple arguments does not exist".to_owned(),
+                        hint: Some("COUNT accepts one expression or *."),
+                        position: (input.OriginTextPosition > 0)
+                            .then_some(input.OriginTextPosition as usize),
+                    };
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    ));
+                    return (input.clone(), true);
+                }
                 // Only a bare literal retains unknown provenance. Parentheses
                 // preserve it, while an explicit text cast fixes the source type
                 // and cannot use the numeric operator's unknown input path.
