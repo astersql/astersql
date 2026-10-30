@@ -232,3 +232,175 @@ pub(crate) fn normalize_ilike(value: &str, pattern: &str, escape: i64) -> (Strin
         actual_escape,
     )
 }
+
+/// PostgreSQL's libc deterministic ILIKE path: normalize ESCAPE before case
+/// conversion, then match Unicode characters. Does not mutate process locale.
+/// The Go/MySQL IlikeSig above deliberately keeps its separate ASCII contract.
+pub(crate) fn pg_match(
+    value: Option<&str>,
+    pattern: Option<&str>,
+    escape: Option<&str>,
+    collation: &str,
+    insensitive: bool,
+) -> Result<Option<bool>, crate::formal_registry::PgPatternError> {
+    use crate::formal_registry::PgPatternError;
+    let error = |state, message, hint| PgPatternError {
+        state,
+        message,
+        hint,
+    };
+    let (Some(pattern), Some(escape)) = (pattern, escape) else {
+        return Ok(None);
+    };
+    let mut chars = escape.chars();
+    let escape = chars.next();
+    if chars.next().is_some() {
+        return Err(error(
+            "22025",
+            "invalid escape string",
+            Some("Escape string must be empty or one character."),
+        ));
+    }
+    // Canonical backslash escapes match PostgreSQL like_escape. Literal
+    // backslashes must be protected even when ESCAPE is the empty string.
+    let mut normalized = String::new();
+    let mut source = pattern.chars();
+    while let Some(ch) = source.next() {
+        if Some(ch) == escape {
+            normalized.push('\\');
+            if let Some(next) = source.next() {
+                normalized.push(next);
+            }
+        } else {
+            if ch == '\\' {
+                normalized.push('\\');
+            }
+            normalized.push(ch);
+        }
+    }
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    struct Locale(libc::locale_t);
+    impl Drop for Locale {
+        fn drop(&mut self) {
+            // SAFETY: uniquely owned locale handle, freed after the final conversion.
+            unsafe {
+                libc::freelocale(self.0);
+            }
+        }
+    }
+    // POSIX wint_t is a 32-bit unsigned integer on Darwin and Linux.
+    unsafe extern "C" {
+        fn towlower_l(ch: u32, locale: libc::locale_t) -> u32;
+    }
+    let locale = if insensitive && collation == "en_US.UTF-8" {
+        let name = std::ffi::CString::new(collation).unwrap();
+        // SAFETY: NUL-terminated name and fresh per-call locale; never setlocale.
+        let handle =
+            unsafe { libc::newlocale(libc::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut()) };
+        if handle.is_null() {
+            return Err(error("0A000", "ILIKE locale is unavailable", None));
+        }
+        Some(Locale(handle))
+    } else {
+        None
+    };
+    let lower = |text: &str| -> Vec<char> {
+        text.chars()
+            .map(|ch| {
+                if !insensitive {
+                    ch
+                } else if let Some(locale) = &locale {
+                    // SAFETY: live locale and a valid Unicode scalar in UTF-8 LC_CTYPE.
+                    let mapped = unsafe { towlower_l(ch as u32, locale.0) };
+                    char::from_u32(mapped).unwrap_or(ch)
+                } else {
+                    ch.to_ascii_lowercase()
+                }
+            })
+            .collect()
+    };
+    let value = lower(value);
+    let pattern = lower(&normalized);
+    // MatchText's ordered '%' search, using an explicit stack rather than
+    // recursive calls. Preserve its lazy trailing-escape diagnostic: reaching
+    // the end of the input can abort before an invalid suffix is inspected.
+    let mut work = vec![(0usize, 0usize)];
+    let mut visited = std::collections::HashSet::new();
+    'states: while let Some((mut t, mut p)) = work.pop() {
+        if !visited.insert((t, p)) {
+            continue;
+        }
+        while t < value.len() && p < pattern.len() {
+            match pattern[p] {
+                '%' => {
+                    p += 1;
+                    while p < pattern.len() {
+                        match pattern[p] {
+                            '%' => p += 1,
+                            '_' => {
+                                if t == value.len() {
+                                    continue 'states;
+                                }
+                                t += 1;
+                                p += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if p == pattern.len() {
+                        return Ok(Some(true));
+                    }
+                    let first = if pattern[p] == '\\' {
+                        if p + 1 == pattern.len() {
+                            return Err(error(
+                                "22025",
+                                "LIKE pattern must not end with escape character",
+                                None,
+                            ));
+                        }
+                        pattern[p + 1]
+                    } else {
+                        pattern[p]
+                    };
+                    // Push in reverse order to visit the earliest candidate first.
+                    for next in (t..value.len()).rev() {
+                        if value[next] == first {
+                            work.push((next, p));
+                        }
+                    }
+                    continue 'states;
+                }
+                '_' => {
+                    t += 1;
+                    p += 1;
+                }
+                ch => {
+                    let literal = if ch == '\\' {
+                        p += 1;
+                        if p == pattern.len() {
+                            return Err(error(
+                                "22025",
+                                "LIKE pattern must not end with escape character",
+                                None,
+                            ));
+                        }
+                        pattern[p]
+                    } else {
+                        ch
+                    };
+                    if value[t] != literal {
+                        continue 'states;
+                    }
+                    t += 1;
+                    p += 1;
+                }
+            }
+        }
+        if t == value.len() && pattern[p..].iter().all(|ch| *ch == '%') {
+            return Ok(Some(true));
+        }
+    }
+    Ok(Some(false))
+}

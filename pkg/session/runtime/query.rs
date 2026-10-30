@@ -1033,6 +1033,22 @@ fn pg_backend_identity_in_expression(expression: &ast::ExprNode) -> bool {
     calls.0
 }
 
+fn pg_pattern_in_expression(expression: &ast::ExprNode) -> bool {
+    struct Patterns(bool);
+    impl ast::ExprNodeVisitor for Patterns {
+        fn Enter(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            self.0 |= matches!(node.Kind, ast::ExprKind::Like { .. });
+            (node.clone(), self.0)
+        }
+        fn Leave(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            (node.clone(), true)
+        }
+    }
+    let mut visitor = Patterns(false);
+    let _ = expression.Accept(&mut visitor);
+    visitor.0
+}
+
 impl ConcreteSession {
     /// 将 SELECT 条件值转换成 Go executor 的 WHERE 真值语义。
     pub(super) fn insert_select_predicate(
@@ -1224,6 +1240,13 @@ impl ConcreteSession {
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && matches!(expression.Kind, ast::ExprKind::Like { .. })
+        {
+            return super::relational_value::pg_pattern_value(expression, |expr| {
+                self.relational_query_expression_value(expr, row, group_rows)
+            });
+        }
         if let ast::ExprKind::Function {
             FnName,
             Schema,
@@ -1326,6 +1349,7 @@ impl ConcreteSession {
             && FnName.L == "coalesce"
             && Args.iter().any(|arg| {
                 pg_backend_identity_in_expression(arg)
+                    || pg_pattern_in_expression(arg)
                     || matches!(
                         self.pg_case_input_type(arg, &[]).GetType(),
                         astersql_parser_mysql::r#type::TypePgInt4Range
@@ -5268,6 +5292,44 @@ impl ConcreteSession {
                     ) =>
                 {
                     return Tp.clone();
+                }
+                ast::ExprKind::Binary { Op, .. }
+                    if pg_pattern_in_expression(expression)
+                        && matches!(
+                            Op.to_ascii_lowercase().as_str(),
+                            "and" | "or" | "=" | "<>" | "!=" | "<" | ">" | "<=" | ">="
+                        ) =>
+                {
+                    let mut tp = astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeTiny,
+                    );
+                    tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                    return tp;
+                }
+                ast::ExprKind::Unary { Op, .. }
+                    if pg_pattern_in_expression(expression) && Op.eq_ignore_ascii_case("not") =>
+                {
+                    let mut tp = astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeTiny,
+                    );
+                    tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                    return tp;
+                }
+                ast::ExprKind::Function { FnName, Args, .. }
+                    if FnName.L == "coalesce"
+                        && pg_pattern_in_expression(expression)
+                        && Args.iter().all(|arg| {
+                            let tp = self
+                                .relational_query_expression_type_from_sources(arg, source_fields);
+                            tp.GetType() == astersql_parser_mysql::r#type::TypeNull
+                                || tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag != 0
+                        }) =>
+                {
+                    let mut tp = astersql_parser_types::NewFieldType(
+                        astersql_parser_mysql::r#type::TypeTiny,
+                    );
+                    tp.AddFlag(astersql_parser_mysql::r#type::IsBooleanFlag);
+                    return tp;
                 }
                 // PG LIKE/ILIKE (including a bound ESCAPE) yields boolean.
                 // Preserve that identity for Prepare and Execute metadata.

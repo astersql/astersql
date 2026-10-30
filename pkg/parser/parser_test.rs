@@ -6059,3 +6059,41 @@ fn pg06_task_033_text_declaration_modifier() {
     let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
     assert!(pg.ParseOneStmt("CREATE TABLE t (v text)", "", "").is_ok());
 }
+
+#[test]
+fn pg08_33_collation_predicate() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let sql = "SELECT 'Ä'::text COLLATE \"en_US.UTF-8\" NOT ILIKE $1::text ESCAPE $2::text AS v";
+    let statement = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let select = statement
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+    let ExprKind::Like {
+        Expr,
+        Not,
+        IsLike,
+        EscapeExpr,
+        Explicit,
+        ..
+    } = &expr.Kind
+    else {
+        panic!("{expr:?}")
+    };
+    assert!(*Not && !*IsLike && *Explicit);
+    assert!(matches!(&Expr.Kind, ExprKind::Collate {Collation,..} if Collation=="en_US.UTF-8"));
+    assert!(EscapeExpr.is_some());
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseOneStmt(sql, "", "")
+            .is_err()
+    );
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt("SELECT 'x' COLLATE aster_missing_locale ILIKE 'x'", "", "")
+            .is_err()
+    );
+}

@@ -1901,10 +1901,10 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         ExpressionRule::CharsetNameAlt02 => out.ident = "binary".to_owned(),
         ExpressionRule::CollationNameAlt01 => {
             let name = &rhs[rhs_len - (0)].ident;
-            // PG's built-in bytewise collations retain their SQL identity;
+            // Bounded deterministic PG collations retain their SQL identity;
             // they are not entries in MySQL's charset/collation registry.
             if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
-                && matches!(name.as_str(), "C" | "POSIX")
+                && matches!(name.as_str(), "C" | "POSIX" | "en_US.UTF-8")
             {
                 out.ident = name.clone();
             } else {

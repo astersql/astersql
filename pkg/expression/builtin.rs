@@ -2958,6 +2958,20 @@ pub mod formal_registry {
     }
     impl std::error::Error for PgArrayAppendError {}
 
+    /// PostgreSQL pattern diagnostics survive the formal factory boundary.
+    #[derive(Clone, Debug)]
+    pub struct PgPatternError {
+        pub state: &'static str,
+        pub message: &'static str,
+        pub hint: Option<&'static str>,
+    }
+    impl std::fmt::Display for PgPatternError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+    impl std::error::Error for PgPatternError {}
+
     /// 类型别名 `BuiltinFactory`。
     pub type BuiltinFactory = fn(
         &dyn BuildContext,
@@ -4445,6 +4459,7 @@ pub mod formal_registry {
         Insert,
         Like,
         Ilike,
+        PgLike(bool),
         IsIPv4,
         IsIPv6,
         RegexpInstr,
@@ -5119,6 +5134,22 @@ pub mod formal_registry {
                         },
                         false,
                     ))
+                }
+                CoreBuiltinKind::PgLike(insensitive) => {
+                    let (value, vn) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (pattern, pn) = self.base.args[1].EvalString(ctx, row.clone())?;
+                    let (escape, en) = self.base.args[2].EvalString(ctx, row)?;
+                    crate::builtin_ilike_kernel::pg_match(
+                        (!vn).then_some(value.as_str()),
+                        (!pn).then_some(pattern.as_str()),
+                        (!en).then_some(escape.as_str()),
+                        self.base.args[0].GetType(ctx).GetCollate(),
+                        insensitive,
+                    )
+                    .map(|value| value.map_or((0, true), |v| (i64::from(v), false)))
+                    .map_err(|e| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(e))
+                    })
                 }
                 CoreBuiltinKind::Like | CoreBuiltinKind::Ilike => {
                     let (value, value_null) = self.base.args[0].EvalString(ctx, row.clone())?;
@@ -8065,6 +8096,19 @@ pub mod formal_registry {
                     CoreBuiltinKind::Insert,
                     field_type_for_eval_type(types::ETString),
                     "builtinInsertUTF8Sig",
+                )
+            }
+            "like" | "ilike" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                // The predicate binder supplies text identities and a text ESCAPE.
+                // Keep PG collation names out of MySQL's collation derivation.
+                (
+                    CoreBuiltinKind::PgLike(name == "ilike"),
+                    boolean_field_type(),
+                    if name == "ilike" {
+                        "builtinIlikeSig"
+                    } else {
+                        "builtinLikeSig"
+                    },
                 )
             }
             "like" | "ilike" => {

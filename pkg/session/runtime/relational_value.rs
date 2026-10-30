@@ -167,23 +167,107 @@ fn relational_collated_string_column(column: &astersql_meta_model::ColumnInfo) -
         )
 }
 
-// Keep the newly preserved PG expression out of the legacy byte matcher.
-// Parsing/Describe may succeed while evaluation awaits the scalar-type plan.
-fn check_pg_escape_evaluation(expression: &ast::ExprNode) -> SessionResult<()> {
-    if let ast::ExprKind::Like {
-        EscapeExpr: Some(escape),
+/// Adapt the preserved predicate AST to the shared formal text factory. The
+/// caller supplies the existing session/table recursion, including bound ESCAPE.
+pub(super) fn pg_pattern_value(
+    expression: &ast::ExprNode,
+    mut evaluate: impl FnMut(&ast::ExprNode) -> SessionResult<Option<String>>,
+) -> SessionResult<Option<String>> {
+    use astersql_expression::BuildContext;
+    let ast::ExprKind::Like {
+        Expr,
+        Pattern,
+        Escape,
+        EscapeExpr,
+        Not,
+        IsLike,
         ..
     } = &expression.Kind
+    else {
+        unreachable!()
+    };
+    let left = pg_conditional_collation(Expr)?;
+    let right = pg_conditional_collation(Pattern)?;
+    if left
+        .as_ref()
+        .zip(right.as_ref())
+        .is_some_and(|(l, r)| l != r)
     {
-        if !matches!(&escape.Kind, ast::ExprKind::Value(value)
-            if matches!(&value.Datum, ast::ValueDatum::String(text) if text.len() == 1 && text.is_ascii()))
-        {
-            return Err(SessionError::new(
-                "PostgreSQL ESCAPE expression evaluation is unsupported",
-            ));
-        }
+        let error = super::function_diagnostics::PgFunctionError {
+            state: "42P21",
+            message: "collation mismatch between explicit collations".into(),
+            hint: None,
+            position: None,
+        };
+        return Err(SessionError::with_source(
+            error.to_string(),
+            astersql_errors::SharedError::new(error),
+        ));
     }
-    Ok(())
+    let collation = left.or(right).unwrap_or_else(|| "C".into());
+    let values = [
+        evaluate(Expr)?,
+        evaluate(Pattern)?,
+        match EscapeExpr {
+            Some(expr) => evaluate(expr)?,
+            None => Some(Escape.clone()),
+        },
+    ];
+    let args = values
+        .into_iter()
+        .map(|value| {
+            let mut arg = value.as_deref().map_or_else(
+                astersql_expression::NewNull,
+                astersql_expression::NewStrConst,
+            );
+            let mut tp =
+                astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString);
+            tp.SetCollate(collation.clone());
+            arg.RetType = Some(tp);
+            Box::new(arg) as Box<dyn astersql_expression::Expression>
+        })
+        .collect();
+    let context = astersql_expression_exprstatic::NewExprContext(vec![
+        astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+            astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(ast::SqlDialect::PostgreSQL),
+            ]),
+        )),
+    ]);
+    let function = astersql_expression::NewFunctionBase(
+        &context,
+        if *IsLike { "like" } else { "ilike" },
+        *astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeTiny),
+        args,
+    )
+    .map_err(|e| session_error("build PG pattern", e))?;
+    let (value, null) = function
+        .EvalInt(
+            context.GetEvalCtx(),
+            astersql_expression::chunk::Row::default(),
+        )
+        .map_err(|e| {
+            let shared = e.into_shared();
+            if let Some(e) =
+                shared.downcast_ref::<astersql_expression::formal_registry::PgPatternError>()
+            {
+                let error = super::function_diagnostics::PgFunctionError {
+                    state: e.state,
+                    message: e.message.into(),
+                    hint: e.hint,
+                    position: None,
+                };
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            } else {
+                SessionError::with_source("evaluate PG pattern", shared)
+            }
+        })?;
+    Ok(relational_boolean_value(
+        (!null).then_some((value != 0) != *Not),
+    ))
 }
 
 /// Evaluate predicates with the table column's collation.  The generic row
@@ -195,7 +279,13 @@ pub(super) fn relational_table_expression_value(
     row: &HashMap<String, Option<String>>,
     table: &astersql_meta_model::TableInfo,
 ) -> SessionResult<Option<String>> {
-    check_pg_escape_evaluation(expression)?;
+    if matches!(expression.Kind, ast::ExprKind::Like { .. })
+        && PG_CAST_TABLE.with(|slot| slot.borrow().is_some())
+    {
+        return pg_pattern_value(expression, |expr| {
+            relational_table_expression_value(expr, row, table)
+        });
+    }
     if let Some(value) = pg_numeric_literal_value(expression) {
         return value.map(Some);
     }
@@ -815,7 +905,9 @@ pub(super) fn pg_conditional_collation(
     expression: &ast::ExprNode,
 ) -> SessionResult<Option<String>> {
     match &expression.Kind {
-        ast::ExprKind::Collate { Collation, .. } if matches!(Collation.as_str(), "C" | "POSIX") => {
+        ast::ExprKind::Collate { Collation, .. }
+            if matches!(Collation.as_str(), "C" | "POSIX" | "en_US.UTF-8") =>
+        {
             Ok(Some(Collation.clone()))
         }
         ast::ExprKind::Parentheses(inner) => pg_conditional_collation(inner),
@@ -925,7 +1017,11 @@ pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
     row: &HashMap<String, Option<String>>,
 ) -> SessionResult<Option<String>> {
-    check_pg_escape_evaluation(expression)?;
+    if matches!(expression.Kind, ast::ExprKind::Like { .. })
+        && PG_CAST_TABLE.with(|slot| slot.borrow().is_some())
+    {
+        return pg_pattern_value(expression, |expr| relational_expression_value(expr, row));
+    }
     if let Some(value) = pg_numeric_literal_value(expression) {
         return value.map(Some);
     }

@@ -1906,6 +1906,9 @@ impl Extended {
                             self.session.error_detail = crate::pg_conn::temporal_error_detail(&e);
                             self.session.function_error_hint =
                                 crate::pg_conn::temporal_error_hint(&e);
+                            if let crate::conn::ConnError::PgFunction(function) = &e {
+                                self.session.function_error_hint = function.hint;
+                            }
                             return Err(engine(e));
                         }
                     };
