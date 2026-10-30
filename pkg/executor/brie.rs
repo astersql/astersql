@@ -545,6 +545,7 @@ pub struct commonConfig {
     pub pdAddresses: Vec<String>,
     pub tls: tlsConfig,
     pub storage: String,
+    pub backendOptions: astersql_objstore::parse::BackendOptions,
     pub rateLimit: u64,
     pub concurrency: u32,
     pub checksum: bool,
@@ -832,9 +833,25 @@ impl executorBuilder {
             tls: global.tls,
             ..Default::default()
         };
+        // Keep URL decoding in the builder so malformed query parameters cannot
+        // be silently discarded by a runtime implementation.
+        let mut storage_url = astersql_objstore::parse::ParseRawURL(&statement.storage)
+            .map_err(|error| BrieError::new(format!("invalid destination URL: {error}")))?;
+        match storage_url.scheme.as_str() {
+            "s3" => astersql_objstore::parse::ExtractQueryParameters(
+                &mut storage_url,
+                &mut common.backendOptions.s3,
+            ),
+            "gs" | "gcs" => astersql_objstore::parse::ExtractQueryParameters(
+                &mut storage_url,
+                &mut common.backendOptions.gcs,
+            ),
+            _ => Ok(()),
+        }
+        .map_err(|error| BrieError::new(format!("invalid destination URL: {error}")))?;
         let normalized_storage = self
             .runtime
-            .normalize_storage_url(&statement.storage, &mut common)
+            .normalize_storage_url(&storage_url.String(), &mut common)
             .map_err(|error| BrieError::new(format!("invalid destination URL: {error}")))?;
         let scheme = normalized_storage.scheme.as_str();
         if self.runtime.sem_v1_enabled() && matches!(scheme, "hdfs" | "local" | "file" | "") {

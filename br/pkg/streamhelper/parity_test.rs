@@ -243,6 +243,7 @@ fn go_rust_public_contract_matches() {
         .WithTableFilter(&["*.*"])
         .ToStorage(StorageBackend {
             Uri: "s3://b".into(),
+            ..Default::default()
         })
         .Check()
         .unwrap();
@@ -252,7 +253,8 @@ fn go_rust_public_contract_matches() {
         NewTaskInfo("bad-name")
             .WithTableFilter(&["*.*"])
             .ToStorage(StorageBackend {
-                Uri: "s3://b".into()
+                Uri: "s3://b".into(),
+                ..Default::default()
             })
             .Check()
             .is_err()
@@ -261,7 +263,8 @@ fn go_rust_public_contract_matches() {
     assert!(
         NewTaskInfo("ok")
             .ToStorage(StorageBackend {
-                Uri: "s3://b".into()
+                Uri: "s3://b".into(),
+                ..Default::default()
             })
             .Check()
             .is_err()
@@ -373,6 +376,7 @@ fn go_rust_public_contract_matches() {
         .WithTableFilter(&["*.*"])
         .ToStorage(StorageBackend {
             Uri: "noop://".into(),
+            ..Default::default()
         })
         .WithRange(b"a", b"z");
     meta.PutTask(&task_info).unwrap();
@@ -551,6 +555,7 @@ fn task_metadata_methods_match_go_contract() {
         .WithTableFilter(&["*.*"])
         .ToStorage(StorageBackend {
             Uri: "noop://".into(),
+            ..Default::default()
         })
         .WithRanges(&[
             KeyRange {

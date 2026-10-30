@@ -118,3 +118,11 @@
 - 增加 flag/配置字段：同步 `S3BackendOptions`、`DefineS3Flags`、`ParseFromFlags`、`Apply`、`backuppb::S3` 适配结构、具体后端配置转换和 `s3_flags_test.rs`。确认字段究竟是共享 protobuf 字段还是仅影响构造阶段，避免像 `UseAccelerateEndpoint` 一样误写到无对应字段的目标。
 - 修改列举：保留首轮 `StartAfter` 与后续 continuation token 的互斥关系、公共前缀裁剪以及目录占位过滤；补充分页中途错误和回调错误的停止行为。
 - 若要允许动态修改默认块大小，应先消除 `static mut`，设计实例级或原子配置，并评估公共 API 兼容性和并发性能。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 store.go：SseKmsContext 原始 JSON 经 encode_sse_kms_context 验证 UTF-8、对象根、唯一解码键和字符串值，按键排序并按 Go JSON 的 HTML/JS 转义后 Base64 编码一次；空输入保持空值。错误不包含用户 JSON 或 decoder 错误。默认/AWS provider 配置 context 时必须显式选择 aws:kms 或 aws:kms:dsse，其他 provider 保留自身 SSE 规则；校验完成才写目标配置。新增 s3.sse-kms-context flag。
+
+对 JSON 转义中的孤立 UTF-16 surrogate，先按 Go encoding/json 规则替换为 U+FFFD，再做唯一键与字符串值检查；有效 surrogate pair 和普通反斜线转义不变。
+
+配置错误通过已有 BR ErrStorageInvalidConfig 哨兵构造 anyhow 因果链，保持 RFC 错误身份；附加上下文不含用户值。objstore query 错误复用这一局部函数。

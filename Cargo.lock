@@ -1505,6 +1505,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-br-pkg-streamhelper-config",
  "astersql-br-pkg-streamhelper-spans",
+ "astersql-objstore",
  "regex",
  "serde",
  "serde_json",
@@ -5994,6 +5995,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astersql-objstore-objectio",
+ "astersql-objstore-s3like",
  "astersql-objstore-storeapi",
  "astersql-parser-ast",
  "base64 0.22.1",
@@ -6116,16 +6118,20 @@ name = "astersql-objstore-s3like"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astersql-br-pkg-errors",
  "astersql-metrics-common",
  "astersql-objstore-objectio",
  "astersql-objstore-s3like-mock",
  "astersql-objstore-storeapi",
  "astersql-util-prefetch",
+ "base64 0.22.1",
  "fail 0.5.1",
  "mockall 0.13.1",
  "os_pipe",
  "prometheus 0.14.0",
  "regex",
+ "serde",
+ "serde_json",
  "tracing",
  "url",
 ]
@@ -6235,6 +6241,7 @@ dependencies = [
  "astersql-parser-charset",
  "astersql-parser-mysql",
  "astersql-parser-types",
+ "percent-encoding",
  "serde",
  "serde_json",
  "url",
@@ -12619,6 +12626,7 @@ version = "0.1.0"
 dependencies = [
  "kvproto",
  "path-clean",
+ "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
 ]
 
 [[package]]
@@ -16853,7 +16861,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.2"
-source = "git+https://github.com/astersql/kvproto.git?tag=v0.0.2-aster.20260929#0e902bac627b0f2ef8955f2a28bf39838ec1b16c"
+source = "git+https://github.com/astersql/kvproto.git?tag=v0.0.2-aster.20261031-s3-kms-context#b50d5c5ca305d81c1958464e9affe9ac1e7c4976"
 dependencies = [
  "bytes",
  "futures",

@@ -96,3 +96,7 @@
 - 修改 multipart 行为时至少覆盖：part 上限、失败 part 不提交、完成列表排序、worker panic、Abort 失败、context 取消、零/单块 Put 快路径、Content-MD5 和 close 后行为。若要改成流式 bounded-memory 实现，应把“与 Go uploader 的内存/流水差异”作为兼容与性能验收项，而不是只验证最终对象内容。
 - 更改错误映射时保持精确错误码判断；不要把权限错误误判为对象不存在，也不要用宽泛字符串匹配扩展非 `MaxUploadParts` 错误。
 - 修改并发模型前确认 `S3API`、context 和上层 `AsyncWriter` 的线程安全/取消契约；特别要防止 detached worker 在调用返回后继续访问 reader 或 context。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 client.go 的七个 hunk：Put、权限探测、Copy、同步 CreateMultipartUpload 与并发 uploader 的单对象/创建分片请求均转发 SSE、KMS key 和已编码 context；不再次编码。上传分片/完成请求不携带这些对象创建头。Put/同步 multipart 保留 ACL 和 StorageClass；probe/copy/uploader 不凭空增加 ACL。并发、失败中止及清理行为沿用现有实现。

@@ -564,3 +564,85 @@ fn test_set_pwd_stmt_secure_text() {
         assert_eq!(stmt.secure_text(), want);
     }
 }
+
+#[test]
+fn port_cb395494e6_storage_context_redaction() {
+    for (raw, expected) in [
+        (
+            r##"s3://bucket/prefix?sse-kms-context={"tenant":"#context-value"}"##,
+            "s3://bucket/prefix",
+        ),
+        (
+            r#"s3://bucket/prefix?sse=aws:kms&sse-kms-context={"tenant":"a&private-context-value"}"#,
+            "s3://bucket/prefix",
+        ),
+        (
+            r#"s3://bucket/prefix?sse=aws:kms&sse-kms-context={"tenant":"a;x&private-context-value"}"#,
+            "s3://bucket/prefix",
+        ),
+        (
+            "s3://bucket/%zz?sse-kms-context=%7B%22tenant%22%3A%22context-value%22%7D",
+            crate::misc::InvalidURLPlaceholder,
+        ),
+        (
+            "s3://user:pass@bucket/prefix?region=us-west-2",
+            "s3://bucket/prefix?region=us-west-2",
+        ),
+        (
+            "s3://bucket/file?SSE_KMS_CONTEXT=%7B%7D&SSE_KMS_CONTEXT=%7B%22a%22%3A%22b%22%7D",
+            "s3://bucket/file?SSE_KMS_CONTEXT=xxxxxx",
+        ),
+        ("gs://user:pass@bucket/file", "gs://bucket/file"),
+        ("/data/my files/100%off#name", "/data/my files/100%off#name"),
+    ] {
+        assert_eq!(redact_url(raw), expected);
+        let statement = BRIEStmt {
+            kind: BrieKind::Backup,
+            storage: raw.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            statement.secure_text(),
+            format!("BACKUP DATABASE * TO '{expected}'")
+        );
+        assert_eq!(statement.storage, raw);
+    }
+
+    assert_eq!(
+        redact_url("s3://bucket/a?region=us&sse-kms-context=%7B%22k%22%3A%22%5Cud800%22%7D"),
+        "s3://bucket/a?region=us&sse-kms-context=xxxxxx"
+    );
+    assert_eq!(
+        redact_url("s3://bucket/a?region=us&sse-kms-context=%7B%22k%22%3A%22%ff%22%7D"),
+        "s3://bucket/a"
+    );
+
+    for raw in [
+        "s3://user:pass@bucket/a?sse-kms-context=%7B%22secret%22%3A%22value%22%7D&region=us#secret-fragment",
+        "S3://bucket/a?SSE_KMS_CONTEXT=%7B%7D",
+        "ks3://bucket/a?sse-kms-context={\"secret\":\"a&secret-value\"}",
+        "oss://bucket/a?sse-kms-context=%zz&secret-value=exposed",
+        "s3://bucket/a?sse-kms-context={\"secret\":\"a#secret-value\"}",
+    ] {
+        let redacted = redact_url(raw);
+        for secret in [
+            "user",
+            "pass",
+            "secret-value",
+            "secret-fragment",
+            "%22secret%22",
+            "exposed",
+        ] {
+            assert!(!redacted.contains(secret), "{redacted}");
+        }
+    }
+    assert_eq!(
+        redact_url("s3://bucket/%zz?access-key=secret"),
+        crate::misc::InvalidURLPlaceholder
+    );
+    assert_eq!(redact_url("/path with % chars"), "/path with % chars");
+    assert_eq!(
+        redact_url("https://user:pass@host/a?visible=x#fragment"),
+        "https://host/a?visible=x#fragment"
+    );
+}

@@ -14,6 +14,7 @@ fn task(name: &str) -> crate::TaskInfo {
         .WithTableFilter(&["*.*"])
         .ToStorage(StorageBackend {
             Uri: "noop://".into(),
+            ..Default::default()
         })
         .WithRange(b"a", b"z")
 }

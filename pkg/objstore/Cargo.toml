@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+s3like = { package = "astersql-objstore-s3like", path = "s3like" }
 parser-ast = { package = "astersql-parser-ast", path = "../parser/ast" }
 anyhow = "1"
 base64 = "0.22"

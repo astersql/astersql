@@ -122,6 +122,7 @@ pub struct PutObjectInput {
     pub acl: Option<String>,
     pub server_side_encryption: Option<String>,
     pub sse_kms_key_id: Option<String>,
+    pub sse_kms_encryption_context: Option<String>,
     pub storage_class: Option<String>,
 }
 
@@ -159,6 +160,9 @@ pub struct CopyObjectInput {
     pub bucket: String,
     pub copy_source: String,
     pub key: String,
+    pub server_side_encryption: Option<String>,
+    pub sse_kms_key_id: Option<String>,
+    pub sse_kms_encryption_context: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -169,6 +173,7 @@ pub struct CreateMultipartUploadInput {
     pub acl: Option<String>,
     pub server_side_encryption: Option<String>,
     pub sse_kms_key_id: Option<String>,
+    pub sse_kms_encryption_context: Option<String>,
     pub storage_class: Option<String>,
 }
 
@@ -702,6 +707,11 @@ impl S3API for AwsS3Api {
         request = optional(&input.sse_kms_key_id, request, |request, value| {
             request.ssekms_key_id(value)
         });
+        request = optional(
+            &input.sse_kms_encryption_context,
+            request,
+            |request, value| request.ssekms_encryption_context(value),
+        );
         request = optional(&input.storage_class, request, |request, value| {
             request.storage_class(aws_sdk_s3::types::StorageClass::from(value.as_str()))
         });
@@ -812,6 +822,14 @@ impl S3API for AwsS3Api {
                 .bucket(&input.bucket)
                 .copy_source(&input.copy_source)
                 .key(&input.key)
+                .set_server_side_encryption(
+                    input
+                        .server_side_encryption
+                        .as_deref()
+                        .map(aws_sdk_s3::types::ServerSideEncryption::from),
+                )
+                .set_ssekms_key_id(input.sse_kms_key_id.clone())
+                .set_ssekms_encryption_context(input.sse_kms_encryption_context.clone())
                 .send(),
         )?
         .map(|_| ())
@@ -841,6 +859,11 @@ impl S3API for AwsS3Api {
         request = optional(&input.sse_kms_key_id, request, |request, value| {
             request.ssekms_key_id(value)
         });
+        request = optional(
+            &input.sse_kms_encryption_context,
+            request,
+            |request, value| request.ssekms_encryption_context(value),
+        );
         request = optional(&input.storage_class, request, |request, value| {
             request.storage_class(aws_sdk_s3::types::StorageClass::from(value.as_str()))
         });

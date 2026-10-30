@@ -140,6 +140,9 @@ impl S3Client {
                 bucket: self.bucket_prefix.Bucket.clone(),
                 key: key.clone(),
                 body: b"check".to_vec(),
+                server_side_encryption: non_empty(&self.options.Sse),
+                sse_kms_key_id: non_empty(&self.options.SseKmsKeyId),
+                sse_kms_encryption_context: non_empty(&self.options.SseKmsEncryptionContext),
                 ..Default::default()
             },
             self.request_options(),
@@ -212,6 +215,7 @@ impl S3Client {
             acl: non_empty(&options.Acl),
             server_side_encryption: non_empty(&options.Sse),
             sse_kms_key_id: non_empty(&options.SseKmsKeyId),
+            sse_kms_encryption_context: non_empty(&options.SseKmsEncryptionContext),
             storage_class: non_empty(&options.StorageClass),
         }
     }
@@ -356,6 +360,9 @@ impl S3Client {
                 bucket: self.bucket_prefix.Bucket.clone(),
                 copy_source: join_copy_source(&params.FromLoc.Bucket, &source_key),
                 key: self.bucket_prefix.ObjectKey(&params.ToKey),
+                server_side_encryption: non_empty(&self.options.Sse),
+                sse_kms_key_id: non_empty(&self.options.SseKmsKeyId),
+                sse_kms_encryption_context: non_empty(&self.options.SseKmsEncryptionContext),
             },
             RequestOptions::default(),
         )
@@ -373,6 +380,7 @@ impl S3Client {
             acl: non_empty(&self.options.Acl),
             server_side_encryption: non_empty(&self.options.Sse),
             sse_kms_key_id: non_empty(&self.options.SseKmsKeyId),
+            sse_kms_encryption_context: non_empty(&self.options.SseKmsEncryptionContext),
             storage_class: non_empty(&self.options.StorageClass),
         };
         let output = self
@@ -400,6 +408,9 @@ impl S3Client {
             part_size,
             concurrency,
             s3_compatible: self.s3_compatible,
+            sse: self.options.Sse.clone(),
+            sse_kms_key_id: self.options.SseKmsKeyId.clone(),
+            sse_kms_encryption_context: self.options.SseKmsEncryptionContext.clone(),
         })
     }
 }
@@ -497,6 +508,9 @@ struct MultipartUploader {
     part_size: i64,
     concurrency: i32,
     s3_compatible: bool,
+    sse: String,
+    sse_kms_key_id: String,
+    sse_kms_encryption_context: String,
 }
 
 /// 读尽 reader 后：单块走 Put，多块走并行分片上传。
@@ -558,6 +572,9 @@ impl MultipartUploader {
                     bucket: self.bucket.clone(),
                     key: self.key.clone(),
                     body: chunks.pop().unwrap_or_default(),
+                    server_side_encryption: non_empty(&self.sse),
+                    sse_kms_key_id: non_empty(&self.sse_kms_key_id),
+                    sse_kms_encryption_context: non_empty(&self.sse_kms_encryption_context),
                     ..Default::default()
                 },
                 RequestOptions {
@@ -571,6 +588,9 @@ impl MultipartUploader {
             &CreateMultipartUploadInput {
                 bucket: self.bucket.clone(),
                 key: self.key.clone(),
+                server_side_encryption: non_empty(&self.sse),
+                sse_kms_key_id: non_empty(&self.sse_kms_key_id),
+                sse_kms_encryption_context: non_empty(&self.sse_kms_encryption_context),
                 ..Default::default()
             },
             RequestOptions::default(),

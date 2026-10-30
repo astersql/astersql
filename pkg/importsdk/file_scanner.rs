@@ -139,7 +139,7 @@ pub struct fileScanner {
 }
 
 /// 无法解析且无法脱敏时使用的占位源路径文案。
-const redactedInvalidSourcePath: &str = "<redacted-invalid-source>";
+const redactedInvalidSourcePath: &str = objstore::parse::InvalidURLPlaceholder;
 
 /// 在共享哨兵错误上附加上下文字符串。
 fn annotate(base: &errors::SharedError, message: impl Into<String>) -> errors::SharedError {
@@ -149,31 +149,7 @@ fn annotate(base: &errors::SharedError, message: impl Into<String>) -> errors::S
 
 /// 脱敏存储 URL 中的密钥查询参数（access-key、sas-token 等替换为 xxxxxx）。
 fn redactURL(source: &str) -> String {
-    let Ok(mut parsed) = Url::parse(source) else {
-        return source.to_owned();
-    };
-    // 按协议选择需要遮蔽的查询键名。
-    let secret_keys: &[&str] = match parsed.scheme().to_ascii_lowercase().as_str() {
-        "s3" | "ks3" | "oss" => &["access-key", "secret-access-key", "session-token"],
-        "azure" | "azblob" => &["account-key", "encryption-key", "sas-token"],
-        _ => return source.to_owned(),
-    };
-    let mut pairs = parsed
-        .query_pairs()
-        .map(|(key, value)| {
-            let normalized = key.to_ascii_lowercase().replace('_', "-");
-            let value = if secret_keys.contains(&normalized.as_str()) {
-                "xxxxxx".to_owned()
-            } else {
-                value.into_owned()
-            };
-            (key.into_owned(), value)
-        })
-        .collect::<Vec<_>>();
-    // 排序保证脱敏后 URL 稳定可比较。
-    pairs.sort_by(|left, right| left.0.cmp(&right.0));
-    parsed.query_pairs_mut().clear().extend_pairs(pairs);
-    parsed.to_string()
+    objstore::parse::RedactURL(source)
 }
 
 /// 将 objstore Storage 适配为 mydump::Storage。

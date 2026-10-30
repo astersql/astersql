@@ -32,6 +32,8 @@ pub mod backuppb {
         pub Sse: String,
         /// KMS 密钥 ID（SSE-KMS）。
         pub SseKmsKeyId: String,
+        /// 已规范化并 Base64 编码的 SSE-KMS 上下文。
+        pub SseKmsEncryptionContext: String,
         /// 对象 ACL。
         pub Acl: String,
         /// 访问密钥。

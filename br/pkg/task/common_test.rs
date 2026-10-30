@@ -697,3 +697,24 @@ fn test_parse_and_validate_master_key_info() {
     assert_eq!(EncloseName("test"), "`test`");
     assert_eq!(EncloseDBAndTable("test", "t"), "`test`.`t`");
 }
+
+#[test]
+fn port_cb395494e6_storage_flags_strip_fragments_and_context() {
+    for name in [
+        "storage",
+        "upstream-storage",
+        "downstream-storage",
+        "checkpoint-storage",
+    ] {
+        let field = flagToZapField(&Flag {
+            Name: name.into(),
+            Value: "s3://bucket/a?secret-query=x#secret-fragment".into(),
+        });
+        assert_eq!(field.String, "s3://bucket/a");
+    }
+    let field = flagToZapField(&Flag {
+        Name: "s3.sse-kms-context".into(),
+        Value: r#"{"key":"secret"}"#.into(),
+    });
+    assert_eq!(field.String, "<redacted>");
+}

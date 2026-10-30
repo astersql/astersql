@@ -372,7 +372,10 @@ impl TestStorageConfig {
 /// 入口：按配置跑完整存储自检套件。
 pub fn RunTestStorage(cfg: TestStorageConfig) -> Result<()> {
     // 输出：供人工观察步骤或报告。
-    eprintln!("Starting external storage test storage={}", cfg.StorageURI);
+    eprintln!(
+        "Starting external storage test storage={}",
+        astersql_objstore::parse::RedactURL(&cfg.StorageURI)
+    );
 
     // 绑定 `report`，供后续步骤使用。
     let mut report = TestReport {

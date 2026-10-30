@@ -311,7 +311,7 @@ fn new_file_scanner_redacts_or_hides_source_in_parse_errors() {
         .err()
         .expect("malformed source must fail to construct");
     let message = error.to_string();
-    assert!(message.contains("source=<redacted-invalid-source>"));
+    assert!(message.contains("source=(invalid URL)"));
     assert!(!message.contains("secret-access-key=sk"));
 }
 

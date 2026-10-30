@@ -99,3 +99,7 @@ RustCodeGraph `status` 显示索引覆盖本文件，并报告它被 10 个文�
 - 将迁移桩升级为生产实现时，最可能修改 `NewMgr`、`GetStorage`、`ReadBackupMeta`、`LogArguments` 与 `progressFileWriterRoutine`；必须逐项恢复 Go 中的连接/关闭、GCS 回退、解密、protobuf/兼容性校验、日志和取消语义，而不是仅替换返回类型。
 - 修改元服务连接时通过 `dialEtcdWithCfgAndFactory` 保留工厂注入点，并同步 `br/pkg/task/meta_service_group_test.rs`；修改 EBS 进度语义时同步 `backup_ebs.rs`、`restore_ebs_meta.rs` 及其独立测试。
 - Rust 单元测试继续放在 `common_test.rs`、`parity_test.rs` 或对应调用模块测试中，不要内嵌回 `common.rs`；本文件底部现有 `meta_service_group_test.rs` 条件模块只是独立测试文件的挂载点。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 common.go 的 flagToZapField：upstream-storage/downstream-storage 与其他 storage flags 一样清除 query 和 fragment；s3.sse-kms-context 整串输出 <redacted>。原 flag 名和值不修改。

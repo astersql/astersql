@@ -507,3 +507,262 @@ fn multipart_uploader_normalizes_part_limit_at_all_sdk_stages() {
         mock.assert_drained();
     }
 }
+
+#[test]
+fn port_cb395494e6_encryption_context_requests_and_upload_paths() {
+    for context in ["", "eyJ0ZW5hbnQiOiJ0ZW5hbnQtYSJ9"] {
+        let mock = Arc::new(MockS3::default());
+        let client = S3Client::new(
+            mock.clone(),
+            storeapi::NewBucketPrefix("bucket", "prefix/"),
+            backuppb::S3 {
+                Bucket: "bucket".into(),
+                Sse: "aws:kms".into(),
+                SseKmsKeyId: "key-id".into(),
+                SseKmsEncryptionContext: context.into(),
+                Acl: "private".into(),
+                StorageClass: "STANDARD_IA".into(),
+                ..Default::default()
+            },
+            false,
+        );
+        let ctx = storeapi::Context::default();
+        client.PutObject(&ctx, "object", b"data").unwrap();
+        client.CheckPutAndDeleteObject(&ctx).unwrap();
+        client.MultipartWriter(&ctx, "object").unwrap();
+        client
+            .CopyObject(
+                &ctx,
+                &s3like::CopyInput {
+                    FromLoc: storeapi::NewBucketPrefix("source", "source-prefix/"),
+                    FromKey: "object".into(),
+                    ToKey: "copy".into(),
+                },
+            )
+            .unwrap();
+        for data in [vec![1; 2], vec![1; 5]] {
+            client
+                .MultipartUploader("upload", 3, 2)
+                .Upload(&ctx, &mut Cursor::new(data))
+                .unwrap();
+        }
+        let calls = mock.calls.lock().unwrap();
+        let expected = (!context.is_empty()).then_some(context);
+        assert_eq!(calls.puts.len(), 3);
+        for (input, _) in &calls.puts {
+            assert_eq!(input.sse_kms_encryption_context.as_deref(), expected);
+            assert_eq!(input.server_side_encryption.as_deref(), Some("aws:kms"));
+            assert_eq!(input.sse_kms_key_id.as_deref(), Some("key-id"));
+        }
+        assert_eq!(calls.puts[0].0.acl.as_deref(), Some("private"));
+        assert_eq!(
+            calls.puts[0].0.storage_class.as_deref(),
+            Some("STANDARD_IA")
+        );
+        assert!(calls.puts[1].0.acl.is_none());
+        assert_eq!(calls.creates.len(), 2);
+        for (input, _) in &calls.creates {
+            assert_eq!(input.sse_kms_encryption_context.as_deref(), expected);
+            assert_eq!(input.server_side_encryption.as_deref(), Some("aws:kms"));
+            assert_eq!(input.sse_kms_key_id.as_deref(), Some("key-id"));
+        }
+        assert_eq!(calls.creates[0].0.acl.as_deref(), Some("private"));
+        assert_eq!(
+            calls.creates[0].0.storage_class.as_deref(),
+            Some("STANDARD_IA")
+        );
+        let copy = &calls.copies[0].0;
+        assert_eq!(copy.sse_kms_encryption_context.as_deref(), expected);
+        assert_eq!(copy.server_side_encryption.as_deref(), Some("aws:kms"));
+        assert_eq!(copy.sse_kms_key_id.as_deref(), Some("key-id"));
+        assert_eq!(copy.copy_source, "source/source-prefix/object");
+        assert_eq!(copy.bucket, "bucket");
+        assert_eq!(calls.uploads.len(), 2);
+        assert_eq!(calls.completes.len(), 1);
+    }
+}
+
+#[test]
+fn port_cb395494e6_sdk_headers_for_copy_single_and_multipart_upload() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+    for context in ["", "eyJ0ZW5hbnQiOiJ0ZW5hbnQtYSJ9"] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while captured.len() < 6 && Instant::now() < deadline {
+                let (stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    request.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let lower = request.to_ascii_lowercase();
+                if lower.contains("expect: 100-continue") {
+                    reader
+                        .get_mut()
+                        .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                        .unwrap();
+                }
+                if lower.contains("transfer-encoding: chunked") {
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        let size =
+                            usize::from_str_radix(line.trim().split(';').next().unwrap(), 16)
+                                .unwrap();
+                        let mut body = vec![0; size + 2];
+                        reader.read_exact(&mut body).unwrap();
+                        if size == 0 {
+                            break;
+                        }
+                    }
+                } else if let Some(length) = lower.lines().find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .map(|x| x.trim().parse::<usize>().unwrap())
+                }) {
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                }
+                let line = request.lines().next().unwrap();
+                let body = if line.contains("?uploads") {
+                    "<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>prefix/object</Key><UploadId>upload-id</UploadId></InitiateMultipartUploadResult>"
+                } else if line.starts_with("POST ") {
+                    "<CompleteMultipartUploadResult><ETag>etag</ETag></CompleteMultipartUploadResult>"
+                } else if lower.contains("x-amz-copy-source:") {
+                    "<CopyObjectResult><ETag>etag</ETag></CopyObjectResult>"
+                } else {
+                    ""
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"etag\"\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                reader.get_mut().write_all(response.as_bytes()).unwrap();
+                captured.push(request);
+            }
+            assert_eq!(captured.len(), 6);
+            captured
+        });
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let sdk = aws_sdk_s3::Client::from_conf(
+            aws_sdk_s3::Config::builder()
+                .behavior_version_latest()
+                .region(aws_types::region::Region::new("us-east-1"))
+                .credentials_provider(aws_credential_types::Credentials::new(
+                    "test", "test", None, None, "test",
+                ))
+                .endpoint_url(endpoint)
+                .force_path_style(true)
+                .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+                .timeout_config(
+                    aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+                        .operation_timeout(Duration::from_secs(5))
+                        .build(),
+                )
+                .build(),
+        );
+        let api = Arc::new(AwsS3Api::new(sdk, runtime, None));
+        let client = S3Client::new(
+            api,
+            storeapi::NewBucketPrefix("bucket", "prefix/"),
+            backuppb::S3 {
+                Sse: "aws:kms".into(),
+                SseKmsKeyId: "destination-key".into(),
+                SseKmsEncryptionContext: context.into(),
+                ..Default::default()
+            },
+            false,
+        );
+        let ctx = storeapi::Context::default();
+        let result: anyhow::Result<()> = (|| {
+            client.CopyObject(
+                &ctx,
+                &s3like::CopyInput {
+                    FromLoc: storeapi::NewBucketPrefix("source", "source-prefix/"),
+                    FromKey: "object".into(),
+                    ToKey: "copy".into(),
+                },
+            )?;
+            client
+                .MultipartUploader("object", 5 * 1024 * 1024, 2)
+                .Upload(&ctx, &mut Cursor::new(vec![1; 32]))?;
+            client
+                .MultipartUploader("object", 5 * 1024 * 1024, 2)
+                .Upload(&ctx, &mut Cursor::new(vec![1; 5 * 1024 * 1024 + 1]))?;
+            Ok(())
+        })();
+        let captured = server.join().unwrap();
+        result.unwrap();
+        let mut counts = std::collections::BTreeMap::new();
+        for request in captured {
+            let line = request.lines().next().unwrap();
+            let operation = if line.contains("?uploads") {
+                "create"
+            } else if line.contains("partNumber=") {
+                "part"
+            } else if line.starts_with("POST ") {
+                "complete"
+            } else if request.to_ascii_lowercase().contains("x-amz-copy-source:") {
+                "copy"
+            } else {
+                "put"
+            };
+            *counts.entry(operation).or_insert(0) += 1;
+            let header = |name: &str| {
+                request
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then(|| value.trim()))
+            };
+            let writes = matches!(operation, "put" | "copy" | "create");
+            assert_eq!(
+                header("x-amz-server-side-encryption-context"),
+                (writes && !context.is_empty()).then_some(context)
+            );
+            assert_eq!(
+                header("x-amz-server-side-encryption"),
+                writes.then_some("aws:kms")
+            );
+            assert_eq!(
+                header("x-amz-server-side-encryption-aws-kms-key-id"),
+                writes.then_some("destination-key")
+            );
+        }
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([
+                ("copy", 1),
+                ("put", 1),
+                ("create", 1),
+                ("part", 2),
+                ("complete", 1)
+            ])
+        );
+    }
+}

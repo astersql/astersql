@@ -124,3 +124,11 @@ Rust 额外校验 authority 转义、映射固定解析错误，并保留 userin
 - 兼容风险主要是既有 URI 解析结果、错误脱敏和默认 path-style；性能风险主要来自解析阶段同步读取大 GCS 凭证文件及反复克隆 options，但当前配置规模很小，不能在无基准证据时引入全局缓存或共享状态。
 
 增加敏感字段或 scheme 时同时核对 `Redacted`、AST query 掩码和所有错误格式化位置，扩展独立 `parse_test.rs` 中 malformed URL、userinfo、未知 scheme 与原选项不变的断言。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 parse.go：S3BackendOptions 保存原始 sse_kms_context，Apply 复用 s3like 的唯一键/字符串对象规范化并检查 AWS SSE-KMS 模式；S3 保存一次编码结果。ExtractQueryParameters 返回 Result，先拒绝非法 percent escape 或裸分号，失败保持 ParsedURL 与 options 不变；成功按每个原始键首值应用后清 query。BackendOptions.Redacted 掩码 context；RedactURL 清 fragment，使用 AST 的统一无效 URL 占位。S3 新增 serde 派生仅供既有 streamhelper JSON 元数据持久化完整配置。
+
+URL query 的 context 值在 query_pairs 的有损 UTF-8 解码前验证；拒绝 `%ff` 等非法 UTF-8，避免替换字符被当成有效 JSON 编码发送。该错误仍不包含用户值。
+
+RedactURL 在删除 fragment 前复用 AST 的合法性判定，非法 fragment 转义与 Go url.Parse 一样返回统一占位，不能因先清 fragment 而漏掉这个错误边界。

@@ -8,9 +8,12 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
-kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
+kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20261031-s3-kms-context", default-features = false, features = ["protobuf-codec"] }
 path-clean = "1"
 
 [package.metadata.porting]
 go-package = "pkg/util/redact"
 legacy-tasks = ["task-182", "task-209"]
+
+[dev-dependencies]
+protobuf = "=2.8.0"

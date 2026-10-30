@@ -837,3 +837,134 @@ fn missing_bucket_errors_redact_cloud_credentials() {
         }
     }
 }
+
+#[test]
+fn port_cb395494e6_context_url_and_query_atomicity() {
+    use crate::parse::ExtractQueryParameters;
+
+    use base64::Engine as _;
+    let context = r#"{"kk":"¾","tenant":"租户😀","value":"a+b / = & ?"}"#;
+    let normalized = r#"{"kk":"¾","tenant":"租户😀","value":"a+b / = \u0026 ?"}"#;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(normalized);
+    assert!(encoded.contains('+'));
+    let mut options = BackendOptions::default();
+    options.s3.sse = "aws:kms".into();
+    options.s3.sse_kms_context = r#"{"tenant":"from-options"}"#.into();
+    let before = options.clone();
+    for key in ["sse-kms-context", "SSE_KMS_CONTEXT"] {
+        let raw = format!(
+            "s3://bucket/prefix?{key}={}",
+            query_escape(context).replace('+', "%20")
+        );
+        let result = s3(ParseBackend(&raw, Some(&options)).unwrap());
+        assert_eq!(result.sse_kms_encryption_context, encoded);
+        assert_eq!(result.sse, "aws:kms");
+        assert!(result.sse_kms_key_id.is_empty());
+        let from_options = s3(ParseBackend("s3://bucket/prefix", Some(&options)).unwrap());
+        assert_eq!(
+            from_options.sse_kms_encryption_context,
+            base64::engine::general_purpose::STANDARD.encode(r#"{"tenant":"from-options"}"#)
+        );
+        assert!(
+            s3(ParseBackend(&format!("s3://bucket/prefix?{key}="), Some(&options)).unwrap())
+                .sse_kms_encryption_context
+                .is_empty()
+        );
+        let mut parsed = ParseRawURL(&raw).unwrap();
+        let from_url = s3(crate::parse::ParseBackendFromURL(&mut parsed, Some(&options)).unwrap());
+        assert_eq!(from_url.sse_kms_encryption_context, encoded);
+        assert_eq!(options, before);
+    }
+    for input in [
+        r#"{"tenant":null}"#,
+        r#"{"tenant":"private-context","tenant":"other"}"#,
+        &encoded,
+    ] {
+        let err = ParseBackend(
+            &format!("s3://bucket/prefix?sse-kms-context={}", query_escape(input)),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("sse-kms-context"));
+        assert!(!err.contains("private-context"));
+    }
+    for input in [
+        r#"{"tenant":"a;private-context"}"#,
+        r#"{"tenant":"private-context%zz"}"#,
+    ] {
+        let err = ParseBackend(
+            &format!("s3://bucket/prefix?sse=aws:kms&sse-kms-context={input}"),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("parse storage URL query failed"));
+        assert!(!err.contains("private-context"));
+    }
+    for scheme in ["s3", "ks3", "oss"] {
+        let raw = format!(
+            "{scheme}://bucket/prefix?sse=aws:kms&sse_kms_context=%7B%22tenant%22%3A%22tenant-a%22%7D"
+        );
+        let result = s3(ParseBackend(&raw, None).unwrap());
+        assert_eq!(
+            result.sse_kms_encryption_context,
+            "eyJ0ZW5hbnQiOiJ0ZW5hbnQtYSJ9"
+        );
+    }
+    assert!(
+        ParseBackend(
+            "s3://bucket/a?sse=aws:kms&sse-kms-context=%7B%22key%22%3A%22secret%ff%22%7D",
+            None
+        )
+        .is_err()
+    );
+    for scheme in ["s3", "gcs", "azure"] {
+        for query in ["endpoint=changed&bad=%zz", "endpoint=changed;secret=value"] {
+            let raw = format!("{scheme}://bucket/a?{query}");
+            assert!(ParseBackend(&raw, None).is_err());
+        }
+    }
+    let mut url = ParseRawURL("s3://bucket/a?region=changed&sse-kms-context=%zz-secret").unwrap();
+    let before_url = url.clone();
+    let mut options = S3BackendOptions {
+        region: "original".into(),
+        ..Default::default()
+    };
+    let before = options.clone();
+    let error = ExtractQueryParameters(&mut url, &mut options)
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("secret"));
+    assert_eq!(options, before);
+    assert_eq!(url, before_url);
+}
+
+#[test]
+fn port_cb395494e6_context_options_and_url_redaction() {
+    assert_eq!(
+        RedactURL("s3://bucket/a?access-key=secret#%zz"),
+        InvalidURLPlaceholder
+    );
+    let mut options = BackendOptions::default();
+    options.s3.sse_kms_context = "context-secret".into();
+    let redacted = options.Redacted();
+    assert_eq!(redacted.s3.sse_kms_context, "xxxxxx");
+    assert_eq!(options.s3.sse_kms_context, "context-secret");
+    assert!(
+        BackendOptions::default()
+            .Redacted()
+            .s3
+            .sse_kms_context
+            .is_empty()
+    );
+    for url in [
+        "s3://user:pass@bucket/a?sse-kms-context=%7B%7D#fragment-secret",
+        "https://user:pass@host/a?token-secret=value#fragment-secret",
+    ] {
+        let output = RedactURL(url);
+        for secret in ["user", "pass", "fragment-secret", "token-secret"] {
+            assert!(!output.contains(secret), "{output}");
+        }
+    }
+}

@@ -77,3 +77,7 @@ Rust `FlagSet` 只是 `pflag.FlagSet` 的局部模拟：不支持命令行 token
 测试必须放在独立文件 `pkg/objstore/flags_test.rs`（或确有跨模块契约需求时放入现有独立测试文件），不要内嵌到 `flags.rs`。至少覆盖正常值、默认值、未注册名称、重复注册、解析中途失败后的状态和流式隐藏可见性。若改变 GCS/Azure 旗标，还应检查 `pkg/objstore/azblob_1_aster_unit_test.rs::flags_and_hdfs_command_match_go`。
 
 若要把该层接入生产 Rust CLI，优先解决 `flags.rs::BackendOptions` 与 `parse.rs::BackendOptions`/其他命令自有 `FlagSet` 的类型边界，并增加真实入口到注册、命令行赋值、解析、后端创建的集成证据；不要仅添加一个同名包装便宣称完成接线。兼容风险主要是旗标名和错误/部分赋值顺序，安全风险是凭据字符串暴露，性能风险较低且主要来自不必要的字符串克隆。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 s3like/store.go 的 flag 增量在本 crate 聚合 flags 门面的必要接线：注册并解析 s3.sse-kms-context 为原始 JSON；这里不进行 Base64 编码，Apply 阶段统一编码。

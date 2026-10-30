@@ -90,6 +90,12 @@ Go `misc.go` 还包含 materialized view 等节点，主 Rust `lib.rs` 也存在
 
 涉及密码、token、URI 或原始 SQL 的节点必须实现安全文本，并评估是否加入 `SensitiveStatement` 宏。扩展对象存储 scheme/参数时同步更新 `redact_url` 和至少三类用例：应打码、应保留、无效 URL；同时检查重复键、大小写、下划线/连字符与参数排序。
 
-测试逻辑保持在独立文件中：主要同步 [`misc_test.rs`](./misc_test.rs)，Go 语义变化对照 [`misc_test.go`](./misc_test.go)；迁移差异/补充分支可放 `misc_6_aster_unit_test.rs` 或相关 merge 测试。重点覆盖成功输出、所有错误分支、敏感信息不泄露、visitor enter/leave 次数以及 Go/Rust 差异。修改 Rust 源码时还应按仓库规则更新顶部 `// Copyright 2026 AsterSQL.` 并运行 `cargo fmt --all`；本次纯文档任务未修改源码。
+测试逻辑保持在独立文件中：主要同步 [`misc_test.rs`](./misc_test.rs)，Go 语义变化对照 [`misc_test.go`](./misc_test.go)；迁移差异/补充分支可放 `misc_6_aster_unit_test.rs` 或相关 merge 测试。重点覆盖成功输出、所有错误分支、敏感信息不泄露、visitor enter/leave 次数以及 Go/Rust 差异。修改 Rust 源码时还应按仓库规则更新顶部 `// Copyright 2026 AsterSQL.` 并运行 `cargo fmt --all`。
 
 兼容风险集中在外部可观察 SQL 文本、参数排序和错误文本；安全风险集中在漏打码；性能风险集中在长列表分配、递归列表和 clone。任何新分支都应确认这些三类风险，并检查已确认的 `redact_url` 生产调用者。
+
+## cb395494e6 增量对齐
+
+对应 Go misc.go 的 RedactURL：统一无效 URL 占位为 (invalid URL)，移除 userinfo；对支持的存储协议清除 fragment、拒绝 query 的非法 percent escape/裸分号并删除整个 query。SSE-KMS context 为敏感键，若原始 JSON 因裸 & 等被拆开或无法解析，则删除整个 query，避免泄漏拆分值。保留普通本地路径，不修改任何方言或 SQL/类型/会话语义。
+
+context 的 JSON 语法检查使用 serde_json RawValue，不把 Go json.Valid 可接受的孤立 UTF16 surrogate 错判为非法；在 query_pairs 有损 UTF-8 解码前验证原始 percent 解码字节，非法 UTF-8 context 直接删除整段 query。显式 percent-encoding 与 raw_value 特性是 Go ParseQuery/json.Valid 的局部接线。

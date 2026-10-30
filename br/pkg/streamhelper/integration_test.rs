@@ -67,6 +67,7 @@ fn simple_task(name: &str, table_count: i32) -> TaskInfo {
         .WithTableFilter(&["*.*", "!mysql"])
         .ToStorage(StorageBackend {
             Uri: "noop://".into(),
+            ..Default::default()
         })
         .Check()
         .unwrap()
@@ -169,7 +170,8 @@ fn test_checking() {
             .WithRange(b"1", b"2")
             .WithTableFilter(&["*.*"])
             .ToStorage(StorageBackend {
-                Uri: "noop://".into()
+                Uri: "noop://".into(),
+                ..Default::default()
             })
             .Check()
             .is_err()
@@ -186,7 +188,8 @@ fn test_checking() {
     assert!(
         NewTaskInfo("root")
             .ToStorage(StorageBackend {
-                Uri: "noop://".into()
+                Uri: "noop://".into(),
+                ..Default::default()
             })
             .Check()
             .is_err()
@@ -197,6 +200,7 @@ fn test_checking() {
         .WithTableFilter(&["*.*"])
         .ToStorage(StorageBackend {
             Uri: "noop://".into(),
+            ..Default::default()
         })
         .Check()
         .unwrap();
@@ -481,4 +485,61 @@ fn test_pause_task_with_err(ext: &AdvancerExt, kv: &dyn EtcdKV) {
     // 顺带触达本地 PauseV2 与 PrefixNextKey，防止未链接符号。
     let _ = NewLocalPauseV2();
     let _ = PrefixNextKey(b"x");
+}
+
+#[test]
+fn port_cb395494e6_s3_context_survives_metadata_reload_pause_resume() {
+    let kv = Arc::new(MemEtcd::new());
+    let meta = NewMetaDataClient(kv.clone());
+    for (name, query, expected) in [
+        ("omitted", "", ""),
+        (
+            "configured",
+            "?sse=aws:kms&sse-kms-context=%7B%22tenant%22%3A%22tenant-a%22%7D",
+            "eyJ0ZW5hbnQiOiJ0ZW5hbnQtYSJ9",
+        ),
+    ] {
+        let backend =
+            objstore::parse::ParseBackend(&format!("s3://backup-bucket/prefix{query}"), None)
+                .unwrap();
+        let objstore::parse::StorageBackend::S3(s3) = backend else {
+            panic!("expected S3");
+        };
+        let mut task = simple_task(name, 1);
+        task.PBInfo.Storage = Some(StorageBackend {
+            Uri: "s3://backup-bucket/prefix".into(),
+            S3: Some(s3),
+        });
+        meta.PutTask(&task).unwrap();
+        let reloaded = NewMetaDataClient(kv.clone());
+        let remote = reloaded.GetTask(name).unwrap();
+        assert_eq!(
+            remote
+                .Info
+                .Storage
+                .as_ref()
+                .unwrap()
+                .S3
+                .as_ref()
+                .unwrap()
+                .sse_kms_encryption_context,
+            expected
+        );
+        reloaded.PauseTask(name, vec![]).unwrap();
+        reloaded.ResumeTask(name).unwrap();
+        let remote = reloaded.GetTask(name).unwrap();
+        assert_eq!(
+            remote
+                .Info
+                .Storage
+                .as_ref()
+                .unwrap()
+                .S3
+                .as_ref()
+                .unwrap()
+                .sse_kms_encryption_context,
+            expected
+        );
+        reloaded.DeleteTask(name).unwrap();
+    }
 }

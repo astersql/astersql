@@ -114,6 +114,7 @@ fn bind_whole_task(adv: &CheckpointAdvancer) {
             StartTs: 0,
             Storage: Some(StorageBackend {
                 Uri: "noop://".into(),
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -801,7 +802,10 @@ fn test_redact_backend() {
     assert!(!redacted.contains("access-key=12ab"));
     let info = StreamBackupTaskInfo {
         Name: "test".into(),
-        Storage: Some(StorageBackend { Uri: uri.into() }),
+        Storage: Some(StorageBackend {
+            Uri: uri.into(),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     assert_eq!(info.Name, "test");

@@ -58,3 +58,15 @@ fn hiding_stream_flags_ignores_missing_flags_like_go() {
 
     assert!(flags.is_hidden("azblob.account-key"));
 }
+
+#[test]
+fn port_cb395494e6_aggregate_s3_context_flag() {
+    let mut flags = crate::flags::FlagSet::default();
+    crate::flags::define_flags(&mut flags);
+    flags
+        .set("s3.sse-kms-context", r#"{"tenant":"tenant-a"}"#)
+        .unwrap();
+    let mut options = crate::flags::BackendOptions::default();
+    options.parse_from_flags(&flags).unwrap();
+    assert_eq!(options.s3.sse_kms_context, r#"{"tenant":"tenant-a"}"#);
+}

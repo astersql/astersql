@@ -344,6 +344,12 @@ impl FmtStringer for TaskInfoRedacted<'_> {
                     s3.access_key = "[REDACTED]".to_string();
                     s3.secret_access_key = "[REDACTED]".to_string();
                     s3.sse_kms_key_id = "[REDACTED]".to_string();
+                    if !s3.session_token.is_empty() {
+                        s3.session_token = "[REDACTED]".to_owned();
+                    }
+                    if !s3.sse_kms_encryption_context.is_empty() {
+                        s3.sse_kms_encryption_context = "[REDACTED]".to_owned();
+                    }
                 }
                 Some(backup::StorageBackend_oneof_backend::Gcs(gcs)) => {
                     gcs.credentials_blob = "[REDACTED]".to_string();

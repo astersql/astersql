@@ -86,3 +86,9 @@ Rust `redact_test.rs` 覆盖同样的模式、反脱敏和全局开关，并增�
 - 全局开关如果需要支持更多状态或可恢复的锁错误，应先与 Go `errors.RedactLogEnabled` 的语义对齐，再调整 `REDACT_LOG_ENABLED`；不要仅为了 Rust 实现便利而改变对外观察结果。
 - 生产逻辑必须继续放在 `redact.rs`，测试修改同步放在独立的 `redact_test.rs` 或 `migration_aster_unit_test.rs`，不将 `#[cfg(test)]` 测试逻辑内嵌到生产文件。Go 可观察行为变更时还需同步核对 `redact.go` / `redact_test.go`。
 - 性能上，`String(MARKER)` 是线性遍历，`DeRedact` 会为每行创建 `Vec<char>`，`Key` 逐字节使用 `format!`，`TaskInfoRedacted` 会克隆整个 protobuf。优化这些路径时应保留 Unicode、错误边界、不修改原对象和输出格式等契约。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 redact.go：TaskInfoRedacted 克隆 S3 配置，只在 SessionToken 和 SseKmsEncryptionContext 非空时替换为 [REDACTED]，保持空字段未配置语义与原对象不变。真实 kvproto 字段来自已发布 v0.0.2-aster.20261031-s3-kms-context，未使用本地协议覆盖。
+
+独立回归还将包含新增 S3 字段的 StorageBackend 放入真实 kvproto BackupRequest，验证快照请求 protobuf 序列化往返不丢 context。

@@ -97,3 +97,7 @@ Go 请求天然异步感知传入 context；Rust 通过共享 runtime 上的 `ru
 新增错误分支时不要仅在高层匹配字符串；先扩展/验证 `sdk_error` 能稳定产出结构化 code，并在 `interface_test.rs` 或相邻独立测试中覆盖包装后的 `error_code`。修改响应 body 时必须保持 `Read` 的 EOF、关闭后错误和 SDK 流错误传播契约，并同步 `client_1_aster_unit_test.rs` 中 `MemoryBody` / `AwsBody` 测试。
 
 修改取消行为时要分别覆盖“调用前已取消”和“在途取消”。如果把 `presign_get_object` 也改为在途可取消，应通过统一 helper 实现并证明 SDK presign future 的生命周期；如果调整 runtime 所有权，必须保证已返回的 `AwsBody` 仍能继续拉取数据。
+
+## cb395494e6 增量对齐
+
+cb395494e6 client.go 使用 AWS SDK 新 context 字段的必要 Rust 局部适配：PutObjectInput/CreateMultipartUploadInput/CopyObjectInput 承载可选 context，Copy 同时承载目标 SSE 与 key。AwsS3Api 将三种输入映射到 SDK ssekms_encryption_context；None 不发送头。真实 HTTP 回归覆盖 copy、单对象上传及 multipart 的 create/part/complete 头边界。

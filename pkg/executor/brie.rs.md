@@ -80,3 +80,7 @@ Rust 的 FIFO 队列也不是 Go `workerCh` 的机械复制；它强化了等待
 - 修改错误映射时，分别覆盖普通底层错误、KILL QUERY 与 CANCEL JOB；参考 `map_brie_error_preserves_kill_and_cancel_causes`，并对照 Go `TestMapBRIEErrPreservesCancelCause`。
 - 修改 glue 的 session/query-string 生命周期时，建议引入 RAII guard 处理 panic/提前退出，并补充独立测试验证关闭和原值恢复。并发或监视策略改变时，应评估每任务 OS thread 的成本、取消延迟和锁顺序。
 - SHOW/结果列变更必须同步 planner schema/上层消费方和 Go 结果顺序；进度 total 要禁止为 0，避免无穷或 NaN 百分比。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 brie.go 的两个 ExtractQueryParameters 错误分支：builder 在调用 runtime 前对 S3/GS/GCS 提取 query 到 commonConfig.backendOptions，失败附加 invalid destination URL 且不回显 query。传给 runtime 的 URL 已清除已提取 query；其他后端的既有 runtime 边界保持。该字段是原 Go cfg.S3/cfg.GCS 的最小配置接线，不扩建 runtime。

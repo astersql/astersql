@@ -440,19 +440,81 @@ impl SetPwdStmt {
     }
 }
 
-/// 按方案与敏感查询参数规则对 URL 做脱敏（打码密钥）。
-// 仅对特定对象存储 scheme 的敏感查询参数打码，其它 URL 原样返回。
-pub fn redact_url(input: &str) -> String {
-    let Ok(mut parsed) = url::Url::parse(input) else {
-        return input.to_owned();
-    };
-    let sensitive_keys: &[&str] = match parsed.scheme().to_ascii_lowercase().as_str() {
-        "s3" | "ks3" | "oss" => &["access-key", "secret-access-key", "session-token"],
-        "azure" | "azblob" => &["account-key", "encryption-key", "sas-token", "endpoint"],
-        _ => return input.to_owned(),
-    };
+/// 无法可靠解析 URL 时使用的脱敏占位值。
+pub const InvalidURLPlaceholder: &str = "(invalid URL)";
 
-    // Go's url.Values.Encode sorts keys and preserves all values for a key.
+/// 移除 userinfo；对支持的存储协议遮盖敏感 query 并清除 fragment。
+pub fn redact_url(input: &str) -> String {
+    if !input.contains("://") && !input.contains('?') {
+        return input.to_owned();
+    }
+    let malformed_escape = |raw: &str| {
+        let bytes = raw.as_bytes();
+        bytes.iter().enumerate().any(|(i, byte)| {
+            *byte == b'%'
+                && (i + 2 >= bytes.len()
+                    || !bytes[i + 1].is_ascii_hexdigit()
+                    || !bytes[i + 2].is_ascii_hexdigit())
+        })
+    };
+    // net/url validates escapes in the path and fragment while ParseQuery is
+    // responsible for the query. Never return malformed input with secrets.
+    let path = input
+        .split('?')
+        .next()
+        .unwrap_or(input)
+        .split('#')
+        .next()
+        .unwrap_or(input);
+    if malformed_escape(path)
+        || input
+            .split_once('#')
+            .is_some_and(|(_, fragment)| malformed_escape(fragment))
+    {
+        return InvalidURLPlaceholder.to_owned();
+    }
+    let Ok(mut parsed) = url::Url::parse(input) else {
+        return if !input.contains("://") {
+            input.to_owned()
+        } else {
+            InvalidURLPlaceholder.to_owned()
+        };
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    let sensitive_keys: &[&str] = match parsed.scheme().to_ascii_lowercase().as_str() {
+        "s3" | "ks3" | "oss" => &[
+            "access-key",
+            "secret-access-key",
+            "session-token",
+            "sse-kms-context",
+        ],
+        "azure" | "azblob" => &["account-key", "encryption-key", "sas-token", "endpoint"],
+        _ => return parsed.to_string(),
+    };
+    parsed.set_fragment(None);
+    let raw_query = parsed.query().unwrap_or_default();
+    if malformed_escape(raw_query) || raw_query.contains(';') {
+        parsed.set_query(None);
+        return parsed.to_string();
+    }
+    // Go json.Valid checks syntax without decoding UTF-16 escapes into Rust
+    // strings. RawValue preserves that boundary, including lone surrogates.
+    for pair in raw_query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = percent_encoding::percent_decode_str(key).decode_utf8_lossy();
+        let key = key.to_ascii_lowercase().replace('_', "-");
+        if key == "sse-kms-context" && sensitive_keys.contains(&key.as_str()) {
+            let value = value.replace('+', " ");
+            let value = percent_encoding::percent_decode_str(&value).decode_utf8();
+            if value.as_ref().map_or(true, |value| {
+                serde_json::from_str::<&serde_json::value::RawValue>(value).is_err()
+            }) {
+                parsed.set_query(None);
+                return parsed.to_string();
+            }
+        }
+    }
     let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, value) in parsed.query_pairs() {
         values

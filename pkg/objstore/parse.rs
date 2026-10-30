@@ -40,14 +40,16 @@ pub struct BackendOptions {
 }
 
 /// Replaces a storage URL that cannot be parsed safely.
-pub const InvalidURLPlaceholder: &str = "(invalid storage URL)";
+pub const InvalidURLPlaceholder: &str = parser_ast::misc::InvalidURLPlaceholder;
 
 /// Masks credentials in a storage URL without exposing malformed input.
 pub fn RedactURL(raw_url: &str) -> String {
     if !raw_url.contains("://") && !raw_url.contains('?') {
         return raw_url.to_owned();
     }
-    if has_invalid_authority_escape(raw_url) {
+    if has_invalid_authority_escape(raw_url)
+        || parser_ast::misc::redact_url(raw_url) == InvalidURLPlaceholder
+    {
         return InvalidURLPlaceholder.to_owned();
     }
     let Ok(mut parsed) = Url::parse(raw_url) else {
@@ -57,6 +59,7 @@ pub fn RedactURL(raw_url: &str) -> String {
         let _ = parsed.set_username("");
         let _ = parsed.set_password(None);
     }
+    parsed.set_fragment(None);
     match parsed.scheme().to_ascii_lowercase().as_str() {
         "" | "file" | "local" | "hdfs" | "noop" | "gs" | "gcs" | "s3" | "ks3" | "oss" | "azure"
         | "azblob" => parser_ast::misc::redact_url(parsed.as_str()),
@@ -91,6 +94,7 @@ impl BackendOptions {
         options.s3.access_key = mask_if_set(&options.s3.access_key);
         options.s3.secret_access_key = mask_if_set(&options.s3.secret_access_key);
         options.s3.session_token = mask_if_set(&options.s3.session_token);
+        options.s3.sse_kms_context = mask_if_set(&options.s3.sse_kms_context);
         options.azblob.account_key = mask_if_set(&options.azblob.account_key);
         options.azblob.sas_token = mask_if_set(&options.azblob.sas_token);
         options.azblob.encryption_key = mask_if_set(&options.azblob.encryption_key);
@@ -122,7 +126,7 @@ pub struct Hdfs {
 }
 
 /// S3 兼容对象存储后端配置（含 OSS/KS3 通过 provider 区分）。
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct S3 {
     pub bucket: String,
     pub prefix: String,
@@ -131,6 +135,7 @@ pub struct S3 {
     pub storage_class: String,
     pub sse: String,
     pub sse_kms_key_id: String,
+    pub sse_kms_encryption_context: String,
     pub acl: String,
     pub access_key: String,
     pub secret_access_key: String,
@@ -209,6 +214,8 @@ pub struct ParsedURL {
     pub path: String,
     query: Vec<(String, String)>,
     original: String,
+    query_invalid: bool,
+    query_context_invalid_utf8: bool,
 }
 
 impl ParsedURL {
@@ -272,6 +279,8 @@ pub fn ParseRawURL(raw_url: &str) -> Result<ParsedURL> {
                 query: url::form_urlencoded::parse(query.as_bytes())
                     .map(|(key, value)| (key.into_owned(), value.into_owned()))
                     .collect(),
+                query_invalid: invalid_query(query),
+                query_context_invalid_utf8: invalid_context_query_utf8(query),
                 original: raw_url.to_owned(),
                 ..ParsedURL::default()
             });
@@ -292,6 +301,8 @@ pub fn ParseRawURL(raw_url: &str) -> Result<ParsedURL> {
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
             .collect(),
         original: raw_url.to_owned(),
+        query_invalid: invalid_query(parsed.query().unwrap_or_default()),
+        query_context_invalid_utf8: invalid_context_query_utf8(parsed.query().unwrap_or_default()),
     })
 }
 
@@ -378,7 +389,7 @@ fn parseBackend(
                         force_path_style: true,
                         ..S3BackendOptions::default()
                     });
-            ExtractQueryParameters(url, &mut backend_options);
+            ExtractQueryParameters(url, &mut backend_options)?;
             backend_options.SetForcePathStyle(&effective_raw_url);
             let mut s3 = S3 {
                 bucket: url.host.clone(),
@@ -396,7 +407,7 @@ fn parseBackend(
         "gs" | "gcs" => {
             require_bucket(url, &effective_raw_url, "gcs")?;
             let mut backend_options = options.map(|value| value.gcs.clone()).unwrap_or_default();
-            ExtractQueryParameters(url, &mut backend_options);
+            ExtractQueryParameters(url, &mut backend_options)?;
             let mut gcs = Gcs {
                 bucket: url.host.clone(),
                 prefix: url.path.trim_matches('/').to_owned(),
@@ -410,7 +421,7 @@ fn parseBackend(
             let mut backend_options = options
                 .map(|value| value.azblob.clone())
                 .unwrap_or_default();
-            ExtractQueryParameters(url, &mut backend_options);
+            ExtractQueryParameters(url, &mut backend_options)?;
             let mut azure = AzureBlobStorage {
                 bucket: url.host.clone(),
                 prefix: url.path.trim_matches('/').to_owned(),
@@ -464,11 +475,29 @@ pub trait QueryParameterOptions {
 }
 
 /// 把 URL query 写入 options，并清空 query（避免残留进最终 URL）。
-pub fn ExtractQueryParameters<T: QueryParameterOptions>(url: &mut ParsedURL, options: &mut T) {
+pub fn ExtractQueryParameters<T: QueryParameterOptions>(
+    url: &mut ParsedURL,
+    options: &mut T,
+) -> Result<()> {
+    if url.query_invalid {
+        return Err(s3like::invalid_storage_config(
+            "parse storage URL query failed: invalid format",
+        ));
+    }
+    if url.query_context_invalid_utf8 {
+        return Err(s3like::invalid_storage_config(
+            "sse-kms-context must be a UTF-8 JSON object with unique keys and string values",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
     for (key, value) in &url.query {
+        if !seen.insert(key) {
+            continue;
+        }
         options.set_query_parameter(&NormalizeQueryParameterKey(key), value);
     }
     url.query.clear();
+    Ok(())
 }
 
 /// 规范化 query 键：下划线转连字符并小写，兼容 `force_path_style` 与 `force-path-style`。
@@ -484,6 +513,7 @@ pub struct S3BackendOptions {
     pub storage_class: String,
     pub sse: String,
     pub sse_kms_key_id: String,
+    pub sse_kms_context: String,
     pub acl: String,
     pub access_key: String,
     pub secret_access_key: String,
@@ -521,11 +551,21 @@ impl S3BackendOptions {
                 return Err(anyhow!("secret_access_key not found"));
             }
         }
+        let context = s3like::encode_sse_kms_context(self.sse_kms_context.as_bytes())?;
+        if !context.is_empty()
+            && (self.provider.is_empty() || self.provider == "aws")
+            && !matches!(self.sse.as_str(), "aws:kms" | "aws:kms:dsse")
+        {
+            return Err(s3like::invalid_storage_config(
+                "sse-kms-context requires sse=aws:kms or sse=aws:kms:dsse",
+            ));
+        }
         s3.endpoint = self.endpoint.trim_end_matches('/').to_owned();
         s3.region = self.region.clone();
         s3.storage_class = self.storage_class.clone();
         s3.sse = self.sse.clone();
         s3.sse_kms_key_id = self.sse_kms_key_id.clone();
+        s3.sse_kms_encryption_context = context;
         s3.acl = self.acl.clone();
         s3.access_key = self.access_key.clone();
         s3.secret_access_key = self.secret_access_key.clone();
@@ -563,6 +603,7 @@ impl QueryParameterOptions for S3BackendOptions {
             "storage-class" => self.storage_class = value.to_owned(),
             "sse" => self.sse = value.to_owned(),
             "sse-kms-key-id" => self.sse_kms_key_id = value.to_owned(),
+            "sse-kms-context" => self.sse_kms_context = value.to_owned(),
             "acl" => self.acl = value.to_owned(),
             "access-key" => self.access_key = value.to_owned(),
             "secret-access-key" => self.secret_access_key = value.to_owned(),
@@ -734,4 +775,44 @@ pub fn IsLocal(url: &ParsedURL) -> bool {
 /// 判断是否为 S3 兼容 scheme（含 OSS）。
 pub fn IsS3Like(url: &ParsedURL) -> bool {
     matches!(url.scheme.as_str(), "s3" | "oss")
+}
+
+// Go url.ParseQuery rejects malformed percent escapes and unescaped semicolons,
+// whereas url::Url::query_pairs silently accepts/replaces them.
+fn invalid_query(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    raw.contains(';')
+        || bytes.iter().enumerate().any(|(i, byte)| {
+            *byte == b'%'
+                && (i + 2 >= bytes.len()
+                    || !bytes[i + 1].is_ascii_hexdigit()
+                    || !bytes[i + 2].is_ascii_hexdigit())
+        })
+}
+
+// query_pairs uses lossy UTF-8 decoding; reject a corrupt context before it can
+// turn into valid JSON containing replacement characters.
+fn invalid_context_query_utf8(raw: &str) -> bool {
+    raw.split('&').any(|pair| {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if NormalizeQueryParameterKey(&decode_url_path(key)) != "sse-kms-context" {
+            return false;
+        }
+        let bytes = value.as_bytes();
+        let mut decoded = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%'
+                && i + 2 < bytes.len()
+                && let (Some(high), Some(low)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2]))
+            {
+                decoded.push((high << 4) | low);
+                i += 3;
+            } else {
+                decoded.push(bytes[i]);
+                i += 1;
+            }
+        }
+        std::str::from_utf8(&decoded).is_err()
+    })
 }

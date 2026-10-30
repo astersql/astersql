@@ -116,6 +116,8 @@ impl Peer {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageBackend {
     pub Uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub S3: Option<objstore::parse::S3>,
 }
 
 /// 日志备份任务信息替身，对齐 backuppb `StreamBackupTaskInfo` 常用字段。

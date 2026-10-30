@@ -85,3 +85,7 @@ reader 在 `testOpen`/`testOpenWithRange` 的正常和大部分错误分支显�
 新增范围或切片场景时，应同步强化 `ParseFromFlags` 的最小数据长度约束，或让步骤按实际数据长度选择合法区间，防止 panic。新增 writer 循环应处理零进展写入。若要把报告用于机器消费，应新增独立的结构化输出层，不能解析带颜色的人类文本。
 
 测试逻辑必须继续放在独立文件：低层错误注入放入 [`test_storage_test.rs`](./test_storage_test.rs)，公开契约、配置边界和 `MemStorage` 全流程放入 [`parity_test.rs`](./parity_test.rs)。涉及 Go 对齐时同步检查 [`test_storage.go`](./test_storage.go) 及 Go CLI 入口。真实云后端的凭证、权限、分页一致性和 rename 支持仍需集成环境验证，不能由 `MemStorage` 用例替代。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 test_storage.go 的启动日志：RunTestStorage 在写 stderr 前调用 astersql_objstore::parse::RedactURL。当前 Rust 启动日志不输出 BackendOptions，因此无需增加选项日志；后端解析、探测顺序与报告语义保持。

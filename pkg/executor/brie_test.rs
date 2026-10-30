@@ -367,3 +367,21 @@ fn brie_builder_rejects_invalid_go_options() {
         assert_eq!(builder.error.expect("builder error").to_string(), expected);
     }
 }
+
+#[test]
+fn port_cb395494e6_brie_rejects_malformed_query_without_secret_leak() {
+    let runtime: Arc<dyn brieRuntime> = Arc::new(MockRuntime::default());
+    for scheme in ["s3", "gcs", "gs"] {
+        let mut builder = executorBuilder {
+            runtime: runtime.clone(),
+            sessionID: 1,
+            error: None,
+        };
+        let mut stmt = statement(brieKind::Backup, vec![]);
+        stmt.storage = format!("{scheme}://bucket/a?sse-kms-context=%zz-secret-value");
+        assert!(builder.buildBRIE(&mut stmt).is_none());
+        let error = builder.error.unwrap().to_string();
+        assert!(error.contains("invalid destination URL"));
+        assert!(!error.contains("secret-value"));
+    }
+}

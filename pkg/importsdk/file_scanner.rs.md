@@ -198,3 +198,7 @@ TABLE 被忽略、未知表报错。
 - 本仓库约定 Rust 测试与生产源码分离；所有回归继续放在同目录
   `pkg/importsdk/file_scanner_test.rs`，不要嵌入本文件。兼容风险主要在 Go 行为偏移和错误
   分类，性能风险主要在全量目录遍历、压缩真实大小估算、schema 解析以及逐表 KV 采样。
+
+## cb395494e6 增量对齐
+
+来源 cb395494e6 file_scanner_test.go 的解析错误占位要求：redactURL 复用 objstore::parse::RedactURL，非法 URL 统一为 InvalidURLPlaceholder，即 (invalid URL)，避免独立实现漏掉 userinfo、fragment 或 SSE-KMS context。保留文件发现、数据库调用与错误身份。

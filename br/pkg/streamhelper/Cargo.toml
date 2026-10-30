@@ -14,6 +14,7 @@ kind = "library"
 lane = 2
 
 [dependencies]
+objstore = { package = "astersql-objstore", path = "../../../pkg/objstore" }
 astersql-br-pkg-streamhelper-config = { package = "astersql-br-pkg-streamhelper-config", path = "config" }
 astersql-br-pkg-streamhelper-spans = { package = "astersql-br-pkg-streamhelper-spans", path = "spans" }
 regex = "1"

@@ -832,18 +832,22 @@ pub fn flagToZapField(f: &Flag) -> ZapField {
         flagStorage
         | FlagStreamFullBackupStorage
         | FlagPiTRAddIndexSQLStorage
-        | flagCheckpointStorage => match Url::parse(&f.Value) {
+        | flagCheckpointStorage
+        | "upstream-storage"
+        | "downstream-storage" => match Url::parse(&f.Value) {
             // 存储 URL 打日志时剥掉 query，避免泄露 AK/SK。
             Ok(mut hiddenQuery) => {
                 hiddenQuery.set_query(None);
+                hiddenQuery.set_fragment(None);
                 ZapStringer(f.Name.clone(), hiddenQuery.to_string())
             }
             Err(_) => ZapString(f.Name.clone(), "<invalid URI>"),
         },
         // 密钥类 flag 一律输出 <redacted>。
-        flagFullBackupCipherKey | flagLogBackupCipherKey | "azblob.encryption-key" => {
-            ZapString(f.Name.clone(), "<redacted>")
-        }
+        flagFullBackupCipherKey
+        | flagLogBackupCipherKey
+        | "azblob.encryption-key"
+        | "s3.sse-kms-context" => ZapString(f.Name.clone(), "<redacted>"),
         // master-key 整串脱敏，避免 query 凭据进日志。
         flagMasterKeyConfig => ZapString(f.Name.clone(), "<redacted>"),
         _ => ZapStringer(f.Name.clone(), f.Value.clone()),

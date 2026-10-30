@@ -36,6 +36,7 @@ const S3_FLAGS: &[&str] = &[
     "s3.storage-class",
     "s3.sse",
     "s3.sse-kms-key-id",
+    "s3.sse-kms-context",
     "s3.acl",
     "s3.provider",
     "s3.role-arn",
@@ -118,6 +119,7 @@ pub struct S3BackendOptions {
     pub storage_class: String,
     pub sse: String,
     pub sse_kms_key_id: String,
+    pub sse_kms_context: String,
     pub acl: String,
     pub provider: String,
     pub role_arn: String,
@@ -138,6 +140,7 @@ impl S3BackendOptions {
         self.region = flags.get("s3.region")?;
         self.sse = flags.get("s3.sse")?;
         self.sse_kms_key_id = flags.get("s3.sse-kms-key-id")?;
+        self.sse_kms_context = flags.get("s3.sse-kms-context")?;
         self.acl = flags.get("s3.acl")?;
         self.storage_class = flags.get("s3.storage-class")?;
         self.force_path_style = true;

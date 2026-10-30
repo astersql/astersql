@@ -51,6 +51,7 @@ const s3EndpointOption: &str = "s3.endpoint";
 const s3RegionOption: &str = "s3.region";
 const s3StorageClassOption: &str = "s3.storage-class";
 const s3SseOption: &str = "s3.sse";
+const s3SseKmsContextOption: &str = "s3.sse-kms-context";
 const s3SseKmsKeyIDOption: &str = "s3.sse-kms-key-id";
 const s3ACLOption: &str = "s3.acl";
 const s3ProviderOption: &str = "s3.provider";
@@ -522,6 +523,7 @@ pub struct S3BackendOptions {
     pub StorageClass: String,
     pub Sse: String,
     pub SseKmsKeyID: String,
+    pub SseKmsContext: String,
     pub ACL: String,
     pub AccessKey: String,
     pub SecretAccessKey: String,
@@ -564,11 +566,21 @@ impl S3BackendOptions {
                 return Err(anyhow!("secret_access_key not found"));
             }
         }
+        let encryption_context = encode_sse_kms_context(self.SseKmsContext.as_bytes())?;
+        if !encryption_context.is_empty()
+            && (self.Provider.is_empty() || self.Provider == "aws")
+            && !matches!(self.Sse.as_str(), "aws:kms" | "aws:kms:dsse")
+        {
+            return Err(invalid_storage_config(
+                "sse-kms-context requires sse=aws:kms or sse=aws:kms:dsse",
+            ));
+        }
         s3.Endpoint = trimOneSlash(&self.Endpoint);
         s3.Region = self.Region.clone();
         s3.StorageClass = self.StorageClass.clone();
         s3.Sse = self.Sse.clone();
         s3.SseKmsKeyId = self.SseKmsKeyID.clone();
+        s3.SseKmsEncryptionContext = encryption_context;
         s3.Acl = self.ACL.clone();
         s3.AccessKey = self.AccessKey.clone();
         s3.SecretAccessKey = self.SecretAccessKey.clone();
@@ -597,6 +609,7 @@ impl S3BackendOptions {
         self.Region = flags.GetString(s3RegionOption)?;
         self.Sse = flags.GetString(s3SseOption)?;
         self.SseKmsKeyID = flags.GetString(s3SseKmsKeyIDOption)?;
+        self.SseKmsContext = flags.GetString(s3SseKmsContextOption)?;
         self.ACL = flags.GetString(s3ACLOption)?;
         self.StorageClass = flags.GetString(s3StorageClassOption)?;
         self.ForcePathStyle = true;
@@ -626,6 +639,8 @@ fn useVirtualHostStyleForAWSS3(options: &S3BackendOptions, rawURL: &str) -> bool
 
 /// 向 FlagSet 注册实验性/正式 S3 后端参数。
 pub fn DefineS3Flags(flags: &mut pflag::FlagSet) {
+    flags.String(s3SseKmsContextOption, "", "S3 SSE-KMS encryption context as a JSON object of string key-value pairs; encoded as Base64. AWS requires aws:kms or aws:kms:dsse");
+
     flags.String(s3EndpointOption, "", "(experimental) Set the S3 endpoint URL, please specify the http or https scheme explicitly");
     flags.String(
         s3RegionOption,
@@ -713,4 +728,108 @@ pub fn ParseRangeInfo(info: Option<&str>) -> Result<RangeInfo> {
 /// 上下文已被取消（context canceled）。
 fn isCancelError(err: &anyhow::Error) -> bool {
     err.to_string().contains("context canceled")
+}
+
+/// Normalize a raw JSON object once, before persisting the backend or sending it
+/// to TiKV. Request writers must forward the result without encoding it again.
+pub fn encode_sse_kms_context(raw: &[u8]) -> Result<String> {
+    use base64::Engine as _;
+    use serde::de::{MapAccess, Visitor};
+    use std::collections::BTreeMap;
+    let invalid = || {
+        invalid_storage_config(
+            "sse-kms-context must be a UTF-8 JSON object with unique keys and string values",
+        )
+    };
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    let raw = std::str::from_utf8(raw).map_err(|_| invalid())?;
+    struct Context;
+    impl<'de> Visitor<'de> for Context {
+        type Value = BTreeMap<String, String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an object with unique keys and string values")
+        }
+        fn visit_map<M: MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> std::result::Result<Self::Value, M::Error> {
+            let mut values = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                if values.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate key"));
+                }
+            }
+            Ok(values)
+        }
+    }
+    let raw = go_json_surrogates(raw);
+    let mut decoder = serde_json::Deserializer::from_str(&raw);
+    let values =
+        serde::de::Deserializer::deserialize_map(&mut decoder, Context).map_err(|_| invalid())?;
+    decoder.end().map_err(|_| invalid())?;
+    // Match encoding/json's stable key order and HTML/JavaScript escaping.
+    let normalized = serde_json::to_string(&values)
+        .map_err(|_| invalid())?
+        .replace('&', r"\u0026")
+        .replace('<', r"\u003c")
+        .replace('>', r"\u003e")
+        .replace('\u{2028}', r"\u2028")
+        .replace('\u{2029}', r"\u2029");
+    Ok(base64::engine::general_purpose::STANDARD.encode(normalized))
+}
+
+// encoding/json replaces unpaired escaped UTF-16 surrogates with U+FFFD.
+// serde_json rejects them, so normalize those escapes before its strict object
+// visitor. Preserve valid pairs and ordinary escapes, including escaped '\\'.
+fn go_json_surrogates(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let unit = |at: usize| -> Option<u16> {
+        let sequence = bytes.get(at..at + 6)?;
+        if &sequence[..2] != br"\u" || !sequence[2..].iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        u16::from_str_radix(std::str::from_utf8(&sequence[2..]).ok()?, 16).ok()
+    };
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut inside = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if inside && bytes[i] == b'\\' {
+            if let Some(high) = unit(i) {
+                if (0xd800..=0xdbff).contains(&high)
+                    && unit(i + 6).is_some_and(|low| (0xdc00..=0xdfff).contains(&low))
+                {
+                    result.extend_from_slice(&bytes[i..i + 12]);
+                    i += 12;
+                    continue;
+                }
+                if (0xd800..=0xdfff).contains(&high) {
+                    result.extend_from_slice(br"\ufffd");
+                    i += 6;
+                    continue;
+                }
+                result.extend_from_slice(&bytes[i..i + 6]);
+                i += 6;
+                continue;
+            }
+            let end = (i + 2).min(bytes.len());
+            result.extend_from_slice(&bytes[i..end]);
+            i = end;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            inside = !inside;
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(result).expect("UTF-8 input and ASCII escape replacements")
+}
+
+/// Preserve the existing BR error identity while keeping user values out of
+/// configuration-error context. Shared by S3 options and storage URL extraction.
+pub fn invalid_storage_config(message: &str) -> anyhow::Error {
+    anyhow::Error::new(berrors::ErrStorageInvalidConfig.clone()).context(message.to_owned())
 }

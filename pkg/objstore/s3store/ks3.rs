@@ -176,6 +176,7 @@ pub fn buildPutObjectInputKS3(options: &backuppb::S3, file: &str, data: &[u8]) -
         acl: non_empty(&options.Acl),
         server_side_encryption: non_empty(&options.Sse),
         sse_kms_key_id: non_empty(&options.SseKmsKeyId),
+        sse_kms_encryption_context: None,
         storage_class: non_empty(&options.StorageClass),
     }
 }

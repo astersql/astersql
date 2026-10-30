@@ -84,3 +84,7 @@ RustCodeGraph 的精确 `callers/callees` 命令对本文件符号未输出静�
 新增对象操作前先判断是否真是 KS3 差异：通用行为应进入 `s3like::Storage` 或 S3 client，而不是在此重新实现。若扩展 `CopyFrom`，必须显式决定重试上限、幂等性和删除后失败的恢复策略，并保持两种历史错误码兼容；若改变非“已存在”结构化错误的吞掉行为，应同时评估 Go 兼容性。若增加 Presign 支持，需要替换当前明确错误，并增加有效期、凭证泄漏和 endpoint/path-style 组合测试。
 
 测试逻辑应继续放在独立文件：本层专属行为放 `pkg/objstore/s3store/ks3_test.rs`，经通用 S3 内层实现的综合行为放 `pkg/objstore/s3store/s3_test.rs`；不要把测试内嵌进 `ks3.rs`。修改 Go 对齐语义时同步核对 `ks3.go` 和相关 Go 测试，但不要为让测试通过而删减 Rust 逻辑。
+
+## cb395494e6 增量对齐
+
+cb395494e6 S3 公共输入结构增加可选 context 后的必要编译接线：既有 KS3 buildPutObjectInputKS3 显式初始化新增字段为 None，保持此来源未修改的 KS3 行为；不把 AWS context 支持扩展为其他提供商能力。

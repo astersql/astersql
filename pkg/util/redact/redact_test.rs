@@ -146,3 +146,39 @@ fn test_de_redact_file_uses_go_output_permissions() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn port_cb395494e6_task_info_context_and_token_redacted_without_mutation() {
+    use kvproto::brpb as backup;
+    for configured in [false, true] {
+        let mut info = backup::StreamBackupTaskInfo::default();
+        let mut backend = backup::StorageBackend::default();
+        let mut s3 = backup::S3::default();
+        s3.session_token = if configured {
+            "token-secret".into()
+        } else {
+            String::new()
+        };
+        s3.sse_kms_encryption_context = if configured {
+            "context-secret".into()
+        } else {
+            String::new()
+        };
+        backend.set_s3(s3.clone());
+        info.set_storage(backend);
+        // The new field also survives the real snapshot BackupRequest wire codec.
+        let mut request = backup::BackupRequest::default();
+        request.set_storage_backend(info.get_storage().clone());
+        let wire = protobuf::Message::write_to_bytes(&request).unwrap();
+        let restored: backup::BackupRequest = protobuf::parse_from_bytes(&wire).unwrap();
+        assert_eq!(restored.get_storage_backend().get_s3(), &s3);
+        let rendered = crate::TaskInfoRedacted { Info: Some(&info) }.String();
+        assert!(!rendered.contains("token-secret"));
+        assert!(!rendered.contains("context-secret"));
+        assert_eq!(info.get_storage().get_s3(), &s3);
+        if !configured {
+            assert!(!rendered.contains("session_token"));
+            assert!(!rendered.contains("sse_kms_encryption_context"));
+        }
+    }
+}
