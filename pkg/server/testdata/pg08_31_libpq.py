@@ -219,6 +219,16 @@ def run(port, database, evidence, mysql_port):
                     # Values are connection/build facts; compare all column definitions and diagnostics.
                     a,b=copy.deepcopy(peers['reference']),copy.deepcopy(peers['aster'])
                     for left,right in zip([a] if mode=='Q' else a,[b] if mode=='Q' else b):
+                        if fn=='version':
+                            for side,record in (('reference',left),('aster',right)):
+                                raw=mysqls[side].lib.mysql_get_server_info(mysqls[side].conn)
+                                assert len(record['metadata'])==1,record
+                                field=record['metadata'][0]
+                                # Native VERSION describes its own handshake build string.
+                                # Prove the utf8mb4 byte capacity before comparing peers;
+                                # code/flags/charset/decimals and every diagnostic stay exact.
+                                assert field[4]==len(raw)*4,(case,side,field,len(raw))
+                                field[4]=0
                         left['rows']=right['rows']=[]
                     assert a==b,(case,a,b)
                 passed.append(case)
