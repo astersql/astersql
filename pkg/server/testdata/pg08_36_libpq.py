@@ -61,6 +61,7 @@ def run(port,database,evidence,mysql_port):
         assert all(x['code']==0 and x['rows']==[['37']] for x in peers),peers
         mysql_compare(*peers)
         peers=[save('mysql-'+side,case,m.query('SELECT 5 DIV 2 AS v'),'native-behavior') for side,m in mysqls.items()]
+        assert all(obs['code']==0 and obs['rows']==[['32']] for obs in peers),peers
         mysql_compare(*peers)
     try:
         admin=pq.PQconnectdb(os.environ['PG18_REFERENCE_DSN'].encode());assert admin and pq.PQstatus(admin)==0,'reference failed (DSN redacted)'
@@ -144,6 +145,16 @@ def run(port,database,evidence,mysql_port):
             case=f'M-{label}-{mode}'
             def mysqlcase():
                 peers=[save('mysql-'+side,case,m.query(sql) if mode=='Q' else m.prepared(sql,[()]),mode) for side,m in mysqls.items()]
+                # Independently pin native results as well as comparing both
+                # sides, so identical failures cannot pass the differential.
+                wanted={'slash':'2.5000','negative':'-2.5000','div':'2','negdiv':'-2','null':None,'zero':None,'health':'7'}[label]
+                for observed in peers:
+                    stages=[observed] if mode=='Q' else observed
+                    assert all(stage['code']==0 for stage in stages),observed
+                    result=stages[-1]
+                    assert result['rows']==[[None if wanted is None else wanted.encode().hex()]],observed
+                    assert result['warning_count']==int(label=='zero'),observed
+                    if label=='zero':assert result['warnings'][0][1]==b'1365'.hex(),observed
                 if mode=='Q':mysql_compare(*peers)
                 else:assert peers[0]==peers[1],peers
             attempt(case,mysqlcase)
