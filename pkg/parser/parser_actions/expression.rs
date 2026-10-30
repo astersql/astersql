@@ -2053,6 +2053,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 ExpressionRule::BitExprAlt05 => "+",
                 ExpressionRule::BitExprAlt06 => "-",
                 ExpressionRule::BitExprAlt10 => "*",
+                ExpressionRule::BitExprAlt11 if rhs[rhs_len - 1].ident == "||" => "||",
                 ExpressionRule::BitExprAlt11 => "/",
                 ExpressionRule::BitExprAlt12 | ExpressionRule::BitExprAlt14 => "%",
                 ExpressionRule::BitExprAlt13 => "DIV",
@@ -2063,6 +2064,9 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Box::new(left),
                 Box::new(right),
             ));
+            if operator == "||" {
+                out.expr.as_mut().unwrap().node_text.SetOriginTextPosition(rhs[rhs_len - 1].offset);
+            }
         }
         ExpressionRule::SimpleIdentAlt01 => {
             out.expr = Some(parser_ast::ExprNode::Column(super::column_name(

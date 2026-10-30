@@ -18059,3 +18059,223 @@ fn pg08_36_sql() {
     assert!(TcpStream::connect(addr).is_err());
     println!("pg08_36_sql: 22 scenarios passed; listener closed");
 }
+
+#[test]
+fn pg08_37_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    for name in ["C", "POSIX"] {
+        for empty in [false, true] {
+            let sql = format!(
+                "SELECT ('a'::text COLLATE \"{name}\") || 'b'::text AS v{}",
+                if empty { " WHERE false" } else { "" }
+            );
+            let fields = session.describe_result_fields(&sql).unwrap();
+            assert_eq!(fields[0].column.FieldType.GetCollate(), name, "{sql}");
+            assert_eq!(fields[0].column.FieldType.PostgreSQLTextOid(), Some(25));
+        }
+    }
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service.clone());
+    fn login(addr: std::net::SocketAddr) -> (TcpStream, Vec<u8>) {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [
+            196610u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let mut key = vec![];
+        loop {
+            let m = read(&mut s);
+            if m.0 == b'S' && m.1.starts_with(b"server_version\0") {
+                assert_eq!(m.1, b"server_version\018.0 (AsterSQL)\0");
+            }
+            if m.0 == b'K' {
+                key = m.1.clone();
+            }
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        assert_eq!(key.len(), 36);
+        (s, key)
+    }
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn value(s: &mut TcpStream, sql: &str) -> Vec<u8> {
+        let ms = query(s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        ms.into_iter().find(|m| m.0 == b'D').unwrap().1
+    }
+    fn describe(ms: &[(u8, Vec<u8>)], fmt: i16) {
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[2..4], b"v\0");
+        assert_eq!(&d[10..14], &25u32.to_be_bytes());
+        assert_eq!(&d[14..16], &(-1i16).to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &fmt.to_be_bytes());
+    }
+    let (mut a, _) = login(addr);
+    for (sql, wanted) in [
+        ("SELECT 'a'::text || 'b'::text AS v", Some("ab")),
+        ("SELECT NULL::text || 'b'::text AS v", None),
+        ("SELECT 'a'::text || NULL::text AS v", None),
+        ("SELECT ''::text || ''::text AS v", Some("")),
+        (
+            "SELECT '你好'::text OPERATOR(pg_catalog.||) '🌍'::text AS v",
+            Some("你好🌍"),
+        ),
+        (
+            "SELECT 'a'::text || 'b'::text || 'c'::text AS v",
+            Some("abc"),
+        ),
+    ] {
+        let ms = query(&mut a, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        describe(&ms, 0);
+        assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, row(&[wanted]));
+    }
+    for (index, sql) in [
+        "SELECT $1::text || $2::text AS v",
+        "SELECT $1::text || $2::text AS v WHERE false",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let name = format!("div{index}\0");
+        send(
+            &mut a,
+            b'P',
+            &[name.as_bytes(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut a, b'D', &[b"S", name.as_bytes()].concat());
+        send(&mut a, b'S', &[]);
+        let ms = ready(&mut a);
+        assert_eq!(
+            ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'1', b't', b'T', b'Z']
+        );
+        describe(&ms, 0);
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b't').unwrap().1,
+            [0, 2, 0, 0, 0, 25, 0, 0, 0, 25]
+        );
+        for infmt in [0i16, 1] {
+            for outfmt in [0i16, 1] {
+                for null in [false, true] {
+                    let mut bind = vec![0];
+                    bind.extend(name.as_bytes());
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(infmt.to_be_bytes());
+                    bind.extend(2i16.to_be_bytes());
+                    for (i, v) in [5i32, 2].iter().enumerate() {
+                        if null && i == 0 {
+                            bind.extend((-1i32).to_be_bytes());
+                        } else {
+                            let bytes = if i == 0 {
+                                "你好".as_bytes().to_vec()
+                            } else {
+                                b"b".to_vec()
+                            };
+                            bind.extend((bytes.len() as i32).to_be_bytes());
+                            bind.extend(bytes);
+                        }
+                    }
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(outfmt.to_be_bytes());
+                    send(&mut a, b'B', &bind);
+                    send(&mut a, b'D', b"P\0");
+                    send(&mut a, b'H', &[]);
+                    let bind_complete = read(&mut a);
+                    let portal_description = read(&mut a);
+                    assert_eq!(bind_complete.0, b'2');
+                    assert_eq!(portal_description.0, b'T');
+                    describe(&[portal_description], outfmt);
+                    send(&mut a, b'E', &[0; 5]);
+                    send(&mut a, b'S', &[]);
+                    let ms = ready(&mut a);
+                    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+                    assert_eq!(
+                        ms.iter().filter(|m| m.0 == b'T').count(),
+                        0,
+                        "Execute must not resend RowDescription"
+                    );
+                    if index == 1 {
+                        assert!(!ms.iter().any(|m| m.0 == b'D'));
+                    } else {
+                        let expected = if null {
+                            vec![0, 1, 255, 255, 255, 255]
+                        } else {
+                            row(&[Some("你好b")])
+                        };
+                        assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                    }
+                }
+            }
+        }
+    }
+    for (sql, state) in [("SELECT 1::int4 || 2::int4 AS v", "42883")] {
+        assert_eq!(query(&mut a, "BEGIN").last().unwrap().1, b"T");
+        send(
+            &mut a,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut a, b'B', &[0; 8]);
+        send(&mut a, b'E', &[0; 5]);
+        send(&mut a, b'S', &[]);
+        let ms = ready(&mut a);
+        let marker = format!("C{state}\0");
+        assert!(
+            ms.iter()
+                .find(|m| m.0 == b'E')
+                .unwrap()
+                .1
+                .windows(marker.len())
+                .any(|w| w == marker.as_bytes()),
+            "{ms:?}"
+        );
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+        assert_eq!(ms.last().unwrap().1, b"E");
+        assert_eq!(query(&mut a, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(value(&mut a, "SELECT 1::int4 AS v"), row(&[Some("1")]));
+    }
+    drop(a);
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!("pg08_37_sql: 27 scenarios passed; listener closed");
+}

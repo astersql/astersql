@@ -6136,3 +6136,46 @@ fn pg08_34_qualified_division() {
             .is_err()
     );
 }
+
+#[test]
+fn pg08_37_text_concat_parser() {
+    use parser_ast::{ExprKind, SqlDialect};
+    for sql in [
+        "SELECT 'a'::text || 'b'::text = 'ab'::text AS v",
+        "SELECT 'a'::text OPERATOR(pg_catalog.||) 'b'::text = 'ab'::text AS v",
+    ] {
+        let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt(sql, "", "")
+            .unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let ExprKind::Binary { Op, L, .. } = &expr.Kind else {
+            panic!("{expr:?}")
+        };
+        assert_eq!(Op, "=");
+        assert!(matches!(&L.Kind,ExprKind::Binary{Op,..} if Op=="||"));
+    }
+    for (mode, concat) in [
+        (parser::mysql::SQLMode(0), false),
+        (parser::mysql::ModePipesAsConcat, true),
+    ] {
+        let mut parser = parser::Parser::with_dialect(SqlDialect::MySQL);
+        parser.SetSQLMode(mode);
+        let stmt = parser
+            .ParseOneStmt("SELECT 'a' || 'b' AS v", "", "")
+            .unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        if concat {
+            assert!(matches!(&expr.Kind,ExprKind::Function{FnName,..} if FnName.L=="concat"));
+        } else {
+            assert!(matches!(&expr.Kind,ExprKind::Binary{Op,..} if Op.eq_ignore_ascii_case("or")));
+        }
+    }
+}

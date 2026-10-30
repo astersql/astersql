@@ -318,10 +318,10 @@ impl Scanner {
             let close = self.scan();
             if open.0 == '(' as i32 && schema.0 == token::identifier
                 && schema.2 == "pg_catalog" && dot.0 == '.' as i32
-                && operator.0 == '/' as i32 && close.0 == ')' as i32
+                && (operator.0 == '/' as i32 || operator.0 == token::pipes) && close.0 == ')' as i32
             {
                 tok = token::pgCatalogDivide;
-                lit = "/".to_owned();
+                lit = if operator.0 == token::pipes { "||" } else { "/" }.to_owned();
             } else {
                 self.AppendError(self.Errorf("unsupported qualified PostgreSQL operator"));
                 return token::invalid;
@@ -385,6 +385,12 @@ impl Scanner {
             && self.r.s.as_bytes().get(v.offset as usize) == Some(&b'"')
         {
             tok = token::identifier;
+        }
+        // The existing PG generic-operator grammar tier also owns text ||.
+        // Never inherit MySQL PIPES_AS_CONCAT mode or its CONCAT AST lowering.
+        if self.postgres && tok == token::pipes {
+            v.ident = "||".to_owned();
+            return token::pgCatalogDivide;
         }
         if tok == token::pipes && !self.sqlMode.HasPipesAsConcatMode() {
             return token::pipesAsOr;

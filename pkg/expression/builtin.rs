@@ -2612,6 +2612,10 @@ pub mod formal_registry {
         inputs: &[u8],
     ) -> Result<PgFunctionCandidate, &'static str> {
         let candidates = match name {
+            "||" => vec![PgFunctionCandidate {
+                arguments: vec![mysql::TypeVarString, mysql::TypeVarString],
+                result: mysql::TypeVarString,
+            }],
             "pg_typeof" if inputs.len() == 1 => vec![PgFunctionCandidate {
                 arguments: inputs.to_vec(),
                 result: mysql::TypePgRegtype,
@@ -2861,6 +2865,19 @@ pub mod formal_registry {
         name: &str,
         inputs: &[types::FieldType],
     ) -> Result<PgFunctionCandidate, &'static str> {
+        if name == "||" {
+            if inputs.len() != 2
+                || inputs.iter().any(|tp| {
+                    tp.PostgreSQLArrayElement().is_some()
+                        || tp.PostgreSQLRecordFields().is_some()
+                        || (tp.GetType() != mysql::TypeNull && tp.PostgreSQLTextOid() != Some(25))
+                })
+            {
+                return Err("42883");
+            }
+            // TEXT columns and text casts have different physical storage codes.
+            return resolve_pg_signature(name, &[mysql::TypeVarString; 2]);
+        }
         if name == "pg_typeof" {
             if inputs.len() != 1 || inputs[0].PostgreSQLTypeOid().is_none() {
                 return Err("42883");
@@ -6866,9 +6883,24 @@ pub mod formal_registry {
             let datetime_type = *types::NewFieldType(mysql::TypeDatetime);
             args[0] = BuildCastFunction(ctx, &args[0], &datetime_type);
         }
-        let split_collation_args = matches!(name, "concat" | "greatest" | "least")
+        let split_collation_args = matches!(name, "||" | "concat" | "greatest" | "least")
             .then(|| args.iter().map(|arg| arg.CloneExpr()).collect::<Vec<_>>());
         let (kind, return_type, signature) = match name {
+            "||" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
+                let inputs = args
+                    .iter()
+                    .map(|a| a.GetType(ctx.GetEvalCtx()).clone())
+                    .collect::<Vec<_>>();
+                resolve_pg_typed_signature(name, &inputs).map_err(errors::New)?;
+                let mut result = *types::NewFieldType(mysql::TypeVarString);
+                result.SetPostgreSQLTextOid(25);
+                // PG textcat is strict; MySQL max_allowed_packet does not bound it.
+                (
+                    CoreBuiltinKind::Concat(u64::MAX),
+                    result,
+                    "builtinConcatSig",
+                )
+            }
             "pg_backend_pid" if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL => {
                 resolve_pg_signature(
                     name,
@@ -8656,6 +8688,7 @@ pub mod formal_registry {
     core_factory!(symbol_multiply_factory, "*");
     core_factory!(symbol_divide_factory, "/");
     core_factory!(symbol_modulo_factory, "%");
+    core_factory!(pg_text_concat_factory, "||");
 
     const CORE_BUILTIN_FACTORIES: &[(&str, BuiltinFactory)] = &[
         ("abs", abs_factory),
@@ -8759,6 +8792,7 @@ pub mod formal_registry {
         ("*", symbol_multiply_factory),
         ("/", symbol_divide_factory),
         ("%", symbol_modulo_factory),
+        ("||", pg_text_concat_factory),
     ];
 
     static BUILTIN_FACTORIES: LazyLock<RwLock<HashMap<String, BuiltinFactory>>> =
@@ -9284,6 +9318,7 @@ pub mod formal_registry {
         ("*", 2, 2),
         ("/", 2, 2),
         ("%", 2, 2),
+        ("||", 2, 2),
         ("in", 2, -1),
         ("istrue", 1, 1),
         ("istrue_with_null", 1, 1),
@@ -9392,7 +9427,7 @@ pub mod formal_registry {
             ),
             crate::ast::SqlDialect::MySQL => !matches!(
                 name,
-                "to_char"
+                "||" | "to_char"
                     | "date_trunc"
                     | "array_length"
                     | "cardinality"

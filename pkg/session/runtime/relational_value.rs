@@ -914,6 +914,27 @@ pub(super) fn pg_conditional_collation(
         ast::ExprKind::Cast {
             Expr: inner, Tp, ..
         } if Tp.PostgreSQLTextOid().is_some() => pg_conditional_collation(inner),
+        ast::ExprKind::Binary { Op, L, R } if Op == "||" => {
+            let left = pg_conditional_collation(L)?;
+            let right = pg_conditional_collation(R)?;
+            if left
+                .as_ref()
+                .zip(right.as_ref())
+                .is_some_and(|(l, r)| l != r)
+            {
+                let error = super::function_diagnostics::PgFunctionError {
+                    state: "42P21",
+                    message: "collation mismatch between explicit collations".into(),
+                    hint: None,
+                    position: None,
+                };
+                return Err(SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                ));
+            }
+            Ok(left.or(right))
+        }
         ast::ExprKind::Function { FnName, Args, .. }
             if matches!(
                 FnName.L.as_str(),
@@ -1010,6 +1031,46 @@ fn pg_extremum_numeric_order(left: &str, right: &str) -> std::cmp::Ordering {
     } else {
         order
     }
+}
+
+/// Consume the bound strict text || text signature through its formal factory.
+pub(super) fn pg_text_concat_value(values: [Option<String>; 2]) -> SessionResult<Option<String>> {
+    use astersql_expression::BuildContext;
+    let args = values
+        .into_iter()
+        .map(|value| {
+            let mut argument = value
+                .as_deref()
+                .map(astersql_expression::NewStrConst)
+                .unwrap_or_else(astersql_expression::NewNull);
+            let mut tp =
+                astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString);
+            tp.SetPostgreSQLTextOid(25);
+            argument.RetType = Some(tp);
+            Box::new(argument) as Box<dyn astersql_expression::Expression>
+        })
+        .collect();
+    let context = astersql_expression_exprstatic::NewExprContext(vec![
+        astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+            astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(ast::SqlDialect::PostgreSQL),
+            ]),
+        )),
+    ]);
+    let function = astersql_expression::NewFunctionBase(
+        &context,
+        "||",
+        astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString),
+        args,
+    )
+    .map_err(|error| session_error("build PG text concatenation", error))?;
+    let (value, null) = function
+        .EvalString(
+            context.GetEvalCtx(),
+            astersql_expression::chunk::Row::default(),
+        )
+        .map_err(|error| SessionError::with_source(error.to_string(), error.into_shared()))?;
+    Ok((!null).then_some(value))
 }
 
 /// Evaluate the already-bound numeric / numeric operator through its formal
@@ -1406,6 +1467,10 @@ pub(super) fn relational_expression_value(
                 .ok_or_else(|| SessionError::new("BIGINT value is out of range"))?;
             Ok(Some(value.to_string()))
         }
+        ast::ExprKind::Binary { Op, L, R } if Op == "||" => pg_text_concat_value([
+            relational_expression_value(L, row)?,
+            relational_expression_value(R, row)?,
+        ]),
         ast::ExprKind::Binary { Op, L, R } if Op == "/" || Op.eq_ignore_ascii_case("div") => {
             // PG ordinary-table projections retain their bound column types in
             // this context. Keep int4 fallback division strict and integral,
@@ -3352,6 +3417,11 @@ pub(super) fn relational_expression_type(
                 }) =>
         {
             new_type(astersql_parser_mysql::r#type::TypeLong)
+        }
+        ast::ExprKind::Binary { Op, .. } if Op == "||" => {
+            let mut tp = new_type(astersql_parser_mysql::r#type::TypeVarString);
+            tp.SetPostgreSQLTextOid(25);
+            tp
         }
         ast::ExprKind::Binary { Op, .. } if Op == "/" => {
             new_type(astersql_parser_mysql::r#type::TypeNewDecimal)

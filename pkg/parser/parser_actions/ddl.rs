@@ -7103,6 +7103,10 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                         .unwrap_or(-1),
                 );
             }
+            // Preserve the PG semantic identity separately from TEXT's Blob storage code.
+            if rule == DdlRule::TextTypeAlt02 && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                field_type.SetPostgreSQLTextOid(25);
+            }
             // PostgreSQL text has no typmod; MySQL TEXT(M) remains valid.
             if rule == DdlRule::TextTypeAlt02
                 && parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL

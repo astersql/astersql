@@ -1248,6 +1248,15 @@ impl ConcreteSession {
             });
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
+            && Op == "||"
+        {
+            return super::relational_value::pg_text_concat_value([
+                self.relational_query_expression_value(L, row, group_rows)?,
+                self.relational_query_expression_value(R, row, group_rows)?,
+            ]);
+        }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Unary { Op, V } = &expression.Kind
             && Op == "-"
             && self.pg_case_input_type(V, &[]).GetType() == astersql_parser_mysql::r#type::TypeLong
@@ -3461,6 +3470,40 @@ impl ConcreteSession {
                         _ => None,
                     }
                 }
+                if let ast::ExprKind::Binary { Op, L, R } = &input.Kind
+                    && Op == "||"
+                {
+                    let types = [L.as_ref(), R.as_ref()]
+                        .map(|operand| self.session.pg_case_input_type(operand, self.sources));
+                    if astersql_expression::formal_registry::resolve_pg_typed_signature(
+                        "||", &types,
+                    )
+                    .is_err()
+                    {
+                        let names = types.each_ref().map(|tp| match tp.PostgreSQLTypeOid() {
+                            Some(23) => "integer",
+                            Some(20) => "bigint",
+                            Some(25) => "text",
+                            Some(16) => "boolean",
+                            _ => "unknown",
+                        });
+                        let error = super::function_diagnostics::PgFunctionError {
+                            state: "42883",
+                            message: format!(
+                                "operator does not exist: {} || {}",
+                                names[0], names[1]
+                            ),
+                            hint: Some(
+                                "No operator matches the given name and argument types. You might need to add explicit type casts.",
+                            ),
+                            position: Some(input.node_text.OriginTextPosition() as usize),
+                        };
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        ));
+                    }
+                }
                 if let ast::ExprKind::Function { FnName, .. } = &input.Kind
                     && FnName.L == "pg_typeof"
                     && let Some(error) =
@@ -5206,6 +5249,15 @@ impl ConcreteSession {
                 if source.GetType() == astersql_parser_mysql::r#type::TypeLong {
                     return source;
                 }
+            }
+            if let ast::ExprKind::Binary { Op, .. } = &expression.Kind
+                && Op == "||"
+            {
+                let mut tp = astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeVarString,
+                );
+                tp.SetPostgreSQLTextOid(25);
+                return tp;
             }
             // PostgreSQL int4 division keeps its integer result identity; MySQL '/' remains decimal.
             if let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
