@@ -5,6 +5,8 @@ use std::{fmt, str::FromStr};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PgNumericError {
+    #[error("division by zero")]
+    DivisionByZero,
     #[error("cannot use \"V\" and decimal point together")]
     FormatShiftPoint,
     #[error("multiple decimal points")]
@@ -25,6 +27,7 @@ pub enum PgNumericError {
 impl PgNumericError {
     pub fn sqlstate(self) -> &'static str {
         match self {
+            Self::DivisionByZero => "22012",
             Self::InvalidSyntax => "22P02",
             Self::FormatShiftPoint | Self::FormatMultiplePoints => "42601",
             Self::InvalidModifier => "22023",
@@ -184,6 +187,124 @@ impl PgNumeric {
             out.extend_from_slice(&digit.to_be_bytes());
         }
         out
+    }
+
+    /// PostgreSQL numeric division: select a base-10000 significant-digit scale,
+    /// then divide decimal coefficients exactly and round ties away from zero.
+    /// This keeps the numeric domain independent of float8 and MySQL DECIMAL.
+    pub fn divide(&self, other: &Self) -> Result<Self, PgNumericError> {
+        use NumericKind::*;
+        if self.kind == NaN || other.kind == NaN {
+            return "NaN".parse();
+        }
+        if other.kind == Finite && other.coefficient == "0" {
+            return Err(PgNumericError::DivisionByZero);
+        }
+        if self.kind != Finite {
+            if other.kind != Finite {
+                return "NaN".parse();
+            }
+            let negative = (self.kind == NegativeInfinity) ^ other.negative;
+            return if negative { "-Infinity" } else { "Infinity" }.parse();
+        }
+        if other.kind != Finite {
+            return "0".parse();
+        }
+        // Equivalent to numeric.c::select_div_scale's normalized weight and
+        // first digit, without expanding the coefficient into base-10000 groups.
+        let leading = |n: &Self| -> (isize, u32) {
+            if n.coefficient == "0" {
+                return (0, 0);
+            }
+            let exponent = n.coefficient.len() as isize - n.scale as isize - 1;
+            let weight = exponent.div_euclid(4);
+            let width = (exponent - weight * 4 + 1) as usize;
+            let mut first = n
+                .coefficient
+                .bytes()
+                .take(width)
+                .fold(0, |v, d| v * 10 + u32::from(d - b'0'));
+            for _ in n.coefficient.len()..width {
+                first *= 10;
+            }
+            (weight, first)
+        };
+        let (w1, d1) = leading(self);
+        let (w2, d2) = leading(other);
+        let qweight = w1 - w2 - isize::from(d1 <= d2);
+        let scale = (16 - qweight * 4)
+            .max(self.scale as isize)
+            .max(other.scale as isize)
+            .clamp(0, 1000) as usize;
+        // One guard digit suffices for decimal ties-away rounding. Long division
+        // keeps a remainder smaller than the divisor, requiring at most nine
+        // subtractions per output digit. Trim common decimal factors first.
+        let mut numerator = self.coefficient.as_bytes().to_vec();
+        let mut denominator = other.coefficient.as_bytes().to_vec();
+        let shift = other.scale as isize - self.scale as isize + scale as isize + 1;
+        if shift >= 0 {
+            numerator.extend(std::iter::repeat_n(b'0', shift as usize));
+        } else {
+            denominator.extend(std::iter::repeat_n(b'0', (-shift) as usize));
+        }
+        while numerator.len() > 1
+            && denominator.len() > 1
+            && numerator.last() == Some(&b'0')
+            && denominator.last() == Some(&b'0')
+        {
+            numerator.pop();
+            denominator.pop();
+        }
+        let mut quotient = Vec::with_capacity(numerator.len());
+        let mut remainder = Vec::<u8>::new();
+        for digit in numerator {
+            if !remainder.is_empty() || digit != b'0' {
+                remainder.push(digit);
+            }
+            let mut digit = b'0';
+            while remainder.len() > denominator.len()
+                || (remainder.len() == denominator.len() && remainder >= denominator)
+            {
+                let mut borrow = 0i16;
+                let offset = remainder.len() - denominator.len();
+                for i in (0..remainder.len()).rev() {
+                    let rhs = if i >= offset {
+                        i16::from(denominator[i - offset] - b'0')
+                    } else {
+                        0
+                    };
+                    let value = i16::from(remainder[i] - b'0') - rhs - borrow;
+                    borrow = i16::from(value < 0);
+                    remainder[i] = b'0' + value.rem_euclid(10) as u8;
+                }
+                let first = remainder
+                    .iter()
+                    .position(|d| *d != b'0')
+                    .unwrap_or(remainder.len());
+                remainder.drain(..first);
+                digit += 1;
+            }
+            quotient.push(digit);
+        }
+        let coefficient = String::from_utf8(quotient).expect("decimal quotient digits");
+        let coefficient = coefficient.trim_start_matches('0');
+        let result = Self {
+            kind: Finite,
+            negative: self.negative ^ other.negative,
+            coefficient: if coefficient.is_empty() {
+                "0".into()
+            } else {
+                coefficient.into()
+            },
+            scale: scale + 1,
+        }
+        .round_scale(scale as i32);
+        if result.coefficient != "0"
+            && result.coefficient.len() as isize - result.scale as isize > 131072
+        {
+            return Err(PgNumericError::OutOfRange);
+        }
+        Ok(result)
     }
 
     /// Round ties away from zero before checking the signed SQL integer domain.

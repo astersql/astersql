@@ -239,3 +239,32 @@ fn pg_function_04_round_exact() {
         16385
     );
 }
+
+#[test]
+fn pg08_36_numeric_domain() {
+    let divide = |left: &str, right: &str| {
+        left.parse::<PgNumeric>()
+            .unwrap()
+            .divide(&right.parse::<PgNumeric>().unwrap())
+    };
+    assert_eq!(divide("1e131071", "0.1"), Err(PgNumericError::OutOfRange));
+    assert_eq!(
+        divide("1e-16383", "1").unwrap().to_string(),
+        format!("0.{}", "0".repeat(1000))
+    );
+    for (input, sign) in [("5e-1001", ""), ("-5e-1001", "-")] {
+        assert_eq!(
+            divide(input, "1").unwrap().to_string(),
+            format!("{sign}0.{}1", "0".repeat(999))
+        );
+    }
+    assert_eq!(
+        divide("1", "9000").unwrap().to_string(),
+        "0.00011111111111111111"
+    );
+    assert_eq!(divide("Infinity", "0"), Err(PgNumericError::DivisionByZero));
+    assert_eq!(
+        divide("0", "-2").unwrap().to_string(),
+        "0.00000000000000000000"
+    );
+}

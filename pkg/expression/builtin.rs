@@ -4426,6 +4426,7 @@ pub mod formal_registry {
         UnaryMinus(types::EvalType),
         Arithmetic(&'static str, types::EvalType),
         PgInt4Divide,
+        PgNumericDivide,
         PgInt4UnaryMinus,
         Case,
         IfNull(types::EvalType),
@@ -5442,6 +5443,7 @@ pub mod formal_registry {
                         .map_err(|e| errors::New(e.to_string()))
                 }
                 CoreBuiltinKind::PgRound
+                | CoreBuiltinKind::PgNumericDivide
                 | CoreBuiltinKind::PgExtractTimestamp
                 | CoreBuiltinKind::PgRangeLower
                 | CoreBuiltinKind::PgRangeUpper => {
@@ -5541,6 +5543,25 @@ pub mod formal_registry {
             row: chunk::Row,
         ) -> Result<(String, bool), Error> {
             match self.kind {
+                CoreBuiltinKind::PgNumericDivide => {
+                    let (left, left_null) = self.base.args[0].EvalString(ctx, row.clone())?;
+                    let (right, right_null) = self.base.args[1].EvalString(ctx, row)?;
+                    if left_null || right_null {
+                        return Ok((String::new(), true));
+                    }
+                    let diagnostic =
+                        |e| errors::Error::from(crate::contextutil::errors::SharedError::new(e));
+                    let left = left
+                        .parse::<types_dependency::pg_numeric::PgNumeric>()
+                        .map_err(diagnostic)?;
+                    let right = right
+                        .parse::<types_dependency::pg_numeric::PgNumeric>()
+                        .map_err(diagnostic)?;
+                    left.divide(&right)
+                        .map(|n| (n.to_string(), false))
+                        .map_err(diagnostic)
+                }
+
                 CoreBuiltinKind::PgTypeOf => {
                     // Non-strict does not mean unevaluated: preserve argument errors.
                     self.base.args[0].Eval(ctx, row)?;
@@ -7351,6 +7372,20 @@ pub mod formal_registry {
                         .SetFlenUnderLimit(source.GetFlen() + isize::from(!reserved_signed_width));
                 }
                 (CoreBuiltinKind::UnaryMinus(eval_type), result, signature)
+            }
+            "div"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                    && args.iter().all(|arg| {
+                        arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypeNewDecimal
+                    }) =>
+            {
+                // Preserve the PG numeric carrier; MySQL DECIMAL casts would
+                // truncate its domain and change precision and error semantics.
+                (
+                    CoreBuiltinKind::PgNumericDivide,
+                    *types::NewFieldType(mysql::TypeNewDecimal),
+                    "builtinArithmeticDivideDecimalSig",
+                )
             }
             "div"
                 if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL

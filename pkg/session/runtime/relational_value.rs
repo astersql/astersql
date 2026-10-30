@@ -1012,6 +1012,48 @@ fn pg_extremum_numeric_order(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
+/// Evaluate the already-bound numeric / numeric operator through its formal
+/// factory. Operand text retains the full PG numeric domain, including specials.
+pub(super) fn pg_numeric_divide_value(
+    values: [Option<String>; 2],
+) -> SessionResult<Option<String>> {
+    use astersql_expression::BuildContext;
+    let args = values
+        .into_iter()
+        .map(|value| {
+            let mut argument = value
+                .as_deref()
+                .map(astersql_expression::NewStrConst)
+                .unwrap_or_else(astersql_expression::NewNull);
+            argument.RetType = Some(astersql_parser_types::NewFieldType(
+                astersql_parser_mysql::r#type::TypeNewDecimal,
+            ));
+            Box::new(argument) as Box<dyn astersql_expression::Expression>
+        })
+        .collect();
+    let context = astersql_expression_exprstatic::NewExprContext(vec![
+        astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+            astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(ast::SqlDialect::PostgreSQL),
+            ]),
+        )),
+    ]);
+    let function = astersql_expression::NewFunctionBase(
+        &context,
+        "/",
+        astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeNewDecimal),
+        args,
+    )
+    .map_err(|error| session_error("build PG numeric division", error))?;
+    let (value, null) = function
+        .EvalString(
+            context.GetEvalCtx(),
+            astersql_expression::chunk::Row::default(),
+        )
+        .map_err(|error| SessionError::with_source(error.to_string(), error.into_shared()))?;
+    Ok((!null).then_some(value))
+}
+
 /// Consume the bound PG int4 signature through the shared expression factory.
 /// Values come from the caller's recursive evaluation; they never choose the type.
 pub(super) fn pg_int4_divide_value(values: [Option<String>; 2]) -> SessionResult<Option<String>> {
@@ -1379,6 +1421,20 @@ pub(super) fn relational_expression_value(
                         })
                     })
                 });
+            let pg_numeric = Op == "/"
+                && PG_CAST_TABLE.with(|slot| {
+                    slot.borrow().as_ref().is_some_and(|table| {
+                        [L.as_ref(), R.as_ref()].iter().all(|operand| {
+                            relational_expression_type(operand, table).GetType()
+                                == astersql_parser_mysql::r#type::TypeNewDecimal
+                        })
+                    })
+                });
+            if pg_numeric {
+                let left = relational_expression_value(L, row)?;
+                let right = relational_expression_value(R, row)?;
+                return pg_numeric_divide_value([left, right]);
+            }
             if pg_int4 {
                 let left = relational_expression_value(L, row)?;
                 let right = relational_expression_value(R, row)?;
