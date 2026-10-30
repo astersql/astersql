@@ -326,6 +326,38 @@ fn evaluated_arguments(
         .collect()
 }
 
+/// Equality key for already typed PostgreSQL numeric aggregate operands.
+/// Display scale and floating zero signs/NaN payloads do not affect equality.
+pub fn NumericDistinctKey(value: &str, oid: u32) -> AdapterResult<Vec<u8>> {
+    if oid == 1700 {
+        let numeric = value
+            .parse::<astersql_types::pg_numeric::PgNumeric>()
+            .map_err(astersql_errors::SharedError::new)?;
+        let mut bytes = numeric.to_binary();
+        bytes[6..8].fill(0); // numeric_send dscale is presentation metadata.
+        return Ok(bytes);
+    }
+    let float = if oid == 700 {
+        astersql_expression::pg_cast_float4(Some(value))
+            .map_err(astersql_errors::SharedError::new)?
+            .map(f64::from)
+    } else {
+        astersql_expression::pg_cast_float8(Some(value))
+            .map_err(astersql_errors::SharedError::new)?
+    }
+    .expect("nonnull typed operand");
+    Ok((if float == 0.0 {
+        0.0
+    } else if float.is_nan() {
+        f64::NAN
+    } else {
+        float
+    })
+    .to_bits()
+    .to_be_bytes()
+    .to_vec())
+}
+
 fn update_aggregate(
     function: &AggFuncDesc,
     state: &mut AggregateState,
@@ -354,7 +386,26 @@ fn update_aggregate(
         return Ok(());
     }
     if let Some(distinct) = &mut state.distinct {
-        let key = astersql_util_codec::EncodeKey(eval.Location(), Vec::new(), values.clone())
+        let mut key_values = values.clone();
+        if eval.SQLDialect() == astersql_parser_ast::SqlDialect::PostgreSQL {
+            for (argument, value) in function.Args.iter().zip(&mut key_values) {
+                match argument.GetType(eval).PostgreSQLTypeOid() {
+                    Some(oid @ (1700 | 700 | 701)) => {
+                        let text = match oid {
+                            700 => value.GetFloat32().to_string(),
+                            701 => value.GetFloat64().to_string(),
+                            _ => value
+                                .ToString()
+                                .map_err(|e| astersql_errors::New(e.to_string()))?,
+                        };
+                        *value =
+                            astersql_types::datum::NewBytesDatum(NumericDistinctKey(&text, oid)?);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let key = astersql_util_codec::EncodeKey(eval.Location(), Vec::new(), key_values)
             .map_err(|error| astersql_errors::New(error.to_string()))?;
         if !distinct.insert(key) {
             return Ok(());

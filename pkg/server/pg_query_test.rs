@@ -20398,3 +20398,353 @@ fn pg09_07_sql() {
         row(&[Some("1")])
     );
 }
+
+#[test]
+fn pg09_08_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    for (sql, expected) in [
+        (
+            "SELECT count(DISTINCT x) AS a, sum(DISTINCT x) AS b, avg(DISTINCT x) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 1::int4 UNION ALL SELECT 2::int4 UNION ALL SELECT NULL::int4) t",
+            row(&[Some("2"), Some("3"), Some("1.5000000000000000")]),
+        ),
+        (
+            "SELECT count(DISTINCT x) AS a, sum(DISTINCT x) AS b, avg(DISTINCT x) AS c FROM (SELECT 1.0::numeric AS x UNION ALL SELECT 1.00::numeric UNION ALL SELECT 2::numeric UNION ALL SELECT NULL::numeric) t",
+            row(&[Some("2"), Some("3.0"), Some("1.5000000000000000")]),
+        ),
+        (
+            "SELECT count(DISTINCT x) AS a FROM (SELECT 0::float8 AS x UNION ALL SELECT '-0'::float8 UNION ALL SELECT 'NaN'::float8 UNION ALL SELECT 'NaN'::float8 UNION ALL SELECT 'Infinity'::float8 UNION ALL SELECT '-Infinity'::float8) t",
+            row(&[Some("4")]),
+        ),
+        (
+            "SELECT count(DISTINCT x) AS a, sum(DISTINCT x) AS b, avg(DISTINCT x) AS c FROM (SELECT NULL::numeric AS x UNION ALL SELECT NULL::numeric) t",
+            row(&[Some("0"), None, None]),
+        ),
+        (
+            "SELECT count(DISTINCT x) AS a, sum(DISTINCT x) AS b, avg(DISTINCT x) AS c FROM (SELECT 1::int4 AS x WHERE false) t",
+            row(&[Some("0"), None, None]),
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![expected],
+            "{sql}"
+        );
+        let description = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        let columns = u16::from_be_bytes(description[..2].try_into().unwrap()) as usize;
+        let mut at = 2;
+        for column in 0..columns {
+            at += description[at..].iter().position(|b| *b == 0).unwrap() + 1;
+            let oid = if column == 0 {
+                20u32
+            } else if column == 1 && !sql.contains("numeric") {
+                20
+            } else {
+                1700
+            };
+            assert_eq!(&description[at + 6..at + 10], &oid.to_be_bytes());
+            assert_eq!(
+                &description[at + 10..at + 12],
+                &(if oid == 20 { 8i16 } else { -1 }).to_be_bytes()
+            );
+            assert_eq!(&description[at + 12..at + 16], &(-1i32).to_be_bytes());
+            at += 18;
+        }
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    for ty in ["numeric", "float4", "float8"] {
+        for (input, expected) in [
+            (
+                format!(
+                    "SELECT '0'::{ty} AS x UNION ALL SELECT '-0'::{ty} UNION ALL SELECT 'NaN'::{ty} UNION ALL SELECT 'NaN'::{ty} UNION ALL SELECT 'Infinity'::{ty} UNION ALL SELECT '-Infinity'::{ty}"
+                ),
+                "4",
+            ),
+            (
+                format!(
+                    "SELECT '1.0'::{ty} AS x UNION ALL SELECT '1.00'::{ty} UNION ALL SELECT '2'::{ty}"
+                ),
+                "2",
+            ),
+        ] {
+            let ms = query(
+                &mut s,
+                &format!("SELECT count(DISTINCT x) AS c FROM ({input}) t"),
+            );
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{ty}: {ms:?}");
+            assert_eq!(
+                ms.iter()
+                    .filter(|m| m.0 == b'D')
+                    .map(|m| m.1.clone())
+                    .collect::<Vec<_>>(),
+                vec![row(&[Some(expected)])]
+            );
+        }
+    }
+    for ty in ["float4", "float8"] {
+        let sql = format!(
+            "SELECT count(DISTINCT x) AS a, sum(DISTINCT x) AS b, avg(DISTINCT x) AS c FROM (SELECT '0'::{ty} AS x UNION ALL SELECT '-0'::{ty} UNION ALL SELECT '2'::{ty}) t"
+        );
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some("2"), Some("2"), Some("1")])]
+        );
+    }
+    // Values beyond float8 precision must remain distinct in numeric keys.
+    let ms = query(
+        &mut s,
+        "SELECT count(DISTINCT x) AS c FROM (SELECT 9007199254740992::numeric AS x UNION ALL SELECT 9007199254740993::numeric UNION ALL SELECT 9007199254740992.00::numeric) t",
+    );
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("2")])]
+    );
+    let sql = "SELECT count(DISTINCT x) AS a, count(DISTINCT x) FILTER (WHERE keep) AS b FROM (SELECT 1::int4 AS x, true AS keep UNION ALL SELECT 2::int4, false UNION ALL SELECT 3::int4, NULL::bool) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("3"), Some("1")])]
+    );
+
+    for (sql, expected) in [
+        (
+            "SELECT count(DISTINCT x) FILTER (WHERE false) AS a, sum(x) FILTER (WHERE false) AS b, avg(x) FILTER (WHERE false) AS c FROM (SELECT 1::int4 AS x) t",
+            vec![row(&[Some("0"), None, None])],
+        ),
+        (
+            "SELECT count(DISTINCT x) FILTER (WHERE NULL::bool) AS a, sum(x) FILTER (WHERE NULL::bool) AS b, avg(x) FILTER (WHERE NULL::bool) AS c FROM (SELECT NULL::int4 AS x) t",
+            vec![row(&[Some("0"), None, None])],
+        ),
+        (
+            "SELECT count(DISTINCT x) FILTER (WHERE true) AS a, sum(x) FILTER (WHERE true) AS b, avg(x) FILTER (WHERE true) AS c FROM (SELECT 1::int4 AS x WHERE false) t",
+            vec![row(&[Some("0"), None, None])],
+        ),
+        (
+            "SELECT count(DISTINCT x) FILTER (WHERE x=1) AS a, count(DISTINCT x) FILTER (WHERE x=2) AS b FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4 UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("1"), Some("1")])],
+        ),
+        (
+            "SELECT x AS a, count(DISTINCT x) FILTER (WHERE false) AS b, sum(x) FILTER (WHERE false) AS c, avg(x) FILTER (WHERE false) AS d FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4) t GROUP BY x ORDER BY x",
+            vec![
+                row(&[Some("1"), Some("0"), None, None]),
+                row(&[Some("2"), Some("0"), None, None]),
+            ],
+        ),
+        (
+            "SELECT sum(10::int4 / x) FILTER (WHERE x <> 0) AS a FROM (SELECT 0::int4 AS x UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("5")])],
+        ),
+        (
+            "SELECT avg(10::int4 / x) FILTER (WHERE x <> 0) AS a FROM (SELECT 0::int4 AS x UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("5.0000000000000000")])],
+        ),
+        (
+            "SELECT count(10::int4 / x) FILTER (WHERE x <> 0) AS a FROM (SELECT 0::int4 AS x UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("1")])],
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "{sql}"
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    for (sql, state) in [
+        (
+            "SELECT count(DISTINCT 1::int4) FILTER (WHERE 1::int4) AS a",
+            "42804",
+        ),
+        (
+            "SELECT count(DISTINCT 1::int4) FILTER (WHERE sum(1::int4)>0) AS a",
+            "42803",
+        ),
+        (
+            "SELECT sum(10::int4 / x) FILTER (WHERE true) AS a FROM (SELECT 0::int4 AS x) t",
+            "22012",
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        let e = &ms.iter().find(|m| m.0 == b'E').expect(sql).1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{sql}: {ms:?}"
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        let ms = query(&mut s, "SELECT 1::int4 AS a");
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b'D').unwrap().1,
+            row(&[Some("1")])
+        );
+    }
+
+    fn ready08(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity08(ms: &[(u8, Vec<u8>)], format: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &20u32.to_be_bytes());
+        assert_eq!(&d[14..16], &8i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &format.to_be_bytes());
+    }
+    for sql in [
+        "SELECT count(DISTINCT x) FILTER (WHERE true) AS c FROM (SELECT 1::int4 AS x) t",
+        "SELECT count(DISTINCT x) FILTER (WHERE false) AS c FROM (SELECT 1::int4 AS x WHERE false) t GROUP BY x",
+    ] {
+        let ms = query(&mut s, sql);
+        identity08(&ms, 0);
+        assert_eq!(
+            ms.iter().filter(|m| m.0 == b'D').count(),
+            usize::from(!sql.contains("GROUP BY"))
+        );
+    }
+    send(&mut s, b'P', &[b"filter08\0SELECT count(DISTINCT x) FILTER (WHERE $1::bool) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4 UNION ALL SELECT 2::int4) t\0".as_slice(), &1i16.to_be_bytes(), &16u32.to_be_bytes()].concat());
+    send(&mut s, b'D', b"Sfilter08\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready08(&mut s);
+    identity08(&ms, 0);
+    assert_eq!(
+        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [b'1', b't', b'T', b'Z']
+    );
+    for input_fmt in [0i16, 1] {
+        for output_fmt in [0i16, 1] {
+            for keep in [Some(true), Some(false), None] {
+                let mut bind = b"\0filter08\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                if let Some(keep) = keep {
+                    let value = if input_fmt == 0 {
+                        if keep {
+                            b"true".to_vec()
+                        } else {
+                            b"false".to_vec()
+                        }
+                    } else {
+                        vec![u8::from(keep)]
+                    };
+                    bind.extend((value.len() as i32).to_be_bytes());
+                    bind.extend(value);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(output_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready08(&mut s);
+                identity08(&ms, output_fmt);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                assert_eq!(
+                    ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    [b'2', b'T', b'D', b'C', b'Z']
+                );
+                let n = if keep == Some(true) { 2i64 } else { 0 };
+                let expected = if output_fmt == 0 {
+                    row(&[Some(if n == 2 { "2" } else { "0" })])
+                } else {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &8i32.to_be_bytes(),
+                        &n.to_be_bytes(),
+                    ]
+                    .concat()
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+
+    send(
+        &mut s,
+        b'P',
+        b"badfilter08\0SELECT count(DISTINCT 1::int4) FILTER (WHERE 1::int4) AS c\0\0\0",
+    );
+    send(&mut s, b'S', &[]);
+    let ms = ready08(&mut s);
+    let e = &ms
+        .iter()
+        .find(|m| m.0 == b'E')
+        .expect("Parse must reject nonboolean FILTER")
+        .1;
+    assert!(e.windows(7).any(|w| w == b"C42804\0"), "{ms:?}");
+    assert!(e.windows(7).any(|w| w == b"SERROR\0"), "{ms:?}");
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4 AS c")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+}

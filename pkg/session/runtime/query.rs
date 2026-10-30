@@ -1133,7 +1133,45 @@ impl ConcreteSession {
             rows
         };
         let name = name.to_ascii_lowercase();
-        if self.sql_dialect() == ast::SqlDialect::PostgreSQL && name == "count" && !distinct {
+        let deduplicate = |values: &mut Vec<Option<String>>| -> SessionResult<()> {
+            if !distinct {
+                return Ok(());
+            }
+            let oid = args
+                .first()
+                .map(|arg| self.pg_case_input_type(arg, &[]))
+                .and_then(|tp| tp.PostgreSQLTypeOid());
+            let mut seen = HashSet::new();
+            let mut unique = Vec::with_capacity(values.len());
+            for value in values.drain(..) {
+                let key = match (&value, oid) {
+                    (Some(value), Some(oid @ (1700 | 700 | 701))) => Some(
+                        astersql_executor::typed_hash_agg::NumericDistinctKey(value, oid)
+                            .map_err(|error| SessionError::with_source(error.to_string(), error))?,
+                    ),
+                    _ => value.as_ref().map(|v| v.as_bytes().to_vec()),
+                };
+                if seen.insert(key) {
+                    unique.push(value);
+                }
+            }
+            *values = unique;
+            Ok(())
+        };
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL && name == "count" {
+            if distinct {
+                let mut values = rows
+                    .iter()
+                    .map(|row| self.relational_query_expression_value(&args[0], row, None))
+                    .collect::<SessionResult<Vec<_>>>()?;
+                deduplicate(&mut values)?;
+                return astersql_executor::typed_hash_agg::CountNonNull(
+                    self.AdapterPlanContext(),
+                    values.iter().map(Option::is_some).collect(),
+                )
+                .map(|n| Some(n.to_string()))
+                .map_err(|e| session_error("execute DISTINCT COUNT", e));
+            }
             let present = rows
                 .iter()
                 .map(|row| {
@@ -1208,10 +1246,7 @@ impl ConcreteSession {
                 .iter()
                 .map(|row| self.relational_query_expression_value(&args[0], row, None))
                 .collect::<SessionResult<Vec<_>>>()?;
-            if distinct {
-                let mut seen = HashSet::new();
-                values.retain(|v| seen.insert(v.clone()));
-            }
+            deduplicate(&mut values)?;
             return astersql_executor::typed_hash_agg::SumNumeric(
                 self.AdapterPlanContext(),
                 values,
@@ -1236,10 +1271,7 @@ impl ConcreteSession {
                 .iter()
                 .map(|row| self.relational_query_expression_value(&args[0], row, None))
                 .collect::<SessionResult<Vec<_>>>()?;
-            if distinct {
-                let mut seen = HashSet::new();
-                values.retain(|v| seen.insert(v.clone()));
-            }
+            deduplicate(&mut values)?;
             return astersql_executor::typed_hash_agg::AvgNumeric(
                 self.AdapterPlanContext(),
                 values,
@@ -1264,10 +1296,7 @@ impl ConcreteSession {
                 .iter()
                 .map(|row| self.relational_query_expression_value(&args[0], row, None))
                 .collect::<SessionResult<Vec<_>>>()?;
-            if distinct {
-                let mut seen = HashSet::new();
-                values.retain(|v| seen.insert(v.clone()));
-            }
+            deduplicate(&mut values)?;
             let result = if name == "avg" {
                 astersql_executor::typed_hash_agg::AvgFloat(
                     self.AdapterPlanContext(),

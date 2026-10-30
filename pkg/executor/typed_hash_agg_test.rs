@@ -732,3 +732,91 @@ fn pg09_07_execution() {
         }
     }
 }
+
+#[test]
+fn pg09_08_execution() {
+    // Each input page contains one row; filters must neither remove groups nor
+    // leak selection into the sibling aggregate, including after reopen.
+    for grouped in [false, true] {
+        let source = Arc::new(MemoryRetriever::default());
+        for (handle, value) in [(1, 10), (2, 10), (3, 20)] {
+            let (key, row) = encode_row(98, handle, value, "unused");
+            source.Put(key, row);
+        }
+        let mut p = hash_agg_plan(grouped);
+        let mut all = p.BasePhysicalAgg.AggFuncs[0].clone();
+        all.HasDistinct = true;
+        all.Args = vec![Box::new(astersql_expression::Column::new(
+            *astersql_expression::types::NewFieldType(TypeLonglong),
+            1,
+            1,
+            0,
+        ))];
+        let mut excluded = all.Clone();
+        excluded.Filter = Some(Box::new(astersql_expression::NewInt64Const(0)));
+        let mut null_filter = all.Clone();
+        null_filter.Filter = Some(Box::new(astersql_expression::NewNull()));
+        let mut sum = excluded.Clone();
+        sum.Name = "sum".into();
+        sum.Args = vec![Box::new(astersql_expression::Column::new(
+            *astersql_expression::types::NewFieldType(TypeLonglong),
+            1,
+            1,
+            0,
+        ))];
+        let mut avg = sum.Clone();
+        avg.Name = "avg".into();
+        assert!(!all.Equal(context().GetExprCtx().GetEvalCtx(), &excluded));
+        assert!(excluded.Equal(context().GetExprCtx().GetEvalCtx(), &excluded.Clone()));
+        p.BasePhysicalAgg.AggFuncs = vec![all, excluded, null_filter, sum, avg];
+        let mut e = crate::builder::BuildTypedPhysicalPlan(&p, source, ranges(), 1, 1).unwrap();
+        for _ in 0..2 {
+            e.Open().unwrap();
+            let mut out = e.NewChunk();
+            let mut counts = vec![];
+            loop {
+                e.Next(&mut out).unwrap();
+                if out.NumRows() == 0 {
+                    break;
+                }
+                let r = out.GetRow(0);
+                counts.push(r.GetInt64(0));
+                assert_eq!(r.GetInt64(1), 0);
+                assert_eq!(r.GetInt64(2), 0);
+                assert!(r.IsNull(3));
+                assert!(r.IsNull(4));
+            }
+            assert_eq!(counts, if grouped { vec![1, 1] } else { vec![2] });
+            e.Close().unwrap();
+        }
+    }
+}
+
+#[test]
+fn pg09_08_numeric_keys() {
+    use crate::typed_hash_agg::NumericDistinctKey as key;
+    for oid in [1700, 700, 701] {
+        for (left, right) in [
+            ("1", "1.00"),
+            ("0", "-0.00"),
+            ("NaN", "nan"),
+            ("Infinity", "inf"),
+        ] {
+            assert_eq!(
+                key(left, oid).unwrap(),
+                key(right, oid).unwrap(),
+                "{oid}: {left}, {right}"
+            );
+        }
+        assert_ne!(
+            key("Infinity", oid).unwrap(),
+            key("-Infinity", oid).unwrap()
+        );
+        assert!(key("invalid", oid).is_err());
+    }
+    assert_ne!(
+        key("9007199254740992", 1700).unwrap(),
+        key("9007199254740993", 1700).unwrap()
+    );
+    assert_eq!(key("1e10000", 1700).unwrap(), key("10e9999", 1700).unwrap());
+}
