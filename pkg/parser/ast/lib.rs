@@ -821,6 +821,7 @@ pub enum ExprKind {
         Args: Vec<ExprNode>,
         Distinct: bool,
         Order: Vec<ByItem>,
+        Filter: Option<Box<ExprNode>>,
     },
     Binary {
         Op: String,
@@ -1312,8 +1313,17 @@ impl ExprNode {
                 .as_mut()
                 .is_none_or(|value| accept_box(value, visitor)),
             ExprKind::Function { Args, .. } => accept_many(Args, visitor),
-            ExprKind::AggregateFunction { Args, Order, .. } => {
-                accept_many(Args, visitor) && accept_by_items(Order, visitor)
+            ExprKind::AggregateFunction {
+                Args,
+                Order,
+                Filter,
+                ..
+            } => {
+                accept_many(Args, visitor)
+                    && accept_by_items(Order, visitor)
+                    && Filter
+                        .as_mut()
+                        .is_none_or(|filter| accept_box(filter, visitor))
             }
             ExprKind::Binary { L, R, .. } => accept_box(L, visitor) && accept_box(R, visitor),
             ExprKind::Unary { V, .. }

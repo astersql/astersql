@@ -20161,3 +20161,240 @@ fn pg09_06_sql() {
     }
     send(&mut s, b'X', &[]);
 }
+
+#[test]
+fn pg09_07_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    let sql = "SELECT count(*) AS a, count(*) FILTER (WHERE keep) AS b FROM (SELECT 1::int4 AS x, true AS keep UNION ALL SELECT 2::int4, false UNION ALL SELECT 3::int4, NULL::bool) t";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("3"), Some("1")])]
+    );
+
+    for (sql, expected) in [
+        (
+            "SELECT count(*) FILTER (WHERE false) AS a, sum(x) FILTER (WHERE false) AS b, avg(x) FILTER (WHERE false) AS c FROM (SELECT 1::int4 AS x) t",
+            vec![row(&[Some("0"), None, None])],
+        ),
+        (
+            "SELECT count(*) FILTER (WHERE NULL::bool) AS a, sum(x) FILTER (WHERE NULL::bool) AS b, avg(x) FILTER (WHERE NULL::bool) AS c FROM (SELECT NULL::int4 AS x) t",
+            vec![row(&[Some("0"), None, None])],
+        ),
+        (
+            "SELECT count(*) FILTER (WHERE true) AS a, sum(x) FILTER (WHERE true) AS b, avg(x) FILTER (WHERE true) AS c FROM (SELECT 1::int4 AS x WHERE false) t",
+            vec![row(&[Some("0"), None, None])],
+        ),
+        (
+            "SELECT count(*) FILTER (WHERE x=1) AS a, count(*) FILTER (WHERE x=2) AS b FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4 UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("1"), Some("2")])],
+        ),
+        (
+            "SELECT x AS a, count(*) FILTER (WHERE false) AS b, sum(x) FILTER (WHERE false) AS c, avg(x) FILTER (WHERE false) AS d FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4) t GROUP BY x ORDER BY x",
+            vec![
+                row(&[Some("1"), Some("0"), None, None]),
+                row(&[Some("2"), Some("0"), None, None]),
+            ],
+        ),
+        (
+            "SELECT sum(10::int4 / x) FILTER (WHERE x <> 0) AS a FROM (SELECT 0::int4 AS x UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("5")])],
+        ),
+        (
+            "SELECT avg(10::int4 / x) FILTER (WHERE x <> 0) AS a FROM (SELECT 0::int4 AS x UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("5.0000000000000000")])],
+        ),
+        (
+            "SELECT count(10::int4 / x) FILTER (WHERE x <> 0) AS a FROM (SELECT 0::int4 AS x UNION ALL SELECT 2::int4) t",
+            vec![row(&[Some("1")])],
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "{sql}"
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    for (sql, state) in [
+        ("SELECT count(*) FILTER (WHERE 1::int4) AS a", "42804"),
+        (
+            "SELECT count(*) FILTER (WHERE sum(1::int4)>0) AS a",
+            "42803",
+        ),
+        (
+            "SELECT sum(10::int4 / x) FILTER (WHERE true) AS a FROM (SELECT 0::int4 AS x) t",
+            "22012",
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        let e = &ms.iter().find(|m| m.0 == b'E').expect(sql).1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{sql}: {ms:?}"
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        let ms = query(&mut s, "SELECT 1::int4 AS a");
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b'D').unwrap().1,
+            row(&[Some("1")])
+        );
+    }
+
+    fn ready07(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity07(ms: &[(u8, Vec<u8>)], format: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &20u32.to_be_bytes());
+        assert_eq!(&d[14..16], &8i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &format.to_be_bytes());
+    }
+    for sql in [
+        "SELECT count(*) FILTER (WHERE true) AS c FROM (SELECT 1::int4 AS x) t",
+        "SELECT count(*) FILTER (WHERE false) AS c FROM (SELECT 1::int4 AS x WHERE false) t GROUP BY x",
+    ] {
+        let ms = query(&mut s, sql);
+        identity07(&ms, 0);
+        assert_eq!(
+            ms.iter().filter(|m| m.0 == b'D').count(),
+            usize::from(!sql.contains("GROUP BY"))
+        );
+    }
+    send(&mut s, b'P', &[b"filter07\0SELECT count(*) FILTER (WHERE $1::bool) AS c FROM (SELECT 1::int4 AS x UNION ALL SELECT 2::int4) t\0".as_slice(), &1i16.to_be_bytes(), &16u32.to_be_bytes()].concat());
+    send(&mut s, b'D', b"Sfilter07\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready07(&mut s);
+    identity07(&ms, 0);
+    assert_eq!(
+        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [b'1', b't', b'T', b'Z']
+    );
+    for input_fmt in [0i16, 1] {
+        for output_fmt in [0i16, 1] {
+            for keep in [Some(true), Some(false), None] {
+                let mut bind = b"\0filter07\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                if let Some(keep) = keep {
+                    let value = if input_fmt == 0 {
+                        if keep {
+                            b"true".to_vec()
+                        } else {
+                            b"false".to_vec()
+                        }
+                    } else {
+                        vec![u8::from(keep)]
+                    };
+                    bind.extend((value.len() as i32).to_be_bytes());
+                    bind.extend(value);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(output_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready07(&mut s);
+                identity07(&ms, output_fmt);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                assert_eq!(
+                    ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    [b'2', b'T', b'D', b'C', b'Z']
+                );
+                let n = if keep == Some(true) { 2i64 } else { 0 };
+                let expected = if output_fmt == 0 {
+                    row(&[Some(if n == 2 { "2" } else { "0" })])
+                } else {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &8i32.to_be_bytes(),
+                        &n.to_be_bytes(),
+                    ]
+                    .concat()
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+
+    send(
+        &mut s,
+        b'P',
+        b"badfilter07\0SELECT count(*) FILTER (WHERE 1::int4) AS c\0\0\0",
+    );
+    send(&mut s, b'S', &[]);
+    let ms = ready07(&mut s);
+    let e = &ms
+        .iter()
+        .find(|m| m.0 == b'E')
+        .expect("Parse must reject nonboolean FILTER")
+        .1;
+    assert!(e.windows(7).any(|w| w == b"C42804\0"), "{ms:?}");
+    assert!(e.windows(7).any(|w| w == b"SERROR\0"), "{ms:?}");
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4 AS c")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+}

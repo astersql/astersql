@@ -19,6 +19,7 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
+    PgAggregateFilter,
     PgExtractField,
     PgRow,
     RowFieldFirst,
@@ -338,6 +339,7 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        id if id.starts_with("simpleexpr_sumexpr_pgfilter_") => Some(ExpressionRule::PgAggregateFilter),
         id if id.starts_with("pgcasttype_pgcasttype--") || id.starts_with("pgcasttype_pgpostfixfloat--") || id.starts_with("pgcasttype_pgpostfixtext--") || id.starts_with("pgcasttype_pgpostfixdate--") || id.starts_with("pgcasttype_pgpostfixjson--") || id.starts_with("pgcasttype_pgtimetype--") || id.starts_with("pgcasttype_pgtimestamptype--") => Some(ExpressionRule::PgArrayType),
         id if id.starts_with("pgcasttype_pginterval_pgintervalopt--") || id.starts_with("pgcasttype_pginterval_prec_empty--") => Some(ExpressionRule::PgIntervalType),
         id if id.starts_with("pgintervalliteralopt") => Some(ExpressionRule::PgIntervalLiteralOpt),
@@ -1171,6 +1173,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 OriginTextPosition: start as i32,
                 Flag: Default::default(),
             });
+        }
+        ExpressionRule::PgAggregateFilter => {
+            let mut aggregate = rhs[1].expr.clone().unwrap();
+            let parser_ast::ExprKind::AggregateFunction { Filter, .. } = &mut aggregate.Kind else {
+                yylex.AppendError(yylex.Errorf("FILTER requires an aggregate function", &[]));
+                return Err(1);
+            };
+            *Filter = Some(Box::new(rhs[5].expr.clone().unwrap()));
+            out.expr = Some(aggregate);
         }
         ExpressionRule::PgRow => {
             let (fields, starts, commas) = rhs[3]
@@ -2993,6 +3004,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         Args: args,
                         Distinct: distinct,
                         Order: order,
+                        Filter: None,
                     },
                     OriginTextPosition: 0,
                     Flag: Default::default(),

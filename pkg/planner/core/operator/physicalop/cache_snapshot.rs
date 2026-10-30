@@ -1520,6 +1520,7 @@ struct CachedAggFunc {
     return_type: Option<expression::types::FieldType>,
     mode: aggregation::AggFunctionMode,
     has_distinct: bool,
+    filter: Option<expression::CachedExpression>,
     order_by: Vec<CachedByItem>,
     grouping_id: isize,
 }
@@ -1532,6 +1533,12 @@ impl CachedAggFunc {
             return_type: value.RetTp.clone(),
             mode: value.Mode,
             has_distinct: value.HasDistinct,
+            filter: value
+                .Filter
+                .as_ref()
+                .map(|filter| expression::CachedExpression::try_from_expression(filter.as_ref()))
+                .transpose()
+                .map_err(|e| unsupported(e.to_string()))?,
             order_by: capture_by_items(&value.OrderByItems)?,
             grouping_id: value.GroupingID,
         })
@@ -1548,6 +1555,12 @@ impl CachedAggFunc {
             },
             Mode: self.mode,
             HasDistinct: self.has_distinct,
+            Filter: self
+                .filter
+                .as_ref()
+                .map(|filter| filter.restore(context))
+                .transpose()
+                .map_err(|e| unsupported(e.to_string()))?,
             OrderByItems: restore_by_items(&self.order_by, context)?,
             GroupingID: self.grouping_id,
         })

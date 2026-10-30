@@ -75,6 +75,11 @@ pub fn AggFuncToPBExpr(
     aggregate: &AggFuncDesc,
     store_type: kv::StoreType,
 ) -> Result<tipb::Expr, Error> {
+    if aggregate.Filter.is_some() {
+        return Err(expression::errors::New(
+            "aggregate FILTER cannot be pushed down",
+        ));
+    }
     let converter = ctx.PbConverter();
     let expression_type = aggregate.GetTiPBExpr(false);
     // 存储客户端须支持该 Select 子类型，否则拒绝下推。
@@ -208,6 +213,7 @@ pub fn PBExprToAggFuncDesc(
         // 与 Go PBExprToAggFuncDesc 一致：该反解路径不恢复 DISTINCT，
         // 因为 PB 返回的聚合描述只用于执行阶段，DISTINCT 由上游计划保留。
         HasDistinct: false,
+        Filter: None,
         OrderByItems: Vec::new(),
         GroupingID: 0,
     })

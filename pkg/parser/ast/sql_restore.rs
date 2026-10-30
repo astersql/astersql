@@ -261,6 +261,7 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             Name,
             Args,
             Distinct,
+            Filter,
             ..
         } => {
             let args = Args
@@ -269,7 +270,12 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                 .collect::<Result<Vec<_>, _>>()?
                 .join(",");
             let distinct = if *Distinct { "DISTINCT " } else { "" };
-            Ok(format!("{Name}({distinct}{args})"))
+            let filter = Filter
+                .as_deref()
+                .map(|f| restore_expr(f).map(|s| format!(" FILTER (WHERE {s})")))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(format!("{Name}({distinct}{args}){filter}"))
         }
         ExprKind::WindowFunction {
             Name, Args, Spec, ..

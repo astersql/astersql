@@ -316,6 +316,7 @@ pub(crate) fn is_scalar_count_non_null_constant(statement: &ast::SelectStmt) -> 
             Name,
             Args,
             Distinct: false,
+            Filter: None,
             Order,
         } if Name.eq_ignore_ascii_case("count")
             && Order.is_empty()

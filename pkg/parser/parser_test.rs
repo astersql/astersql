@@ -6179,3 +6179,37 @@ fn pg08_37_text_concat_parser() {
         }
     }
 }
+
+#[test]
+fn pg09_07_filter_ast() {
+    let sql = "SELECT count(*) FILTER (WHERE keep) AS c";
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let stmt = pg.ParseOneStmt(sql, "", "").unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+    assert!(
+        matches!(&expr.Kind, parser_ast::ExprKind::AggregateFunction { Filter: Some(filter), .. }
+        if matches!(&filter.Kind, parser_ast::ExprKind::Column(c) if c.Name.L == "keep"))
+    );
+    let restored = parser_ast::sql_restore::restore_expr(expr).unwrap();
+    assert!(restored.contains("FILTER (WHERE"));
+    pg.ParseOneStmt(&format!("SELECT {restored}"), "", "")
+        .unwrap();
+    let mut mysql = parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(mysql.ParseOneStmt(sql, "", "").is_err());
+    assert!(
+        pg.ParseOneStmt("SELECT count(*) FILTER (WHERE)", "", "")
+            .is_err()
+    );
+    assert!(
+        pg.ParseOneStmt(
+            "SELECT count(*) FILTER (WHERE true) FILTER (WHERE true)",
+            "",
+            ""
+        )
+        .is_err()
+    );
+}

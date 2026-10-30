@@ -332,6 +332,17 @@ fn update_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
     row: chunk::Row,
 ) -> AdapterResult {
+    if let Some(filter) = &function.Filter {
+        let (keep, _) = astersql_expression::EvalBool(
+            eval,
+            &astersql_expression::CNFExprs(vec![filter.clone()]),
+            row.clone(),
+        )
+        .map_err(|error| astersql_errors::New(error.to_string()))?;
+        if !keep {
+            return Ok(());
+        }
+    }
     if let AggregateValue::CountExtrema { function, state } = &mut state.value {
         function
             .update_partial_result(eval, &[row], state)

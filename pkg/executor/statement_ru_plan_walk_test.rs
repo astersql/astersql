@@ -1927,6 +1927,7 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
         ));
         agg.GroupByItems = vec![Box::new(astersql_expression::Column::default()); 2];
         agg.AggFuncs = vec![astersql_expression_aggregation::AggFuncDesc {
+            Filter: None,
             baseFuncDesc: astersql_expression_aggregation::baseFuncDesc {
                 Name: "count".into(),
                 Args: Vec::new(),

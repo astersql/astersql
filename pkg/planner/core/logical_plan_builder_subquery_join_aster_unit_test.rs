@@ -18,6 +18,7 @@ fn count_node(value: i64) -> ast::ExprNode {
     ast::ExprNode {
         node_text: Default::default(),
         Kind: ast::ExprKind::AggregateFunction {
+            Filter: None,
             Name: ast::AggFuncCount.to_owned(),
             Args: vec![ast::NewValueExpr(value, "", "")],
             Distinct: false,

@@ -951,6 +951,7 @@
 %token pgTypecast 58270;
 %token pgInterval 58271;
 %token pgCatalogDivide 58272;
+%token pgFilter 58273;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -2611,6 +2612,7 @@ SimpleExpr : Literal;
 SimpleExpr : paramMarker @action;
 SimpleExpr : Variable;
 SimpleExpr : SumExpr;
+SimpleExpr : SumExpr pgFilter "(" "WHERE" Expression ")" @action;
 SimpleExpr : "!" SimpleExpr %prec neg @action;
 SimpleExpr : "~" SimpleExpr %prec neg @action;
 SimpleExpr : "-" SimpleExpr %prec neg @action;

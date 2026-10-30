@@ -680,3 +680,55 @@ fn pg09_06_execution_boundaries() {
             .is_finite()
     );
 }
+
+#[test]
+fn pg09_07_execution() {
+    // Each input page contains one row; filters must neither remove groups nor
+    // leak selection into the sibling aggregate, including after reopen.
+    for grouped in [false, true] {
+        let source = Arc::new(MemoryRetriever::default());
+        for (handle, value) in [(1, 10), (2, 10), (3, 20)] {
+            let (key, row) = encode_row(98, handle, value, "unused");
+            source.Put(key, row);
+        }
+        let mut p = hash_agg_plan(grouped);
+        let all = p.BasePhysicalAgg.AggFuncs[0].clone();
+        let mut excluded = all.Clone();
+        excluded.Filter = Some(Box::new(astersql_expression::NewInt64Const(0)));
+        let mut null_filter = all.Clone();
+        null_filter.Filter = Some(Box::new(astersql_expression::NewNull()));
+        let mut sum = excluded.Clone();
+        sum.Name = "sum".into();
+        sum.Args = vec![Box::new(astersql_expression::Column::new(
+            *astersql_expression::types::NewFieldType(TypeLonglong),
+            1,
+            1,
+            0,
+        ))];
+        let mut avg = sum.Clone();
+        avg.Name = "avg".into();
+        assert!(!all.Equal(context().GetExprCtx().GetEvalCtx(), &excluded));
+        assert!(excluded.Equal(context().GetExprCtx().GetEvalCtx(), &excluded.Clone()));
+        p.BasePhysicalAgg.AggFuncs = vec![all, excluded, null_filter, sum, avg];
+        let mut e = crate::builder::BuildTypedPhysicalPlan(&p, source, ranges(), 1, 1).unwrap();
+        for _ in 0..2 {
+            e.Open().unwrap();
+            let mut out = e.NewChunk();
+            let mut counts = vec![];
+            loop {
+                e.Next(&mut out).unwrap();
+                if out.NumRows() == 0 {
+                    break;
+                }
+                let r = out.GetRow(0);
+                counts.push(r.GetInt64(0));
+                assert_eq!(r.GetInt64(1), 0);
+                assert_eq!(r.GetInt64(2), 0);
+                assert!(r.IsNull(3));
+                assert!(r.IsNull(4));
+            }
+            assert_eq!(counts, if grouped { vec![2, 1] } else { vec![3] });
+            e.Close().unwrap();
+        }
+    }
+}

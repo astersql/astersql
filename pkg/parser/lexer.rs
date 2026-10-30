@@ -346,6 +346,13 @@ impl Scanner {
                 self.lastKeyword = keyword;
             }
         }
+        // FILTER is a PG aggregate suffix; quoted identifiers retain their name.
+        if self.postgres && tok == token::identifier && lit.eq_ignore_ascii_case("filter")
+            && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`')
+            && self.getNextToken() == '(' as i32
+        {
+            tok = token::pgFilter;
+        }
         // VARIADIC is a reserved PostgreSQL argument modifier, not a column
         // identifier. Its unsupported grammar must reject at this original
         // token, before lookahead advances to ARRAY. Quoted identifiers remain

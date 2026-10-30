@@ -1102,8 +1102,36 @@ impl ConcreteSession {
         name: &str,
         args: &[ast::ExprNode],
         distinct: bool,
+        filter: Option<&ast::ExprNode>,
         rows: &[HashMap<String, Option<String>>],
     ) -> SessionResult<Option<String>> {
+        // Filter each aggregate's input before evaluating its arguments. Group
+        // formation and sibling aggregates continue to see the original rows.
+        let filtered;
+        let rows = if let Some(filter) = filter {
+            filtered = rows
+                .iter()
+                .filter_map(|row| {
+                    match self
+                        .relational_query_expression_value(filter, row, None)
+                        .and_then(|value| {
+                            astersql_expression::pg_boolean_cast(
+                                value.as_deref(),
+                                astersql_expression::PgBooleanCast::TextToBool,
+                            )
+                            .map(|v| v.as_deref() == Some("1"))
+                            .map_err(pg_bool_session_error)
+                        }) {
+                        Ok(true) => Some(Ok(row.clone())),
+                        Ok(false) => None,
+                        Err(error) => Some(Err(error)),
+                    }
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            filtered.as_slice()
+        } else {
+            rows
+        };
         let name = name.to_ascii_lowercase();
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL && name == "count" && !distinct {
             let present = rows
@@ -2150,11 +2178,13 @@ impl ConcreteSession {
                 Name,
                 Args,
                 Distinct,
+                Filter,
                 ..
             } => self.relational_aggregate_value(
                 Name,
                 Args,
                 *Distinct,
+                Filter.as_deref(),
                 group_rows
                     .ok_or_else(|| SessionError::new("aggregate expression has no input group"))?,
             ),
@@ -3659,6 +3689,52 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::AggregateFunction {
+                    Filter: Some(filter),
+                    ..
+                } = &input.Kind
+                {
+                    let tp = self.session.pg_case_input_type(filter, self.sources);
+                    // The shared relational type helper does not mark every
+                    // comparison carrier boolean (notably <>). They are still
+                    // predicates; scalar integers must not gain truth coercion.
+                    fn predicate(expr: &ast::ExprNode) -> bool {
+                        match &expr.Kind {
+                            ast::ExprKind::Parentheses(inner) => predicate(inner),
+                            ast::ExprKind::Binary { Op, .. } => matches!(
+                                Op.to_ascii_lowercase().as_str(),
+                                "=" | "!=" | "<>" | "<" | ">" | "<=" | ">=" | "and" | "or"
+                            ),
+                            ast::ExprKind::Unary { Op, .. } => Op.eq_ignore_ascii_case("not"),
+                            ast::ExprKind::IsNull { .. }
+                            | ast::ExprKind::IsTruth { .. }
+                            | ast::ExprKind::Like { .. }
+                            | ast::ExprKind::Between { .. }
+                            | ast::ExprKind::InList { .. }
+                            | ast::ExprKind::ExistsSubquery { .. } => true,
+                            _ => false,
+                        }
+                    }
+                    if !predicate(filter)
+                        && tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
+                        && tp.GetType() != astersql_parser_mysql::r#type::TypeNull
+                    {
+                        self.scalar_cast_error =
+                            Some(super::relational_value::pg_bytea_input_error(
+                                "42804",
+                                "argument of FILTER must be type boolean",
+                            ));
+                    }
+                    if relational_expression_has_aggregate(filter)
+                        || relational_expression_has_window(filter)
+                    {
+                        self.scalar_cast_error =
+                            Some(super::relational_value::pg_bytea_input_error(
+                                "42803",
+                                "aggregate and window functions are not allowed in FILTER",
+                            ));
+                    }
+                }
                 // MySQL permits a DISTINCT argument tuple; PostgreSQL COUNT
                 // has only the star and single-expression signatures.
                 if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &input.Kind

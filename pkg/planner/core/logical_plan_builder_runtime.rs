@@ -3761,6 +3761,7 @@ fn build_select_aggregation(
             Args,
             Distinct,
             Order,
+            Filter,
         } = &ast_expression.Kind
         else {
             continue;
@@ -3806,6 +3807,10 @@ fn build_select_aggregation(
         };
         let mut function =
             aggregation::NewAggFuncDesc(builder.ctx.GetExprCtx(), Name, arguments, *Distinct)?;
+        function.Filter = Filter
+            .as_deref()
+            .map(|filter| rewrite_for_plan(builder, filter, source.as_ref(), table_info))
+            .transpose()?;
         function.OrderByItems = Order
             .iter()
             .map(|item| {
@@ -3852,6 +3857,9 @@ fn build_select_aggregation(
         })
         .collect::<Vec<_>>();
     for function in &mut functions {
+        if let Some(filter) = &mut function.Filter {
+            *filter = resolve_group_input_expression(filter, source.as_ref());
+        }
         for argument in &mut function.Args {
             *argument = resolve_group_input_expression(argument, source.as_ref());
         }

@@ -741,7 +741,12 @@ impl Children for ExprKind {
             Self::Column(column) => column.visit(_v),
             Self::Variable { Value, .. } => Value.visit(_v),
             Self::Function { Args, .. } => Args.visit(_v),
-            Self::AggregateFunction { Args, Order, .. } => Args.visit(_v) && Order.visit(_v),
+            Self::AggregateFunction {
+                Args,
+                Order,
+                Filter,
+                ..
+            } => Args.visit(_v) && Order.visit(_v) && Filter.visit(_v),
             Self::Binary { L, R, .. } => L.visit(_v) && R.visit(_v),
             Self::Unary { V, .. } => V.visit(_v),
             Self::IsTruth { Expr, .. } => Expr.visit(_v),
@@ -818,9 +823,12 @@ impl MutChildren for ExprKind {
             Self::Column(column) => column.visit_mut(_v),
             Self::Variable { Value, .. } => Value.visit_mut(_v),
             Self::Function { Args, .. } => Args.visit_mut(_v),
-            Self::AggregateFunction { Args, Order, .. } => {
-                Args.visit_mut(_v) && Order.visit_mut(_v)
-            }
+            Self::AggregateFunction {
+                Args,
+                Order,
+                Filter,
+                ..
+            } => Args.visit_mut(_v) && Order.visit_mut(_v) && Filter.visit_mut(_v),
             Self::Binary { L, R, .. } => L.visit_mut(_v) && R.visit_mut(_v),
             Self::Unary { V, .. } => V.visit_mut(_v),
             Self::IsTruth { Expr, .. } => Expr.visit_mut(_v),

@@ -36,6 +36,8 @@ pub struct AggFuncDesc {
     pub Mode: AggFunctionMode,
     /// 是否带 DISTINCT。
     pub HasDistinct: bool,
+    /// Only true input rows evaluate arguments and enter transition.
+    pub Filter: Option<expression::ExprBox>,
     /// GROUP_CONCAT 等使用的 ORDER BY 项。
     pub OrderByItems: Vec<planner_util::ByItems>,
     /// GROUPING 相关标识（rollup 等）。
@@ -67,6 +69,7 @@ pub fn NewAggFuncDesc(
         baseFuncDesc: newBaseFuncDesc(ctx, name, args)?,
         Mode: CompleteMode,
         HasDistinct: has_distinct,
+        Filter: None,
         OrderByItems: Vec::new(),
         GroupingID: 0,
     })
@@ -88,6 +91,7 @@ pub fn NewAggFuncDescForWindowFunc(
         baseFuncDesc: base,
         Mode: CompleteMode,
         HasDistinct: has_distinct,
+        Filter: None,
         OrderByItems: Vec::new(),
         GroupingID: 0,
     })
@@ -108,6 +112,7 @@ impl AggFuncDesc {
             },
             Mode: CompleteMode,
             HasDistinct: has_distinct,
+            Filter: None,
             OrderByItems: Vec::new(),
             GroupingID: 0,
         }
@@ -118,6 +123,10 @@ impl AggFuncDesc {
         self.baseFuncDesc.Hash64(hasher);
         hasher.HashInt(self.Mode as isize);
         hasher.HashBool(self.HasDistinct);
+        hasher.HashBool(self.Filter.is_some());
+        if let Some(filter) = &self.Filter {
+            filter.Hash64(hasher);
+        }
         hasher.HashInt(self.OrderByItems.len() as isize);
         for item in &self.OrderByItems {
             item.Hash64(hasher);
@@ -130,6 +139,11 @@ impl AggFuncDesc {
             return false;
         };
         self.Mode == other.Mode
+            && match (&self.Filter, &other.Filter) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.Equals(right.as_any()),
+                _ => false,
+            }
             && self.HasDistinct == other.HasDistinct
             && self.OrderByItems.len() == other.OrderByItems.len()
             && self
@@ -162,12 +176,22 @@ impl AggFuncDesc {
             }
         }
         result.push(')');
+        if let Some(filter) = &self.Filter {
+            result.push_str(&format!(
+                " filter (where {})",
+                filter.StringWithCtx(ctx, redact)
+            ));
+        }
         result
     }
 
     /// 带求值上下文的语义相等。
     pub fn Equal(&self, ctx: &dyn expression::EvalContext, other: &AggFuncDesc) -> bool {
-        self.HasDistinct == other.HasDistinct
+        (match (&self.Filter, &other.Filter) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.Equal(ctx, right.as_ref()),
+            _ => false,
+        }) && self.HasDistinct == other.HasDistinct
             && self.OrderByItems.len() == other.OrderByItems.len()
             && self
                 .OrderByItems
@@ -183,6 +207,7 @@ impl AggFuncDesc {
             baseFuncDesc: self.baseFuncDesc.clone_desc(),
             Mode: self.Mode,
             HasDistinct: self.HasDistinct,
+            Filter: self.Filter.clone(),
             OrderByItems: self
                 .OrderByItems
                 .iter()
@@ -210,6 +235,7 @@ impl AggFuncDesc {
             },
             Mode: FinalMode,
             HasDistinct: self.HasDistinct,
+            Filter: None,
             OrderByItems: Vec::new(),
             GroupingID: 0,
         };
@@ -460,7 +486,10 @@ impl AggFuncDesc {
 
     /// 估算描述符内存占用（含 ORDER BY 项）。
     pub fn MemoryUsage(&self) -> i64 {
-        self.baseFuncDesc.MemoryUsage()
+        self.Filter
+            .as_ref()
+            .map_or(0, |filter| filter.MemoryUsage())
+            + self.baseFuncDesc.MemoryUsage()
             + std::mem::size_of::<isize>() as i64
             + std::mem::size_of::<bool>() as i64
             + self
