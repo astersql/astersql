@@ -18,6 +18,8 @@
 
 ## 主要符号
 
+- `BuildTypedPhysicalPlanWithRuntimeStats`、`TypedRuntimeStats`、`observe_typed_executor`：刷新观察路径可选的真实逐算子采样入口和 statement-owned collector；普通入口不启用。
+
 - `Executor` / `ExecutorBox`：`Executor` 是 `ExecExecutor` 的空扩展 trait，因 blanket impl，任何真实 adapter executor 都能装箱。`builder_contract_test.rs` 验证装箱后仍具有 `Open`、typed `Chunk`、`Next` 和 `Close` 生命周期，而非标记桩。
 - `BuildError`：构建期错误载体。`executorBuilder` 对外沿用 Go 风格的 `Option<ExecutorBox>`，把错误保存到 `err`；typed 入口和独立 helper 则直接返回 `Result<_, BuildError>`。
 - `TypedScanBinding` 与 `BuildTypedPhysicalPlanWithBindings`：为一棵树中的每个扫描绑定精确 `table_id`、`Retriever` 和已编码 `KeyRange`。`typed_scan_binding` 按遍历顺序消费绑定，多表 Hash Join 因而不会错误复用单一数据源。
@@ -30,6 +32,8 @@
 - 关键纯函数包括 `buildIdxColsConcatHandleCols`、`buildHandleColsForExec`、`getAssignFlag`、`retrieveColumnIdxsUsedByChild`、`buildIndexScanOutputOffsets`、`buildRangesForIndexJoin`、`partitionPruning` 和 `InitSnapshotWithSessCtx`。这些函数把易错的 schema/range/选项推导从具体算子创建中分离出来。
 
 ## 执行流程
+
+05fd982b2d 的 PROFILE 局部接线增加 BuildTypedPhysicalPlanWithRuntimeStats：在既有递归物理树与 index pushdown 装配边界可选装饰每个实际算子，复用 RuntimeStatsColl/BasicRuntimeStats。Open/Close 记录真实耗时；Next/NextWithContext 记录实际输出 Chunk 行数、循环与耗时，错误保持原样传播且不计失败页中的残留行。旧入口传 None，不分配 collector 或改变运行路径。装饰器透传 schema、chunk config、写入/外键/锁键/扫描能力；仅内部观察路径使用，未提供 detach。collector 由调用者拥有，互斥锁只保护登记/记录，不跨子算子调用持有，避免嵌套采样死锁。此变更对应 Go mv_refresh_observability.go 的 Analyze=true/RuntimeStatsColl 契约及必要的本地 typed 接线，没有扩展新的统计子系统。
 
 1. 常规路径由调用方以 `newExecutorBuilder` 创建 builder。构造函数从依赖对象读取 stale-read、事务 scope 与副本读取 scope，并把错误、锁、DML、UnionScan 和并发锁状态初始化为空。
 2. `executorBuilder::build` 接收 `Option<Plan>`：空计划返回空；`PhysicalWrapper` 递归解包；其余变体分派到对应 `buildXxx`。叶节点调用 `dependencies.build_executor(kind, plan, [])`，复合节点先构建必要子节点，再把拥有所有权的 children 交给依赖层。

@@ -16,6 +16,7 @@
 use super::mview_source::{RefreshResources, definition};
 use super::*;
 use astersql_executor::adapter::{ExecExecutor, ExecutionContext};
+use astersql_executor::builder::TypedRuntimeStats;
 use astersql_executor::mview_delta_merge_builder::ReaderSnapshot;
 use astersql_executor::mview_refresh_steps::{ObserveStep, StepObserver, new_step_set};
 use astersql_parser_ast::RefreshMaterializedViewMode as Mode;
@@ -44,6 +45,53 @@ pub(super) fn sql(session: &ConcreteSession, statement: &str) -> SessionResult<(
         drain.and(close)?;
     }
     Ok(())
+}
+fn sql_with_runtime_stats(
+    session: &ConcreteSession,
+    statement: &str,
+    stats: Option<&TypedRuntimeStats>,
+) -> SessionResult<()> {
+    let Some(stats) = stats else {
+        return sql(session, statement);
+    };
+    stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .GetBasicRuntimeStats(0, true);
+    let started = Instant::now();
+    let mut returned = 0;
+    let result = (|| {
+        for mut set in session.execute(statement)? {
+            let drain: SessionResult<()> = (|| {
+                while set.next_row()?.is_some() {
+                    returned += 1;
+                }
+                Ok(())
+            })();
+            let close = set.close();
+            drain.and(close)?;
+        }
+        Ok(())
+    })();
+    stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .GetBasicRuntimeStats(0, false)
+        .expect("registered write stats")
+        .Record(started.elapsed(), returned);
+    result
+}
+fn step_with_write_plan(
+    observer: &mut Option<&mut dyn StepObserver>,
+    step: &ObserveStep,
+    plan: Option<Vec<Vec<String>>>,
+    session: &ConcreteSession,
+    statement: &str,
+) -> SessionResult<()> {
+    let stats = observer.as_ref().map(|_| new_refresh_runtime_stats());
+    step_with_runtime_plan(observer, step, plan, stats.as_ref(), || {
+        sql_with_runtime_stats(session, statement, stats.as_ref())
+    })
 }
 fn rows(session: &ConcreteSession, statement: &str) -> SessionResult<Vec<Vec<String>>> {
     let mut sets = session.execute(statement)?;
@@ -100,12 +148,28 @@ fn step_with_plan<T>(
     plan_rows: Option<Vec<Vec<String>>>,
     run: impl FnOnce() -> SessionResult<T>,
 ) -> SessionResult<T> {
+    step_with_runtime_plan(observer, step, plan_rows, None, run)
+}
+fn step_with_runtime_plan<T>(
+    observer: &mut Option<&mut dyn StepObserver>,
+    step: &ObserveStep,
+    plan_rows: Option<Vec<Vec<String>>>,
+    stats: Option<&TypedRuntimeStats>,
+    run: impl FnOnce() -> SessionResult<T>,
+) -> SessionResult<T> {
     if let Some(observer) = observer.as_deref_mut() {
         observer.on_step_start(step, SystemTime::now());
     }
     let result = run();
     if let (Some(observer), Some(rows)) = (observer.as_deref_mut(), plan_rows) {
-        observer.on_step_plan_rows(step, rows);
+        observer.on_step_plan_rows(
+            step,
+            if let Some(stats) = stats {
+                analyze_refresh_plan_rows(rows, stats)
+            } else {
+                rows
+            },
+        );
     }
     let error = result.as_ref().err().map(ToString::to_string);
     if let Some(observer) = observer.as_deref_mut() {
@@ -120,9 +184,19 @@ fn timed_step<T>(
     current: &ObserveStep,
     run: impl FnOnce() -> SessionResult<T>,
 ) -> SessionResult<T> {
+    timed_step_with_plan(duration, observer, current, None, None, run)
+}
+fn timed_step_with_plan<T>(
+    duration: &mut Duration,
+    observer: &mut Option<&mut dyn StepObserver>,
+    current: &ObserveStep,
+    plan: Option<Vec<Vec<String>>>,
+    stats: Option<&TypedRuntimeStats>,
+    run: impl FnOnce() -> SessionResult<T>,
+) -> SessionResult<T> {
     let started = Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        step(observer, current, run)
+        step_with_runtime_plan(observer, current, plan, stats, run)
     }));
     *duration = started.elapsed();
     match result {
@@ -624,11 +698,10 @@ impl RefreshMaterializedViewExec {
                     .session_vars
                     .StmtCtx
                     .SetMessage(refresh_result.1.clone());
-                if let Some(report) = maintenance.LastDmlReport() {
-                    let mut report = report;
-                    report.AffectedRows = affected;
-                    self.session.state.borrow_mut().last_dml_report = Some(report);
-                }
+                let mut report = maintenance.LastDmlReport().unwrap_or_default();
+                report.AffectedRows = affected;
+                report.Committed = true;
+                self.session.state.borrow_mut().last_dml_report = Some(report);
                 astersql_metrics::executor::RecordRefreshAffectedRows(affected);
                 Ok(())
             },
@@ -816,19 +889,40 @@ impl RefreshMaterializedViewExec {
     ) -> SessionResult<()> {
         let qualified = format!("{}.{}", ident(database), ident(&table.Name.O));
         if mode == Mode::CompleteInPlace {
-            step(observer, &steps[3], || {
-                sql(maintenance, &format!("DELETE FROM {qualified}"))
-            })?;
-            let deleted = maintenance.protocol_state().affected_rows;
-            step(observer, &steps[4], || {
-                sql(
-                    maintenance,
-                    &format!(
-                        "INSERT INTO {qualified} {}",
-                        table.MaterializedView.as_ref().unwrap().SQLContent
-                    ),
+            let delete_plan = if observer.is_some() {
+                Some(
+                    maintenance
+                        .refresh_write_plan("Delete", &format!("SELECT * FROM {qualified}"))?,
                 )
-            })?;
+            } else {
+                None
+            };
+            step_with_write_plan(
+                observer,
+                &steps[3],
+                delete_plan,
+                maintenance,
+                &format!("DELETE FROM {qualified}"),
+            )?;
+            let deleted = maintenance.protocol_state().affected_rows;
+            let insert_plan = if observer.is_some() {
+                Some(maintenance.refresh_write_plan(
+                    "Insert",
+                    &table.MaterializedView.as_ref().unwrap().SQLContent,
+                )?)
+            } else {
+                None
+            };
+            step_with_write_plan(
+                observer,
+                &steps[4],
+                insert_plan,
+                maintenance,
+                &format!(
+                    "INSERT INTO {qualified} {}",
+                    table.MaterializedView.as_ref().unwrap().SQLContent
+                ),
+            )?;
             let inserted = maintenance.protocol_state().affected_rows;
             maintenance
                 .session_vars
@@ -890,10 +984,19 @@ impl RefreshMaterializedViewExec {
             *maintenance.mview_scan.borrow_mut() =
                 Some((definition.mlog_table_id, Arc::new(AtomicU64::new(0))));
         }
+        let runtime_stats = observer.as_ref().map(|_| new_refresh_runtime_stats());
         let child = maintenance
-            .compile_mview_source(source, read_ts)
+            .compile_mview_source_with_stats(source, read_ts, runtime_stats.as_ref())
             .map_err(|e| SessionError::new(e.to_string()))?;
-        let source_plan_rows = maintenance.mview_plan_rows.borrow().clone();
+        let mut source_plan_rows = vec![vec![
+            if mode == Mode::Fast {
+                "MViewDeltaMerge_0"
+            } else {
+                "MViewCompleteDeltaApply_0"
+            }
+            .into(),
+        ]];
+        source_plan_rows.extend(maintenance.mview_plan_rows.borrow().clone());
         let slow_log =
             super::typed_adapter_bridge::SessionBoundAdapterOwner::new(maintenance.clone());
         slow_log.effects.borrow_mut().process_started = Some(SystemTime::now());
@@ -936,43 +1039,51 @@ impl RefreshMaterializedViewExec {
             )
         }
         .map_err(|e| SessionError::new(e.to_string()))?;
-        step_with_plan(observer, &steps[3], Some(source_plan_rows), || {
-            executor
-                .Open()
-                .map_err(|e| SessionError::new(e.to_string()))?;
-            let mut output = executor.NewChunk();
-            let result = executor
-                .NextWithContext(
-                    &ExecutionContext {
-                        sql_killer: Some(maintenance.sql_killer.clone()),
-                        ..Default::default()
-                    },
-                    &mut output,
-                )
-                .map_err(|e| SessionError::new(e.to_string()));
-            let close = executor
-                .Close()
-                .map_err(|e| SessionError::new(e.to_string()));
-            let result = result.and(close);
-            astersql_executor::adapter::AdapterRuntime::SlowQuery(
-                &slow_log,
-                read_ts,
-                &slow_text,
-                result.is_ok(),
-                false,
-            );
-            if result.is_ok() {
-                maintenance
-                    .session_vars
-                    .StmtCtx
-                    .SetAffectedRows(statement_context.AffectedRows());
-                maintenance
-                    .session_vars
-                    .StmtCtx
-                    .SetMessage(statement_context.GetMessage());
-            }
-            result
-        })
+        let mut executor =
+            astersql_executor::builder::observe_typed_executor(executor, 0, runtime_stats.as_ref());
+        step_with_runtime_plan(
+            observer,
+            &steps[3],
+            Some(source_plan_rows),
+            runtime_stats.as_ref(),
+            || {
+                executor
+                    .Open()
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                let mut output = executor.NewChunk();
+                let result = executor
+                    .NextWithContext(
+                        &ExecutionContext {
+                            sql_killer: Some(maintenance.sql_killer.clone()),
+                            ..Default::default()
+                        },
+                        &mut output,
+                    )
+                    .map_err(|e| SessionError::new(e.to_string()));
+                let close = executor
+                    .Close()
+                    .map_err(|e| SessionError::new(e.to_string()));
+                let result = result.and(close);
+                astersql_executor::adapter::AdapterRuntime::SlowQuery(
+                    &slow_log,
+                    read_ts,
+                    &slow_text,
+                    result.is_ok(),
+                    false,
+                );
+                if result.is_ok() {
+                    maintenance
+                        .session_vars
+                        .StmtCtx
+                        .SetAffectedRows(statement_context.AffectedRows());
+                    maintenance
+                        .session_vars
+                        .StmtCtx
+                        .SetMessage(statement_context.GetMessage());
+                }
+                result
+            },
+        )
     }
     fn out_of_place(
         &mut self,
@@ -990,38 +1101,61 @@ impl RefreshMaterializedViewExec {
         timed_step(&mut self.timings.create_shadow, observer, &steps[1], || {
             shadow.create()
         })?;
-        let build = timed_step(&mut self.timings.execution, observer, &steps[2], || {
-            let source = &table.MaterializedView.as_ref().unwrap().SQLContent;
-            if maintenance.state.borrow().transaction.is_some() {
-                return Err(SessionError::new(
-                    "refresh materialized view complete OUT OF PLACE: build session unexpectedly in transaction",
-                ));
-            }
+        let load_plan = if observer.is_some() {
             let store = maintenance
                 .domain
                 .storage()
                 .with_storage(|store| store.Name());
-            let sql_text = build_shadow_sql(
-                database,
-                &shadow.name,
-                table,
-                &store,
-                maintenance
-                    .session_vars
-                    .GetSystemVar("tidb_mview_maintain_import_threads")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0),
-                &maintenance
-                    .session_vars
-                    .GetSystemVar("tidb_mview_maintain_import_disk_quota")
-                    .unwrap_or_default(),
-            )?;
-            sql(maintenance, &sql_text)?;
-            let inserted = maintenance.protocol_state().affected_rows;
-            let info: serde_json::Value =
-                serde_json::from_str(&maintenance.state.borrow().last_query_info)
-                    .map_err(|e| session_error("read shadow build query info", e))?;
-            let actual_read = info
+            Some(maintenance.refresh_write_plan(
+                if store == "TiKV" {
+                    "ImportInto"
+                } else {
+                    "Insert"
+                },
+                &table.MaterializedView.as_ref().unwrap().SQLContent,
+            )?)
+        } else {
+            None
+        };
+        let load_stats = observer.as_ref().map(|_| new_refresh_runtime_stats());
+        let build = timed_step_with_plan(
+            &mut self.timings.execution,
+            observer,
+            &steps[2],
+            load_plan,
+            load_stats.as_ref(),
+            || {
+                let source = &table.MaterializedView.as_ref().unwrap().SQLContent;
+                if maintenance.state.borrow().transaction.is_some() {
+                    return Err(SessionError::new(
+                        "refresh materialized view complete OUT OF PLACE: build session unexpectedly in transaction",
+                    ));
+                }
+                let store = maintenance
+                    .domain
+                    .storage()
+                    .with_storage(|store| store.Name());
+                let sql_text = build_shadow_sql(
+                    database,
+                    &shadow.name,
+                    table,
+                    &store,
+                    maintenance
+                        .session_vars
+                        .GetSystemVar("tidb_mview_maintain_import_threads")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                    &maintenance
+                        .session_vars
+                        .GetSystemVar("tidb_mview_maintain_import_disk_quota")
+                        .unwrap_or_default(),
+                )?;
+                sql_with_runtime_stats(maintenance, &sql_text, load_stats.as_ref())?;
+                let inserted = maintenance.protocol_state().affected_rows;
+                let info: serde_json::Value =
+                    serde_json::from_str(&maintenance.state.borrow().last_query_info)
+                        .map_err(|e| session_error("read shadow build query info", e))?;
+                let actual_read = info
                 .get("start_ts")
                 .and_then(serde_json::Value::as_u64)
                 .filter(|value| *value > 0)
@@ -1030,14 +1164,15 @@ impl RefreshMaterializedViewExec {
                         "refresh materialized view complete OUT OF PLACE: invalid build read tso",
                     )
                 })?;
-            shadow.read_ts.set(actual_read);
-            maintenance.session_vars.StmtCtx.SetAffectedRows(inserted);
-            maintenance
-                .session_vars
-                .StmtCtx
-                .SetMessage(format!("Rows inserted: {inserted}  Updated: 0  Deleted: 0"));
-            Ok(())
-        });
+                shadow.read_ts.set(actual_read);
+                maintenance.session_vars.StmtCtx.SetAffectedRows(inserted);
+                maintenance
+                    .session_vars
+                    .StmtCtx
+                    .SetMessage(format!("Rows inserted: {inserted}  Updated: 0  Deleted: 0"));
+                Ok(())
+            },
+        );
         build?;
         let load_result = (
             maintenance.session_vars.StmtCtx.AffectedRows(),
@@ -1774,12 +1909,26 @@ impl Drop for ShadowGuard {
 impl ConcreteSession {
     pub(super) fn execute_cancel_refresh_job(&self, job: i64) -> SessionResult<()> {
         if job <= 0 {
-            return Err(SessionError::new(
-                "invalid materialized view refresh job ID",
-            ));
+            return Err(SessionError::new(format!(
+                "cannot cancel materialized view refresh job {job}"
+            )));
         }
         let history = ConcreteSession::new(self.domain.clone());
         history.state.borrow_mut().in_restricted_sql = true;
+        if self.login_user.is_some()
+            && self
+                .domain
+                .info_schema()
+                .TableByName(
+                    &astersql_infoschema::CiString::new("mysql"),
+                    &astersql_infoschema::CiString::new("tidb_mview_refresh_hist"),
+                )
+                .is_err()
+        {
+            return Err(SessionError::new(
+                "refresh materialized view: required system table mysql.tidb_mview_refresh_hist does not exist",
+            ));
+        }
         let target = rows(
             &history,
             &format!(
@@ -1788,12 +1937,7 @@ impl ConcreteSession {
         )?;
         let target = target
             .first()
-            .filter(|row| {
-                row.get(1).is_some_and(|status| status == "running")
-                    && row.get(2).is_some_and(|value| {
-                        matches!(value.to_ascii_lowercase().as_str(), "null" | "<nil>")
-                    })
-            })
+            .filter(|row| row.get(1).is_some_and(|status| status == "running"))
             .ok_or_else(|| {
                 SessionError::new(format!("cannot cancel materialized view refresh job {job}"))
             })?;
@@ -1803,19 +1947,14 @@ impl ConcreteSession {
                 .map_err(|e| session_error("read refresh cancellation target", e))?;
             let schema = self.domain.info_schema();
             let table = schema.TableByID(id).ok_or_else(|| {
-                SessionError::new(format!("cannot cancel materialized view refresh job {job}"))
+                SessionError::new(format!("refresh materialized view: cannot resolve target materialized view {id} for cancel job {job}"))
             })?;
             let meta = table
                 .ModelMeta()
                 .map_err(|e| session_error("read cancellation target metadata", e))?;
-            if meta.MaterializedView.is_none() {
-                return Err(SessionError::new(format!(
-                    "cannot cancel materialized view refresh job {job}"
-                )));
-            }
             let database = astersql_infoschema::SchemaByTable(schema.as_ref(), table.Meta())
                 .ok_or_else(|| {
-                    SessionError::new("cannot resolve refresh cancellation target schema")
+                    SessionError::new(format!("refresh materialized view: cannot resolve schema for materialized view {id}"))
                 })?;
             self.check_mlog_operate_privilege(&database.name.lower, &meta.Name.L)?;
         }
@@ -1895,4 +2034,423 @@ impl ConcreteSession {
     fn evaluate_refresh_target_ts(&self, expression: &ast::ExprNode) -> SessionResult<u64> {
         self.evaluate_stale_read_ts(expression)
     }
+}
+
+impl ConcreteSession {
+    pub(super) fn execute_refresh_sql(
+        &self,
+        statement: &ast::RefreshMaterializedViewStmt,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
+        use ast::RefreshMaterializedViewObserveType as Observe;
+        if self.sql_dialect() != ast::SqlDialect::MySQL {
+            return Err(SessionError::new(
+                "materialized view refresh requires the MySQL dialect",
+            ));
+        }
+        if self.state.borrow().transaction.is_some() {
+            return Err(SessionError::new(
+                "cannot run REFRESH MATERIALIZED VIEW in explicit transaction",
+            ));
+        }
+        let mode = statement.mode().map_err(SessionError::new)?;
+        if statement.WithAsyncMode {
+            return Err(SessionError::new(
+                "refresh materialized view: WITH ASYNC MODE is not supported yet",
+            ));
+        }
+        if statement.AsOf.is_some() && mode != Mode::Fast {
+            return Err(SessionError::new(
+                "refresh materialized view: AS OF TIMESTAMP is only supported for FAST refresh",
+            ));
+        }
+        let target = statement
+            .ViewName
+            .as_ref()
+            .ok_or_else(|| SessionError::new("refresh materialized view: missing view name"))?;
+        let database = if target.Schema.L.is_empty() {
+            self.current_database()
+        } else {
+            target.Schema.O.clone()
+        };
+        self.check_mlog_operate_privilege(&database, &target.Name.L)?;
+        if statement.ObserveType != Observe::None {
+            self.check_refresh_show_privilege(&database, &target.Name.L)?;
+        }
+        let mut plain = statement.clone();
+        plain.ObserveType = Observe::None;
+        let mut executor = RefreshMaterializedViewExec::new(self.clone(), plain.clone(), false);
+        match statement.ObserveType {
+            Observe::None => {
+                executor.next(None)?;
+                Ok(None)
+            }
+            Observe::DryRun => {
+                let plans = self.refresh_dry_plans(&plain, &database)?;
+                let mut output = Vec::new();
+                for step in new_step_set(mode) {
+                    output.push(vec![format!("[{} {}]", step.id, step.name)]);
+                    if let Some(rows) = plans.get(step.name) {
+                        output.extend(format_observe_plan(rows).into_iter().map(|line| vec![line]));
+                    }
+                }
+                Ok(Some(ConcreteRecordSet::new(
+                    vec!["Refresh Plan".into()],
+                    output,
+                )))
+            }
+            Observe::Profile => {
+                let mut collector = RefreshObserveCollector::default();
+                executor.next(Some(&mut collector))?;
+                let mut output = Vec::new();
+                for step in new_step_set(mode) {
+                    let runtime = collector.steps.get(&step.id);
+                    let suffix = runtime
+                        .and_then(|r| r.start.zip(r.end).map(|(start, end)| (r, start, end)))
+                        .map(|(r, start, end)| {
+                            format!(
+                                " status:{}, time:{:?}",
+                                if r.error.is_some() {
+                                    "failed"
+                                } else {
+                                    "success"
+                                },
+                                end.duration_since(start).unwrap_or_default()
+                            )
+                        })
+                        .unwrap_or_default();
+                    output.push(vec![format!("[{} {}]{suffix}", step.id, step.name)]);
+                    if let Some(runtime) = runtime {
+                        output.extend(
+                            format_observe_profile_plan(&runtime.plans)
+                                .into_iter()
+                                .map(|line| vec![line]),
+                        );
+                    }
+                }
+                Ok(Some(ConcreteRecordSet::new(
+                    vec!["Refresh Profile".into()],
+                    output,
+                )))
+            }
+        }
+    }
+    fn refresh_write_plan(&self, operator: &str, source: &str) -> SessionResult<Vec<Vec<String>>> {
+        let source = astersql_parser::New()
+            .ParseOneStmt(source, "", "")
+            .map_err(|e| session_error("parse refresh write source", e))?;
+        let source = source
+            .into_any()
+            .downcast::<ast::SelectStmt>()
+            .map_err(|_| SessionError::new("refresh write source is not SELECT"))?;
+        let read_ts = self
+            .domain
+            .storage()
+            .with_storage(|store| store.CurrentVersion("global"))
+            .map_err(|e| session_error("read refresh write plan TSO", e))?
+            .Ver;
+        let _child = self
+            .compile_mview_source(*source, read_ts)
+            .map_err(|e| SessionError::new(e.to_string()))?;
+        // The runtime owns the write sink; compile its actual relational input
+        // instead of using the general legacy EXPLAIN placeholder.
+        let mut plan = vec![vec![format!("{operator}_0")]];
+        plan.extend(self.mview_plan_rows.borrow().clone());
+        Ok(plan)
+    }
+    fn check_refresh_show_privilege(&self, database: &str, view: &str) -> SessionResult<()> {
+        let Some(user) = self.login_user.as_deref() else {
+            return Ok(());
+        };
+        let host = self
+            .authenticated_host
+            .as_deref()
+            .or(self.login_host.as_deref())
+            .unwrap_or("%");
+        if !runtime_privilege_handle(&self.domain)
+            .Get()
+            .RequestVerification(
+                &self.active_roles.borrow(),
+                user,
+                host,
+                database,
+                view,
+                "",
+                astersql_privilege_privileges::ShowViewPriv,
+            )
+        {
+            return Err(SessionError::new(format!(
+                "SHOW VIEW command denied to user '{user}'@'{host}' for table '{view}'"
+            )));
+        }
+        Ok(())
+    }
+    fn refresh_dry_plans(
+        &self,
+        statement: &ast::RefreshMaterializedViewStmt,
+        database: &str,
+    ) -> SessionResult<HashMap<&'static str, Vec<Vec<String>>>> {
+        let mode = statement.mode().map_err(SessionError::new)?;
+        let target = statement.ViewName.as_ref().unwrap();
+        let table = self
+            .resolve_runtime_table(database, &target.Name.L)
+            .ok_or_else(|| SessionError::new("refresh materialized view target does not exist"))?;
+        let info = table
+            .MaterializedView
+            .as_ref()
+            .ok_or_else(|| SessionError::new("target is not a materialized view"))?;
+        if !info.GetInitBuildState().IsReady() {
+            return Err(SessionError::new(
+                info.GetInitBuildState()
+                    .AccessErrorMessage(&format!("{database}.{}", table.Name.O)),
+            ));
+        }
+        self.check_refresh_base_select(info)?;
+        let maintenance = ConcreteSession::new(self.domain.clone());
+        maintenance.state.borrow_mut().in_restricted_sql = true;
+        sql(&maintenance, &format!("USE {}", ident(database)))?;
+        let _settings = initialize_session(&maintenance, info, self, false)?;
+        let mut plans = HashMap::new();
+        let target_name = format!("{}.{}", ident(database), ident(&table.Name.O));
+        match mode {
+            Mode::CompleteInPlace | Mode::CompleteOutOfPlace => {
+                if mode == Mode::CompleteInPlace {
+                    plans.insert(
+                        "DATA_CHANGE_COMPLETE_DELETE",
+                        maintenance.refresh_write_plan(
+                            "Delete",
+                            &format!("SELECT * FROM {target_name}"),
+                        )?,
+                    );
+                }
+                plans.insert(
+                    if mode == Mode::CompleteInPlace {
+                        "DATA_CHANGE_COMPLETE_INSERT"
+                    } else {
+                        "OUT_OF_PLACE_LOAD_SHADOW"
+                    },
+                    maintenance.refresh_write_plan(
+                        if mode == Mode::CompleteOutOfPlace
+                            && maintenance
+                                .domain
+                                .storage()
+                                .with_storage(|store| store.Name())
+                                == "TiKV"
+                        {
+                            "ImportInto"
+                        } else {
+                            "Insert"
+                        },
+                        &info.SQLContent,
+                    )?,
+                );
+            }
+            Mode::Fast | Mode::CompleteDeltaApply => {
+                let (definition, select, _) = definition(&maintenance, database, &table)?;
+                let read_ts = self
+                    .domain
+                    .storage()
+                    .with_storage(|store| store.CurrentVersion("global"))
+                    .map_err(|e| session_error("read refresh plan TSO", e))?
+                    .Ver;
+                let (source, operator) = if mode == Mode::Fast {
+                    let history = ConcreteSession::new(self.domain.clone());
+                    let history_rows = rows(
+                        &history,
+                        &format!(
+                            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",
+                            table.ID
+                        ),
+                    )?;
+                    let watermark = history_rows.first().ok_or_else(||SessionError::new("refresh materialized view: refresh info row missing in mysql.tidb_mview_refresh_info"))?;
+                    let watermark = optional_u64(watermark.first())?.ok_or_else(|| {
+                        SessionError::new(
+                            "refresh materialized view fast: LAST_SUCCESS_READ_TSO is NULL",
+                        )
+                    })?;
+                    let target_ts = statement
+                        .AsOf
+                        .as_ref()
+                        .map(|a| self.evaluate_refresh_target_ts(&a.TsExpr))
+                        .transpose()?
+                        .unwrap_or(0);
+                    if target_ts > 0 && target_ts == watermark {
+                        return Ok(plans);
+                    }
+                    check_log_integrity(&history, &definition, watermark)?;
+                    if target_ts > 0 && target_ts < watermark {
+                        return Err(SessionError::new(format!(
+                            "refresh materialized view fast as of timestamp: target tso {target_ts} is older than LAST_SUCCESS_READ_TSO {watermark}"
+                        )));
+                    }
+                    let log = self
+                        .domain
+                        .info_schema()
+                        .TableByID(definition.mlog_table_id)
+                        .ok_or_else(|| SessionError::new("materialized view log does not exist"))?
+                        .ModelMeta()
+                        .map_err(|e| session_error("read MLog plan metadata", e))?;
+                    let (source, _) =
+                        astersql_planner_core::mview_refresh_source::BuildFastRefreshSource(
+                            &definition,
+                            &table.Name.O,
+                            &log.Name.O,
+                            &select,
+                            MViewBuildOptions {
+                                from_ts: watermark,
+                                to_ts: target_ts,
+                            },
+                        )
+                        .map_err(SessionError::new)?;
+                    (source, "MViewDeltaMerge")
+                } else {
+                    let (source, _) =
+                        astersql_planner_core::mview_refresh_source::BuildCompleteRefreshSource(
+                            &definition,
+                            &table.Name.O,
+                            *select,
+                        )
+                        .map_err(SessionError::new)?;
+                    (source, "MViewCompleteDeltaApply")
+                };
+                // Building this executor compiles its physical source without opening it:
+                // no history, watermark, shadow or table mutation is performed.
+                let _child = maintenance
+                    .compile_mview_source(source, read_ts)
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                let mut plan = vec![vec![format!("{operator}_0")]];
+                plan.extend(maintenance.mview_plan_rows.borrow().clone());
+                plans.insert(
+                    if mode == Mode::Fast {
+                        "DATA_CHANGE_FAST_MERGE"
+                    } else {
+                        "DATA_CHANGE_COMPLETE_DELTA_APPLY"
+                    },
+                    plan,
+                );
+            }
+        }
+        Ok(plans)
+    }
+}
+#[derive(Default)]
+struct RefreshStepRuntime {
+    start: Option<SystemTime>,
+    end: Option<SystemTime>,
+    error: Option<String>,
+    plans: Vec<Vec<String>>,
+}
+#[derive(Default)]
+struct RefreshObserveCollector {
+    steps: HashMap<String, RefreshStepRuntime>,
+}
+impl StepObserver for RefreshObserveCollector {
+    fn on_step_start(&mut self, step: &ObserveStep, at: SystemTime) {
+        self.steps.entry(step.id.clone()).or_default().start = Some(at);
+    }
+    fn on_step_end(&mut self, step: &ObserveStep, at: SystemTime, error: Option<&str>) {
+        let r = self.steps.entry(step.id.clone()).or_default();
+        r.end = Some(at);
+        r.error = error.map(str::to_owned);
+    }
+    fn on_step_plan_rows(&mut self, step: &ObserveStep, rows: Vec<Vec<String>>) {
+        self.steps.entry(step.id.clone()).or_default().plans = rows;
+    }
+}
+fn format_observe_plan(rows: &[Vec<String>]) -> Vec<String> {
+    rows.iter()
+        .filter(|row| !row.is_empty())
+        .map(|row| {
+            static PLAN_SUFFIX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let id = PLAN_SUFFIX
+                .get_or_init(|| {
+                    regex::Regex::new(r"_(\d+)\b").expect("constant plan suffix pattern")
+                })
+                .replace_all(&row[0], "")
+                .into_owned();
+            let mut fields = vec![id];
+            if let Some(value) = row.get(1).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+                fields.push(format!("estRows:{value}"));
+            }
+            if let Some(value) = row.get(2).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+                fields.push(format!("task:{value}"));
+            }
+            for value in row
+                .iter()
+                .skip(3)
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("N/A"))
+            {
+                fields.push(value.into());
+            }
+            format!("  {}", fields.join(" | "))
+        })
+        .collect()
+}
+
+fn new_refresh_runtime_stats() -> TypedRuntimeStats {
+    Arc::new(std::sync::Mutex::new(
+        astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None),
+    ))
+}
+fn analyze_refresh_plan_rows(
+    rows: Vec<Vec<String>>,
+    stats: &TypedRuntimeStats,
+) -> Vec<Vec<String>> {
+    let stats = stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    rows.into_iter()
+        .map(|row| {
+            let id = row
+                .first()
+                .and_then(|id| id.rsplit_once('_'))
+                .and_then(|(_, id)| id.parse::<i32>().ok());
+            let observed = id.and_then(|id| stats.GetRootStatsIfExists(id));
+            let field = |index| row.get(index).cloned().unwrap_or_default();
+            vec![
+                field(0),
+                field(1),
+                observed
+                    .map(|s| s.GetActRows().to_string())
+                    .unwrap_or_default(),
+                "root".into(),
+                String::new(),
+                id.filter(|_| observed.is_some())
+                    .map(|id| stats.GetRootStatsStringShared(id))
+                    .unwrap_or_default(),
+                field(3),
+                "N/A".into(),
+                "N/A".into(),
+            ]
+        })
+        .collect()
+}
+
+fn format_observe_profile_plan(rows: &[Vec<String>]) -> Vec<String> {
+    rows.iter()
+        .flat_map(|row| {
+            if row.len() != 9 {
+                return format_observe_plan(std::slice::from_ref(row));
+            }
+            let mut fields = format_observe_plan(&[vec![row[0].clone(), row[1].clone()]])
+                .pop()
+                .unwrap_or_default();
+            if !row[2].trim().is_empty() {
+                fields.push_str(&format!(" | actRows:{}", row[2].trim()));
+            }
+            if !row[3].trim().is_empty() {
+                fields.push_str(&format!(" | task:{}", row[3].trim()));
+            }
+            for value in row
+                .iter()
+                .skip(4)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("N/A"))
+            {
+                fields.push_str(" | ");
+                fields.push_str(value);
+            }
+            vec![fields]
+        })
+        .collect()
 }

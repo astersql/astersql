@@ -373,6 +373,7 @@ fn finalize_purge_history(session: &ConcreteSession, sql: &str) -> SessionResult
 
 fn derive_mlog_next_purge_seconds(
     log: &astersql_meta_model::TableInfo,
+    database: &str,
 ) -> SessionResult<Option<i64>> {
     let expression = log
         .MaterializedViewLog
@@ -401,7 +402,20 @@ fn derive_mlog_next_purge_seconds(
         .as_ref()
         .expect("MLog metadata")
         .PurgeScheduleSQLMode;
-    super::mview_ddl::mlog_schedule_unix_seconds_with_mode(expression, mode)
+    let next = super::mview_ddl::mlog_schedule_unix_seconds_with_mode(expression, mode)?;
+    if next.is_none() {
+        let next_expression = &log.MaterializedViewLog.as_ref().unwrap().PurgeNext;
+        super::BgLogger().log(
+            super::LogLevel::Error,
+            "purge materialized view log: automatic purge schedule disabled because NEXT expression evaluated to NULL, updating NEXT_PURGE_UNIX_SECONDS to NULL",
+            [
+                super::LogField::String("schemaName".into(), database.into()),
+                super::LogField::String("tableName".into(), log.Name.O.clone()),
+                super::LogField::String("purgeNext".into(), astersql_parser::Normalize(next_expression, "ON")),
+            ],
+        );
+    }
+    Ok(next)
 }
 
 impl ConcreteSession {
@@ -666,7 +680,9 @@ impl ConcreteSession {
                         .unwrap_or(astersql_sessionctx_vardef::DefTiDBMLogPurgeRateBudgetRatio);
                     let now = chrono::Utc::now().timestamp();
                     let schedule = if automatic {
-                        derive_mlog_next_purge_seconds(&log).ok().flatten()
+                        derive_mlog_next_purge_seconds(&log, &database)
+                            .ok()
+                            .flatten()
                     } else {
                         locked_next_time
                     };
@@ -788,7 +804,7 @@ impl ConcreteSession {
                 ))?;
             }
             if automatic {
-                let next = derive_mlog_next_purge_seconds(&log)?;
+                let next = derive_mlog_next_purge_seconds(&log, &database)?;
                 let next_sql = next.map_or_else(|| "NULL".to_owned(), |value| value.to_string());
                 maintenance.execute(&format!(
                     "update mysql.tidb_mlog_purge_info set NEXT_PURGE_UNIX_SECONDS={next_sql} where MLOG_ID={}",

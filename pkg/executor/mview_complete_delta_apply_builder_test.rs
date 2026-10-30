@@ -469,3 +469,26 @@ fn port_37a4cd4f43_complete_publishes_actual_writes_and_noops() {
     exec.Next(&mut out).unwrap();
     exec.Close().unwrap();
 }
+
+#[test]
+fn port_05fd982b2d_typed_stats_record_real_chunk_rows_and_lifecycle() {
+    use crate::adapter::ExecExecutor;
+    let stats = Arc::new(Mutex::new(
+        astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None),
+    ));
+    let dual = crate::typed_projection::TypedTableDual::new(1, vec![], 1, 32);
+    let mut executor = observe_typed_executor(Box::new(dual), 7, Some(&stats));
+    executor.Open().unwrap();
+    let mut output = executor.NewChunk();
+    executor.Next(&mut output).unwrap();
+    assert_eq!(output.NumRows(), 1);
+    executor.Next(&mut output).unwrap();
+    assert_eq!(output.NumRows(), 0);
+    executor.Close().unwrap();
+    let stats = stats.lock().unwrap();
+    assert_eq!(stats.GetPlanActRows(7), 1);
+    let text = stats.GetRootStatsStringShared(7);
+    assert!(text.contains("loops:2"), "{text}");
+    assert!(text.contains("open:"));
+    assert!(text.contains("close:"));
+}

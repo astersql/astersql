@@ -258,6 +258,15 @@ impl ConcreteSession {
         select: ast::SelectStmt,
         read_ts: u64,
     ) -> Result<ExecutorBox, BuildError> {
+        self.compile_mview_source_with_stats(select, read_ts, None)
+    }
+
+    pub(super) fn compile_mview_source_with_stats(
+        &self,
+        select: ast::SelectStmt,
+        read_ts: u64,
+        stats: Option<&astersql_executor::builder::TypedRuntimeStats>,
+    ) -> Result<ExecutorBox, BuildError> {
         let mut variables = astersql_sessionctx_variable::session::SessionVars::default();
         variables.EnableFullOuterJoin = true;
         variables.InRestrictedSQL = true;
@@ -308,7 +317,7 @@ impl ConcreteSession {
             plan_rows.push(vec![
                 plan.explain_id(&[]).to_string(),
                 plan.stats_info().RowCount.to_string(),
-                plan.tp(&[]),
+                "root".into(),
                 plan.explain_info(),
             ]);
             if let Some(scan) =
@@ -424,11 +433,12 @@ impl ConcreteSession {
                 }
             })
             .collect();
-        astersql_executor::builder::BuildTypedPhysicalPlanWithBindings(
+        astersql_executor::builder::BuildTypedPhysicalPlanWithRuntimeStats(
             physical.as_ref(),
             bindings,
             32,
             1024,
+            stats,
         )
     }
 }

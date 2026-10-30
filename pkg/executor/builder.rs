@@ -191,6 +191,7 @@ pub fn BuildTypedPhysicalPlanWithBindings(
         initial_capacity,
         maximum_chunk_size,
         false,
+        None,
     )
 }
 
@@ -228,6 +229,7 @@ pub fn BuildTypedPhysicalSelectLockPlan(
         initial_capacity,
         maximum_chunk_size,
         true,
+        None,
     )
 }
 
@@ -375,6 +377,16 @@ fn build_typed_aggregate(
 fn wrap_typed_pushdown_plan(
     plan: &dyn astersql_planner_core_base::PhysicalPlan,
     executor: ExecutorBox,
+    stats: Option<&TypedRuntimeStats>,
+) -> Result<ExecutorBox, BuildError> {
+    let executor = wrap_typed_pushdown_plan_inner(plan, executor, stats)?;
+    Ok(observe_typed_executor(executor, plan.id(), stats))
+}
+
+fn wrap_typed_pushdown_plan_inner(
+    plan: &dyn astersql_planner_core_base::PhysicalPlan,
+    executor: ExecutorBox,
+    stats: Option<&TypedRuntimeStats>,
 ) -> Result<ExecutorBox, BuildError> {
     use astersql_planner_core_operator_physicalop::{
         PhysicalIndexScan, PhysicalLimit, PhysicalProjection, PhysicalSelection, PhysicalTableScan,
@@ -389,7 +401,7 @@ fn wrap_typed_pushdown_plan(
             "typed index pushdown requires a unary canonical subtree",
         ));
     }
-    let child = wrap_typed_pushdown_plan(children[0], executor)?;
+    let child = wrap_typed_pushdown_plan(children[0], executor, stats)?;
     use astersql_planner_core_operator_physicalop::{PhysicalHashAgg, PhysicalStreamAgg};
     if let Some(aggregate) = plan
         .as_any()
@@ -436,6 +448,28 @@ fn build_typed_physical_plan(
     initial_capacity: usize,
     maximum_chunk_size: usize,
     locking: bool,
+    stats: Option<&TypedRuntimeStats>,
+) -> Result<ExecutorBox, BuildError> {
+    let executor = build_typed_physical_plan_inner(
+        plan,
+        bindings,
+        binding_index,
+        initial_capacity,
+        maximum_chunk_size,
+        locking,
+        stats,
+    )?;
+    Ok(observe_typed_executor(executor, plan.id(), stats))
+}
+
+fn build_typed_physical_plan_inner(
+    plan: &dyn astersql_planner_core_base::PhysicalPlan,
+    bindings: &[TypedScanBinding],
+    binding_index: &mut usize,
+    initial_capacity: usize,
+    maximum_chunk_size: usize,
+    locking: bool,
+    stats: Option<&TypedRuntimeStats>,
 ) -> Result<ExecutorBox, BuildError> {
     use astersql_planner_core_operator_physicalop::{
         LegacyPhysicalLock, PhysicalHashAgg, PhysicalHashJoin, PhysicalIndexLookUpReader,
@@ -495,6 +529,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         );
     }
 
@@ -523,6 +558,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             false,
+            stats,
         )?;
         let mut right = build_typed_physical_plan(
             children[1],
@@ -531,6 +567,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             false,
+            stats,
         )?;
         if join.BasePhysicalJoin.JoinType != astersql_planner_core_base::JoinType::FullOuterJoin
             && !join.BasePhysicalJoin.LeftConditions.is_empty()
@@ -654,6 +691,7 @@ fn build_typed_physical_plan(
                     initial_capacity,
                     maximum_chunk_size,
                     false,
+                    stats,
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -756,7 +794,7 @@ fn build_typed_physical_plan(
                 plan.s_ctx().clone(),
             ));
         }
-        executor = wrap_typed_pushdown_plan(index_plan, executor)?;
+        executor = wrap_typed_pushdown_plan(index_plan, executor, stats)?;
         if !index_plan.as_any().is::<PhysicalIndexScan>() {
             executor = project_typed_output(
                 executor,
@@ -820,7 +858,7 @@ fn build_typed_physical_plan(
                 plan.s_ctx().clone(),
             ));
         }
-        executor = wrap_typed_pushdown_plan(index_plan, executor)?;
+        executor = wrap_typed_pushdown_plan(index_plan, executor, stats)?;
         if !table.FilterCondition.is_empty() {
             executor = Box::new(crate::typed_selection::TypedSelection::new(
                 executor,
@@ -828,7 +866,7 @@ fn build_typed_physical_plan(
                 plan.s_ctx().clone(),
             ));
         }
-        executor = wrap_typed_pushdown_plan(table_plan, executor)?;
+        executor = wrap_typed_pushdown_plan(table_plan, executor, stats)?;
         if let Some(limit) = reader.PushedLimit {
             executor = Box::new(crate::typed_limit::TypedLimit::new(
                 executor,
@@ -850,6 +888,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         )?;
         return project_typed_output(
             executor,
@@ -879,6 +918,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         )?;
         return build_typed_aggregate(plan, aggregate, child);
     }
@@ -894,6 +934,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         )?;
         return Ok(Box::new(crate::typed_limit::TypedLimit::new(
             child,
@@ -929,6 +970,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         )?;
         return Ok(Box::new(crate::typed_selection::TypedSelection::new(
             child,
@@ -948,6 +990,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         )?;
         let executor = Box::new(crate::typed_selection::TypedSelection::new(
             child,
@@ -973,6 +1016,7 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
             locking,
+            stats,
         )?;
         return Ok(Box::new(crate::typed_projection::TypedProjection::new(
             child,
@@ -6071,3 +6115,141 @@ impl emptySampler {
 #[cfg(test)]
 #[path = "mview_delta_merge_builder_test.rs"]
 mod mview_delta_merge_builder_test;
+
+/// Optional statement-owned statistics for the canonical typed plan tree.
+/// Recording uses returned chunks, never estimates or explain tree length.
+pub type TypedRuntimeStats = Arc<Mutex<astersql_util_execdetails::execdetails::RuntimeStatsColl>>;
+
+struct TypedRuntimeStatsExecutor {
+    child: ExecutorBox,
+    stats: TypedRuntimeStats,
+    plan_id: i32,
+}
+impl crate::adapter::ExecExecutor for TypedRuntimeStatsExecutor {
+    fn Open(&mut self) -> crate::adapter::AdapterResult {
+        let start = std::time::Instant::now();
+        let result = self.child.Open();
+        self.stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .GetBasicRuntimeStats(self.plan_id, false)
+            .expect("registered typed stats")
+            .RecordOpen(start.elapsed());
+        result
+    }
+    fn Close(&mut self) -> crate::adapter::AdapterResult {
+        let start = std::time::Instant::now();
+        let result = self.child.Close();
+        self.stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .GetBasicRuntimeStats(self.plan_id, false)
+            .expect("registered typed stats")
+            .RecordClose(start.elapsed());
+        result
+    }
+    fn Next(&mut self, output: &mut astersql_util_chunk::Chunk) -> crate::adapter::AdapterResult {
+        self.NextWithContext(&crate::adapter::ExecutionContext::default(), output)
+    }
+    fn NextWithContext(
+        &mut self,
+        context: &crate::adapter::ExecutionContext,
+        output: &mut astersql_util_chunk::Chunk,
+    ) -> crate::adapter::AdapterResult {
+        let start = std::time::Instant::now();
+        let result = self.child.NextWithContext(context, output);
+        self.stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .GetBasicRuntimeStats(self.plan_id, false)
+            .expect("registered typed stats")
+            .Record(
+                start.elapsed(),
+                if result.is_ok() {
+                    output.NumRows() as i32
+                } else {
+                    0
+                },
+            );
+        result
+    }
+    fn ChunkConfig(&self) -> crate::adapter::ChunkConfig {
+        self.child.ChunkConfig()
+    }
+    fn NewChunk(&self) -> astersql_util_chunk::Chunk {
+        self.child.NewChunk()
+    }
+    fn Schema(&self) -> &[crate::adapter::SchemaColumn] {
+        self.child.Schema()
+    }
+    fn CalculateNoDelay(&self) -> bool {
+        self.child.CalculateNoDelay()
+    }
+    fn IsWriteExecutor(&self) -> bool {
+        self.child.IsWriteExecutor()
+    }
+    fn CheckForeignKeys(&mut self) -> crate::adapter::AdapterResult {
+        self.child.CheckForeignKeys()
+    }
+    fn TakeForeignKeyCascades(&mut self) -> Vec<Box<dyn crate::adapter::CascadeBatch>> {
+        self.child.TakeForeignKeyCascades()
+    }
+    fn HasForeignKeyCascades(&self) -> bool {
+        self.child.HasForeignKeyCascades()
+    }
+    fn PrepareFKCascadeContext(&mut self) {
+        self.child.PrepareFKCascadeContext();
+    }
+    fn AddFKCheckLockDuration(&mut self, duration: Duration) {
+        self.child.AddFKCheckLockDuration(duration);
+    }
+    fn TakeLockKeys(&mut self) -> Vec<crate::adapter::Key> {
+        self.child.TakeLockKeys()
+    }
+    fn ScannedRows(&self) -> usize {
+        self.child.ScannedRows()
+    }
+    fn Detach(&mut self) -> Option<Box<dyn crate::adapter::ExecExecutor>> {
+        None
+    }
+}
+/// Attach statement-local sampling to an internal, non-detached executor.
+/// With no collector the original executor is returned unchanged.
+pub fn observe_typed_executor(
+    child: ExecutorBox,
+    plan_id: i32,
+    stats: Option<&TypedRuntimeStats>,
+) -> ExecutorBox {
+    let Some(stats) = stats else {
+        return child;
+    };
+    stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .GetBasicRuntimeStats(plan_id, true);
+    Box::new(TypedRuntimeStatsExecutor {
+        child,
+        plan_id,
+        stats: stats.clone(),
+    })
+}
+
+/// Build the same typed tree with per-plan Open/Next/Close observations.
+pub fn BuildTypedPhysicalPlanWithRuntimeStats(
+    plan: &dyn astersql_planner_core_base::PhysicalPlan,
+    bindings: Vec<TypedScanBinding>,
+    initial_capacity: usize,
+    maximum_chunk_size: usize,
+    stats: Option<&TypedRuntimeStats>,
+) -> Result<ExecutorBox, BuildError> {
+    let mut binding_index = 0;
+    build_typed_physical_plan(
+        plan,
+        &bindings,
+        &mut binding_index,
+        initial_capacity,
+        maximum_chunk_size,
+        false,
+        stats,
+    )
+}

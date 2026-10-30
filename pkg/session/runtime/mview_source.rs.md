@@ -6,11 +6,13 @@ canonical session 与 MV merge/apply sink 的真实数据源、事务 writer 桥
 
 ## 核心职责
 
+05fd982b2d 最小观察接线：compile_mview_source_with_stats 可接收 statement-owned TypedRuntimeStats，交给既有 typed 构造器并逐节点包裹真实 Open/Next/Close 采样；普通 compile_mview_source 传 None，保持原执行行为。显示的物理输入在本地 typed runtime 执行，task 标为 root。DRY RUN 只编译，不打开执行器或产生运行统计。
+
 提取定义元数据，生成并优化 SELECT，绑定固定 MVCC 版本的 KV 扫描；提供真实 DML batch、statement staging、MIN/MAX 组键 lookup 与扫描统计。
 
 ## 主要符号
 
-`definition`、`compile_mview_source`、`RefreshResources`、`Batch`、`ObservedSource`、`ObservedIterator`。
+`definition`、`compile_mview_source`、`compile_mview_source_with_stats`、`RefreshResources`、`Batch`、`ObservedSource`、`ObservedIterator`。
 
 ## 执行流程
 

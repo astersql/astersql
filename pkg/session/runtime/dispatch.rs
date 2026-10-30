@@ -2166,11 +2166,18 @@ impl ConcreteSession {
             self.execute_create_materialized_view_log(create)?;
             return Ok(None);
         }
+        if let Some(refresh) = statement
+            .as_any()
+            .downcast_ref::<ast::RefreshMaterializedViewStmt>()
+        {
+            return self.execute_refresh_sql(refresh);
+        }
         if let Some(purge) = statement
             .as_any()
             .downcast_ref::<ast::PurgeMaterializedViewLogStmt>()
         {
-            self.execute_purge_materialized_view_log(purge, false)?;
+            let internal = self.state.borrow().in_restricted_sql;
+            self.execute_purge_materialized_view_log(purge, internal)?;
             return Ok(None);
         }
         if let Some(cancel) = statement

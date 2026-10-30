@@ -888,7 +888,10 @@ fn port_a87bf8db64_manual_cancel_rolls_back_and_records_requester() {
                 || error.is_some()
                 || !matches!(
                     step.name,
-                    "DATA_CHANGE_FAST_MERGE" | "OUT_OF_PLACE_LOAD_SHADOW"
+                    "DATA_CHANGE_FAST_MERGE"
+                        | "DATA_CHANGE_COMPLETE_INSERT"
+                        | "DATA_CHANGE_COMPLETE_DELTA_APPLY"
+                        | "OUT_OF_PLACE_LOAD_SHADOW"
                 )
             {
                 return;
@@ -896,12 +899,14 @@ fn port_a87bf8db64_manual_cancel_rolls_back_and_records_requester() {
             self.requested = true;
             let job=query(&self.session,"SELECT REFRESH_JOB_ID FROM mysql.tidb_mview_refresh_hist WHERE REFRESH_STATUS='running'")[0][0].clone();
             if let Some(requester) = self.requester {
+                assert_eq!(requester, "'operator'@'localhost'");
+                let mut caller = ConcreteSession::new(self.session.domain.clone());
+                caller.login_user = Some("operator".into());
+                caller.login_host = Some("localhost".into());
+                caller.authenticated_host = Some("localhost".into());
                 query(
-                    &self.session,
-                    &format!(
-                        "UPDATE mysql.tidb_mview_refresh_hist SET CANCEL_REQUEST_TIME=NOW(6),CANCEL_REQUESTED_BY={} WHERE REFRESH_JOB_ID={job}",
-                        super::dispatch::quote_argument(requester)
-                    ),
+                    &caller,
+                    &format!("CANCEL MATERIALIZED VIEW REFRESH JOB {job}"),
                 );
             } else {
                 query(
@@ -921,6 +926,8 @@ fn port_a87bf8db64_manual_cancel_rolls_back_and_records_requester() {
     }
     for (mode, requester) in [
         ("fast", None),
+        ("complete in place", None),
+        ("complete delta apply", None),
         ("complete out of place", Some("'operator'@'localhost'")),
     ] {
         let (f, session) = fixture();
@@ -949,6 +956,13 @@ fn port_a87bf8db64_manual_cancel_rolls_back_and_records_requester() {
             "github.com/pingcap/tidb/pkg/executor/mockMVTaskHistHeartbeatInterval",
             "return(1)",
         );
+        if requester.is_some() {
+            query(&session, "CREATE USER 'operator'@'localhost'");
+            query(
+                &session,
+                "GRANT OPERATE VIEW ON test.mv_runtime TO 'operator'@'localhost'",
+            );
+        }
         let mut observer = CancelObserver {
             session: session.clone(),
             watched,
@@ -1265,4 +1279,420 @@ fn port_a87bf8db64_refresh_info_nowait_preserves_locked_row_and_failure_timing()
     );
     let (_, result) = run(&session, "fast", &mut Observer::default());
     result.unwrap();
+}
+
+#[test]
+fn port_05fd982b2d_sql_entry_executes_real_refresh() {
+    let (_f, session) = fixture();
+    query(&session, "INSERT INTO src_runtime VALUES (4,1,40)");
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW test.mv_runtime complete in place",
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        vec![vec!["1", "70", "3"], vec!["2", "30", "1"]]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT REFRESH_STATUS FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["success"]]
+    );
+}
+
+#[test]
+fn port_05fd982b2d_dry_run_profile_and_plain_preserve_entry_contract() {
+    for (mode, step, operator) in [
+        ("fast", "DATA_CHANGE_FAST_MERGE", "MViewDeltaMerge"),
+        ("complete in place", "DATA_CHANGE_COMPLETE_INSERT", "Insert"),
+        (
+            "complete delta apply",
+            "DATA_CHANGE_COMPLETE_DELTA_APPLY",
+            "MViewCompleteDeltaApply",
+        ),
+        (
+            "complete out of place",
+            "OUT_OF_PLACE_LOAD_SHADOW",
+            "Insert",
+        ),
+    ] {
+        let (f, session) = fixture();
+        if mode == "complete out of place" {
+            EnableMockDDLForTest(&f.domain).unwrap();
+        }
+        let old_id = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+        query(&session, "INSERT INTO src_runtime VALUES(4,1,40)");
+        let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        let watermark = query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+        );
+        let refresh = format!("REFRESH MATERIALIZED VIEW test.mv_runtime {mode}");
+        for _ in 0..2 {
+            let plan = format!("{:?}", query(&session, &format!("{refresh} DRY RUN")));
+            assert!(plan.contains(step), "{mode}: {plan}");
+            assert!(plan.contains(operator), "{mode}: {plan}");
+            assert!(plan.contains("FINALIZE_HIST"));
+            assert!(!plan.contains("status:success"));
+            assert_eq!(
+                query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+                before
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+                ),
+                watermark
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist"
+                ),
+                vec![vec!["0"]]
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='test' AND table_name LIKE '__mv_shadow_%'"
+                ),
+                vec![vec!["0"]]
+            );
+        }
+        let profile = format!("{:?}", query(&session, &format!("{refresh} WITH PROFILE")));
+        assert!(profile.contains(step));
+        assert!(profile.contains(operator), "{mode}: {profile}");
+        assert!(profile.contains("status:success, time:"));
+        assert!(profile.contains("actRows:"), "{mode}: {profile}");
+        assert!(profile.contains("loops:"), "{mode}: {profile}");
+        assert!(profile.contains("FINALIZE_HIST"));
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            vec![vec!["1", "70", "3"], vec!["2", "30", "1"]]
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT REFRESH_STATUS,REFRESH_METHOD FROM mysql.tidb_mview_refresh_hist"
+            ),
+            vec![vec!["success".to_string(), format!("{mode} manual")]]
+        );
+        let current_id = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+        assert_eq!(old_id == current_id, mode != "complete out of place");
+        query(&session, "INSERT INTO src_runtime VALUES(5,3,50)");
+        query(&session, &refresh);
+        assert!(session.protocol_state().affected_rows > 0);
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            vec![
+                vec!["1", "70", "3"],
+                vec!["2", "30", "1"],
+                vec!["3", "50", "1"]
+            ]
+        );
+        assert!(format!("{:?}", query(&session, &format!("{refresh} DRY RUN"))).contains(step));
+        assert!(!session.state.borrow().in_restricted_sql);
+    }
+}
+
+#[test]
+fn port_05fd982b2d_transaction_direct_prepared_and_autocommit_validation() {
+    let (_f, session) = fixture();
+    let refresh = "REFRESH MATERIALIZED VIEW test.mv_runtime complete in place";
+    assert!(
+        session
+            .execute("REFRESH MATERIALIZED VIEW test.mv_runtime WITH ASYNC MODE complete in place")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("WITH ASYNC MODE is not supported yet")
+    );
+    for suffix in ["", " DRY RUN", " WITH PROFILE"] {
+        query(&session, "BEGIN");
+        assert!(
+            session
+                .execute(&format!("{refresh}{suffix}"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("cannot run REFRESH MATERIALIZED VIEW in explicit transaction")
+        );
+        query(&session, "ROLLBACK");
+    }
+    query(&session, &format!("PREPARE refresh_stmt FROM '{refresh}'"));
+    query(&session, "BEGIN");
+    assert!(
+        session
+            .execute("EXECUTE refresh_stmt")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("cannot run REFRESH MATERIALIZED VIEW in explicit transaction")
+    );
+    query(&session, "ROLLBACK");
+    query(&session, "DEALLOCATE PREPARE refresh_stmt");
+    query(&session, "SET autocommit=0");
+    query(&session, refresh);
+    query(&session, "INSERT INTO src_runtime VALUES(4,1,40)");
+    assert!(
+        session
+            .execute(refresh)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("cannot run REFRESH MATERIALIZED VIEW in explicit transaction")
+    );
+    query(&session, "ROLLBACK");
+    query(&session, "SET autocommit=1");
+}
+
+#[test]
+fn port_05fd982b2d_entry_privileges_and_cancel_request() {
+    let (f, session) = fixture();
+    query(&session, "CREATE USER 'refresh_entry_u'@'%'");
+    let mut user = ConcreteSession::new(f.domain.clone());
+    user.login_user = Some("refresh_entry_u".into());
+    user.login_host = Some("%".into());
+    user.authenticated_host = Some("%".into());
+    let refresh = "REFRESH MATERIALIZED VIEW test.mv_runtime complete delta apply";
+    assert!(
+        user.execute(refresh)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("OPERATE VIEW command denied")
+    );
+    query(
+        &session,
+        "GRANT OPERATE VIEW ON test.mv_runtime TO 'refresh_entry_u'@'%'",
+    );
+    assert!(
+        user.execute(refresh)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SELECT command denied")
+    );
+    for suffix in [" DRY RUN", " WITH PROFILE"] {
+        assert!(
+            user.execute(&format!("{refresh}{suffix}"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("SHOW VIEW command denied")
+        );
+    }
+    query(
+        &session,
+        "GRANT SHOW VIEW ON test.mv_runtime TO 'refresh_entry_u'@'%'",
+    );
+    for suffix in [" DRY RUN", " WITH PROFILE"] {
+        assert!(
+            user.execute(&format!("{refresh}{suffix}"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("SELECT command denied")
+        );
+    }
+    query(
+        &session,
+        "GRANT SELECT ON test.src_runtime TO 'refresh_entry_u'@'%'",
+    );
+    query(&user, refresh);
+    for suffix in [" DRY RUN", " WITH PROFILE"] {
+        assert!(
+            format!("{:?}", query(&user, &format!("{refresh}{suffix}"))).contains("FINALIZE_HIST")
+        );
+    }
+    let id = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    query(
+        &session,
+        &format!(
+            "INSERT INTO mysql.tidb_mview_refresh_hist (REFRESH_JOB_ID,MVIEW_ID,REFRESH_METHOD,REFRESH_STATUS) VALUES(9000000000000000001,{id},'fast manual','running'),(9000000000000000002,{id},'fast manual','success')"
+        ),
+    );
+    query(
+        &session,
+        "REVOKE OPERATE VIEW ON test.mv_runtime FROM 'refresh_entry_u'@'%'",
+    );
+    assert!(
+        user.execute("CANCEL MATERIALIZED VIEW REFRESH JOB 9000000000000000001")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("OPERATE VIEW command denied")
+    );
+    query(
+        &session,
+        "GRANT OPERATE VIEW ON test.mv_runtime TO 'refresh_entry_u'@'%'",
+    );
+    query(
+        &user,
+        "CANCEL MATERIALIZED VIEW REFRESH JOB 9000000000000000001",
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT CANCEL_REQUEST_TIME IS NOT NULL,CANCEL_REQUESTED_BY FROM mysql.tidb_mview_refresh_hist WHERE REFRESH_JOB_ID=9000000000000000001"
+        ),
+        vec![vec!["1", "'refresh_entry_u'@'%'"]]
+    );
+    for id in [
+        9000000000000000001_i64,
+        9000000000000000002,
+        9000000000000000003,
+    ] {
+        assert!(
+            user.execute(&format!("CANCEL MATERIALIZED VIEW REFRESH JOB {id}"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains(&format!("cannot cancel materialized view refresh job {id}"))
+        );
+    }
+    query(
+        &session,
+        "INSERT INTO mysql.tidb_mview_refresh_hist (REFRESH_JOB_ID,MVIEW_ID,REFRESH_METHOD,REFRESH_STATUS) VALUES(9000000000000000004,-1234,'fast manual','running')",
+    );
+    assert_eq!(
+        user.execute("CANCEL MATERIALIZED VIEW REFRESH JOB 9000000000000000004")
+            .err()
+            .unwrap()
+            .to_string(),
+        "refresh materialized view: cannot resolve target materialized view -1234 for cancel job 9000000000000000004"
+    );
+    query(&session, "DROP TABLE mysql.tidb_mview_refresh_hist");
+    assert_eq!(
+        user.execute("CANCEL MATERIALIZED VIEW REFRESH JOB 9000000000000000001")
+            .err()
+            .unwrap()
+            .to_string(),
+        "refresh materialized view: required system table mysql.tidb_mview_refresh_hist does not exist"
+    );
+}
+
+#[test]
+fn port_05fd982b2d_purge_next_null_logs_only_automatic_and_redacts_literals() {
+    let message = "purge materialized view log: automatic purge schedule disabled because NEXT expression evaluated to NULL, updating NEXT_PURGE_UNIX_SECONDS to NULL";
+    for (expression, want_null, want_log) in [
+        ("", true, false),
+        ("DATE_ADD(NOW(), INTERVAL 1 HOUR)", false, false),
+        (
+            "CAST(NULLIF('purge-next-secret','purge-next-secret') AS DATETIME)",
+            true,
+            true,
+        ),
+    ] {
+        let (f, session) = fixture();
+        let base = f.domain.table_by_name("test", "src_runtime").unwrap();
+        let mut log = (*f
+            .domain
+            .info_schema()
+            .TableByID(base.MaterializedViewBase.as_ref().unwrap().MLogID)
+            .unwrap()
+            .ModelMeta()
+            .unwrap())
+        .clone();
+        log.MaterializedViewLog.as_mut().unwrap().PurgeNext = expression.into();
+        save_meta(&f, log);
+        let before = BgLogger().entries().len();
+        query(&session, "PURGE MATERIALIZED VIEW LOG ON test.src_runtime");
+        assert!(
+            !BgLogger().entries()[before..]
+                .iter()
+                .any(|e| e.message == message)
+        );
+        let before = BgLogger().entries().len();
+        let old_restricted = session.state.borrow().in_restricted_sql;
+        session.state.borrow_mut().in_restricted_sql = true;
+        query(&session, "PURGE MATERIALIZED VIEW LOG ON test.src_runtime");
+        session.state.borrow_mut().in_restricted_sql = old_restricted;
+        assert_eq!(
+            query(
+                &session,
+                "SELECT NEXT_PURGE_UNIX_SECONDS IS NULL FROM mysql.tidb_mlog_purge_info"
+            ),
+            vec![vec![if want_null { "1" } else { "0" }]]
+        );
+        let logs = BgLogger().entries();
+        let logs = logs[before..]
+            .iter()
+            .filter(|e| e.message == message)
+            .collect::<Vec<_>>();
+        assert_eq!(!logs.is_empty(), want_log);
+        for log in logs {
+            assert!(
+                log.fields
+                    .contains(&LogField::String("schemaName".into(), "test".into()))
+            );
+            assert!(log.fields.contains(&LogField::String(
+                "tableName".into(),
+                "$mlog$src_runtime".into()
+            )));
+            assert!(!format!("{:?}", log.fields).contains("purge-next-secret"));
+        }
+    }
+}
+
+#[test]
+fn port_05fd982b2d_profile_requires_actual_operator_rows() {
+    for mode in ["fast", "complete delta apply"] {
+        let (_f, session) = fixture();
+        for values in ["(4,1,40)", "(5,3,50),(6,3,60)"] {
+            let before = query(&session, "SELECT COUNT(*) FROM test.src_runtime")[0][0]
+                .parse::<u64>()
+                .unwrap();
+            query(
+                &session,
+                &format!("INSERT INTO src_runtime VALUES {values}"),
+            );
+            let after = query(&session, "SELECT COUNT(*) FROM test.src_runtime")[0][0]
+                .parse::<u64>()
+                .unwrap();
+            let source_table = if mode == "fast" {
+                "$mlog$src_runtime"
+            } else {
+                "src_runtime"
+            };
+            // FAST reads the newly committed insert batch after its persisted
+            // watermark; COMPLETE reads the full base relation. Query actual
+            // base cardinalities rather than estimates or hidden commit-TS SQL.
+            let expected = if mode == "fast" {
+                after - before
+            } else {
+                after
+            }
+            .to_string();
+            let output = query(
+                &session,
+                &format!("REFRESH MATERIALIZED VIEW test.mv_runtime {mode} WITH PROFILE"),
+            );
+            let scan = output
+                .iter()
+                .map(|row| &row[0])
+                .find(|line| {
+                    line.contains("TableScan") && line.contains(&format!("table:{source_table}"))
+                })
+                .unwrap_or_else(|| panic!("actual MLog scan absent: {output:?}"));
+            let measured = scan
+                .split("actRows:")
+                .nth(1)
+                .and_then(|field| field.split(" | ").next())
+                .expect("Go Analyze=true profile must include actual operator row statistics");
+            assert_eq!(measured, expected, "{scan}");
+            assert!(scan.contains("loops:"), "{scan}");
+            assert!(scan.contains("open:"), "{scan}");
+            assert!(scan.contains("close:"), "{scan}");
+            assert!(
+                output
+                    .iter()
+                    .any(|row| row[0].contains("MView") && row[0].contains("actRows:0")),
+                "write sink returns no result rows: {output:?}"
+            );
+        }
+    }
 }

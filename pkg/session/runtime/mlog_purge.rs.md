@@ -77,6 +77,8 @@ crate 依赖由 `pkg/session/Cargo.toml` 明确声明：KV/表 key 来自 `aster
 
 ## 错误处理与边界
 
+05fd982b2d：自动 purge 的 NEXT 求值（含节流预算求值和最终调度更新）为 NULL 时，以 error 级别报告禁用调度，带 schemaName、tableName 和经 parser::Normalize(...,"ON") 脱敏的 purgeNext；空 NEXT 不记录，手动 purge 不求值也不改调度。错误仍由既有表达式求值路径传播。
+
 - 输入边界：无数据库、基础表/MLog 不存在、MLog 反向元数据不匹配、显式事务、权限不足、非法取消类型/job ID 均在产生删除前失败。
 - 锁与 TSO 边界：purge-info 行不存在、NOWAIT 锁冲突、StartTS 为零、checkpoint/刷新 TSO/历史 cutoff 无法解析都会停止任务；`safe_tso == 0` 不删除。
 - KV 边界：批大小为零是错误；iterator 创建、Get、Next、row key 解码、Delete、Commit 均带操作上下文映射为 `SessionError`。iterator 无论扫描成功或失败都会调用 `Close`。

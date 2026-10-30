@@ -30,6 +30,8 @@
 
 ## 执行流程
 
+05fd982b2d：PURGE 的内部调用标志从当前会话 in_restricted_sql 读取（先复制再调用，避免跨执行持有 RefCell 借用），自动 NEXT 调度/日志通过真实 SQL 生效。RefreshMaterializedViewStmt 在已有 purge/cancel 邻近分支调用 execute_refresh_sql，返回普通刷新无结果集或 DRY RUN/PROFILE 单列结果集。预处理语句执行重入该分支，复用同一事务拒绝规则；PostgreSQL 方言由刷新入口拒绝，不改共享协议/类型逻辑。
+
 `ShutdownStmt` 在既有 SEM 检查之后走最小直接分发：除 skip-grant-table 和无登录身份的内部会话外，用现有权限缓存及 active roles 检查 `ShutdownPriv`；失败返回1227，成功调用 `astersql_executor::simple::scheduleProcessShutdown(1s)` 并立即返回无结果集。消费者发送真实 SIGTERM，最终走 cmd 的 canonical server 清理；不接管其他 generic SimpleBackend 能力，不改变 PostgreSQL 解析、事务或协议分支。
 
 诊断模式在每条已解析 AST 进入语句循环后首先检查：仅非 restricted SQL 调用 `diagnostic_sql::is_diagnostic_sql_allowed`，传入当前库和 InfoSchema 的 view 判定；拒绝时立即返回只读模式错误。该检查早于 scalar-subquery registry 清理、过期事务处理、告警重置、tracker 与语句 guard 建立，因此拒绝分支没有进入后续正常语句收尾链。
