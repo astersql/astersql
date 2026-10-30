@@ -15,7 +15,7 @@
 
 ## 主要符号
 
-- `ExecutorError(pub String)` 与 `Result<T>`：错误仅保存字符串，`Display` 原样输出，并实现标准 `Error`。它没有结构化错误码或 source 链，调用方目前会对部分消息（例如 `"task not found"`、`"context canceled"`）做分支判断。
+- `ExecutorError` 是 `ExecutorFailure` 的兼容别名，消息构造函数继续接受 String，Display 原样输出；with_source 额外保留 Arc 标准错误并通过 source 暴露。既有消息分支保持不变，业务分类可沿类型化原因链判定。
 - `ContextState { cancelled, cause, parent }`：私有共享状态。`cancelled` 是 `AtomicBool`，`cause` 是互斥保护的首个本地原因，`parent` 构成只向上查询的取消链。
 - `Context`：`Background` 创建根上下文，`Child` 关联父状态，`Cancel`/`CancelWithCause` 取消当前节点，`Done` 和 `Cause` 同时观察本节点与父节点。取消不会反向传播给父节点，也不会主动唤醒阻塞操作。
 - `TaskState`：`Pending`、`Running`、`Modifying`、`Pausing`、`Reverting`、`Succeed`、`Reverted`、`Failed`。本文件只枚举状态，不在类型层强制状态迁移。
@@ -105,3 +105,14 @@ slot 和内存配额只是逻辑预算，不在本文件中申请线程、内存
 新增 `TaskTable` 实现时，应把默认方法视为待办清单：尤其要覆盖所有会改变 durable state 的方法，并验证 exec ID 所有权条件、状态机条件和失败原子性。`WithNewSession` 若用于真实存储，必须提供隔离的新会话语义；不要沿用默认直接回调后声称具备 Go 等价性。
 
 修改状态、排序或资源公式时，要同步检查 `slot.rs`、`manager.rs` 和 `task_executor.rs` 的分支，并更新同目录独立测试。兼容风险包括持久化状态值与 Go 不一致、错误字符串改变分支、默认 no-op 掩盖数据丢失；性能风险包括取消轮询延迟、父链递归、过多监测线程、频繁加锁和浮点资源换算。任何 Rust 行为调整都应以 Go 文件及 Go 测试为基准，不为通过局部测试删减语义。
+
+
+### 0766a90d52 限定前置接线
+
+ExecutorFailure保留String及Arc标准错误原因；ExecutorError类型别名和同名消息构造函数兼容既有调用；source供业务RFC分类，持久化仍使用原消息。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

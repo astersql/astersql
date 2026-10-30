@@ -12,6 +12,7 @@ go-package = "pkg/ingestor/ingestcli"
 legacy-tasks = ["task-993", "task-994"]
 
 [dependencies]
+astersql-testkit-testfailpoint = { path = "../../testkit/testfailpoint" }
 "astersql-ingestor-errdef" = { package = "astersql-ingestor-errdef", path = "../errdef" }
 "astersql-ingestor-ingestmetric" = { package = "astersql-ingestor-ingestmetric", path = "../ingestmetric" }
 "astersql-util" = { package = "astersql-util", path = "../../util", optional = true }

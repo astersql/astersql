@@ -131,3 +131,14 @@ Cargo 中目前唯一正常启用的外部依赖是 `astersql-lightning-log`；�
 修改后应优先扩展独立文件 `pkg/dxf/framework/taskexecutor/task_executor_test.rs`，不要把单元测试写回生产源文件。涉及 manager 生命周期时同步 `manager_test.rs`；涉及真实摘要持久化时参考 `tests/realtikvtest/importintotest4/recorded_summary_harness.rs`。需要对齐 Go 行为时还应检查 `task_executor_test.go` 的对应分支，尤其是重试、取消、slot 回滚、Meta 通知和均衡测试。
 
 兼容性风险集中在状态机和取消语义：错误分类改变可能造成重复执行或错误地失败任务；调整锁/线程顺序可能造成死锁或监控泄漏；缩短/加长退避会影响数据库压力和资源释放时延；改动摘要完成顺序可能出现任务已成功但最终进度丢失。资源修改必须保持缩容与扩容的不同操作顺序和扩容失败回滚。
+
+
+### 0766a90d52 限定前置接线
+
+可重试失败保留Running，使用实际TaskID增加ExecuteEventCounter/retry；取消分支不增加重试。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

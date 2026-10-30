@@ -287,6 +287,7 @@ mod ttl_test;
 
 pub mod normal_policy;
 pub mod persistent_actions;
+pub mod persistent_add_index;
 pub mod persistent_alter_materialized_view_attributes;
 pub mod persistent_alter_materialized_view_log_purge;
 pub mod persistent_alter_materialized_view_refresh;

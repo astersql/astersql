@@ -102,6 +102,7 @@ fn real_sst_write_and_multi_ingest_preserve_mvcc_visibility() {
 #[derive(Default)]
 struct WireState {
     endpoint: std::sync::Mutex<String>,
+    status_address: std::sync::Mutex<String>,
     writes: std::sync::Mutex<Vec<sst::WriteRequest>>,
     ingests: std::sync::Mutex<Vec<sst::MultiIngestRequest>>,
 }
@@ -157,6 +158,7 @@ unary_handler!(
         store: Some(metapb::Store {
             id: req.store_id,
             address: state.endpoint.lock().unwrap().clone(),
+            status_address: state.status_address.lock().unwrap().clone(),
             ..Default::default()
         }),
         ..Default::default()
@@ -506,4 +508,323 @@ fn tonic_sst_transport_reads_shared_limiter_for_every_write_batch() {
     for store in 1..=3 {
         assert_eq!(calls.iter().filter(|(id, _)| *id == store).count(), 2);
     }
+}
+
+#[test]
+fn port_0766a90d52_nextgen_http_transport_preserves_region_error_and_timestamp() {
+    use std::io::{BufRead, Read, Write};
+    struct Config(astersql_config::Config);
+    impl Drop for Config {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    struct Server(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Option<std::thread::JoinHandle<Vec<(String, Vec<u8>)>>>,
+    );
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(thread) = self.1.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+    let wire = WireHarness::start();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    *wire.state.status_address.lock().unwrap() = address.clone();
+    let _config = Config((*astersql_config::get_global_config()).clone());
+    let mut config = (*astersql_config::get_global_config()).clone();
+    config.tikv_worker_url = format!("http://{address}");
+    astersql_config::store_global_config(config);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while requests.len() < 8
+            && !stopping.load(std::sync::atomic::Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            let (stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("HTTP accept: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut length = 0;
+            let mut chunked = false;
+            let mut content_type = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                if let Some(value) = lower.strip_prefix("content-type:") {
+                    content_type = value.trim().to_owned();
+                }
+                if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+                    chunked = true;
+                }
+            }
+            let mut body = Vec::new();
+            if chunked {
+                loop {
+                    let mut size = String::new();
+                    reader.read_line(&mut size).unwrap();
+                    let n = usize::from_str_radix(size.trim(), 16).unwrap();
+                    if n == 0 {
+                        let mut end = String::new();
+                        reader.read_line(&mut end).unwrap();
+                        break;
+                    }
+                    let mut chunk = vec![0; n];
+                    reader.read_exact(&mut chunk).unwrap();
+                    body.extend(chunk);
+                    let mut crlf = [0; 2];
+                    reader.read_exact(&mut crlf).unwrap();
+                }
+            } else {
+                body.resize(length, 0);
+                reader.read_exact(&mut body).unwrap();
+            }
+            if first.starts_with("PUT ") {
+                assert_eq!(content_type, "application/octet-stream");
+            }
+            requests.push((first, body));
+            let (status, response): (&str, Vec<u8>) = if matches!(requests.len(), 2 | 6) {
+                (
+                    "500 Internal Server Error",
+                    vec![0x0a, 4, b'f', b'u', b'l', b'l', 0x7a, 0],
+                )
+            } else if requests.len() % 2 == 1 {
+                ("200 OK", br#"{"sst_meta":{"id":42}}"#.to_vec())
+            } else {
+                ("200 OK", Vec::new())
+            };
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response.len()
+            )
+            .unwrap();
+            reader.get_mut().write_all(&response).unwrap();
+        }
+        requests
+    });
+    let mut server = Server(stop, Some(server));
+    let pairs = vec![(b"a".to_vec(), b"one".to_vec())];
+    for keyspace in [None, Some(0x010203)] {
+        let failure = write_and_ingest_nextgen(
+            &wire.endpoint(),
+            None,
+            42,
+            pairs.clone(),
+            keyspace,
+            Default::default(),
+        )
+        .unwrap_err();
+        let typed = failure
+            .downcast_ref::<astersql_ingestor_ingestcli::Error>()
+            .unwrap();
+        let astersql_ingestor_ingestcli::Error::IngestApi(region) = typed else {
+            panic!("wrong error {typed:?}");
+        };
+        assert_eq!(region.err.category.RFCCode(), "Ingest:StoreDiskFull");
+        let stats = write_and_ingest_nextgen(
+            &wire.endpoint(),
+            None,
+            42,
+            pairs.clone(),
+            keyspace,
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(stats.keys, 1);
+        assert_eq!(stats.write_rpcs, 1);
+        assert_eq!(stats.ingest_rpcs, 1);
+    }
+    let requests = server.1.take().unwrap().join().unwrap();
+    assert_eq!(requests.len(), 8);
+    assert!(requests[0].0.contains("commit_ts=42"));
+    assert!(requests[1].0.contains("region_id=1&epoch_version=1"));
+    assert_eq!(requests[0].1, b"\x01\x00a\x03\x00\x00\x00one");
+    assert_eq!(requests[0].1, requests[2].1);
+    assert_eq!(requests[4].1, b"\x05\x00x\x01\x02\x03a\x03\x00\x00\x00one");
+    assert_eq!(requests[4].1, requests[6].1);
+    assert!(String::from_utf8_lossy(&requests[1].1).contains("\"id\":42"));
+    assert!(
+        wire.state.writes.lock().unwrap().is_empty(),
+        "NextGen must use the HTTP transport"
+    );
+}
+
+#[test]
+fn port_0766a90d52_http_transport_errors_do_not_expose_worker_credentials() {
+    struct Config(astersql_config::Config);
+    impl Drop for Config {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    let wire = WireHarness::start();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let _restore = Config((*astersql_config::get_global_config()).clone());
+    let mut config = (*astersql_config::get_global_config()).clone();
+    config.tikv_worker_url = format!("http://{address}/?access-key=port_0766_secret");
+    astersql_config::store_global_config(config);
+    let error = write_and_ingest_nextgen(
+        &wire.endpoint(),
+        None,
+        42,
+        vec![(b"a".to_vec(), b"one".to_vec())],
+        None,
+        Default::default(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<astersql_ingestor_ingestcli::Error>(),
+            Some(astersql_ingestor_ingestcli::Error::Io(_))
+        ),
+        "actual HTTP failure expected: {error}"
+    );
+    assert!(
+        !error.to_string().contains("port_0766_secret"),
+        "worker credentials leaked"
+    );
+}
+
+#[test]
+fn port_0766a90d52_cancellation_interrupts_an_inflight_http_ingest() {
+    use std::io::{Read, Write};
+    struct Config(astersql_config::Config);
+    impl Drop for Config {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    struct Server(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Option<std::thread::JoinHandle<()>>,
+    );
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+            self.1.take().unwrap().join().unwrap();
+        }
+    }
+    let wire = WireHarness::start();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    *wire.state.status_address.lock().unwrap() = address.to_string();
+    let _config = Config((*astersql_config::get_global_config()).clone());
+    let mut config = (*astersql_config::get_global_config()).clone();
+    config.tikv_worker_url = format!("http://{address}");
+    astersql_config::store_global_config(config);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        for phase in 0..2 {
+            let mut stream = loop {
+                if stopping.load(std::sync::atomic::Ordering::Acquire)
+                    || std::time::Instant::now() > deadline
+                {
+                    return;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("HTTP accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let count = stream.read(&mut buf).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buf[..count]);
+                if phase == 0 && request.ends_with(b"0\r\n\r\n") {
+                    break;
+                }
+                if phase == 1 && request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            if phase == 0 {
+                let body = br#"{"sst_meta":{"id":42}}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            } else {
+                ready_tx.send(()).unwrap();
+                while !stopping.load(std::sync::atomic::Ordering::Acquire)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    });
+    let server = Server(stop, Some(server));
+    let context = kv::Context::new();
+    let cancelled = context.clone();
+    let endpoints = wire.endpoint();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let result = write_and_ingest_nextgen(
+            &endpoints,
+            None,
+            42,
+            vec![(b"a".to_vec(), b"one".to_vec())],
+            None,
+            kv::SSTImportOptions {
+                context: cancelled,
+                ..Default::default()
+            },
+        );
+        done_tx.send(result).ok();
+    });
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("actual POST must reach the stalled remote HTTP boundary");
+    context.cancel();
+    let result = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+    let interrupted = matches!(&result,Ok(Err(error)) if matches!(error.downcast_ref::<astersql_ingestor_ingestcli::Error>(),Some(astersql_ingestor_ingestcli::Error::Canceled)));
+    drop(server);
+    worker.join().unwrap();
+    assert!(
+        interrupted,
+        "cancellation must interrupt the in-flight HTTP request, without waiting for the remote response"
+    );
 }

@@ -97,3 +97,14 @@
 - 改变等待策略时必须保留“入队后用实际 job ID 查 history、仅 Synced 成功、service stop 可退出”的不变量。若引入通知 channel、超时或主动取消，需要核对 Go `DoDDLJobWrapper` 的 killer、retry 和终态处理，避免把调用者超时错误误当作 job 已取消。
 - 重点风险：JSON args 与 Go 编码不兼容会让 worker 无法解码；错误的 ID 分配会破坏表/分区身份；漏快照 session vars 会造成 owner 节点执行语义漂移；错误放宽 fast/dist 组合会引入不受支持的回填路径；增加更短轮询会提高系统表读取压力。
 - 应同步/扩展的独立测试首选 `pkg/session/runtime/normal_ddl_masking_policy_test.rs`（SQL 到 durable history 的端到端动作与 reorg 快照）、`pkg/session/runtime/normal_ddl_test.rs`（service/scheduler 生命周期），以及 `pkg/ddl/jobsubmit/submit_test.rs`（提交、ID 与策略边界）。
+
+
+### 0766a90d52 限定前置接线
+
+ADD INDEX持久化need_reorg和已有reorg资源、方言SQLMode、云存储初始化设置。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

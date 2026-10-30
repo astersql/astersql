@@ -173,7 +173,10 @@ impl super::ConcreteSession {
                     !astersql_ddl::persistent_modify_column::no_reorg_data_strict(&info, old, &new);
             }
         }
-        if action == 12 {
+        if action == 7 {
+            job.need_reorg = true;
+        }
+        if action == 12 || action == 7 {
             for name in [
                 astersql_sessionctx_vardef::TiDBAnalyzeVersion,
                 astersql_sessionctx_vardef::TiDBEnableDDLAnalyze,

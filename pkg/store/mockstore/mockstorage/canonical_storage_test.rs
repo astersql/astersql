@@ -465,3 +465,24 @@ fn bounded_mvcc_scan_visits_only_requested_keys_and_keeps_versions() {
     assert_eq!(store.scan_at(20, Some(b"k0999"), None, false).len(), 1);
     assert_eq!(store.scan_at(20, None, Some(b"k0001"), false).len(), 1);
 }
+
+#[test]
+fn port_0766a90d52_named_store_exposes_its_actual_backfill_keyspace_id() {
+    let store = crate::NewMockStorage(
+        crate::KVStore::NewMemory(),
+        Some(crate::KeyspaceMeta {
+            Name: "SYSTEM".into(),
+            Id: 96076,
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        astersql_kv::Storage::DDLKeyspaceID(store.as_ref()).unwrap(),
+        96076
+    );
+    let legacy = crate::NewMockStorage(crate::KVStore::NewMemory(), None).unwrap();
+    assert_eq!(
+        astersql_kv::Storage::DDLKeyspaceID(legacy.as_ref()).unwrap(),
+        u32::MAX
+    );
+}

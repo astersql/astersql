@@ -428,6 +428,11 @@ impl executor::Extension for Extension {
         Ok(step)
     }
     fn IsRetryableError(&self, failure: &executor::ExecutorError) -> bool {
+        if astersql_config_kerneltype::IsNextGen()
+            && astersql_ingestor_errdef::IsKVDiskFullError(failure)
+        {
+            return true;
+        }
         failure.0.contains("write conflict")
             || failure.0.contains("region")
             || failure.0.contains("not leader")
@@ -1110,6 +1115,30 @@ pub(super) fn run(
     planner.init().map_err(|e| e.to_string())?;
     let mut balancer = scheduler::Balancer::new(param);
     loop {
+        if job.tp == astersql_meta_model::group_3::ACTION_ADD_INDEX {
+            let jobs = session
+                .execute(&format!(
+                    "SELECT job_meta FROM mysql.tidb_ddl_job WHERE job_id={}",
+                    job.id
+                ))
+                .map_err(|e| e.to_string())?;
+            if let Some(bytes) = jobs
+                .first()
+                .and_then(|set| set.rows.front())
+                .and_then(|row| row.first())
+            {
+                let persisted = astersql_meta_model::group_3::Job::decode(bytes.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                if matches!(
+                    persisted.state,
+                    astersql_meta_model::group_3::JobState::Cancelling
+                        | astersql_meta_model::group_3::JobState::Rollingback
+                ) {
+                    manager.CancelTask((), task_id).map_err(|e| e.to_string())?;
+                    job.state = astersql_meta_model::group_3::JobState::Rollingback;
+                }
+            }
+        }
         if worker.stopped.load(Ordering::Acquire) {
             planner.close();
             slot_manager.unreserve(&planner.task().base, &reserve_node);

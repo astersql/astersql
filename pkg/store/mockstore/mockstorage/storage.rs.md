@@ -95,3 +95,12 @@ Go 版本把这些行为委托给 `tikv/client-go` 和 driver 包。因此，Rus
 - 扩展 keyspace/PD 行为时，需同步 `MemoryPdClient`、`pdCliWithCodec`、`mockStorage::GetCodec` 和同路径 Go 分支，并分别测试 PD 错误、未找到和成功三种结果。若把当前 panic 改为可恢复错误，会改变 Go 对齐语义，应显式评审。
 - 增加并发共享状态时应使用独立同步原语并明确锁顺序，避免把外部回调或 RPC 放在数据写锁内。新增 Rust 单元测试应继续放在独立的 `canonical_storage_test.rs` 或相邻独立测试文件，不嵌入生产源文件。
 - 若实现当前占位方法，应先核对标准 `astersql_kv::Storage` trait 与 Go `helper.Storage` 契约，并同时调整 `canonical_storage.rs`；不要仅让本文件同名方法返回真实值而留下规范接口仍返回占位值。
+
+
+### 0766a90d52 命名存储物理导入能力
+
+`mockStorage::DDLKeyspaceID` 从已保存的 KeyspaceMeta.Id 返回实际keyspace ID；未配置keyspace时返回u32::MAX，维持V1编码边界。canonical Storage适配把它公开给现有CloudStep的KeyCodec选择，避免在命名SYSTEM存储上错误使用V1或默认“不支持”。这是用户授权限定导入链的必要局部接线，不改变PD包装、事务或MVCC存储。独立canonical_storage_test::port_0766a90d52_named_store_exposes_its_actual_backfill_keyspace_id覆盖命名与legacy两分支，已通过。
+
+## 验证依据
+
+`cargo test -p astersql-store-mockstore-mockstorage --lib port_0766a90d52_ -- --test-threads=1`：1通过，覆盖命名和legacy；session实际导入链port_0766a90d52_：2通过。均0忽略。

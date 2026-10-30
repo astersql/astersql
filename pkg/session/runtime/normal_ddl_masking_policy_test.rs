@@ -3382,3 +3382,240 @@ fn bootstrap_binding_digest_refresh_runs_until_version282() {
         }
     }
 }
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn port_0766a90d52_add_index_retries_actual_ingest_until_capacity_recovers() {
+    use astersql_dxf_framework_dxfmetric as metrics;
+    use astersql_dxf_framework_storage as tasks;
+    let _scope = RestoreNodeScope(
+        (*astersql_config::get_global_config()).clone(),
+        astersql_sessionctx_vardef::ServiceScope.Load(),
+    );
+    let _dist = DistTaskConfiguration(astersql_sessionctx_vardef::EnableDistTask.Load());
+    let _ingest = IngestEnvironment::new();
+    let _cloud = CloudSortConfiguration::new(true);
+    let domain = bootstrapped_keyspace_domain("SYSTEM", 96076);
+    let session = super::ConcreteSession::new(domain.clone());
+    session
+        .execute("CREATE TABLE test.disk_full_retry (a INT PRIMARY KEY, b INT)")
+        .unwrap();
+    session
+        .execute("INSERT INTO test.disk_full_retry VALUES (1,10),(2,20),(3,30)")
+        .unwrap();
+    session
+        .execute("SET GLOBAL tidb_enable_dist_task=ON")
+        .unwrap();
+    astersql_sessionctx_vardef::ServiceScope.Store("dxf_service");
+    let worker = super::modify_column_dist_backfill::NodeService::start(
+        &mut super::ConcreteSession::new(domain.clone()),
+    )
+    .unwrap();
+    // In SYSTEM the real task SQL backend is local; user-keyspace routing is
+    // already covered by masking_policy_nextgen_system_executes_user_keyspace_modify.
+    tasks::SetDXFSvcTaskMgr(session.ImportTaskManager().unwrap());
+    domain
+        .install_server_info_syncer(
+            "disk-full-owner".into(),
+            Arc::new(astersql_domain_serverinfo::MemoryEtcdClient::default()),
+            &[],
+        )
+        .unwrap();
+    let cancel = astersql_owner::Context::new();
+    let owner =
+        astersql_owner::NewMockManager(cancel.clone(), "disk-full-owner", None, "/disk-full-owner");
+    super::session_factory::install_serving_ddl_runtime(
+        &domain,
+        owner,
+        Arc::new(tokio::runtime::Runtime::new().unwrap()),
+        cancel,
+        Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default()),
+        "disk-full-owner",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let sufficient = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let disk_errors = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let capacity = sufficient.clone();
+    let errors = disk_errors.clone();
+    let full = astersql_ingestor_ingestcli::EnableIngestErrorCall(move |error| {
+        if !capacity.load(std::sync::atomic::Ordering::Acquire) {
+            errors.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            *error = Some(
+                astersql_ingestor_ingestcli::NewIngestAPIError(
+                    &astersql_ingestor_ingestcli::ErrorPb {
+                        message: "mock TiKV disk full".into(),
+                        disk_full: true,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .into(),
+            );
+        }
+    });
+    let target = domain.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let alter = std::thread::spawn(move || {
+        let result = super::ConcreteSession::new(target)
+            .execute("ALTER TABLE test.disk_full_retry ADD INDEX idx_b(b)");
+        send.send(result.map(|_| ())).ok();
+    });
+    let manager = session.ImportTaskManager().unwrap();
+    let mut retry_baseline = None;
+    let mut early_completion = None;
+    let observation = (|| -> Result<i64, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Ok(result) = receive.try_recv() {
+                let history = session
+                    .execute(
+                        "SELECT job_meta FROM mysql.tidb_ddl_history ORDER BY job_id DESC LIMIT 1",
+                    )
+                    .ok()
+                    .and_then(|sets| {
+                        sets.first()
+                            .and_then(|set| set.rows.front())
+                            .and_then(|row| row.first())
+                            .and_then(|value| Job::decode(value.as_bytes()).ok())
+                            .map(|job| format!("{:?}", job.error))
+                    });
+                let task_errors = session
+                    .execute("SELECT state,error FROM mysql.tidb_global_task")
+                    .map(|sets| sets.into_iter().map(|set| set.rows).collect::<Vec<_>>());
+                let message = format!(
+                    "ADD INDEX finished before capacity recovered: {result:?}; history error={history:?}; tasks={task_errors:?}; ingest failures={}",
+                    disk_errors.load(std::sync::atomic::Ordering::Acquire)
+                );
+                early_completion = Some(result);
+                return Err(message);
+            }
+            let rows = session.execute("SELECT id FROM mysql.tidb_global_task WHERE type='backfill' AND state='running'").map_err(|e| e.to_string())?;
+            if let Some(id) = rows
+                .first()
+                .and_then(|set| set.rows.front())
+                .and_then(|row| row.first())
+                .and_then(|value| value.parse::<i64>().ok())
+            {
+                let retries = metrics::InitDistTaskMetrics()
+                    .ExecuteEventCounter
+                    .with_label_values(&[&id.to_string(), metrics::EventRetry])
+                    .get();
+                let baseline = *retry_baseline.get_or_insert(retries);
+                if disk_errors.load(std::sync::atomic::Ordering::Acquire) >= 2
+                    && retries >= baseline + 2.0
+                {
+                    let task = manager.GetTaskByID((), id).map_err(|e| e.to_string())?;
+                    if task.State != tasks::proto::TaskStateRunning {
+                        return Err(format!("task state {}", task.State));
+                    }
+                    let jobs = session
+                        .execute("SELECT job_meta FROM mysql.tidb_ddl_job")
+                        .map_err(|e| e.to_string())?;
+                    let bytes = jobs
+                        .first()
+                        .and_then(|set| set.rows.front())
+                        .and_then(|row| row.first())
+                        .ok_or("running DDL job missing")?;
+                    let job = Job::decode(bytes.as_bytes()).map_err(|e| e.to_string())?;
+                    if job.state != astersql_meta_model::group_3::JobState::Running
+                        || job.pause_reason.is_some()
+                    {
+                        return Err(format!(
+                            "DDL unexpectedly paused or stopped: {:?}",
+                            job.state
+                        ));
+                    }
+                    return Ok(id);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("no repeated actual ingest failures within timeout".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    })();
+    let observation = observation.and_then(|id| {
+        session
+            .execute("INSERT INTO test.disk_full_retry VALUES (4,40)")
+            .map_err(|e| e.to_string())?;
+        session
+            .execute("DELETE FROM test.disk_full_retry WHERE a=4")
+            .map_err(|e| e.to_string())?;
+        Ok(id)
+    });
+    sufficient.store(true, std::sync::atomic::Ordering::Release);
+    let completion = early_completion
+        .map(Ok)
+        .unwrap_or_else(|| receive.recv_timeout(std::time::Duration::from_secs(60)));
+    if completion.is_err() {
+        domain.close();
+    }
+    if completion.is_ok() {
+        alter.join().unwrap();
+    }
+    worker.stop();
+    drop(full);
+    let id = observation.unwrap();
+    completion
+        .expect("capacity recovery must finish the same ADD INDEX")
+        .unwrap();
+    let task = manager.GetTaskByIDWithHistory((), id).unwrap();
+    assert_eq!(task.State, tasks::proto::TaskStateSucceed);
+    session
+        .execute("ADMIN CHECK TABLE test.disk_full_retry")
+        .unwrap();
+    let sets = session
+        .execute("SELECT a,b FROM test.disk_full_retry FORCE INDEX(idx_b) ORDER BY b")
+        .unwrap();
+    assert_eq!(
+        sets[0].rows.iter().cloned().collect::<Vec<_>>(),
+        vec![
+            vec!["1".to_owned(), "10".to_owned()],
+            vec!["2".to_owned(), "20".to_owned()],
+            vec!["3".to_owned(), "30".to_owned()]
+        ]
+    );
+    domain.close();
+}
+
+#[test]
+fn port_0766a90d52_rollback_before_start_preserves_foreign_index() {
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("CREATE INDEX kept_idx ON test.normal_ddl_target(payload)")
+        .unwrap();
+    let before = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let index = before
+        .Indices
+        .iter()
+        .find(|index| index.Name.L == "kept_idx")
+        .unwrap()
+        .clone();
+    let mut job = Job {
+        id: 9607601,
+        tp: astersql_meta_model::group_3::ACTION_ADD_INDEX,
+        schema_id: f.db,
+        table_id: f.table,
+        schema_name: "test".into(),
+        table_name: "normal_ddl_target".into(),
+        state: JobState::Rollingback,
+        schema_state: SchemaState::None,
+        version: JobVersion::V2,
+        raw_args: serde_json::to_vec(&serde_json::json!({"prepared_index":index})).unwrap(),
+        ..Default::default()
+    };
+    let bytes = job.encode(false).unwrap();
+    f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},1,'{}','{}',X'{}',7,0)",job.id,f.db,f.table,hex(&bytes))).unwrap();
+    run(&f);
+    let after = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    assert!(
+        after
+            .Indices
+            .iter()
+            .any(|candidate| candidate.ID == index.ID && candidate.State == SchemaState::Public),
+        "a cancelled task that never allocated its index must preserve another job's public index"
+    );
+}

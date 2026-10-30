@@ -839,6 +839,10 @@ pub trait Storage {
         }
         self.ImportSST(commit_ts, pairs)
     }
+    /// NextGen HTTP import, kept separate from the Classic gRPC transport.
+    fn ImportNextGenSST(&self, _commit_ts: u64, _pairs: Vec<(Vec<u8>, Vec<u8>)>, _options: SSTImportOptions) -> Result<SSTImportStats, errors::SharedError> {
+        Err(errors::New("storage does not support NextGen HTTP import"))
+    }
     fn Begin(&self, opts: &[tikv::TxnOption]) -> Result<Box<dyn Transaction>, errors::SharedError>;
     fn GetSnapshot(&self, ver: Version) -> Box<dyn Snapshot>;
     fn GetClient(&self) -> &dyn Client;

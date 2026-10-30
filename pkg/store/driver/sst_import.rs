@@ -451,3 +451,270 @@ pub fn write_and_ingest_with_options(
 #[cfg(test)]
 #[path = "sst_import_test.rs"]
 mod tests;
+
+/// NextGen physical import. Region lookup remains PD-backed; a disk-full
+/// response escapes intact to DXF instead of being exhausted inside transport.
+pub fn write_and_ingest_nextgen(
+    endpoints: &[String],
+    tls: Option<crate::TlsConfig>,
+    timestamp: u64,
+    pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    keyspace_id: Option<u32>,
+    options: astersql_kv::SSTImportOptions,
+) -> std::result::Result<ImportStats, astersql_kv::errors::SharedError> {
+    use astersql_ingestor_ingestcli as http;
+    use astersql_kv::errors::SharedError;
+    struct Split(String);
+    impl http::SplitClient for Split {
+        fn get_store(
+            &self,
+            _: &dyn http::RequestContext,
+            _: u64,
+        ) -> std::result::Result<http::Store, http::Error> {
+            Ok(http::Store {
+                status_address: self.0.clone(),
+            })
+        }
+    }
+    struct Context(astersql_kv::Context);
+    impl http::RequestContext for Context {
+        fn is_cancelled(&self) -> bool {
+            self.0.is_cancelled()
+        }
+    }
+    struct Transport {
+        client: reqwest::Client,
+        runtime: std::sync::Mutex<tokio::runtime::Runtime>,
+        context: astersql_kv::Context,
+    }
+    impl Transport {
+        fn execute(
+            &self,
+            request: reqwest::RequestBuilder,
+        ) -> std::result::Result<http::HttpResponse, http::Error> {
+            if self.context.is_cancelled() {
+                return Err(http::Error::Canceled);
+            }
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| http::Error::WorkerPanicked)?;
+            runtime.block_on(async {
+                let request = async {
+                    let response = request.send().await.map_err(|error| {
+                        http::Error::Io(std::io::Error::other(error.without_url()))
+                    })?;
+                    let status_code = response.status().as_u16();
+                    let body = response
+                        .bytes()
+                        .await
+                        .map_err(|error| {
+                            http::Error::Io(std::io::Error::other(error.without_url()))
+                        })?
+                        .to_vec();
+                    Ok(http::HttpResponse { status_code, body })
+                };
+                tokio::pin!(request);
+                loop {
+                    tokio::select! {
+                        response = &mut request => return response,
+                        _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                            if self.context.is_cancelled() { return Err(http::Error::Canceled); }
+                        }
+                    }
+                }
+            })
+        }
+    }
+    impl http::HttpTransport for Transport {
+        fn put_stream(
+            &self,
+            url: &str,
+            chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+        ) -> std::result::Result<http::HttpResponse, http::Error> {
+            // Do not put a blocking recv inside the HTTP runtime. Dropping the
+            // cancelled request must drop this receiver and wake its producer.
+            let stream = futures::stream::unfold(chunks, |receiver| async move {
+                loop {
+                    match receiver.try_recv() {
+                        Ok(chunk) => return Some((Ok::<_, std::io::Error>(chunk), receiver)),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            tokio::time::sleep(Duration::from_millis(1)).await
+                        }
+                    }
+                }
+            });
+            self.execute(
+                self.client
+                    .put(url)
+                    .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                    .body(reqwest::Body::wrap_stream(stream)),
+            )
+        }
+        fn post(
+            &self,
+            url: &str,
+            body: &[u8],
+        ) -> std::result::Result<http::HttpResponse, http::Error> {
+            self.execute(self.client.post(url).body(body.to_vec()))
+        }
+    }
+    if timestamp == 0 || pairs.windows(2).any(|w| w[0].0 >= w[1].0) {
+        return Err(astersql_kv::errors::New(
+            "invalid NextGen SST timestamp or key order",
+        ));
+    }
+    let codec = match keyspace_id {
+        Some(id) => astersql_store_copr::network_backend::KeyCodec::v2(String::new(), id)
+            .map_err(|e| astersql_kv::errors::New(e.to_string()))?,
+        None => astersql_store_copr::network_backend::KeyCodec::v1(),
+    };
+    let pairs = pairs
+        .into_iter()
+        .map(|(k, v)| (codec.encode_key(&k), v))
+        .collect::<Vec<_>>();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(SharedError::new)?;
+    let cancellation = options.context.clone();
+    runtime.block_on(async {
+        let importing = async {
+            let mut connection = Connection::connect(endpoints, tls.clone())
+                .await
+                .map_err(SharedError::new)?;
+            let mut stats = ImportStats::default();
+            let mut cursor = 0;
+            while cursor < pairs.len() {
+                if options.context.is_cancelled() {
+                    return Err(astersql_kv::errors::New("NextGen SST import cancelled"));
+                }
+                let response = connection
+                    .pd
+                    .get_region(pdpb::GetRegionRequest {
+                        header: connection.header(),
+                        region_key: region_key(&pairs[cursor].0),
+                        need_buckets: false,
+                    })
+                    .await
+                    .map_err(SharedError::new)?
+                    .into_inner();
+                check_header(response.header.as_ref()).map_err(SharedError::new)?;
+                let region = response
+                    .region
+                    .ok_or_else(|| astersql_kv::errors::New("PD region missing"))?;
+                let leader = response
+                    .leader
+                    .ok_or_else(|| astersql_kv::errors::New("PD region leader missing"))?;
+                let count = pairs[cursor..].partition_point(|(k, _)| {
+                    region.end_key.is_empty() || region_key(k) < region.end_key
+                });
+                if count == 0 {
+                    return Err(astersql_kv::errors::New("stale PD Region range"));
+                }
+                let store = connection
+                    .pd
+                    .get_store(pdpb::GetStoreRequest {
+                        header: connection.header(),
+                        store_id: leader.store_id,
+                    })
+                    .await
+                    .map_err(SharedError::new)?
+                    .into_inner();
+                check_header(store.header.as_ref()).map_err(SharedError::new)?;
+                let address = store
+                    .store
+                    .ok_or_else(|| astersql_kv::errors::New("PD store missing"))?
+                    .status_address;
+                let batch = pairs[cursor..cursor + count].to_vec();
+                let bytes = batch.iter().map(|(k, v)| k.len() + v.len()).sum();
+                if let Some(limiter) = &options.write_limiter {
+                    limiter.WaitN(&options.context, leader.store_id, bytes)?;
+                }
+                let cluster_id = connection.cluster_id;
+                let tls = tls.clone();
+                let context = Context(options.context.clone());
+                let worker = astersql_config::get_global_config().tikv_worker_url.clone();
+                tokio::task::spawn_blocking(move || -> std::result::Result<(), SharedError> {
+                    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(60));
+                    if let Some(tls) = &tls {
+                        let ca = std::fs::read(&tls.ca_path).map_err(SharedError::new)?;
+                        builder = builder.add_root_certificate(
+                            reqwest::Certificate::from_pem(&ca).map_err(SharedError::new)?,
+                        );
+                        if !tls.cert_path.is_empty() {
+                            let mut pem =
+                                std::fs::read(&tls.cert_path).map_err(SharedError::new)?;
+                            pem.extend(std::fs::read(&tls.key_path).map_err(SharedError::new)?);
+                            builder = builder.identity(
+                                reqwest::Identity::from_pem(&pem).map_err(SharedError::new)?,
+                            );
+                        }
+                    }
+                    let transport = builder.build().map_err(SharedError::new)?;
+                    let client = http::ClientImpl::new(
+                        worker,
+                        cluster_id,
+                        tls.is_some(),
+                        Arc::new(Transport {
+                            client: transport,
+                            runtime: std::sync::Mutex::new(
+                                tokio::runtime::Builder::new_multi_thread()
+                                    .worker_threads(1)
+                                    .enable_all()
+                                    .build()
+                                    .map_err(SharedError::new)?,
+                            ),
+                            context: context.0.clone(),
+                        }),
+                        Arc::new(Split(address)),
+                    );
+                    let epoch = region.region_epoch.map(|e| http::RegionEpoch {
+                        conf_ver: e.conf_ver,
+                        version: e.version,
+                    });
+                    http::WriteAndIngestRegion(
+                        &client,
+                        &context,
+                        timestamp,
+                        batch
+                            .into_iter()
+                            .map(|(key, value)| http::Pair { key, value })
+                            .collect(),
+                        http::RegionInfo {
+                            region: http::Region {
+                                id: region.id,
+                                region_epoch: epoch,
+                                start_key: region.start_key,
+                                end_key: region.end_key,
+                                ..Default::default()
+                            },
+                            leader: Some(http::Peer {
+                                id: leader.id,
+                                store_id: leader.store_id,
+                            }),
+                        },
+                    )
+                    .map_err(SharedError::new)
+                })
+                .await
+                .map_err(SharedError::new)??;
+                stats.keys += count;
+                stats.bytes += bytes;
+                stats.write_rpcs += 1;
+                stats.ingest_rpcs += 1;
+                cursor += count;
+            }
+            Ok(stats)
+        };
+        tokio::select! {
+            result = importing => result,
+            _ = async {
+                while !cancellation.is_cancelled() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => Err(SharedError::new(http::Error::Canceled)),
+        }
+    })
+}

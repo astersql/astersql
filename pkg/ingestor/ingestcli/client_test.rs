@@ -468,3 +468,73 @@ fn histogram_sample_sum(histogram: &std::sync::RwLock<Option<prometheus::Histogr
         .expect("InitIngestMetrics must run first")
         .get_sample_sum()
 }
+
+#[test]
+fn port_0766a90d52_ingest_disk_full_injection_recovers_without_new_client() {
+    let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = posts.clone();
+    let transport = Arc::new(MockTransport {
+        put_stream: unreachable_put_stream(),
+        post: Box::new(move |_, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(HttpResponse {
+                status_code: 200,
+                body: Vec::new(),
+            })
+        }),
+    });
+    let client = ClientImpl::new(
+        "http://worker",
+        12345,
+        false,
+        transport,
+        stub_split_client("store"),
+    );
+    ingestmetric::InitIngestMetrics();
+    let before = histogram_sample_count(&ingestmetric::IngestAPIDuration);
+    {
+        let _full = astersql_testkit_testfailpoint::enable(
+            "github.com/pingcap/tidb/pkg/ingestor/ingestcli/mockIngestError",
+            "return(true)",
+        );
+        for _ in 0..2 {
+            let error = client
+                .ingest(&(), ingest_request(42))
+                .expect_err("disk full must propagate");
+            assert!(astersql_ingestor_errdef::IsKVDiskFullError(&error));
+        }
+        assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+    client.ingest(&(), ingest_request(42)).unwrap();
+    assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(histogram_sample_count(&ingestmetric::IngestAPIDuration) >= before + 3);
+}
+
+#[test]
+fn port_0766a90d52_typed_ingest_hook_preserves_arbitrary_errors() {
+    let transport = Arc::new(MockTransport {
+        put_stream: unreachable_put_stream(),
+        post: Box::new(|_, _| {
+            Ok(HttpResponse {
+                status_code: 200,
+                body: Vec::new(),
+            })
+        }),
+    });
+    let client = ClientImpl::new(
+        "http://worker",
+        12345,
+        false,
+        transport,
+        stub_split_client("store"),
+    );
+    {
+        let _hook = crate::EnableIngestErrorCall(|error| {
+            *error = Some(Error::Json("arbitrary injected error".into()))
+        });
+        let error = client.ingest(&(), ingest_request(42)).unwrap_err();
+        assert!(matches!(&error,Error::Json(message) if message == "arbitrary injected error"));
+        assert!(!astersql_ingestor_errdef::IsKVDiskFullError(&error));
+    }
+    client.ingest(&(), ingest_request(42)).unwrap();
+}

@@ -112,3 +112,14 @@ Rust 将可独立运行的内存 MVCC 放在 `storage.rs`，再由本文件显�
 - 为 options 增加动态类型时，必须同时修改 `option_key` 或 `leak_option_value`，并明确所有权与释放策略；当前泄漏方案不适合高频、无界设置。
 - 若实现 coprocessor、MPP、disk-full、checkpoint 或 flush，替换对应占位符号并加入能力/错误路径测试；不能只把 `IsRequestTypeSupported` 改为 true 而不提供实际响应。
 - 兼容风险集中在错误身份、`CommitTs` 暴露、key 编码、范围边界和 Go option 语义；性能风险集中在扫描预物化、staging 全量克隆、逐 key `BatchGet` 与 option 泄漏。
+
+
+### 0766a90d52 限定前置接线
+
+显式mock store替换HTTP外部边界；解析实际客户端write字节，只有ingest请求到达才写入真实MVCC ingest_sst，保留时间戳与错误；不伪造任务状态/重试/事务。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

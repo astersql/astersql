@@ -335,3 +335,26 @@ fn test_decode_error_pb_rejects_overflowing_length_varint() {
     encoded.push(0x02);
     assert!(crate::ingest_err::decode_error_pb(&encoded).is_err());
 }
+
+#[test]
+fn port_0766a90d52_disk_full_identity_survives_ingest_wrappers() {
+    let disk_full = NewIngestAPIError(
+        &ErrorPb {
+            message: "storage capacity exhausted".into(),
+            disk_full: true,
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(errdef::IsKVDiskFullError(&disk_full));
+    let wrapped = crate::Error::from(disk_full);
+    assert!(errdef::IsKVDiskFullError(&wrapped));
+    let other = NewIngestAPIError(
+        &ErrorPb {
+            message: "store disk full".into(),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(!errdef::IsKVDiskFullError(&other));
+}

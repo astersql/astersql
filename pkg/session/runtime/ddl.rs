@@ -2969,7 +2969,14 @@ impl ConcreteSession {
                     // reached by the real SQL/DDL path; failpoint callbacks
                     // may observe or pause the operation, but tests do not
                     // invoke the callbacks directly.
-                    let _pending_write_index = {
+                    let persistent_nextgen_index = astersql_config_kerneltype::IsNextGen()
+                        && self.sql_dialect() != ast::SqlDialect::PostgreSQL
+                        && astersql_sessionctx_vardef::EnableDistTask.Load()
+                        && self.persistent_actions_enabled()
+                        && constraint.Tp == ast::ConstraintType::Index;
+                    let _pending_write_index = if persistent_nextgen_index {
+                        None
+                    } else {
                         let offsets = current_table
                             .Columns
                             .iter()
@@ -3559,39 +3566,62 @@ impl ConcreteSession {
                         })
                         .transpose()?
                         .unwrap_or_default();
+                    let prepared_index = astersql_meta_model::IndexInfo {
+                        ID: table
+                            .Indices
+                            .iter()
+                            .map(|index| index.ID)
+                            .max()
+                            .unwrap_or_default()
+                            .saturating_add(1),
+                        Name: ast::NewCIStr(&constraint.Name),
+                        Table: table.Name.clone(),
+                        Columns: columns,
+                        State: astersql_meta_model::StatePublic,
+                        Unique: matches!(
+                            constraint.Tp,
+                            ast::ConstraintType::Unique | ast::ConstraintType::PrimaryKey
+                        ),
+                        Primary: constraint.Tp == ast::ConstraintType::PrimaryKey,
+                        Tp: if vector_info.is_some() {
+                            astersql_parser_ast::model::IndexTypeVector
+                        } else if inverted_info.is_some() {
+                            astersql_parser_ast::model::IndexTypeInverted
+                        } else {
+                            astersql_parser_ast::model::IndexTypeBtree
+                        },
+                        ConditionExprString: condition,
+                        VectorInfo: vector_info,
+                        InvertedInfo: inverted_info,
+                        ..astersql_meta_model::IndexInfo::default()
+                    };
+                    if persistent_nextgen_index
+                        && !prepared_index.IsColumnarIndex()
+                        && !prepared_index.Unique
+                        && !prepared_index.Primary
+                    {
+                        self.submit_normal_action(
+                            database,
+                            &statement.Table.Name.L,
+                            7,
+                            serde_json::json!({
+                                "index_args": [{
+                                    "index_name": prepared_index.Name,
+                                    "unique": prepared_index.Unique,
+                                    "index_part_specifications": prepared_index.Columns.iter().map(|column| serde_json::json!({"Column": column.Name, "Length": column.Length})).collect::<Vec<_>>(),
+                                    "condition_string": prepared_index.ConditionExprString,
+                                }],
+                                "prepared_index": prepared_index,
+                            }),
+                        )?;
+                        handled_additive_spec = true;
+                        continue;
+                    }
                     self.domain
                         .stage_pending_add_index(
                             database,
                             &statement.Table.Name.L,
-                            astersql_meta_model::IndexInfo {
-                                ID: table
-                                    .Indices
-                                    .iter()
-                                    .map(|index| index.ID)
-                                    .max()
-                                    .unwrap_or_default()
-                                    .saturating_add(1),
-                                Name: ast::NewCIStr(&constraint.Name),
-                                Table: table.Name.clone(),
-                                Columns: columns,
-                                State: astersql_meta_model::StatePublic,
-                                Unique: matches!(
-                                    constraint.Tp,
-                                    ast::ConstraintType::Unique | ast::ConstraintType::PrimaryKey
-                                ),
-                                Primary: constraint.Tp == ast::ConstraintType::PrimaryKey,
-                                Tp: if vector_info.is_some() {
-                                    astersql_parser_ast::model::IndexTypeVector
-                                } else if inverted_info.is_some() {
-                                    astersql_parser_ast::model::IndexTypeInverted
-                                } else {
-                                    astersql_parser_ast::model::IndexTypeBtree
-                                },
-                                ConditionExprString: condition,
-                                VectorInfo: vector_info,
-                                InvertedInfo: inverted_info,
-                                ..astersql_meta_model::IndexInfo::default()
-                            },
+                            prepared_index,
                             reorg_partition_count,
                         )
                         .map_err(|error| session_error("stage ALTER TABLE ADD INDEX", error))?;

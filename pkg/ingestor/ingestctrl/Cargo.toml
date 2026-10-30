@@ -12,6 +12,7 @@ go-package = "pkg/ingestor/ingestctrl"
 legacy-tasks = ["task-996", "task-997", "task-998", "task-1000", "task-1033", "task-1034", "task-1035", "task-1036"]
 
 [dependencies]
+astersql-ingestor-errdef = { path = "../errdef" }
 "astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
 "astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
 "astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }

@@ -43,7 +43,7 @@ ingest 流程：
 3. 要求 `WriteResponse.next_gen_sst_meta` 存在，经 `encode_sst_meta` 生成 JSON 数组线格式，启动 `IngestDurationGuard` 后调用 transport `post`。
 4. HTTP 200 直接成功。非 200 响应先由 `ingest_err::decode_error_pb` 解码 `errorpb.Error`，再把 SST ID 附加到 message，最后经 `NewIngestAPIError` 分类为可供上层重试/诊断的业务错误。
 
-Go 生产链可在 `pkg/ingestor/ingestctrl/local.go:newRegionJobWorker` 与 `pkg/ingestor/ingestctrl/job_worker.go:objStoreRegionJobWorker.write/ingest` 复核：next-gen 分支构造 `ingestcli.NewClient`，按批调用 `WriteClient.Write`，`Recv` 得到 SST 元数据，再把结果和 Region 组合后调用 `Ingest`。当前 Rust 侧尚未搜索到同等生产调用点。
+Go 生产链可在 `pkg/ingestor/ingestctrl/local.go:newRegionJobWorker` 与 `pkg/ingestor/ingestctrl/job_worker.go:objStoreRegionJobWorker.write/ingest` 复核：next-gen 分支构造 `ingestcli.NewClient`，按批调用 `WriteClient.Write`，`Recv` 得到 SST 元数据，再把结果和 Region 组合后调用 `Ingest`。Rust 生产调用点为 `pkg/store/driver/sst_import.rs::write_and_ingest_nextgen`，经 `WriteAndIngestRegion` 保留 write/recv/ingest 的顺序及错误。
 
 ## 数据与状态
 
@@ -102,4 +102,17 @@ RustCodeGraph 将 `client.rs` 标记为被 43 个文件使用，并能精确列�
 - 若改变 KV 帧格式，必须保留小端序与服务端字段宽度契约，并先为 key 超过 `u16::MAX`、value 超过 `u32::MAX` 定义显式错误，避免当前截断风险；同步验证多 pair、多批和空批行为。
 - 若增强 JSON 兼容性，修改 `JsonParser` 时应增加畸形 chunk/JSON、UTF-8、surrogate、数字溢出、未知嵌套字段测试，保持缺失字段零值和未知字段忽略语义。
 - 若改变生命周期或重试，重点审查 `finish`、`cause_closed_pipe`、`Drop` 与 channel 容量，避免重复取 outcome、线程泄漏或在析构时永久阻塞；需要独立并发测试覆盖 worker panic、transport 提前关闭、重复 `recv/close`。
-- 若把该客户端接入 Rust 生产主链，应在 `pkg/ingestor/ingestctrl` 中复刻而非简化 Go 的 `objStoreRegionJobWorker` 行为：分批写、错误路径 close、`Recv` 结果传给 ingest、Region/commit TS 约束与重试分类都需保留。当前只有 Cargo 依赖不能作为已接线证据。
+- 生产调用方位于driver的NextGen importer；继续扩展时需保留分批写、错误路径close、Recv结果传给ingest、Region/commit TS及重试分类。完整objStoreRegionJobWorker其他功能仍需单独移植。
+
+
+### 0766a90d52 导入失败边界
+
+`mockIngestError` 在 IngestDurationGuard 建立后、HttpTransport.post 前求值；开启时返回真实 NewIngestAPIError 的 DiskFull 分类，不访问 HTTP，RAII 仍记录失败耗时。关闭后同一客户端继续正常请求。Rust 的 `EnableIngestErrorCall` 提供带守卫的类型化 `&mut Option<Error>` 回调，支持任意错误及动态容量标志；布尔 failpoint 动作额外提供本来源 disk-full 的便捷注入。钩子本身的边界测试与session中的真实ADD INDEX/DXF恢复回归分别验证。
+
+
+## 验证依据
+
+`cargo test --manifest-path pkg/ingestor/ingestcli/Cargo.toml -p astersql-ingestor-ingestcli --lib port_0766a90d52_ -- --test-threads=1`：分类链和注入点两个独立回归分别取得行为红灯后修复，另加任意类型错误回调回归，最终3通过、0忽略。客户端测试只替换HTTP外部边界，验证连续两次错误分类、禁止发送HTTP、容量恢复后同一客户端成功及3次耗时计数；不作为真实SQL/DXF恢复或TiKV验收证据。
+
+
+`WriteAndIngestRegion` 复用同一 Client 的 write_client/write/recv/ingest；传入真实Region、timestamp和KV数据。Write失败显式close，其他路径在recv完成写线程后返回原错误链。生产driver从PD提供Region/Store地址与HTTP传输；显式mock store只替换HTTP边界并把实际write字节解析后写入真实MVCC，不伪造任务或恢复结果。

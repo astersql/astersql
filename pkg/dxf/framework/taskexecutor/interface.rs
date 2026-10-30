@@ -20,17 +20,38 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::SystemTime;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// 执行器错误：以字符串消息承载，对应 Go 侧 error 包装。
-pub struct ExecutorError(pub String);
-/// 将内部消息原样写出。
-impl fmt::Display for ExecutorError {
+/// Executor failure retaining a typed cause in memory. Persisted task tables
+/// retain the message; business classification happens before serialization.
+#[derive(Clone, Debug)]
+pub struct ExecutorFailure(pub String, Option<Arc<dyn std::error::Error + Send + Sync>>);
+pub type ExecutorError = ExecutorFailure;
+/// Keep the existing message-only constructor for framework callers.
+pub fn ExecutorError(message: String) -> ExecutorFailure {
+    ExecutorFailure(message, None)
+}
+impl ExecutorFailure {
+    pub fn with_source(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self(error.to_string(), Some(Arc::new(error)))
+    }
+}
+impl PartialEq for ExecutorFailure {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for ExecutorFailure {}
+impl fmt::Display for ExecutorFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
-/// 标记为标准 Error，便于与 `?` 及错误链协作。
-impl std::error::Error for ExecutorError {}
+impl std::error::Error for ExecutorFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.1
+            .as_deref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+    }
+}
 /// 本模块统一结果类型。
 pub type Result<T> = std::result::Result<T, ExecutorError>;
 

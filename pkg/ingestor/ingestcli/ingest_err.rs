@@ -77,7 +77,11 @@ impl std::fmt::Display for CategorizedError {
     }
 }
 
-impl std::error::Error for CategorizedError {}
+impl std::error::Error for CategorizedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.category)
+    }
+}
 
 /// IngestAPIError is returned when transport succeeded but TiKV reported a
 /// region error. `new_region` is populated only for EpochNotMatch.

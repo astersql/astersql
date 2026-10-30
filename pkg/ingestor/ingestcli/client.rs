@@ -27,6 +27,33 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+type IngestErrorCall = Arc<dyn Fn(&mut Option<Error>) + Send + Sync>;
+fn ingest_error_call() -> &'static Mutex<Option<IngestErrorCall>> {
+    static CALL: std::sync::OnceLock<Mutex<Option<IngestErrorCall>>> = std::sync::OnceLock::new();
+    CALL.get_or_init(Default::default)
+}
+/// Scoped equivalent of Go's mockIngestError(&err) callback.
+#[must_use]
+pub struct IngestErrorCallGuard;
+impl Drop for IngestErrorCallGuard {
+    fn drop(&mut self) {
+        ingest_error_call()
+            .lock()
+            .expect("ingest hook poisoned")
+            .take();
+    }
+}
+/// Install an arbitrary typed error injection at the real HTTP ingest boundary.
+/// Only one hook may be active; callbacks run outside the registration lock.
+pub fn EnableIngestErrorCall(
+    call: impl Fn(&mut Option<Error>) + Send + Sync + 'static,
+) -> IngestErrorCallGuard {
+    let mut active = ingest_error_call().lock().expect("ingest hook poisoned");
+    assert!(active.is_none(), "mockIngestError hook already installed");
+    *active = Some(Arc::new(call));
+    IngestErrorCallGuard
+}
+
 /// 客户端与传输层错误（取消、I/O、HTTP/JSON/protobuf、ingest API 等）。
 #[derive(Debug)]
 pub enum Error {
@@ -563,6 +590,30 @@ impl crate::Client for ClientImpl {
             .ok_or(Error::MissingSstMeta)?;
         let body = encode_sst_meta(sst_meta);
         let _duration = IngestDurationGuard(Instant::now());
+        let hook = ingest_error_call()
+            .lock()
+            .expect("ingest hook poisoned")
+            .clone();
+        let mut injected = None;
+        if let Some(hook) = hook {
+            hook(&mut injected);
+        }
+        if let Some(error) = injected {
+            return Err(error);
+        }
+        if astersql_testkit_testfailpoint::eval_bool(
+            "github.com/pingcap/tidb/pkg/ingestor/ingestcli/mockIngestError",
+        ) {
+            return Err(crate::NewIngestAPIError(
+                &crate::ErrorPb {
+                    message: "mock TiKV disk full".into(),
+                    disk_full: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .into());
+        }
         let response = self.http_transport.post(&url, body.as_bytes())?;
         if response.status_code == 200 {
             return Ok(());
@@ -933,4 +984,31 @@ fn observe_write_duration(started: Instant) {
     {
         metric.observe(started.elapsed().as_secs_f64());
     }
+}
+
+/// Execute one physical Region import, preserving the SST timestamp and client
+/// error chain. Region discovery and HTTP transport are supplied by the store.
+pub fn WriteAndIngestRegion(
+    client: &dyn crate::Client,
+    context: &dyn crate::RequestContext,
+    timestamp: u64,
+    pairs: Vec<crate::Pair>,
+    region: crate::RegionInfo,
+) -> Result<(), Error> {
+    let mut writer = client.write_client(context, timestamp)?;
+    if let Err(error) = writer.write(crate::WriteRequest { pairs }) {
+        // A closed pipe may be the consequence of an earlier HTTP failure.
+        // Join the sender before selecting its actual cause, as Go cause does.
+        let cause = writer.recv().err().unwrap_or(error);
+        writer.close();
+        return Err(cause);
+    }
+    let response = writer.recv()?;
+    client.ingest(
+        context,
+        crate::IngestRequest {
+            region,
+            write_response: response,
+        },
+    )
 }

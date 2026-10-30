@@ -107,6 +107,8 @@ mod tikv_mode_test;
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// ingestctrl 统一错误类型。
 pub enum Error {
+    /// TiKV disk-full identity survives local engine and DXF wrapping.
+    KVDiskFull(String),
     /// 操作被取消令牌取消。
     Cancelled,
     /// Engine 已关闭。
@@ -134,6 +136,7 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::KVDiskFull(message) => f.write_str(message),
             Self::Cancelled => f.write_str("operation cancelled"),
             Self::Closed => f.write_str("engine is closed"),
             Self::Conflict { key, .. } => write!(f, "duplicate key found: {key:?}"),
@@ -151,7 +154,14 @@ impl Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::KVDiskFull(_) => Some(&astersql_ingestor_errdef::ErrKVDiskFull),
+            _ => None,
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value.to_string())

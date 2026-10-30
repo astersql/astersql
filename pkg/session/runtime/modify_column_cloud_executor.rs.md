@@ -80,3 +80,14 @@
 资源与限速扩展应保持“先调真实对象，成功后提交缓存状态”的顺序，并为 idle、CPU 不变但内存变化、取消和锁失败定义行为。进度扩展若要覆盖 MergeSort，不能复用当前仅表示 import rows 的 `rows` 而混淆单位。
 
 回归测试应扩展独立文件 `pkg/session/runtime/modify_column_cloud_executor_test.rs`，不要把测试逻辑写入生产文件。现有用例应继续覆盖归并成功、重复键、取消和 Meta 原子发布；新增导入行为至少应覆盖 Init/Cleanup、旧/新 Meta、表或索引缺失、engine 注册/清理、导入失败、行数摘要、TaskMetaModified 及 ResourceModified 的运行中/空闲/CPU 不变分支。正确性风险集中在错误发布 Meta、错误索引 UUID 和清理遗漏；兼容风险集中在 Go JSON/旧任务 Meta；性能风险集中在每核内存、worker 并发和大规模 metadata 合并。
+
+
+### 0766a90d52 限定前置接线
+
+仅NextGen ADD INDEX的CloudStep后端选择HTTP导入；ImportEngine原错误经ExecutorError.with_source返回，所有情况下清理外部引擎。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

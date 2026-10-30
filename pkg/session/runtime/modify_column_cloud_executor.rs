@@ -208,7 +208,7 @@ impl CloudStep {
         *self.active.lock().map_err(error)? = Some(Active::Import(source.clone(), token));
         let result = backend
             .import_external_native(&control.local, id)
-            .map_err(error);
+            .map_err(executor::ExecutorError::with_source);
         self.rows
             .store(source.ImportedStatistics().1 as u64, Ordering::Release);
         let cleanup = backend.cleanup_external(id).map_err(error);
@@ -240,12 +240,14 @@ impl executor::StepExecutor for CloudStep {
                     .map_err(error)?
             };
             *self.backend.lock().map_err(error)? = Some(
-                super::super::import_sst::Backend::new_with_key_prefix(
+                super::super::import_sst::Backend::new_with_transport(
                     self.base.domain.clone(),
                     self.base.job.id,
                     Default::default(),
                     codec.encode_key(&[]),
                     resource.CPU.max(1) as usize,
+                    astersql_config_kerneltype::IsNextGen()
+                        && self.base.job.tp == astersql_meta_model::group_3::ACTION_ADD_INDEX,
                 )
                 .map_err(error)?,
             );

@@ -91,6 +91,13 @@ pub fn step(
     if matches!(job.tp, 4 | 87 | 88 | 94) {
         return crate::persistent_masking_actions::drop_table(context, job);
     }
+    if job.tp == 7
+        && serde_json::from_slice::<serde_json::Value>(&job.raw_args)
+            .ok()
+            .is_some_and(|args| args.get("prepared_index").is_some())
+    {
+        return crate::persistent_add_index::step(context, job);
+    }
     if matches!(job.tp, 7 | 32) {
         return initialize_prepared_index_action(context, job);
     }

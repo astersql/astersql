@@ -110,3 +110,18 @@ Rust 实现把这些协议步骤组合成可由 `Storage` 同步调用的完整�
 - 扩充重试策略：应在 `ImportError` 分类和外层 cursor 循环处实现，并针对 NotLeader、EpochNotMatch、ServerIsBusy、PD leader 切换和 ambiguous ingest 分别验证。要特别评估重新生成 UUID、相同 commit TSO 和远端已 ingest 状态的幂等语义。
 - 改动 TLS/寻址：集中在 `channel`、`Connection::connect`、`Connection::store`，测试应覆盖 scheme、CA-only、mTLS、多个 PD endpoint 与 store 地址。同步 I/O 读取证书和每次重连重建 channel 的成本需要显式评估。
 - 引入 Region 并行：当前 `cursor` 顺序语义简单；并行化需要重新设计统计合并、取消、每 store limiter 公平性、错误后未完成范围归属和内存上限，不能只把外层循环替换成并发集合。
+
+
+### 0766a90d52 限定前置接线
+
+NextGen按PD实际Region/leader/status-address定位HTTP目标，固定timestamp、KeyCodec、限速和取消；真实write_sst/ingest_s3错误保留至调用者，不在transport耗尽disk-full重试。TLS使用配置CA及客户端证书。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。
+
+NextGen传输使用持续运行的单worker Tokio运行时驱动reqwest，HTTP调用在同步接口内等待；请求、响应读取及PD阶段可随原KV context取消。请求体逐块消费既有有界通道，不聚合完整SST；取消丢弃receiver以唤醒写端。网络错误移除URL，避免worker查询参数中的凭证进入错误链。
+
+`cargo test -p astersql-store-driver --lib port_0766a90d52_ -- --test-threads=1`：3项覆盖真实TCP HTTP的V1/V2帧与固定TS、DiskFull后恢复、URL凭证不泄漏及在途取消。凭证和取消用例分别取得修复前行为红灯。真实TLS握手、远端TiKV部署及吞吐未验证。

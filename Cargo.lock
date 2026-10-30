@@ -5396,6 +5396,7 @@ dependencies = [
  "astersql-ingestor-errdef",
  "astersql-ingestor-ingestmetric",
  "astersql-lightning-common",
+ "astersql-testkit-testfailpoint",
  "astersql-util",
  "astersql-util-logutil",
  "astersql-util-redact",
@@ -8590,6 +8591,7 @@ dependencies = [
  "astersql-domain-infosync",
  "astersql-domain-serverinfo",
  "astersql-domain-sqlsvrapi",
+ "astersql-dxf-framework-dxfmetric",
  "astersql-dxf-framework-proto",
  "astersql-dxf-framework-scheduler",
  "astersql-dxf-framework-storage",
@@ -8616,7 +8618,9 @@ dependencies = [
  "astersql-infoschema-isvalidator",
  "astersql-infoschema-perfschema",
  "astersql-infoschema-validatorapi",
+ "astersql-ingestor-errdef",
  "astersql-ingestor-globalsort",
+ "astersql-ingestor-ingestcli",
  "astersql-ingestor-ingestctrl",
  "astersql-ingestor-simplesst",
  "astersql-keyspace",
@@ -10104,6 +10108,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-config",
  "astersql-config-configtypes",
+ "astersql-ingestor-ingestcli",
  "astersql-kv",
  "astersql-metaservice",
  "astersql-store-copr",
@@ -10253,6 +10258,7 @@ dependencies = [
 name = "astersql-store-mockstore-mockstorage"
 version = "0.1.0"
 dependencies = [
+ "astersql-ingestor-ingestcli",
  "astersql-kv",
  "astersql-store-copr",
  "astersql-store-driver-txn",

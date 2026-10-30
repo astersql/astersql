@@ -1224,6 +1224,121 @@ fn leak_option_value(value: Box<dyn Any>) -> Option<&'static (dyn Any + Send + S
 
 /// mockStorage 的规范 Storage 适配。
 impl kv::Storage for mockStorage {
+    fn ImportNextGenSST(
+        &self,
+        commit_ts: u64,
+        pairs: Vec<(Vec<u8>, Vec<u8>)>,
+        options: kv::SSTImportOptions,
+    ) -> Result<kv::SSTImportStats, kv::errors::SharedError> {
+        use astersql_ingestor_ingestcli as http;
+        struct NativeHttp {
+            store: crate::KVStore,
+            timestamp: u64,
+            pending: std::sync::Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+        }
+        impl http::HttpTransport for NativeHttp {
+            fn put_stream(
+                &self,
+                _: &str,
+                chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+            ) -> Result<http::HttpResponse, http::Error> {
+                let bytes = chunks.into_iter().flatten().collect::<Vec<_>>();
+                let mut cursor = 0;
+                let mut pairs = Vec::new();
+                while cursor < bytes.len() {
+                    let take = |cursor: &mut usize, n: usize| -> Result<&[u8], http::Error> {
+                        let end = cursor
+                            .checked_add(n)
+                            .ok_or_else(|| http::Error::Protobuf("write length overflow".into()))?;
+                        let value = bytes.get(*cursor..end).ok_or_else(|| {
+                            http::Error::Protobuf("truncated write stream".into())
+                        })?;
+                        *cursor = end;
+                        Ok(value)
+                    };
+                    let key_len =
+                        u16::from_le_bytes(take(&mut cursor, 2)?.try_into().unwrap()) as usize;
+                    let key = take(&mut cursor, key_len)?.to_vec();
+                    let value_len =
+                        u32::from_le_bytes(take(&mut cursor, 4)?.try_into().unwrap()) as usize;
+                    let value = take(&mut cursor, value_len)?.to_vec();
+                    pairs.push((key, value));
+                }
+                *self.pending.lock().unwrap() = pairs;
+                Ok(http::HttpResponse {
+                    status_code: 200,
+                    body: br#"{"sst_meta":{"id":1}}"#.to_vec(),
+                })
+            }
+            fn post(&self, _: &str, _: &[u8]) -> Result<http::HttpResponse, http::Error> {
+                let pairs = self.pending.lock().unwrap().clone();
+                self.store
+                    .ingest_sst(self.timestamp, pairs)
+                    .map_err(|e| http::Error::Io(std::io::Error::other(e.to_string())))?;
+                Ok(http::HttpResponse {
+                    status_code: 200,
+                    body: Vec::new(),
+                })
+            }
+        }
+        struct Split;
+        impl http::SplitClient for Split {
+            fn get_store(
+                &self,
+                _: &dyn http::RequestContext,
+                _: u64,
+            ) -> Result<http::Store, http::Error> {
+                Ok(http::Store {
+                    status_address: "native-mock-storage".into(),
+                })
+            }
+        }
+        struct Context(kv::Context);
+        impl http::RequestContext for Context {
+            fn is_cancelled(&self) -> bool {
+                self.0.is_cancelled()
+            }
+        }
+        let context = Context(options.context.clone());
+        let stats = kv::SSTImportStats {
+            keys: pairs.len(),
+            bytes: pairs.iter().map(|(k, v)| k.len() + v.len()).sum(),
+            write_rpcs: 1,
+            ingest_rpcs: 1,
+        };
+        if let Some(limiter) = options.write_limiter {
+            limiter.WaitN(&options.context, 0, stats.bytes)?;
+        }
+        let client = http::ClientImpl::new(
+            "http://native-mock-storage",
+            0,
+            false,
+            std::sync::Arc::new(NativeHttp {
+                store: self.KVStore.clone(),
+                timestamp: commit_ts,
+                pending: Default::default(),
+            }),
+            std::sync::Arc::new(Split),
+        );
+        http::WriteAndIngestRegion(
+            &client,
+            &context,
+            commit_ts,
+            pairs
+                .into_iter()
+                .map(|(key, value)| http::Pair { key, value })
+                .collect(),
+            http::RegionInfo {
+                region: http::Region {
+                    id: 1,
+                    ..Default::default()
+                },
+                leader: Some(http::Peer { id: 1, store_id: 1 }),
+            },
+        )
+        .map_err(kv::errors::SharedError::new)?;
+        Ok(stats)
+    }
     fn ImportSST(
         &self,
         commit_ts: u64,
@@ -1382,6 +1497,10 @@ impl kv::Storage for mockStorage {
 
     fn GetClusterID(&self) -> u64 {
         mockStorage::GetClusterID(self)
+    }
+
+    fn DDLKeyspaceID(&self) -> Result<u32, kv::errors::SharedError> {
+        Ok(mockStorage::DDLKeyspaceID(self))
     }
 
     fn GetKeyspace(&self) -> String {

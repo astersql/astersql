@@ -139,3 +139,14 @@ Rust 还显式处理 NextGen 测试进程缺少 Go `init()` 的全局 keyspace �
 - 修改资源组标签时需同时检查 classic/nextgen keyspace、空 key、SQL/plan digest、table ID callback、label 与 protobuf 兼容性；对应文件是 `pkg/kv/kv_test.rs`、`pkg/kv/kv_test.go` 和 `pkg/executor/resource_tag_test.rs`。
 - 若要消除 `DecodeTableIDFunc` 的并发风险，优先使用一次初始化或受控可替换容器，并验证 tablecodec 接线不造成 crate import cycle；不能直接在本 crate 引入上层 tablecodec。
 - Rust 行为应继续对照 `pkg/kv/kv.go`，但 Rust 已有直接调用所必需的扩展不能为了表面一致而删除。任何行为修改都应同步独立 Rust 测试，并按仓库规则在实现修复后保留顶部 AsterSQL 与 PingCAP 版权注释。
+
+
+### 0766a90d52 限定前置接线
+
+Storage新增ImportNextGenSST显式能力，默认返回不支持而不退回事务写；其他存储API不变。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

@@ -84,3 +84,14 @@ Rust 没有同名 `kv_adapter.go`；语义来源分散在 `pkg/store/driver/tikv
 - 扩展 cop 字段时同时更新 `cop_request`、必要的 response 转换以及 `coprocessor_adapter_test.rs`；要区分 TiKV standard DAG 与 TiFlash batch cop 的合法组合，并保留限流器、runaway checker、RU 和 runtime evidence。
 - 增加 PD/TiFlash/DDL 能力时复用 `TikvStore` 的 PD 地址和 TLS，明确 keyspace v1/v2 编码差异；HTTP/RegionCache 失败必须带上下文返回。真实集群验证应继续放在独立且默认忽略的测试中。
 - 若要补齐 MPP、safe-ts、store options、pipelined flush 或 checkpoint，首先对照 Go 文件和 canonical trait 约束，再确认 client-rust 上游能力；这些是明确的迁移缺口，不应以假成功桩掩盖。
+
+
+### 0766a90d52 限定前置接线
+
+真实Storage能力委托NextGen HTTP importer，传PD地址、TLS、keyspace与SSTImportOptions，统计返回同一结构。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

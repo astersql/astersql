@@ -112,6 +112,7 @@ impl importer::TableImporterRuntime for Runtime {
 }
 
 struct StoreBridge {
+    nextgen: bool,
     domain: Arc<Domain>,
     options: Arc<Mutex<kv::SSTImportOptions>>,
     stats: Arc<Mutex<kv::SSTImportStats>>,
@@ -228,9 +229,18 @@ impl local::local::ImportClient for StoreBridge {
                                 }
                             }
                         }
-                        store
-                            .ImportSSTWithOptions(data.GetTS(), pairs, options.clone())
-                            .map_err(local_error)
+                        let result = if self.nextgen {
+                            store.ImportNextGenSST(data.GetTS(), pairs, options.clone())
+                        } else {
+                            store.ImportSSTWithOptions(data.GetTS(), pairs, options.clone())
+                        };
+                        result.map_err(|error| {
+                            if astersql_ingestor_errdef::IsKVDiskFullError(&error) {
+                                local::Error::KVDiskFull(error.to_string())
+                            } else {
+                                local_error(error)
+                            }
+                        })
                     })?;
                     let mut total = self.stats.lock().map_err(|_| local::Error::Poisoned)?;
                     total.keys += stats.keys;
@@ -307,6 +317,7 @@ impl local::local::ImportClientFactory for StoreBridge {
     ) -> local::Result<Arc<dyn local::local::ImportClient>> {
         token.check()?;
         Ok(Arc::new(Self {
+            nextgen: self.nextgen,
             domain: self.domain.clone(),
             options: self.options.clone(),
             stats: self.stats.clone(),
@@ -473,6 +484,16 @@ impl Backend {
         key_prefix: Vec<u8>,
         concurrency: usize,
     ) -> SessionResult<Arc<Self>> {
+        Self::new_with_transport(domain, task_id, options, key_prefix, concurrency, false)
+    }
+    pub(super) fn new_with_transport(
+        domain: Arc<Domain>,
+        task_id: i64,
+        options: kv::SSTImportOptions,
+        key_prefix: Vec<u8>,
+        concurrency: usize,
+        nextgen: bool,
+    ) -> SessionResult<Arc<Self>> {
         let directory = std::env::temp_dir().join(format!(
             "astersql-import-{}-{task_id}-{}",
             std::process::id(),
@@ -481,6 +502,7 @@ impl Backend {
         let stats = Arc::new(Mutex::new(kv::SSTImportStats::default()));
         let options = Arc::new(Mutex::new(options));
         let bridge = Arc::new(StoreBridge {
+            nextgen,
             domain,
             options: options.clone(),
             stats: stats.clone(),

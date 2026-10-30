@@ -661,6 +661,13 @@ impl BaseTaskExecutor {
             // will decide how to handle a subtask left in Running state.
             Ok(())
         } else if self.IsRetryableError(error) {
+            astersql_dxf_framework_dxfmetric::InitDistTaskMetrics()
+                .ExecuteEventCounter
+                .with_label_values(&[
+                    &self.GetTaskBase().ID.to_string(),
+                    astersql_dxf_framework_dxfmetric::EventRetry,
+                ])
+                .inc();
             Ok(())
         } else {
             self.updateSubtaskStateAndErrorImpl(

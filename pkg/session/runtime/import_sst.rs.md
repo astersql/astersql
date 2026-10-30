@@ -101,3 +101,14 @@ RustCodeGraph 对 `NewImportLocalBackend` 的节点定位为 `import_sst.rs::New
 新增可变导入控制项时，沿用 `set_import_options` 的共享更新边界，并检查正在运行与下一 subtask 的可见性；若要求无竞态快照，保持“每次写入开始时 clone options”的约束。调整取消桥时必须保证限速等待和外部 reader 都能被唤醒，且所有早退路径 join 监控线程。
 
 修改 engine 生命周期或清理策略时，同步检查 `Drop for Backend`、`CleanupEngine`、`seen` 条目和临时目录。性能风险集中在全批次 KV 收集、snapshot `BatchGet`、writer 全批持锁、1 ms 取消轮询与 `BTreeSet` 内存占用；正确性风险集中在时间戳、keyspace、重复键和 option context 的跨 subtask 生命周期。
+
+
+### 0766a90d52 限定前置接线
+
+StoreBridge按构造时限定transport选择ImportNextGenSST；真实sorted KV及commit TS从外部引擎迭代；保留磁盘满类别/详情而不吞掉错误，其他调用默认Classic。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

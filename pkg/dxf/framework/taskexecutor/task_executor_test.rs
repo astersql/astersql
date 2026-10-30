@@ -537,6 +537,13 @@ fn test_run_subtask_panic_fails_subtask_and_cleans_up() {
 #[test]
 /// 可重试失败后，幂等子任务再次执行直至成功。
 fn test_run_one_subtask_failed_retryable_succeeds_after_retry() {
+    let before = astersql_dxf_framework_dxfmetric::InitDistTaskMetrics()
+        .ExecuteEventCounter
+        .with_label_values(&[
+            &task1().TaskBase.ID.to_string(),
+            astersql_dxf_framework_dxfmetric::EventRetry,
+        ])
+        .get();
     let e = new_env();
     e.table.push_task(task1());
     e.table.push_subtask(Some(pending_subtask1()));
@@ -565,6 +572,14 @@ fn test_run_one_subtask_failed_retryable_succeeds_after_retry() {
     e.executor.Run();
     assert_eq!(1, e.table.finish_subtask_calls.lock().unwrap().len());
     assert!(e.table.fail_subtask_calls.lock().unwrap().is_empty());
+    let after = astersql_dxf_framework_dxfmetric::InitDistTaskMetrics()
+        .ExecuteEventCounter
+        .with_label_values(&[
+            &task1().TaskBase.ID.to_string(),
+            astersql_dxf_framework_dxfmetric::EventRetry,
+        ])
+        .get();
+    assert!(after >= before + 2.0);
 }
 
 #[test]
@@ -1310,4 +1325,13 @@ fn complete_summary_persistence_failure_prevents_subtask_success() {
     let calls = table.calls.lock().unwrap();
     assert_eq!(calls.len(), 3);
     assert!(calls.iter().all(|(name, _)| name == "summary"));
+}
+
+#[test]
+fn port_0766a90d52_executor_failure_retains_the_typed_cause() {
+    let failure = ExecutorError::with_source(std::io::Error::other("capacity detail"));
+    let cause = std::error::Error::source(&failure).unwrap();
+    assert!(cause.downcast_ref::<std::io::Error>().is_some());
+    assert_eq!(failure.to_string(), "capacity detail");
+    assert!(std::error::Error::source(&ExecutorError("same text".into())).is_none());
 }

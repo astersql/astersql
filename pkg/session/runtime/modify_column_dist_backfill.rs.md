@@ -121,3 +121,14 @@ RustCodeGraph `query` 精确定位了 `ReadIndex`、`NodeService`、`TaskRuntime
 - 修改 NextGen keyspace 路由时，保持 SYSTEM task manager、目标 Store/Domain、runtime handle 三者一致；同步扩展 `masking_policy_dxf_foreign_runtime_checks_store_and_releases_holders` 与 NextGen SYSTEM 执行测试，覆盖错误 keyspace、release 幂等和 manager close。
 - 修改 scheduler 生命周期时建议为 slot reservation 引入显式 RAII guard，并验证所有 init/schedule/balance/error 返回路径释放 reservation；同时保持 NodeService stop 能中断同步 loop。
 - 修改云路径时同步阅读 `modify_column_cloud_{planner,executor,meta,store}.rs` 和各自独立测试，验证外部 meta 仅在成功后发布、取消能传播、索引组长度与内存除数有效。正确性风险集中在错误 checkpoint/范围与跨 keyspace 路由；兼容风险集中在 Go JSON/历史 task；性能风险集中在 region 数、SQL checkpoint 频率、worker 数和对象存储中间数据。
+
+
+### 0766a90d52 限定前置接线
+
+复用真实Backfill Extension/TaskTable/Planner/worker；NextGen沿typed source识别IsKVDiskFullError；ADD INDEX循环读取持久化取消状态并CancelTask。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。

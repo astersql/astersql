@@ -2273,6 +2273,32 @@ impl kv::Storage for TikvStore {
             "publish TiFlash placement rule {rule_id}: {last_error}"
         )))
     }
+    fn ImportNextGenSST(
+        &self,
+        commit_ts: u64,
+        pairs: Vec<(Vec<u8>, Vec<u8>)>,
+        options: kv::SSTImportOptions,
+    ) -> Result<kv::SSTImportStats, kv::errors::SharedError> {
+        let keyspace_id = if self.GetKeyspace().is_empty() {
+            None
+        } else {
+            Some(self.DDLKeyspaceID()?)
+        };
+        let stats = crate::sst_import::write_and_ingest_nextgen(
+            &self.GetPDAddrs().map_err(adapter_error)?,
+            self.TLSConfig(),
+            commit_ts,
+            pairs,
+            keyspace_id,
+            options,
+        )?;
+        Ok(kv::SSTImportStats {
+            keys: stats.keys,
+            bytes: stats.bytes,
+            write_rpcs: stats.write_rpcs,
+            ingest_rpcs: stats.ingest_rpcs,
+        })
+    }
     fn ImportSST(
         &self,
         commit_ts: u64,

@@ -97,3 +97,13 @@ Rust `test_ingest_api_error_categories_are_distinct` 只验证两者 RFC code �
 5. 若把 Region 提取接入 Rust 生产链，需要修改实际调用方而非只改本文件，并验证 EpochNotMatch 后续阶段消费 `new_region` 的行为；当前 `client.rs` 固定传 `None` 是明确的迁移限制。
 
 兼容风险包括 RFC code 或分类顺序变化、protobuf field number/wire type 不匹配、raft dropped 文案变化及错误 detail 格式变化。性能风险集中在大错误体的多层 `Vec` 和内容克隆；并发风险当前不存在，但若未来保存回调或异步执行，必须重新定义闭包的所有权与 `Send`/`Sync` 边界。
+
+
+### 0766a90d52 分类错误链
+
+CategorizedError.source 返回实际 NormalizedError；因此 IngestAPIError → CategorizedError → NormalizedError 和客户端 Error → IngestAPIError 的包装都保留 RFC 分类。消息中包含“store disk full”但实际分类为 IngestFailed 时不能误判。该修复是本来源 NextGen disk-full 重试的必要局部接线；实际CloudStep通过ExecutorFailure.source把它交给业务重试分类。
+
+
+## 验证依据
+
+`cargo test --manifest-path pkg/ingestor/ingestcli/Cargo.toml -p astersql-ingestor-ingestcli --lib port_0766a90d52_ -- --test-threads=1`：分类链和注入点两个独立回归分别取得行为红灯后修复，另加任意类型错误回调回归，最终3通过、0忽略。客户端测试只替换HTTP外部边界，验证连续两次错误分类、禁止发送HTTP、容量恢复后同一客户端成功及3次耗时计数；不作为真实SQL/DXF恢复或TiKV验收证据。

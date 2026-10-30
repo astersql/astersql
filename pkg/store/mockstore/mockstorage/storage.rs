@@ -1326,6 +1326,11 @@ impl mockStorage {
         1
     }
 
+    /// The keyspace codec used by physical distributed backfill.
+    pub fn DDLKeyspaceID(&self) -> u32 {
+        self.keyspaceMeta.as_ref().map_or(u32::MAX, |meta| meta.Id)
+    }
+
     /// 当前 keyspace 名。
     pub fn GetKeyspace(&self) -> String {
         self.keyspaceMeta

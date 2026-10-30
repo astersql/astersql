@@ -1006,13 +1006,10 @@ pub(super) fn encode_relational_index_entries(
     let mut entries = Vec::new();
     for index in table.Indices.iter().filter(|index| {
         (index.State == astersql_meta_model::StatePublic
-            || ((index.IsChanging() || index.IsRemoving() || table.Partition.as_ref().is_some_and(|p| p.DDLChangedIndex.contains_key(&index.ID)))
-                && matches!(
-                    index.State,
-                    astersql_meta_model::SchemaState::DeleteOnly
-                        | astersql_meta_model::SchemaState::WriteOnly
-                        | astersql_meta_model::SchemaState::WriteReorganization
-                )))
+            || matches!(index.State,
+                astersql_meta_model::SchemaState::DeleteOnly
+                | astersql_meta_model::SchemaState::WriteOnly
+                | astersql_meta_model::SchemaState::WriteReorganization))
             // A clustered PRIMARY KEY is encoded in the record key itself and
             // has no independent index KV. A non-clustered PRIMARY KEY does,
             // so DML and partition reorganization must maintain it just like

@@ -93,3 +93,14 @@ schema version、diff、DB/Table 元数据和重新编码的 job 行属于一次
 测试必须保持在独立 Rust 测试文件中。最接近的接入点是：普通事务/statement stage 与元数据版本用 `pkg/ddl/table_mode_test.rs`；owner/提交回滚用 `pkg/ddl/job_worker_test.rs`；TTL 用 `pkg/ddl/ttl_test.rs` 和 `pkg/ddl/table_test.rs`；FK 用 `pkg/ddl/foreign_key_test.rs`；storage-class 用 `pkg/ddl/storage_class_transition_test.rs`；物化视图 dispatch 用 `pkg/ddl/persistent_mview_out_of_place_cutover_test.rs`。新增 bug fix 应添加先失败后通过的回归测试，并保留 Rust/Go 行为对照。
 
 兼容性风险最高的是 action 数值、job raw args V1/V2 解码、错误码、schema diff 和 terminal state；正确性风险集中于 statement stage 外做副作用、误用返回版本 0、漏发事件或遗漏回滚清理；性能风险主要是 `list_databases` 冲突检查、storage-class history 查询/逐行更新，以及对大 metadata/targets 的 JSON 编解码。
+
+
+### 0766a90d52 限定前置接线
+
+带prepared_index的ADD INDEX任务分派至限定适配；其他既有初始化入口保留。
+
+依据：来源Go ingest错误分类/NextGen重试与原自动恢复测试，以及用户明确授权的限定前置执行链。限定生产链已通过持久化 SQL/DXF/MVCC 恢复回归；真实集群部署仍需独立验证。
+
+## 验证依据
+
+`cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。
