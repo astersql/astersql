@@ -259,3 +259,132 @@ fn benchmark_native_int_map() -> Vec<usize> {
 fn benchmark_workloads_match_native_map() {
     assert_eq!(benchmark_mem_aware_int_map(), benchmark_native_int_map());
 }
+
+// Go 1.27's unsafe slot walkers become safe iteration checks here: Rust does
+// not expose Go's split/interleaved offsets or indirect pointer flags.
+fn port_69d1aac23d_entries<K, V>(n: usize, entry: impl Fn(usize) -> (K, V))
+where
+    K: Eq + Hash + std::fmt::Debug,
+    V: PartialEq + std::fmt::Debug,
+{
+    use super::swiss_map::SwissMap;
+    for hint in [0, n] {
+        let mut map = SwissMap::with_capacity(hint);
+        let check = |map: &SwissMap<K, V>| {
+            assert!(map.capacity() >= map.len());
+            let mut seen = std::collections::HashSet::new();
+            for (key, value) in map {
+                assert_eq!(map.get(key), Some(value));
+                assert!(seen.insert(key));
+            }
+            assert_eq!(seen.len(), map.len());
+        };
+        check(&map);
+        for i in 0..n {
+            let (key, value) = entry(i);
+            map.insert(key, value);
+            if [0, 7, 8].contains(&i) {
+                check(&map);
+            }
+        }
+        for i in 0..n {
+            let (key, value) = entry(i);
+            assert_eq!(map.get(&key), Some(&value));
+        }
+        check(&map);
+        for i in (0..n).step_by(3) {
+            let (key, value) = entry(i);
+            assert_eq!(map.remove(&key), Some(value));
+        }
+        check(&map);
+        let capacity = map.capacity();
+        map.clear();
+        assert!(map.is_empty());
+        assert_eq!(map.capacity(), capacity);
+        check(&map);
+    }
+}
+
+#[test]
+fn port_69d1aac23d_map_abi_entries() {
+    port_69d1aac23d_entries(2000, |i| (i as u64, i as u8));
+    port_69d1aac23d_entries(2000, |i| (i as u16, i as u64));
+    port_69d1aac23d_entries(2000, |i| (i as u64, ()));
+    port_69d1aac23d_entries(1, |i| ((), i as u64));
+    port_69d1aac23d_entries(1, |_| ((), ()));
+    let large = |i: usize| {
+        let mut a = [0u8; 129];
+        a[0] = i as u8;
+        a[128] = (i >> 8) as u8;
+        a
+    };
+    port_69d1aac23d_entries(2000, |i| (large(i), i as u64));
+    port_69d1aac23d_entries(2000, |i| (i as u64, large(i)));
+    port_69d1aac23d_entries(2000, |i| (large(i), large(i + 1)));
+    // Vec preserves the Go interface case's dynamically owned slice payload.
+    port_69d1aac23d_entries(2000, |i| (i.to_string(), vec![i]));
+}
+
+#[test]
+fn port_69d1aac23d_memory_constants_and_zero_capacity() {
+    use super::hack::*;
+    use super::map_abi_go126::NewMemAwareMap as new;
+    assert_eq!(
+        new::<String, [usize; 2]>(0).RealBytes(),
+        DefBucketMemoryUsageForMapStringToAny as u64
+    );
+    assert_eq!(
+        new::<String, ()>(0).RealBytes(),
+        DefBucketMemoryUsageForSetString as u64
+    );
+    assert_eq!(
+        new::<i64, ()>(0).RealBytes(),
+        DefBucketMemoryUsageForSetInt64 as u64
+    );
+    // f64 cannot be a Rust Eq key; its layout is identical to u64.
+    assert_eq!(
+        new::<u64, ()>(0).RealBytes(),
+        DefBucketMemoryUsageForSetFloat64 as u64
+    );
+    assert_eq!(
+        new::<String, Box<i32>>(0).RealBytes(),
+        DefBucketMemoryUsageForMapStringToDecimal as u64
+    );
+    assert_eq!(
+        new::<String, String>(0).RealBytes(),
+        DefBucketMemoryUsageForMapStringToString as u64
+    );
+    assert_eq!(new::<u64, ()>(0).M.capacity(), 8);
+    assert_eq!(new::<(), u64>(0).M.capacity(), 8);
+    assert_eq!(new::<(), ()>(0).M.capacity(), 8);
+}
+
+#[test]
+fn port_69d1aac23d_mem_aware_map() {
+    let mut map = super::map_abi_go126::NewMemAwareMap::<u64, u8>(0);
+    assert!(map.Empty());
+    assert_eq!(map.Count(), 0);
+    let mut bytes = map.Bytes as i64;
+    for i in 0..2000 {
+        let (delta, inserted) = map.SetExt(i, i as u8);
+        assert!(inserted);
+        bytes += delta;
+        assert_eq!(bytes as u64, map.Bytes);
+        assert_eq!(map.Get(&i), (Some(&(i as u8)), true));
+        assert!(map.Exist(&i));
+        assert!(!map.SetExt(i, i as u8).1);
+    }
+    assert_eq!(map.Len(), 2000);
+    assert_eq!(map.Count(), map.Len());
+    let real = map.M.size(
+        super::map_abi_go126::mapSize,
+        super::map_abi_go126::mapTableSize,
+        super::map_abi_go126::sizeofPtr,
+        super::swiss_map::group_size::<u64, u8>(),
+    );
+    assert_eq!(map.RealBytes(), real);
+    map.M.clear();
+    assert!(map.Empty());
+    assert_eq!(map.RealBytes(), real);
+    assert_eq!(map.Bytes as i64, bytes);
+}
