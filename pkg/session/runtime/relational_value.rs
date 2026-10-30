@@ -1056,6 +1056,50 @@ pub(super) fn pg_int4_divide_value(values: [Option<String>; 2]) -> SessionResult
     Ok((!null).then(|| value.to_string()))
 }
 
+/// Consume the bound PG int4 signature through the shared expression factory.
+/// Values come from the caller's recursive evaluation; they never choose the type.
+pub(super) fn pg_int4_unary_minus_value(value: Option<String>) -> SessionResult<Option<String>> {
+    use astersql_expression::BuildContext;
+    let args = [value]
+        .into_iter()
+        .map(|value| {
+            let mut argument = match value {
+                Some(value) => astersql_expression::NewInt64Const(
+                    value.parse::<i32>().map(i64::from).map_err(|error| {
+                        session_error("parse bound int4 unary minus operand", error)
+                    })?,
+                ),
+                None => astersql_expression::NewNull(),
+            };
+            argument.RetType = Some(astersql_parser_types::NewFieldType(
+                astersql_parser_mysql::r#type::TypeLong,
+            ));
+            Ok(Box::new(argument) as Box<dyn astersql_expression::Expression>)
+        })
+        .collect::<SessionResult<Vec<_>>>()?;
+    let context = astersql_expression_exprstatic::NewExprContext(vec![
+        astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+            astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(ast::SqlDialect::PostgreSQL),
+            ]),
+        )),
+    ]);
+    let function = astersql_expression::NewFunctionBase(
+        &context,
+        "unaryminus",
+        astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeLong),
+        args,
+    )
+    .map_err(|error| session_error("build PG int4 unary minus", error))?;
+    let (value, null) = function
+        .EvalInt(
+            context.GetEvalCtx(),
+            astersql_expression::chunk::Row::default(),
+        )
+        .map_err(|error| SessionError::with_source(error.to_string(), error.into_shared()))?;
+    Ok((!null).then(|| value.to_string()))
+}
+
 /// Evaluate one scalar expression against a decoded relational row.
 pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
@@ -1095,6 +1139,19 @@ pub(super) fn relational_expression_value(
                 }
             })
             .transpose(),
+        ast::ExprKind::Unary { Op, V }
+            if Op == "-"
+                && PG_CAST_TABLE.with(|slot| {
+                    slot.borrow().as_ref().is_some_and(|table| {
+                        super::query::pg_integer_literal_type(V)
+                            .unwrap_or_else(|| relational_expression_type(V, table))
+                            .GetType()
+                            == astersql_parser_mysql::r#type::TypeLong
+                    })
+                }) =>
+        {
+            pg_int4_unary_minus_value(relational_expression_value(V, row)?)
+        }
         ast::ExprKind::Unary { Op, V } if Op == "-" => relational_expression_value(V, row)?
             .map(|value| {
                 if let Ok(value) = value.parse::<i128>() {

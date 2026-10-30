@@ -1248,6 +1248,14 @@ impl ConcreteSession {
             });
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Unary { Op, V } = &expression.Kind
+            && Op == "-"
+            && self.pg_case_input_type(V, &[]).GetType() == astersql_parser_mysql::r#type::TypeLong
+        {
+            let value = self.relational_query_expression_value(V, row, group_rows)?;
+            return super::relational_value::pg_int4_unary_minus_value(value);
+        }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
             && Op == "/"
             && [L.as_ref(), R.as_ref()].iter().all(|operand| {
@@ -5177,6 +5185,14 @@ impl ConcreteSession {
                             TypeLong
                         },
                     );
+                }
+            }
+            if let ast::ExprKind::Unary { Op, V } = &expression.Kind
+                && Op == "-"
+            {
+                let source = self.pg_case_input_type(V, source_fields);
+                if source.GetType() == astersql_parser_mysql::r#type::TypeLong {
+                    return source;
                 }
             }
             // PostgreSQL int4 division keeps its integer result identity; MySQL '/' remains decimal.

@@ -4426,6 +4426,7 @@ pub mod formal_registry {
         UnaryMinus(types::EvalType),
         Arithmetic(&'static str, types::EvalType),
         PgInt4Divide,
+        PgInt4UnaryMinus,
         Case,
         IfNull(types::EvalType),
         Coalesce(types::EvalType),
@@ -4942,6 +4943,21 @@ pub mod formal_registry {
                             .ok_or_else(|| errors::New("BIGINT value is out of range"))?,
                         null,
                     ))
+                }
+                CoreBuiltinKind::PgInt4UnaryMinus => {
+                    let (value, null) = self.base.args[0].EvalInt(ctx, row)?;
+                    if null {
+                        return Ok((0, true));
+                    }
+                    let value = i32::try_from(value)
+                        .ok()
+                        .and_then(i32::checked_neg)
+                        .ok_or_else(|| {
+                            errors::Error::from(crate::contextutil::errors::SharedError::new(
+                                crate::PgInt4Error::OutOfRange,
+                            ))
+                        })?;
+                    Ok((i64::from(value), false))
                 }
                 CoreBuiltinKind::PgInt4Divide => {
                     let (left, left_null) = self.base.args[0].EvalInt(ctx, row.clone())?;
@@ -7298,6 +7314,17 @@ pub mod formal_registry {
                     _ => "builtinUnaryNotRealSig",
                 };
                 (CoreBuiltinKind::UnaryNot, boolean_field_type(), signature)
+            }
+            "unaryminus"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                    && args[0].GetType(ctx.GetEvalCtx()).GetType() == mysql::TypeLong =>
+            {
+                // The PG prefix operator keeps int4 identity and 32-bit overflow.
+                (
+                    CoreBuiltinKind::PgInt4UnaryMinus,
+                    *types::NewFieldType(mysql::TypeLong),
+                    "builtinUnaryMinusIntSig",
+                )
             }
             "unaryminus" => {
                 let eval_type = match args[0].GetType(ctx.GetEvalCtx()).EvalType() {
