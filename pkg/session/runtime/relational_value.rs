@@ -1987,6 +1987,28 @@ pub(super) fn relational_expression_value(
                         .and_then(|next| next.pred_opt())
                         .map(|date| date.format("%Y-%m-%d").to_string()))
                 }
+                "version" => {
+                    use astersql_expression::BuildContext;
+                    astersql_expression::formal_registry::VerifyArgsWrapper("version", Args.len())
+                        .map_err(|error| session_error("validate native VERSION", error))?;
+                    let context = astersql_expression_exprstatic::NewExprContext(vec![]);
+                    let built = astersql_expression::NewFunctionBase(
+                        &context,
+                        "version",
+                        *astersql_expression::types::NewFieldType(
+                            astersql_parser_mysql::r#type::TypeVarString,
+                        ),
+                        vec![],
+                    )
+                    .map_err(|error| session_error("build native VERSION", error))?;
+                    let (value, null) = built
+                        .EvalString(
+                            context.GetEvalCtx(),
+                            astersql_expression::chunk::Row::default(),
+                        )
+                        .map_err(|error| session_error("evaluate native VERSION", error))?;
+                    Ok((!null).then_some(value))
+                }
                 "tidb_version" => {
                     astersql_expression::formal_registry::VerifyArgsWrapper(
                         "tidb_version",
@@ -3104,6 +3126,16 @@ pub(super) fn relational_expression_type(
         | ast::ExprKind::InList { .. }
         | ast::ExprKind::Between { .. }
         | ast::ExprKind::Like { .. } => new_type(astersql_parser_mysql::r#type::TypeLonglong),
+        ast::ExprKind::Function {
+            FnName,
+            Schema,
+            Args,
+        } if FnName.L == "version"
+            && Args.is_empty()
+            && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
+        {
+            new_type(astersql_parser_mysql::r#type::TypeVarString)
+        }
         ast::ExprKind::Function {
             FnName,
             Schema,

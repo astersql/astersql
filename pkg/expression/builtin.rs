@@ -2616,6 +2616,10 @@ pub mod formal_registry {
                 arguments: inputs.to_vec(),
                 result: mysql::TypePgRegtype,
             }],
+            "version" => vec![PgFunctionCandidate {
+                arguments: vec![],
+                result: mysql::TypeVarString,
+            }],
             "pg_backend_pid" => vec![PgFunctionCandidate {
                 arguments: vec![],
                 result: mysql::TypeLong,
@@ -2876,6 +2880,7 @@ pub mod formal_registry {
                 | "current_database"
                 | "current_schema"
                 | "pg_backend_pid"
+                | "version"
         ) {
             if inputs.iter().any(|tp| {
                 tp.PostgreSQLArrayElement().is_some()
@@ -4414,6 +4419,7 @@ pub mod formal_registry {
         Row,
         JsonExtract,
         TiDBVersion,
+        Version(bool),
         Uuid,
         Rand,
         Md5,
@@ -5515,6 +5521,14 @@ pub mod formal_registry {
                     }
                     Ok((result, false))
                 }
+                CoreBuiltinKind::Version(postgresql) => Ok((
+                    if postgresql {
+                        crate::builtin_info_kernel::pg_version()
+                    } else {
+                        crate::builtin_info_kernel::version()
+                    },
+                    false,
+                )),
                 CoreBuiltinKind::TiDBVersion => {
                     Ok((crate::builtin_info_kernel::tidb_version(), false))
                 }
@@ -7567,6 +7581,32 @@ pub mod formal_registry {
                 args[0].GetType(ctx.GetEvalCtx()).clone(),
                 "builtinRowSig",
             ),
+            "version" => {
+                let postgresql = ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL;
+                if postgresql {
+                    resolve_pg_signature(name, &[]).map_err(errors::New)?;
+                }
+                let mut return_type = field_type_for_eval_type(types::ETString);
+                let (charset, collation) = ctx.GetCharsetInfo();
+                return_type.SetCharset(charset);
+                return_type.SetCollate(collation);
+                return_type.AddFlag(mysql::NotNullFlag);
+                let value = if postgresql {
+                    crate::builtin_info_kernel::pg_version()
+                } else {
+                    crate::builtin_info_kernel::version()
+                };
+                return_type.SetFlen(value.len() as isize);
+                (
+                    CoreBuiltinKind::Version(postgresql),
+                    return_type,
+                    if postgresql {
+                        "builtinPgVersionSig"
+                    } else {
+                        "builtinVersionSig"
+                    },
+                )
+            }
             "tidb_version" => {
                 let mut return_type = field_type_for_eval_type(types::ETString);
                 let (charset, collation) = ctx.GetCharsetInfo();
@@ -8086,7 +8126,10 @@ pub mod formal_registry {
         };
         let mut base = if matches!(
             kind,
-            CoreBuiltinKind::Sleep | CoreBuiltinKind::Rand | CoreBuiltinKind::PgBackendPid
+            CoreBuiltinKind::Sleep
+                | CoreBuiltinKind::Rand
+                | CoreBuiltinKind::PgBackendPid
+                | CoreBuiltinKind::Version(_)
         ) {
             RegistryBuiltinBase::new_never(args, return_type)
         } else {
@@ -8400,6 +8443,7 @@ pub mod formal_registry {
     core_factory!(row_factory, "row");
     core_factory!(json_extract_factory, "json_extract");
     core_factory!(tidb_version_factory, "tidb_version");
+    core_factory!(version_factory, "version");
     core_factory!(uuid_factory, "uuid");
     core_factory!(rand_factory, "rand");
     core_factory!(md5_factory, "md5");
@@ -8502,6 +8546,7 @@ pub mod formal_registry {
         ("row", row_factory),
         ("json_extract", json_extract_factory),
         ("tidb_version", tidb_version_factory),
+        ("version", version_factory),
         ("uuid", uuid_factory),
         ("rand", rand_factory),
         ("md5", md5_factory),

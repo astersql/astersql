@@ -165,8 +165,8 @@ fn root_handshake_with_capability(stream: &mut TcpStream, extra_capability: u32)
     assert_eq!(initial[0], 10, "server must emit protocol v10");
     assert!(
         initial
-            .windows("8.0.11-TiDB-AsterSQL".len())
-            .any(|value| value == b"8.0.11-TiDB-AsterSQL")
+            .windows(astersql_parser_mysql::r#const::ServerVersion().len())
+            .any(|value| value == astersql_parser_mysql::r#const::ServerVersion().as_bytes())
     );
 
     const CLIENT_PROTOCOL_41: u32 = 1 << 9;

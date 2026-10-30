@@ -376,7 +376,7 @@ impl PgService {
                 ("server_encoding", "UTF8"),
                 ("DateStyle", "ISO, MDY"),
                 ("TimeZone", time_zone),
-                ("server_version", "18.0 (AsterSQL)"),
+                ("server_version", astersql_expression::pg_server_version()),
             ] {
                 let mut body = name.as_bytes().to_vec();
                 body.push(0);

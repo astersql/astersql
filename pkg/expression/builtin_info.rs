@@ -202,6 +202,22 @@ pub fn version() -> String {
     mysql::r#const::ServerVersion()
 }
 
+/// PostgreSQL protocol compatibility declaration, shared with ParameterStatus.
+/// This identifies an AsterSQL compatibility baseline, not an upstream build.
+pub fn pg_server_version() -> &'static str {
+    "18.0 (AsterSQL)"
+}
+
+/// Keep the compatibility declaration and this binary's existing build facts
+/// explicit. Never substitute the reference PostgreSQL server's version here.
+pub fn pg_version() -> String {
+    format!(
+        "PostgreSQL {} compatibility\n{}",
+        pg_server_version(),
+        tidb_version()
+    )
+}
+
 /// `TIDB_VERSION()`：TiDB/AsterSQL 构建信息。
 pub fn tidb_version() -> String {
     printer::GetTiDBInfo()

@@ -2323,7 +2323,7 @@ impl ConnectionServer for Server {
                 self.capability() & !(1 << 11)
             },
             default_collation: 45,
-            server_version: "8.0.11-TiDB-AsterSQL".into(),
+            server_version: astersql_parser_mysql::r#const::ServerVersion(),
             default_auth_plugin: crate::conn::AUTH_NATIVE_PASSWORD.into(),
             require_secure_transport: astersql_util::misc::RequireSecureTransportEnabled(),
             init_connect: String::new(),

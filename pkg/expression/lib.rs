@@ -247,7 +247,7 @@ mod builtin_ilike_vec_kernel;
 mod builtin_ilike_vec_test;
 #[path = "builtin_info.rs"]
 mod builtin_info_kernel;
-pub use builtin_info_kernel::{pg_backend_pid, tidb_version};
+pub use builtin_info_kernel::{pg_backend_pid, pg_server_version, pg_version, tidb_version};
 #[path = "builtin_info_vec.rs"]
 mod builtin_info_vec_kernel;
 #[path = "builtin_json.rs"]
@@ -1012,3 +1012,6 @@ mod pg08_30_test;
 
 #[cfg(test)]
 mod pg08_31_test;
+
+#[cfg(test)]
+mod pg08_32_test;

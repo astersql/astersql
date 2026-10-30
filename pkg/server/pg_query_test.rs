@@ -16990,3 +16990,239 @@ fn pg08_31_sql() {
         "pg08_31_sql: {count} scenarios passed; A-only cancellation and listener cleanup verified"
     );
 }
+
+#[test]
+fn pg08_32_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(service.clone());
+    fn login(addr: std::net::SocketAddr) -> (TcpStream, Vec<u8>) {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [
+            196610u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let mut key = vec![];
+        loop {
+            let m = read(&mut s);
+            if m.0 == b'S' && m.1.starts_with(b"server_version\0") {
+                assert_eq!(m.1, b"server_version\018.0 (AsterSQL)\0");
+            }
+            if m.0 == b'K' {
+                key = m.1.clone();
+            }
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        assert_eq!(key.len(), 36);
+        (s, key)
+    }
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn value(s: &mut TcpStream, sql: &str) -> Vec<u8> {
+        let ms = query(s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        ms.into_iter().find(|m| m.0 == b'D').unwrap().1
+    }
+    fn describe(ms: &[(u8, Vec<u8>)], fmt: i16) {
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[2..4], b"v\0");
+        assert_eq!(&d[10..14], &25u32.to_be_bytes());
+        assert_eq!(&d[14..16], &(-1i16).to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &fmt.to_be_bytes());
+    }
+    let expected = format!(
+        "PostgreSQL 18.0 (AsterSQL) compatibility\n{}",
+        astersql_expression::tidb_version()
+    );
+    let (mut a, _) = login(addr);
+    let (mut b, _) = login(addr);
+    assert_eq!(
+        value(&mut b, "SELECT version() AS v"),
+        row(&[Some(&expected)])
+    );
+    assert!(
+        !query(&mut a, "CREATE TABLE pg0832_source(v integer)")
+            .iter()
+            .any(|m| m.0 == b'E')
+    );
+    assert!(
+        !query(&mut a, "INSERT INTO pg0832_source VALUES(7)")
+            .iter()
+            .any(|m| m.0 == b'E')
+    );
+    let mut count = 0;
+    for expr in [
+        "version()",
+        "pg_catalog.version()",
+        "COALESCE(version(),NULL::text)",
+        "version() FROM pg0832_source",
+    ] {
+        let sql = format!(
+            "SELECT {}",
+            if let Some(e) = expr.strip_suffix(" FROM pg0832_source") {
+                format!("{e} AS v FROM pg0832_source")
+            } else {
+                format!("{expr} AS v")
+            }
+        );
+        for zero in [false, true] {
+            let sql = format!("{sql}{}", if zero { " WHERE false" } else { "" });
+            let ms = query(&mut a, &sql);
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+            describe(&ms, 0);
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'D').count(),
+                usize::from(!zero)
+            );
+            if !zero {
+                assert_eq!(
+                    ms.iter().find(|m| m.0 == b'D').unwrap().1,
+                    row(&[Some(&expected)])
+                );
+            }
+            count += 1;
+        }
+    }
+    for (index, sql) in [
+        "SELECT version() AS v",
+        "SELECT version() AS v WHERE false",
+        "SELECT NULL::text AS v WHERE version() IS NOT NULL",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let name = format!("version{index}\0");
+        send(
+            &mut a,
+            b'P',
+            &[name.as_bytes(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut a, b'D', &[b"S", name.as_bytes()].concat());
+        send(&mut a, b'S', &[]);
+        let ms = ready(&mut a);
+        assert_eq!(
+            ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [b'1', b't', b'T', b'Z']
+        );
+        describe(&ms, 0);
+        assert_eq!(ms.iter().find(|m| m.0 == b't').unwrap().1, [0, 0]);
+        for fmt in [0i16, 1] {
+            let bind = [
+                b"\0".as_slice(),
+                name.as_bytes(),
+                &[0, 0, 0, 0, 0, 1],
+                &fmt.to_be_bytes(),
+            ]
+            .concat();
+            send(&mut a, b'B', &bind);
+            send(&mut a, b'D', b"P\0");
+            send(&mut a, b'E', &[0; 5]);
+            send(&mut a, b'S', &[]);
+            let ms = ready(&mut a);
+            describe(&ms, fmt);
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'T').count(),
+                1,
+                "Execute must not emit RowDescription"
+            );
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'D').count(),
+                usize::from(index != 1)
+            );
+            if index != 1 {
+                let payload = if index == 2 {
+                    None
+                } else {
+                    Some(expected.as_bytes().to_vec())
+                };
+                let mut expected = vec![0, 1];
+                expected.extend(
+                    payload
+                        .as_ref()
+                        .map_or(-1, |v| v.len() as i32)
+                        .to_be_bytes(),
+                );
+                if let Some(v) = payload {
+                    expected.extend(v);
+                }
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+            }
+            count += 1;
+        }
+    }
+    for sql in [
+        "SELECT version(1::int4) AS v",
+        "SELECT version(NULL::text) AS v",
+    ] {
+        assert_eq!(query(&mut a, "BEGIN").last().unwrap().1, b"T");
+        send(
+            &mut a,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(&mut a, b'B', &[0; 8]);
+        send(&mut a, b'E', &[0; 5]);
+        send(&mut a, b'S', &[]);
+        let ms = ready(&mut a);
+        assert!(
+            ms.iter()
+                .find(|m| m.0 == b'E')
+                .unwrap()
+                .1
+                .windows(7)
+                .any(|w| w == b"C42883\0"),
+            "{ms:?}"
+        );
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+        assert_eq!(ms.last().unwrap().1, b"E");
+        assert_eq!(query(&mut a, "ROLLBACK").last().unwrap().1, b"I");
+        assert_eq!(value(&mut a, "SELECT 1::int4 AS v"), row(&[Some("1")]));
+        count += 1;
+    }
+    assert!(
+        !query(&mut a, "DROP TABLE pg0832_source")
+            .iter()
+            .any(|m| m.0 == b'E')
+    );
+    drop(a);
+    drop(b);
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!("pg08_32_sql: {count} scenarios passed; listener closed");
+}

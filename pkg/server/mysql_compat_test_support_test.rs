@@ -69,11 +69,9 @@ fn mysql_compat_test_support_round_trips_packets() {
         .connect_root(CLIENT_DEPRECATE_EOF, None)
         .expect("complete root handshake");
     assert_eq!(client.handshake.protocol_version, 10);
-    assert!(
-        client
-            .handshake
-            .server_version
-            .contains("8.0.11-TiDB-AsterSQL")
+    assert_eq!(
+        client.handshake.server_version,
+        astersql_parser_mysql::r#const::ServerVersion()
     );
     assert_ne!(client.handshake.connection_id, 0);
     assert_eq!(

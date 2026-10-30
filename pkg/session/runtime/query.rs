@@ -1017,7 +1017,7 @@ fn pg_backend_identity_in_expression(expression: &ast::ExprNode) -> bool {
     impl ast::ExprNodeVisitor for Calls {
         fn Enter(&mut self, node: &ast::ExprNode) -> (ast::ExprNode, bool) {
             if let ast::ExprKind::Function { FnName, Schema, .. } = &node.Kind
-                && FnName.L == "pg_backend_pid"
+                && matches!(FnName.L.as_str(), "pg_backend_pid" | "version")
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
                 self.0 = true;
@@ -1483,6 +1483,7 @@ impl ConcreteSession {
                     | "current_schema"
                     | "pg_typeof"
                     | "pg_backend_pid"
+                    | "version"
             )
             && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             && (!matches!(FnName.L.as_str(), "lower" | "upper")
@@ -1552,6 +1553,7 @@ impl ConcreteSession {
                     | "current_database"
                     | "current_schema"
                     | "pg_typeof"
+                    | "version"
             ) {
                 let (value, null) = built
                     .EvalString(context.GetEvalCtx(), astersql_expression::chunk::Row::default())
@@ -2914,6 +2916,7 @@ impl ConcreteSession {
                                 | "current_schema"
                                 | "pg_typeof"
                                 | "pg_backend_pid"
+                                | "version"
                         )
                         && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                     {
@@ -3693,6 +3696,7 @@ impl ConcreteSession {
                             | "current_schema"
                             | "pg_typeof"
                             | "pg_backend_pid"
+                            | "version"
                     )
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog")
                 {
@@ -4450,7 +4454,7 @@ impl ConcreteSession {
                 "concat" => !Args.is_empty(),
                 "ifnull" | "date_format" | "extract" => Args.len() == 2,
                 "json_extract" => Args.len() >= 2,
-                "tidb_version" => Args.is_empty(),
+                "tidb_version" | "version" => Args.is_empty(),
                 "greatest" | "least" => Args.len() >= 2,
                 "round" => (1..=2).contains(&Args.len()),
                 "substr" | "substring" => (2..=3).contains(&Args.len()),
@@ -4969,6 +4973,7 @@ impl ConcreteSession {
                         | "current_schema"
                         | "pg_typeof"
                         | "pg_backend_pid"
+                        | "version"
                 )
                 && (Schema.L.is_empty() || Schema.L == "pg_catalog")
             {
