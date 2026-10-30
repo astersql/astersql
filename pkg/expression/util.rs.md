@@ -32,7 +32,7 @@
 - `ExtractFiltersFromDNFs` / `DeriveRelaxedFiltersFromDNF`：分别提取 DNF 公因子、导出可安全下推到给定 schema 的弱条件。
 - `ParamMarkerInPrepareChecker` / `ParamMarkerExpression` / `PosFromPositionExpr`：连接 parser AST 参数标记、prepare 状态与表达式常量。
 - `IsRuntimeConstExpr`、`CheckNonDeterministic`、`IsMutableEffectsExpr`、`IsImmutableFunc`、`MaybeOverOptimized4PlanCache`、`RemoveMutableConst`：描述表达式的稳定性、副作用和计划缓存安全性。
-- `SQLDigestTextRetriever`：持有 `SQLDigestsMap`、测试 mock 数据与 `fetchAllLimit`；`RetrieveLocal` 和 `RetrieveGlobal` 负责分层回填。
+- `SQLDigestTextRetriever`：持有 `SQLDigestsMap` 与 `fetchAllLimit`，通过 `unresolvedDigests`、`hasUnresolvedDigests` 和 `retrieveDigests` 控制查询；`RetrieveLocal` 和 `RetrieveGlobal` 负责分层回填。
 - `ExecBinaryParam` 与 `binaryDate*` / `binaryDuration*`：二进制协议解码入口和时间文本组装辅助。
 - `IsConstNull`、`IsColOpCol`、`ExtractColumnsFromColOpCol`：比较谓词的末端形态检查。
 
@@ -46,7 +46,7 @@ NOT 下推由 `PushDownNot` 调用 `pushNotAcrossExpr`。连续 NOT 翻转状态
 
 DNF 公因子提取时，`extractFiltersFromDNF` 展平 OR 分支，再拆分各分支的 CNF 项；用表达式 `HashCode()` 统计每个哈希出现的分支数，并用每分支 `seen` 防止同一条件重复计数。共有项被移出各分支；某一分支只剩公共项时整个 remainder 消失，否则重新组合 CNF 和 DNF。提取结果按哈希排序，避免 `HashMap` 遍历造成不稳定输出。
 
-digest 回填从 `RetrieveLocal` 开始：空映射直接返回；条目数不超过 512 时生成带 `%?` 占位符的 `IN` 查询，否则不带过滤取全量；查询合并 current/history statements summary，并将请求上下文标为 `kv::InternalTxnOthers`。`RetrieveGlobal` 先跑本地，仅将仍为空的 digest 交给 cluster statements summary；已有非空文本不会被覆盖。
+digest 回填由 `retrieveDigests` 每阶段重新收集并排序未解析 digest；空集合不发 SQL。未解析数量不超过阈值（默认 512，阈值为 0 时回退 512）时使用 `%?` 占位符的 `IN` 查询，否则只发一条无过滤查询，避免按批次重复扫描历史文件。`runFetchDigestQuery` 每次选择本地/集群的 current/history 单表，使用 `SELECT DISTINCT digest, digest_text` 保留旧 UNION DISTINCT 的成对去重，并把上下文标为 `kv::InternalTxnOthers`。`RetrieveLocal` 顺序查询本地当前、本地历史；`RetrieveGlobal` 顺序查询本地当前、集群当前、本地历史、集群历史。每阶段只回填请求中尚为空的文本，忽略额外结果和空文本；已经补齐则跳过所有后续扫描。
 
 二进制参数处理在 `ExecBinaryParam` 中逐项按 MySQL type 分派：整数和浮点按小端解码；日期、时间戳和时长先按允许长度构造文本，再交给 `types` 解析；decimal 接受截断但传播其他错误；字符串/blob 按 null 约定生成 Datum；未知类型产生 `ERR_UNKNOWN_FIELD_TYPE`。最后为每个 Datum 调用 `InferParamTypeFromDatum`，包装为 `Constant`。
 
@@ -58,7 +58,7 @@ digest 回填从 `RetrieveLocal` 开始：空映射直接返回；条目数不�
 
 表达式重建必须维护派生状态：`SetExprColumnInOperand`、`removeMutableConstExpr` 和 GROUPING 重建会调用 `CleanHashCode`；`ColumnSubstituteImpl` 还保留 coercibility 和字段 flag。忽略这些缓存/类型元数据会造成相等判断、DNF 哈希或排序规则推导使用旧值。
 
-`SQLDigestTextRetriever::SQLDigestsMap` 同时表示请求集合与回填结果：key 是 digest，空字符串表示未知。`fetchAllLimit` 默认为 512；mock 字段是文件内测试路径的可选数据源。`updateDigestInfo` 只写空值，保证调用方预置结果不被覆盖。
+`SQLDigestTextRetriever::SQLDigestsMap` 同时表示请求集合与回填结果：key 是 digest，空字符串表示未知。`fetchAllLimit` 默认为 512；独立测试通过 `SQLExecutor` 边界提供四类摘要数据并记录 SQL/参数，不在生产对象内保存 mock 数据。`updateDigestInfo` 只写空值，保证调用方预置结果不被覆盖。
 
 静态规则表使用 `LazyLock<HashSet<_>>` / `LazyLock<HashMap<_, _>>`，初始化后只读。容量与时间单位常量均为 `f64`；`formatFloatLikeGo` 专门补齐 Go 对 NaN、正负 Inf 和带符号两位指数的拼写。
 
@@ -77,6 +77,8 @@ RustCodeGraph 的 `ExtractColumns` 节点显示其下游为本文件 `extractCol
 
 ## 错误处理与边界
 
+摘要检索保留 Go `3f2de015d91e4423164ca6e0beb07255869df7d5` 的错误顺序：本地当前失败立即返回；集群当前错误暂存，仍尝试本地历史。本地历史失败优先返回；若本地历史已补齐则忽略集群当前错误，否则传播该错误而不再扫描集群历史。共享上下文若已耗尽期限，本地历史也可能无法恢复，这是来源提交接受的权衡。`sqlDigestRetrieverSkipRetrieveGlobal` failpoint 通过已有 `fail` crate 启用，跳过集群查询但保留本地历史。
+
 函数按用途采用三类失败策略。可恢复构造/求值路径返回 `Result<_, Error>`，例如 `SubstituteCorCol2Constant`、`CheckArgsNotMultiColumnRow`、`PopRowFirstArg`、常量取值、digest SQL 执行和 `ExecBinaryParam`。优化型 best-effort 重写通常返回原表达式并携带 `changed/failed`，避免优化失败改变查询语义；`ColumnSubstituteImpl` 的 collation 推导错误会记录日志或标记失败。
 
 若调用者破坏已由协议或构造器保证的前置条件，部分辅助函数会 panic：`timeZone2int` 假定 `±HH:MM`；二进制日期辅助按固定长度切片；`GetFuncArg` 假定参数索引有效；多个 `NewFunctionInternal(...).unwrap()` 和组合条件 `expect` 假定既有表达式形态合法。对外协议入口 `ExecBinaryParam` 在进入固定长度辅助函数前验证时间/时长长度，但整数/浮点分支仍要求 `BinaryParam.Val` 与类型宽度一致。
@@ -91,11 +93,13 @@ RustCodeGraph 的 `ExtractColumns` 节点显示其下游为本文件 `extractCol
 
 `CorrelatedColumn` 的 datum 在 `SubstituteCorCol2Constant` 中通过读锁访问，锁中毒会以 `expect("correlated datum lock poisoned")` panic；数据克隆后锁立即释放，后续常量折叠不持锁。
 
-`SQLDigestTextRetriever` 由调用方独占可变借用更新，没有内部共享同步。一次 `RetrieveGlobal` 顺序执行本地再全局查询；它不并行请求，也不拥有 executor。`kv::Context` 在两阶段间克隆，restricted SQL 返回的 rows 被立即转为 `HashMap`，资源生命周期由 `SQLExecutor` 实现管理。
+`SQLDigestTextRetriever` 由调用方独占可变借用更新，没有内部共享同步。一次 `RetrieveGlobal` 顺序执行至多四阶段查询；它不并行请求，也不拥有 executor。`kv::Context` 在各阶段间克隆，restricted SQL 返回的 rows 被立即转为 `HashMap`，资源生命周期由 `SQLExecutor` 实现管理。
 
 惰性静态规则表由标准库保证线程安全初始化，之后只有共享只读访问。表达式树采用 clone/rebuild，工具函数不就地修改调用方共享的原节点；需要修改的哈希、类型 flag 或参数都发生在克隆节点上。
 
 ## 与 Go 版本的对应关系
+
+digest 策略对应 Go `3f2de015d91e4423164ca6e0beb07255869df7d5`。Go 的 mockQuery 钩子以独立测试中的 SQLExecutor 外部边界替身实现；生产 SQL 构造、请求来源和回填使用真实 Rust 入口。运行时入口已挂载于 expression crate，当前可靠的直接调用证据仍为独立测试，不能据此声称新增了 SQL 内建函数接线。
 
 需要注意的实现层差异：
 
@@ -105,7 +109,7 @@ RustCodeGraph 的 `ExtractColumns` 节点显示其下游为本文件 `extractCol
 - Go `strconv.FormatFloat` 的 Inf 和指数拼写由 Rust `formatFloatLikeGo` 显式模拟。
 - Rust `ParamMarkerInPrepareChecker` 的通用 `enter`/`leave` 基本放行，核心状态只在 `enter_param_marker` 更新；扩展 AST visitor 时应继续以 Go 的 prepare/execute 语义为准。
 
-Go 测试 `pkg/expression/util_test.go` 是完整参考；Rust 独立测试 `pkg/expression/util_test.rs` 覆盖列表顺序、数值前缀、二进制时间、格式化、时区和校对边界，`pkg/expression/util_runtime_parity_aster_unit_test.rs` 补充 digest 查询及更多运行时对等场景。Rust 测试仍少于 Go 文件的 695 行覆盖面，因此未被现有 Rust 测试点名的分支不能仅凭移植关系宣称已充分验证。
+Go 测试 `pkg/expression/util_test.go` 是完整参考；Rust 独立测试 `pkg/expression/util_test.rs` 覆盖列表顺序、数值前缀、二进制时间、格式化、时区和校对边界，`pkg/expression/util_runtime_parity_aster_unit_test.rs` 补充 digest 查询及更多运行时对等场景。`util_test.rs` 中的 9 个 `port_3f2de015d9_` 用例进一步覆盖分层摘要命中、部分命中、fetch-all 单次扫描、未请求结果保护、错误恢复与 failpoint；原有两个 `test_digest_retriever_` 用例继续保留旧输入和结果契约。未被现有 Rust 测试点名的其他分支不能仅凭移植关系宣称已充分验证。
 
 ## 扩展指南
 
@@ -117,4 +121,4 @@ Go 测试 `pkg/expression/util_test.go` 是完整参考；Rust 独立测试 `pkg
 
 扩展 MySQL 参数类型时，在 `ExecBinaryParam` 增加分支并核对 `pkg/expression/util.go`、协议长度、null 表现、符号扩展和最终 `InferParamTypeFromDatum`。固定长度 helper 不做完整边界检查，因此所有外部入口必须先验证 buffer 长度；回归测试应放在独立 Rust 测试文件，并包含 malformed packet。
 
-改变 digest 策略时需保持内部请求来源、current/history 合并、已有文本不覆盖和大集合 fetch-all 行为；`fetchAllLimit` 改动必须同步 Go 语义与 `test_digest_retriever_matches_go_partial_and_fetch_all_contract`。性能风险主要来自表达式深递归、无必要 clone、HashCode 重算和全量 statements summary 查询；兼容风险主要来自 collation、SQL 三值逻辑、计划缓存可变常量和二进制协议边界。
+改变 digest 策略时需保持内部请求来源、current 优先与未解析 digest 的 history 回退、错误恢复顺序、已有文本不覆盖和大集合单次 fetch-all 行为；`fetchAllLimit` 改动必须同步 Go 语义与 `test_digest_retriever_matches_go_partial_and_fetch_all_contract`。性能风险主要来自表达式深递归、无必要 clone、HashCode 重算和全量 statements summary 查询；兼容风险主要来自 collation、SQL 三值逻辑、计划缓存可变常量和二进制协议边界。

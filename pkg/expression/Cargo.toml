@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+fail = { version = "0.5", features = ["failpoints"] }
 inference = { package = "astersql-inference", path = "../inference" }
 deploymode = { package = "astersql-config-deploymode", path = "../config/deploymode" }
 bigdecimal = "0.4"

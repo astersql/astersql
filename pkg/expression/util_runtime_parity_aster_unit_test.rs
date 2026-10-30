@@ -277,8 +277,17 @@ fn test_digest_retriever_matches_go_partial_and_fetch_all_contract() {
         .unwrap();
 
     let calls = executor.calls.lock().unwrap();
-    assert_eq!(calls[0], (false, 5));
-    assert_eq!(calls[1], (false, 5));
-    assert_eq!(calls[2], (true, 3));
-    assert_eq!(calls[3], (false, 0));
+    assert_eq!(
+        *calls,
+        vec![
+            (false, 5),
+            (false, 3),
+            (false, 4),
+            (true, 3),
+            (false, 1),
+            (true, 1),
+            (false, 0),
+            (false, 0)
+        ]
+    );
 }

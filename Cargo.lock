@@ -4858,6 +4858,7 @@ dependencies = [
  "crc32fast",
  "des",
  "encoding_rs",
+ "fail 0.5.1",
  "flate2",
  "hex 0.4.3",
  "jsonschema",

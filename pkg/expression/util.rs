@@ -1670,16 +1670,12 @@ pub fn GetFormatNanoTime(nanoseconds: f64) -> String {
 /// 按 digest 从 statements_summary 回填规范化 SQL 文本。
 pub struct SQLDigestTextRetriever {
     pub SQLDigestsMap: HashMap<String, String>,
-    mockLocalData: Option<HashMap<String, String>>,
-    mockGlobalData: Option<HashMap<String, String>>,
     fetchAllLimit: usize,
 }
 /// 创建空的 digest→SQL 文本检索器。
 pub fn NewSQLDigestTextRetriever() -> SQLDigestTextRetriever {
     SQLDigestTextRetriever {
         SQLDigestsMap: HashMap::new(),
-        mockLocalData: None,
-        mockGlobalData: None,
         fetchAllLimit: 512,
     }
 }
@@ -1700,29 +1696,28 @@ impl SQLDigestTextRetriever {
             .collect()
     }
 
-    /// 根据 query_global 选择 statements_summary 或 cluster_statements_summary，并合并 history 防止轮转丢失。
+    /// 从指定本地/集群 current/history 表读取去重后的 digest 文本。
     pub fn runFetchDigestQuery<E>(
         &self,
         ctx: kv::Context,
         exec: &E,
         query_global: bool,
+        history: bool,
         values: &[String],
     ) -> Result<HashMap<String, String>, Error>
     where
         E: expropt::SQLExecutor<Context = kv::Context, Row = chunk::Row>,
     {
-        if !query_global {
-            if let Some(data) = &self.mockLocalData {
-                return Ok(self.runMockQuery(data, values));
-            }
-        } else if let Some(data) = &self.mockGlobalData {
-            return Ok(self.runMockQuery(data, values));
-        }
-        let mut statement = if query_global {
-            "select digest, digest_text from information_schema.cluster_statements_summary union distinct select digest, digest_text from information_schema.cluster_statements_summary_history".to_owned()
+        let mut table = if query_global {
+            "information_schema.cluster_statements_summary".to_owned()
         } else {
-            "select digest, digest_text from information_schema.statements_summary union distinct select digest, digest_text from information_schema.statements_summary_history".to_owned()
+            "information_schema.statements_summary".to_owned()
         };
+        if history {
+            table.push_str("_history");
+        }
+        // Keep the old UNION DISTINCT pair deduplication within each summary table.
+        let mut statement = format!("select distinct digest, digest_text from {table}");
         if !values.is_empty() {
             statement.push_str(&format!(
                 " where digest in ({})",
@@ -1751,56 +1746,86 @@ impl SQLDigestTextRetriever {
         for (digest, text) in &mut self.SQLDigestsMap {
             if text.is_empty() {
                 if let Some(found) = query_result.get(digest) {
-                    *text = found.clone();
+                    if !found.is_empty() {
+                        *text = found.clone();
+                    }
                 }
             }
         }
     }
 
-    /// 从本机 statements_summary 检索并回填 digest 文本。
-    pub fn RetrieveLocal<E>(&mut self, ctx: kv::Context, exec: &E) -> Result<(), Error>
-    where
-        E: expropt::SQLExecutor<Context = kv::Context, Row = chunk::Row>,
-    {
-        if self.SQLDigestsMap.is_empty() {
-            return Ok(());
-        }
-        let values = if self.SQLDigestsMap.len() <= self.fetchAllLimit {
-            self.SQLDigestsMap.keys().cloned().collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let result = self.runFetchDigestQuery(ctx, exec, false, &values)?;
-        if !values.is_empty() && result.len() == self.SQLDigestsMap.len() {
-            self.SQLDigestsMap = result;
-        } else {
-            self.updateDigestInfo(&result);
-        }
-        Ok(())
-    }
-    /// 先尝试本地，不足时再查集群级 statements_summary。
-    pub fn RetrieveGlobal<E>(&mut self, ctx: kv::Context, exec: &E) -> Result<(), Error>
-    where
-        E: expropt::SQLExecutor<Context = kv::Context, Row = chunk::Row>,
-    {
-        self.RetrieveLocal(ctx.clone(), exec)?;
-        let unknown = self
+    /// 返回排序后的未解析 digest，避免重复查询已知文本。
+    fn unresolvedDigests(&self) -> Vec<String> {
+        let mut values = self
             .SQLDigestsMap
             .iter()
             .filter(|(_, text)| text.is_empty())
             .map(|(digest, _)| digest.clone())
             .collect::<Vec<_>>();
-        if unknown.is_empty() {
+        values.sort();
+        values
+    }
+
+    /// 无分配检查是否仍有未知文本。
+    fn hasUnresolvedDigests(&self) -> bool {
+        self.SQLDigestsMap.values().any(String::is_empty)
+    }
+
+    /// 大集合只扫描一次所选表，阈值按当前未解析数量计算。
+    fn retrieveDigests<E>(
+        &mut self,
+        ctx: kv::Context,
+        exec: &E,
+        query_global: bool,
+        history: bool,
+    ) -> Result<(), Error>
+    where
+        E: expropt::SQLExecutor<Context = kv::Context, Row = chunk::Row>,
+    {
+        let mut values = self.unresolvedDigests();
+        if values.is_empty() {
             return Ok(());
         }
-        let values = if self.SQLDigestsMap.len() <= self.fetchAllLimit {
-            unknown
+        let limit = if self.fetchAllLimit == 0 {
+            512
         } else {
-            Vec::new()
+            self.fetchAllLimit
         };
-        let result = self.runFetchDigestQuery(ctx, exec, true, &values)?;
+        if values.len() > limit {
+            values.clear();
+        }
+        let result = self.runFetchDigestQuery(ctx, exec, query_global, history, &values)?;
         self.updateDigestInfo(&result);
         Ok(())
+    }
+
+    /// 本地当前摘要优先，只对未解析 digest 查询本地历史。
+    pub fn RetrieveLocal<E>(&mut self, ctx: kv::Context, exec: &E) -> Result<(), Error>
+    where
+        E: expropt::SQLExecutor<Context = kv::Context, Row = chunk::Row>,
+    {
+        self.retrieveDigests(ctx.clone(), exec, false, false)?;
+        self.retrieveDigests(ctx, exec, false, true)
+    }
+
+    /// 本地当前、集群当前、本地历史、集群历史顺序检索。
+    pub fn RetrieveGlobal<E>(&mut self, ctx: kv::Context, exec: &E) -> Result<(), Error>
+    where
+        E: expropt::SQLExecutor<Context = kv::Context, Row = chunk::Row>,
+    {
+        self.retrieveDigests(ctx.clone(), exec, false, false)?;
+        if fail::eval("sqlDigestRetrieverSkipRetrieveGlobal", |_| ()).is_some() {
+            return self.retrieveDigests(ctx, exec, false, true);
+        }
+        // Preserve locally recoverable results even when the remote current query fails.
+        // As in Go, an exhausted shared context can still prevent this local fallback.
+        let global_current = self.retrieveDigests(ctx.clone(), exec, true, false);
+        self.retrieveDigests(ctx.clone(), exec, false, true)?;
+        if !self.hasUnresolvedDigests() {
+            return Ok(());
+        }
+        global_current?;
+        self.retrieveDigests(ctx, exec, true, true)
     }
 }
 

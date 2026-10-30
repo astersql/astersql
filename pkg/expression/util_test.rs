@@ -113,3 +113,243 @@ fn format_helpers_match_go_scientific_notation_and_special_values() {
     assert_eq!(GetFormatBytes(f64::INFINITY), "+Inf EiB");
     assert_eq!(GetFormatNanoTime(f64::NEG_INFINITY), "-Inf d");
 }
+
+// Restricted SQL is the external boundary; exercise the real retriever and SQL builder.
+#[derive(Default)]
+struct PortDigestExecutor {
+    calls: std::cell::RefCell<Vec<(bool, bool, Vec<String>)>>,
+    data: [std::collections::HashMap<String, String>; 4],
+    fail: Option<usize>,
+    ignore_filter: bool,
+}
+impl expropt::SQLExecutor for PortDigestExecutor {
+    type Context = kv::Context;
+    type OptionFuncAlias = ();
+    type Row = chunk::Row;
+    type ResultField = ();
+    fn exec_restricted_sql(
+        &self,
+        ctx: &kv::Context,
+        _: &[()],
+        sql: &str,
+        args: &[Box<dyn std::any::Any>],
+    ) -> anyhow::Result<(Vec<chunk::Row>, Vec<()>)> {
+        assert_eq!(
+            ctx.RequestSource().unwrap().RequestSourceType,
+            kv::InternalTxnOthers
+        );
+        let global = sql.contains("cluster_statements_summary");
+        let history = sql.contains("_history");
+        let values = args
+            .iter()
+            .map(|v| v.downcast_ref::<String>().unwrap().clone())
+            .collect::<Vec<_>>();
+        self.calls
+            .borrow_mut()
+            .push((global, history, values.clone()));
+        assert!(
+            sql.starts_with("select distinct digest, digest_text from "),
+            "{sql}"
+        );
+        assert!(!sql.contains("union"), "{sql}");
+        assert_eq!(sql.matches("%?").count(), values.len());
+        let index = usize::from(global) * 2 + usize::from(history);
+        if self.fail == Some(index) {
+            anyhow::bail!("summary failure {index}");
+        }
+        let mut rows = Vec::new();
+        for (digest, text) in &self.data[index] {
+            if !self.ignore_filter && !values.is_empty() && !values.contains(digest) {
+                continue;
+            }
+            let mut row = chunk::NewChunkWithCapacity(
+                vec![
+                    *types::NewFieldType(mysql::TypeVarchar),
+                    *types::NewFieldType(mysql::TypeVarchar),
+                ],
+                1,
+            );
+            row.AppendString(0, digest);
+            row.AppendString(1, text);
+            rows.push(row.GetRow(0).CopyConstruct());
+        }
+        Ok((rows, Vec::new()))
+    }
+}
+fn port_digest_retriever(keys: &[&str]) -> SQLDigestTextRetriever {
+    let mut r = NewSQLDigestTextRetriever();
+    r.SQLDigestsMap = keys
+        .iter()
+        .map(|k| (k.to_string(), String::new()))
+        .collect();
+    r
+}
+fn port_digest_data(e: &mut PortDigestExecutor, index: usize, entries: &[(&str, &str)]) {
+    e.data[index] = entries
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+}
+#[test]
+fn port_3f2de015d9_current_hit_skips_history() {
+    let mut e = PortDigestExecutor::default();
+    port_digest_data(&mut e, 0, &[("a", "current")]);
+    let mut r = port_digest_retriever(&["a"]);
+    r.RetrieveLocal(kv::Context::default(), &e).unwrap();
+    assert_eq!(r.SQLDigestsMap["a"], "current");
+    assert_eq!(e.calls.borrow().len(), 1);
+}
+#[test]
+fn port_3f2de015d9_cluster_current_before_local_history() {
+    let mut e = PortDigestExecutor::default();
+    port_digest_data(&mut e, 0, &[("a", "local")]);
+    port_digest_data(&mut e, 2, &[("c", "cluster")]);
+    port_digest_data(&mut e, 1, &[("b", "history")]);
+    let mut r = port_digest_retriever(&["c", "b", "a"]);
+    r.RetrieveGlobal(kv::Context::default(), &e).unwrap();
+    assert_eq!(
+        *e.calls.borrow(),
+        vec![
+            (false, false, vec!["a".into(), "b".into(), "c".into()]),
+            (true, false, vec!["b".into(), "c".into()]),
+            (false, true, vec!["b".into()])
+        ]
+    );
+    assert_eq!(r.SQLDigestsMap["c"], "cluster");
+    assert_eq!(r.SQLDigestsMap["b"], "history");
+}
+#[test]
+fn port_3f2de015d9_unrequested_and_known_are_preserved() {
+    let mut e = PortDigestExecutor {
+        ignore_filter: true,
+        ..Default::default()
+    };
+    port_digest_data(&mut e, 0, &[("other", "sql")]);
+    let mut r = port_digest_retriever(&["wanted"]);
+    r.RetrieveLocal(kv::Context::default(), &e).unwrap();
+    assert_eq!(r.SQLDigestsMap.len(), 1);
+    assert_eq!(r.SQLDigestsMap["wanted"], "");
+    r.SQLDigestsMap.insert("wanted".into(), "known".into());
+    e.calls.borrow_mut().clear();
+    r.RetrieveGlobal(kv::Context::default(), &e).unwrap();
+    assert!(e.calls.borrow().is_empty());
+    assert_eq!(r.SQLDigestsMap["wanted"], "known");
+}
+#[test]
+fn port_3f2de015d9_large_history_scanned_once() {
+    let e = PortDigestExecutor::default();
+    let mut r = NewSQLDigestTextRetriever();
+    r.SQLDigestsMap = (0..513).map(|i| (format!("d{i}"), String::new())).collect();
+    r.RetrieveLocal(kv::Context::default(), &e).unwrap();
+    assert_eq!(
+        *e.calls.borrow(),
+        vec![(false, false, vec![]), (false, true, vec![])]
+    );
+}
+#[test]
+fn port_3f2de015d9_partial_local_global_history_and_fetch_all() {
+    for count in [5, 513] {
+        let mut e = PortDigestExecutor::default();
+        port_digest_data(&mut e, 0, &[("d1", "t1"), ("d2", "t2"), ("extra", "x")]);
+        port_digest_data(&mut e, 2, &[("d3", "t3"), ("d4", "t4")]);
+        port_digest_data(&mut e, 3, &[("d5", "t5")]);
+        let mut r = NewSQLDigestTextRetriever();
+        r.SQLDigestsMap = (1..=count)
+            .map(|i| (format!("d{i}"), String::new()))
+            .collect();
+        r.RetrieveGlobal(kv::Context::default(), &e).unwrap();
+        for i in 1..=5 {
+            assert_eq!(r.SQLDigestsMap[&format!("d{i}")], format!("t{i}"));
+        }
+        assert_eq!(r.SQLDigestsMap.len(), count);
+        assert_eq!(e.calls.borrow().len(), 4);
+    }
+}
+#[test]
+fn port_3f2de015d9_global_error_local_history_recovery() {
+    for recovered in [false, true] {
+        let mut e = PortDigestExecutor {
+            fail: Some(2),
+            ..Default::default()
+        };
+        if recovered {
+            port_digest_data(&mut e, 1, &[("a", "recovered")]);
+        }
+        let mut r = port_digest_retriever(&["a"]);
+        let result = r.RetrieveGlobal(kv::Context::default(), &e);
+        assert_eq!(result.is_ok(), recovered);
+        assert_eq!(e.calls.borrow().len(), 3);
+        if !recovered {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("summary failure 2")
+            );
+        }
+    }
+}
+#[test]
+fn port_3f2de015d9_empty_text_and_error_precedence() {
+    let mut e = PortDigestExecutor {
+        fail: Some(1),
+        ..Default::default()
+    };
+    port_digest_data(&mut e, 0, &[("a", "")]);
+    let mut r = port_digest_retriever(&["a"]);
+    assert!(
+        r.RetrieveGlobal(kv::Context::default(), &e)
+            .unwrap_err()
+            .to_string()
+            .contains("summary failure 1")
+    );
+    assert_eq!(e.calls.borrow().len(), 3);
+    let e = PortDigestExecutor {
+        fail: Some(0),
+        ..Default::default()
+    };
+    let mut r = port_digest_retriever(&["a"]);
+    assert!(r.RetrieveLocal(kv::Context::default(), &e).is_err());
+    assert_eq!(e.calls.borrow().len(), 1);
+    let mut r = NewSQLDigestTextRetriever();
+    r.RetrieveGlobal(kv::Context::default(), &e).unwrap();
+    assert_eq!(e.calls.borrow().len(), 1);
+}
+
+#[test]
+fn port_3f2de015d9_threshold_uses_only_unresolved() {
+    let mut e = PortDigestExecutor::default();
+    port_digest_data(&mut e, 0, &[("d0", "current"), ("d1", "current")]);
+    let mut r = NewSQLDigestTextRetriever();
+    r.SQLDigestsMap = (0..513).map(|i| (format!("d{i}"), String::new())).collect();
+    r.RetrieveLocal(kv::Context::default(), &e).unwrap();
+    let calls = e.calls.borrow();
+    assert!(calls[0].2.is_empty());
+    assert_eq!(calls[1].2.len(), 511);
+    assert!(!calls[1].2.contains(&"d0".into()));
+    assert!(calls[1].2.windows(2).all(|w| w[0] < w[1]));
+}
+
+#[test]
+fn port_3f2de015d9_skip_global_keeps_local_history() {
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            fail::remove("sqlDigestRetrieverSkipRetrieveGlobal");
+        }
+    }
+    fail::cfg("sqlDigestRetrieverSkipRetrieveGlobal", "return").unwrap();
+    let _cleanup = Cleanup;
+    let mut e = PortDigestExecutor::default();
+    port_digest_data(&mut e, 1, &[("a", "history")]);
+    let mut r = port_digest_retriever(&["a"]);
+    r.RetrieveGlobal(kv::Context::default(), &e).unwrap();
+    assert_eq!(r.SQLDigestsMap["a"], "history");
+    assert_eq!(
+        *e.calls.borrow(),
+        vec![
+            (false, false, vec!["a".into()]),
+            (false, true, vec!["a".into()])
+        ]
+    );
+}
