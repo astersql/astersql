@@ -3057,7 +3057,7 @@ impl ConcreteSession {
             // this existing SELECT filter so WHERE false suppresses their rows.
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
-                    .any(|expr| self.is_mysql_function_projection(expr, &[]) || self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || (select.Where.is_some() && ["concat", "greatest", "least"].iter().any(|name| expression_contains_function(expr, name))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+                    .any(|expr| self.is_mysql_signed_integer_division(expr, &self.relational_select_source_fields(select).unwrap_or_default()) || self.is_mysql_function_projection(expr, &[]) || self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || (select.Where.is_some() && ["concat", "greatest", "least"].iter().any(|name| expression_contains_function(expr, name))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
             || has_derived_source
             || select
                 .From
@@ -4575,9 +4575,8 @@ impl ConcreteSession {
         }
     }
 
-    /// Only the existing signed ABS signature opts into formal MySQL projection
-    /// fields and the relational SELECT filter. Other ABS families remain outside
-    /// this runtime contract.
+    /// Bounded native MySQL projections retain formal result fields and the
+    /// statement warning policy in both Query and prepared execution.
     pub(super) fn is_mysql_function_projection(
         &self,
         expression: &ast::ExprNode,
@@ -4617,6 +4616,9 @@ impl ConcreteSession {
             if relational_expression_has_aggregate(expression) {
                 return false;
             }
+            if self.is_mysql_signed_integer_division(expression, sources) {
+                return true;
+            }
             return Op == "<=>"
                 || (Op.eq_ignore_ascii_case("or")
                     && !relational_expression_has_subquery(expression)
@@ -4649,6 +4651,34 @@ impl ConcreteSession {
                 "substr" | "substring" | "format" => (2..=3).contains(&Args.len()),
                 _ => false,
             }
+            && !relational_expression_has_aggregate(expression)
+            && !relational_expression_has_subquery(expression)
+            && sources.first().is_none_or(|first| {
+                sources
+                    .iter()
+                    .all(|source| source.table_as_name == first.table_as_name)
+            })
+    }
+
+    /// Keep this compatibility bridge on its two declared signed integer inputs.
+    pub(super) fn is_mysql_signed_integer_division(
+        &self,
+        expression: &ast::ExprNode,
+        sources: &[ConcreteResultField],
+    ) -> bool {
+        let ast::ExprKind::Binary { Op, L, R } = &expression.Kind else {
+            return false;
+        };
+        self.sql_dialect() == ast::SqlDialect::MySQL
+            && matches!(Op.as_str(), "/" | "div" | "DIV")
+            && [L.as_ref(), R.as_ref()].iter().all(|operand| {
+                let source = self.signed_abs_argument_type(operand, sources);
+                matches!(
+                    source.GetType(),
+                    astersql_parser_mysql::r#type::TypeLong
+                        | astersql_parser_mysql::r#type::TypeLonglong
+                ) && source.GetFlag() & astersql_parser_mysql::r#type::UnsignedFlag == 0
+            })
             && !relational_expression_has_aggregate(expression)
             && !relational_expression_has_subquery(expression)
             && sources.first().is_none_or(|first| {
@@ -4796,14 +4826,15 @@ impl ConcreteSession {
                 .collect(),
             ..Default::default()
         };
+        let native_division = self.is_mysql_signed_integer_division(expression, sources);
         let result = (|| {
             let built = astersql_planner_core::PlannerBuildSimpleExpr(
                 &context,
                 expression,
-                vec![astersql_expression::WithTableInfo(
-                    &self.current_database(),
-                    &table,
-                )],
+                vec![
+                    astersql_expression::WithTableInfo(&self.current_database(), &table),
+                    Box::new(move |options| options.DeferConstantFolding = native_division),
+                ],
             )
             .map_err(|error| {
                 SessionError::with_source(
@@ -5037,6 +5068,33 @@ impl ConcreteSession {
                             _ => None,
                         }
                     }
+                    if let ast::ExprKind::Binary { Op, L, .. } = &expression.Kind
+                        && self.is_mysql_signed_integer_division(expression, source_fields)
+                    {
+                        use astersql_parser_mysql::r#type::{BinaryFlag, NotNullFlag, TypeLong, TypeLonglong};
+                        let source = self.signed_abs_argument_type(L, source_fields);
+                        // Native widths follow the declared dividend precision,
+                        // not the folded result or Go's default BIGINT width.
+                        let precision = if let Some(number) = integer_literal(L) {
+                            number.unsigned_abs().to_string().len() as isize
+                        } else if let ast::ExprKind::Cast { Tp, .. } = &unparenthesized(L).Kind
+                            && matches!(Tp.GetType(), TypeLong | TypeLonglong)
+                        {
+                            if Tp.GetType() == TypeLong { 10 } else { 20 }
+                        } else {
+                            let width = if source.GetFlen() > 0 { source.GetFlen() }
+                                else if source.GetType() == TypeLong { 11 } else { 20 };
+                            (width - 1).max(1)
+                        };
+                        tp.AddFlag(BinaryFlag);
+                        tp.DelFlag(NotNullFlag);
+                        if Op == "/" {
+                            tp.SetFlen((precision + tp.GetDecimal().max(0)).min(65));
+                        } else {
+                            tp.SetFlen(precision + 1);
+                            tp.SetDecimal(0);
+                        }
+                    }
                     if let ast::ExprKind::Unary { Op, V } = &expression.Kind
                         && Op == "-"
                         && let ast::ExprKind::Cast { Expr, Tp, .. } = &unparenthesized(V).Kind
@@ -5170,6 +5228,8 @@ impl ConcreteSession {
         // constant input folds to a non-NULL value with a shorter display width.
         let preserve_native_descriptor = self.sql_dialect() == ast::SqlDialect::MySQL
             && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "extract" | "date_format" | "format" | "lower" | "upper" | "concat"));
+        let preserve_native_descriptor = preserve_native_descriptor
+            || self.is_mysql_signed_integer_division(expression, source_fields);
         astersql_planner_core::PlannerBuildSimpleExpr(
             &context,
             expression,

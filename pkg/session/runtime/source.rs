@@ -1700,7 +1700,7 @@ impl ConcreteSession {
                 .filter_map(|field| field.Expr.as_ref())
                 .any(|expr| {
                     matches!(&expr.Kind, ast::ExprKind::Function { FnName, Schema, .. }
-                    if Schema.L.is_empty() && matches!(FnName.L.as_str(), "coalesce" | "nullif" | "ifnull" | "date_format" | "json_extract" | "tidb_version"))
+                    if Schema.L.is_empty() && matches!(FnName.L.as_str(), "coalesce" | "nullif" | "ifnull" | "date_format" | "json_extract" | "tidb_version")) || matches!(&expr.Kind, ast::ExprKind::Binary { Op, .. } if matches!(Op.as_str(), "/" | "div" | "DIV"))
                 }) {
             self.relational_select_source_fields(select)?
         } else {

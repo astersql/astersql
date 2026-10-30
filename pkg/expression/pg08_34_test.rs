@@ -83,6 +83,8 @@ fn pg08_34_formal() {
         .EvalDecimal(mysql.GetEvalCtx(), crate::chunk::Row::default())
         .unwrap();
     assert!(!null);
+    assert_eq!(slash.GetType(mysql.GetEvalCtx()).GetDecimal(), 4);
+    assert_eq!(value.String(), "2.5000");
     assert_eq!(
         std::str::from_utf8(&value.ToString())
             .unwrap()

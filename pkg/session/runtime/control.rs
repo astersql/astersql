@@ -2138,7 +2138,26 @@ impl ConcreteSession {
                 "Can't create more than maxPreparedStmtCount statements (current value: {limit})"
             )));
         }
+        let native_division = statements
+            .first()
+            .and_then(|s| s.as_any().downcast_ref::<ast::SelectStmt>())
+            .is_some_and(|select| {
+                let sources = self
+                    .relational_select_source_fields(select)
+                    .unwrap_or_default();
+                select
+                    .Fields
+                    .Fields
+                    .iter()
+                    .filter_map(|field| field.Expr.as_ref())
+                    .any(|expr| self.is_mysql_signed_integer_division(expr, &sources))
+            });
         let mut state = self.state.borrow_mut();
+        if native_division {
+            // Prepare describes the deferred division without evaluating it.
+            state.current_warnings.clear();
+            state.last_warnings.clear();
+        }
         let statement_id = state.next_prepared_id;
         state.next_prepared_id += 1;
         state.prepared.insert(statement_id, sql.to_owned());
@@ -2466,7 +2485,7 @@ impl ConcreteSession {
                         field
                             .Expr
                             .as_ref()
-                            .is_some_and(|expr| self.is_mysql_conditional_projection(expr, &conditional_sources) || matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
+                            .is_some_and(|expr| self.is_mysql_signed_integer_division(expr, &conditional_sources) || self.is_mysql_conditional_projection(expr, &conditional_sources) || matches!(&expr.Kind,ast::ExprKind::Function{FnName,..} if matches!(FnName.L.as_str(), "concat" | "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     })
                     .collect::<Vec<_>>();
                 if affected.iter().any(|affected| *affected) {

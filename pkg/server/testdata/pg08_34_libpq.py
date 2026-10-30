@@ -31,9 +31,9 @@ CASES = (
  ('zero',"NULL::int4 / 0::int4",None),
 )
 ERRORS=(('divide-zero',"SELECT 1::int4 / 0::int4 AS v",'22012','division by zero'),('overflow',"SELECT '-2147483648'::int4 / (-1)::int4 AS v",'22003','integer out of range'))
-MYSQL_CASES=(('slash','SELECT 5 / 2 AS v'),('negative','SELECT -5 / 2 AS v'),('div','SELECT 5 DIV 2 AS v'),('negdiv','SELECT -5 DIV 2 AS v'),('null','SELECT CAST(NULL AS SIGNED) / 0 AS v'),('zero','SELECT 1 / 0 AS v'),('health','SELECT v AS v FROM health'))
+MYSQL_CASES=(('slash','SELECT 5 / 2 AS v'),('negative','SELECT -5 / 2 AS v'),('div','SELECT 5 DIV 2 AS v'),('negdiv','SELECT -5 DIV 2 AS v'),('null','SELECT CAST(NULL AS SIGNED) / 0 AS v'),('zero','SELECT 1 / 0 AS v'),('health','SELECT v AS v FROM health'),('row-slash','SELECT v / 2 AS v FROM health'),('row-div','SELECT v DIV 2 AS v FROM health'),('wide-slash','SELECT wide / 2 AS v FROM health'),('wide-div','SELECT wide DIV 2 AS v FROM health'))
 CASE_IDS=tuple(['Q-'+label for label,*_ in CASES]+[f'bind-{op}-{i}-{o}-{k}' for op in ('ordinary','qualified') for i in (0,1) for o in (0,1) for k in range(3)]+[f'bind-zero-{i}-{o}' for i in (0,1) for o in (0,1)]+[f'error-{label}-{phase}' for label,*_ in ERRORS for phase in ('Q','P','txn')]+[f'M-{label}-{mode}' for label,_ in MYSQL_CASES for mode in ('Q','P')]+['I-before','I-middle','I-after'])
-assert len(CASE_IDS)==len(set(CASE_IDS))==65
+assert len(CASE_IDS)==len(set(CASE_IDS))==73
 
 def run(port,database,evidence,mysql_port):
     evidence.mkdir(parents=True,exist_ok=False)
@@ -91,8 +91,8 @@ def run(port,database,evidence,mysql_port):
             save('mysql-'+side,'client-version',m.mysql_get_client_version())
             assert m.query('SET NAMES utf8mb4 COLLATE utf8mb4_bin')['code']==0
             assert m.query("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")['code']==0
-            assert m.query('CREATE TABLE health(v INT)')['code']==0
-            assert m.query('INSERT INTO health VALUES(7)')['code']==0
+            assert m.query('CREATE TABLE health(v INT,wide BIGINT)')['code']==0
+            assert m.query('INSERT INTO health VALUES(7,7)')['code']==0
         attempt('I-before',lambda:interleave('before'))
         for label,expr,wanted in CASES:
             sql=f'SELECT {expr} AS v'+(' FROM source' if label in ('row','rowzero') else '')+(' WHERE false' if label in ('rowzero','zero') else '')
@@ -145,8 +145,12 @@ def run(port,database,evidence,mysql_port):
             case=f'M-{label}-{mode}'
             def mysqlcase():
                 peers=[save('mysql-'+side,case,m.query(sql) if mode=='Q' else m.prepared(sql,[()]),mode) for side,m in mysqls.items()]
-                if mode=='Q':mysql_compare(*peers)
-                else:assert peers[0]==peers[1],peers
+                if mode=='Q':
+                    assert all(obs['code']==0 for obs in peers),peers
+                    mysql_compare(*peers)
+                else:
+                    assert all(len(obs)==2 and all(phase['code']==0 for phase in obs) for obs in peers),peers
+                    assert peers[0]==peers[1],peers
             attempt(case,mysqlcase)
         attempt('I-after',lambda:interleave('after'))
     finally:
@@ -167,10 +171,10 @@ def run(port,database,evidence,mysql_port):
                 cleanup['mysql-'+side+'-settings-restored']=(m.query("SET sql_mode='"+mode+"'")['code']==0 and m.query(f'SET NAMES {charset} COLLATE {collation}')['code']==0)
             m.close()
         category=lambda x:'binding' if x.startswith('bind-') else 'error-recovery' if x.startswith('error-') else 'mysql' if x.startswith('M-') else 'interleaved' if x.startswith('I-') else 'zero' if x in ('Q-zero','Q-rowzero') else 'null' if x.startswith('Q-null') else 'success'
-        summary=dict(expected=65,actual=len(attempted),unique=len(attempted),passed=len(passed),failed=len(attempted-set(passed)),skipped=len(set(CASE_IDS)-attempted),failures=failures,negative_self_checks=3,connections_closed=True,reference_database_dropped=cleanup.get('reference_database_dropped',False),cleanup=cleanup,case_ids=passed,expected_case_ids=CASE_IDS,counts={key:sum(category(x)==key for x in passed) for key in set(map(category,CASE_IDS))})
+        summary=dict(expected=73,actual=len(attempted),unique=len(attempted),passed=len(passed),failed=len(attempted-set(passed)),skipped=len(set(CASE_IDS)-attempted),failures=failures,negative_self_checks=3,connections_closed=True,reference_database_dropped=cleanup.get('reference_database_dropped',False),cleanup=cleanup,case_ids=passed,expected_case_ids=CASE_IDS,counts={key:sum(category(x)==key for x in passed) for key in set(map(category,CASE_IDS))})
         (evidence/'summary.json').write_text(json.dumps(summary,indent=2))
     assert all(cleanup.values()),cleanup
-    assert len(passed)==65 and not failures,summary
+    assert len(passed)==73 and not failures,summary
     print(json.dumps(summary))
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda *_:sys.exit(143))
