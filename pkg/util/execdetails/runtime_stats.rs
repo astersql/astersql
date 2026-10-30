@@ -89,6 +89,10 @@ pub const TpHashStateRuntimeStats: i32 = 21;
 pub const TpWriteRuntimeStats: i32 = 22;
 
 pub const TpJoinedRowsRuntimeStats: i32 = 23;
+/// Materialized view delta merge aggregation runtime statistics.
+pub const TpMViewDeltaMergeAggRuntimeStats: i32 = 24;
+/// Materialized view complete delta apply runtime statistics.
+pub const TpMViewCompleteDeltaApplyRuntimeStats: i32 = 25;
 
 /// Candidate pairs before residual filtering. Worker-owned until publication;
 /// excludes null-extension rows and candidates skipped by semi joins.

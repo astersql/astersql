@@ -951,3 +951,15 @@ fn joined_rows_clone_merge_overflow_and_collection() {
     invalid.AddRows(1);
     assert_eq!(invalid.Rows, -1);
 }
+
+#[test]
+fn port_37a4cd4f43_refresh_stats_type_ids_follow_joined_rows() {
+    assert_eq!(
+        exec::TpMViewDeltaMergeAggRuntimeStats,
+        exec::TpJoinedRowsRuntimeStats + 1
+    );
+    assert_eq!(
+        exec::TpMViewCompleteDeltaApplyRuntimeStats,
+        exec::TpMViewDeltaMergeAggRuntimeStats + 1
+    );
+}

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use astersql_parser_types::{ETInt, FieldType};
 use astersql_planner_core::MViewCompleteDeltaApply;
@@ -222,6 +222,12 @@ impl CompleteDeltaApplyExec {
         if self.done {
             return Ok(());
         }
+        let accounting = self.resources.refresh_context();
+        let enabled = accounting
+            .as_ref()
+            .is_some_and(|(_, ctx)| ctx.RuntimeStatsColl.is_some());
+        let mut stats =
+            crate::mview_complete_delta_apply::CompleteDeltaApplyRuntimeStats::default();
         let result = (|| -> Result<(), String> {
             let mut input = self.child.NewChunk();
             loop {
@@ -245,6 +251,9 @@ impl CompleteDeltaApplyExec {
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>();
+                let write_start = enabled.then(Instant::now);
+                stats.writer_detail.chunks += 1;
+                stats.writer_detail.row_ops += rows.len() as i64;
                 self.resources.run_atomic(&mut |batch| {
                     for (idx, row) in rows.iter().enumerate() {
                         let op = &row[self.op];
@@ -267,8 +276,12 @@ impl CompleteDeltaApplyExec {
                                     .map(|i| row[*i].clone())
                                     .collect::<Vec<_>>();
                                 batch.insert(&values)?;
+                                stats.writer_detail.insert_rows += 1;
                             }
-                            DIFF_DELETE => batch.delete_from_source(row, &old)?,
+                            DIFF_DELETE => {
+                                batch.delete_from_source(row, &old)?;
+                                stats.writer_detail.delete_rows += 1;
+                            }
                             DIFF_UPDATE => {
                                 let mut touched = vec![false; old.len()];
                                 for i in &self.mapping.compare {
@@ -290,6 +303,7 @@ impl CompleteDeltaApplyExec {
                                 }
                                 if touched.iter().any(|v| *v) {
                                     batch.update_from_source(row, &old, &new, &touched)?;
+                                    stats.writer_detail.update_rows += 1;
                                 }
                             }
                             other => {
@@ -301,10 +315,22 @@ impl CompleteDeltaApplyExec {
                     }
                     Ok(())
                 })?;
+                if let Some(start) = write_start {
+                    stats.writer_time += start.elapsed();
+                }
             }
             Ok(())
         })();
         self.done = true;
+        if let Some((id, statement)) = accounting {
+            if result.is_ok() {
+                statement.SetAffectedRows(stats.writer_detail.affected_rows());
+                statement.SetMessage(stats.writer_detail.stmt_message());
+            }
+            if let Some(collector) = &statement.RuntimeStatsColl {
+                collector.RegisterStatsShared(id, Box::new(stats));
+            }
+        }
         result.map_err(astersql_errors::New)
     }
 }

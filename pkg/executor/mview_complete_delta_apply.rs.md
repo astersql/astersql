@@ -13,6 +13,8 @@
 
 ## 主要符号
 
+新增 `RefreshWriterStats` 共享实际 writer 计数，提供合并、影响行数和语句消息。`CompleteDeltaApplyRuntimeStats` 实现 RuntimeStats 的 String/Merge/CloneBox/Tp 与 reset；真实 COMPLETE builder 的 Next 使用并注册它。
+
 `DIFF_INSERT=1`、`DIFF_DELETE=2`、`DIFF_UPDATE=3` 对应 Go 的差异操作码。`DeltaRow` 保存 `op`、`current: Vec<Datum>` 与 `recomputed: Vec<Datum>`，可克隆；它没有表 ID、列映射或 handle 元数据。
 
 `MutationBatch` 提供 `insert(row)`、`delete(row)`、`update(old, new, touched)`；`MutationRuntime: Send + Sync` 提供 `run_atomic`，接受可变回调，并要求成功发布全部写入、失败不发布任何写入。`ApplyStats` 是可复制、可比较的三个 `u64` 计数。`Result<T>` 的错误类型为 `String`。唯一入口 `apply(runtime, rows)` 返回 `Result<ApplyStats>`。
@@ -33,9 +35,9 @@
 
 ## 依赖与调用关系
 
-唯一直接外部类型依赖为 `astersql_types::datum::Datum`；其余使用标准库向量、切片、字符串与 Result。`lib.rs` 在测试配置下单独挂载 `mview_complete_delta_apply_test.rs`。
+行应用依赖 `astersql_types::datum::Datum`；专项统计另依赖 execdetails 的 RuntimeStats/FormatDuration 与标准库 Duration。`lib.rs` 在测试配置下单独挂载 `mview_complete_delta_apply_test.rs`。
 
-抽象构建边为 `Plan::MViewCompleteDeltaApply -> buildMViewCompleteDeltaApply -> build_required_child -> build_mview_complete_delta_apply_executor`。计划提供 `target_table_id`，工厂接收已构建 child；本文件的 `apply` 却接收 runtime 和行切片，二者之间的子树拉取、行解码、表解析和事务适配不在此文件中。另一个 `MViewDeltaMerge` builder 分支与聚合合并模块不能当成本文件的调用证据。
+真实构建边为 `Plan::MViewCompleteDeltaApply -> buildMViewCompleteDeltaApply -> mview_complete_delta_apply_builder::build -> CompleteDeltaApplyExec::Next`。子树拉取、行解码、类型感知比较和映射由 builder 所有者实现；本文件的 apply 是已解码行的独立应用入口，统计类型则由真实 builder 注册。
 
 ## 错误处理与边界
 
@@ -51,12 +53,18 @@ UPDATE 列数不匹配报 `UPDATE row {idx} column count mismatch`；未知操�
 
 ## 与 Go 版本的对应关系
 
+统计增量对应 Go `37a4cd4f439b97980a42d64d23c126933ba1f7be` 的 mview_complete_delta_apply.go。共享明细仅消除两类 writer 计数重复；COMPLETE 字符串不展示 noop。统计会按成功表调用计数，包括出错前进度；成功语句结果只在 EOF 发布。
+
 两边共享操作码、按差异执行写入、只更新变化列以及无变化 UPDATE 跳过的意图。
 
-Rust 当前只实现已解码行的应用算法，逐列使用 `Datum::Equals`，没有 Go 的类型感知列比较、chunk 批比较和 touched bitmap 优化，也没有完整刷新执行器生命周期。
+本文件的 apply 逐列使用 Datum::Equals；真实 COMPLETE builder 则已经提供类型感知比较、差异行映射、执行生命周期和本提交新增统计注册。Go 的 chunk 批比较和 touched bitmap 优化仍不属于本文件。
 
 ## 扩展指南
 
 生产接线应在 builder 工厂及 runtime 中完成目标表解析、child 拉取/差异解码、事务回滚与 session 统计；扩展时逐段对照 Go 的列映射、类型比较与表 mutation 语义。保持整个批次出错不发布、写入成功才计数、无变化更新不写入的约束。
 
 测试继续放在独立的 `mview_complete_delta_apply_test.rs`。新增 DELETE、列数错误、runtime 提交错误与类型边界验证时，应断言写入集合和回滚结果，而非只看返回成功；若增加重试，还需覆盖统计是否重复累计。性能优化可考虑复用 touched 缓冲，但必须保持 Datum 比较和计数语义。
+
+## 验证依据
+
+`executor_pkg_test::port_37a4cd4f43_complete_stats_string_merge_clone_reset` 对照 Go 的 String/Merge/Clone；真实 COMPLETE builder 独立测试核对写入计数和计划登记，组合刷新测试核对原 Go 最终行及固定快照。确切命令和结果保存于来源提交正文。

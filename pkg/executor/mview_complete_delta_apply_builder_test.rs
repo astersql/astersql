@@ -49,7 +49,7 @@ pub(super) fn target_columns(
             .collect(),
     }
 }
-fn complete_plan() -> astersql_planner_core::MViewCompleteDeltaApply {
+pub(super) fn complete_plan() -> astersql_planner_core::MViewCompleteDeltaApply {
     astersql_planner_core::MViewCompleteDeltaApply {
         source: PlanNode::New(1, PlanKind::TableReader, vec![]),
         mv_table_id: 10,
@@ -429,4 +429,43 @@ fn mview_complete_delta_apply_context_null_op_and_write_failure() {
         assert!(rt.writes.lock().unwrap().rows.is_empty());
         exec.Close().unwrap();
     }
+}
+
+#[test]
+fn port_37a4cd4f43_complete_publishes_actual_writes_and_noops() {
+    use crate::mview_complete_delta_apply_builder::build as build_complete;
+    let rt = Arc::new(Resource::new(
+        vec![row(&[1, 2, 10]), row(&[2, 1, 20])],
+        RecomputeStrategy::Batch,
+    ));
+    let child = Source::new(
+        vec![
+            row(&[3, 1, 2, 10, 999, 3, 15]),
+            row(&[2, 2, 1, 20, 0, 0, 0]),
+            row(&[1, 0, 0, 0, 3, 1, 30]),
+            row(&[3, 1, 3, 15, 888, 3, 15]),
+        ],
+        fields(7),
+    );
+    let mut exec = build_complete(&complete_plan(), Box::new(child), rt.clone()).unwrap();
+    exec.Open().unwrap();
+    let mut out = exec.NewChunk();
+    exec.Next(&mut out).unwrap();
+    assert_eq!(rt.statement.AffectedRows(), 3);
+    assert_eq!(
+        rt.statement.GetMessage(),
+        "Rows inserted: 1  Updated: 1  Deleted: 1"
+    );
+    let stats = rt
+        .statement
+        .RuntimeStatsColl
+        .as_ref()
+        .unwrap()
+        .GetRootStatsStringShared(37);
+    assert!(
+        stats.contains("rows:{insert:1, update:1, delete:1}"),
+        "{stats}"
+    );
+    exec.Next(&mut out).unwrap();
+    exec.Close().unwrap();
 }

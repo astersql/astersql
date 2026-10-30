@@ -332,6 +332,7 @@ fn same_row(a: &[Datum], b: &[Datum]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.Equals(b))
 }
 struct Resource {
+    statement: Arc<astersql_sessionctx_stmtctx::StatementContext>,
     writes: Mutex<Writes>,
     strategy: RecomputeStrategy,
     reads: Mutex<Vec<(u64, usize)>>,
@@ -342,6 +343,13 @@ struct Resource {
 impl Resource {
     fn new(rows: Vec<Vec<Datum>>, strategy: RecomputeStrategy) -> Self {
         Self {
+            statement: Arc::new({
+                let mut statement = *astersql_sessionctx_stmtctx::NewStmtCtx();
+                statement.RuntimeStatsColl = Some(Arc::new(
+                    astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None),
+                ));
+                statement
+            }),
             writes: Mutex::new(Writes {
                 rows,
                 ..Default::default()
@@ -370,6 +378,9 @@ impl MutationRuntime for Resource {
     }
 }
 impl Resources for Resource {
+    fn refresh_context(&self) -> Option<(i32, Arc<astersql_sessionctx_stmtctx::StatementContext>)> {
+        Some((37, self.statement.clone()))
+    }
     fn complete_delta_target_columns(
         &self,
     ) -> Result<crate::mview_complete_delta_apply_builder::TargetColumns, BuildError> {
@@ -1145,6 +1156,9 @@ impl MutationRuntime for BadResource {
     }
 }
 impl Resources for BadResource {
+    fn refresh_context(&self) -> Option<(i32, Arc<astersql_sessionctx_stmtctx::StatementContext>)> {
+        self.inner.refresh_context()
+    }
     fn target_field_types(&self) -> Vec<FieldType> {
         self.inner.target_fields.clone()
     }
@@ -1322,3 +1336,484 @@ fn mview_delta_merge_rejects_target_types_and_duplicate_key_result_layout() {
 
 #[path = "mview_complete_delta_apply_builder_test.rs"]
 mod complete_delta_apply;
+
+#[test]
+fn port_37a4cd4f43_merge_publishes_actual_writes_and_noops() {
+    let rt = Arc::new(Resource::new(
+        vec![row(&[1, 2, 10]), row(&[2, 1, 4])],
+        RecomputeStrategy::Batch,
+    ));
+    let child = Source::new(
+        vec![
+            row(&[1, 5, 1, 2, 10]),
+            row(&[-1, -4, 2, 1, 4]),
+            vec![
+                NewIntDatum(1),
+                NewIntDatum(8),
+                NewIntDatum(3),
+                Datum::default(),
+                Datum::default(),
+            ],
+            row(&[0, 0, 1, 3, 15]),
+        ],
+        fields(5),
+    );
+    let mut exec = build(&plan(), Box::new(child), rt.clone(), reader()).unwrap();
+    exec.Open().unwrap();
+    let mut out = exec.NewChunk();
+    exec.Next(&mut out).unwrap();
+    assert_eq!(rt.statement.AffectedRows(), 3);
+    assert_eq!(
+        rt.statement.GetMessage(),
+        "Rows inserted: 1  Updated: 1  Deleted: 1"
+    );
+    let stats = rt
+        .statement
+        .RuntimeStatsColl
+        .as_ref()
+        .unwrap()
+        .GetRootStatsStringShared(37);
+    assert!(
+        stats.contains("rows:{insert:1, update:1, delete:1, noop:1}"),
+        "{stats}"
+    );
+    exec.Next(&mut out).unwrap();
+    assert_eq!(rt.statement.AffectedRows(), 3);
+    exec.Close().unwrap();
+}
+
+fn port_key_rows() -> Vec<Vec<Datum>> {
+    use astersql_types::datum::NewCollationStringDatum;
+    let text = || NewCollationStringDatum("same".into(), "utf8mb4_bin".into());
+    let null = Datum::default;
+    vec![
+        vec![NewIntDatum(1), text()],
+        vec![NewIntDatum(2), text()],
+        vec![null(), text()],
+        vec![NewIntDatum(1), null()],
+        vec![NewIntDatum(2), null()],
+        vec![null(), null()],
+        vec![
+            NewIntDatum(1),
+            NewCollationStringDatum("".into(), "utf8mb4_bin".into()),
+        ],
+        vec![NewIntDatum(1), text()],
+    ]
+}
+
+#[test]
+fn port_37a4cd4f43_keys_preserve_null_length_duplicates_and_reorder() {
+    let rows = port_key_rows();
+    let same = crate::mview_delta_merge_builder::same;
+    for (i, a) in rows.iter().enumerate() {
+        for (j, b) in rows.iter().enumerate() {
+            assert_eq!(same(a, b), i == j || [i, j] == [0, 7] || [i, j] == [7, 0]);
+        }
+    }
+    let mut reused = rows.clone();
+    reused.clear();
+    for i in [7, 3, 1, 4] {
+        reused.push(rows[i].clone());
+    }
+    for (key, i) in reused.iter().zip([7, 3, 1, 4]) {
+        assert!(same(key, &rows[i]));
+    }
+}
+
+struct CompositeKeysResource {
+    inner: Resource,
+}
+impl MutationRuntime for CompositeKeysResource {
+    fn run_atomic(
+        &self,
+        f: &mut dyn FnMut(&mut dyn MutationBatch) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.inner.run_atomic(f)
+    }
+}
+impl Resources for CompositeKeysResource {
+    fn refresh_context(&self) -> Option<(i32, Arc<astersql_sessionctx_stmtctx::StatementContext>)> {
+        self.inner.refresh_context()
+    }
+    fn target_field_types(&self) -> Vec<FieldType> {
+        self.inner.target_fields.clone()
+    }
+    fn read_full_update(
+        &self,
+        _: &PlanNode,
+        snapshot: &ReaderSnapshot,
+        request: &LookupRequest,
+    ) -> Result<ExecutorBox, BuildError> {
+        assert_eq!(request.key_to_index, vec![0, 1]);
+        self.inner
+            .reads
+            .lock()
+            .unwrap()
+            .push((snapshot.ts, request.keys.len()));
+        let rows = request
+            .keys
+            .iter()
+            .rev()
+            .map(|k| vec![NewIntDatum(9), k[0].clone(), k[1].clone()])
+            .collect();
+        Ok(Box::new(Source::new(
+            rows,
+            vec![NewFieldType(TypeLonglong), NewFieldType(TypeLonglong), {
+                let mut tp = NewFieldType(TypeVarchar);
+                tp.SetCollate("utf8mb4_bin".into());
+                tp
+            }],
+        )))
+    }
+    fn recompute_strategy(&self) -> RecomputeStrategy {
+        self.inner.strategy
+    }
+}
+
+#[test]
+fn port_37a4cd4f43_composite_keys_reach_real_recompute_and_writer() {
+    for strategy in [RecomputeStrategy::SingleRow, RecomputeStrategy::Batch] {
+        let keys = port_key_rows();
+        let mut target_types = fields(4);
+        target_types[1] = NewFieldType(TypeVarchar);
+        target_types[1].SetCollate("utf8mb4_bin".into());
+        let mut p = minmax_plan();
+        p.mv_column_count = 4;
+        p.count_star_mv_offset = 2;
+        p.group_key_mv_offsets = vec![0, 1];
+        p.agg_infos = vec![info(K::Min, 3, &[1, 2, 3, 4]), info(K::CountStar, 2, &[0])];
+        p.full_update_inner_column_count = 3;
+        p.full_update_key_off_to_index_off = vec![0, 1];
+        p.full_update_index_ranges = vec![vec!["key".into(), "key2".into()]];
+        p.full_update_key_result_col_indexes = vec![1, 2];
+        p.full_update_output_mv_offsets = vec![3, 0, 1];
+        let old: Vec<_> = keys[..7]
+            .iter()
+            .map(|k| vec![k[0].clone(), k[1].clone(), NewIntDatum(1), NewIntDatum(5)])
+            .collect();
+        let input = old
+            .iter()
+            .map(|old| {
+                let mut input = vec![
+                    NewIntDatum(0),
+                    Datum::default(),
+                    NewIntDatum(0),
+                    NewIntDatum(5),
+                    NewIntDatum(1),
+                ];
+                input.extend(old.iter().cloned());
+                input
+            })
+            .collect();
+        let mut inner = Resource::new(old, strategy);
+        inner.target_fields = target_types.clone();
+        let rt = Arc::new(CompositeKeysResource { inner });
+        let mut source_types = fields(5);
+        source_types.extend(target_types);
+        let mut exec = build(
+            &p,
+            Box::new(Source::new(input, source_types)),
+            rt.clone(),
+            reader(),
+        )
+        .unwrap();
+        exec.Open().unwrap();
+        let mut output = exec.NewChunk();
+        exec.Next(&mut output).unwrap();
+        exec.Close().unwrap();
+        let writes = rt.inner.writes.lock().unwrap();
+        assert_eq!(writes.rows.len(), 7);
+        for (r, k) in writes.rows.iter().zip(keys) {
+            assert!(same_row(&r[..2], &k));
+            assert_eq!(r[3].GetInt64(), 9);
+        }
+        assert_eq!(rt.inner.statement.AffectedRows(), 7);
+        let reads = rt.inner.reads.lock().unwrap();
+        assert!(reads.iter().all(|(ts, _)| *ts == reader().ts));
+        assert_eq!(reads.iter().map(|(_, n)| *n).sum::<usize>(), 7);
+    }
+}
+
+struct RefreshOperatorsResource {
+    inner: Resource,
+    target_ts: u64,
+}
+impl MutationRuntime for RefreshOperatorsResource {
+    fn run_atomic(
+        &self,
+        f: &mut dyn FnMut(&mut dyn MutationBatch) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.inner.run_atomic(f)
+    }
+}
+impl Resources for RefreshOperatorsResource {
+    fn refresh_context(&self) -> Option<(i32, Arc<astersql_sessionctx_stmtctx::StatementContext>)> {
+        self.inner.refresh_context()
+    }
+    fn target_field_types(&self) -> Vec<FieldType> {
+        self.inner.target_fields.clone()
+    }
+    fn complete_delta_target_columns(
+        &self,
+    ) -> Result<crate::mview_complete_delta_apply_builder::TargetColumns, BuildError> {
+        Ok(complete_delta_apply::target_columns(
+            &self.inner.target_fields,
+        ))
+    }
+    fn read_full_update(
+        &self,
+        _: &PlanNode,
+        snapshot: &ReaderSnapshot,
+        request: &LookupRequest,
+    ) -> Result<ExecutorBox, BuildError> {
+        self.inner
+            .reads
+            .lock()
+            .unwrap()
+            .push((snapshot.ts, request.keys.len()));
+        let rows = request
+            .keys
+            .iter()
+            .map(|key| {
+                let g = key[0].GetInt64();
+                // A later committed value 1 must not replace value 5 at target_ts.
+                let value = if g == 1 {
+                    10
+                } else if snapshot.ts == self.target_ts {
+                    5
+                } else {
+                    1
+                };
+                row(&[value, value, g])
+            })
+            .collect();
+        Ok(Box::new(Source::new(rows, fields(3))))
+    }
+}
+fn optional_row(values: &[Option<i64>]) -> Vec<Datum> {
+    values
+        .iter()
+        .map(|v| v.map_or_else(Datum::default, NewIntDatum))
+        .collect()
+}
+#[test]
+fn port_37a4cd4f43_refresh_operators_keep_go_rows_counts_and_target_snapshot() {
+    for fixed in [false, true] {
+        let mut snapshot = reader();
+        if fixed {
+            snapshot.ts = 42;
+        }
+        let mut inner = Resource::new(
+            vec![row(&[1, 2, 2, 30, 10, 20]), row(&[2, 1, 1, 30, 30, 30])],
+            RecomputeStrategy::Batch,
+        );
+        inner.target_fields = fields(6);
+        let rt = Arc::new(RefreshOperatorsResource {
+            inner,
+            target_ts: snapshot.ts,
+        });
+        let mut p = minmax_plan();
+        p.mv_column_count = 6;
+        p.delta_column_count = 11;
+        p.mv_table_pk_cols = vec![11];
+        p.count_star_mv_offset = 1;
+        p.agg_infos = vec![
+            info(K::CountStar, 1, &[0]),
+            info(K::Count, 2, &[1]),
+            info(K::Sum, 3, &[2, 13]),
+            info(K::Min, 4, &[3, 4, 5, 6, 13]),
+            info(K::Max, 5, &[7, 8, 9, 10, 13]),
+        ];
+        p.full_update_inner_column_count = 3;
+        p.full_update_key_result_col_indexes = vec![2];
+        p.full_update_output_mv_offsets = vec![4, 5, 0];
+        let deltas = vec![
+            optional_row(&[
+                Some(0),
+                Some(-1),
+                Some(-20),
+                None,
+                Some(0),
+                Some(20),
+                Some(1),
+                None,
+                Some(0),
+                Some(20),
+                Some(1),
+                Some(1),
+                Some(2),
+                Some(2),
+                Some(30),
+                Some(10),
+                Some(20),
+            ]),
+            row(&[0, 0, -25, 5, 1, 30, 1, 5, 1, 30, 1, 2, 1, 1, 30, 30, 30]),
+            optional_row(&[
+                Some(1),
+                Some(1),
+                Some(40),
+                Some(40),
+                Some(1),
+                None,
+                Some(0),
+                Some(40),
+                Some(1),
+                None,
+                Some(0),
+                Some(3),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ]),
+        ];
+        let mut exec = build(
+            &p,
+            Box::new(Source::new(deltas, fields(17))),
+            rt.clone(),
+            snapshot,
+        )
+        .unwrap();
+        exec.Open().unwrap();
+        let mut out = exec.NewChunk();
+        exec.Next(&mut out).unwrap();
+        exec.Close().unwrap();
+        assert_eq!(rt.inner.statement.AffectedRows(), 3);
+        let stats = rt
+            .inner
+            .statement
+            .RuntimeStatsColl
+            .as_ref()
+            .unwrap()
+            .GetRootStatsStringShared(37);
+        assert!(
+            stats.contains("rows:{insert:1, update:2, delete:0, noop:0}"),
+            "{stats}"
+        );
+        let fast_rows = vec![
+            row(&[1, 2, 1, 10, 10, 10]),
+            row(&[2, 1, 1, 5, 5, 5]),
+            row(&[3, 1, 1, 40, 40, 40]),
+        ];
+        {
+            let writes = rt.inner.writes.lock().unwrap();
+            for (a, b) in writes.rows.iter().zip(&fast_rows) {
+                assert!(same_row(a, b));
+            }
+            assert_eq!(writes.rows.len(), 3);
+        }
+        assert!(
+            rt.inner
+                .reads
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(ts, _)| *ts == rt.target_ts)
+        );
+        let final_rows = vec![
+            optional_row(&[Some(1), Some(1), Some(0), None, None, None]),
+            row(&[3, 2, 2, 100, 40, 60]),
+            row(&[4, 1, 1, 7, 7, 7]),
+        ];
+        let mut input = Vec::new();
+        for (op, old, new) in [
+            (3, fast_rows[0].clone(), final_rows[0].clone()),
+            (2, fast_rows[1].clone(), vec![Datum::default(); 6]),
+            (3, fast_rows[2].clone(), final_rows[1].clone()),
+            (1, vec![Datum::default(); 6], final_rows[2].clone()),
+        ] {
+            let mut r = vec![NewIntDatum(op)];
+            r.extend(old);
+            r.extend(new);
+            input.push(r);
+        }
+        let mut complete = complete_delta_apply::complete_plan();
+        complete.mv_column_count = 6;
+        complete.current_row_input_col_ids = (1..7).collect();
+        complete.recomputed_row_input_col_ids = (7..13).collect();
+        let mut exec = crate::mview_complete_delta_apply_builder::build(
+            &complete,
+            Box::new(Source::new(input, fields(13))),
+            rt.clone(),
+        )
+        .unwrap();
+        exec.Open().unwrap();
+        let mut out = exec.NewChunk();
+        exec.Next(&mut out).unwrap();
+        exec.Close().unwrap();
+        assert_eq!(rt.inner.statement.AffectedRows(), 4);
+        let stats = rt
+            .inner
+            .statement
+            .RuntimeStatsColl
+            .as_ref()
+            .unwrap()
+            .GetRootStatsStringShared(37);
+        assert!(
+            stats.contains("rows:{insert:1, update:2, delete:1}"),
+            "{stats}"
+        );
+        let writes = rt.inner.writes.lock().unwrap();
+        assert_eq!(writes.rows.len(), 3);
+        for (a, b) in writes.rows.iter().zip(&final_rows) {
+            assert!(same_row(a, b));
+        }
+    }
+}
+
+#[test]
+fn port_37a4cd4f43_writer_failure_registers_progress_without_success_result() {
+    for complete in [false, true] {
+        let mut resource = Resource::new(vec![], RecomputeStrategy::Batch);
+        resource.fail = true;
+        resource.statement.SetAffectedRows(17);
+        resource.statement.SetMessage("prior result");
+        let rt = Arc::new(resource);
+        let mut exec = if complete {
+            crate::mview_complete_delta_apply_builder::build(
+                &complete_delta_apply::complete_plan(),
+                Box::new(Source::new(vec![row(&[1, 0, 0, 0, 3, 1, 8])], fields(7))),
+                rt.clone(),
+            )
+            .unwrap()
+        } else {
+            build(
+                &plan(),
+                Box::new(Source::new(
+                    vec![vec![
+                        NewIntDatum(1),
+                        NewIntDatum(8),
+                        NewIntDatum(3),
+                        Datum::default(),
+                        Datum::default(),
+                    ]],
+                    fields(5),
+                )),
+                rt.clone(),
+                reader(),
+            )
+            .unwrap()
+        };
+        exec.Open().unwrap();
+        let mut output = exec.NewChunk();
+        assert!(
+            exec.Next(&mut output)
+                .unwrap_err()
+                .to_string()
+                .contains("write failure")
+        );
+        assert!(rt.writes.lock().unwrap().rows.is_empty());
+        assert_eq!(rt.statement.AffectedRows(), 17);
+        assert_eq!(rt.statement.GetMessage(), "prior result");
+        let coll = rt.statement.RuntimeStatsColl.as_ref().unwrap();
+        let observed = coll.GetRootStatsStringShared(37);
+        assert!(
+            observed.contains("chunks:1, row_ops:1, rows:{insert:1, update:0, delete:0"),
+            "{observed}"
+        );
+        exec.Next(&mut output).unwrap();
+        assert_eq!(coll.GetRootStatsStringShared(37), observed);
+        exec.Close().unwrap();
+    }
+}

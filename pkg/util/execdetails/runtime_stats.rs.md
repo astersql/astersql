@@ -14,6 +14,8 @@
 
 ## 主要符号
 
+`TpMViewDeltaMergeAggRuntimeStats=24` 与 `TpMViewCompleteDeltaApplyRuntimeStats=25` 紧随 JoinedRows，分别标识 MV FAST 和 COMPLETE 统计；对应 Go 37a4cd4f439b97980a42d64d23c126933ba1f7be 的 runtime_stats.go 新增常量。实际统计对象位于 executor，登记后沿既有收集器按不同 Tp 合并。
+
 - `RuntimeStats: Any + Send + Sync`：动态统计接口。`String` 生成展示片段，`Merge` 合并同类值，`CloneBox` 复制 trait object，`Tp` 返回类型编号，`as_any` 支持 Rust downcast。`Send + Sync` 使包含这些对象的 `RuntimeStatsColl` 可被 `Arc` 跨线程共享。
 - `BasicRuntimeStats`：原子字段 `executorCount/loopCount/consume/open/close/rows`。`Record` 记录一次 Next，`RecordOpen`/`RecordClose` 将阶段耗时同时计入总耗时，`SetRowNum` 可覆盖行数，`String` 在同 plan id 有多个执行器实例时使用 `total_` 前缀。它的 `Clone`/`CloneBox` 故意 panic，因为相同 executor id 应共享同一个基础统计，复制容易重复计数。
 - `basicCopRuntimeStats`：单类 Cop 摘要累加器。`mergeExecSummary` 从 protobuf 可选字段累计迭代数、输出行、处理时间、并发度，并按 TiFlash 子消息的实际存在性懒建 `TiflashStats`；`Merge` 合并百分位样本与 TiFlash 统计。
@@ -104,3 +106,7 @@ Rust 为可运行的跨线程对象模型增加了 `as_any`、`CloneBox` 和 tra
 增加并发读 API 时，优先返回标量或 owned snapshot，仿照 `GetRootRowsSnapshot`/`GetObservedCopScanDetail`，不要把 mutex 内部引用暴露到 guard 外。若需要可共享写入，沿用 `sharedRootStats` 模式并保持 `mu -> 子锁` 的锁顺序。增加原子复合状态前先确认是否允许弱一致观察。
 
 修改显示格式或事务字段时，应同步 `pkg/util/execdetails/execdetails_test.rs`、`execdetails_1_aster_unit_test.rs` 与 Go 的 `execdetails_test.go`；关注单位（内部纳秒）、零值过滤、标点顺序、退避去重排序及 mutex/atomic 字段。修改对象复用时应覆盖所有字段，特别检查 `stmtCopStats` 和 `tiFlashExecutionUnits` 是否按预期重置。
+
+## 验证依据
+
+`port_37a4cd4f43_refresh_stats_type_ids_follow_joined_rows` 校验新增编号顺序；executor 的专项统计和组合刷新测试验证 FAST/COMPLETE 在同一计划收集器下不混型。确切命令与结果保存于来源提交正文。

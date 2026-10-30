@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use astersql_parser_mysql::r#type::{
     TypeBlob, TypeLongBlob, TypeMediumBlob, TypeString, TypeTinyBlob, TypeVarString, TypeVarchar,
@@ -55,6 +55,9 @@ pub struct LookupRequest {
 /// Statement resources, not an executor-building hook. Reads must use the given
 /// snapshot and bind keys to the supplied index-range positions before scanning.
 pub trait Resources: MutationRuntime {
+    /// Statement and plan owning this sink. None means no statement accounting
+    /// was requested; the mutation and snapshot contracts still apply.
+    fn refresh_context(&self) -> Option<(i32, Arc<astersql_sessionctx_stmtctx::StatementContext>)>;
     fn target_field_types(&self) -> Vec<FieldType>;
     /// Resolve actual table metadata; absence must fail closed for COMPLETE APPLY.
     fn complete_delta_target_columns(
@@ -436,7 +439,7 @@ pub struct DeltaMergeExec {
     schema: Vec<SchemaColumn>,
 }
 
-fn same(a: &[Datum], b: &[Datum]) -> bool {
+pub(crate) fn same(a: &[Datum], b: &[Datum]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.Equals(b))
 }
 fn count(value: &Datum) -> Result<i64, String> {
@@ -737,15 +740,21 @@ impl DeltaMergeExec {
         if self.done {
             return Ok(());
         }
+        let accounting = self.resources.refresh_context();
+        // The existing Rust sink has one synchronous merge worker. Report that
+        // actual worker, rather than inventing unused concurrency slots.
+        let mut stats = crate::mviewdeltamergeagg::MergeRuntimeStats::new(1);
         let result = (|| -> Result<(), String> {
             let mut chunk = self.child.NewChunk();
             loop {
+                let read_start = Instant::now();
                 if let Some(context) = context {
                     self.child.NextWithContext(context, &mut chunk)
                 } else {
                     self.child.Next(&mut chunk)
                 }
                 .map_err(|e| e.to_string())?;
+                stats.reader_time += read_start.elapsed();
                 if chunk.NumRows() == 0 {
                     break;
                 }
@@ -761,10 +770,15 @@ impl DeltaMergeExec {
                     })
                     .collect();
                 let before = rows.clone();
+                let merge_start = Instant::now();
                 self.merge(&mut rows, context)?;
+                stats.merge_worker_time[0] += merge_start.elapsed();
                 let start = self.plan.delta_column_count;
                 let end = start + self.plan.mv_column_count;
                 let count_col = start + self.plan.count_star_mv_offset;
+                let write_start = Instant::now();
+                stats.writer_detail.chunks += 1;
+                stats.writer_detail.row_ops += rows.len() as i64;
                 self.resources.run_atomic(&mut |batch| {
                     for (old, new) in before.iter().zip(&rows) {
                         let existed = !old[count_col].IsNull();
@@ -773,8 +787,10 @@ impl DeltaMergeExec {
                         let new_target = &new[start..end];
                         if !existed && remains {
                             batch.insert(new_target)?;
+                            stats.writer_detail.insert_rows += 1;
                         } else if existed && !remains {
                             batch.delete_from_source(old, old_target)?;
+                            stats.writer_detail.delete_rows += 1;
                         } else if existed && remains {
                             let touched: Vec<_> = old_target
                                 .iter()
@@ -783,16 +799,31 @@ impl DeltaMergeExec {
                                 .collect();
                             if touched.iter().any(|v| *v) {
                                 batch.update_from_source(old, old_target, new_target, &touched)?;
+                                stats.writer_detail.update_rows += 1;
+                            } else {
+                                stats.writer_detail.noop_rows += 1;
                             }
+                        } else {
+                            stats.writer_detail.noop_rows += 1;
                         }
                     }
                     Ok(())
                 })?;
+                stats.writer_time += write_start.elapsed();
             }
             Ok(())
         })();
         // A failed write belongs to the statement rollback path; retry requires Open.
         self.done = true;
+        if let Some((id, statement)) = accounting {
+            if result.is_ok() {
+                statement.SetAffectedRows(stats.writer_detail.affected_rows());
+                statement.SetMessage(stats.writer_detail.stmt_message());
+            }
+            if let Some(collector) = &statement.RuntimeStatsColl {
+                collector.RegisterStatsShared(id, Box::new(stats));
+            }
+        }
         result.map_err(astersql_errors::New)
     }
 }

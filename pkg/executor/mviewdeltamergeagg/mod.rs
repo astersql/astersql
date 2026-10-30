@@ -212,3 +212,86 @@ pub fn merge_rows(
     }
     Ok(touched)
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct MergeRuntimeStats {
+    pub reader_time: std::time::Duration,
+    pub writer_time: std::time::Duration,
+    pub merge_worker_time: Vec<std::time::Duration>,
+    pub writer_detail: crate::mview_complete_delta_apply::RefreshWriterStats,
+}
+impl MergeRuntimeStats {
+    pub fn new(workers: isize) -> Self {
+        Self {
+            merge_worker_time: vec![std::time::Duration::ZERO; workers.max(0) as usize],
+            ..Self::default()
+        }
+    }
+    pub fn reset(&mut self, workers: isize) {
+        self.reader_time = std::time::Duration::ZERO;
+        self.writer_time = std::time::Duration::ZERO;
+        self.writer_detail = Default::default();
+        self.merge_worker_time
+            .resize(workers.max(0) as usize, std::time::Duration::ZERO);
+        self.merge_worker_time.fill(std::time::Duration::ZERO);
+    }
+}
+impl astersql_util_execdetails::execdetails::RuntimeStats for MergeRuntimeStats {
+    fn String(&self) -> String {
+        use astersql_util_execdetails::execdetails::FormatDuration;
+        let active: Vec<_> = self
+            .merge_worker_time
+            .iter()
+            .copied()
+            .filter(|d| !d.is_zero())
+            .collect();
+        let mut worker = format!(
+            "total:{}, active:{}",
+            self.merge_worker_time.len(),
+            active.len()
+        );
+        if !active.is_empty() {
+            let total: std::time::Duration = active.iter().sum();
+            worker.push_str(&format!(
+                ", min:{}, max:{}, avg:{}",
+                FormatDuration(*active.iter().min().unwrap()),
+                FormatDuration(*active.iter().max().unwrap()),
+                FormatDuration(total / active.len() as u32)
+            ));
+        }
+        format!(
+            "mview_delta_merge_agg:{{merge_worker:{{{}}}, reader:{}, writer:{{time:{}, {}}}}}",
+            worker,
+            FormatDuration(self.reader_time),
+            FormatDuration(self.writer_time),
+            self.writer_detail.detail(true)
+        )
+    }
+    fn Tp(&self) -> i32 {
+        astersql_util_execdetails::execdetails::TpMViewDeltaMergeAggRuntimeStats
+    }
+    fn CloneBox(&self) -> Box<dyn astersql_util_execdetails::execdetails::RuntimeStats> {
+        Box::new(self.clone())
+    }
+    fn Merge(&mut self, other: &dyn astersql_util_execdetails::execdetails::RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            self.reader_time += other.reader_time;
+            self.writer_time += other.writer_time;
+            self.writer_detail.merge(other.writer_detail);
+            if self.merge_worker_time.len() < other.merge_worker_time.len() {
+                self.merge_worker_time
+                    .resize(other.merge_worker_time.len(), std::time::Duration::ZERO);
+            }
+            for (dest, source) in self
+                .merge_worker_time
+                .iter_mut()
+                .zip(&other.merge_worker_time)
+            {
+                *dest += *source;
+            }
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

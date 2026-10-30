@@ -314,3 +314,110 @@ fn slow_query_runtime_stats_match_go_format_clone_and_merge_contract() {
         "initialize: 2ms, read_file: 2s, parse_log: {time:200ms, concurrency:15}, total_file: 4, read_file: 4, read_size: 2 GB"
     );
 }
+
+#[test]
+fn port_37a4cd4f43_complete_stats_string_merge_clone_reset() {
+    use crate::mview_complete_delta_apply::{
+        CompleteDeltaApplyRuntimeStats as S, RefreshWriterStats as W,
+    };
+    use astersql_util_execdetails::execdetails::{
+        RuntimeStats, TpMViewCompleteDeltaApplyRuntimeStats,
+    };
+    let mut left = S {
+        writer_time: Duration::from_millis(5),
+        writer_detail: W {
+            chunks: 1,
+            row_ops: 4,
+            insert_rows: 1,
+            update_rows: 2,
+            delete_rows: 1,
+            ..Default::default()
+        },
+    };
+    let right = S {
+        writer_time: Duration::from_millis(7),
+        writer_detail: W {
+            chunks: 2,
+            row_ops: 5,
+            update_rows: 1,
+            delete_rows: 1,
+            ..Default::default()
+        },
+    };
+    left.Merge(&right);
+    assert_eq!(left.writer_time, Duration::from_millis(12));
+    assert_eq!(
+        left.writer_detail,
+        W {
+            chunks: 3,
+            row_ops: 9,
+            insert_rows: 1,
+            update_rows: 3,
+            delete_rows: 2,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        left.String(),
+        "mview_complete_delta_apply:{writer:{time:12ms, chunks:3, row_ops:9, rows:{insert:1, update:3, delete:2}}}"
+    );
+    let cloned = left.CloneBox();
+    assert_eq!(cloned.String(), left.String());
+    assert_eq!(cloned.Tp(), TpMViewCompleteDeltaApplyRuntimeStats);
+    left.Merge(&crate::mviewdeltamergeagg::MergeRuntimeStats::new(0));
+    assert_eq!(cloned.String(), left.String());
+    left.reset();
+    assert_eq!(left.writer_detail, W::default());
+    assert_eq!(left.writer_time, Duration::ZERO);
+    assert!(cloned.String().contains("time:12ms"));
+}
+
+#[test]
+fn port_37a4cd4f43_merge_stats_string_merge_clone_reset() {
+    use crate::mview_complete_delta_apply::RefreshWriterStats as W;
+    use crate::mviewdeltamergeagg::MergeRuntimeStats as S;
+    use astersql_util_execdetails::execdetails::{RuntimeStats, TpMViewDeltaMergeAggRuntimeStats};
+    let mut stats = S::new(2);
+    stats.reader_time = Duration::from_secs(1);
+    stats.writer_time = Duration::from_secs(2);
+    stats.merge_worker_time[0] = Duration::from_secs(3);
+    stats.writer_detail = W {
+        chunks: 1,
+        row_ops: 2,
+        insert_rows: 1,
+        noop_rows: 1,
+        ..Default::default()
+    };
+    let clone = stats.CloneBox();
+    assert_eq!(clone.String(), stats.String());
+    assert_eq!(clone.Tp(), TpMViewDeltaMergeAggRuntimeStats);
+    let mut other = S::new(2);
+    other.reader_time = Duration::from_secs(1);
+    other.merge_worker_time[1] = Duration::from_secs(4);
+    other.writer_detail = W {
+        chunks: 2,
+        row_ops: 3,
+        update_rows: 2,
+        ..Default::default()
+    };
+    stats.Merge(&other);
+    assert_eq!(stats.reader_time, Duration::from_secs(2));
+    assert_eq!(stats.writer_detail.chunks, 3);
+    assert_eq!(
+        stats.String(),
+        "mview_delta_merge_agg:{merge_worker:{total:2, active:2, min:3s, max:4s, avg:3.5s}, reader:2s, writer:{time:2s, chunks:3, row_ops:5, rows:{insert:1, update:2, delete:0, noop:1}}}"
+    );
+    stats.Merge(&S::new(4));
+    assert_eq!(stats.merge_worker_time.len(), 4);
+    assert!(clone.String().contains("active:1"));
+    stats.Merge(&crate::mview_complete_delta_apply::CompleteDeltaApplyRuntimeStats::default());
+    stats.reset(1);
+    assert_eq!(stats.merge_worker_time, vec![Duration::ZERO]);
+    assert_eq!(stats.writer_detail, W::default());
+    stats.reset(-1);
+    assert!(stats.merge_worker_time.is_empty());
+    assert_eq!(
+        S::new(-1).String(),
+        "mview_delta_merge_agg:{merge_worker:{total:0, active:0}, reader:0s, writer:{time:0s, chunks:0, row_ops:0, rows:{insert:0, update:0, delete:0, noop:0}}}"
+    );
+}

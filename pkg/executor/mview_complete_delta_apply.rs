@@ -94,3 +94,79 @@ pub fn apply(runtime: &dyn MutationRuntime, rows: &[DeltaRow]) -> Result<ApplySt
     })?;
     Ok(stats)
 }
+
+/// Counts successful table operations, including progress before a writer error.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RefreshWriterStats {
+    pub chunks: i64,
+    pub row_ops: i64,
+    pub insert_rows: i64,
+    pub update_rows: i64,
+    pub delete_rows: i64,
+    pub noop_rows: i64,
+}
+impl RefreshWriterStats {
+    pub fn merge(&mut self, other: Self) {
+        self.chunks += other.chunks;
+        self.row_ops += other.row_ops;
+        self.insert_rows += other.insert_rows;
+        self.update_rows += other.update_rows;
+        self.delete_rows += other.delete_rows;
+        self.noop_rows += other.noop_rows;
+    }
+    pub fn affected_rows(&self) -> u64 {
+        (self.insert_rows + self.update_rows + self.delete_rows) as u64
+    }
+    pub fn stmt_message(&self) -> String {
+        format!(
+            "Rows inserted: {}  Updated: {}  Deleted: {}",
+            self.insert_rows, self.update_rows, self.delete_rows
+        )
+    }
+    pub fn detail(&self, include_noop: bool) -> String {
+        let noop = if include_noop {
+            format!(", noop:{}", self.noop_rows)
+        } else {
+            String::new()
+        };
+        format!(
+            "chunks:{}, row_ops:{}, rows:{{insert:{}, update:{}, delete:{}{}}}",
+            self.chunks, self.row_ops, self.insert_rows, self.update_rows, self.delete_rows, noop
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CompleteDeltaApplyRuntimeStats {
+    pub writer_time: std::time::Duration,
+    pub writer_detail: RefreshWriterStats,
+}
+impl CompleteDeltaApplyRuntimeStats {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+impl astersql_util_execdetails::execdetails::RuntimeStats for CompleteDeltaApplyRuntimeStats {
+    fn String(&self) -> String {
+        format!(
+            "mview_complete_delta_apply:{{writer:{{time:{}, {}}}}}",
+            astersql_util_execdetails::execdetails::FormatDuration(self.writer_time),
+            self.writer_detail.detail(false)
+        )
+    }
+    fn Tp(&self) -> i32 {
+        astersql_util_execdetails::execdetails::TpMViewCompleteDeltaApplyRuntimeStats
+    }
+    fn CloneBox(&self) -> Box<dyn astersql_util_execdetails::execdetails::RuntimeStats> {
+        Box::new(self.clone())
+    }
+    fn Merge(&mut self, other: &dyn astersql_util_execdetails::execdetails::RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            self.writer_time += other.writer_time;
+            self.writer_detail.merge(other.writer_detail);
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

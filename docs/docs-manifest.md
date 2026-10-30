@@ -1,6 +1,6 @@
 # Rust 文件说明文档新增清单
 
-计划为 2576 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
+计划为 2579 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
 
 维护规则：修改含实际业务逻辑的合格生产 `.rs` 文件时，必须同步更新同目录的同名 `.rs.md`；新增合格生产 `.rs` 文件时，必须新建同目录说明并加入本清单。
 
@@ -880,6 +880,9 @@
 - [ ] [`pkg/executor/mpp_gather.rs.md`](../pkg/executor/mpp_gather.rs.md)
 - [ ] [`pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs.md`](../pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs.md)
 - [ ] [`pkg/executor/mview_complete_delta_apply.rs.md`](../pkg/executor/mview_complete_delta_apply.rs.md)
+- [ ] [`pkg/executor/mview_complete_delta_apply_builder.rs.md`](../pkg/executor/mview_complete_delta_apply_builder.rs.md)
+- [ ] [`pkg/executor/mview_delta_merge_builder.rs.md`](../pkg/executor/mview_delta_merge_builder.rs.md)
+- [ ] [`pkg/executor/mviewdeltamergeagg/mod.rs.md`](../pkg/executor/mviewdeltamergeagg/mod.rs.md)
 - [ ] [`pkg/executor/operate_ddl_jobs.rs.md`](../pkg/executor/operate_ddl_jobs.rs.md)
 - [ ] [`pkg/executor/opt_rule_blacklist.rs.md`](../pkg/executor/opt_rule_blacklist.rs.md)
 - [ ] [`pkg/executor/parallel_apply.rs.md`](../pkg/executor/parallel_apply.rs.md)
