@@ -624,6 +624,9 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "bitexpr_bitexpr_bitexpr_prec--1013803bbfaeab3b" => Some(ExpressionRule::BitExprAlt10),
         "bitexpr_bitexpr_bitexpr_prec--d4bd52a4cfccb8eb" => Some(ExpressionRule::BitExprAlt11),
         "bitexpr_bitexpr_bitexpr_prec--5afa6fdb71acc87b" => Some(ExpressionRule::BitExprAlt12),
+        id if id.starts_with("bitexpr_bitexpr_pgcatalogdivide_bitexpr_prec_pgc") => {
+            Some(ExpressionRule::BitExprAlt11)
+        }
         "bitexpr_bitexpr_div_bitexpr_prec_div--b690c011682742cf" => {
             Some(ExpressionRule::BitExprAlt13)
         }

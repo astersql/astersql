@@ -950,6 +950,7 @@
 %token returnKwd 58269 "RETURN";
 %token pgTypecast 58270;
 %token pgInterval 58271;
+%token pgCatalogDivide 58272;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -1010,6 +1011,7 @@
 %left between;
 %precedence lowerThanEq;
 %left eq ge le neq neqSynonym ">" "<" is like ilike in;
+%left pgCatalogDivide;
 %left "|";
 %left "&";
 %left rsh lsh;
@@ -4388,3 +4390,5 @@ PgCastType : PgPostfixJson '[' ']' @action;
 PgCastType : PgTimeType '[' ']' @action;
 
 PgCastType : PgTimestampType '[' ']' @action;
+
+BitExpr : BitExpr pgCatalogDivide BitExpr %prec pgCatalogDivide @action;

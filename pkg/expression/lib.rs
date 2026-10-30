@@ -1018,3 +1018,6 @@ mod pg08_32_test;
 
 #[cfg(test)]
 mod pg08_33_test;
+
+#[cfg(test)]
+mod pg08_34_test;

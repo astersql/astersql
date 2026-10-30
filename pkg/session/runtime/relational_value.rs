@@ -1012,6 +1012,50 @@ fn pg_extremum_numeric_order(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
+/// Consume the bound PG int4 signature through the shared expression factory.
+/// Values come from the caller's recursive evaluation; they never choose the type.
+pub(super) fn pg_int4_divide_value(values: [Option<String>; 2]) -> SessionResult<Option<String>> {
+    use astersql_expression::BuildContext;
+    let args = values
+        .into_iter()
+        .map(|value| {
+            let mut argument = match value {
+                Some(value) => astersql_expression::NewInt64Const(
+                    value.parse::<i32>().map(i64::from).map_err(|error| {
+                        session_error("parse bound int4 division operand", error)
+                    })?,
+                ),
+                None => astersql_expression::NewNull(),
+            };
+            argument.RetType = Some(astersql_parser_types::NewFieldType(
+                astersql_parser_mysql::r#type::TypeLong,
+            ));
+            Ok(Box::new(argument) as Box<dyn astersql_expression::Expression>)
+        })
+        .collect::<SessionResult<Vec<_>>>()?;
+    let context = astersql_expression_exprstatic::NewExprContext(vec![
+        astersql_expression_exprstatic::WithEvalCtx(Arc::new(
+            astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithSQLDialect(ast::SqlDialect::PostgreSQL),
+            ]),
+        )),
+    ]);
+    let function = astersql_expression::NewFunctionBase(
+        &context,
+        "/",
+        astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeLong),
+        args,
+    )
+    .map_err(|error| session_error("build PG int4 division", error))?;
+    let (value, null) = function
+        .EvalInt(
+            context.GetEvalCtx(),
+            astersql_expression::chunk::Row::default(),
+        )
+        .map_err(|error| SessionError::with_source(error.to_string(), error.into_shared()))?;
+    Ok((!null).then(|| value.to_string()))
+}
+
 /// Evaluate one scalar expression against a decoded relational row.
 pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
@@ -1281,24 +1325,7 @@ pub(super) fn relational_expression_value(
             if pg_int4 {
                 let left = relational_expression_value(L, row)?;
                 let right = relational_expression_value(R, row)?;
-                let Some((left, right)) = left.zip(right) else {
-                    return Ok(None);
-                };
-                let left = left
-                    .parse::<i32>()
-                    .map_err(|error| session_error("parse int4 dividend", error))?;
-                let right = right
-                    .parse::<i32>()
-                    .map_err(|error| session_error("parse int4 divisor", error))?;
-                let (state, message) = if right == 0 {
-                    ("22012", "division by zero")
-                } else {
-                    ("22003", "integer out of range")
-                };
-                return left
-                    .checked_div(right)
-                    .map(|value| Some(value.to_string()))
-                    .ok_or_else(|| pg_bytea_input_error(state, message));
+                return pg_int4_divide_value([left, right]);
             }
             if Op == "/"
                 && let Some(precision) = BUILD_DIVISION_PRECISION.with(|slot| slot.get())

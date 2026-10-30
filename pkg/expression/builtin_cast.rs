@@ -1758,10 +1758,12 @@ pub fn decimalPrecisionToLength(field_type: &FieldType) -> i32 {
     if result == 0 { 1 } else { result }
 }
 
-/// Strict text/integer conversion shared by PostgreSQL integer consumers.
+/// Errors shared by strict PostgreSQL integer conversion and arithmetic.
 /// SQL whitespace is ASCII; Unicode whitespace is not accepted by int4 input.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum PgInt4Error {
+    #[error("division by zero")]
+    DivisionByZero,
     #[error("integer out of range")]
     OutOfRange,
     #[error("invalid input syntax for type integer")]
@@ -1772,6 +1774,7 @@ pub enum PgInt4Error {
 impl PgInt4Error {
     pub fn sqlstate(self) -> &'static str {
         match self {
+            Self::DivisionByZero => "22012",
             Self::OutOfRange => "22003",
             Self::InvalidSyntax => "22P02",
             Self::Unsupported => "0A000",

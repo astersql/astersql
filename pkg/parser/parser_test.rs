@@ -6097,3 +6097,42 @@ fn pg08_33_collation_predicate() {
             .is_err()
     );
 }
+
+#[test]
+fn pg08_34_qualified_division() {
+    use parser_ast::{ExprKind, SqlDialect};
+    let sql = "SELECT 10::int4 OPERATOR(pg_catalog./) 2::int4 * 5::int4 AS v";
+    let stmt = parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+    let ExprKind::Binary { Op, R, .. } = &expr.Kind else {
+        panic!("{expr:?}")
+    };
+    assert_eq!(Op, "/");
+    assert!(matches!(&R.Kind, ExprKind::Binary{Op,..} if Op=="*"));
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseOneStmt(sql, "", "")
+            .is_err()
+    );
+    for sql in [
+        "SELECT 'OPERATOR(pg_catalog./)'",
+        "SELECT 5::int4 /* OPERATOR(missing./) */ / 2::int4",
+    ] {
+        assert!(
+            parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+                .ParseOneStmt(sql, "", "")
+                .is_ok()
+        );
+    }
+    assert!(
+        parser::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt("SELECT 5::int4 OPERATOR(missing./) 2::int4", "", "")
+            .is_err()
+    );
+}

@@ -1247,6 +1247,18 @@ impl ConcreteSession {
                 self.relational_query_expression_value(expr, row, group_rows)
             });
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let ast::ExprKind::Binary { Op, L, R } = &expression.Kind
+            && Op == "/"
+            && [L.as_ref(), R.as_ref()].iter().all(|operand| {
+                self.pg_case_input_type(operand, &[]).GetType()
+                    == astersql_parser_mysql::r#type::TypeLong
+            })
+        {
+            let left = self.relational_query_expression_value(L, row, group_rows)?;
+            let right = self.relational_query_expression_value(R, row, group_rows)?;
+            return super::relational_value::pg_int4_divide_value([left, right]);
+        }
         if let ast::ExprKind::Function {
             FnName,
             Schema,

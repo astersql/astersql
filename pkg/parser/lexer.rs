@@ -304,6 +304,29 @@ impl Scanner {
                 tok = token::paramMarker;
             }
         }
+        // A bounded catalog-qualified operator is one grammar token. Scan its
+        // components, retaining original SQL offsets and strings/comments intact.
+        // Its grammar precedence is PG's generic operator tier, not bare '/'.
+        if self.postgres && tok == token::identifier && lit.eq_ignore_ascii_case("operator")
+            && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`')
+            && self.getNextToken() == '(' as i32
+        {
+            let open = self.scan();
+            let schema = self.scan();
+            let dot = self.scan();
+            let operator = self.scan();
+            let close = self.scan();
+            if open.0 == '(' as i32 && schema.0 == token::identifier
+                && schema.2 == "pg_catalog" && dot.0 == '.' as i32
+                && operator.0 == '/' as i32 && close.0 == ')' as i32
+            {
+                tok = token::pgCatalogDivide;
+                lit = "/".to_owned();
+            } else {
+                self.AppendError(self.Errorf("unsupported qualified PostgreSQL operator"));
+                return token::invalid;
+            }
+        }
         self.lastScanOffset = pos.Offset;
         if !self.updateParenthesesDepth(tok) {
             return token::invalid;

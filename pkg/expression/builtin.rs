@@ -4425,6 +4425,7 @@ pub mod formal_registry {
         MysqlAbs(types::EvalType),
         UnaryMinus(types::EvalType),
         Arithmetic(&'static str, types::EvalType),
+        PgInt4Divide,
         Case,
         IfNull(types::EvalType),
         Coalesce(types::EvalType),
@@ -4941,6 +4942,26 @@ pub mod formal_registry {
                             .ok_or_else(|| errors::New("BIGINT value is out of range"))?,
                         null,
                     ))
+                }
+                CoreBuiltinKind::PgInt4Divide => {
+                    let (left, left_null) = self.base.args[0].EvalInt(ctx, row.clone())?;
+                    let (right, right_null) = self.base.args[1].EvalInt(ctx, row)?;
+                    if left_null || right_null {
+                        return Ok((0, true));
+                    }
+                    let diagnostic = |error| {
+                        errors::Error::from(crate::contextutil::errors::SharedError::new(error))
+                    };
+                    let left = i32::try_from(left)
+                        .map_err(|_| diagnostic(crate::PgInt4Error::OutOfRange))?;
+                    let right = i32::try_from(right)
+                        .map_err(|_| diagnostic(crate::PgInt4Error::OutOfRange))?;
+                    if right == 0 {
+                        return Err(diagnostic(crate::PgInt4Error::DivisionByZero));
+                    }
+                    left.checked_div(right)
+                        .map(|value| (i64::from(value), false))
+                        .ok_or_else(|| diagnostic(crate::PgInt4Error::OutOfRange))
                 }
                 CoreBuiltinKind::Arithmetic(operator, types::ETInt) => {
                     let (left, left_null) = self.base.args[0].EvalInt(ctx, row.clone())?;
@@ -7303,6 +7324,20 @@ pub mod formal_registry {
                         .SetFlenUnderLimit(source.GetFlen() + isize::from(!reserved_signed_width));
                 }
                 (CoreBuiltinKind::UnaryMinus(eval_type), result, signature)
+            }
+            "div"
+                if ctx.SQLDialect() == crate::ast::SqlDialect::PostgreSQL
+                    && args
+                        .iter()
+                        .all(|arg| arg.GetType(ctx.GetEvalCtx()).GetType() == mysql::TypeLong) =>
+            {
+                // Bind the int4 / int4 operator by source identity, independently
+                // of MySQL DIV and decimal /. No TiKV pushdown signature exists.
+                (
+                    CoreBuiltinKind::PgInt4Divide,
+                    *types::NewFieldType(mysql::TypeLong),
+                    "builtinArithmeticIntDivideIntSig",
+                )
             }
             "plus" | "minus" | "mul" | "div" | "intdiv" | "mod" => {
                 let left = args[0].GetType(ctx.GetEvalCtx()).EvalType();

@@ -952,4 +952,5 @@ mod token {
     pub const returnKwd: i32 = 58269;
     pub const pgTypecast: i32 = 58270;
     pub const pgInterval: i32 = 58271;
+    pub const pgCatalogDivide: i32 = 58272;
 }
