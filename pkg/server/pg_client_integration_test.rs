@@ -12263,10 +12263,10 @@ fn pg08_20_clients() {
     );
     let summary: serde_json::Value =
         serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
-    assert_eq!(summary["expected"], 52);
-    assert_eq!(summary["passed"], 52);
-    assert_eq!(summary["unique"], 52);
-    assert_eq!(summary["actual"], 52);
+    assert_eq!(summary["expected"], 58);
+    assert_eq!(summary["passed"], 58);
+    assert_eq!(summary["unique"], 58);
+    assert_eq!(summary["actual"], 58);
     assert_eq!(summary["failed"], 0);
     assert_eq!(summary["skipped"], 0);
     assert_eq!(summary["negative_self_checks"], 3);

@@ -14,7 +14,7 @@ from pg_function_27_libpq import Mysql
 from pg_function_25_libpq import mysql_compare
 
 
-CASE_IDS = ('I-before', 'I-middle', 'I-after', 'C-Q-empty', 'C-Q-null-array', 'C-Q-null-element', 'C-Q-multidim', 'C-Q-lower-zero', 'C-Q-lower-negative', 'C-Q-zero', 'C-Q-nested', 'C-Q-row', 'C-Q-row-zero', 'C-E-signature', 'C-recover-signature', 'C-txn-signature', 'C-bind-0-0-0-0', 'C-bind-0-0-0-1', 'C-bind-0-0-0-2', 'C-bind-0-0-0-3', 'C-bind-0-0-1-0', 'C-bind-0-0-1-1', 'C-bind-0-0-1-2', 'C-bind-0-0-1-3', 'C-bind-0-1-0-0', 'C-bind-0-1-0-1', 'C-bind-0-1-0-2', 'C-bind-0-1-0-3', 'C-bind-0-1-1-0', 'C-bind-0-1-1-1', 'C-bind-0-1-1-2', 'C-bind-0-1-1-3', 'C-bind-1-0-0-0', 'C-bind-1-0-0-1', 'C-bind-1-0-0-2', 'C-bind-1-0-0-3', 'C-bind-1-0-1-0', 'C-bind-1-0-1-1', 'C-bind-1-0-1-2', 'C-bind-1-0-1-3', 'C-bind-1-1-0-0', 'C-bind-1-1-0-1', 'C-bind-1-1-0-2', 'C-bind-1-1-0-3', 'C-bind-1-1-1-0', 'C-bind-1-1-1-1', 'C-bind-1-1-1-2', 'C-bind-1-1-1-3', 'M-Q-cardinality', 'M-prepare-cardinality', 'M-Q-health', 'M-prepared-health')
+CASE_IDS = ('I-before', 'I-middle', 'I-after', 'C-Q-empty', 'C-Q-null-array', 'C-Q-null-element', 'C-Q-multidim', 'C-Q-lower-zero', 'C-Q-lower-negative', 'C-Q-zero', 'C-Q-nested', 'C-Q-row', 'C-Q-row-zero', 'C-E-signature', 'C-recover-signature', 'C-txn-signature', 'C-bind-0-0-0-0', 'C-bind-0-0-0-1', 'C-bind-0-0-0-2', 'C-bind-0-0-0-3', 'C-bind-0-0-1-0', 'C-bind-0-0-1-1', 'C-bind-0-0-1-2', 'C-bind-0-0-1-3', 'C-bind-0-1-0-0', 'C-bind-0-1-0-1', 'C-bind-0-1-0-2', 'C-bind-0-1-0-3', 'C-bind-0-1-1-0', 'C-bind-0-1-1-1', 'C-bind-0-1-1-2', 'C-bind-0-1-1-3', 'C-bind-1-0-0-0', 'C-bind-1-0-0-1', 'C-bind-1-0-0-2', 'C-bind-1-0-0-3', 'C-bind-1-0-1-0', 'C-bind-1-0-1-1', 'C-bind-1-0-1-2', 'C-bind-1-0-1-3', 'C-bind-1-1-0-0', 'C-bind-1-1-0-1', 'C-bind-1-1-0-2', 'C-bind-1-1-0-3', 'C-bind-1-1-1-0', 'C-bind-1-1-1-1', 'C-bind-1-1-1-2', 'C-bind-1-1-1-3', 'M-Q-cardinality', 'M-prepare-cardinality', 'M-Q-health', 'M-prepared-health', 'M-width-zero', 'M-width-ten', 'M-width-signed-max', 'M-width-boolean', 'M-width-unsigned-max', 'M-prepared-literal')
 
 def run(port, database, evidence, mysql_port):
     assert database.replace("_", "").isalnum(), "invalid owned database name"
@@ -200,6 +200,29 @@ def run(port, database, evidence, mysql_port):
             assert phases[1]['rows']==[['37']],phases
         assert observations[0]==observations[1],observations
         passed.append('M-prepared-health')
+        for case,sql in (
+            ('M-width-zero','SELECT 0 AS v'),
+            ('M-width-ten','SELECT 10 AS v'),
+            ('M-width-signed-max','SELECT 9223372036854775807 AS v'),
+            ('M-width-boolean','SELECT TRUE AS v'),
+            ('M-width-unsigned-max','SELECT 18446744073709551615 AS v'),
+        ):
+            observations=[save('mysql-'+side,case,m.query(sql)) for side,m in mysqls.items()]
+            try:
+                mysql_compare(*observations)
+                assert all(obs['code']==0 for obs in observations),observations
+                passed.append(case)
+            except AssertionError as error:
+                failures[case]=str(error)
+        observations=[save('mysql-'+side,'M-prepared-literal',m.prepared('SELECT 1 AS v',[()])) for side,m in mysqls.items()]
+        try:
+            assert observations[0]==observations[1],observations
+            for phases in observations:
+                assert [p['phase'] for p in phases]==['prepare','execute'],phases
+                assert all(p['code']==0 for p in phases) and phases[1]['rows']==[['31']],phases
+            passed.append('M-prepared-literal')
+        except AssertionError as error:
+            failures['M-prepared-literal']=str(error)
         interleave('after')
         assert len(passed)==len(set(passed)) and set(passed)|set(failures)==set(CASE_IDS)
         assert not failures,failures
@@ -228,7 +251,7 @@ def run(port, database, evidence, mysql_port):
                        expected_counts={k:sum(category(x)==k for x in CASE_IDS) for k in set(map(category,CASE_IDS))},
                        counts={k:sum(category(x)==k for x in passed) for k in set(map(category,CASE_IDS))})
         (evidence/'summary.json').write_text(json.dumps(cleanup,indent=2))
-    print('pg08_20_clients: 52 unique scenarios passed; 3 negative self-checks')
+    print('pg08_20_clients: 58 unique scenarios passed; 3 negative self-checks')
 
 if __name__=='__main__':
     def interrupted(signum,_frame):raise SystemExit(128+signum)

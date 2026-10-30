@@ -4971,7 +4971,23 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> SessionResult<astersql_parser_types::types::FieldType> {
         self.mysql_function_type_and_cache_reason(expression, source_fields)
-            .map(|(tp, _, _)| tp)
+            .map(|(mut tp, _, _)| {
+                if self.sql_dialect() == ast::SqlDialect::MySQL
+                    && let ast::ExprKind::Value(value) = &expression.Kind
+                    && let ast::ValueDatum::Int64(number) = &value.Datum
+                    && *number >= 0
+                    && tp.GetType() == astersql_parser_mysql::r#type::TypeLonglong
+                    && tp.GetFlag()
+                        & (astersql_parser_mysql::r#type::IsBooleanFlag
+                            | astersql_parser_mysql::r#type::UnsignedFlag)
+                        == 0
+                {
+                    // Native signed integer literal results reserve a sign position.
+                    // Apply it to result descriptors, leaving AST/argument types intact.
+                    tp.SetFlen(number.to_string().len() as isize + 1);
+                }
+                tp
+            })
     }
 
     pub(super) fn mysql_function_type_and_cache_reason(
@@ -6046,6 +6062,8 @@ impl ConcreteSession {
                         .is_mysql_function_projection(expression, &source_fields)
                         || self.is_mysql_signed_abs(expression, &source_fields)
                         || self.is_mysql_conditional_projection(expression, &source_fields)
+                        || (self.sql_dialect() == ast::SqlDialect::MySQL
+                            && matches!(expression.Kind, ast::ExprKind::Value(_)))
                         || (self.sql_dialect() == ast::SqlDialect::MySQL
                             && matches!(&expression.Kind, ast::ExprKind::Function {FnName,..} if matches!(FnName.L.as_str(), "ifnull" | "date_format" | "json_extract" | "tidb_version")))
                     {
