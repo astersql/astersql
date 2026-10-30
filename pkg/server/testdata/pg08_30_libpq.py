@@ -179,6 +179,14 @@ def run(port, database, evidence, mysql_port):
                     # Values are connection/build facts; compare all column definitions and diagnostics.
                     a,b=copy.deepcopy(peers['reference']),copy.deepcopy(peers['aster'])
                     for left,right in zip([a] if mode=='Q' else a,[b] if mode=='Q' else b):
+                        if fn=='version':
+                            for side,record in [('reference',left),('aster',right)]:
+                                # VERSION's descriptor width follows its own handshake
+                                # identity under utf8mb4, including Prepare and Execute.
+                                raw=mysqls[side].lib.mysql_get_server_info(mysqls[side].conn)
+                                for field in record['metadata']:
+                                    assert field[4]==len(raw)*4,(case,side,field,len(raw))
+                                    field[4]=0
                         left['rows']=right['rows']=[]
                     assert a==b,(case,a,b)
                 passed.append(case)
