@@ -284,3 +284,28 @@ fn pg09_01_null_groups_and_pages() {
         1025
     );
 }
+
+#[test]
+fn pg09_02_execution() {
+    use crate::typed_hash_agg::SumSmallInt;
+    for (values, expected) in [
+        (vec![], None),
+        (vec![None], None),
+        (vec![Some(1), None, Some(2)], Some(3)),
+        (vec![Some(i32::MAX as i64); 2], Some(4294967294)),
+        (vec![Some(i64::MIN), Some(1)], Some(i64::MIN + 1)),
+    ] {
+        assert_eq!(SumSmallInt(context(), values).unwrap(), expected);
+    }
+    for values in [
+        vec![Some(i64::MAX), Some(1)],
+        vec![Some(i64::MIN), Some(-1)],
+    ] {
+        assert!(
+            SumSmallInt(context(), values)
+                .unwrap_err()
+                .to_string()
+                .contains("SUM bigint out of range")
+        );
+    }
+}

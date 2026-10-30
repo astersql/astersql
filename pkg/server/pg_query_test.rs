@@ -18780,3 +18780,208 @@ fn pg09_01_mysql() {
         );
     }
 }
+
+#[test]
+fn pg09_02_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+    for (sql, expected) in [
+        ("SELECT sum(1::int2) AS s", vec![row(&[Some("1")])]),
+        (
+            "SELECT sum(x) AS s FROM (SELECT 2147483647::int4 AS x UNION ALL SELECT 2147483647::int4) t",
+            vec![row(&[Some("4294967294")])],
+        ),
+        (
+            "SELECT sum(x) AS s FROM (SELECT NULL::int4 AS x) t",
+            vec![row(&[None])],
+        ),
+        (
+            "SELECT sum(x) AS s FROM (SELECT 1::int4 AS x) t WHERE false",
+            vec![row(&[None])],
+        ),
+        (
+            "SELECT sum(x) AS s FROM (SELECT 1::int4 AS x) t WHERE false GROUP BY x",
+            vec![],
+        ),
+    ] {
+        let ms = query(&mut s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "{sql}"
+        );
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        let mut pos = 2;
+        for _ in 0..i16::from_be_bytes(d[..2].try_into().unwrap()) {
+            pos += d[pos..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&d[pos + 6..pos + 10], &20u32.to_be_bytes(), "{sql}: {d:?}");
+            assert_eq!(&d[pos + 10..pos + 12], &8i16.to_be_bytes());
+            assert_eq!(&d[pos + 12..pos + 16], &(-1i32).to_be_bytes());
+            pos += 18;
+        }
+    }
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity(ms: &[(u8, Vec<u8>)], fmt: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[2..4], b"c\0");
+        assert_eq!(&d[10..14], &20u32.to_be_bytes());
+        assert_eq!(&d[14..16], &8i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &fmt.to_be_bytes());
+    }
+    let sql = "SELECT sum(x) AS c FROM (SELECT $1::int4 AS x UNION ALL SELECT $2::int4) t";
+    send(
+        &mut s,
+        b'P',
+        &[b"sum09\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+    );
+    send(&mut s, b'D', b"Ssum09\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready(&mut s);
+    identity(&ms, 0);
+    assert_eq!(
+        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [b'1', b't', b'T', b'Z']
+    );
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b't').unwrap().1,
+        [
+            2i16.to_be_bytes().as_slice(),
+            &23u32.to_be_bytes(),
+            &23u32.to_be_bytes()
+        ]
+        .concat()
+    );
+    for input_fmt in [0i16, 1] {
+        for result_fmt in [0i16, 1] {
+            for nonnull in [true, false] {
+                let mut bind = b"\0sum09\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_fmt.to_be_bytes());
+                bind.extend(2i16.to_be_bytes());
+                if nonnull {
+                    let bytes = if input_fmt == 0 {
+                        b"7".to_vec()
+                    } else {
+                        7i32.to_be_bytes().to_vec()
+                    };
+                    bind.extend((bytes.len() as i32).to_be_bytes());
+                    bind.extend(bytes);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend((-1i32).to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(result_fmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready(&mut s);
+                identity(&ms, result_fmt);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'D').count(), 1);
+                let count = 7i64;
+                let expected = if !nonnull {
+                    row(&[None])
+                } else if result_fmt == 0 {
+                    row(&[nonnull.then_some("7")])
+                } else {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &8i32.to_be_bytes(),
+                        &count.to_be_bytes(),
+                    ]
+                    .concat()
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+    let sql = "SELECT sum(x) AS c FROM (SELECT 1::int4 AS x) t WHERE false GROUP BY x";
+    send(
+        &mut s,
+        b'P',
+        &[b"empty09\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+    );
+    send(&mut s, b'D', b"Sempty09\0");
+    send(&mut s, b'S', &[]);
+    identity(&ready(&mut s), 0);
+    for fmt in [0i16, 1] {
+        send(
+            &mut s,
+            b'B',
+            &[
+                b"\0empty09\0".as_slice(),
+                &[0, 0, 0, 0, 0, 1],
+                &fmt.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut s, b'D', b"P\0");
+        send(&mut s, b'E', &[0; 5]);
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        identity(&ms, fmt);
+        assert!(!ms.iter().any(|m| m.0 == b'D'));
+    }
+    let ms = query(&mut s, "SELECT sum(1::int4,2::int4) AS s");
+    assert!(
+        ms.iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42601\0")),
+        "{ms:?}"
+    );
+    let ms = query(&mut s, "SELECT 1::int4 AS v");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1")])
+    );
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    send(&mut s, b'X', &[]);
+}

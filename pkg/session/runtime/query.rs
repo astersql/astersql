@@ -1122,6 +1122,50 @@ impl ConcreteSession {
             .map(|count| Some(count.to_string()))
             .map_err(|error| session_error("execute COUNT", error));
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && name == "sum"
+            && args.first().is_some_and(|arg| {
+                matches!(
+                    self.pg_case_input_type(arg, &[]).GetType(),
+                    astersql_parser_mysql::r#type::TypeShort
+                        | astersql_parser_mysql::r#type::TypeLong
+                )
+            })
+        {
+            let mut values = rows
+                .iter()
+                .map(|row| {
+                    self.relational_query_expression_value(&args[0], row, None)?
+                        .map(|value| {
+                            value
+                                .parse::<i64>()
+                                .map_err(|e| session_error("parse SUM integer", e))
+                        })
+                        .transpose()
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            if distinct {
+                let mut seen = HashSet::new();
+                values.retain(|v| seen.insert(*v));
+            }
+            return astersql_executor::typed_hash_agg::SumSmallInt(
+                self.AdapterPlanContext(),
+                values,
+            )
+            .map(|value| value.map(|v| v.to_string()))
+            .map_err(|error| {
+                if error.to_string() == "SUM bigint out of range" {
+                    SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(
+                            astersql_types::pg_numeric::PgNumericError::OutOfRange,
+                        ),
+                    )
+                } else {
+                    session_error("execute SUM", error)
+                }
+            });
+        }
         if name == "count" && args.is_empty() {
             return Ok(Some(rows.len().to_string()));
         }
@@ -5405,6 +5449,20 @@ impl ConcreteSession {
                 ) {
                     return source;
                 }
+            }
+            if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
+                && Name.eq_ignore_ascii_case("sum")
+                && Args.first().is_some_and(|arg| {
+                    matches!(
+                        self.pg_case_input_type(arg, source_fields).GetType(),
+                        astersql_parser_mysql::r#type::TypeShort
+                            | astersql_parser_mysql::r#type::TypeLong
+                    )
+                })
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeLonglong,
+                );
             }
             // A null test has a fixed boolean result, independently of whether
             // its parameter type came from Parse OIDs or an explicit cast.

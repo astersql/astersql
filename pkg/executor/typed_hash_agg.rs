@@ -344,6 +344,18 @@ fn update_aggregate(
                 .ok_or_else(|| astersql_errors::New("COUNT bigint out of range"))?;
         }
         AggregateValue::Sum { value, count } => {
+            if function.Name == astersql_parser_ast::AggFuncSumInt
+                && !astersql_parser_mysql::r#type::HasUnsignedFlag(
+                    function.RetTp.as_ref().unwrap().GetFlag(),
+                )
+            {
+                let previous = if value.IsNull() { 0 } else { value.GetInt64() };
+                let sum = previous
+                    .checked_add(values[0].GetInt64())
+                    .ok_or_else(|| astersql_errors::New("SUM bigint out of range"))?;
+                *value = NewIntDatum(sum);
+                return Ok(());
+            }
             if function.Name == astersql_parser_ast::AggFuncAvg
                 && matches!(
                     function.Mode,
@@ -604,6 +616,111 @@ impl ExecExecutor for CountInput {
         while !output.IsFull() && self.index < self.present.len() {
             if self.present[self.index] {
                 output.AppendInt64(0, 1);
+            } else {
+                output.AppendNull(0);
+            }
+            self.index += 1;
+        }
+        Ok(())
+    }
+    fn ChunkConfig(&self) -> ChunkConfig {
+        ChunkConfig {
+            fields: self.schema.iter().map(|c| c.field_type.clone()).collect(),
+            initial_capacity: 32,
+            maximum_chunk_size: 1024,
+        }
+    }
+    fn NewChunk(&self) -> chunk::Chunk {
+        let c = self.ChunkConfig();
+        *chunk::New(c.fields, c.initial_capacity, c.maximum_chunk_size)
+    }
+    fn Schema(&self) -> &[SchemaColumn] {
+        &self.schema
+    }
+    fn CalculateNoDelay(&self) -> bool {
+        false
+    }
+    fn IsWriteExecutor(&self) -> bool {
+        false
+    }
+    fn CheckForeignKeys(&mut self) -> AdapterResult {
+        Ok(())
+    }
+    fn TakeForeignKeyCascades(&mut self) -> Vec<Box<dyn CascadeBatch>> {
+        vec![]
+    }
+    fn HasForeignKeyCascades(&self) -> bool {
+        false
+    }
+    fn PrepareFKCascadeContext(&mut self) {}
+    fn AddFKCheckLockDuration(&mut self, _: Duration) {}
+    fn Detach(&mut self) -> Option<Box<dyn ExecExecutor>> {
+        None
+    }
+}
+
+/// Evaluate the signed small-integer SUM overload through typed HashAgg.
+pub fn SumSmallInt(context: ContextRef, values: Vec<Option<i64>>) -> AdapterResult<Option<i64>> {
+    let field_type =
+        astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeLonglong);
+    let input = SumInput {
+        values,
+        index: 0,
+        opened: false,
+        schema: vec![SchemaColumn {
+            field_type: (*field_type).clone(),
+        }],
+    };
+    let function = astersql_expression_aggregation::NewAggFuncDesc(
+        context.GetExprCtx(),
+        astersql_parser_ast::AggFuncSumInt,
+        vec![Box::new(astersql_expression::Column::new(
+            *field_type,
+            1,
+            1,
+            0,
+        ))],
+        false,
+    )
+    .map_err(|e| astersql_errors::New(e.to_string()))?;
+    let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
+        .map_err(astersql_errors::New)?;
+    executor.Open()?;
+    let mut output = executor.NewChunk();
+    let result = executor
+        .Next(&mut output)
+        .map(|()| (!output.GetRow(0).IsNull(0)).then(|| output.GetRow(0).GetInt64(0)));
+    let close = executor.Close();
+    let count = result?;
+    close?;
+    Ok(count)
+}
+
+struct SumInput {
+    values: Vec<Option<i64>>,
+    index: usize,
+    opened: bool,
+    schema: Vec<SchemaColumn>,
+}
+impl ExecExecutor for SumInput {
+    fn Open(&mut self) -> AdapterResult {
+        self.index = 0;
+        self.opened = true;
+        Ok(())
+    }
+    fn Close(&mut self) -> AdapterResult {
+        self.opened = false;
+        self.values.clear();
+        Ok(())
+    }
+    fn Next(&mut self, output: &mut chunk::Chunk) -> AdapterResult {
+        output.Reset();
+        if !self.opened {
+            return Err(astersql_errors::New("SUM input is not open"));
+        }
+        while !output.IsFull() && self.index < self.values.len() {
+            if let Some(value) = self.values[self.index] {
+                output.AppendInt64(0, value);
             } else {
                 output.AppendNull(0);
             }
