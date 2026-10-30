@@ -357,3 +357,42 @@ fn pg09_03_execution() {
         Some("1")
     );
 }
+
+#[test]
+fn pg09_04_execution() {
+    use crate::typed_hash_agg::AvgNumeric;
+    for (values, expected) in [
+        (vec![], None),
+        (vec![None], None),
+        (vec![Some("1"), None, Some("2")], Some("1.5000000000000000")),
+        (
+            vec![Some("1"), Some("0"), Some("0")],
+            Some("0.33333333333333333333"),
+        ),
+        (
+            vec![Some("1.20"), Some("-1.2")],
+            Some("0.00000000000000000000"),
+        ),
+        (
+            vec![Some("9223372036854775807"); 2],
+            Some("9223372036854775807"),
+        ),
+    ] {
+        assert_eq!(
+            AvgNumeric(
+                context(),
+                values.into_iter().map(|v| v.map(str::to_owned)).collect()
+            )
+            .unwrap()
+            .as_deref(),
+            expected
+        );
+    }
+    assert_eq!(
+        AvgNumeric(context(), vec![Some("0.01".into()); 2050])
+            .unwrap()
+            .as_deref(),
+        Some("0.01000000000000000000")
+    );
+    assert!(AvgNumeric(context(), vec![Some("invalid".into())]).is_err());
+}

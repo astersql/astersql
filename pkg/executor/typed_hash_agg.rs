@@ -18,6 +18,10 @@ use crate::adapter::{
 enum AggregateValue {
     Count(i64),
     NumericSum(Option<astersql_types::pg_numeric::PgNumeric>),
+    NumericAvg {
+        sum: Option<astersql_types::pg_numeric::PgNumeric>,
+        count: i64,
+    },
     Sum {
         value: Datum,
         count: i64,
@@ -90,7 +94,8 @@ impl TypedHashAgg {
                         return Err(format!("typed AVG requires {required} argument(s)"));
                     }
                 }
-                "pg_sum_numeric"
+                "pg_avg_numeric"
+                | "pg_sum_numeric"
                 | astersql_parser_ast::AggFuncSum
                 | astersql_parser_ast::AggFuncSumInt
                 | astersql_parser_ast::AggFuncFirstRow
@@ -159,6 +164,7 @@ impl TypedHashAgg {
                     value: match function.Name.as_str() {
                         astersql_parser_ast::AggFuncCount => AggregateValue::Count(0),
                         "pg_sum_numeric" => AggregateValue::NumericSum(None),
+                        "pg_avg_numeric" => AggregateValue::NumericAvg { sum: None, count: 0 },
                         astersql_parser_ast::AggFuncSum
                         | astersql_parser_ast::AggFuncSumInt
                         | astersql_parser_ast::AggFuncAvg => AggregateValue::Sum {
@@ -332,6 +338,21 @@ fn update_aggregate(
         }
     }
     match &mut state.value {
+        AggregateValue::NumericAvg { sum, count } => {
+            let next = values[0]
+                .GetString()
+                .parse::<astersql_types::pg_numeric::PgNumeric>()
+                .map_err(astersql_errors::SharedError::new)?;
+            *sum = Some(match sum.as_ref() {
+                Some(previous) => previous
+                    .add(&next)
+                    .map_err(astersql_errors::SharedError::new)?,
+                None => next,
+            });
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| astersql_errors::New("AVG bigint count out of range"))?;
+        }
         AggregateValue::NumericSum(sum) => {
             let next = values[0]
                 .GetString()
@@ -435,6 +456,19 @@ fn finish_aggregate(
             state,
         } => Ok(NewIntDatum(evaluator.result_count(state))),
         AggregateValue::Count(count) => Ok(NewIntDatum(*count)),
+        AggregateValue::NumericAvg { sum, count } => {
+            let Some(sum) = sum else {
+                return Ok(Datum::default());
+            };
+            let divisor = count
+                .to_string()
+                .parse::<astersql_types::pg_numeric::PgNumeric>()
+                .map_err(astersql_errors::SharedError::new)?;
+            let average = sum
+                .divide(&divisor)
+                .map_err(astersql_errors::SharedError::new)?;
+            Ok(astersql_types::datum::NewStringDatum(average.to_string()))
+        }
         AggregateValue::NumericSum(value) => Ok(value.as_ref().map_or_else(Datum::default, |v| {
             astersql_types::datum::NewStringDatum(v.to_string())
         })),
@@ -797,6 +831,14 @@ pub fn SumNumeric(
     context: ContextRef,
     values: Vec<Option<String>>,
 ) -> AdapterResult<Option<String>> {
+    NumericAggregate(context, values, "pg_sum_numeric")
+}
+
+fn NumericAggregate(
+    context: ContextRef,
+    values: Vec<Option<String>>,
+    name: &str,
+) -> AdapterResult<Option<String>> {
     let field_type =
         astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeVarString);
     let input = SumInput {
@@ -819,7 +861,7 @@ pub fn SumNumeric(
         false,
     )
     .map_err(|e| astersql_errors::New(e.to_string()))?;
-    function.Name = "pg_sum_numeric".into();
+    function.Name = name.into();
     let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
         .map_err(astersql_errors::New)?;
     executor.Open()?;
@@ -831,4 +873,12 @@ pub fn SumNumeric(
     let value = result?;
     close?;
     Ok(value)
+}
+
+/// PostgreSQL exact average over the shared typed executor.
+pub fn AvgNumeric(
+    context: ContextRef,
+    values: Vec<Option<String>>,
+) -> AdapterResult<Option<String>> {
+    NumericAggregate(context, values, "pg_avg_numeric")
 }

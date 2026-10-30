@@ -1192,6 +1192,34 @@ impl ConcreteSession {
                 SessionError::with_source(format!("execute numeric SUM: {error}"), error)
             });
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && name == "avg"
+            && args.first().is_some_and(|arg| {
+                matches!(
+                    self.pg_case_input_type(arg, &[]).GetType(),
+                    astersql_parser_mysql::r#type::TypeShort
+                        | astersql_parser_mysql::r#type::TypeLong
+                        | astersql_parser_mysql::r#type::TypeLonglong
+                        | astersql_parser_mysql::r#type::TypeNewDecimal
+                )
+            })
+        {
+            let mut values = rows
+                .iter()
+                .map(|row| self.relational_query_expression_value(&args[0], row, None))
+                .collect::<SessionResult<Vec<_>>>()?;
+            if distinct {
+                let mut seen = HashSet::new();
+                values.retain(|v| seen.insert(v.clone()));
+            }
+            return astersql_executor::typed_hash_agg::AvgNumeric(
+                self.AdapterPlanContext(),
+                values,
+            )
+            .map_err(|error| {
+                SessionError::with_source(format!("execute numeric AVG: {error}"), error)
+            });
+        }
         if name == "count" && args.is_empty() {
             return Ok(Some(rows.len().to_string()));
         }
@@ -5496,6 +5524,22 @@ impl ConcreteSession {
                     matches!(
                         self.pg_case_input_type(arg, source_fields).GetType(),
                         astersql_parser_mysql::r#type::TypeLonglong
+                            | astersql_parser_mysql::r#type::TypeNewDecimal
+                    )
+                })
+            {
+                return astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeNewDecimal,
+                );
+            }
+            if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
+                && Name.eq_ignore_ascii_case("avg")
+                && Args.first().is_some_and(|arg| {
+                    matches!(
+                        self.pg_case_input_type(arg, source_fields).GetType(),
+                        astersql_parser_mysql::r#type::TypeShort
+                            | astersql_parser_mysql::r#type::TypeLong
+                            | astersql_parser_mysql::r#type::TypeLonglong
                             | astersql_parser_mysql::r#type::TypeNewDecimal
                     )
                 })
