@@ -1837,3 +1837,245 @@ fn TestAsyncCommitPausePreservesValidForeignKey() {
         .MustQuery("select * from child", Vec::new())
         .Check(Rows(&["1"]));
 }
+
+// Source 0073665a65: observe real replies; only the setup's commit/cleanup
+// transport boundary is faulted to leave genuine TiKV prewrite locks behind.
+#[derive(Default, Debug)]
+struct RepeatedLockObservations {
+    primary: Vec<u8>,
+    setup_finished: bool,
+    duplicate_batch_get: bool,
+    resolves: usize,
+    rollbacks: usize,
+    expired_primary: bool,
+    errors: Vec<String>,
+}
+struct RepeatedLockObserver {
+    start_ts: u64,
+    rollback: bool,
+    state: Arc<Mutex<RepeatedLockObservations>>,
+}
+impl tikv_client::rpc_interceptor::RpcInterceptor for RepeatedLockObserver {
+    fn prewrite_batch_size(&self, start_ts: u64) -> Option<usize> {
+        (start_ts == self.start_ts).then_some(1)
+    }
+    fn lock_ttl(&self, start_ts: u64) -> Option<u64> {
+        (self.rollback && start_ts == self.start_ts).then_some(1)
+    }
+    fn disable_heartbeat(&self, start_ts: u64) -> bool {
+        self.rollback && start_ts == self.start_ts
+    }
+    fn before(&self, request: &dyn std::any::Any, _: &mut Duration) -> tikv_client::Result<()> {
+        use tikv_client::proto::kvrpcpb::*;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(req) = request.downcast_ref::<PrewriteRequest>() {
+            if req.start_version == self.start_ts {
+                state.primary = req.primary_lock.clone();
+            }
+        }
+        if let Some(req) = request.downcast_ref::<CommitRequest>() {
+            if req.start_version == self.start_ts
+                && (self.rollback || !req.keys.contains(&state.primary))
+            {
+                state.setup_finished = true;
+                return Err(tikv_client::Error::StringError(
+                    "port_0073665a65_ leave prewrite locks".into(),
+                ));
+            }
+        }
+        if let Some(req) = request.downcast_ref::<BatchRollbackRequest>() {
+            if self.rollback && req.start_version == self.start_ts {
+                return Err(tikv_client::Error::StringError(
+                    "port_0073665a65_ skip setup cleanup".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn after(
+        &self,
+        request: &dyn std::any::Any,
+        result: &mut tikv_client::Result<Box<dyn std::any::Any>>,
+    ) {
+        use tikv_client::proto::kvrpcpb::*;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(req) = request.downcast_ref::<ResolveLockRequest>() {
+            if req.start_version == self.start_ts {
+                state.resolves += 1;
+                state.rollbacks += usize::from(req.commit_version == 0);
+                match result {
+                    Err(error) => state.errors.push(error.to_string()),
+                    Ok(response) => match response.downcast_ref::<ResolveLockResponse>() {
+                        Some(response) if response.error.is_none() => {}
+                        _ => state
+                            .errors
+                            .push("ResolveLock response missing or contains error".into()),
+                    },
+                }
+            }
+        }
+        if let Ok(response) = result {
+            if let Some(response) = response.downcast_ref::<BatchGetResponse>() {
+                let mut seen = std::collections::HashSet::new();
+                for lock in response
+                    .pairs
+                    .iter()
+                    .filter_map(|pair| pair.error.as_ref())
+                    .filter_map(|error| error.locked.as_ref())
+                    .filter(|lock| lock.lock_version == self.start_ts)
+                {
+                    if !seen.insert(&lock.key) {
+                        state.duplicate_batch_get = true;
+                    }
+                }
+            }
+            if let (Some(req), Some(response)) = (
+                request.downcast_ref::<CheckTxnStatusRequest>(),
+                response.downcast_ref::<CheckTxnStatusResponse>(),
+            ) {
+                if req.lock_ts == self.start_ts
+                    && response.action == Action::TtlExpireRollback as i32
+                {
+                    state.expired_primary = true;
+                }
+            }
+        }
+    }
+}
+fn port_0073665a65_repeated_locks(rollback: bool) {
+    let _serial = serial_guard();
+    let path = std::env::var("ASTERSQL_TXN_TIKV_PATH").expect("this regression requires real TiKV");
+    let (store, mut first, database) = fixture(if rollback {
+        "repeated_rollback"
+    } else {
+        "repeated_commit"
+    });
+    first.MustExec(
+        "create table insert_duplicate_locks (id int primary key, u int unique, v int)",
+        Vec::new(),
+    );
+    first.MustExec("set tidb_enable_async_commit=OFF", Vec::new());
+    first.MustExec("set tidb_enable_1pc=OFF", Vec::new());
+    first.MustExec("begin optimistic", Vec::new());
+    first.MustExec(
+        "insert into insert_duplicate_locks values (1,1,10),(2,2,20),(3,3,30)",
+        Vec::new(),
+    );
+    let start_ts = scalar(&first, "select @@tidb_current_ts").parse().unwrap();
+    let state = Arc::new(Mutex::new(RepeatedLockObservations::default()));
+    let _hook = tikv_client::rpc_interceptor::register(Arc::new(RepeatedLockObserver {
+        start_ts,
+        rollback,
+        state: state.clone(),
+    }));
+    if rollback {
+        let error = first.ExecToErr("commit");
+        assert!(
+            error
+                .to_string()
+                .contains("port_0073665a65_ leave prewrite locks"),
+            "{error}"
+        );
+    } else {
+        first.MustExec("commit", Vec::new());
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .setup_finished
+    {
+        assert!(
+            Instant::now() < deadline,
+            "setup commit worker never finished"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let endpoint = path
+        .trim_start_matches("tikv://")
+        .split('?')
+        .next()
+        .unwrap();
+    let client = tikv_client::SyncTransactionClient::new(vec![endpoint]).unwrap();
+    let table = store
+        .domain()
+        .table_by_name(&database, "insert_duplicate_locks")
+        .unwrap();
+    let mut prefix = vec![b't'];
+    prefix.extend_from_slice(&((table.ID as u64) ^ (1_u64 << 63)).to_be_bytes());
+    let mut end = prefix.clone();
+    while end.last() == Some(&u8::MAX) {
+        end.pop();
+    }
+    *end.last_mut().expect("table prefix has a successor") += 1;
+    let locks = client
+        .scan_locks(&client.current_timestamp().unwrap(), prefix..end, 16)
+        .unwrap();
+    assert_eq!(
+        locks
+            .iter()
+            .filter(|lock| lock.lock_version == start_ts)
+            .count(),
+        if rollback { 6 } else { 5 }
+    );
+    if rollback {
+        // Refresh TSO until the actual primary's 1ms TTL has expired.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while tikv_client::TimestampExt::version(&client.current_timestamp().unwrap()) >> 18
+            <= (start_ts >> 18) + 1
+        {
+            assert!(Instant::now() < deadline, "short TTL failed to expire");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let mut second = peer(store.clone(), &database);
+    second.MustExec("set tidb_enable_async_commit=OFF", Vec::new());
+    second.MustExec("set tidb_enable_1pc=OFF", Vec::new());
+    second.MustExec("insert into insert_duplicate_locks values (4,2,100),(5,3,100),(6,2,100),(7,3,100) on duplicate key update v=v+1", Vec::new());
+    // The client resolves synchronously before retrying the BatchGet. Snapshot
+    // before SELECT, which could otherwise hide missing INSERT cleanup.
+    {
+        let observed = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            observed.duplicate_batch_get,
+            "INSERT must encounter repeated BatchGet locks: {observed:?}"
+        );
+        assert!(
+            observed.resolves > 0,
+            "INSERT must physically resolve locks: {observed:?}"
+        );
+        assert!(observed.errors.is_empty(), "{observed:?}");
+        if rollback {
+            assert!(observed.expired_primary, "{observed:?}");
+            assert_eq!(observed.resolves, observed.rollbacks);
+        }
+    }
+    second
+        .MustQuery(
+            "select * from insert_duplicate_locks order by id",
+            Vec::new(),
+        )
+        .Check(if rollback {
+            Rows(&["4 2 101", "5 3 101"])
+        } else {
+            Rows(&["1 1 10", "2 2 22", "3 3 32"])
+        });
+    second.MustExec("admin check table insert_duplicate_locks", Vec::new());
+    second.MustExec(&format!("drop database `{database}`"), Vec::new());
+}
+#[test]
+fn port_0073665a65_resolves_repeated_locks() {
+    port_0073665a65_repeated_locks(false);
+}
+#[test]
+fn port_0073665a65_rolls_back_repeated_locks() {
+    port_0073665a65_repeated_locks(true);
+}

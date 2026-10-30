@@ -2352,7 +2352,19 @@ impl ConcreteSession {
             && (table.PKIsHandle || table.IsCommonHandle)
             && !has_secondary_unique_index
             && statement_transaction.is_some();
-        let mut working_rows = if requires_existing_rows && !point_prefetch_clustered_upsert {
+        // Preserve repeated unique keys from VALUES in the first conflict read.
+        // A table scan here would resolve their locks before BatchGet could see
+        // them (Go 0073665a65's repeated-lock INSERT regression).
+        let prefetch_secondary_upsert = self.sql_dialect() == ast::SqlDialect::MySQL
+            && !plan.Replace
+            && !plan.Ignore
+            && !plan.OnDuplicate.is_empty()
+            && has_secondary_unique_index
+            && statement_transaction.is_some();
+        let mut working_rows = if requires_existing_rows
+            && !point_prefetch_clustered_upsert
+            && !prefetch_secondary_upsert
+        {
             if pessimistic_transaction {
                 self.scan_latest_with_transaction_overlay(&table)?
             } else if let Some(transaction) = statement_transaction.as_ref() {
@@ -2369,9 +2381,9 @@ impl ConcreteSession {
         } else {
             HashMap::new()
         };
-        let prefetch_time = prefetch_started.elapsed();
+        let mut prefetch_time = prefetch_started.elapsed();
         let mut foreign_key_check_time = std::time::Duration::ZERO;
-        let stats_before = working_rows.values().cloned().collect::<Vec<_>>();
+        let mut stats_before = working_rows.values().cloned().collect::<Vec<_>>();
         let mut prepared_rows = Vec::with_capacity(statement.Lists.len());
         for (row_index, expressions) in statement.Lists.iter().enumerate() {
             let row_columns = if statement.Columns.is_empty() && expressions.is_empty() {
@@ -3141,6 +3153,35 @@ impl ConcreteSession {
             plan.Ignore,
             embedding_load_row_count,
         )?;
+        if prefetch_secondary_upsert {
+            let started = std::time::Instant::now();
+            let mut keys = Vec::new();
+            for row in rows.iter().filter_map(Option::as_ref) {
+                keys.push(encode_relational_row(&table, row, flags)?.0);
+                keys.extend(
+                    encode_relational_unique_index_entries(&table, row, flags)?
+                        .into_iter()
+                        .map(|(key, _, _)| key),
+                );
+            }
+            let transaction = statement_transaction
+                .as_ref()
+                .expect("UPSERT unique-key prefetch requires an autocommit transaction");
+            transaction
+                .BatchGet(&kv::Context::default(), &keys, &[])
+                .map_err(|error| session_error("batch read UPSERT duplicate keys", error))?;
+            // Keep the existing full conflict view: UPDATE expressions can
+            // change a unique value to one absent from the incoming VALUES.
+            working_rows = scan_relational_rows_with_limit(transaction.as_ref(), &table, None)?
+                .into_iter()
+                .map(|(_, row)| {
+                    let (key, _) = encode_relational_row(&table, &row, flags)?;
+                    Ok((key.0, row))
+                })
+                .collect::<SessionResult<HashMap<_, _>>>()?;
+            stats_before = working_rows.values().cloned().collect();
+            prefetch_time += started.elapsed();
+        }
         if point_prefetch_clustered_upsert {
             let keys = rows
                 .iter()

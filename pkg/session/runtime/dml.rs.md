@@ -47,6 +47,8 @@ INSERT 的主流程位于 `execute_relational_insert_with_load_counts`：
 
 单表 DELETE 在 `execute_relational_delete` 中同样先筛选、排序和截取目标键；拿到删除锁后重新扫描最新视图并重验谓词，随后删除 record 与索引、追加 MLog、递归处理 FK delete cascade，再统一提交和记统计。join UPDATE/DELETE 由 `source.rs` 的 join 执行结果构造目标行，使用 record key 集合避免同一目标行被 join 多次修改。
 
+MySQL autocommit 的普通 `ON DUPLICATE KEY UPDATE` 若有 public 二级唯一索引，先准备 VALUES，再对每个输入行的 record key 和非 NULL 唯一 index key 调用当前 statement transaction 的 `BatchGet`。保留 VALUES 中重复的索引键，使真实 TiKV 返回的重复锁进入 client-rust 的解析器；解析成功后，仍执行已有完整冲突扫描，避免 UPDATE 表达式改动唯一值时漏检其他行。读取失败直接返回带 `batch read UPSERT duplicate keys` 的错误；扫描和批量读耗时都累计在 prefetch 时间。PostgreSQL、显式事务、REPLACE、IGNORE 及没有二级唯一索引的路径保持其既有分支。
+
 ## 数据与状态
 
 - 行在本文件内主要表示为 `HashMap<String, Option<String>>`；`None` 表示 SQL NULL。持久化边界通过 `encode_relational_row`、`relational_index_mutations` 和 tablecodec 转成 `kv::Key`/bytes。
@@ -102,6 +104,8 @@ commit 刷出 pending_stats_deltas 时，已附着内部 collector 的会话先�
 
 - Rust 显式事务缓冲和 autocommit commit 边界对应 Go [`pkg/session/txn.go`](../txn.go) 的 statement/transaction 生命周期以及 `txnmanager.go` 的 `OnStmtCommit`。当前 Rust 是面向 `ConcreteSession` 的窄运行时实现，不等价于完整 Go planner/executor 的全部优化和算子框架。
 - Rust 独立测试 `dml_runtime_test.rs` 与 `mysql_dml_compat_test.rs` 用真实 SQL/KV 验证这些可观察语义；因此扩展时应优先复刻对应 Go 行为，而不是为了通过局部用例简化错误、锁或计数规则。
+
+来源 `0073665a657ecc5b31f88b410504647395772ebb` 的生产变化位于 client-go 依赖，新增 TiKV 回归要求 INSERT 本身遇到重复 BatchGet 锁并物理解析。Rust 复用已发布 client-rust `v0.4.2-aster.13` 的事务状态缓存与按事务/region 清理去重，本文件只补齐进入该真实客户端路径的最小读取次序接线；不移植 client-go 源码、不改 PostgreSQL 方言。独立 `tests/realtikvtest/txntest/txn_test.rs` 的 `port_0073665a65_` 用例观察真实请求/响应，覆盖已提交二级锁和过期事务回滚，最终检查 SQL 数据及索引。
 
 ## 扩展指南
 
