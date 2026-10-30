@@ -142,6 +142,50 @@ impl ConcreteSession {
                 return Err(error("IMPORT INTO target table is not empty"));
             }
         }
+        // Shadow refresh imports are autocommit statements. Pin their real
+        // source snapshot and report that same version in last_query_info;
+        // an allocated timestamp without a matching read would be unsafe for
+        // the subsequent watermark cutover.
+        struct ShadowSnapshotGuard {
+            session: ConcreteSession,
+            old: Option<u64>,
+        }
+        impl Drop for ShadowSnapshotGuard {
+            fn drop(&mut self) {
+                self.session.state.borrow_mut().snapshot_read_ts = self.old;
+            }
+        }
+        let _shadow_snapshot = if table.MaterializedViewShadow.is_some() {
+            if self.state.borrow().transaction.is_some() {
+                return Err(error(
+                    "IMPORT INTO shadow refresh cannot run inside a transaction",
+                ));
+            }
+            let old = self.state.borrow().snapshot_read_ts;
+            let read = match old {
+                Some(ts) => ts,
+                None => {
+                    self.domain
+                        .storage()
+                        .with_storage(|store| store.CurrentVersion("global"))
+                        .map_err(error)?
+                        .Ver
+                }
+            };
+            if read == 0 {
+                return Err(error("invalid shadow import source read tso"));
+            }
+            let mut state = self.state.borrow_mut();
+            state.snapshot_read_ts = Some(read);
+            state.statement_txn_start_ts = read;
+            drop(state);
+            Some(ShadowSnapshotGuard {
+                session: self.clone(),
+                old,
+            })
+        } else {
+            None
+        };
         // The SELECT runs through the relational executor against the current
         // transaction's snapshot. Its result is converted to canonical Datums.
         let selected = self.execute_insert_select_node(source.as_ref())?;

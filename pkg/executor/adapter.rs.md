@@ -104,6 +104,8 @@ RustCodeGraph 的精确查询把 `ExecStmt` 同时定位到 `pkg/executor/adapte
 
 ## 与 Go 版本的对应关系
 
+新增 restoreStmtTextForSlowLogWhenEmptySQL，仅为没有原始文本的 RefreshMaterializedViewImplementStmt 恢复原 REFRESH SQL 并追加 USING TIMESTAMP，不打印窗口 TSO。真实 MV typed source 调用既有 AdapterRuntime::SlowQuery 消费此文本。对应 a87bf8db64 adapter.go 慢日志增量；独立测试保留 Go 的缺失 RefreshStmt 返回空串分支。
+
 主要表达差异如下：
 
 - Go 直接依赖 `sessionctx.Context`、`exec.Executor`、`sqlexec.RecordSet`；Rust 用 `AdapterRuntime`、`ExecExecutor`、`RecordSet` trait 隔离会话和具体算子，使测试可注入最小实现。

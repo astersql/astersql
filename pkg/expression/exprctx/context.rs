@@ -80,6 +80,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
     fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
         None
     }
+    /// Numeric MySQL maintenance time zone, independent of PostgreSQL settings.
+    fn FixedTimeZone(&self) -> Option<chrono::FixedOffset> {
+        None
+    }
     /// 同一 CtxID 的多次调用应返回同一时刻；错误仍通过 Result 传播。
     fn CurrentTime(&self) -> Result<DateTime<Tz>, contextutil::errors::SharedError>;
     fn CurrentDB(&self) -> String;
@@ -402,6 +406,9 @@ impl EvalContext for InnerOverrideEvalContext<'_> {
     }
     fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
         self.inner.PgFixedTimeZone()
+    }
+    fn FixedTimeZone(&self) -> Option<chrono::FixedOffset> {
+        self.inner.FixedTimeZone()
     }
     fn PgLcTime(&self) -> String {
         self.inner.PgLcTime()

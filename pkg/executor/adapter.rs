@@ -160,6 +160,19 @@ pub struct StatementNode {
     pub prepared_text: Option<String>,
 }
 
+/// Restore the internally constructed MV implementation statement when it
+/// has no source text. Deliberately omit watermarks, matching the slow log
+/// contract for the original refresh SQL.
+pub fn restoreStmtTextForSlowLogWhenEmptySQL(statement: &dyn astersql_parser_ast::Node) -> String {
+    statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::RefreshMaterializedViewImplementStmt>()
+        .and_then(|statement| statement.RefreshStmt.as_ref())
+        .and_then(|refresh| refresh.restore().ok())
+        .map(|refresh| format!("IMPLEMENT FOR {refresh} USING TIMESTAMP"))
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Default)]
 /// 执行上下文：链路追踪 ID 与继承的 RU 上下文。
 pub struct ExecutionContext {

@@ -146,3 +146,6 @@ mod gc_worker_test;
 #[cfg(test)]
 #[path = "telemetry_test.rs"]
 mod telemetry_test;
+
+pub mod materialized_view;
+pub use materialized_view::{InitMVMetrics, MVServiceRefreshScheduleDurationHistogram};

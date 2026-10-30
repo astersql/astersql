@@ -122,6 +122,7 @@ pub unsafe fn InitMetrics() -> Result<(), prometheus::Error> {
             crate::gc_worker::InitGCWorkerMetrics();
             crate::log_backup::InitLogBackupMetrics();
             crate::meta::init_meta_metrics();
+            crate::InitMVMetrics();
             crate::owner::init_owner_metrics();
             crate::rawkv::init_raw_kv_metrics();
             crate::resourcemanager::InitResourceManagerMetrics();
@@ -194,6 +195,7 @@ macro_rules! register_options {
 
 /// 将包内关键指标注册到默认 Prometheus 注册表，并尝试安装 channelz 采集器。
 pub unsafe fn RegisterMetrics() -> Result<(), prometheus::Error> {
+    register_clone(crate::MVServiceRefreshScheduleDurationHistogram())?;
     register_clone(&*PanicCounter)?;
     register_clone(&*MemoryUsage)?;
     register_clone(&*crate::globalsort::GlobalSortOrphanDataSize)?;

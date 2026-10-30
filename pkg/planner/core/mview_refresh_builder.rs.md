@@ -38,6 +38,8 @@ COMPLETE DELTA APPLY 选第一列可见元数据中的 NOT NULL 列为 marker，
 
 ## 与 Go 版本的对应关系
 
+布局验证与 MLog 验证分离，COMPLETE diff 不要求日志存在；日志内部字段采用真实模型名称 _MLOG$_OLD_NEW / _MLOG$_DML_TYPE。
+
 Go 使用 session、InfoSchema、parser AST、优化结果、GC 和 ranger；Rust 以 typed 元数据及轻量节点表达可验证子集。read_from_tiflash 标志、join operator 字符串及 lookup 描述不能等同 Go 实际 AST hint、聚合/连接执行和优化器提取。
 
 ## 扩展指南

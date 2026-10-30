@@ -599,3 +599,6 @@ mod update_test;
 mod write_concurrent_test;
 
 pub mod mview_delta_merge_builder;
+
+pub mod mview_refresh_steps;
+pub mod mview_task;

@@ -250,7 +250,7 @@ fn find_index_scan(plan: &dyn PhysicalPlan) -> Option<&PhysicalIndexScan> {
         .flatten()
 }
 
-fn encode_index_ranges(
+pub(super) fn encode_index_ranges(
     scan: &PhysicalIndexScan,
     table_id: i64,
 ) -> Result<Vec<KeyRange>, BuildError> {
@@ -294,7 +294,7 @@ fn encode_index_ranges(
         .collect()
 }
 
-fn encode_common_handle_ranges(
+pub(super) fn encode_common_handle_ranges(
     scan: &PhysicalIndexScan,
     table_id: i64,
 ) -> Result<Vec<KeyRange>, BuildError> {
@@ -331,7 +331,7 @@ fn encode_common_handle_ranges(
         .collect()
 }
 
-fn encode_table_record_ranges(
+pub(super) fn encode_table_record_ranges(
     scan: &PhysicalTableScan,
     table_id: i64,
 ) -> Result<Vec<KeyRange>, BuildError> {

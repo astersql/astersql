@@ -91,6 +91,8 @@ MDL 生命周期以事务为界：首次真实表访问调用 `TransactionMDL::b
 
 ## 与 Go 版本的对应关系
 
+新增内部 collector 与 MV 扫描计数状态，随 canonical session 创建；嵌套维护 guard 保留已有 collector 身份，计数由固定快照的真实 KV 迭代器更新。
+
 主要 Go 对照是 `pkg/session/session.go`：Go `session` 同样持有 txn、Domain/store、`SessionVars`、schema validator、计划缓存、统计 collector、session manager 和异步提交资源；Rust 将大量散布在 Go session/context 中的兼容状态集中进 `SessionState` 与 `ConcreteSessionInner`。Go `bootstrapSessionImpl` 的“检查版本—bootstrap/upgrade—初始化全局变量—创建会话—启动 Domain/后台循环”被 Rust 的 `CanonicalSessionFactory::from_tikv_store_with_server_info_options` 与 `BootstrapCanonicalDomain` 共同承接，但不是逐字段一一复刻：Rust runtime 仍是独立的 concrete ABI，`pkg/session/runtime.rs` 明确说明完整 `sessionapi::Session` 是另一边界。
 
 Rust 的 `pkg/session/runtime/session_test.rs::fixed_time_zone_range_matches_go_parse_time_zone` 额外验证边界及畸形符号。

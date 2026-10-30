@@ -72,6 +72,8 @@
 
 ## 与 Go 版本的对应关系
 
+隐藏 ExtraHandleID 从真实 record key 解码；ExtraCommitTSID 从同一版本 retriever 的实际 ValueEntry.CommitTs 读取，零 timestamp 返回错误，支持有界 FAST 的真实窗口条件。
+
 两者不能视为行为完全等价。Go TableReader 把逻辑 ranger ranges 转成请求，构造 DAG，处理 TiKV/TiFlash、分区、signed/unsigned range 分段、correlated column、虚拟列、内存跟踪和 `SelectResult` 生命周期；Rust `TypedKVScan` 接受已编码 range，直接遍历调用者提供的 Retriever，并在本地用 tablecodec 解码。Rust 的 kill、锁键移交、detach 和分页行为由 typed adapter 协议显式实现；Go 对应能力分散在 executor、DistSQL result 和会话执行链中。
 
 行解码语义也只做局部对齐：Rust 依据 `ColumnInfo.ID/FieldType` 解码并补 `PKIsHandle` 整数主键，这与 Go 表行解码的元数据规则一致，但本文件没有覆盖 Go TableReader 的虚拟列、common handle、extra handle、分区请求和下推表达式等完整路径。扩展时应以这些差异为兼容边界，不能仅因名称相近推断已支持。

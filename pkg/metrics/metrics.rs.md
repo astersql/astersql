@@ -115,3 +115,8 @@ Go channelz 状态显式拥有 bufconn listener、gRPC server 和 client connect
 修改 channelz 时，应在 `channelz.rs` 实现采集细节，在本文件维持单例与注册生命周期；同步覆盖重复初始化、测试环境跳过、cleanup、内部目标过滤和真实 leaf-subchannel/socket 快照。不要在并行测试中绕过 `GRPC_CHANNELZ_TEST_LOCK`。
 
 若目标是让 Rust 生产路径直接使用本文件 `InitMetrics/RegisterMetrics` 或接通 `ToggleSimplifiedMode`，这属于跨 crate 接线变更，必须先审查 `pkg/util/metricsutil/common.rs` 现有拆分 owner 设计和重复注册风险，不能仅在本文件增加调用。
+
+
+### a87bf8db64 局部增量
+
+在 meta 初始化后调用 `InitMVMetrics`，并在统一注册入口注册同一 MV 调度间隔 collector；对应 Go metrics.go 两个 hunk。一次性初始化与注册错误传播规则保持。

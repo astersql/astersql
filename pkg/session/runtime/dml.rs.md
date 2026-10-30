@@ -96,6 +96,10 @@ INSERT 的主流程位于 `execute_relational_insert_with_load_counts`：
 
 ## 与 Go 版本的对应关系
 
+内部 MV 会话绑定真实 stats collector 时，事务和 autocommit 变更进入 Domain 既有 pending stats 队列；普通会话保留原记录路径。
+
+commit 刷出 pending_stats_deltas 时，已附着内部 collector 的会话先累积到真实 SessionStatsItem，再由 Domain sweep 转交原统计增量队列；rollback 仍丢弃 pending delta，避免重复记账。
+
 - Rust 显式事务缓冲和 autocommit commit 边界对应 Go [`pkg/session/txn.go`](../txn.go) 的 statement/transaction 生命周期以及 `txnmanager.go` 的 `OnStmtCommit`。当前 Rust 是面向 `ConcreteSession` 的窄运行时实现，不等价于完整 Go planner/executor 的全部优化和算子框架。
 - Rust 独立测试 `dml_runtime_test.rs` 与 `mysql_dml_compat_test.rs` 用真实 SQL/KV 验证这些可观察语义；因此扩展时应优先复刻对应 Go 行为，而不是为了通过局部用例简化错误、锁或计数规则。
 

@@ -74,6 +74,8 @@
 
 ## 与 Go 版本的对应关系
 
+RecordRefreshAffectedRows 在包初始化锁下复制 RefreshMV child counter，再在锁外累加，供 canonical refresh runtime 使用并避免消费者借用 static mut。
+
 两边的指标名、Help、标签顺序、指数桶参数以及普通 DML、NT-DML、`PurgeMLog` 标签值一致；Rust 用 `Option` 表达 Go 指针型包变量在初始化前未赋值，用 clone 表达多个句柄共享 collector。
 
 关键实现差异有三点：
@@ -91,3 +93,8 @@
 - 修改初始化：保持“先构造、后集中发布”的顺序，并通过包级 `InitMetrics`/`RegisterMetrics` 测试验证。不要绕过 `PACKAGE_INIT_LOCK` 写 `static mut`。
 
 建议的测试落点是 `pkg/metrics/metrics_test.rs`（初始化与注册）、`pkg/metrics/metrics_internal_test.rs`（collector 元数据/内部约束）或新增独立的 `pkg/metrics/executor_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 区域挂载；跨模块读取可扩展 `telemetry_test.rs`，语句执行行为则扩展 session 的独立测试。按仓库规则，测试逻辑不得写入 `executor.rs`。
+
+
+### a87bf8db64 局部增量
+
+新增 `AffectedRowsCounterRefreshMV`，与 `AffectedRowsCounter` 共享底层 collector，固定标签 `RefreshMV`，不单独注册；尚待刷新语句适配器消费。对应 Go executor.go 两个 hunk。

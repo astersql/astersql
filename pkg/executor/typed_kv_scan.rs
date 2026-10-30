@@ -118,7 +118,7 @@ impl TypedKVScan {
         output: &mut chunk::Chunk,
     ) -> AdapterResult {
         let (table_id, handle) =
-            astersql_tablecodec::DecodeRecordKey(astersql_tablecodec::kv::Key(key.0))?;
+            astersql_tablecodec::DecodeRecordKey(astersql_tablecodec::kv::Key(key.0.clone()))?;
         if table_id != expected_table_id {
             return Err(errors::New(format!(
                 "table scan key belongs to table {table_id}, expected {}",
@@ -145,7 +145,21 @@ impl TypedKVScan {
             }
         }
         for (offset, column) in self.columns.iter().enumerate() {
-            let datum = decoded.remove(&column.ID).unwrap_or_default();
+            let datum = if column.ID == astersql_meta_model::ExtraHandleID {
+                NewIntDatum(handle.IntValue())
+            } else if column.ID == astersql_meta_model::ExtraCommitTSID {
+                let entry = self
+                    .retriever
+                    .Get(&kv::Context::default(), key.clone(), &[])?;
+                if entry.CommitTs == 0 {
+                    return Err(errors::New(
+                        "MV source record commit timestamp is unavailable",
+                    ));
+                }
+                astersql_types::datum::NewUintDatum(entry.CommitTs)
+            } else {
+                decoded.remove(&column.ID).unwrap_or_default()
+            };
             output.AppendDatum(offset, &datum);
         }
         if self.columns.is_empty() {

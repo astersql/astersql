@@ -173,6 +173,8 @@ RustCodeGraph 将本文件标记为被 73 个文件使用；这个数字包含�
 
 ## 与 Go 版本的对应关系
 
+`WithFixedTimeZone`、clone 与 MakeStatic 保留 MV 的 FixedOffset；命名时区继续使用 Location，PostgreSQL 固定时区保留独立状态。
+
 主要语言适配和当前差异如下：
 
 - Go 用嵌入 `evalCtxState` 和接口值；Rust 用显式 `state`、trait object、`Box`/`Arc`，并通过

@@ -872,6 +872,8 @@ pub struct Domain {
     schema_reload_count: AtomicU64,
     ddl_notifier_sequence: AtomicI64,
     stats_handle: Arc<Mutex<Handle<DomainStatsBackend>>>,
+    internal_session_stats: astersql_statistics_handle_usage::SessionStatsList,
+    internal_index_usage: astersql_statistics_handle_usage::IndexUsageCollector,
     stats_store: Arc<KvStatsStore<DomainStatsBackend>>,
     stats_catalog:
         Arc<RwLock<BTreeMap<(String, String), (StatsTableKey, astersql_meta_model::TableInfo)>>>,
@@ -1567,6 +1569,8 @@ impl Domain {
             schema_reload_count: AtomicU64::new(0),
             ddl_notifier_sequence: AtomicI64::new(0),
             stats_handle,
+            internal_session_stats: Default::default(),
+            internal_index_usage: Default::default(),
             stats_store,
             stats_catalog: Arc::new(RwLock::new(BTreeMap::new())),
             stats_catalog_history: Arc::new(RwLock::new(vec![(0, BTreeMap::new())])),
@@ -6158,6 +6162,32 @@ impl Domain {
     ///
     /// A full reload replaces table objects, but Go keeps compatible AutoID
     /// allocators and transfers them to the table's current database identity.
+    /// Shared canonical collectors used by maintenance sessions. The guard
+    /// owns individual session entries, while Domain owns their aggregate.
+    pub fn internal_session_stats(&self) -> &astersql_statistics_handle_usage::SessionStatsList {
+        &self.internal_session_stats
+    }
+    pub fn internal_index_usage(&self) -> &astersql_statistics_handle_usage::IndexUsageCollector {
+        &self.internal_index_usage
+    }
+    pub fn flush_internal_session_stats(&self) {
+        self.internal_session_stats.sweep();
+        self.enqueue_stats_mutations(
+            self.internal_session_stats
+                .table_delta()
+                .take()
+                .into_iter()
+                .map(|(id, delta)| (id, delta.delta, delta.count)),
+        );
+    }
+
+    /// Publish persisted MV shadow/cutover metadata to both canonical schema
+    /// and SQL metadata readers after their DDL job has synchronized.
+    pub fn refresh_materialized_view_metadata(&self) -> Result<i64, DomainError> {
+        self.reconcile_from_committed_metadata_with_mode(true)?;
+        self.reload()
+    }
+
     pub fn force_full_reload_for_test(&self) -> Result<i64, DomainError> {
         self.reconcile_from_committed_metadata_with_mode(false)?;
         let single_point_tables = self

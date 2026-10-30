@@ -97,6 +97,8 @@ RustCodeGraph 将该文件标记为被 `pkg/session/runtime/planning.rs`、`pkg/
 
 ## 与 Go 版本的对应关系
 
+MV runtime 所需 div_precision_increment、mview_enable、shuffle batch 与四个维护参数在既有注册表接线：维护内存默认2GiB、导入线程默认0、磁盘配额默认空，维护引擎复用现有引擎校验。
+
 本 Rust 文件把 Go 的单一大表按职责拆成多个 `register_*` 函数，但仍保持 `Scope`、类型、默认值、上下界、alias、hint 可更新标志和 hook 语义。
 
 - Rust 用 `Once` 完成延迟幂等注册，并通过构造器减少表项样板；Go 使用包级表和 `RWMutex`。

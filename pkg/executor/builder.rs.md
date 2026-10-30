@@ -87,6 +87,10 @@ CTE storage 由 `Arc` 共享，三个可选资源各受 `Mutex` 保护，初始�
 
 ## 与 Go 版本的对应关系
 
+MV signed/full-join 派生源使用 canonical 输出 schema 映射 typed table/join/reader/selection 列；外连接类型由 typed join 保留可空性。TableScan 的 FilterCondition/AccessCondition 在本地求值前按输出 schema 解析下标，不能直接使用存储侧未解析谓词。partial aggregate 输出附带分组值，供 final aggregate 按真实位置读取。MIN/MAX 有界回查选出的 StreamAgg 复用已有 typed 聚合状态内核，保留完整 AggFuncDesc/模式/分组键；该本地路径按组保留状态。旧的手工计划未填写输出 schema 时保留孩子的 typed contract；实际非空 canonical schema 始终按列身份映射。
+
+MV ReaderSnapshot 持有 canonical 非 Send KV snapshot，Snapshot 不再强制 Send；执行器本身仍遵守既有线程内生命周期，未使用 unsafe 扩大线程边界。
+
 Rust 的 `Plan` enum 代替 Go type switch；`*PlanData` traits 代替具体 planner struct 的直接字段访问；`ExecutorBuilderDependencies` 代替 Go 中对 session、domain、DDL、KV 和具体 executor 构造函数的直接调用。
 
 Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 executor、Index Join 固定 read TS、Show DDL 查询后释放系统会话、DML 在构建前更新 for-update TS、reader 先建 draft 再 finalize、CTE producer 单次初始化以及失败清理。

@@ -98,6 +98,8 @@ statement memory tracker 作为 session root tracker 的子节点存在，由初
 
 ## 与 Go 版本的对应关系
 
+SET 的既有 HintSystemVar 分支接收 MV 开关、精度与四个维护会话参数，使初始化复制取得实际会话覆盖值。
+
 Go 路径使用完整 preprocess/plan builder/executor 和 `PlanCacheStmt`；Rust 路径解析规范 AST、推导字段、进行 token-aware literal 绑定后回到 `ConcreteSession::execute`。因此 Rust 行为覆盖当前具体 runtime 所需的协议语义，但不能据此宣称实现了 Go prepared pipeline 的全部 optimizer/executor 能力。
 
 谓词统计方法对应 Go planner 的 `CollectPredicateColumnsPoint`、索引裁剪和 statistics sync-load 约定；Rust 注释明确处理 plan-cache hit 跳过收集、静态分区展开、同步/异步 histogram 请求和单列全扫描 issue 路径。

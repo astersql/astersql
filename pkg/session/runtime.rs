@@ -68,6 +68,10 @@ mod mlog_purge;
 pub(crate) use mlog_purge::purge_mlog_snapshot_batch;
 pub(crate) use mlog_purge::run_mlog_purge_tick;
 mod mview_ddl;
+pub mod mview_refresh;
+#[cfg(test)]
+mod mview_refresh_test;
+mod mview_source;
 pub use import_file::{ImportFileSubtask, ImportFileTask};
 mod canonical_table_reader;
 mod paging;

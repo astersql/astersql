@@ -1,6 +1,6 @@
 # Rust 文件说明文档新增清单
 
-计划为 2581 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
+计划为 2588 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
 
 维护规则：修改含实际业务逻辑的合格生产 `.rs` 文件时，必须同步更新同目录的同名 `.rs.md`；新增合格生产 `.rs` 文件时，必须新建同目录说明并加入本清单。
 
@@ -883,6 +883,8 @@
 - [ ] [`pkg/executor/mview_complete_delta_apply.rs.md`](../pkg/executor/mview_complete_delta_apply.rs.md)
 - [ ] [`pkg/executor/mview_complete_delta_apply_builder.rs.md`](../pkg/executor/mview_complete_delta_apply_builder.rs.md)
 - [ ] [`pkg/executor/mview_delta_merge_builder.rs.md`](../pkg/executor/mview_delta_merge_builder.rs.md)
+- [ ] [`pkg/executor/mview_refresh_steps.rs.md`](../pkg/executor/mview_refresh_steps.rs.md)
+- [ ] [`pkg/executor/mview_task.rs.md`](../pkg/executor/mview_task.rs.md)
 - [ ] [`pkg/executor/mviewdeltamergeagg/mod.rs.md`](../pkg/executor/mviewdeltamergeagg/mod.rs.md)
 - [ ] [`pkg/executor/operate_ddl_jobs.rs.md`](../pkg/executor/operate_ddl_jobs.rs.md)
 - [ ] [`pkg/executor/opt_rule_blacklist.rs.md`](../pkg/executor/opt_rule_blacklist.rs.md)
@@ -1367,6 +1369,7 @@
 - [ ] [`pkg/metrics/import.rs.md`](../pkg/metrics/import.rs.md)
 - [ ] [`pkg/metrics/infoschema.rs.md`](../pkg/metrics/infoschema.rs.md)
 - [ ] [`pkg/metrics/log_backup.rs.md`](../pkg/metrics/log_backup.rs.md)
+- [ ] [`pkg/metrics/materialized_view.rs.md`](../pkg/metrics/materialized_view.rs.md)
 - [ ] [`pkg/metrics/memory.rs.md`](../pkg/metrics/memory.rs.md)
 - [ ] [`pkg/metrics/meta.rs.md`](../pkg/metrics/meta.rs.md)
 - [ ] [`pkg/metrics/metrics.rs.md`](../pkg/metrics/metrics.rs.md)
@@ -1616,6 +1619,7 @@
 - [ ] [`pkg/planner/core/joinorder/join_order.rs.md`](../pkg/planner/core/joinorder/join_order.rs.md)
 - [ ] [`pkg/planner/core/joinorder/ordered_leading.rs.md`](../pkg/planner/core/joinorder/ordered_leading.rs.md)
 - [ ] [`pkg/planner/core/joinorder/util.rs.md`](../pkg/planner/core/joinorder/util.rs.md)
+- [ ] [`pkg/planner/core/lib.rs.md`](../pkg/planner/core/lib.rs.md)
 - [ ] [`pkg/planner/core/logical_initialize.rs.md`](../pkg/planner/core/logical_initialize.rs.md)
 - [ ] [`pkg/planner/core/logical_plan_builder.rs.md`](../pkg/planner/core/logical_plan_builder.rs.md)
 - [ ] [`pkg/planner/core/logical_plan_builder_runtime.rs.md`](../pkg/planner/core/logical_plan_builder_runtime.rs.md)
@@ -1624,6 +1628,7 @@
 - [ ] [`pkg/planner/core/metrics/metrics.rs.md`](../pkg/planner/core/metrics/metrics.rs.md)
 - [ ] [`pkg/planner/core/mview_refresh_builder.rs.md`](../pkg/planner/core/mview_refresh_builder.rs.md)
 - [ ] [`pkg/planner/core/mview_refresh_lookup.rs.md`](../pkg/planner/core/mview_refresh_lookup.rs.md)
+- [ ] [`pkg/planner/core/mview_refresh_source.rs.md`](../pkg/planner/core/mview_refresh_source.rs.md)
 - [ ] [`pkg/planner/core/operator/baseimpl/plan.rs.md`](../pkg/planner/core/operator/baseimpl/plan.rs.md)
 - [ ] [`pkg/planner/core/operator/logicalop/base_logical_plan.rs.md`](../pkg/planner/core/operator/logicalop/base_logical_plan.rs.md)
 - [ ] [`pkg/planner/core/operator/logicalop/expression_util.rs.md`](../pkg/planner/core/operator/logicalop/expression_util.rs.md)
@@ -1949,6 +1954,8 @@
 
 ## pkg/session
 
+- [ ] [`pkg/session/runtime/mview_refresh.rs.md`](../pkg/session/runtime/mview_refresh.rs.md)
+- [ ] [`pkg/session/runtime/mview_source.rs.md`](../pkg/session/runtime/mview_source.rs.md)
 - [x] [`pkg/session/runtime/pg_record.rs.md`](../pkg/session/runtime/pg_record.rs.md)
 - [x] [`pkg/session/runtime/pg_uuid.rs.md`](../pkg/session/runtime/pg_uuid.rs.md)
 - [x] [`pkg/session/runtime/pg_json.rs.md`](../pkg/session/runtime/pg_json.rs.md)

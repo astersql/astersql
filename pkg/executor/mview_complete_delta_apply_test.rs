@@ -175,3 +175,186 @@ fn mview_complete_delta_rejects_invalid_op() {
         .contains("invalid diff op")
     );
 }
+
+#[test]
+fn port_a87bf8db64_runtime_step_contracts() {
+    use crate::mview_refresh_steps::*;
+    use astersql_parser_ast::RefreshMaterializedViewMode as Mode;
+    for (mode, names) in [
+        (
+            Mode::Fast,
+            vec![
+                "TXN_BEGIN",
+                "LOCK_REFRESH_INFO",
+                "INSERT_HIST_RUNNING",
+                "DATA_CHANGE_FAST_MERGE",
+                "PERSIST_REFRESH_INFO",
+                "TXN_COMMIT",
+                "FINALIZE_HIST",
+            ],
+        ),
+        (
+            Mode::CompleteInPlace,
+            vec![
+                "TXN_BEGIN",
+                "LOCK_REFRESH_INFO",
+                "INSERT_HIST_RUNNING",
+                "DATA_CHANGE_COMPLETE_DELETE",
+                "DATA_CHANGE_COMPLETE_INSERT",
+                "PERSIST_REFRESH_INFO",
+                "TXN_COMMIT",
+                "FINALIZE_HIST",
+            ],
+        ),
+        (
+            Mode::CompleteDeltaApply,
+            vec![
+                "TXN_BEGIN",
+                "LOCK_REFRESH_INFO",
+                "INSERT_HIST_RUNNING",
+                "DATA_CHANGE_COMPLETE_DELTA_APPLY",
+                "PERSIST_REFRESH_INFO",
+                "TXN_COMMIT",
+                "FINALIZE_HIST",
+            ],
+        ),
+        (
+            Mode::CompleteOutOfPlace,
+            vec![
+                "INSERT_HIST_RUNNING",
+                "OUT_OF_PLACE_CREATE_SHADOW",
+                "OUT_OF_PLACE_LOAD_SHADOW",
+                "OUT_OF_PLACE_CUTOVER",
+                "FINALIZE_HIST",
+            ],
+        ),
+    ] {
+        let steps = new_step_set(mode);
+        assert_eq!(
+            steps.iter().map(|step| step.name).collect::<Vec<_>>(),
+            names
+        );
+        for (index, step) in steps.iter().enumerate() {
+            assert_eq!(step.id, format!("S{:02}", index + 1));
+        }
+    }
+    let mut rows = vec![
+        vec!["TableReader".into(), "1".into()],
+        vec!["TableScan".into(), "2".into()],
+    ];
+    let copy = clone_plan_rows(&rows);
+    rows[0][0] = "changed".into();
+    assert_eq!(copy[0][0], "TableReader");
+    assert!(clone_plan_rows(&[]).is_empty());
+}
+
+#[test]
+fn port_a87bf8db64_duration_and_history_contracts() {
+    use crate::mview_task::*;
+    use std::time::{Duration, UNIX_EPOCH};
+    let start = UNIX_EPOCH + Duration::from_secs(42);
+    let end = start + Duration::from_nanos(1_123_456_789);
+    assert_eq!(
+        format_duration_seconds_between(Some(start), Some(end)),
+        "1.123456"
+    );
+    assert_eq!(
+        format_duration_seconds_between(Some(end), Some(start)),
+        "0.000000"
+    );
+    assert_eq!(format_duration_seconds_between(None, Some(end)), "0.000000");
+    assert_eq!(
+        format_duration_seconds_between(Some(start), None),
+        "0.000000"
+    );
+    for value in [-1, 0, 1, 999_999, 1_000_000] {
+        let expected = if value <= 0 {
+            "0.000000".to_owned()
+        } else {
+            format!("{}.{:06}", value / 1_000_000, value % 1_000_000)
+        };
+        assert_eq!(format_duration_seconds_from_microseconds(value), expected);
+    }
+    assert_eq!(
+        format_duration_seconds(Duration::from_nanos(999)),
+        "0.000000"
+    );
+    assert_eq!(hist_time(None), None);
+    assert_eq!(
+        hist_time(Some(end)),
+        Some(start + Duration::from_micros(1_123_456))
+    );
+    assert_eq!(
+        hist_time(Some(UNIX_EPOCH - Duration::from_nanos(1))),
+        Some(UNIX_EPOCH - Duration::from_micros(1))
+    );
+}
+
+#[test]
+fn port_a87bf8db64_observer_preserves_errors_and_unwinding() {
+    use crate::mview_refresh_steps::*;
+    use astersql_parser_ast::RefreshMaterializedViewMode;
+    use std::time::SystemTime;
+    #[derive(Default)]
+    struct Observer(Vec<String>);
+    impl StepObserver for Observer {
+        fn on_step_start(&mut self, step: &ObserveStep, _: SystemTime) {
+            self.0.push(format!("start:{}", step.name));
+        }
+        fn on_step_end(&mut self, step: &ObserveStep, _: SystemTime, error: Option<&str>) {
+            self.0
+                .push(format!("end:{}:{}", step.name, error.unwrap_or("ok")));
+        }
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+    }
+    let step = new_step_set(RefreshMaterializedViewMode::Fast).remove(0);
+    let mut observer = Observer::default();
+    let error = observe_step(&mut Some(&mut observer), &step, || {
+        Err::<(), _>("runtime failure".to_owned())
+    })
+    .unwrap_err();
+    assert_eq!(error, "runtime failure");
+    assert_eq!(
+        observer.0,
+        ["start:TXN_BEGIN", "end:TXN_BEGIN:runtime failure"]
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = observe_step(
+            &mut Some(&mut observer),
+            &step,
+            || -> std::result::Result<(), String> { panic!("original refresh panic") },
+        );
+    }));
+    assert!(panic.is_err());
+    assert_eq!(observer.0.last().unwrap(), "start:TXN_BEGIN");
+    assert_eq!(observe_step(&mut None, &step, || Ok(42)).unwrap(), 42);
+}
+
+#[test]
+fn port_a87bf8db64_restore_refresh_statement_for_slow_log() {
+    use astersql_parser_ast as ast;
+    let implementation = ast::RefreshMaterializedViewImplementStmt {
+        RefreshStmt: Some(ast::RefreshMaterializedViewStmt {
+            ViewName: Some(ast::TableName {
+                Name: ast::NewCIStr("mv"),
+                ..Default::default()
+            }),
+            Type: ast::RefreshMaterializedViewType::Complete,
+            CompleteType: ast::RefreshMaterializedViewCompleteType::InPlace,
+            ..Default::default()
+        }),
+        LastSuccessfulRefreshReadTSO: 123,
+        TargetRefreshReadTSO: 456,
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::adapter::restoreStmtTextForSlowLogWhenEmptySQL(&implementation),
+        "IMPLEMENT FOR REFRESH MATERIALIZED VIEW `mv` COMPLETE IN PLACE USING TIMESTAMP"
+    );
+    assert!(
+        crate::adapter::restoreStmtTextForSlowLogWhenEmptySQL(
+            &ast::RefreshMaterializedViewImplementStmt::default()
+        )
+        .is_empty()
+    );
+}

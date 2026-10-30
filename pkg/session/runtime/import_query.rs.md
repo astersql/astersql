@@ -85,6 +85,8 @@ receiver 被包装成 `Arc<Mutex<_>>`，满足通用 importer 的共享接收接
 
 ## 与 Go 版本的对应关系
 
+MV 影子表 IMPORT 在自身 autocommit 事务中读取，并将实际源事务 start_ts 写入 last_query_info；快照 guard 恢复原状态，供刷新水位使用。
+
 明确差异包括：
 
 - Rust 在单一 `ConcreteSession` 中同步执行并预先物化全部 SELECT 行；Go 使用新 session、并发 producer/importer 和有界 channel。

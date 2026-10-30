@@ -70,6 +70,8 @@ pub static mut AffectedRowsCounterNTDMLInsert: Option<prometheus::Counter> = Non
 pub static mut AffectedRowsCounterNTDMLReplace: Option<prometheus::Counter> = None;
 /// Purged materialized log rows.
 pub static mut AffectedRowsCounterPurgeMLog: Option<prometheus::Counter> = None;
+/// Refreshed materialized-view rows, sharing the affected_rows metric family.
+pub static mut AffectedRowsCounterRefreshMV: Option<prometheus::Counter> = None;
 
 /// 查询网络传输字节数。
 // NetworkTransmissionStats records the network transmission for queries.
@@ -266,6 +268,7 @@ pub fn InitExecutorMetrics() {
         MppCoordinatorStats = Some(mpp_coordinator_stats);
         MppCoordinatorLatency = Some(mpp_coordinator_latency);
         AffectedRowsCounterPurgeMLog = Some(affected_rows_counter.WithLabelValues(&["PurgeMLog"]));
+        AffectedRowsCounterRefreshMV = Some(affected_rows_counter.WithLabelValues(&["RefreshMV"]));
         AffectedRowsCounter = Some(affected_rows_counter);
         AffectedRowsCounterInsert = Some(affected_insert);
         AffectedRowsCounterUpdate = Some(affected_update);
@@ -294,5 +297,22 @@ pub fn IncStatementCounter(statement_type: &str, database: &str, resource_group:
         if let Some(counter) = DbStmtNodeCounter.as_ref() {
             counter.WithLabelValues(&[database, statement_type]).inc();
         }
+    }
+}
+
+/// Count refresh utility rows without exposing mutable package globals to the
+/// session runtime. Initialization and handle cloning share one lock.
+pub fn RecordRefreshAffectedRows(rows: u64) {
+    if rows == 0 {
+        return;
+    }
+    let counter = {
+        let _guard = crate::metrics::PACKAGE_INIT_LOCK
+            .lock()
+            .expect("metrics init lock poisoned");
+        unsafe { AffectedRowsCounterRefreshMV.clone() }
+    };
+    if let Some(counter) = counter {
+        counter.inc_by(rows as f64);
     }
 }

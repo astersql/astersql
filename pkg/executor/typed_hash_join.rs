@@ -67,7 +67,7 @@ impl TypedHashJoin {
         }
         let left_schema = left.Schema().to_vec();
         let right_schema = right.Schema().to_vec();
-        let schema = match join_type {
+        let mut schema = match join_type {
             JoinType::SemiJoin | JoinType::AntiSemiJoin => left_schema.clone(),
             JoinType::LeftOuterSemiJoin | JoinType::AntiLeftOuterSemiJoin => {
                 let mut output = left_schema.clone();
@@ -80,6 +80,21 @@ impl TypedHashJoin {
             }
             _ => left_schema.iter().chain(&right_schema).cloned().collect(),
         };
+        // Outer joins can synthesize NULL on their null-extended side even
+        // when the stored column is NOT NULL.
+        for (index, column) in schema.iter_mut().enumerate() {
+            if (matches!(join_type, JoinType::LeftOuterJoin | JoinType::FullOuterJoin)
+                && index >= left_schema.len())
+                || (matches!(
+                    join_type,
+                    JoinType::RightOuterJoin | JoinType::FullOuterJoin
+                ) && index < left_schema.len())
+            {
+                column.field_type.SetFlag(
+                    column.field_type.GetFlag() & !astersql_parser_mysql::r#type::NotNullFlag,
+                );
+            }
+        }
         let probe_chunk = left.NewChunk();
         Ok(Self {
             left,

@@ -64,6 +64,8 @@
 
 ## 与 Go 版本的对应关系
 
+MV 定义的数值时区通过独立 `FixedTimeZone` 返回 FixedOffset，装饰器转发；不复用或覆盖 PostgreSQL 的 `PgFixedTimeZone`。
+
 Rust 的 `AtomicI64::fetch_add(...).wrapping_add(1)` 对齐 Go `atomic.Int64.Add(1)` 返回新值以及溢出回绕；独立 Rust 边界测试补充了 Go 源文件中未显式写出的该行为。
 
 Go 依靠匿名嵌入自动转发接口方法，Rust 必须为 `NullRejectCheckExprContext`、`ConstantPropagateCheckContext` 和 override 类型显式实现并逐项委托。Go 的截断函数可以统一返回接口值，并在无变化时返回同一指针；Rust 用 `CtxWithTruncateResult` 表达借用原对象或拥有包装器，`WasOverridden` 与指针比较测试保留“不重复包装”语义。

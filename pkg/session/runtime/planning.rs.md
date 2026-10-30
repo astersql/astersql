@@ -118,6 +118,8 @@ RustCodeGraph 的文件节点列出 `runtime/scan_adapter_runtime_test.rs`、`ru
 
 ## 与 Go 版本的对应关系
 
+MV 专用 mview_plan_context 向共享构造函数传入定义 SQL mode 与 location；其他调用保持原空 options 与方言参数，不能覆盖 PostgreSQL 的规划规则。此接线及固定偏移时区仍待行为验证。
+
 - `pkg/planner/optimize.go` 的 `Optimize`/`buildLogicalPlan` 与 `pkg/planner/core/optimizer.go` 的 `DoOptimize`、`adjustOptimizationFlags` 对应 Rust 的 builder + `DoOptimize` 流程。Rust `OptimizeParsedSelect` 显式补入 `FLAG_COLLECT_PREDICATE_COLUMNS_POINT` 和 `FLAG_SYNC_WAIT_STATS_LOAD_POINT`，注释说明这是对齐 Go 正常 SELECT 的 flags 调整。
 - Go prepared plan cache 会把 schema、session variables、参数类型、range 配额和运行反馈纳入可复用性判断；Rust 的 `PlanCacheKeyContext`、`CachedPlan::restore`、`physical_plan_cache_ranges_fit_quota` 与延迟 `FinishPreparedKVPhysicalPlan` 复刻这组行为，而不是仅按 SQL 文本缓存最终 plan 对象。
 - Go 使用 Domain statistics handle、pseudo estimate 与 isolation read 选择访问路径；Rust 的 `SessionDomainDataSourceProvider` 和 `populate_session_data_source` 提供相应接线。当前 Rust 适配对 CMSketch、主键 handle 等统计元数据仍是受限映射，文档不将其描述为 Go 全量统计结构的完全等价实现。

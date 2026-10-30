@@ -94,6 +94,8 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 
 ## 与 Go 版本的对应关系
 
+NOW 在通用 FixedTimeZone 存在时以真实当前时钟加固定偏移构造本地日期，保留声明 FSP 的截断；未设置时保持命名时区路径。
+
 - Rust `baseBuiltinFunc` 对应 Go `builtin.go` 的同名结构：参数、返回类型、PB code、collator、子节点向量化、clone、相等比较、内存估算和基础 `eval*` 保护路径均保留相同职责。
 - `newBaseBuiltinFunc*` 对应 Go 第 127、186、247、305 行附近的构造器；共同顺序是推导 collation、为参数构造 CAST、建立返回类型、再调整 NULL 标志。Rust 精简实现只实现了足够验证框架的转换子集，正式实现通过 crate 类型补足生产接线。
 - 正式 `functionClass`、`baseFunctionClass`、`funcs` 和 `extensionFuncs` 对应 Go 的函数类接口、静态 `funcs` map 与扩展函数边界。Rust 用 `RwLock<HashMap>`/`Arc` 模拟 Go map 或并发映射的共享语义。

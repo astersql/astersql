@@ -1300,11 +1300,72 @@ pub(crate) fn plan_context_with_params_and_explain(
     prepared_marker_offsets: Option<Vec<usize>>,
     sql_dialect: ast::SqlDialect,
 ) -> astersql_planner_core_base::ContextRef {
+    plan_context_with_eval_options(
+        variables,
+        parameters,
+        use_cache,
+        in_explain_stmt,
+        ignore_explain_id_suffix,
+        stats_domain,
+        prepared_marker_offsets,
+        sql_dialect,
+        Vec::new(),
+    )
+}
+
+pub(super) fn mview_plan_context(
+    variables: Arc<astersql_sessionctx_variable::session::SessionVars>,
+    sql_mode: astersql_parser_mysql::r#const::SQLMode,
+    location: super::session::RuntimeTimeZone,
+) -> astersql_planner_core_base::ContextRef {
+    let (zone, fixed) = match location {
+        super::session::RuntimeTimeZone::Named(zone) => (zone, None),
+        super::session::RuntimeTimeZone::Fixed(offset) => (chrono_tz::UTC, Some(offset)),
+    };
+    plan_context_with_eval_options(
+        variables.clone(),
+        &[],
+        false,
+        false,
+        false,
+        None,
+        None,
+        ast::SqlDialect::MySQL,
+        vec![
+            astersql_expression_exprstatic::WithSQLMode(sql_mode),
+            astersql_expression_exprstatic::WithDivPrecisionIncrement(
+                variables
+                    .GetSystemVar("div_precision_increment")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(4),
+            ),
+            astersql_expression_exprstatic::WithLocation(zone),
+            astersql_expression_exprstatic::WithFixedTimeZone(fixed),
+        ],
+    )
+}
+
+fn plan_context_with_eval_options(
+    variables: Arc<astersql_sessionctx_variable::session::SessionVars>,
+    parameters: &[astersql_types::datum::Datum],
+    use_cache: bool,
+    in_explain_stmt: bool,
+    ignore_explain_id_suffix: bool,
+    stats_domain: Option<Arc<astersql_domain::Domain>>,
+    prepared_marker_offsets: Option<Vec<usize>>,
+    sql_dialect: ast::SqlDialect,
+    eval_options: Vec<astersql_expression_exprstatic::EvalCtxOption>,
+) -> astersql_planner_core_base::ContextRef {
     let new_expression = || {
-        let eval = Arc::new(astersql_expression_exprstatic::NewEvalContext(vec![
-            astersql_expression_exprstatic::WithParamList(parameters.to_vec()),
-            astersql_expression_exprstatic::WithSQLDialect(sql_dialect),
-        ]));
+        let eval = Arc::new(astersql_expression_exprstatic::NewEvalContext(
+            vec![
+                astersql_expression_exprstatic::WithParamList(parameters.to_vec()),
+                astersql_expression_exprstatic::WithSQLDialect(sql_dialect),
+            ]
+            .into_iter()
+            .chain(eval_options)
+            .collect(),
+        ));
         astersql_expression_exprstatic::NewExprContext(vec![
             astersql_expression_exprstatic::WithEvalCtx(eval),
             astersql_expression_exprstatic::WithColumnIDAllocator(Arc::new(

@@ -345,8 +345,7 @@ fn purge_history_time() -> String {
 }
 
 fn purge_history_duration(started: std::time::Instant) -> String {
-    let micros = started.elapsed().as_micros();
-    format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
+    astersql_executor::mview_task::format_duration_seconds(started.elapsed())
 }
 
 fn resolve_mlog_database(explicit: &str, current: &str) -> SessionResult<String> {
@@ -406,7 +405,11 @@ fn derive_mlog_next_purge_seconds(
 }
 
 impl ConcreteSession {
-    fn check_mlog_operate_privilege(&self, database: &str, log_name: &str) -> SessionResult<()> {
+    pub(super) fn check_mlog_operate_privilege(
+        &self,
+        database: &str,
+        log_name: &str,
+    ) -> SessionResult<()> {
         let Some(user) = self.login_user.as_deref() else {
             return Ok(());
         };
@@ -848,6 +851,9 @@ impl ConcreteSession {
         &self,
         statement: &ast::CancelMaterializedViewJobStmt,
     ) -> SessionResult<()> {
+        if statement.Tp == ast::CancelMaterializedViewJobType::Refresh {
+            return self.execute_cancel_refresh_job(statement.JobID);
+        }
         if statement.Tp != ast::CancelMaterializedViewJobType::LogPurge || statement.JobID <= 0 {
             return Err(SessionError::new(
                 "invalid materialized view purge job ID or type",

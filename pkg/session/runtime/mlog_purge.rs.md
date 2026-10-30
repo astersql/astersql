@@ -98,6 +98,8 @@ crate 依赖由 `pkg/session/Cargo.toml` 明确声明：KV/表 key 来自 `aster
 
 ## 与 Go 版本的对应关系
 
+a87bf8db64 的时间工具提取通过 purge_history_duration 调用 executor::mview_task::format_duration_seconds，保留整数微秒六位小数并复用 Go Duration 上限，避免浮点时间误差。
+
 - Go `PurgeMaterializedViewLogExec.executePurgeMaterializedViewLog` 对应 Rust `ConcreteSession::execute_purge_materialized_view_log`；两者都校验权限、使用 purge-info NOWAIT 锁、以 StartTS 建 job ID、计算依赖视图最小 TSO、使用历史 cutoff、防 checkpoint 倒退、分批删除并写 success/failed 历史。
 - Go 通过 TiFlash/SQL 统计和带 `_tidb_commit_ts`、`_tidb_rowid` 条件的 DELETE 执行；Rust 直接在 KV snapshot 上读取 commit ts 并删除编码 row key。因此 Rust 保留相同 fence 与范围意图，但执行层、计划选择和错误形态并不逐行等同。
 - Go 用 `startMVTaskMonitor` 独立监测取消/心跳，并能利用 context 取消睡眠/执行；Rust 在清理循环和分段睡眠中同步轮询历史表。Rust 当前没有 Go 的 maintenance session memory quota、isolation read engine、TiFlash thread 配置应用/恢复，也没有相同 failpoint 集合。

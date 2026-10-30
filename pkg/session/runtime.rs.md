@@ -88,6 +88,8 @@ DDL 排队以 `Mutex + Condvar` 实现：提交顺序由 job ID 决定，同 sch
 
 ## 与 Go 版本的对应关系
 
+装配 MV refresh 协调器、真实派生源桥接与独立测试；本来源仍通过直接 utility constructor 调用，公开 REFRESH SQL dispatcher 属于后续提交。
+
 Rust 把 Go `pkg/session/session.go`、事务、planner/executor glue、testkit 与 DDL owner 的部分行为聚合为 `runtime.rs` 模块树，因此只能按行为链对照，不能声称逐函数一一翻译。
 
 本文件只提供 parser、共享状态和辅助边界，不代表 Go 完整 session API。

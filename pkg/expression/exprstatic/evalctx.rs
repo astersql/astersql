@@ -118,6 +118,7 @@ pub struct EvalCtxState {
     warn_handler: SharedWarnHandler,
     sql_dialect: parser_ast::SqlDialect,
     pg_fixed_time_zone: Option<chrono::FixedOffset>,
+    fixed_time_zone: Option<chrono::FixedOffset>,
     pg_lc_time: String,
     pg_numeric_locales: [String; 2],
     deprecated_integer_display_width: Option<bool>,
@@ -143,6 +144,7 @@ impl Clone for EvalCtxState {
             warn_handler: Arc::clone(&self.warn_handler),
             sql_dialect: self.sql_dialect,
             pg_fixed_time_zone: self.pg_fixed_time_zone,
+            fixed_time_zone: self.fixed_time_zone,
             pg_lc_time: self.pg_lc_time.clone(),
             pg_numeric_locales: self.pg_numeric_locales.clone(),
             deprecated_integer_display_width: self.deprecated_integer_display_width,
@@ -208,6 +210,11 @@ pub fn WithPgLcTime(value: String) -> EvalCtxOption {
 }
 
 /// Preserve an explicitly configured PostgreSQL fixed displacement.
+/// Set a numeric MySQL maintenance zone without changing PostgreSQL state.
+pub fn WithFixedTimeZone(zone: Option<chrono::FixedOffset>) -> EvalCtxOption {
+    Box::new(move |state| state.fixed_time_zone = zone)
+}
+
 pub fn WithPgFixedTimeZone(zone: Option<chrono::FixedOffset>) -> EvalCtxOption {
     Box::new(move |state| state.pg_fixed_time_zone = zone)
 }
@@ -319,6 +326,7 @@ pub fn NewEvalContext(options: Vec<EvalCtxOption>) -> EvalContext {
         warn_handler: warning_handler,
         sql_dialect: parser_ast::SqlDialect::MySQL,
         pg_fixed_time_zone: None,
+        fixed_time_zone: None,
         pg_lc_time: "C".into(),
         pg_numeric_locales: ["C".into(), "C".into()],
         deprecated_integer_display_width: None,
@@ -621,6 +629,9 @@ impl exprctx::EvalContext for EvalContext {
     fn PgNumericLocales(&self) -> [String; 2] {
         self.state.pg_numeric_locales.clone()
     }
+    fn FixedTimeZone(&self) -> Option<chrono::FixedOffset> {
+        self.state.fixed_time_zone
+    }
     fn PgFixedTimeZone(&self) -> Option<chrono::FixedOffset> {
         self.state.pg_fixed_time_zone
     }
@@ -707,6 +718,7 @@ pub fn MakeEvalContextStatic(context: &dyn exprctx::StaticConvertibleEvalContext
         WithTypeFlags(type_context.Flags()),
         WithLocation(type_context.Location()),
         WithPgFixedTimeZone(context.PgFixedTimeZone()),
+        WithFixedTimeZone(context.FixedTimeZone()),
         WithPgLcTime(context.PgLcTime()),
         WithPgNumericLocales(context.PgNumericLocales()),
         WithErrLevelMap(error_context.LevelMap()),

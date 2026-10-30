@@ -480,3 +480,57 @@ fn test_planbuilder_dispatches_mview_refresh() {
     assert_eq!(observe_builder.visitInfo.len(), 2);
     assert_eq!(observe_builder.visitInfo[1].privilege, Privilege::ShowView);
 }
+
+#[test]
+fn port_a87bf8db64_sources_preserve_where_layout_and_handles() {
+    use crate::mview_refresh_source::*;
+    let parse = || {
+        parser_dependency::New()
+            .ParseOneStmt(
+                "SELECT a,COUNT(*),COUNT(b),SUM(b) FROM test.src WHERE src.b > 2 GROUP BY a",
+                "",
+                "",
+            )
+            .unwrap()
+            .into_any()
+            .downcast::<ast::SelectStmt>()
+            .unwrap()
+    };
+    let definition = base_definition();
+    let original = parse();
+    let (fast, plan) = BuildFastRefreshSource(
+        &definition,
+        "mv",
+        "$mlog$src",
+        &original,
+        MViewBuildOptions {
+            from_ts: 11,
+            to_ts: 29,
+        },
+    )
+    .unwrap();
+    assert_eq!(fast.Fields.Fields.len(), 8);
+    assert_eq!(plan.delta_column_count, 3);
+    let sql = ast::sql_restore::restore_node(&fast).unwrap();
+    assert!(sql.contains("_tidb_commit_ts"), "{sql}");
+    assert!(sql.contains("b`>2"), "{sql}");
+    assert!(sql.contains("LEFT JOIN"), "{sql}");
+    assert!(sql.contains("__mview_mv_rowid"), "{sql}");
+    let (diff, layout) = BuildCompleteRefreshSource(&definition, "mv", *parse()).unwrap();
+    assert_eq!(diff.Fields.Fields.len(), 10);
+    assert_eq!(layout.current_handle_cols, vec![1]);
+    let from = diff.From.as_ref().unwrap();
+    assert_eq!(from.TableRefs.Tp, ast::JoinType::FullJoin);
+    let ast::ResultSetNode::TableSource(new) = from.TableRefs.Left.as_deref().unwrap() else {
+        panic!("missing recomputed side")
+    };
+    assert!(
+        new.QuerySource
+            .as_ref()
+            .unwrap()
+            .with_node(|node| ast::sql_restore::restore_node(node)
+                .unwrap()
+                .contains("WHERE"))
+            .unwrap()
+    );
+}

@@ -80,6 +80,8 @@ FTS 明确拒绝非字符串列、非常量/非字符串搜索值、LIKE 回退�
 
 ## 与 Go 版本的对应关系
 
+restricted SQL 可以显式引用 ExtraCommitTSID/ExtraHandleID；选中这些伪列时副本取消隐藏标记，避免输出清理丢失实际水位/行句柄。普通 SQL 的隐藏列限制不变。
+
 Go 文件的 `evalAstExprWithPlanCtx`、`buildSimpleExpr`、`rewriteWithPreprocess`、`expressionRewriter.Enter/Leave`、四类子查询 handler、FTS 双路径、表达式转换、列解析和 DEFAULT 求值，在 Rust 中均有同名或显式 receiver 参数版本；Rust 源码注释也逐段注明“对应 Go 的同名函数”。
 
 Rust 的结构性差异有四类：Go receiver 被改为自由函数加 `&mut expressionRewriter`；Go 的 `map[*ast.AggregateFuncExpr]int` 改为规范化结构字符串键；Go 可直接替换接口计划值，Rust 用 `MovableLogicalPlan`；Go 指针共享 builder，Rust 用受严格同步生命周期约束的 `PlanBuilderPtr`。

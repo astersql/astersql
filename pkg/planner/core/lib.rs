@@ -159,6 +159,7 @@ mod memtable_predicate_extractor;
 mod memtable_predicate_extractor_test;
 pub mod mview_refresh_builder;
 pub mod mview_refresh_lookup;
+pub mod mview_refresh_source;
 mod optimizer;
 mod optimizer_runtime;
 mod pb_to_plan;

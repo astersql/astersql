@@ -47,7 +47,9 @@ pub trait MutationBatch {
 
 /// Runtime owns transaction creation, table-context borrowing and statement rollback.
 /// `run_atomic` must publish every mutation on `Ok` and none on `Err`.
-pub trait MutationRuntime: Send + Sync {
+/// Executors and their canonical session are thread-bound. Resources must not
+/// acquire a Send/Sync promise for Rc/RefCell-owned transaction state.
+pub trait MutationRuntime {
     fn run_atomic(&self, apply: &mut dyn FnMut(&mut dyn MutationBatch) -> Result<()>)
     -> Result<()>;
 }

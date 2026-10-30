@@ -22,8 +22,8 @@ use crate::{
     RefreshMaterializedView, SchemaProducer,
 };
 
-pub const MLOG_OLD_NEW_COLUMN: &str = "_tidb_old_new";
-pub const MLOG_DML_TYPE_COLUMN: &str = "_tidb_dml_type";
+pub const MLOG_OLD_NEW_COLUMN: &str = "_MLOG$_OLD_NEW";
+pub const MLOG_DML_TYPE_COLUMN: &str = "_MLOG$_DML_TYPE";
 pub const MLOG_COMMIT_TS_COLUMN: &str = "_tidb_commit_ts";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -175,13 +175,18 @@ fn validate_definition(definition: &MViewDefinition) -> Result<(), String> {
     {
         return Err("materialized view has invalid group key offset".to_owned());
     }
+    Ok(())
+}
+
+fn validate_mlog_definition(definition: &MViewDefinition) -> Result<(), String> {
+    validate_definition(definition)?;
     let mlog_columns = definition
         .mlog_columns
         .iter()
         .map(|column| column.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     for required in [MLOG_OLD_NEW_COLUMN, MLOG_DML_TYPE_COLUMN] {
-        if !mlog_columns.contains(required) {
+        if !mlog_columns.contains(&required.to_ascii_lowercase()) {
             return Err(format!(
                 "materialized view log missing required column {required}"
             ));
@@ -195,7 +200,7 @@ pub fn BuildMView(
     definition: &MViewDefinition,
     options: MViewBuildOptions,
 ) -> Result<MViewBuildResult, String> {
-    validate_definition(definition)?;
+    validate_mlog_definition(definition)?;
     let count_star = definition
         .aggregates
         .iter()

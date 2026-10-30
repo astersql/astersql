@@ -7933,6 +7933,12 @@ impl ConcreteSession {
                         variable_is_on(&value);
                 }
                 "tidb_mem_quota_query"
+                | "tidb_mview_enable"
+                | "tidb_mview_maintain_mem_quota"
+                | "tidb_mview_maintain_isolation_read_engines"
+                | "tidb_mview_maintain_import_threads"
+                | "tidb_mview_maintain_import_disk_quota"
+                | astersql_sessionctx_vardef::DivPrecisionIncrement
                 | astersql_sessionctx_vardef::CTEMaxRecursionDepth
                 | "tidb_dml_batch_size"
                 | "tidb_batch_insert"

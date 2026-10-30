@@ -173,3 +173,47 @@ fn statement_and_command_durations_use_independent_histograms() {
         assert_eq!(metric.get_histogram().sample_sum(), sum);
     }
 }
+
+#[test]
+fn port_a87bf8db64_refresh_metric_registration() {
+    if crate::main_test::run_in_isolated_process(
+        "metrics_test::port_a87bf8db64_refresh_metric_registration",
+    ) {
+        return;
+    }
+    unsafe {
+        metrics::InitMetrics().unwrap();
+        metrics::RegisterMetrics().unwrap();
+    }
+    crate::MVServiceRefreshScheduleDurationHistogram().observe(1.0);
+    crate::MVServiceRefreshScheduleDurationHistogram().observe(4.0);
+    unsafe {
+        crate::executor::AffectedRowsCounterRefreshMV
+            .as_ref()
+            .unwrap()
+            .inc_by(3.0);
+    }
+    let families = prometheus::gather();
+    let histogram = families
+        .iter()
+        .find(|family| family.name() == "tidb_mv_service_refresh_schedule_duration_seconds")
+        .expect("MV schedule histogram must be initialized and registered");
+    let observed = histogram.get_metric()[0].get_histogram();
+    assert_eq!(observed.sample_count(), 2);
+    assert_eq!(observed.sample_sum(), 5.0);
+    let buckets = observed.get_bucket();
+    assert_eq!(buckets.len(), 25);
+    for (index, bucket) in buckets.iter().enumerate() {
+        assert_eq!(bucket.upper_bound(), 2_f64.powi(index as i32));
+    }
+    let affected = families
+        .iter()
+        .find(|family| family.name() == "tidb_executor_affected_rows")
+        .unwrap();
+    assert!(affected.get_metric().iter().any(|metric| {
+        metric
+            .get_label()
+            .iter()
+            .any(|label| label.value() == "RefreshMV")
+    }));
+}

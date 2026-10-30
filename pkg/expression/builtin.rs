@@ -6458,15 +6458,28 @@ pub mod formal_registry {
                     };
                     // Go evalNowWithFsp uses the statement timestamp, never a
                     // per-row clock. MySQL truncates fractional seconds here.
-                    let now = ctx.CurrentTime()?.with_timezone(&ctx.Location());
-                    use chrono::Timelike;
+                    let instant = ctx.CurrentTime()?;
+                    let now = if let Some(offset) = ctx.FixedTimeZone() {
+                        instant.with_timezone(&offset).naive_local()
+                    } else {
+                        instant.with_timezone(&ctx.Location()).naive_local()
+                    };
+                    use chrono::{Datelike, Timelike};
                     let quantum = 10_u32.pow(9 - fsp as u32);
                     let truncated = now
                         .with_nanosecond(now.nanosecond() / quantum * quantum)
                         .ok_or_else(|| errors::New("invalid NOW fractional precision"))?;
                     Ok((
                         types_dependency::time::NewTime(
-                            types_dependency::time::FromGoTime(truncated),
+                            types_dependency::time::FromDate(
+                                truncated.year(),
+                                truncated.month() as i32,
+                                truncated.day() as i32,
+                                truncated.hour() as i32,
+                                truncated.minute() as i32,
+                                truncated.second() as i32,
+                                (truncated.nanosecond() / 1000) as i32,
+                            ),
                             mysql::TypeDatetime,
                             fsp,
                         ),

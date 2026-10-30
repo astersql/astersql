@@ -52,6 +52,7 @@ pub fn BuildTypedTableScan(
     initial_capacity: usize,
     maximum_chunk_size: usize,
 ) -> Result<ExecutorBox, BuildError> {
+    use astersql_planner_core_base::Plan as _;
     let table = scan
         .Table
         .as_ref()
@@ -61,12 +62,29 @@ pub fn BuildTypedTableScan(
     } else {
         table.ID
     };
+    let columns = if scan.schema().Columns.is_empty() {
+        scan.Columns.clone()
+    } else {
+        scan.schema()
+            .Columns
+            .iter()
+            .map(|column| {
+                scan.Columns
+                    .iter()
+                    .find(|info| info.ID == column.ID)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BuildError::new("typed table scan output column is absent from metadata")
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
     Ok(Box::new(crate::typed_kv_scan::TypedKVScan::new(
         retriever,
         table_id,
         table.PKIsHandle,
         scan.Desc,
-        scan.Columns.clone(),
+        columns,
         ranges,
         initial_capacity,
         maximum_chunk_size,
@@ -266,6 +284,94 @@ fn typed_scan_binding<'a>(
     Ok(&bindings[index])
 }
 
+fn project_typed_output(
+    executor: ExecutorBox,
+    source: &astersql_expression::Schema,
+    target: &astersql_expression::Schema,
+    context: astersql_planner_core_base::ContextRef,
+) -> Result<ExecutorBox, BuildError> {
+    // Hand-built legacy plans may leave their output schema unspecified.
+    // Their children still own the usable typed output contract.
+    if target.Columns.is_empty() {
+        return Ok(executor);
+    }
+    let positions = target
+        .Columns
+        .iter()
+        .map(|column| {
+            source
+                .ColumnIndex(column)
+                .ok_or_else(|| BuildError::new("typed output column is absent from its child plan"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if positions.len() == executor.Schema().len()
+        && positions
+            .iter()
+            .enumerate()
+            .all(|(index, position)| index == *position)
+    {
+        return Ok(executor);
+    }
+    let expressions = target
+        .Columns
+        .iter()
+        .zip(positions)
+        .map(|(column, index)| {
+            let mut column = column.Clone();
+            column.Index = index as isize;
+            column.RetType = Some(executor.Schema()[index].field_type.clone());
+            Box::new(column) as astersql_expression::ExprBox
+        })
+        .collect();
+    Ok(Box::new(crate::typed_projection::TypedProjection::new(
+        executor,
+        expressions,
+        context,
+        false,
+    )))
+}
+
+fn build_typed_aggregate(
+    plan: &dyn astersql_planner_core_base::PhysicalPlan,
+    aggregate: &astersql_planner_core_operator_physicalop::BasePhysicalAgg,
+    child: ExecutorBox,
+) -> Result<ExecutorBox, BuildError> {
+    let mut functions = aggregate.AggFuncs.clone();
+    // Coprocessor aggregation appends its grouping values to the partial
+    // aggregate row. Preserve those values for the real final aggregation.
+    let extra = plan.schema().Len().saturating_sub(functions.len());
+    if extra > 0
+        && extra == aggregate.GroupByItems.len()
+        && functions.iter().all(|function| {
+            matches!(
+                function.Mode,
+                astersql_expression_aggregation::AggFunctionMode::Partial1Mode
+                    | astersql_expression_aggregation::AggFunctionMode::Partial2Mode
+            )
+        })
+    {
+        for group in &aggregate.GroupByItems {
+            functions.push(
+                astersql_expression_aggregation::NewAggFuncDesc(
+                    plan.s_ctx().GetExprCtx(),
+                    astersql_parser_ast::AggFuncFirstRow,
+                    vec![group.clone()],
+                    false,
+                )
+                .map_err(|error| BuildError::new(error.to_string()))?,
+            );
+        }
+    }
+    crate::typed_hash_agg::TypedHashAgg::new(
+        child,
+        functions,
+        aggregate.GroupByItems.clone(),
+        plan.s_ctx().clone(),
+    )
+    .map(|executor| Box::new(executor) as ExecutorBox)
+    .map_err(BuildError::new)
+}
+
 fn wrap_typed_pushdown_plan(
     plan: &dyn astersql_planner_core_base::PhysicalPlan,
     executor: ExecutorBox,
@@ -284,6 +390,20 @@ fn wrap_typed_pushdown_plan(
         ));
     }
     let child = wrap_typed_pushdown_plan(children[0], executor)?;
+    use astersql_planner_core_operator_physicalop::{PhysicalHashAgg, PhysicalStreamAgg};
+    if let Some(aggregate) = plan
+        .as_any()
+        .downcast_ref::<PhysicalHashAgg>()
+        .map(|p| &p.BasePhysicalAgg)
+        .or_else(|| {
+            plan.as_any()
+                .downcast_ref::<PhysicalStreamAgg>()
+                .map(|p| &p.BasePhysicalAgg)
+        })
+    {
+        return build_typed_aggregate(plan, aggregate, child);
+    }
+
     if let Some(selection) = plan.as_any().downcast_ref::<PhysicalSelection>() {
         return Ok(Box::new(crate::typed_selection::TypedSelection::new(
             child,
@@ -320,8 +440,8 @@ fn build_typed_physical_plan(
     use astersql_planner_core_operator_physicalop::{
         LegacyPhysicalLock, PhysicalHashAgg, PhysicalHashJoin, PhysicalIndexLookUpReader,
         PhysicalIndexReader, PhysicalIndexScan, PhysicalLimit, PhysicalProjection,
-        PhysicalSelection, PhysicalTableDual, PhysicalTableReader, PhysicalTableScan,
-        PhysicalUnionAll, PointGetPlan,
+        PhysicalSelection, PhysicalStreamAgg, PhysicalTableDual, PhysicalTableReader,
+        PhysicalTableScan, PhysicalUnionAll, PointGetPlan,
     };
 
     if let Some(dual) = plan.as_any().downcast_ref::<PhysicalTableDual>() {
@@ -440,20 +560,81 @@ fn build_typed_physical_plan(
         } else {
             (Vec::new(), Vec::new())
         };
-        return crate::typed_hash_join::TypedHashJoin::new(
-            left,
-            right,
-            join.BasePhysicalJoin.LeftJoinKeys.clone(),
-            join.BasePhysicalJoin.RightJoinKeys.clone(),
-            join.BasePhysicalJoin.IsNullEQ.clone(),
-            left_conditions,
-            right_conditions,
-            join.BasePhysicalJoin.OtherConditions.clone(),
-            plan.s_ctx().clone(),
-            join.BasePhysicalJoin.JoinType,
-        )
-        .map(|executor| Box::new(executor) as ExecutorBox)
-        .map_err(BuildError::new);
+        let executor: ExecutorBox = Box::new(
+            crate::typed_hash_join::TypedHashJoin::new(
+                left,
+                right,
+                join.BasePhysicalJoin.LeftJoinKeys.clone(),
+                join.BasePhysicalJoin.RightJoinKeys.clone(),
+                join.BasePhysicalJoin.IsNullEQ.clone(),
+                left_conditions,
+                right_conditions,
+                join.BasePhysicalJoin.OtherConditions.clone(),
+                plan.s_ctx().clone(),
+                join.BasePhysicalJoin.JoinType,
+            )
+            .map_err(BuildError::new)?,
+        );
+        if !plan.schema().Columns.is_empty()
+            && matches!(
+                join.BasePhysicalJoin.JoinType,
+                astersql_planner_core_base::JoinType::InnerJoin
+                    | astersql_planner_core_base::JoinType::LeftOuterJoin
+                    | astersql_planner_core_base::JoinType::RightOuterJoin
+                    | astersql_planner_core_base::JoinType::FullOuterJoin
+            )
+        {
+            // Projection elimination can fold a selected/reordered output into
+            // HashJoin.Schema. The join's working row still concatenates both
+            // children, so map that row to the physical output by UniqueID.
+            let input = children[0]
+                .schema()
+                .Columns
+                .iter()
+                .chain(&children[1].schema().Columns)
+                .collect::<Vec<_>>();
+            let positions = plan
+                .schema()
+                .Columns
+                .iter()
+                .map(|column| {
+                    input
+                        .iter()
+                        .position(|input| input.UniqueID == column.UniqueID)
+                        .ok_or_else(|| {
+                            BuildError::new(
+                                "typed HashJoin output column is absent from both children",
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if positions.len() != executor.Schema().len()
+                || positions
+                    .iter()
+                    .enumerate()
+                    .any(|(index, position)| index != *position)
+            {
+                let expressions = plan
+                    .schema()
+                    .Columns
+                    .iter()
+                    .zip(positions)
+                    .map(|(column, index)| {
+                        let mut column = column.Clone();
+                        column.Index = index as isize;
+                        column.RetType = Some(executor.Schema()[index].field_type.clone());
+                        Box::new(column) as astersql_expression::ExprBox
+                    })
+                    .collect();
+                return Ok(Box::new(crate::typed_projection::TypedProjection::new(
+                    executor,
+                    expressions,
+                    plan.s_ctx().clone(),
+                    false,
+                )));
+            }
+        }
+        return Ok(executor);
     }
 
     if plan.as_any().is::<PhysicalUnionAll>() {
@@ -482,6 +663,7 @@ fn build_typed_physical_plan(
     }
 
     if let Some(reader) = plan.as_any().downcast_ref::<PhysicalIndexReader>() {
+        use astersql_planner_core_base::Plan as _;
         let index_plan = reader
             .IndexPlan
             .as_deref()
@@ -513,11 +695,15 @@ fn build_typed_physical_plan(
                     .ok_or_else(|| BuildError::new("index column offset is outside TableInfo"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let output_columns = if reader.OutputColumns.is_empty() {
+        let scan_outputs = if index_plan.as_any().is::<PhysicalIndexScan>() {
+            &reader.OutputColumns
+        } else {
+            &scan.schema().Columns
+        };
+        let output_columns = if scan_outputs.is_empty() {
             scan.Columns.clone()
         } else {
-            reader
-                .OutputColumns
+            scan_outputs
                 .iter()
                 .map(|output| {
                     scan.Columns
@@ -555,13 +741,30 @@ fn build_typed_physical_plan(
             ),
         );
         if !scan.FilterCondition.is_empty() {
+            let conditions = scan
+                .FilterCondition
+                .iter()
+                .map(|condition| {
+                    condition
+                        .ResolveIndices(scan.schema())
+                        .map_err(|error| BuildError::new(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             executor = Box::new(crate::typed_selection::TypedSelection::new(
                 executor,
-                scan.FilterCondition.clone(),
+                conditions,
                 plan.s_ctx().clone(),
             ));
         }
         executor = wrap_typed_pushdown_plan(index_plan, executor)?;
+        if !index_plan.as_any().is::<PhysicalIndexScan>() {
+            executor = project_typed_output(
+                executor,
+                index_plan.schema(),
+                plan.schema(),
+                plan.s_ctx().clone(),
+            )?;
+        }
         return Ok(executor);
     }
 
@@ -640,19 +843,34 @@ fn build_typed_physical_plan(
         let child = reader
             .GetTablePlan()
             .ok_or_else(|| BuildError::new("PhysicalTableReader has no TablePlan"))?;
-        return build_typed_physical_plan(
+        let executor = build_typed_physical_plan(
             child,
             bindings,
             binding_index,
             initial_capacity,
             maximum_chunk_size,
             locking,
+        )?;
+        return project_typed_output(
+            executor,
+            child.schema(),
+            plan.schema(),
+            plan.s_ctx().clone(),
         );
     }
-    if let Some(aggregate) = plan.as_any().downcast_ref::<PhysicalHashAgg>() {
+    let aggregate = plan
+        .as_any()
+        .downcast_ref::<PhysicalHashAgg>()
+        .map(|plan| &plan.BasePhysicalAgg)
+        .or_else(|| {
+            plan.as_any()
+                .downcast_ref::<PhysicalStreamAgg>()
+                .map(|plan| &plan.BasePhysicalAgg)
+        });
+    if let Some(aggregate) = aggregate {
         let children = plan.children();
         if children.len() != 1 {
-            return Err(BuildError::new("PhysicalHashAgg requires one child"));
+            return Err(BuildError::new("typed aggregation requires one child"));
         }
         let child = build_typed_physical_plan(
             children[0],
@@ -662,14 +880,7 @@ fn build_typed_physical_plan(
             maximum_chunk_size,
             locking,
         )?;
-        return crate::typed_hash_agg::TypedHashAgg::new(
-            child,
-            aggregate.BasePhysicalAgg.AggFuncs.clone(),
-            aggregate.BasePhysicalAgg.GroupByItems.clone(),
-            plan.s_ctx().clone(),
-        )
-        .map(|executor| Box::new(executor) as ExecutorBox)
-        .map_err(BuildError::new);
+        return build_typed_aggregate(plan, aggregate, child);
     }
     if let Some(limit) = plan.as_any().downcast_ref::<PhysicalLimit>() {
         let children = plan.children();
@@ -738,11 +949,17 @@ fn build_typed_physical_plan(
             maximum_chunk_size,
             locking,
         )?;
-        return Ok(Box::new(crate::typed_selection::TypedSelection::new(
+        let executor = Box::new(crate::typed_selection::TypedSelection::new(
             child,
             selection.Conditions.clone(),
             plan.s_ctx().clone(),
-        )));
+        ));
+        return project_typed_output(
+            executor,
+            children[0].schema(),
+            plan.schema(),
+            plan.s_ctx().clone(),
+        );
     }
     if let Some(projection) = plan.as_any().downcast_ref::<PhysicalProjection>() {
         let children = plan.children();
@@ -765,6 +982,7 @@ fn build_typed_physical_plan(
         )));
     }
     if let Some(scan) = plan.as_any().downcast_ref::<PhysicalTableScan>() {
+        use astersql_planner_core_base::Plan as _;
         let table = scan
             .Table
             .as_ref()
@@ -782,9 +1000,26 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
         )?;
-        let mut conditions = scan.FilterCondition.clone();
+        let mut conditions = scan
+            .FilterCondition
+            .iter()
+            .map(|condition| {
+                condition
+                    .ResolveIndices(scan.schema())
+                    .map_err(|error| BuildError::new(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if bindings.len() > 1 {
-            conditions.extend(scan.AccessCondition.clone());
+            // Canonical table scans leave access predicates unresolved because
+            // storage normally evaluates them through key ranges. The local
+            // typed reader evaluates these predicates against its output row.
+            for condition in &scan.AccessCondition {
+                conditions.push(
+                    condition
+                        .ResolveIndices(scan.schema())
+                        .map_err(|error| BuildError::new(error.to_string()))?,
+                );
+            }
         }
         if conditions.is_empty() {
             return Ok(child);
@@ -857,7 +1092,7 @@ pub trait MViewDeltaMergePlanData: UnaryPlanData {
     fn merge_plan(&self) -> &astersql_planner_core::MViewDeltaMerge;
 }
 /// 快照抽象接口。
-pub trait Snapshot: Send {
+pub trait Snapshot {
     /// 设置option。
     fn set_option(&mut self, option: SnapshotOption) -> Result<(), BuildError>;
 }

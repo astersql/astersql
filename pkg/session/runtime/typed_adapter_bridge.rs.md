@@ -110,6 +110,8 @@ RU scope 采用 RAII 恢复嵌套状态：构造时取走先前 pending 并增�
 
 ## 与 Go 版本的对应关系
 
+将已有 table/index/common-handle range encoder 暴露给同级 MV source，复用真实物理 scan 的范围编码，避免为 MV 复制存储读实现。
+
 Rust 文件没有一一对应的 `pkg/session/typed_adapter_bridge.go`；其职责是把 Go `pkg/session/session.go` 中分散在 session、executor、record-set 生命周期里的语义集中成类型化桥接层。
 
 - Go `executeStmtImpl` 在最早 defer 中记录 panic/错误的 RU 失败，并让 point-get 或文件传输的正常返回发布成功；Rust 用 `StatementRUFailureGuard`、`PendingStatementRU` 和两个 scope 保持相同“必须有终态”的意图。

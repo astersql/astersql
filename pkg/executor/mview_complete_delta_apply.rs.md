@@ -53,6 +53,8 @@ UPDATE 列数不匹配报 `UPDATE row {idx} column count mismatch`；未知操�
 
 ## 与 Go 版本的对应关系
 
+MutationRuntime 去除 Send/Sync 超约束以允许真实 Rc/RefCell canonical session；事务 batch 原子性仍由实际 StageStatement/Cleanup/Release 保障，未替换为模型存储。
+
 统计增量对应 Go `37a4cd4f439b97980a42d64d23c126933ba1f7be` 的 mview_complete_delta_apply.go。共享明细仅消除两类 writer 计数重复；COMPLETE 字符串不展示 noop。统计会按成功表调用计数，包括出错前进度；成功语句结果只在 EOF 发布。
 
 两边共享操作码、按差异执行写入、只更新变化列以及无变化 UPDATE 跳过的意图。

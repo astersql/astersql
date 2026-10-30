@@ -5139,7 +5139,17 @@ pub fn toColumn(rewriter: &mut expressionRewriter<'_>, node: &ast::ExprNode) {
         // pointer-keyed mapper entries are not stable; allow those deliberately
         // hidden projection fields while rewriting HAVING itself. The final
         // SELECT projection removes them before exposing the query schema.
-        if column.IsHidden && clause(rewriter) != havingClause {
+        let maintenance_pseudo_column = matches!(
+            column.ID,
+            expression::model::ExtraCommitTSID | expression::model::ExtraHandleID
+        ) && rewriter
+            .planCtx
+            .as_ref()
+            .is_some_and(|context| context.builder.ctx.GetSessionVars().InRestrictedSQL);
+        if maintenance_pseudo_column {
+            column.IsHidden = false;
+        }
+        if column.IsHidden && clause(rewriter) != havingClause && !maintenance_pseudo_column {
             rewriter.err = Some(
                 plannererrors::ErrUnknownColumn
                     .GenWithStackByArgs(&[

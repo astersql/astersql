@@ -79,6 +79,8 @@
 
 ## 与 Go 版本的对应关系
 
+外连接补 NULL 的一侧输出 FieldType 清除 NotNullFlag，保持实际空扩展行与 merge 输入类型一致。
+
 仓库没有 `pkg/executor/typed_hash_join.go`，因此不能声称逐函数移植。
 
 - Rust `TypedHashJoin` 保留这些 SQL 结果语义和 chunk 拉取接口，但属于更窄的 typed adapter 实现：固定右 build/左 probe，单线程同步，无 worker/channel、分区、spill、内存/磁盘 tracker、运行统计、NA join 或动态换边。Go V1/V2 的并发与资源管理细节不能套用为本文件现状。

@@ -453,6 +453,65 @@ fn error(message: impl Into<String>) -> VariableError {
 
 /// 注册带上下限钳制的基础系统变量（TiFlash/执行时限等）。
 fn register_basic_clamped_vars() {
+    let mut maintain_memory = int_var(
+        "tidb_mview_maintain_mem_quota",
+        2 << 30,
+        scope_both(),
+        -1,
+        i64::MAX as u64,
+    );
+    maintain_memory.Validation = Some(Arc::new(|vars, normalized, original, _| {
+        let value = normalized
+            .parse::<i64>()
+            .map_err(|_| error("invalid MV memory quota"))?;
+        if value > 0 && value < 128 {
+            vars.StmtCtx.append_warning(VariableError::truncated(
+                "tidb_mview_maintain_mem_quota",
+                original,
+            ));
+            Ok("128".into())
+        } else {
+            Ok(normalized.into())
+        }
+    }));
+    RegisterSysVar(maintain_memory);
+    RegisterSysVar(int_var(
+        "tidb_mview_maintain_import_threads",
+        0,
+        scope_both(),
+        0,
+        vardef::MaxConfigurableConcurrency as u64,
+    ));
+    let mut disk = string_var("tidb_mview_maintain_import_disk_quota", "", scope_both());
+    disk.Validation = Some(Arc::new(|_, normalized, original, _| {
+        if normalized.is_empty()
+            || astersql_config_configtypes::ParseGoSize(normalized, true)
+                .is_ok_and(|bytes| bytes > 0)
+        {
+            Ok(normalized.into())
+        } else {
+            Err(VariableError::wrong_value(
+                "tidb_mview_maintain_import_disk_quota",
+                original,
+            ))
+        }
+    }));
+    RegisterSysVar(disk);
+    RegisterSysVar(unsigned_var(
+        vardef::TiFlashFineGrainedShuffleBatchSize,
+        vardef::DefTiFlashFineGrainedShuffleBatchSize as u64,
+        scope_both(),
+        1,
+        u64::MAX,
+    ));
+    RegisterSysVar(bool_var("tidb_mview_enable", false, scope_both()));
+    RegisterSysVar(int_var(
+        vardef::DivPrecisionIncrement,
+        vardef::DefDivPrecisionIncrement as i64,
+        scope_both(),
+        0,
+        30,
+    ));
     let mut allow_mpp = bool_var(
         vardef::TiDBAllowMPPExecution,
         vardef::DefTiDBAllowMPPExecution,
@@ -1043,6 +1102,15 @@ fn register_planner_tuning_vars() {
         }
         Ok(engines.join(","))
     }));
+    let mut maintain_engines = isolation_read_engines.clone();
+    maintain_engines.Name = "tidb_mview_maintain_isolation_read_engines".into();
+    let validate_engines = maintain_engines.Validation.clone().unwrap();
+    maintain_engines.Validation = Some(Arc::new(move |vars, normalized, original, scope| {
+        validate_engines(vars, normalized, original, scope).map_err(|_| {
+            VariableError::wrong_value("tidb_mview_maintain_isolation_read_engines", original)
+        })
+    }));
+    RegisterSysVar(maintain_engines);
     RegisterSysVar(isolation_read_engines);
 
     let mut tiflash_preagg = string_var(

@@ -2631,6 +2631,7 @@ dependencies = [
  "astersql-statistics-handle",
  "astersql-statistics-handle-autoanalyze",
  "astersql-statistics-handle-logutil",
+ "astersql-statistics-handle-usage",
  "astersql-statistics-handle-util",
  "astersql-statistics-util",
  "astersql-store",

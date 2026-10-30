@@ -77,6 +77,8 @@ DDL/统计复合变更包含补偿与故障注入点，扩展时必须维持“�
 
 ## 与 Go 版本的对应关系
 
+MV 维护会话通过 internal_session_stats / internal_index_usage 访问 Domain 持有的真实 collector；flush_internal_session_stats 扫描并转交增量到既有 enqueue_stats_mutations。对应 a87bf8db64 的内部 collector 必要局部接线，正常会话原通道保留。持久影子 create/drop/cutover 后，refresh_materialized_view_metadata 以 reconcile 的统计目录同步模式同时发布 InfoSchema 和 SQL catalog，再 reload，避免已提交表仅在一侧可见。
+
 本提交接线来源 d0665b0713432cb7a38d283885d61a6c252f56f3 的 schema.go/ttl.go：`drop_schema_ttl_tables(database, summaries)` 消费 id/name/enabled 摘要，删除所有配置 TTL 的表，失败时逆序重新注册先前启用的表；禁用表被删除但不补偿。`register_ttl_table_id_to_external_workload` 复用真实 Manager 与 EnableTTLJob 开关，补偿和正常同步注册共用，不重建完整 TableInfo。外部原始删除错误优先，补偿失败只记录原日志。成功后仍走原事务提交与 publish/reconcile 链路；SQL、方言及会话协议处理未改。
 
 Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、channel、WaitGroup、etcd session 和大量后台 loop；Rust 当前以 trait 注入、原子状态、命名线程、内存事件队列及规范 KV 服务表达已移植路径。Go 的系统 session pool 由 Domain 直接拥有，Rust 则由 session 层注册 `AutoAnalyzeExecutor` 等边界，因此不能把 Go 的所有 loop 宣称为 Rust 已完整实现。

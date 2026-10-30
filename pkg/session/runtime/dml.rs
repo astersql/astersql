@@ -1163,6 +1163,11 @@ impl ConcreteSession {
             return Ok(());
         }
         drop(state);
+        if let Some(collector) = self.internal_collectors.borrow().stats.as_ref() {
+            collector.update(key.table_id, row_delta, modified_rows);
+            self.domain.flush_internal_session_stats();
+            return Ok(());
+        }
         self.domain
             .record_stats_mutation(&key, row_delta, modified_rows)
             .map_err(|error| session_error("record committed statistics delta", error))
@@ -1171,11 +1176,18 @@ impl ConcreteSession {
     /// 刷出挂起的统计增量到 Domain。
     pub(super) fn flush_pending_stats_deltas(&self) {
         let deltas = std::mem::take(&mut self.state.borrow_mut().pending_stats_deltas);
-        self.domain.enqueue_stats_mutations(
-            deltas
-                .into_values()
-                .map(|(key, row_delta, modified_rows)| (key.table_id, row_delta, modified_rows)),
-        );
+        if let Some(collector) = self.internal_collectors.borrow().stats.as_ref() {
+            for (key, row_delta, modified_rows) in deltas.into_values() {
+                collector.update(key.table_id, row_delta, modified_rows);
+            }
+            self.domain.flush_internal_session_stats();
+        } else {
+            self.domain.enqueue_stats_mutations(
+                deltas.into_values().map(|(key, row_delta, modified_rows)| {
+                    (key.table_id, row_delta, modified_rows)
+                }),
+            );
+        }
     }
 
     /// 求值生成列。
