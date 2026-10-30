@@ -224,13 +224,13 @@ def run(port, database, evidence, mysql_port):
         for obs in errors[1:]:compare(errors[0],obs)
         passed.append('C-txn-signature')
         paired('C-E-date-format',"SELECT date_format('2024-01-02'::timestamp,'%Y'::text) AS v",state='42883')
-        for label,sql,wanted in [('date-format', "DATE_FORMAT(CAST('2024-01-02 03:04:05.123456' AS DATETIME(6)),'%Y-%m-%d %H:%i:%s.%f')", '2024-01-02 03:04:05.123456'), ('empty', "DATE_FORMAT(CAST('2024-01-02' AS DATETIME),'')", ''), ('format', "FORMAT(12345.678,2,'de_DE')", '12.345,68'), ('to-char', "to_char(CAST('2024-01-02' AS DATETIME),'YYYY')", None)]:
+        for label,sql,wanted in [('date-format', "DATE_FORMAT(CAST('2024-01-02 03:04:05.123456' AS DATETIME(6)),'%Y-%m-%d %H:%i:%s.%f')", '2024-01-02 03:04:05.123456'), ('empty', "DATE_FORMAT(CAST('2024-01-02' AS DATETIME),'')", None), ('format', "FORMAT(12345.678,2,'de_DE')", '12.345,68'), ('to-char', "to_char(CAST('2024-01-02' AS DATETIME),'YYYY')", None)]:
             query_sql='SELECT '+sql+' AS v'
             observations=[save('mysql-'+side,'M-Q-'+label,m.query(query_sql)) for side,m in mysqls.items()]
             try:
                 for obs in observations:
-                    if wanted is None:assert obs['code']==1305 and obs['state']=='42000' and not obs['rows'],obs
-                    else:assert obs['code']==0 and obs['rows']==[[wanted.encode().hex()]],obs
+                    if label == 'to-char':assert obs['code']==1305 and obs['state']=='42000' and not obs['rows'],obs
+                    else:assert obs['code']==0 and obs['rows']==[[None if wanted is None else wanted.encode().hex()]],obs
                 mysql_compare(*observations)
                 passed.append('M-Q-'+label)
             except AssertionError as error:
@@ -238,8 +238,8 @@ def run(port, database, evidence, mysql_port):
             observations=[save('mysql-'+side,'M-prepare-'+label,m.prepared(query_sql,[()])) for side,m in mysqls.items()]
             try:
                 for phases in observations:
-                    if wanted is None:assert any(o['code']==1305 and o['state']=='42000' for o in phases),phases
-                    else:assert phases[-1]['code']==0 and phases[-1]['rows']==[[wanted.encode().hex()]],phases
+                    if label == 'to-char':assert any(o['code']==1305 and o['state']=='42000' for o in phases),phases
+                    else:assert phases[-1]['code']==0 and phases[-1]['rows']==[[None if wanted is None else wanted.encode().hex()]],phases
                 assert observations[0]==observations[1],observations
                 passed.append('M-prepare-'+label)
             except AssertionError as error:
