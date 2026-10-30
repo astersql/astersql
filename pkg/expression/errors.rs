@@ -86,7 +86,7 @@ standard_error!(
 );
 standard_error!(errWarnOptionIgnored, WarnOptionIgnored);
 standard_error!(errTruncatedWrongValue, ErrTruncatedWrongValue);
-standard_error!(errUnknownLocale, ErrUnknownLocale);
+standard_error!(pub(crate) errUnknownLocale, ErrUnknownLocale);
 standard_error!(errNonUniq, ErrNonUniq);
 standard_error!(errWrongValueForType, ErrWrongValueForType);
 standard_error!(errUnknown, ErrUnknown);

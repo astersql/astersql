@@ -4616,7 +4616,7 @@ impl ConcreteSession {
                 "tidb_version" | "version" => Args.is_empty(),
                 "greatest" | "least" => Args.len() >= 2,
                 "round" => (1..=2).contains(&Args.len()),
-                "substr" | "substring" => (2..=3).contains(&Args.len()),
+                "substr" | "substring" | "format" => (2..=3).contains(&Args.len()),
                 _ => false,
             }
             && !relational_expression_has_aggregate(expression)
@@ -5063,16 +5063,16 @@ impl ConcreteSession {
             tracker.Restore(false, kind, reason, force, warn);
         }
 
-        // EXTRACT descriptors retain the nullable formal signature even when
-        // the current constant input happens to evaluate to a non-NULL integer.
-        let describe_extract = self.sql_dialect() == ast::SqlDialect::MySQL
-            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if FnName.L == "extract");
+        // Native descriptors retain the formal signature even when the current
+        // constant input folds to a non-NULL value with a shorter display width.
+        let preserve_native_descriptor = self.sql_dialect() == ast::SqlDialect::MySQL
+            && matches!(&expression.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "extract" | "date_format" | "format"));
         astersql_planner_core::PlannerBuildSimpleExpr(
             &context,
             expression,
             vec![
                 astersql_expression::WithTableInfo(&self.current_database(), &table),
-                Box::new(move |options| options.DeferConstantFolding = unresolved_parameters || describe_extract),
+                Box::new(move |options| options.DeferConstantFolding = unresolved_parameters || preserve_native_descriptor),
             ],
         )
         .map(|built| {

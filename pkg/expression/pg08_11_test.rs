@@ -84,3 +84,95 @@ fn pg08_11_formal() {
     );
     println!("pg08_11_formal: 11 scenarios passed");
 }
+
+#[test]
+fn pg08_11_mysql_formal() {
+    use crate::contextutil::WarnHandler;
+    let warnings = std::sync::Arc::new(crate::contextutil::NewStaticWarnHandler(0));
+    let context = exprstatic::NewExprContext(vec![exprstatic::WithEvalCtx(std::sync::Arc::new(
+        exprstatic::NewEvalContext(vec![
+            exprstatic::WithSQLDialect(crate::ast::SqlDialect::MySQL),
+            exprstatic::WithWarnHandler(warnings.clone()),
+        ]),
+    ))]);
+    for (name, arguments, expected) in [
+        (
+            "date_format",
+            vec![
+                crate::NewStrConst("2024-01-02 03:04:05.123456"),
+                crate::NewStrConst("%Y-%m-%d %H:%i:%s.%f"),
+            ],
+            Some("2024-01-02 03:04:05.123456"),
+        ),
+        (
+            "date_format",
+            vec![crate::NewStrConst("2024-01-02"), crate::NewStrConst("")],
+            None,
+        ),
+        (
+            "format",
+            vec![
+                crate::NewStrConst("12345.678"),
+                crate::NewInt64Const(2),
+                crate::NewStrConst("de_DE"),
+            ],
+            Some("12.345,68"),
+        ),
+        (
+            "format",
+            vec![crate::NewStrConst("12345.678"), crate::NewInt64Const(2)],
+            Some("12,345.68"),
+        ),
+        (
+            "format",
+            vec![crate::NewNull(), crate::NewInt64Const(2)],
+            None,
+        ),
+        (
+            "format",
+            vec![crate::NewStrConst("12345.678"), crate::NewNull()],
+            None,
+        ),
+        (
+            "format",
+            vec![
+                crate::NewStrConst("12345.678"),
+                crate::NewInt64Const(2),
+                crate::NewStrConst("aster_unknown"),
+            ],
+            Some("12,345.68"),
+        ),
+        (
+            "format",
+            vec![
+                crate::NewStrConst("12345.678"),
+                crate::NewInt64Const(2),
+                crate::NewNull(),
+            ],
+            Some("12,345.68"),
+        ),
+    ] {
+        let expression = crate::NewFunctionBase(
+            &context,
+            name,
+            *crate::types::NewFieldType(crate::mysql::TypeVarString),
+            arguments
+                .into_iter()
+                .map(|arg| Box::new(arg) as Box<dyn Expression>)
+                .collect(),
+        )
+        .unwrap();
+        let (actual, null) = expression
+            .EvalString(context.GetEvalCtx(), crate::chunk::Row::default())
+            .unwrap();
+        assert_eq!((!null).then_some(actual.as_str()), expected, "{name}");
+        if name == "date_format" && expected.is_some() {
+            let result = expression.GetType(context.GetEvalCtx());
+            assert_eq!(result.GetFlen(), 31);
+            assert!(!crate::mysql::HasNotNullFlag(result.GetFlag()));
+            assert!(crate::mysql::HasBinaryFlag(result.GetFlag()));
+        }
+    }
+    assert_eq!(warnings.CopyWarnings(Vec::new()).len(), 2);
+    println!("pg08_11_mysql_formal: 8 scenarios passed; 2 locale warnings");
+}

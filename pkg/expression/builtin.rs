@@ -4386,6 +4386,36 @@ pub mod formal_registry {
         Ok(Some(time))
     }
 
+    // Static native MySQL display bound, not the current formatted value length.
+    // Percent escapes consume one directive; %H intentionally reserves seven digits.
+    fn mysql_date_format_width(mask: &str) -> isize {
+        let mut chars = mask.chars();
+        let mut width: isize = 0;
+        while let Some(character) = chars.next() {
+            let addition = if character != '%' {
+                1
+            } else {
+                match chars.next() {
+                    Some('M' | 'W') => 64,
+                    Some('D' | 'Y' | 'x' | 'X') => 4,
+                    Some('a' | 'b') => 32,
+                    Some('j') => 3,
+                    Some(
+                        'U' | 'u' | 'V' | 'v' | 'y' | 'm' | 'd' | 'h' | 'I' | 'i' | 'l' | 'p' | 'S'
+                        | 's' | 'c' | 'e',
+                    ) => 2,
+                    Some('k' | 'H') => 7,
+                    Some('r') => 11,
+                    Some('T') => 8,
+                    Some('f') => 6,
+                    _ => 1,
+                }
+            };
+            width = width.saturating_add(addition);
+        }
+        width
+    }
+
     /// Apply the DATE_FORMAT mask after source conversion and NULL handling.
     pub fn DateFormatOutput(
         ctx: &dyn EvalContext,
@@ -4407,6 +4437,9 @@ pub mod formal_registry {
                 Some(error) => Err(error.into()),
                 None => Ok((String::new(), true)),
             };
+        }
+        if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL && mask.is_empty() {
+            return Ok((String::new(), true));
         }
         time.DateFormat(&mask)
             .map(|value| (value, false))
@@ -4463,6 +4496,7 @@ pub mod formal_registry {
         Extract(ExtractMode),
         Weekday,
         DateFormat,
+        MysqlFormat,
         Atan,
         Pow,
         DateAddSub(bool),
@@ -5667,6 +5701,50 @@ pub mod formal_registry {
                 )),
                 CoreBuiltinKind::TiDBVersion => {
                     Ok((crate::builtin_info_kernel::tidb_version(), false))
+                }
+                CoreBuiltinKind::MysqlFormat => {
+                    let (number, null) =
+                        if self.base.args[0].GetType(ctx).EvalType() == types::ETDecimal {
+                            let (value, null) = self.base.args[0].EvalDecimal(ctx, row.clone())?;
+                            (value.String(), null)
+                        } else {
+                            let (value, null) = self.base.args[0].EvalReal(ctx, row.clone())?;
+                            (value.to_string(), null)
+                        };
+                    if null {
+                        return Ok((String::new(), true));
+                    }
+                    let (decimals, null) = self.base.args[1].EvalInt(ctx, row.clone())?;
+                    if null {
+                        return Ok((String::new(), true));
+                    }
+                    let locale = self
+                        .base
+                        .args
+                        .get(2)
+                        .map(|argument| argument.EvalString(ctx, row))
+                        .transpose()?;
+                    let label = locale
+                        .as_ref()
+                        .map(|(name, null)| if *null { "NULL" } else { name.as_str() });
+                    let selected = locale
+                        .as_ref()
+                        .and_then(|(name, null)| (!null).then_some(name.as_str()));
+                    let (value, found) = crate::builtin_string_kernel::formatByLocale(
+                        &number,
+                        decimals,
+                        selected.or_else(|| locale.is_none().then_some("en_US")),
+                    );
+                    if let Some(label) = label
+                        && !found
+                    {
+                        crate::typeCtx(ctx).AppendWarning(
+                            crate::expression_errors_kernel::errUnknownLocale
+                                .GenWithStackByArgs(&[label.into()])
+                                .into(),
+                        );
+                    }
+                    Ok((value, false))
                 }
                 CoreBuiltinKind::DateFormat => {
                     let Some(time) =
@@ -8083,6 +8161,36 @@ pub mod formal_registry {
                     },
                 )
             }
+            "format" if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL => {
+                let source = args[0].GetType(ctx.GetEvalCtx()).clone();
+                let chars = source.GetFlen().max(0);
+                args[0] = if matches!(source.EvalType(), types::ETDecimal | types::ETInt) {
+                    crate::WrapWithCastAsDecimal(ctx, args[0].CloneExpr())
+                } else {
+                    crate::WrapWithCastAsReal(ctx, args[0].CloneExpr())
+                };
+                args[1] = crate::WrapWithCastAsInt(ctx, args[1].CloneExpr(), None);
+                if args.len() == 3 {
+                    args[2] = crate::WrapWithCastAsString(ctx, args[2].CloneExpr());
+                }
+                let mut result = field_type_for_eval_type(types::ETString);
+                let (charset, collation) = ctx.GetCharsetInfo();
+                result.SetCharset(charset);
+                result.SetCollate(collation);
+                result.SetFlen(chars.saturating_add(chars / 3).saturating_add(32));
+                if result.GetCollate().ends_with("_bin") {
+                    result.AddFlag(mysql::BinaryFlag);
+                }
+                (
+                    CoreBuiltinKind::MysqlFormat,
+                    result,
+                    if args.len() == 3 {
+                        "builtinFormatWithLocaleSig"
+                    } else {
+                        "builtinFormatSig"
+                    },
+                )
+            }
             "date_format" => {
                 args[0] = crate::WrapWithCastAsTime(
                     ctx,
@@ -8094,8 +8202,27 @@ pub mod formal_registry {
                 let (charset, collation) = ctx.GetCharsetInfo();
                 return_type.SetCharset(charset);
                 return_type.SetCollate(collation);
-                // Match Go's worst-case %r expansion, including unknown masks.
-                return_type.SetFlen((args[1].GetType(ctx.GetEvalCtx()).GetFlen() + 1) / 2 * 11);
+                let width = if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL
+                    && args[1]
+                        .as_any()
+                        .downcast_ref::<crate::Constant>()
+                        .is_some_and(|value| {
+                            value.DeferredExpr.is_none() && value.ParamMarker.is_none()
+                        }) {
+                    let (mask, null) =
+                        args[1].EvalString(ctx.GetEvalCtx(), chunk::Row::default())?;
+                    (!null).then(|| mysql_date_format_width(&mask))
+                } else {
+                    None
+                };
+                return_type.SetFlen(
+                    width.unwrap_or((args[1].GetType(ctx.GetEvalCtx()).GetFlen() + 1) / 2 * 11),
+                );
+                if ctx.SQLDialect() == crate::ast::SqlDialect::MySQL
+                    && return_type.GetCollate().ends_with("_bin")
+                {
+                    return_type.AddFlag(mysql::BinaryFlag);
+                }
                 (
                     CoreBuiltinKind::DateFormat,
                     return_type,
@@ -8706,6 +8833,7 @@ pub mod formal_registry {
     core_factory!(ascii_factory, "ascii");
     core_factory!(weekday_factory, "weekday");
     core_factory!(date_format_factory, "date_format");
+    core_factory!(format_factory, "format");
     core_factory!(atan_factory, "atan");
     core_factory!(atan2_factory, "atan2");
     core_factory!(pow_factory, "pow");
@@ -8812,6 +8940,7 @@ pub mod formal_registry {
         ("ascii", ascii_factory),
         ("weekday", weekday_factory),
         ("date_format", date_format_factory),
+        ("format", format_factory),
         ("atan", atan_factory),
         ("atan2", atan2_factory),
         ("pow", pow_factory),
