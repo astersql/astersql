@@ -14166,3 +14166,160 @@ fn pg09_11_clients() {
     assert_eq!(summary["reference_database_dropped"], true);
     assert_eq!(summary["connections_closed"], true);
 }
+
+#[test]
+fn pg09_18_clients() {
+    // This self-check runs before any reference connection is needed.
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pg09_18_libpq.py");
+    assert!(
+        Command::new("python3")
+            .args([script, "--self-test"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg0918_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let evidence_root = std::env::var_os("PG09_18_EVIDENCE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pg09-18-evidence")
+        });
+    let evidence = evidence_root.join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG09_18_EVIDENCE={}", evidence.display());
+    let database_dropped = std::cell::Cell::new(false);
+    let cleanup = Cleanup(|| {
+        server.close();
+        database_dropped.set(native.execute(&format!("DROP DATABASE {database}")).is_ok());
+        let record = serde_json::json!({
+            "database_dropped": database_dropped.get(),
+            "postgres_port_closed": TcpStream::connect(pg).is_err(),
+            "mysql_port_closed": TcpStream::connect(mysql_address).is_err(),
+        });
+        let _ = std::fs::write(evidence.with_extension("cleanup.json"), record.to_string());
+    });
+    let mut mysql = TcpStream::connect(mysql_address).unwrap();
+    mysql
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    mysql_handshake(&mut mysql);
+    fn mysql_window_bitmap(socket: &mut TcpStream) {
+        let sql = "SELECT last_value(x) OVER() AS v FROM (SELECT CAST(? AS SIGNED) AS x) t";
+        let mut prepare = vec![0x16];
+        prepare.extend_from_slice(sql.as_bytes());
+        mysql_packet(socket, 0, &prepare);
+        let header = mysql_read(socket);
+        assert_eq!(header[0], 0, "{header:?}");
+        let id = u32::from_le_bytes(header[1..5].try_into().unwrap());
+        assert_eq!(&header[5..9], &[1, 0, 1, 0]);
+        let parameter = mysql_read(socket);
+        assert!(!parameter.is_empty());
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        fn column(packet: &[u8]) {
+            let mut offset = 0;
+            let mut fields = vec![];
+            for _ in 0..6 {
+                let len = packet[offset] as usize;
+                offset += 1;
+                fields.push(&packet[offset..offset + len]);
+                offset += len;
+            }
+            assert_eq!(fields[4], b"v");
+            assert_eq!(packet[offset], 12);
+            assert_eq!(packet[offset + 7], 253, "native MySQL VARCHAR: {packet:?}");
+            assert_eq!(&packet[offset + 1..offset + 7], &[46, 0, 5, 0, 0, 0]);
+            assert_eq!(&packet[offset + 8..offset + 11], &[0, 0, 31]);
+        }
+        column(&mysql_read(socket));
+        assert_eq!(mysql_read(socket)[0], 0xfe);
+        for value in [Some(7i64), None, Some(9i64)] {
+            let mut execute = vec![0x17];
+            execute.extend_from_slice(&id.to_le_bytes());
+            execute.push(0);
+            execute.extend_from_slice(&1u32.to_le_bytes());
+            execute.extend_from_slice(&[u8::from(value.is_none()), 1, 8, 0]);
+            if let Some(value) = value {
+                execute.extend_from_slice(&value.to_le_bytes());
+            }
+            mysql_packet(socket, 0, &execute);
+            assert_eq!(mysql_read(socket), vec![1]);
+            column(&mysql_read(socket));
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            let row = mysql_read(socket);
+            let mut expected = vec![0, if value.is_none() { 4 } else { 0 }];
+            if let Some(value) = value {
+                let text = value.to_string();
+                expected.push(text.len() as u8);
+                expected.extend_from_slice(text.as_bytes());
+            }
+            assert_eq!(row, expected, "raw binary NULL bitmap and payload");
+            assert_eq!(mysql_read(socket)[0], 0xfe);
+            println!("pg09_18 MySQL binary row={row:?}");
+        }
+        let mut close = vec![0x19];
+        close.extend_from_slice(&id.to_le_bytes());
+        mysql_packet(socket, 0, &close);
+    }
+    mysql_window_bitmap(&mut mysql);
+    let baseline = crate::pg_extended_test::scalar_mysql_check(&mut mysql);
+    // output() reaps the child before server/database guards run on any assertion.
+    let output = Command::new("python3")
+        .arg(script)
+        .args([
+            pg.port().to_string(),
+            database.clone(),
+            evidence.display().to_string(),
+            mysql_address.port().to_string(),
+        ])
+        .env("PG09_18_RUST_BINARY", std::env::current_exe().unwrap())
+        .output()
+        .expect("Python3 required");
+    assert_eq!(
+        crate::pg_extended_test::scalar_mysql_check(&mut mysql),
+        baseline
+    );
+    mysql_window_bitmap(&mut mysql);
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    drop(mysql);
+    drop(cleanup);
+    assert!(database_dropped.get(), "test database leaked");
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(
+        TcpStream::connect(mysql_address).is_err(),
+        "MySQL listener leaked"
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["expected"], 351);
+    assert_eq!(summary["attempted"], 351);
+    assert_eq!(summary["unique"], 351);
+    assert_eq!(summary["passed"], summary["expected"]);
+    assert_eq!(summary["failed"], 0);
+    assert_eq!(summary["negative_self_checks"], 3);
+    assert_eq!(summary["reference_database_dropped"], true);
+    assert_eq!(summary["connections_closed"], true);
+}

@@ -458,10 +458,14 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
             Some(QueryRule::OptWindowFrameClauseAlt02)
         }
         "optwindowexclusion--e39c8f040824e4ae" => Some(QueryRule::PgExcludeNone),
-        "optwindowexclusion_exclude_current_row--38b937f4f9af2a70" => Some(QueryRule::PgExcludeCurrent),
+        "optwindowexclusion_exclude_current_row--38b937f4f9af2a70" => {
+            Some(QueryRule::PgExcludeCurrent)
+        }
         "optwindowexclusion_exclude_group--c74ecbc94d919dda" => Some(QueryRule::PgExcludeGroup),
         "optwindowexclusion_exclude_ties--255608ca6443b0ec" => Some(QueryRule::PgExcludeTies),
-        "optwindowexclusion_exclude_no_others--ad37bc6b497b8eed" => Some(QueryRule::PgExcludeNoOthers),
+        "optwindowexclusion_exclude_no_others--ad37bc6b497b8eed" => {
+            Some(QueryRule::PgExcludeNoOthers)
+        }
         "windowframeunits_rows--003e9d2c85bb972f" => Some(QueryRule::WindowFrameUnitsAlt01),
         "windowframeunits_range--99ba8418cadbf047" => Some(QueryRule::WindowFrameUnitsAlt02),
         "windowframeunits_groups--2c888d21058d9220" => Some(QueryRule::WindowFrameUnitsAlt03),
@@ -1293,7 +1297,35 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                     || (start.Type == parser_ast::BoundType::Following
                         && end.Type != parser_ast::BoundType::Following))
             {
-                yylex.AppendError(yylex.Errorf("invalid window frame bounds", &[]));
+                let (message, offset) =
+                    if start.UnBounded && start.Type == parser_ast::BoundType::Following {
+                        (
+                            "frame start cannot be UNBOUNDED FOLLOWING",
+                            rhs[rhs_len - 2].offset,
+                        )
+                    } else if end.UnBounded && end.Type == parser_ast::BoundType::Preceding {
+                        (
+                            "frame end cannot be UNBOUNDED PRECEDING",
+                            rhs[rhs_len].offset,
+                        )
+                    } else if start.Type == parser_ast::BoundType::CurrentRow {
+                        (
+                            "frame starting from current row cannot have preceding rows",
+                            rhs[rhs_len].offset,
+                        )
+                    } else {
+                        (
+                            "frame starting from following row cannot have preceding rows",
+                            rhs[rhs_len].offset,
+                        )
+                    };
+                yylex.AppendError(super::super::errors::SharedError::new(
+                    super::super::PostgreSQLWindowError {
+                        state: "42P20",
+                        message: message.into(),
+                        offset: offset.max(0) as usize,
+                    },
+                ));
                 return Err(1);
             }
             out.item = Some(Box::new(parser_ast::FrameExtent {
@@ -1455,6 +1487,18 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 .expr
                 .clone()
                 .map(|expr| Box::new(expr) as Box<dyn Any>)
+        }
+        QueryRule::OptNullTreatmentAlt02 | QueryRule::OptNullTreatmentAlt03
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL =>
+        {
+            yylex.AppendError(super::super::errors::SharedError::new(
+                super::super::PostgreSQLWindowError {
+                    state: "42601",
+                    message: "syntax error at or near \"NULLS\"".into(),
+                    offset: rhs[rhs_len].offset.max(0) as usize,
+                },
+            ));
+            return Err(1);
         }
         QueryRule::OptNullTreatmentAlt01
         | QueryRule::OptNullTreatmentAlt02

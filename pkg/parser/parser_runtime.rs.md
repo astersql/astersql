@@ -87,3 +87,8 @@ Go [`parser_test.go`](parser_test.go) 的 `TestSideEffect` 验证错误 SQL 后�
 - 修改 `yyLexer` 时要同步 `Scanner`、测试词法器和所有默认方法调用方。尤其应保持 `Errors` 的 `(warnings, errors)` 顺序与 `Parser::ParseSQL` 解构一致；新增必需方法会破坏全部实现者。
 - 修改缓存或所有权路径时，应保留“所有退出路径归还 cache”不变量，并用长语句重复解析测试确认指针/容量复用；错误路径还需对照 Go 的 `TestSideEffect`，防止残留状态污染下一次解析。
 - 修改 `yyDebug` 前应先解决全局并发安全；修改位置记录必须同时检查 `skip_position_recording` 与 `yySetOffset`，避免对明确禁用位置记录的调用重新写入偏移。
+
+
+## 2026-10-31 窗口客户端差分
+
+在PG语法错误状态确实可移进OVER时，从已有LALR栈识别完整窗口调用，给42809及函数起始位置；参数语法错误与MySQL保持原路径。

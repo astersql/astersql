@@ -259,7 +259,37 @@ pub fn yyParse(yylex: &mut dyn yyLexer, parser_state: &mut Parser) -> isize {
             if error_flag == 0 {
                 // TiDB intentionally ignores goyacc's generated message; Scanner
                 // derives the exact line/column/near text from its current state.
-                yylex.AppendError(yylex.Errorf("", &[]));
+                // Diagnose only an otherwise complete window call for which
+                // this LALR state accepts OVER (possibly after a reduction). Malformed arguments retain
+                // their ordinary syntax error and MySQL keeps its old grammar.
+                let over_action = generated_main_symbol(token::over as isize)
+                    .map(|symbol| generated_main_action(state, symbol))
+                    .unwrap_or(0);
+                let missing_over = (parser_state.sql_dialect()
+                    == parser_ast::SqlDialect::PostgreSQL
+                    && over_action != 0)
+                    .then(|| {
+                        values.iter().rev().find(|value| {
+                            value.expr.is_none()
+                                && matches!(
+                                    value.ident.to_ascii_lowercase().as_str(),
+                                    "row_number" | "rank" | "lag" | "lead" | "last_value"
+                                )
+                        })
+                    })
+                    .flatten();
+                if let Some(call) = missing_over {
+                    yylex.AppendError(errors::SharedError::new(PostgreSQLWindowError {
+                        state: "42809",
+                        message: format!(
+                            "window function {} requires an OVER clause",
+                            call.ident.to_ascii_lowercase()
+                        ),
+                        offset: call.offset.max(0) as usize,
+                    }));
+                } else {
+                    yylex.AppendError(yylex.Errorf("", &[]));
+                }
             }
             if error_flag < 3 {
                 error_flag = 3;

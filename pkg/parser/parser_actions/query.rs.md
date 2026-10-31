@@ -104,3 +104,8 @@ OptLeadLagInfo 复用 Expression 载体接收逐行 offset，原 NumLiteral/para
 ## PostgreSQL 窗口 EXCLUDE
 
 OptWindowExclusion的语义动作构造独立排除枚举，OptWindowFrameClause将其装配到真实AST；显式后缀仅PostgreSQL方言允许。
+
+
+## 2026-10-31 窗口客户端差分
+
+PG的IGNORE/RESPECT NULLS在现有语义规约拒绝；非法帧按起止类别发42P20，位置来自原始bound token。

@@ -1038,10 +1038,17 @@ pub(crate) fn adapt(
     let path = session
         .effective_explicit_path(context)
         .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
-    if let Ok((statements, _)) =
-        astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
-            .ParseSQL(sql, &[])
+    let parsed = astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[]);
+    if let Err(error) = &parsed
+        && let Some(window) = error.downcast_ref::<astersql_parser::PostgreSQLWindowError>()
     {
+        session.relation_error_position = sql
+            .get(..window.offset)
+            .map(|prefix| prefix.chars().count() + 1);
+        return Err((window.state, window.message.clone()));
+    }
+    if let Ok((statements, _)) = parsed {
         if let Err(error) =
             astersql_session::runtime::ValidatePostgreSQLExclusiveFunctions(&statements)
             && let Some(function) = error.pg_function_error()

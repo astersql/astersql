@@ -1057,3 +1057,182 @@ fn pg09_17_execution() {
         vec![Value::Null, Value::Int(10), Value::Int(10)]
     );
 }
+
+#[test]
+fn pg09_18_execution_chunks() {
+    for pipelined in [false, true] {
+        for ranking in [false, true] {
+            let mut rows = vec![
+                vec![Value::Int(1), Value::Int(10), Value::Int(1)],
+                vec![Value::Int(1), Value::Int(10), Value::Int(2)],
+                vec![Value::Int(1), Value::Int(20), Value::Null],
+                vec![Value::Int(2), Value::Int(10), Value::Int(8)],
+                vec![Value::Int(2), Value::Int(10), Value::Int(9)],
+            ];
+            // Rank's adapter consumes projected peer keys, like the session's
+            // ranking plan. The frame-value plan independently consumes x.
+            if ranking {
+                for row in &mut rows {
+                    row.truncate(2);
+                }
+            }
+            let columns = if ranking { 2 } else { 3 };
+            let frame = if ranking {
+                None
+            } else {
+                Some(WindowFrame {
+                    exclusion: Default::default(),
+                    frame_type: FrameType::Range,
+                    start: FrameBound::unbounded(BoundType::Preceding),
+                    end: current_row(),
+                })
+            };
+            let functions: Vec<Box<dyn super::WindowFunction>> = if ranking {
+                vec![
+                    Box::new(super::RowNumber::default()),
+                    Box::new(super::Rank::default()),
+                ]
+            } else {
+                vec![Box::new(super::LastValue::new(2))]
+            };
+            let plan = build_plan(
+                columns,
+                vec![0],
+                order(1, false),
+                frame,
+                functions,
+                pipelined,
+            );
+            let mut executor = super::build(
+                plan,
+                Box::new(super::VecChunkExecutor::new(
+                    rows.into_iter().map(|row| Chunk::new(vec![row])).collect(),
+                )),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                matches!(executor, super::WindowExecutor::Pipelined(_)),
+                pipelined
+            );
+            let context = ExecContext::default();
+            executor.open(&context).unwrap();
+            let mut actual = vec![];
+            let mut output = Chunk::default();
+            loop {
+                executor.next(&context, &mut output).unwrap();
+                if output.rows.is_empty() {
+                    break;
+                }
+                actual.extend(output.rows.iter().map(|row| row[columns..].to_vec()));
+            }
+            assert_eq!(
+                actual,
+                if ranking {
+                    vec![
+                        vec![Value::UInt(1), Value::Int(1)],
+                        vec![Value::UInt(2), Value::Int(1)],
+                        vec![Value::UInt(3), Value::Int(3)],
+                        vec![Value::UInt(1), Value::Int(1)],
+                        vec![Value::UInt(2), Value::Int(1)],
+                    ]
+                } else {
+                    vec![
+                        vec![Value::Int(2)],
+                        vec![Value::Int(2)],
+                        vec![Value::Null],
+                        vec![Value::Int(9)],
+                        vec![Value::Int(9)],
+                    ]
+                }
+            );
+            executor.close().unwrap();
+            assert_eq!(executor.memory_bytes(), 0);
+            executor.open(&context).unwrap();
+            executor.next(&context, &mut output).unwrap();
+            assert!(output.rows.is_empty());
+            executor.close().unwrap();
+            assert_eq!(executor.memory_bytes(), 0);
+        }
+    }
+}
+
+#[test]
+fn pg09_18_offsets_chunks() {
+    for pipelined in [false, true] {
+        let rows = vec![
+            vec![
+                Value::Int(1),
+                Value::Int(1),
+                Value::Int(10),
+                Value::Int(1),
+                Value::Int(99),
+            ],
+            vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Null,
+                Value::Int(1),
+                Value::Int(99),
+            ],
+            vec![
+                Value::Int(1),
+                Value::Int(3),
+                Value::Int(30),
+                Value::Int(1),
+                Value::Int(99),
+            ],
+            vec![
+                Value::Int(2),
+                Value::Int(1),
+                Value::Int(40),
+                Value::Int(1),
+                Value::Int(99),
+            ],
+        ];
+        let plan = build_plan(
+            5,
+            vec![0],
+            order(1, false),
+            None,
+            vec![
+                Box::new(super::Lag::with_row_arguments(2, 3, 4, false)),
+                Box::new(super::Lag::with_row_arguments(2, 3, 4, true)),
+            ],
+            pipelined,
+        );
+        let mut executor = super::build(
+            plan,
+            Box::new(super::VecChunkExecutor::new(
+                rows.into_iter().map(|row| Chunk::new(vec![row])).collect(),
+            )),
+            false,
+        )
+        .unwrap();
+        // Arbitrary offsets require the existing partition buffer, even when
+        // pipelining is requested; exercise that routing rather than claiming it streams.
+        assert!(matches!(executor, super::WindowExecutor::Buffered(_)));
+        let context = ExecContext::default();
+        executor.open(&context).unwrap();
+        let mut actual = vec![];
+        let mut output = Chunk::default();
+        loop {
+            executor.next(&context, &mut output).unwrap();
+            if output.rows.is_empty() {
+                break;
+            }
+            actual.extend(output.rows.iter().map(|row| row[5..].to_vec()));
+        }
+        assert_eq!(
+            actual,
+            vec![
+                vec![Value::Int(99), Value::Null],
+                vec![Value::Int(10), Value::Int(30)],
+                vec![Value::Null, Value::Int(99)],
+                vec![Value::Int(99), Value::Int(99)],
+            ]
+        );
+        executor.close().unwrap();
+        assert_eq!(executor.memory_bytes(), 0);
+    }
+}

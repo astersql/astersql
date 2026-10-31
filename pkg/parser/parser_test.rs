@@ -6538,3 +6538,74 @@ fn pg09_17_parse_independent_windows() {
         parser_ast::FrameExclusion::NoOthers
     );
 }
+
+#[test]
+fn pg09_18_window_diagnostics() {
+    use parser_ast::SqlDialect;
+    let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+    for (sql, state, message, token) in [
+        (
+            "SELECT lag(x) IGNORE NULLS OVER() FROM t",
+            "42601",
+            "syntax error at or near \"NULLS\"",
+            "NULLS",
+        ),
+        (
+            "SELECT last_value(x) RESPECT NULLS OVER() FROM t",
+            "42601",
+            "syntax error at or near \"NULLS\"",
+            "NULLS",
+        ),
+        (
+            "SELECT row_number() AS v",
+            "42809",
+            "window function row_number requires an OVER clause",
+            "row_number",
+        ),
+        (
+            "SELECT 'é', rank() AS v",
+            "42809",
+            "window function rank requires an OVER clause",
+            "rank",
+        ),
+        (
+            "SELECT lag(x) AS v FROM t",
+            "42809",
+            "window function lag requires an OVER clause",
+            "lag",
+        ),
+        (
+            "SELECT last_value(x) OVER(ROWS BETWEEN CURRENT ROW AND 1 PRECEDING) FROM t",
+            "42P20",
+            "frame starting from current row cannot have preceding rows",
+            "1 PRECEDING",
+        ),
+        (
+            "SELECT last_value(x) OVER(ROWS BETWEEN 1 FOLLOWING AND CURRENT ROW) FROM t",
+            "42P20",
+            "frame starting from following row cannot have preceding rows",
+            "CURRENT ROW",
+        ),
+    ] {
+        let error = pg.ParseSQL(sql, &[]).err().expect("invalid PG window");
+        let diagnostic = error
+            .downcast_ref::<crate::PostgreSQLWindowError>()
+            .unwrap_or_else(|| panic!("structured window error: {sql}: {error}"));
+        assert_eq!(diagnostic.state, state, "{sql}");
+        assert_eq!(diagnostic.message, message, "{sql}");
+        assert_eq!(diagnostic.offset, sql.rfind(token).unwrap(), "{sql}");
+        // Parser reuse must not retain an earlier window diagnostic.
+        pg.ParseSQL("SELECT 1", &[]).unwrap();
+    }
+    for sql in ["SELECT row_number(,)", "SELECT lag(,) OVER()"] {
+        let error = pg.ParseSQL(sql, &[]).err().unwrap();
+        assert!(
+            error
+                .downcast_ref::<crate::PostgreSQLWindowError>()
+                .is_none()
+        );
+    }
+    crate::New()
+        .ParseSQL("SELECT lag(x) IGNORE NULLS OVER() FROM t", &[])
+        .unwrap();
+}

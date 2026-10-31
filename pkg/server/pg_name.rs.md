@@ -113,3 +113,8 @@ PG 请求的 validate_relations 前置 AST 解析显式构造 PostgreSQL Parser�
 ## PostgreSQL 整数转换解析（2026-10-24）
 
 validate_relations 直接使用 PostgreSQL Parser 解析原 SQL；本轮原生词法器已接受 $n，不再为名称门禁将其重写为 ?，避免门禁 AST 丢失参数编号或改变原始偏移。语法错误仍交由后续 command 门禁处理，保留扩展协议 OID 检查顺序。
+
+
+## 2026-10-31 窗口客户端差分
+
+adapt消费parser的typed窗口错误，保留原始SQL字节位置到PG字符位置转换，不匹配SQL或错误字符串。

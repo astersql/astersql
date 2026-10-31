@@ -946,14 +946,32 @@ pub(super) fn pg_offset_window_signature(expression: &ast::ExprNode) -> SessionR
             }
         });
     if invalid {
-        let error = super::pg_array::PgArrayError {
-            state: "42883",
-            message: "LAG/LEAD requires int4-compatible arguments".into(),
-            position: None,
-        };
-        return Err(SessionError::with_source(
-            error.to_string(),
-            astersql_errors::SharedError::new(error),
+        fn input_type(arg: &ast::ExprNode) -> u8 {
+            use astersql_parser_mysql::r#type::*;
+            match &arg.Kind {
+                ast::ExprKind::Parentheses(inner) | ast::ExprKind::Unary { V: inner, .. } => {
+                    input_type(inner)
+                }
+                ast::ExprKind::Cast { Tp, .. } => {
+                    if Tp.GetFlag() & IsBooleanFlag != 0 {
+                        TypeTiny
+                    } else {
+                        Tp.GetType()
+                    }
+                }
+                ast::ExprKind::Value(v) => match &v.Datum {
+                    ast::ValueDatum::Bool(_) => TypeTiny,
+                    ast::ValueDatum::Int64(_) | ast::ValueDatum::Uint64(_) => TypeLong,
+                    ast::ValueDatum::Decimal(_) => TypeNewDecimal,
+                    ast::ValueDatum::Float32(_) | ast::ValueDatum::Float64(_) => TypeDouble,
+                    _ => TypeNull,
+                },
+                _ => TypeLong,
+            }
+        }
+        return Err(super::function_diagnostics::no_matching_function(
+            expression,
+            &Args.iter().map(input_type).collect::<Vec<_>>(),
         ));
     }
     Ok(())
@@ -4174,7 +4192,23 @@ where
         if Args.len() != 1 {
             return Err(SessionError::new("last_value requires one argument"));
         }
-        let bound = |b: &ast::FrameBound| -> SessionResult<windows::FrameBound> {
+        let bound = |b: &ast::FrameBound, starting: bool| -> SessionResult<windows::FrameBound> {
+            let offset_error = |null: bool| {
+                let diagnostic = super::function_diagnostics::PgFunctionError {
+                    state: if null { "22004" } else { "22013" },
+                    message: format!(
+                        "frame {} offset must not be {}",
+                        if starting { "starting" } else { "ending" },
+                        if null { "null" } else { "negative" }
+                    ),
+                    hint: None,
+                    position: None,
+                };
+                SessionError::with_source(
+                    diagnostic.to_string(),
+                    astersql_errors::SharedError::new(diagnostic),
+                )
+            };
             let kind = match b.Type {
                 ast::BoundType::Preceding => windows::BoundType::Preceding,
                 ast::BoundType::CurrentRow => windows::BoundType::CurrentRow,
@@ -4194,7 +4228,7 @@ where
                         .map(|e| evaluate(e, &rows[row_index].1))
                         .transpose()?
                         .flatten()
-                        .ok_or_else(|| SessionError::new("frame offset must not be null"))?
+                        .ok_or_else(|| offset_error(true))?
                 };
                 let offset = text
                     .parse::<astersql_types::pg_numeric::PgNumeric>()
@@ -4202,7 +4236,7 @@ where
                 if text.eq_ignore_ascii_case("nan")
                     || offset.compare(&"0".parse().expect("zero")) == std::cmp::Ordering::Less
                 {
-                    return Err(SessionError::new("frame offset must not be negative"));
+                    return Err(offset_error(false));
                 }
                 let mut result = windows::FrameBound::default();
                 result.bound_type = kind;
@@ -4235,10 +4269,8 @@ where
                 .map(|e| evaluate(e, &rows[row_index].1))
                 .transpose()?
                 .flatten()
-                .ok_or_else(|| SessionError::new("frame offset must not be null"))?;
-            let n = value
-                .parse::<u64>()
-                .map_err(|_| SessionError::new("frame offset must not be negative"))?;
+                .ok_or_else(|| offset_error(true))?;
+            let n = value.parse::<u64>().map_err(|_| offset_error(false))?;
             Ok(if b.Type == ast::BoundType::Preceding {
                 windows::FrameBound::preceding(n)
             } else {
@@ -4272,8 +4304,8 @@ where
                 } else {
                     windows::FrameType::Range
                 },
-                start: bound(start)?,
-                end: bound(end)?,
+                start: bound(start, true)?,
+                end: bound(end, false)?,
             })
         } else if spec.OrderBy.is_empty() {
             None

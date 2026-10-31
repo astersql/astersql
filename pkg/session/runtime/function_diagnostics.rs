@@ -18,17 +18,21 @@ impl std::fmt::Display for PgFunctionError {
 impl std::error::Error for PgFunctionError {}
 
 pub(super) fn no_matching_function(expression: &ast::ExprNode, types: &[u8]) -> SessionError {
-    let ast::ExprKind::Function { FnName, Schema, .. } = &expression.Kind else {
-        unreachable!()
-    };
-    let name = if Schema.L.is_empty() {
-        FnName.L.clone()
-    } else {
-        format!("{}.{}", Schema.L, FnName.L)
+    let name = match &expression.Kind {
+        ast::ExprKind::Function { FnName, Schema, .. } if !Schema.L.is_empty() => {
+            format!("{}.{}", Schema.L, FnName.L)
+        }
+        ast::ExprKind::Function { FnName, .. } => FnName.L.clone(),
+        ast::ExprKind::WindowFunction { Name, .. } => Name.to_ascii_lowercase(),
+        _ => unreachable!(),
     };
     let arguments = types
         .iter()
         .map(|tp| match *tp {
+            astersql_parser_mysql::r#type::TypeTiny => "boolean",
+            astersql_parser_mysql::r#type::TypeShort => "smallint",
+            astersql_parser_mysql::r#type::TypeNewDecimal => "numeric",
+            astersql_parser_mysql::r#type::TypeDouble => "double precision",
             astersql_parser_mysql::r#type::TypeLong => "integer",
             astersql_parser_mysql::r#type::TypeLonglong => "bigint",
             astersql_parser_mysql::r#type::TypeVarString
@@ -153,6 +157,12 @@ pub fn ValidatePostgreSQLExclusiveFunctions(
     impl ast::Visitor for Exclusive {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
             if self.0.is_some() {
+                return true;
+            }
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && let Err(error) = super::relational_value::pg_offset_window_signature(expr)
+            {
+                self.0 = Some(error);
                 return true;
             }
             if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()

@@ -21914,11 +21914,11 @@ fn pg09_13_sql() {
     assert!(ms.iter().any(|m| m.0 == b'3'));
     assert!(!ms.iter().any(|m| m.0 == b'E'));
     for (frame, state) in [
-        ("ROWS BETWEEN CURRENT ROW AND 1 PRECEDING", "42601"),
-        ("ROWS BETWEEN 1 FOLLOWING AND CURRENT ROW", "42601"),
+        ("ROWS BETWEEN CURRENT ROW AND 1 PRECEDING", "42P20"),
+        ("ROWS BETWEEN 1 FOLLOWING AND CURRENT ROW", "42P20"),
         (
             "ROWS BETWEEN UNBOUNDED FOLLOWING AND UNBOUNDED FOLLOWING",
-            "42601",
+            "42P20",
         ),
         ("ROWS BETWEEN -1 PRECEDING AND CURRENT ROW", "22013"),
         ("ROWS BETWEEN NULL PRECEDING AND CURRENT ROW", "22004"),

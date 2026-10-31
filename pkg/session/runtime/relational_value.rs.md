@@ -363,3 +363,8 @@ GROUPS 复用 SQL 排序后连续 peer 组号与真实 RANGE 帧处理器，偏�
 ## PostgreSQL 窗口 EXCLUDE
 
 relational_window_value将PostgreSQL AST排除枚举透传到现有int4 last_value物理帧，保留基础ROWS/RANGE/GROUPS和dense peer身份。未接线的帧敏感签名返回0A000，避免旧求值器忽略EXCLUDE；rank/lag/lead等忽略帧的既有路径不受排除影响。
+
+
+## 2026-10-31 窗口客户端差分
+
+LAG/LEAD静态签名检查复用typed函数错误；共享last_value帧offset适配保留starting/ending区分并以PgFunctionError传递22004/22013。

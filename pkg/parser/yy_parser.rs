@@ -254,6 +254,21 @@ pub(crate) fn check_ast_depth_limit(
     Ok(())
 }
 
+/// PostgreSQL window syntax/analysis error at an original SQL byte offset.
+/// Kept typed so the protocol boundary never parses the native error message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgreSQLWindowError {
+    pub state: &'static str,
+    pub message: String,
+    pub offset: usize,
+}
+impl std::fmt::Display for PostgreSQLWindowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for PostgreSQLWindowError {}
+
 /// 一次 SQL 解析会话的状态：字符集、词法器、AST 结果与 yacc 符号缓存。
 // Parser 保存一次解析所需的连接字符集、词法器、结果以及 yacc 临时值。
 // Go 的切片复用和指针字段在这里保留为 Vec/Option 形状，以表达生命周期和可空语义。

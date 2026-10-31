@@ -115,3 +115,8 @@ Rust 用 `Box<dyn Node>`/`Box<dyn Any>` 表达 Go 接口值，用 `Option<Box<_>
 ## PostgreSQL 整数转换（2026-10-24）
 
 ParseSQL 在 reset 后把连接所属 SqlDialect 注入本轮 Scanner；默认 MySQL 的词法和 CAST AS SIGNED 路径保持。PostgreSQL 的后缀转换和整数 CAST 由同一生成语法/动作完成，不经 SQL 文本替换。
+
+
+## 2026-10-31 窗口客户端差分
+
+PostgreSQLWindowError保存窗口规约诊断的SQLSTATE、消息和原始字节位置，复用共享错误载体，由协议适配边界转字符位置。
