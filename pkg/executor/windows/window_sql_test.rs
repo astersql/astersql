@@ -758,3 +758,85 @@ fn pg09_14_exact_key_domains() {
         }
     }
 }
+
+#[test]
+fn pg09_15_execution() {
+    for pipelined in [false, true] {
+        let rows = vec![
+            vec![Value::Int(10)],
+            vec![Value::Null],
+            vec![Value::Int(30)],
+        ];
+        let result = execute(
+            rows,
+            vec![],
+            vec![],
+            Some(WindowFrame {
+                frame_type: FrameType::Rows,
+                start: current_row(),
+                end: current_row(),
+            }),
+            vec![Box::new(super::Lag::new(0, 1, Value::Int(99)))],
+            pipelined,
+        );
+        assert_eq!(
+            result.into_iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
+            vec![Value::Int(99), Value::Int(10), Value::Null]
+        );
+    }
+}
+
+#[test]
+fn pg09_15_execution_row_arguments_chunks_cleanup() {
+    for pipelined in [false, true] {
+        for lead in [false, true] {
+            let input = vec![
+                vec![Value::Int(10), Value::Int(1), Value::Int(1)],
+                vec![Value::Null, Value::Int(-1), Value::Int(2)],
+                vec![Value::Int(30), Value::Int(0), Value::Int(3)],
+                vec![Value::Int(40), Value::Null, Value::Int(4)],
+            ];
+            let plan = build_plan(
+                3,
+                vec![],
+                vec![],
+                Some(WindowFrame {
+                    frame_type: FrameType::Rows,
+                    start: current_row(),
+                    end: current_row(),
+                }),
+                vec![Box::new(super::Lag::with_row_arguments(0, 1, 2, lead))],
+                pipelined,
+            );
+            let mut executor = super::build(
+                plan,
+                Box::new(super::VecChunkExecutor::new(
+                    input.into_iter().map(|r| Chunk::new(vec![r])).collect(),
+                )),
+                false,
+            )
+            .unwrap();
+            let context = ExecContext::default();
+            executor.open(&context).unwrap();
+            let mut actual = vec![];
+            let mut chunk = Chunk::default();
+            loop {
+                executor.next(&context, &mut chunk).unwrap();
+                if chunk.rows.is_empty() {
+                    break;
+                }
+                actual.extend(chunk.rows.iter().map(|r| r[3].clone()));
+            }
+            assert_eq!(
+                actual,
+                if lead {
+                    vec![Value::Null, Value::Int(10), Value::Int(30), Value::Null]
+                } else {
+                    vec![Value::Int(1), Value::Int(30), Value::Int(30), Value::Null]
+                }
+            );
+            executor.close().unwrap();
+            assert_eq!(executor.memory_bytes(), 0);
+        }
+    }
+}

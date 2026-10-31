@@ -304,3 +304,8 @@ prepared推断和显式Uuid数组cast返回2951，与标量2950分离。
 ## PostgreSQL jsonb 数组（任务42）
 
 协议数组OID允许3807，JSONB[]上下文参数推断返回3807。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+protocol_parameter_types 对 LAG/LEAD 的直接未知参数提供本任务 int4 域约束，显式不兼容参数在 Parse 返回42883；validate_function_visibility 接入局部窗口签名检查，覆盖空输入。

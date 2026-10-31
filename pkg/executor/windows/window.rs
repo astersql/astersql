@@ -697,6 +697,10 @@ pub trait WindowFunction: Send {
     fn ignores_frame(&self) -> bool {
         false
     }
+    /// Needs all partition rows before the first result can be produced.
+    fn requires_partition(&self) -> bool {
+        false
+    }
     /// Fixed bytes allocated with the partial result.
     fn initial_partial_result_memory_usage(&self) -> i64 {
         size_of::<usize>() as i64
@@ -825,6 +829,7 @@ impl WindowFunction for LastValue {
 pub struct Lag {
     column: usize,
     offset: usize,
+    row_arguments: Option<(usize, usize, bool)>,
     default: Value,
     rows: Vec<Row>,
     current: usize,
@@ -836,16 +841,23 @@ impl Lag {
         Self {
             column,
             offset,
+            row_arguments: None,
             default,
             rows: Vec::new(),
             current: 0,
         }
     }
+    /// Bound per-row offset/default columns; lead reverses the signed direction.
+    pub fn with_row_arguments(column: usize, offset: usize, default: usize, lead: bool) -> Self {
+        let mut state = Self::new(column, 1, Value::Null);
+        state.row_arguments = Some((offset, default, lead));
+        state
+    }
 }
 
 impl WindowFunction for Lag {
     fn reset(&mut self) {
-        self.rows.clear();
+        self.rows = Vec::new();
         self.current = 0;
     }
 
@@ -855,22 +867,47 @@ impl WindowFunction for Lag {
     }
 
     fn result(&mut self) -> Result<Value> {
-        let result = if let Some(source) = self.current.checked_sub(self.offset) {
-            self.rows
-                .get(source)
-                .and_then(|row| row.get(self.column))
-                .cloned()
-                .ok_or_else(|| {
-                    Error::new(format!(
-                        "LAG source row {source} or column {} is out of range",
-                        self.column
-                    ))
-                })?
+        let (offset, default, lead) = if let Some((offset, default, lead)) = self.row_arguments {
+            let row = self
+                .rows
+                .get(self.current)
+                .ok_or_else(|| Error::new("LAG/LEAD current row is out of range"))?;
+            let offset = match row.get(offset) {
+                Some(Value::Null) => {
+                    self.current += 1;
+                    return Ok(Value::Null);
+                }
+                Some(Value::Int(n)) => *n as i128,
+                _ => return Err(Error::new("LAG/LEAD offset requires an integer")),
+            };
+            (
+                offset,
+                row.get(default)
+                    .cloned()
+                    .ok_or_else(|| Error::new("LAG/LEAD default column is out of range"))?,
+                lead,
+            )
         } else {
-            self.default.clone()
+            (self.offset as i128, self.default.clone(), false)
+        };
+        let source = self.current as i128 + if lead { offset } else { -offset };
+        let result = if source >= 0 && source < self.rows.len() as i128 {
+            self.rows[source as usize]
+                .get(self.column)
+                .cloned()
+                .ok_or_else(|| Error::new("LAG/LEAD value column is out of range"))?
+        } else {
+            default
         };
         self.current += 1;
         Ok(result)
+    }
+
+    fn ignores_frame(&self) -> bool {
+        true
+    }
+    fn requires_partition(&self) -> bool {
+        true
     }
 
     fn slide(&mut self, _rows: &[Row], _start: u64, _end: u64) -> Result<bool> {
@@ -1795,6 +1832,14 @@ fn calculate_frames(
         let mut values = Vec::with_capacity(functions.len());
         for (index, function) in functions.iter_mut().enumerate() {
             if function.ignores_frame() {
+                if !*initialized_sliding && function.requires_partition() {
+                    update_partial_result_and_track_memory(
+                        memory_tracker,
+                        index,
+                        function.as_mut(),
+                        rows,
+                    )?;
+                }
                 values.push(function.result()?);
                 continue;
             }

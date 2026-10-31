@@ -94,3 +94,8 @@ Rust 文件不是 Go 同路径文件的逐行翻译；其直接语义来源是 `
 ByItem 保留完整排序表达式的字节起始偏移，供 DISTINCT 聚合参数列表约束错误定位；排序方向和表达式语义保持原有规则。
 
 PG ROWS 的负数和 NULL PRECEDING/FOLLOWING 规则生成既有 FrameBound；保留偏移值交由执行器诊断，MySQL 方言拒绝这些新增规则。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+OptLeadLagInfo 复用 Expression 载体接收逐行 offset，原 NumLiteral/paramMarker 两条归并为一条动作；MySQL 仍限制原有数字或参数形式。

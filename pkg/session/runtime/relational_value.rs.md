@@ -346,3 +346,10 @@ PG last_value(int4) 的描述复用参数字段类型；执行把 SQL 比较器�
 ## 数值 RANGE 偏移（任务14）
 
 last_value(int4)显式数值RANGE使用真实排序值与精确numeric排序，再构造既有PhysicalWindowPlan。默认帧仍保留peer编号路径；绑定offset时验证非NULL非负和单排序键，空输入描述沿既有固定身份。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+pg_offset_window_signature 仅检查本任务 int4 LAG/LEAD 签名；relational_window_value 将当前行 offset/default 与整分区输入绑定到 PhysicalWindowPlan/Lag；default 只在对应行越界时求值。保留现有 SQL 分区排序，结果身份继承首参数。
+
+LAG/LEAD 在本 int4 域复用 pg_union_common_type 合并 value/default 的固定返回身份，覆盖未知 NULL value 与 int4 default、零行 Describe；值只对实际被 offset 引用的目标求值，NULL offset 不触发未访问表达式。

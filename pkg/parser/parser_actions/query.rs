@@ -148,7 +148,6 @@ enum QueryRule {
     WindowFuncCallAlt11,
     OptLeadLagInfoAlt01,
     OptLeadLagInfoAlt02,
-    OptLeadLagInfoAlt03,
     OptLLDefaultAlt01,
     OptLLDefaultAlt02,
     OptNullTreatmentAlt01,
@@ -537,11 +536,8 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
             Some(QueryRule::WindowFuncCallAlt11)
         }
         "optleadlaginfo--8514b4b5e2aabf84" => Some(QueryRule::OptLeadLagInfoAlt01),
-        "optleadlaginfo_numliteral_optlldefault--cb509b0866b176ac" => {
+        "optleadlaginfo_expression_optlldefault--69beeba79772b4df" => {
             Some(QueryRule::OptLeadLagInfoAlt02)
-        }
-        "optleadlaginfo_parammarker_optlldefault--6a89f3503e20857e" => {
-            Some(QueryRule::OptLeadLagInfoAlt03)
         }
         "optlldefault--515d84fa322b2557" => Some(QueryRule::OptLLDefaultAlt01),
         "optlldefault_expression--4865c01e92871540" => Some(QueryRule::OptLLDefaultAlt02),
@@ -1397,27 +1393,20 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         QueryRule::OptLeadLagInfoAlt01 | QueryRule::OptLLDefaultAlt01 => out.item = None,
         QueryRule::OptLeadLagInfoAlt02 => {
-            let mut args = vec![parser_ast::ExprNode::Value(
-                rhs[rhs_len - (1)]
-                    .item
-                    .as_deref()
-                    .map(semantic_value_text)
-                    .unwrap_or_default(),
-            )];
-            if let Some(value) = rhs[rhs_len - (0)]
-                .item
-                .as_deref()
-                .and_then(|item| item.downcast_ref::<parser_ast::ExprNode>())
+            let Some(offset) = rhs[rhs_len - 1].expr.clone() else {
+                return Ok(false);
+            };
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                && !matches!(&offset.Kind, parser_ast::ExprKind::ParamMarker { .. })
+                && !matches!(&offset.Kind, parser_ast::ExprKind::Value(v) if matches!(v.Datum, parser_ast::ValueDatum::Int64(_) | parser_ast::ValueDatum::Uint64(_) | parser_ast::ValueDatum::Float32(_) | parser_ast::ValueDatum::Float64(_) | parser_ast::ValueDatum::Decimal(_)))
             {
-                args.push(value.clone());
+                yylex.AppendError(
+                    yylex.Errorf("expression window offsets require PostgreSQL dialect", &[]),
+                );
+                return Err(1);
             }
-            out.item = Some(Box::new(args));
-        }
-        QueryRule::OptLeadLagInfoAlt03 => {
-            let mut args = vec![parser_ast::ExprNode::ParamMarker(
-                rhs[rhs_len - (1)].offset.max(0) as usize,
-            )];
-            if let Some(value) = rhs[rhs_len - (0)]
+            let mut args = vec![offset];
+            if let Some(value) = rhs[rhs_len]
                 .item
                 .as_deref()
                 .and_then(|item| item.downcast_ref::<parser_ast::ExprNode>())

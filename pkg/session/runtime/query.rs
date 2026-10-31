@@ -5907,10 +5907,22 @@ impl ConcreteSession {
             // Window output identity follows its bound argument even when the
             // derived input contains no rows (there is no value to infer from).
             if let ast::ExprKind::WindowFunction { Name, Args, .. } = &expression.Kind
-                && Name.eq_ignore_ascii_case("last_value")
+                && matches!(
+                    Name.to_ascii_lowercase().as_str(),
+                    "last_value" | "lag" | "lead"
+                )
                 && let Some(argument) = Args.first()
             {
                 let mut result = self.pg_case_input_type(argument, source_fields);
+                if matches!(Name.to_ascii_lowercase().as_str(), "lag" | "lead")
+                    && let Some(default) = Args.get(2)
+                {
+                    result = pg_union_common_type(
+                        &result,
+                        &self.pg_case_input_type(default, source_fields),
+                    )
+                    .unwrap_or(result);
+                }
                 result.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
                 return result;
             }

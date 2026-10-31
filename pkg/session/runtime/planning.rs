@@ -2895,9 +2895,24 @@ impl ConcreteSession {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL || markers.is_empty() {
             return Ok(oids);
         }
-        struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<(usize, u32)>);
+        struct Constraints(Vec<(usize, u32)>, Vec<usize>, Vec<(usize, u32)>, Vec<usize>);
         impl ast::ExprNodeVisitor for Constraints {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                // This task binds the int4 LAG/LEAD overload only. Offset
+                // is int4 and value/default share that fixed identity at Parse.
+                if let ast::ExprKind::WindowFunction { Name, Args, .. } = &input.Kind
+                    && matches!(Name.to_ascii_lowercase().as_str(), "lag" | "lead")
+                {
+                    for arg in Args {
+                        let mut arg = arg;
+                        while let ast::ExprKind::Parentheses(inner) = &arg.Kind {
+                            arg = inner;
+                        }
+                        if let ast::ExprKind::ParamMarker { Offset } = arg.Kind {
+                            self.3.push(Offset);
+                        }
+                    }
+                }
                 // Bare OID0 parameters acquire the fixed argument identity at Parse.
                 // The three-argument date_trunc source is timestamptz and its zone
                 // is text. Supplied identities remain source types.
@@ -3121,7 +3136,7 @@ impl ConcreteSession {
                 *oid = inferred;
             }
         }
-        let mut constraints = Constraints(Vec::new(), Vec::new(), Vec::new());
+        let mut constraints = Constraints(Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for statement in &statements {
             // SELECT retains its explicit-cast policy. DML direct markers
             // are constrained by the target schema, even without RETURNING.
@@ -3168,6 +3183,24 @@ impl ConcreteSession {
                     )
                 {
                     let _ = expression.Accept(&mut constraints);
+                }
+            }
+        }
+        for offset in constraints.3 {
+            if let Ok(index) = markers.binary_search_by_key(&offset, |marker| marker.offset) {
+                let source = supplied.get(index).copied().unwrap_or(0);
+                if !matches!(source, 0 | 21 | 23) {
+                    return Err(SessionError::with_source(
+                        "LAG/LEAD requires int4-compatible arguments",
+                        astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                            state: "42883",
+                            message: "LAG/LEAD requires int4-compatible arguments".into(),
+                            position: None,
+                        }),
+                    ));
+                }
+                if oids[index] == 0 {
+                    oids[index] = 23;
                 }
             }
         }
@@ -3237,7 +3270,8 @@ pub(super) fn validate_function_visibility(
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
             if self.dialect == ast::SqlDialect::PostgreSQL
                 && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
-                && let Err(error) = super::relational_value::pg_conditional_collation(expr)
+                && let Err(error) = super::relational_value::pg_offset_window_signature(expr)
+                    .and_then(|_| super::relational_value::pg_conditional_collation(expr))
             {
                 self.validation_error.get_or_insert(error);
             }

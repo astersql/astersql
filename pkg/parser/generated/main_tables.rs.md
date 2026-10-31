@@ -177,3 +177,8 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 由 `cargo run --release --locked -p astersql-parsergen -- generate` 随主文法生成。新增 `PgAggregateArity` 的 COUNT/SUM/AVG 多参数载体以及到 `SumExpr` 的转接，供 PostgreSQL 在分析阶段给出签名诊断；对应语义动作对 MySQL 继续拒绝。表状态编号与稀疏行的变动是生成结果，不承载新的聚合执行逻辑。
 
 任务13新增四条 PG 帧偏移语法规则后由 parsergen generate 再生主表。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+由既有 astersql-parsergen generate 生成；OptLeadLagInfo 的 NumLiteral/paramMarker 合并为 Expression，以承载 PG 逐行、负数、NULL 与 cast 偏移。

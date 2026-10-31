@@ -2970,8 +2970,7 @@ WindowFuncCall : "FIRST_VALUE" "(" Expression ")" OptNullTreatment WindowingClau
 WindowFuncCall : "LAST_VALUE" "(" Expression ")" OptNullTreatment WindowingClause @action;
 WindowFuncCall : "NTH_VALUE" "(" Expression "," SimpleExpr ")" OptFromFirstLast OptNullTreatment WindowingClause @action;
 OptLeadLagInfo : ε @action;
-OptLeadLagInfo : "," NumLiteral OptLLDefault @action;
-OptLeadLagInfo : "," paramMarker OptLLDefault @action;
+OptLeadLagInfo : "," Expression OptLLDefault @action;
 OptLLDefault : ε @action;
 OptLLDefault : "," Expression @action;
 OptNullTreatment : ε @action;

@@ -897,6 +897,51 @@ pub(super) fn relational_hex_value(argument: &ast::ExprNode, value: &str) -> Str
         .collect()
 }
 
+/// Validate the locally supported int4 offset-window signature before execution,
+/// including empty inputs where runtime argument evaluation never occurs.
+pub(super) fn pg_offset_window_signature(expression: &ast::ExprNode) -> SessionResult<()> {
+    let ast::ExprKind::WindowFunction { Name, Args, .. } = &expression.Kind else {
+        return Ok(());
+    };
+    if !matches!(Name.to_ascii_lowercase().as_str(), "lag" | "lead") {
+        return Ok(());
+    }
+    let invalid = !(1..=3).contains(&Args.len())
+        || Args.iter().any(|arg| {
+            let mut arg = arg;
+            while let ast::ExprKind::Parentheses(inner) = &arg.Kind {
+                arg = inner;
+            }
+            match &arg.Kind {
+                ast::ExprKind::Cast { Tp, .. } => {
+                    use astersql_parser_mysql::r#type::*;
+                    !matches!(Tp.GetType(), TypeTiny | TypeShort | TypeLong | TypeInt24)
+                        || Tp.GetFlag() & IsBooleanFlag != 0
+                }
+                ast::ExprKind::Value(v) => matches!(
+                    &v.Datum,
+                    ast::ValueDatum::Bool(_)
+                        | ast::ValueDatum::Float32(_)
+                        | ast::ValueDatum::Float64(_)
+                        | ast::ValueDatum::Decimal(_)
+                ),
+                _ => false,
+            }
+        });
+    if invalid {
+        let error = super::pg_array::PgArrayError {
+            state: "42883",
+            message: "LAG/LEAD requires int4-compatible arguments".into(),
+            position: None,
+        };
+        return Err(SessionError::with_source(
+            error.to_string(),
+            astersql_errors::SharedError::new(error),
+        ));
+    }
+    Ok(())
+}
+
 /// Derive the explicit identity needed by conditional text expressions. C and
 /// POSIX share bytewise comparison but remain distinct explicit SQL collations.
 /// An outer COLLATE overrides the child's derived identity; the analysis
@@ -3723,12 +3768,23 @@ pub(super) fn relational_expression_type(
             new_type(astersql_parser_mysql::r#type::TypeLonglong)
         }
         ast::ExprKind::WindowFunction { Name, Args, .. }
-            if Name.eq_ignore_ascii_case("last_value") =>
+            if Name.eq_ignore_ascii_case("last_value")
+                || (matches!(Name.to_ascii_lowercase().as_str(), "lag" | "lead")
+                    && PG_CAST_TABLE.with(|slot| slot.borrow().is_some())) =>
         {
             let mut result = Args
                 .first()
                 .map(|argument| relational_expression_type(argument, table))
                 .unwrap_or_else(|| new_type(astersql_parser_mysql::r#type::TypeVarString));
+            if matches!(Name.to_ascii_lowercase().as_str(), "lag" | "lead")
+                && let Some(default) = Args.get(2)
+            {
+                result = super::query::pg_union_common_type(
+                    &result,
+                    &relational_expression_type(default, table),
+                )
+                .unwrap_or(result);
+            }
             result.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
             result
         }
@@ -3917,6 +3973,173 @@ where
         .iter()
         .position(|index| *index == row_index)
         .expect("current row belongs to its partition");
+    if matches!(Name.to_ascii_lowercase().as_str(), "lag" | "lead")
+        && PG_CAST_TABLE.with(|slot| slot.borrow().is_some())
+    {
+        use astersql_executor::windows;
+        if !(1..=3).contains(&Args.len()) {
+            return Err(SessionError::new(
+                "LAG/LEAD requires one to three arguments",
+            ));
+        }
+        fn int4_argument(arg: &ast::ExprNode, table: &astersql_meta_model::TableInfo) -> bool {
+            use astersql_parser_mysql::r#type::*;
+            let tp = relational_expression_type(arg, table);
+            if tp.GetFlag() & IsBooleanFlag != 0 {
+                return false;
+            }
+            match &arg.Kind {
+                ast::ExprKind::Parentheses(inner) | ast::ExprKind::Unary { V: inner, .. } => {
+                    int4_argument(inner, table)
+                }
+                ast::ExprKind::Binary { Op, L, R }
+                    if matches!(Op.as_str(), "+" | "-" | "*" | "%") =>
+                {
+                    int4_argument(L, table) && int4_argument(R, table)
+                }
+                ast::ExprKind::Value(v) => matches!(
+                    v.Datum,
+                    ast::ValueDatum::Null
+                        | ast::ValueDatum::Int64(_)
+                        | ast::ValueDatum::Uint64(_)
+                        | ast::ValueDatum::String(_)
+                ),
+                ast::ExprKind::ParamMarker { .. } => true,
+                _ => matches!(
+                    tp.GetType(),
+                    TypeNull | TypeTiny | TypeShort | TypeLong | TypeInt24
+                ),
+            }
+        }
+        let valid = PG_CAST_TABLE.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_none_or(|table| Args.iter().all(|arg| int4_argument(arg, table)))
+        });
+        if !valid {
+            return Err(SessionError::with_source(
+                "LAG/LEAD requires int4-compatible arguments",
+                astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                    state: "42883",
+                    message: "LAG/LEAD requires int4-compatible arguments".into(),
+                    position: None,
+                }),
+            ));
+        }
+        let integer = |expr: &ast::ExprNode, index: usize| -> SessionResult<windows::Value> {
+            evaluate(expr, &rows[index].1)?
+                .map(|v| {
+                    let n = v.parse::<i64>().map_err(|_| {
+                        SessionError::new("LAG/LEAD argument is not an integer value")
+                    })?;
+                    if i32::try_from(n).is_err() {
+                        return Err(SessionError::with_source(
+                            "LAG/LEAD integer out of range",
+                            astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                                state: "22003",
+                                message: "integer out of range".into(),
+                                position: None,
+                            }),
+                        ));
+                    }
+                    Ok(windows::Value::Int(n))
+                })
+                .transpose()
+                .map(|v| v.unwrap_or(windows::Value::Null))
+        };
+        let lead = Name.eq_ignore_ascii_case("lead");
+        let offsets = partition
+            .iter()
+            .map(|index| {
+                Args.get(1)
+                    .map(|e| integer(e, *index))
+                    .transpose()
+                    .map(|n| n.unwrap_or(windows::Value::Int(1)))
+            })
+            .collect::<SessionResult<Vec<_>>>()?;
+        let targets = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, offset)| match offset {
+                windows::Value::Int(n) => {
+                    let source = i as i128 + if lead { *n as i128 } else { -(*n as i128) };
+                    (source >= 0 && source < partition.len() as i128).then_some(source as usize)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut needed = vec![false; partition.len()];
+        for target in targets.iter().flatten() {
+            needed[*target] = true;
+        }
+        let mut input = Vec::with_capacity(partition.len());
+        for (i, index) in partition.iter().enumerate() {
+            let offset = offsets[i].clone();
+            let out_of_bounds = matches!(offset, windows::Value::Int(_)) && targets[i].is_none();
+            // Defaults belong to the current row and are needed only outside
+            // the partition. A present NULL target never selects the default.
+            let default = if out_of_bounds {
+                Args.get(2)
+                    .map(|e| integer(e, *index))
+                    .transpose()?
+                    .unwrap_or(windows::Value::Null)
+            } else {
+                windows::Value::Null
+            };
+            // NULL offsets and unreferenced values do not force evaluation of
+            // a value expression that no row actually accesses.
+            let value = if needed[i] {
+                integer(&Args[0], *index)?
+            } else {
+                windows::Value::Null
+            };
+            input.push(vec![value, offset, default]);
+        }
+        let plan = windows::PhysicalWindowPlan {
+            schema_columns: 4,
+            partition_by: vec![],
+            order_by: vec![],
+            frame: None,
+            window_functions: vec![Box::new(windows::Lag::with_row_arguments(0, 1, 2, lead))],
+            pipelined_enabled: false,
+        };
+        let mut executor = windows::build(
+            plan,
+            Box::new(windows::VecChunkExecutor::new(vec![windows::Chunk::new(
+                input,
+            )])),
+            false,
+        )
+        .map_err(|e| SessionError::new(e.to_string()))?;
+        let context = windows::ExecContext::default();
+        let result = (|| {
+            executor
+                .open(&context)
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            let mut output = windows::Chunk::default();
+            let mut seen = 0;
+            loop {
+                executor
+                    .next(&context, &mut output)
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                if output.rows.is_empty() {
+                    return Err(SessionError::new("missing LAG/LEAD result"));
+                }
+                if position < seen + output.rows.len() {
+                    return match output.rows[position - seen].last() {
+                        Some(windows::Value::Int(n)) => Ok(Some(n.to_string())),
+                        Some(windows::Value::Null) => Ok(None),
+                        _ => Err(SessionError::new("invalid LAG/LEAD result")),
+                    };
+                }
+                seen += output.rows.len();
+            }
+        })();
+        let closed = executor
+            .close()
+            .map_err(|e| SessionError::new(e.to_string()));
+        return result.and_then(|v| closed.map(|_| v));
+    }
     if Name.eq_ignore_ascii_case("last_value")
         && PG_CAST_TABLE.with(|slot| {
             slot.borrow().as_ref().is_some_and(|table| {

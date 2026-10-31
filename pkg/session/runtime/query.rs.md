@@ -323,3 +323,10 @@ Typed text→bytea evaluation uses the shared strict scalar input helper. COALES
 聚合参数的 numeric/real/double precision 非法常量复用已有严格输入转换器，在分析阶段补齐 22P02 的原值与源位置；输入文本先经既有 RedactURL 脱敏，避免凭证进入错误字段，不修改全局类型库或聚合状态机。
 
 PG LAST_VALUE 的源字段类型绑定在无行输入时也递归解析参数身份；Describe 不通过首行值推断 int4。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+PG LAG/LEAD 与 last_value 一样从绑定首参数推导固定返回身份，零行 Describe 不从数据猜测类型。
+
+LAG/LEAD 在本 int4 域复用 pg_union_common_type 合并 value/default 的固定返回身份，覆盖未知 NULL value 与 int4 default、零行 Describe；值只对实际被 offset 引用的目标求值，NULL offset 不触发未访问表达式。

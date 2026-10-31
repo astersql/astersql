@@ -6436,3 +6436,25 @@ fn pg09_13_invalid_frame_bounds() {
         );
     }
 }
+
+#[test]
+fn pg09_15_offset_expression_ast() {
+    for offset in ["o", "-1", "NULL", "id+1", "$1::int4"] {
+        let sql = format!("SELECT lag(x,{offset},id::int4) OVER(ORDER BY id) FROM t");
+        crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(&sql, &[])
+            .unwrap();
+    }
+    for offset in ["1", "?"] {
+        crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+            .ParseSQL(&format!("SELECT lag(x,{offset},0) OVER() FROM t"), &[])
+            .unwrap();
+    }
+    for offset in ["o", "-1", "NULL", "id+1"] {
+        assert!(
+            crate::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+                .ParseSQL(&format!("SELECT lag(x,{offset},0) OVER() FROM t"), &[])
+                .is_err()
+        );
+    }
+}

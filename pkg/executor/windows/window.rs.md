@@ -92,3 +92,8 @@ LAST_VALUE 的整数适配器复用 aggfuncs::func_value::LastValue<i64>，保�
 ## 数值 RANGE 偏移（任务14）
 
 FrameBound绑定numeric偏移和NULL排序；精确整数使用i128，numeric复用PgNumeric比较/加减，浮点键独立保留浮点算术。缓冲与流水线共用candidate_cmp_boundary；偏移帧要求一个排序键。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+Lag 复用既有状态，新增 with_row_arguments 绑定逐行 offset/default 与 lead 方向；signed 偏移用 i128 计算，NULL offset 返回 NULL，越界才选择当前行 default。requires_partition 标识整分区读取；窄帧处理器仅初始化一次该状态，保留目标 NULL。

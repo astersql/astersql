@@ -95,3 +95,8 @@ Go 测试 `window_executor_test.go::TestWindowExecutorsBasic`、`TestBuildOrdere
 - 修改 RANGE 装配时，必须保留起止两端 `update_compare_cols` 的错误传播，并同时检查升序、降序、无 `ORDER BY`、多排序键和列越界场景。相关独立测试宜放在同目录 `window_executor_test.rs` 或 `window_test.rs`，不要嵌入生产源文件。
 - 修改内存初值或状态字段时，要与 `WindowMemoryTracker::open/close`、两种执行器的重置逻辑以及 `window_memory_test.rs` 同步；重点风险是重复计费、漏释放和输出缓冲移交后仍计费。
 - 若要接入真实 Rust planner/session 主链，应新增明确的适配层，把物理计划和表达式描述转换成此处的简化计划，而不是让本文件悄悄承担 SQL 解析或 planner 类型转换；同时需要补充生产调用边和端到端 SQL 测试。
+
+
+## 2026-10-31 LAG/LEAD 逐行偏移
+
+存在 requires_partition 函数时复用缓冲式执行器；任意 signed LAG/LEAD 偏移不能依赖流水线当前帧已就绪条件。此回退不创建第二执行器。

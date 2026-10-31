@@ -115,7 +115,13 @@ pub fn build(
         .schema_columns
         .checked_sub(function_count)
         .ok_or_else(|| Error::new("window function count exceeds schema columns"))?;
-    let pipelined = force_pipelined || plan.pipelined_enabled;
+    // Arbitrary signed offsets can reach either end of the partition.
+    // Keep the existing buffered processor for these functions.
+    let pipelined = (force_pipelined || plan.pipelined_enabled)
+        && !plan
+            .window_functions
+            .iter()
+            .any(|function| function.requires_partition());
 
     // 流水线：默认帧为无界 PRECEDING..FOLLOWING；RANGE 需绑定比较列。
     if pipelined {
