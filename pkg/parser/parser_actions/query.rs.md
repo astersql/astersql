@@ -114,3 +114,7 @@ PG的IGNORE/RESPECT NULLS在现有语义规约拒绝；非法帧按起止类别�
 ## 2026-11-01 INT4 FROM 序列行源
 
 PG 专属 TableFactor 接收 FunctionCallGeneric、可选表别名及列别名，保存到 TableSource.FunctionSource；函数表达式读取既有 yySymType.expr，MySQL 保持拒绝该形态。
+
+## 关联函数表源
+
+PG LATERAL 函数表源复用 PgFunctionSource 归约动作；显式产生式只设置现有 TableSource.Lateral，保留方言门禁和参数/别名载体。

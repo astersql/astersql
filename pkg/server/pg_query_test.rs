@@ -25571,3 +25571,491 @@ fn pg09_25_sql() {
         }
     }
 }
+
+#[test]
+fn pg09_26_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+    let sql = "SELECT t.id AS id,g.v AS v FROM (VALUES(1::int4,2::int4),(2,0),(3,NULL::int4)) t(id,n) LEFT JOIN LATERAL generate_series(1::int4,t.n,1::int4) AS g(v) ON true ORDER BY t.id,g.v";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| text_row(&m.1))
+            .collect::<Vec<_>>(),
+        vec![
+            vec![Some("1".into()), Some("1".into())],
+            vec![Some("1".into()), Some("2".into())],
+            vec![Some("2".into()), None],
+            vec![Some("3".into()), None]
+        ]
+    );
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = Vec::new();
+        loop {
+            let m = read(s);
+            let end = m.0 == b'Z';
+            ms.push(m);
+            if end {
+                return ms;
+            }
+        }
+    }
+    #[track_caller]
+    fn description(d: &[u8], format: i16) {
+        assert_eq!(&d[..2], &2i16.to_be_bytes());
+        let mut offset = 2;
+        for name in ["id", "v"] {
+            let end = d[offset..].iter().position(|b| *b == 0).unwrap();
+            assert_eq!(&d[offset..offset + end], name.as_bytes());
+            offset += end + 1;
+            assert_eq!(
+                &d[offset + 6..offset + 10],
+                &23u32.to_be_bytes(),
+                "field {name}, description {d:?}"
+            );
+            assert_eq!(&d[offset + 10..offset + 12], &4i16.to_be_bytes());
+            assert_eq!(&d[offset + 12..offset + 16], &(-1i32).to_be_bytes());
+            assert_eq!(&d[offset + 16..offset + 18], &format.to_be_bytes());
+            offset += 18;
+        }
+        assert_eq!(offset, d.len());
+    }
+    fn error(ms: &[(u8, Vec<u8>)], state: &str, status: u8) {
+        let e = &ms.iter().find(|m| m.0 == b'E').expect("error response").1;
+        let mut fields = std::collections::BTreeMap::new();
+        let mut offset = 0;
+        while e[offset] != 0 {
+            let tag = e[offset];
+            offset += 1;
+            let n = e[offset..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(tag, std::str::from_utf8(&e[offset..offset + n]).unwrap());
+            offset += n + 1;
+        }
+        assert_eq!(fields.get(&b'S'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'V'), Some(&"ERROR"));
+        assert_eq!(fields.get(&b'C'), Some(&state));
+        assert!(!fields[&b'M'].is_empty());
+        println!("pg09_26 error fields={fields:?}");
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![status]));
+    }
+    fn successful_rows(s: &mut TcpStream, sql: &str) -> Vec<Vec<Option<String>>> {
+        let ms = query(s, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| text_row(&m.1))
+            .collect()
+    }
+    description(&ms.iter().find(|m| m.0 == b'T').unwrap().1, 0);
+    let fixture = "(VALUES(1::int4,2::int4),(2,0),(3,NULL::int4),(4,1)) t(id,n)";
+    for lateral in ["", "LATERAL "] {
+        let q = format!(
+            "SELECT t.id AS id,g.v AS v FROM {fixture} CROSS JOIN {lateral}generate_series(1::int4,t.n) g(v) ORDER BY t.id,g.v"
+        );
+        assert_eq!(
+            successful_rows(&mut s, &q),
+            vec![
+                vec![Some("1".into()), Some("1".into())],
+                vec![Some("1".into()), Some("2".into())],
+                vec![Some("4".into()), Some("1".into())]
+            ]
+        );
+        let q = format!(
+            "SELECT t.id AS id,g.v AS v FROM {fixture} LEFT JOIN {lateral}generate_series(1::int4,t.n) g(v) ON false ORDER BY t.id"
+        );
+        assert_eq!(
+            successful_rows(&mut s, &q),
+            (1..=4)
+                .map(|id| vec![Some(id.to_string()), None])
+                .collect::<Vec<_>>()
+        );
+    }
+    for (source, expected_left) in [
+        (
+            "(VALUES(1::int4,NULL::int4),(2,NULL::int4)) t(id,n)",
+            vec![vec![Some("1".into()), None], vec![Some("2".into()), None]],
+        ),
+        ("(SELECT 1::int4 AS id,2::int4 AS n WHERE false) t", vec![]),
+    ] {
+        for join in ["CROSS JOIN", "LEFT JOIN"] {
+            let on = if join.starts_with("LEFT") {
+                " ON true"
+            } else {
+                ""
+            };
+            let q = format!(
+                "SELECT t.id AS id,g.v AS v FROM {source} {join} generate_series(1::int4,t.n) g(v){on} ORDER BY t.id"
+            );
+            let ms = query(&mut s, &q);
+            assert!(!ms.iter().any(|m| m.0 == b'E'), "{q}: {ms:?}");
+            description(&ms.iter().find(|m| m.0 == b'T').unwrap().1, 0);
+            let actual = ms
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| text_row(&m.1))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                if join.starts_with("LEFT") {
+                    expected_left.clone()
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+    assert_eq!(
+        successful_rows(
+            &mut s,
+            "SELECT t.id AS id,g.v AS v FROM (VALUES(1::int4,2147483647::int4),(2,(-2147483648)::int4)) t(id,n) CROSS JOIN generate_series(t.n,t.n) g(v) ORDER BY t.id"
+        ),
+        vec![
+            vec![Some("1".into()), Some("2147483647".into())],
+            vec![Some("2".into()), Some("-2147483648".into())]
+        ]
+    );
+    assert_eq!(
+        successful_rows(
+            &mut s,
+            "SELECT t.id AS id,u.v AS v FROM (VALUES(1::int4,ARRAY[2,NULL,2]::int4[]),(2,'{}'::int4[]),(3,NULL::int4[])) t(id,a) LEFT JOIN LATERAL unnest(t.a) u(v) ON true ORDER BY t.id,u.v"
+        ),
+        vec![
+            vec![Some("1".into()), Some("2".into())],
+            vec![Some("1".into()), Some("2".into())],
+            vec![Some("1".into()), None],
+            vec![Some("2".into()), None],
+            vec![Some("3".into()), None]
+        ]
+    );
+    assert_eq!(
+        successful_rows(
+            &mut s,
+            "SELECT t.id AS id,g.v AS v FROM (VALUES(1::int4)) t(id) RIGHT JOIN LATERAL generate_series(1::int4,2::int4) g(v) ON false ORDER BY g.v"
+        ),
+        vec![vec![None, Some("1".into())], vec![None, Some("2".into())]]
+    );
+    assert_eq!(
+        successful_rows(
+            &mut s,
+            "SELECT t.id AS id,generate_series.generate_series AS v FROM (VALUES(1::int4,0::int4)) t(id,n) LEFT JOIN generate_series(1::int4,t.n) ON true"
+        ),
+        vec![vec![Some("1".into()), None]]
+    );
+    for (q, state) in [
+        (
+            "SELECT g.v FROM (VALUES(1::int4)) t(n) CROSS JOIN generate_series(1::int4,t.m) g(v)",
+            "42703",
+        ),
+        (
+            "SELECT g.v FROM (VALUES(1::int4)) t(n) CROSS JOIN generate_series(1::int4,r.n) g(v) CROSS JOIN (VALUES(1::int4)) r(n)",
+            "42P01",
+        ),
+        (
+            "SELECT g.v FROM (VALUES(1::int4)) t(n) RIGHT JOIN LATERAL generate_series(1::int4,t.n) g(v) ON true",
+            "42P10",
+        ),
+        (
+            "SELECT g.v FROM (VALUES(1::int4)) t(n) CROSS JOIN (VALUES(2::int4)) r(n) CROSS JOIN generate_series(1::int4,n) g(v)",
+            "42702",
+        ),
+        (
+            "SELECT g.v FROM (VALUES(1::int4)) t(n) CROSS JOIN generate_series(1::int4,t.n,0::int4) g(v)",
+            "22023",
+        ),
+    ] {
+        let ms = query(&mut s, q);
+        error(&ms, state, b'I');
+        assert_eq!(
+            successful_rows(&mut s, "SELECT 1::int4 AS c"),
+            vec![vec![Some("1".into())]]
+        );
+    }
+    for (join, on, preserve) in [
+        ("LEFT JOIN LATERAL", " ON true", true),
+        ("CROSS JOIN", "", false),
+    ] {
+        let q = format!(
+            "SELECT t.id AS id,g.v AS v FROM (VALUES(1::int4,$1::int4),(2,0),(3,NULL::int4)) t(id,n) {join} generate_series(1::int4,t.n) g(v){on} ORDER BY t.id,g.v"
+        );
+        send(
+            &mut s,
+            b'P',
+            &[
+                b"lateral26\0".as_slice(),
+                q.as_bytes(),
+                b"\0",
+                &1i16.to_be_bytes(),
+                &23u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut s, b'D', b"Slateral26\0");
+        send(&mut s, b'S', &[]);
+        let ms = ready(&mut s);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        assert_eq!(
+            ms.iter().find(|m| m.0 == b't').unwrap().1,
+            [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+        );
+        description(&ms.iter().find(|m| m.0 == b'T').unwrap().1, 0);
+        for input_format in [0i16, 1] {
+            for output_format in [0i16, 1] {
+                for n in [Some(2i32), Some(0), None, Some(2)] {
+                    let mut bind = b"\0lateral26\0".to_vec();
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(input_format.to_be_bytes());
+                    bind.extend(1i16.to_be_bytes());
+                    if let Some(n) = n {
+                        let bytes = if input_format == 0 {
+                            n.to_string().into_bytes()
+                        } else {
+                            n.to_be_bytes().to_vec()
+                        };
+                        bind.extend((bytes.len() as i32).to_be_bytes());
+                        bind.extend(bytes);
+                    } else {
+                        bind.extend((-1i32).to_be_bytes());
+                    }
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(output_format.to_be_bytes());
+                    send(&mut s, b'B', &bind);
+                    send(&mut s, b'D', b"P\0");
+                    send(&mut s, b'E', &[0; 5]);
+                    send(&mut s, b'S', &[]);
+                    let ms = ready(&mut s);
+                    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+                    assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1); // Only portal Describe emits T.
+                    description(&ms.iter().find(|m| m.0 == b'T').unwrap().1, output_format);
+                    let mut values = if n == Some(2) {
+                        vec![(1, Some(1)), (1, Some(2))]
+                    } else if preserve {
+                        vec![(1, None)]
+                    } else {
+                        vec![]
+                    };
+                    if preserve {
+                        values.extend([(2, None), (3, None)]);
+                    }
+                    let expected = values
+                        .into_iter()
+                        .map(|(id, v): (i32, Option<i32>)| {
+                            if output_format == 0 {
+                                row(&[
+                                    Some(&id.to_string()),
+                                    v.as_ref().map(|v| v.to_string()).as_deref(),
+                                ])
+                            } else {
+                                let mut b = 2i16.to_be_bytes().to_vec();
+                                for value in [Some(id), v] {
+                                    if let Some(value) = value {
+                                        b.extend(4i32.to_be_bytes());
+                                        b.extend(value.to_be_bytes());
+                                    } else {
+                                        b.extend((-1i32).to_be_bytes());
+                                    }
+                                }
+                                b
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        ms.iter()
+                            .filter(|m| m.0 == b'D')
+                            .map(|m| m.1.clone())
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+                }
+            }
+        }
+        send(&mut s, b'C', b"Slateral26\0");
+        send(&mut s, b'S', &[]);
+        assert!(ready(&mut s).iter().any(|m| m.0 == b'3'));
+    }
+    send(&mut s,b'P',&[b"illegal26\0SELECT g.v FROM (VALUES(1::int4)) t(n) RIGHT JOIN LATERAL generate_series(1::int4,t.n) g(v) ON true\0".as_slice(),&0i16.to_be_bytes()].concat());
+    send(&mut s, b'S', &[]);
+    error(&ready(&mut s), "42P10", b'I');
+    assert_eq!(
+        successful_rows(&mut s, "SELECT 1::int4 AS c"),
+        vec![vec![Some("1".into())]]
+    );
+    let bad = "SELECT g.v AS c FROM (VALUES(2::int4)) t(n) CROSS JOIN generate_series(1::int4,t.n,0::int4) g(v)";
+    send(
+        &mut s,
+        b'P',
+        &[
+            b"error26\0".as_slice(),
+            bad.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut s, b'D', b"Serror26\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready(&mut s);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    send(&mut s, b'B', &[b"\0error26\0".as_slice(), &[0; 6]].concat());
+    send(&mut s, b'E', &[0; 5]);
+    send(&mut s, b'S', &[]);
+    let ms = ready(&mut s);
+    error(&ms, "22023", b'I');
+    assert_eq!(
+        successful_rows(&mut s, "SELECT 1::int4 AS c"),
+        vec![vec![Some("1".into())]]
+    );
+    assert_eq!(query(&mut s, "BEGIN").last().unwrap().1, b"T");
+    error(&query(&mut s, bad), "22023", b'E');
+    assert_eq!(query(&mut s, "ROLLBACK").last().unwrap().1, b"I");
+    assert_eq!(
+        successful_rows(&mut s, "SELECT 1::int4 AS c"),
+        vec![vec![Some("1".into())]]
+    );
+    send(&mut s, b'X', &[]);
+}
+
+#[test]
+fn pg09_26_dual_listener_isolation() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, MysqlTestClient, TextValue, WireResponse,
+    };
+    struct Driver;
+    impl crate::server::ServerDriver for Driver {
+        fn name(&self) -> &str {
+            "tidb"
+        }
+    }
+    struct Domain;
+    impl crate::server::Domain for Domain {
+        fn server_id(&self) -> u64 {
+            1
+        }
+        fn start_timestamp(&self) -> i64 {
+            1
+        }
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let server = crate::server::Server::new_test(
+        crate::server::ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            postgres_port: Some(0),
+            status: crate::server::StatusConfig {
+                report_status: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(Driver),
+    );
+    server
+        .set_connection_runtime(driver, Arc::new(CanonicalConnectionDomain::new(domain)))
+        .unwrap();
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    server.run(Arc::new(Domain)).unwrap();
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql = server.listener_addr().unwrap();
+    fn connect(addr: std::net::SocketAddr) -> TcpStream {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [
+            196610u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        while read(&mut s).0 != b'Z' {}
+        s
+    }
+    let mut a = connect(pg);
+    let mut b = connect(pg);
+    let mut my = MysqlTestClient::connect(mysql, CLIENT_DEPRECATE_EOF, Some("test"), &[]).unwrap();
+    for index in 0..3 {
+        let pg = if index == 1 { &mut b } else { &mut a };
+        let ms = query(
+            pg,
+            "SELECT t.id AS id,g.v AS v FROM (VALUES(1::int4,2::int4),(2,0),(3,NULL::int4)) t(id,n) CROSS JOIN generate_series(1::int4,t.n) g(v)",
+        );
+        assert!(!ms.iter().any(|m| m.0 == b'E'));
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some("1"), Some("1")]), row(&[Some("1"), Some("2")])]
+        );
+        let sql = "SELECT t.id,g.v FROM (SELECT 1 AS id,2 AS n UNION ALL SELECT 2,0) t LEFT JOIN (SELECT 1 AS v UNION ALL SELECT 2) g ON g.v<=t.n ORDER BY t.id,g.v";
+        let WireResponse::ResultSet(result) = my.query(sql).unwrap() else {
+            panic!("MySQL join result")
+        };
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![
+                    TextValue::Bytes(b"1".to_vec()),
+                    TextValue::Bytes(b"1".to_vec())
+                ],
+                vec![
+                    TextValue::Bytes(b"1".to_vec()),
+                    TextValue::Bytes(b"2".to_vec())
+                ],
+                vec![TextValue::Bytes(b"2".to_vec()), TextValue::Null]
+            ]
+        );
+    }
+    send(&mut a, b'X', &[]);
+    send(&mut b, b'X', &[]);
+    drop(a);
+    drop(b);
+    drop(my);
+    drop(cleanup);
+    assert!(TcpStream::connect(pg).is_err());
+    assert!(TcpStream::connect(mysql).is_err());
+}

@@ -151,3 +151,7 @@ Restore percentile_cont direct arguments and WITHIN GROUP ordering using the exi
 ## 2026-11-01 INT4 FROM 序列行源
 
 TableSource.FunctionSource 还原原函数表达式、表别名和列别名，保持普通 FROM 源的结构，不伪装成持久表。
+
+## 关联函数表源
+
+函数表源恢复时保留 TableSource.Lateral 修饰词，支持关联函数AST的恢复和重新解析。

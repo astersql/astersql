@@ -17,6 +17,26 @@
 
 use super::*;
 
+pub(super) fn function_source_is_correlated(source: &ast::TableSource) -> bool {
+    struct Columns(bool);
+    impl ast::Visitor for Columns {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
+                self.0 |= matches!(expr.Kind, ast::ExprKind::Column(_));
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut columns = Columns(false);
+    if let Some(function) = &source.FunctionSource {
+        let _ = ast::Node::accept(function, &mut columns);
+    }
+    columns.0
+}
+
 /// Prefetch exact integer operands so rejected pairs need no joined-row allocation.
 /// Ambiguous sources and non-integer types retain the general expression evaluator.
 fn integer_join_operands<'a>(
@@ -433,14 +453,15 @@ impl ConcreteSession {
         predicate: Option<&ast::ExprNode>,
     ) -> SessionResult<InsertSelectRows> {
         if let Some(call) = &source.FunctionSource {
-            let field = self.pg_integer_series_field(source)?;
+            let empty = HashMap::new();
+            let arguments = outer.unwrap_or(&empty);
+            let field = self.pg_integer_series_field(source, None)?;
             let ast::ExprKind::Function { Args, FnName, .. } = &call.Kind else {
                 unreachable!()
             };
             let mut executor = if FnName.L == "unnest" {
                 use astersql_types::pg_array::{PgArray, PgArrayElement};
-                let value =
-                    self.relational_query_expression_value(&Args[0], &HashMap::new(), None)?;
+                let value = self.relational_query_expression_value(&Args[0], arguments, None)?;
                 let array = value
                     .map(|text| {
                         PgArray::from_text_with(text.as_bytes(), 23, -1, b',', |v, _| {
@@ -466,7 +487,7 @@ impl ConcreteSession {
                 let mut values = [None, None, Some(1)];
                 for (index, arg) in Args.iter().enumerate() {
                     values[index] = self
-                        .relational_query_expression_value(arg, &HashMap::new(), None)?
+                        .relational_query_expression_value(arg, arguments, None)?
                         .map(|value| {
                             value.parse::<i64>().map_err(|_| {
                                 super::query::pg_union_error("integer out of range", "22003")
@@ -783,7 +804,15 @@ impl ConcreteSession {
             return;
         };
         let qualifier = if source.AsName.L.is_empty() {
-            relation_name(&source.Source)
+            if let Some(ast::ExprNode {
+                Kind: ast::ExprKind::Function { FnName, .. },
+                ..
+            }) = &source.FunctionSource
+            {
+                &FnName.L
+            } else {
+                relation_name(&source.Source)
+            }
         } else {
             &source.AsName.L
         };
@@ -853,16 +882,37 @@ impl ConcreteSession {
         let Some(right_source) = join.Right.as_deref() else {
             return Ok(left);
         };
+        // An independent function remains legal as the right input of RIGHT
+        // JOIN; only an actual reference to the left makes that shape invalid.
+        let correlated_function = matches!(right_source, ast::ResultSetNode::TableSource(source)
+            if function_source_is_correlated(source));
         if let ast::ResultSetNode::TableSource(right_table) = right_source
-            && right_table.Lateral
+            && (right_table.Lateral
+                || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && right_table.FunctionSource.is_some()))
+            && (join.Tp != ast::JoinType::RightJoin
+                || correlated_function
+                || right_table.FunctionSource.is_none())
         {
-            if join.Tp != ast::JoinType::CrossJoin {
-                return Err(SessionError::new(
-                    "only CROSS/INNER JOIN supports a LATERAL right source",
+            if join.Tp != ast::JoinType::CrossJoin
+                && !(join.Tp == ast::JoinType::LeftJoin && right_table.FunctionSource.is_some())
+            {
+                return Err(super::query::pg_union_error(
+                    "invalid LATERAL join type",
+                    "42P10",
                 ));
             }
             let mut rows = Vec::new();
-            let mut right_columns = Vec::new();
+            // A function has a fixed schema even when the outer relation is empty.
+            let mut right_columns = if right_table.FunctionSource.is_some() {
+                vec![
+                    self.pg_integer_series_field(right_table, None)?
+                        .column_as_name
+                        .L,
+                ]
+            } else {
+                Vec::new()
+            };
             for left_row in &left.rows {
                 let right = self
                     .execute_insert_select_table_source_with_outer(right_table, Some(left_row))?;
@@ -871,6 +921,7 @@ impl ConcreteSession {
                 }
                 let join_columns =
                     self.insert_select_join_columns(join, &left.columns, &right.columns);
+                let mut matched = false;
                 for right_row in &right.rows {
                     let joined =
                         self.merge_insert_select_rows(left_row.clone(), right_row, &join_columns);
@@ -882,8 +933,18 @@ impl ConcreteSession {
                         &join_columns,
                         outer,
                     )? {
+                        matched = true;
                         rows.push(joined);
                     }
+                }
+                if !matched && join.Tp == ast::JoinType::LeftJoin {
+                    let mut null_right = self.null_insert_select_row(&right);
+                    self.qualify_null_insert_select_row(right_source, &right, &mut null_right);
+                    rows.push(self.merge_insert_select_rows(
+                        left_row.clone(),
+                        &null_right,
+                        &join_columns,
+                    ));
                 }
             }
             let mut columns = left.columns;
@@ -1201,7 +1262,9 @@ impl ConcreteSession {
 
     pub(super) fn insert_select_source_can_stream(&self, source: &ast::ResultSetNode) -> bool {
         match source {
-            ast::ResultSetNode::TableSource(source) => !source.Lateral,
+            ast::ResultSetNode::TableSource(source) => {
+                !source.Lateral && !function_source_is_correlated(source)
+            }
             ast::ResultSetNode::Join(join) => {
                 join.Tp == ast::JoinType::CrossJoin
                     && join.Using.is_empty()

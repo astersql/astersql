@@ -1792,3 +1792,31 @@ fn pg06_task_092_unknown_integer_analysis() {
         );
     }
 }
+
+#[test]
+fn pg09_26_array_values_analysis() {
+    let parser =
+        || astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT u.v FROM (VALUES ROW(ARRAY[2,NULL,2]::int4[])) t(a) LEFT JOIN LATERAL unnest(t.a) u(v) ON true",
+        "VALUES ROW(ARRAY[2,NULL,2]::int4[])",
+    ] {
+        let (statements, _) = parser().ParseSQL(sql, &[]).unwrap();
+        let (types, _) = super::pg_array::analyze(sql, &statements, None).unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            types.values().next(),
+            Some(&astersql_parser_types::PostgreSQLArrayElement::Int4)
+        );
+    }
+    let sql = "SELECT u.v FROM (VALUES ROW(ARRAY[])) t(a) CROSS JOIN unnest(t.a) u(v)";
+    let (statements, _) = parser().ParseSQL(sql, &[]).unwrap();
+    assert_eq!(
+        super::pg_array::analyze(sql, &statements, None)
+            .unwrap_err()
+            .pg_array_error()
+            .unwrap()
+            .state,
+        "42P18"
+    );
+}

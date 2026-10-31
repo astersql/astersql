@@ -201,3 +201,7 @@ Regenerated from main.astergram for the bounded ordered-set DISTINCT and missing
 ## 2026-11-01 INT4 FROM 序列行源
 
 由 main.astergram 的单个 FunctionCallGeneric FROM 产生式生成新 TableFactor 表项；对应 query action 清单245项。生成命令 cargo run --locked --release -p astersql-parsergen -- generate，仍使用既有解析表与动作分派。
+
+## 关联函数表源
+
+从 main.astergram 的 LATERAL FunctionCallGeneric 产生式重新生成；规约复用普通函数表源动作并保留 Lateral 标志，供现有连接循环消费。

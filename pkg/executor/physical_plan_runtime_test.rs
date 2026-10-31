@@ -1191,3 +1191,53 @@ fn pg09_25_execution_chunks() {
         source.Close().unwrap();
     }
 }
+
+#[test]
+fn pg09_26_execution() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    // The server adapter maps PG's bare tuples to the shared VALUES ROW AST.
+    for (join, count) in [("CROSS JOIN", 2), ("LEFT JOIN LATERAL", 4)] {
+        let on = if join.starts_with("LEFT") {
+            " ON true"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT t.id AS id,g.v AS v FROM (VALUES ROW(1::int4,2::int4),ROW(2,0),ROW(3,NULL::int4)) t(id,n) {join} generate_series(1::int4,t.n,1::int4) AS g(v){on} ORDER BY t.id,g.v"
+        );
+        let mut sets = session.execute(&sql).unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        assert_eq!(rows.len(), count, "{sql}: {rows:?}");
+        assert_eq!(rows[0], vec!["1".to_string(), "1".to_string()]);
+        assert_eq!(rows[1], vec!["1".to_string(), "2".to_string()]);
+        sets[0].close().unwrap();
+    }
+}
+
+#[test]
+fn pg09_26_execution_chunks() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let mut sets = session.execute("SELECT t.id AS id,g.v AS v FROM (VALUES ROW(1::int4,1025::int4),ROW(2,0),ROW(3,NULL::int4),ROW(4,2)) t(id,n) CROSS JOIN generate_series(1::int4,t.n) g(v) ORDER BY t.id,g.v").unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = sets[0].next_row().unwrap() {
+        rows.push(row);
+    }
+    assert_eq!(rows.len(), 1027);
+    for (i, row) in rows[..1025].iter().enumerate() {
+        assert_eq!(row, &vec!["1".to_string(), (i + 1).to_string()]);
+    }
+    assert_eq!(rows[1025], vec!["4".to_string(), "1".to_string()]);
+    assert_eq!(rows[1026], vec!["4".to_string(), "2".to_string()]);
+    sets[0].close().unwrap();
+}

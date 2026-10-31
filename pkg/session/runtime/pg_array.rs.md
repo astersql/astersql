@@ -1,6 +1,6 @@
 # `pkg/session/runtime/pg_array.rs`
 
-本文件连接共享 SQL ARRAY 分析、求值和规范数组文本载体。`analyze` 对直接 SELECT 构造及显式 int4[]/int8[]/text[]/bool[] 构造上下文记录元素身份和参数约束；无上下文的裸空构造继续42P18。`field_type` 使用 PostgreSQLArrayElement，独立于 MySQL JSON/多值索引数组标记。
+本文件连接共享 SQL ARRAY 分析、求值和规范数组文本载体。`analyze` 对直接 SELECT/VALUES 行构造及显式 int4[]/int8[]/text[]/bool[] 构造上下文记录元素身份和参数约束；无上下文的裸空构造继续42P18。`field_type` 使用 PostgreSQLArrayElement，独立于 MySQL JSON/多值索引数组标记。
 
 `value` 保留既有构造族逻辑；已开放族构造经 `typed_array` 验证后输出规范 PgArray 文本。`value_as` 为明确整数数组上下文提供空数组/全NULL构造求值，维度和下界由规范容器验证。`validate_cast` 仅开放整数构造、int4[]/int8[]、文本和NULL等本任务输入；未开放转换以0A000拒绝。`cast_value` 供常量及行求值消费者共用，不自行建立新执行内核。
 
@@ -105,3 +105,7 @@ Uuid元素推断、ARRAY构造、显式cast和规范数组转换复用PgUuid标�
 ## PostgreSQL jsonb 数组（任务42）
 
 接通Jsonb元素推断、ARRAY构造、同族cast及typed_array，委托既有PgJsonb严格数值/Unicode校验；不同族暂缺转换保持0A000。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+## 关联 UNNEST 的 VALUES 输入
+
+`analyze` 同时收集嵌套 VALUES 行中直接数组构造或显式数组转换下的构造位置，元素类型和参数约束仍由原分析器处理，实际维度检查仍在既有求值器执行。使普通 VALUES 派生表可提供关联 UNNEST 参数，不放宽谓词等其他上下文的门禁。

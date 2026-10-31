@@ -3001,6 +3001,7 @@ TableFactor : SubSelect TableAsNameOpt IdentListWithParenOpt @action;
 TableFactor : "LATERAL" SubSelect TableAsName IdentListWithParenOpt @action;
 TableFactor : "(" TableRefs ")" @action;
 TableFactor : FunctionCallGeneric TableAsNameOpt IdentListWithParenOpt @action;
+TableFactor : "LATERAL" FunctionCallGeneric TableAsNameOpt IdentListWithParenOpt @action;
 PartitionNameListOpt : ε @action;
 PartitionNameListOpt : "PARTITION" "(" PartitionNameList ")" @action;
 TableAsNameOpt : ε %prec empty @action;

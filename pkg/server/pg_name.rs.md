@@ -129,3 +129,7 @@ The preflight reuses pg_sql::values_parameter_source and reverses its four-byte 
 ## 2026-11-01 INT4 FROM 序列行源
 
 普通 FROM 名称适配仅让 generate_series 与 pg_catalog.generate_series 调用绕过持久表名重写，参数/重载交给会话绑定。此处不生成数据、不推断返回值，其他函数及目录路径保留原门禁。未显式指定表别名时，范围名使用函数名，供 generate_series.generate_series 等普通列绑定。
+
+## 关联函数行源
+
+`Resolver::relation` 将未加引号的 LATERAL 作为关系修饰词跳过，后续函数签名交普通 session FROM 绑定。PG VALUES 继续复用既有 ROW 插入适配，不新增查询执行路径。

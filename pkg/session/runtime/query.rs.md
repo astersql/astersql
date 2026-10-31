@@ -351,9 +351,15 @@ Existing PgFunctionError constructors explicitly leave the new optional detail a
 
 ## 2026-11-01 INT4 FROM 序列行源
 
-pg_int4_series_field 在 append_relational_source_fields 分支分类普通 FROM SRF，仅绑定 generate_series(int4,int4[,int4])，Describe 固定 TypeLong（OID23/长度4/typmod-1）及别名，与行数和首行无关。其他重载/关联输入保留范围门禁。
+pg_int4_series_field 在 append_relational_source_fields 分支分类普通 FROM SRF，仅绑定 generate_series(int4,int4[,int4])，Describe 固定 TypeLong（OID23/长度4/typmod-1）及别名，与行数和首行无关。其他重载保留范围门禁；关联输入现按下文的左侧字段绑定规则解析。
 
 
 ## 2026-11-01 INT8序列边界终止
 
 pg_integer_series_field 将含 INT8 参数的整数 generate_series 固定绑定为 TypeLonglong，其余整数仍为 TypeLong；Describe 与执行共享该字段，空行和NULL重绑不改变身份。
+
+## 关联函数行源
+
+`pg_integer_series_field` 在描述阶段只从已经累积的左侧字段绑定参数，拒绝不可见或歧义列，选择固定的 int4/int8/unnest 返回身份；执行阶段复用已绑定列的类型，不从首行或空行推断。
+
+PG 派生表字段统一按投影名绑定，包括 SELECT 表达式且未提供列别名列表的情况；空左输入也保留原 int4 身份，不由值或零行推导为 text。

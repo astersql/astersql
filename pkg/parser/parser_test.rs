@@ -6798,3 +6798,51 @@ fn pg09_23_parser_from_function() {
             .is_err()
     );
 }
+
+#[test]
+fn pg09_26_parser() {
+    use parser_ast::{self as ast, SqlDialect};
+    for lateral in ["", "LATERAL "] {
+        let sql = format!(
+            "SELECT g.v FROM (SELECT 1::int4 AS n) t LEFT JOIN {lateral}generate_series(1::int4,t.n) g(v) ON true"
+        );
+        let statement = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt(&sql, "", "")
+            .unwrap();
+        let select = statement
+            .as_any()
+            .downcast_ref::<ast::SelectStmt>()
+            .unwrap();
+        let ast::ResultSetNode::TableSource(source) = select
+            .From
+            .as_ref()
+            .unwrap()
+            .TableRefs
+            .Right
+            .as_deref()
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(source.Lateral, !lateral.is_empty());
+        assert!(source.FunctionSource.is_some());
+        let restored = ast::sql_restore::restore_node(statement.as_ref()).unwrap();
+        let reparsed = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseOneStmt(&restored, "", "")
+            .unwrap();
+        let select = reparsed.as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let ast::ResultSetNode::TableSource(source) = select
+            .From
+            .as_ref()
+            .unwrap()
+            .TableRefs
+            .Right
+            .as_deref()
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(source.Lateral, !lateral.is_empty());
+        assert!(crate::Parser::default().ParseOneStmt(&sql, "", "").is_err());
+    }
+}

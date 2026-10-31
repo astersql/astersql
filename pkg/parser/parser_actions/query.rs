@@ -170,6 +170,7 @@ enum QueryRule {
     TableFactorAlt03,
     TableFactorAlt04,
     PgFunctionSource,
+    PgLateralFunctionSource,
     PartitionNameListOptAlt01,
     PartitionNameListOptAlt02,
     TableAsNameOptAlt01,
@@ -582,6 +583,9 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "tablefactor_tablerefs--76dd9f75764a4480" => Some(QueryRule::TableFactorAlt04),
         "tablefactor_functioncallgeneric_tableasnameopt_i--d6046ddcd17dfb81" => {
             Some(QueryRule::PgFunctionSource)
+        }
+        "tablefactor_lateral_functioncallgeneric_tableasn--c68b7eba949558ce" => {
+            Some(QueryRule::PgLateralFunctionSource)
         }
         "partitionnamelistopt--63bd7f0ca404da07" => Some(QueryRule::PartitionNameListOptAlt01),
         "partitionnamelistopt_partition_partitionnamelist--472022a361659a84" => {
@@ -2777,7 +2781,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 ..Default::default()
             }));
         }
-        QueryRule::PgFunctionSource => {
+        QueryRule::PgFunctionSource | QueryRule::PgLateralFunctionSource => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
                 yylex.AppendError(yylex.Errorf("table functions require PostgreSQL", &[]));
                 return Err(1);
@@ -2799,6 +2803,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 .unwrap_or_default();
             out.item = Some(Box::new(parser_ast::TableSource {
                 FunctionSource: Some(function),
+                Lateral: rule == QueryRule::PgLateralFunctionSource,
                 AsName: alias,
                 ColumnNames: columns,
                 ..Default::default()

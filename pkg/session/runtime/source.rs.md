@@ -39,7 +39,7 @@
 
 ### JOIN 与集合运算
 
-JOIN 先执行左源。LATERAL 只允许作为 CROSS/INNER 的右源，并为每个左行把该行传作 `outer`；其他 JOIN 先执行右源。`insert_select_join_columns` 从 NATURAL 公共列或 USING 列得到合并键，`merge_insert_select_rows` 对重复非限定列放置歧义 marker，随后移除 USING/NATURAL 合并列的歧义。
+JOIN 先执行左源。派生子查询的 LATERAL 仍只允许作为 CROSS/INNER 的右源；PG 函数右源可省略 LATERAL，并支持 CROSS/INNER 与 LEFT，逐左行把该行传作 `outer`。无关联函数可作为 RIGHT 的右源；其他普通 JOIN 先执行右源。`insert_select_join_columns` 从 NATURAL 公共列或 USING 列得到合并键，`merge_insert_select_rows` 对重复非限定列放置歧义 marker，随后移除 USING/NATURAL 合并列的歧义。
 
 简单且左右键类型一致的等值 ON 可构造右侧 `HashMap<String, Vec<usize>>`；否则对左右行做嵌套循环。ON 与 USING/NATURAL 条件全部通过 `insert_select_join_matches` 复核。LEFT/RIGHT 未匹配行由 `null_insert_select_row` 补 NULL；RIGHT JOIN 按右侧顺序缓存匹配结果。无 ORDER/LIMIT/DISTINCT/聚合/相关外层行等条件的 CROSS JOIN 可由 `visit_insert_select_source` 边访问边投影，以缩小峰值中间结果。
 
@@ -89,7 +89,7 @@ JOIN 先执行左源。LATERAL 只允许作为 CROSS/INNER 的右源，并为每
 
 - 全部执行入口返回 `SessionResult`。IO、UTF-8、数值解析等错误被包装成含操作上下文的 `SessionError`；标量子查询多行错误由表达式层原样保留。
 - 视图 SQL 必须能 parse 为 `CreateViewStmt`，且运行时输出宽度必须等于声明列数；CTE 显式列名和递归成员也必须与 seed 等宽。
-- JOIN 缺左源、LATERAL 用于非 CROSS/INNER、流式 visitor 遇到非 CROSS/INNER、集合分支列数不等都会显式失败。USING/NATURAL 的 NULL 键不匹配，ON 使用 SQL predicate 语义。
+- JOIN 缺左源、派生 LATERAL 用于非 CROSS/INNER、关联函数用于 RIGHT、流式 visitor 遇到非 CROSS/INNER、集合分支列数不等都会显式失败。USING/NATURAL 的 NULL 键不匹配，ON 使用 SQL predicate 语义。
 - 递归 CTE 只接受 UNION/UNION ALL；缺 seed/递归项、最大深度为零或迭代未收敛均报错。seed/recursive panic 通过 recoverable failpoint 转成错误；cleanup panic 被捕获以避免锁/作用域清理路径中断。
 - spill 格式以列数、NULL marker、字节长度和 UTF-8 payload 编码。截断的行头 EOF 被视为文件结束，但行内部截断、非法 UTF-8或超出地址空间均报错；文件创建冲突最多重试 16 次。
 - TIDB_ROW_CHECKSUM 仅允许直接投影且必须是带主键点查/批点查；嵌套表达式、WHERE 中使用、无主键或非点查会被拒绝。
@@ -138,3 +138,9 @@ SELECT投影及INSERT SELECT的求值错误若携带PgJsonCastError则直接传�
 ## 2026-11-01 INT8序列边界终止
 
 普通 FROM 函数源按已绑定字段选择 BuildInt8Series 或 BuildInt4Series。参数先精确解析 i64，INT4 分支保留 i32 范围检查，不经浮点中转。
+
+## 关联函数行源
+
+PG 的 FROM 函数沿现有逐外行 LATERAL 连接入口执行，函数可省略 LATERAL。参数从当前左行求值，每次调用独立 Open/Next/Close；LEFT 在 ON 无匹配或函数零行时用固定右侧列补 NULL，不更改函数自身零行语义。
+
+隐式关联函数通过 `function_source_is_correlated` 排除旧的非关联 CROSS 流式路径；无关联函数保留原路径。RIGHT JOIN 仅拒绝实际含列引用的函数，分析阶段与执行阶段使用同一判定。

@@ -450,6 +450,36 @@ pub(super) fn analyze(
         root.accept(&mut positions);
         allowed.extend(positions.0);
     }
+    // A typed VALUES row is an ordinary input relation for correlated UNNEST.
+    // Keep constructors constrained to row expressions, rather than admitting
+    // arbitrary ARRAY use in predicates or other unsupported positions.
+    struct ValuesArrays<'a>(&'a mut std::collections::HashSet<usize>);
+    impl ast::Visitor for ValuesArrays<'_> {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>()
+                && select.Kind == ast::SelectStmtKind::Values
+            {
+                for row in &select.Lists {
+                    for value in &row.Values {
+                        if matches!(value.Kind, ast::ExprKind::Array { .. })
+                            || matches!(&value.Kind, ast::ExprKind::Cast { Tp, .. } if Tp.PostgreSQLArrayElement().is_some())
+                        {
+                            let mut positions = ArrayPositions(std::collections::HashSet::new());
+                            value.accept(&mut positions);
+                            self.0.extend(positions.0);
+                        }
+                    }
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    for statement in statements {
+        statement.accept(&mut ValuesArrays(&mut allowed));
+    }
     struct Markers(Vec<(usize, Option<usize>)>);
     impl ast::Visitor for Markers {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {

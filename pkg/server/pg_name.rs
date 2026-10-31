@@ -238,7 +238,8 @@ impl Resolver<'_> {
             && (self.word(i, "if")
                 || self.word(i, "not")
                 || self.word(i, "exists")
-                || self.word(i, "only"))
+                || self.word(i, "only")
+                || self.word(i, "lateral"))
         {
             i += 1;
         }

@@ -5204,6 +5204,7 @@ impl ConcreteSession {
     pub(super) fn pg_integer_series_field(
         &self,
         source: &ast::TableSource,
+        sources: Option<&[ConcreteResultField]>,
     ) -> SessionResult<ConcreteResultField> {
         let call = source.FunctionSource.as_ref().expect("function source");
         let ast::ExprKind::Function {
@@ -5214,9 +5215,76 @@ impl ConcreteSession {
         else {
             return Err(pg_union_error("unsupported FROM function", "0A000"));
         };
+        if let Some(sources) = sources {
+            struct References<'a> {
+                fields: &'a [ConcreteResultField],
+                invalid: bool,
+                invalid_relation: bool,
+                ambiguous: bool,
+            }
+            impl ast::Visitor for References<'_> {
+                fn enter(&mut self, node: &dyn ast::Node) -> bool {
+                    if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                        && let ast::ExprKind::Column(column) = &expr.Kind
+                    {
+                        let count = self
+                            .fields
+                            .iter()
+                            .filter(|field| {
+                                (field.column_as_name.L == column.Name.L
+                                    || field.column.Name.L == column.Name.L)
+                                    && (column.Table.L.is_empty()
+                                        || field.table_as_name.L == column.Table.L)
+                            })
+                            .count();
+                        self.invalid_relation |= !column.Table.L.is_empty()
+                            && !self
+                                .fields
+                                .iter()
+                                .any(|field| field.table_as_name.L == column.Table.L);
+                        self.invalid |= count == 0;
+                        self.ambiguous |= count > 1;
+                    }
+                    false
+                }
+                fn leave(&mut self, _: &dyn ast::Node) -> bool {
+                    true
+                }
+            }
+            let mut references = References {
+                fields: sources,
+                invalid: false,
+                invalid_relation: false,
+                ambiguous: false,
+            };
+            for arg in Args {
+                let _ = ast::Node::accept(arg, &mut references);
+            }
+            if references.invalid_relation {
+                return Err(pg_union_error(
+                    "FROM function relation is not visible",
+                    "42P01",
+                ));
+            }
+            if references.invalid {
+                return Err(pg_union_error(
+                    "FROM function column is not visible",
+                    "42703",
+                ));
+            }
+            if references.ambiguous {
+                return Err(pg_union_error(
+                    "FROM function column reference is ambiguous",
+                    "42702",
+                ));
+            }
+        }
         let types: Vec<_> = Args
             .iter()
-            .map(|arg| self.pg_case_input_type(arg, &[]).GetType())
+            .map(|arg| {
+                self.pg_case_input_type(arg, sources.unwrap_or(&[]))
+                    .GetType()
+            })
             .collect();
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL
             || !matches!(FnName.L.as_str(), "generate_series" | "unnest")
@@ -5234,7 +5302,7 @@ impl ConcreteSession {
         let unnest = FnName.L == "unnest";
         if unnest
             && self
-                .pg_case_input_type(&Args[0], &[])
+                .pg_case_input_type(&Args[0], sources.unwrap_or(&[]))
                 .PostgreSQLArrayElement()
                 != Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
         {
@@ -5255,16 +5323,6 @@ impl ConcreteSession {
                 "generate_series overload is not supported",
                 "0A000",
             ));
-        }
-        for arg in Args {
-            let mut columns = HashSet::new();
-            collect_expression_column_names(arg, &mut columns);
-            if !columns.is_empty() || source.Lateral {
-                return Err(pg_union_error(
-                    "correlated FROM functions are not supported",
-                    "0A000",
-                ));
-            }
         }
         if source.ColumnNames.len() > 1 {
             return Err(pg_union_error(
@@ -5302,6 +5360,17 @@ impl ConcreteSession {
         })
     }
 
+    fn validate_pg_function_join(&self, join: &ast::Join) -> SessionResult<()> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && join.Tp == ast::JoinType::RightJoin
+            && matches!(join.Right.as_deref(), Some(ast::ResultSetNode::TableSource(source))
+                if super::source::function_source_is_correlated(source))
+        {
+            return Err(pg_union_error("invalid LATERAL join type", "42P10"));
+        }
+        Ok(())
+    }
+
     fn append_relational_source_fields(
         &self,
         source_node: &ast::ResultSetNode,
@@ -5311,6 +5380,7 @@ impl ConcreteSession {
         let source = match source_node {
             ast::ResultSetNode::TableSource(source) => source,
             ast::ResultSetNode::Join(join) => {
+                self.validate_pg_function_join(join)?;
                 if let Some(left) = join.Left.as_deref() {
                     self.append_relational_source_fields(left, fields, ctes)?;
                 }
@@ -5322,7 +5392,7 @@ impl ConcreteSession {
         };
 
         if source.FunctionSource.is_some() {
-            fields.push(self.pg_integer_series_field(source)?);
+            fields.push(self.pg_integer_series_field(source, Some(fields))?);
             return Ok(());
         }
         if let Some(query) = source.QuerySource.as_ref() {
@@ -5350,8 +5420,11 @@ impl ConcreteSession {
             }
             for field in &mut derived_fields {
                 field.column_origin = None;
-                if field.column.FieldType.PostgreSQLTextOid() == Some(1042) {
-                    // A derived bpchar source is referenced by its projected name.
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    || field.column.FieldType.PostgreSQLTextOid() == Some(1042)
+                {
+                    // Bind derived expressions by projected names, including
+                    // empty inputs whose values cannot supply result identity.
                     field.column.Name = field.column_as_name.clone();
                 }
             }
@@ -5437,6 +5510,7 @@ impl ConcreteSession {
     ) -> SessionResult<Vec<ConcreteResultField>> {
         let mut fields = Vec::new();
         if let Some(from) = select.From.as_ref() {
+            self.validate_pg_function_join(&from.TableRefs)?;
             if let Some(left) = from.TableRefs.Left.as_deref() {
                 self.append_relational_source_fields(left, &mut fields, ctes)?;
             }

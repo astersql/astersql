@@ -839,7 +839,12 @@ fn restore_with_clause(with: &parser_ast::WithClause) -> Result<String, String> 
 
 fn restore_table_source(source: &parser_ast::TableSource) -> Result<String, String> {
     if let Some(function) = &source.FunctionSource {
-        let mut out = restore_expr(function)?;
+        let mut out = if source.Lateral {
+            "LATERAL ".to_owned()
+        } else {
+            String::new()
+        };
+        out.push_str(&restore_expr(function)?);
         if !source.AsName.O.is_empty() {
             out.push_str(" AS ");
             out.push_str(&quote(&source.AsName.O));
