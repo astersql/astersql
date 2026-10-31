@@ -133,3 +133,8 @@ SELECT投影及INSERT SELECT的求值错误若携带PgJsonCastError则直接传�
 ## 2026-11-01 INT4 FROM 序列行源
 
 普通函数源分支验证固定绑定、评估参数后调用 BuildInt4Series，消费 Chunk 并在正常/错误路径关闭。原关系查询继续负责投影/过滤/排序；函数源排除持久表扫描且走派生行源分派。零步长在执行时返回22023，NULL严格零行。现有关系查询可能物化结果，不声称完整portal流式支持。
+
+
+## 2026-11-01 INT8序列边界终止
+
+普通 FROM 函数源按已绑定字段选择 BuildInt8Series 或 BuildInt4Series。参数先精确解析 i64，INT4 分支保留 i32 范围检查，不经浮点中转。

@@ -5200,8 +5200,8 @@ impl ConcreteSession {
     }
 
     /// Classify and bind the supported ordinary FROM SRF before any values are
-    /// read. Both Describe and execution use this fixed int4 output identity.
-    pub(super) fn pg_int4_series_field(
+    /// read. Describe and execution select the same fixed integer output identity.
+    pub(super) fn pg_integer_series_field(
         &self,
         source: &ast::TableSource,
     ) -> SessionResult<ConcreteResultField> {
@@ -5232,6 +5232,7 @@ impl ConcreteSession {
                 *tp,
                 astersql_parser_mysql::r#type::TypeLong
                     | astersql_parser_mysql::r#type::TypeShort
+                    | astersql_parser_mysql::r#type::TypeLonglong
                     | astersql_parser_mysql::r#type::TypeNull
             )
         }) {
@@ -5270,7 +5271,11 @@ impl ConcreteSession {
             column: astersql_meta_model::ColumnInfo {
                 Name: name.clone(),
                 FieldType: astersql_parser_types::NewFieldType(
-                    astersql_parser_mysql::r#type::TypeLong,
+                    if types.contains(&astersql_parser_mysql::r#type::TypeLonglong) {
+                        astersql_parser_mysql::r#type::TypeLonglong
+                    } else {
+                        astersql_parser_mysql::r#type::TypeLong
+                    },
                 ),
                 ..Default::default()
             },
@@ -5302,7 +5307,7 @@ impl ConcreteSession {
         };
 
         if source.FunctionSource.is_some() {
-            fields.push(self.pg_int4_series_field(source)?);
+            fields.push(self.pg_integer_series_field(source)?);
             return Ok(());
         }
         if let Some(query) = source.QuerySource.as_ref() {

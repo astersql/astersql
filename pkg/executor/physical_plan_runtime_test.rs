@@ -1021,3 +1021,110 @@ fn pg09_23_execution_chunks() {
     assert_eq!(chunk.GetRow(0).GetInt64(0), 1);
     source.Close().unwrap();
 }
+
+#[test]
+fn pg09_24_execution() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let mut result = session
+        .execute("SELECT g.v AS c FROM generate_series('9223372036854775806'::int8,'9223372036854775807'::int8) AS g(v) ORDER BY g.v")
+        .unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = result[0].next_row().unwrap() {
+        rows.push(row);
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec!["9223372036854775806".to_owned()],
+            vec!["9223372036854775807".to_owned()]
+        ]
+    );
+    result[0].close().unwrap();
+}
+
+#[test]
+fn pg09_24_execution_chunks() {
+    for (arguments, expected) in [
+        ([Some(1), Some(7), Some(2)], vec![1, 3, 5, 7]),
+        ([Some(3), Some(-3), Some(-2)], vec![3, 1, -1, -3]),
+        (
+            [Some(i64::MAX - 1), Some(i64::MAX), Some(1)],
+            vec![i64::MAX - 1, i64::MAX],
+        ),
+        (
+            [Some(i64::MIN + 1), Some(i64::MIN), Some(-1)],
+            vec![i64::MIN + 1, i64::MIN],
+        ),
+        (
+            [Some(i64::MAX), Some(i64::MAX), Some(i64::MAX)],
+            vec![i64::MAX],
+        ),
+        (
+            [Some(i64::MIN), Some(i64::MIN), Some(i64::MIN)],
+            vec![i64::MIN],
+        ),
+        ([Some(3), Some(1), Some(1)], vec![]),
+        (
+            [Some(9007199254740993), Some(9007199254740997), Some(1)],
+            vec![
+                9007199254740993,
+                9007199254740994,
+                9007199254740995,
+                9007199254740996,
+                9007199254740997,
+            ],
+        ),
+        ([None, Some(1), Some(0)], vec![]),
+        ([Some(1), None, Some(0)], vec![]),
+        ([Some(1), Some(1), None], vec![]),
+    ] {
+        let mut source = crate::builder::BuildInt8Series(arguments, 2);
+        assert_eq!(
+            source.Schema()[0].field_type.GetType(),
+            astersql_parser_mysql::r#type::TypeLonglong
+        );
+        let mut chunk = source.NewChunk();
+        assert!(source.Next(&mut chunk).is_err());
+        for _ in 0..2 {
+            source.Open().unwrap();
+            let mut actual = Vec::new();
+            loop {
+                source.Next(&mut chunk).unwrap();
+                assert!(chunk.NumRows() <= 2);
+                if chunk.NumRows() == 0 {
+                    break;
+                }
+                for row in 0..chunk.NumRows() {
+                    actual.push(chunk.GetRow(row).GetInt64(0));
+                }
+            }
+            assert_eq!(actual, expected);
+            source.Next(&mut chunk).unwrap();
+            assert_eq!(chunk.NumRows(), 0);
+            source.Close().unwrap();
+            source.Close().unwrap();
+            assert!(source.Next(&mut chunk).is_err());
+        }
+    }
+    let mut source = crate::builder::BuildInt8Series([Some(1), Some(2), Some(0)], 2);
+    assert_eq!(
+        source.Open().unwrap_err().to_string(),
+        "step size cannot equal zero"
+    );
+    source.Close().unwrap();
+    // Early close discards the unread page tail; Open restarts at the argument.
+    let mut source = crate::builder::BuildInt8Series([Some(1), Some(9), Some(1)], 2);
+    source.Open().unwrap();
+    let mut chunk = source.NewChunk();
+    source.Next(&mut chunk).unwrap();
+    assert_eq!(chunk.NumRows(), 2);
+    source.Close().unwrap();
+    source.Open().unwrap();
+    source.Next(&mut chunk).unwrap();
+    assert_eq!(chunk.GetRow(0).GetInt64(0), 1);
+    source.Close().unwrap();
+}

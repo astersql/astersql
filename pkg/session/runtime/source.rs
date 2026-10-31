@@ -433,7 +433,7 @@ impl ConcreteSession {
         predicate: Option<&ast::ExprNode>,
     ) -> SessionResult<InsertSelectRows> {
         if let Some(call) = &source.FunctionSource {
-            let field = self.pg_int4_series_field(source)?;
+            let field = self.pg_integer_series_field(source)?;
             let ast::ExprKind::Function { Args, .. } = &call.Kind else {
                 unreachable!()
             };
@@ -442,13 +442,25 @@ impl ConcreteSession {
                 values[index] = self
                     .relational_query_expression_value(arg, &HashMap::new(), None)?
                     .map(|value| {
-                        value.parse::<i32>().map_err(|_| {
+                        value.parse::<i64>().map_err(|_| {
                             super::query::pg_union_error("integer out of range", "22003")
                         })
                     })
                     .transpose()?;
             }
-            let mut executor = astersql_executor::builder::BuildInt4Series(values, 1024);
+            let mut executor = if field.column.FieldType.GetType()
+                == astersql_parser_mysql::r#type::TypeLonglong
+            {
+                astersql_executor::builder::BuildInt8Series(values, 1024)
+            } else {
+                let mut int4_values = [None; 3];
+                for (index, value) in values.into_iter().enumerate() {
+                    int4_values[index] = value.map(i32::try_from).transpose().map_err(|_| {
+                        super::query::pg_union_error("integer out of range", "22003")
+                    })?;
+                }
+                astersql_executor::builder::BuildInt4Series(int4_values, 1024)
+            };
             // Construction/Describe never evaluates the step. Open is the same
             // execution-time error boundary as the existing executor leaves.
             if let Err(error) = executor.Open() {

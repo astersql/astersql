@@ -6257,8 +6257,18 @@ pub fn BuildTypedPhysicalPlanWithRuntimeStats(
 /// Construct the ordinary int4 FROM function leaf on the existing typed Chunk
 /// executor interface; no scalar-function factory participates in row expansion.
 pub fn BuildInt4Series(arguments: [Option<i32>; 3], maximum_chunk_size: usize) -> ExecutorBox {
-    Box::new(crate::physical_plan_runtime::Int4Series::new(
+    Box::new(crate::physical_plan_runtime::IntegerSeries::new(
+        arguments.map(|value| value.map(i64::from)),
+        maximum_chunk_size,
+        false,
+    ))
+}
+
+/// Construct the int8 overload with exact i64 state and checked endpoint stepping.
+pub fn BuildInt8Series(arguments: [Option<i64>; 3], maximum_chunk_size: usize) -> ExecutorBox {
+    Box::new(crate::physical_plan_runtime::IntegerSeries::new(
         arguments,
         maximum_chunk_size,
+        true,
     ))
 }

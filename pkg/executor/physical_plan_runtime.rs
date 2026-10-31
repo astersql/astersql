@@ -1097,23 +1097,28 @@ pub fn ExecutePhysicalPlan(
     execute_node(plan, source)
 }
 
-/// A typed FROM leaf for PostgreSQL's int4 generate_series overload. The next
+/// A typed FROM leaf for PostgreSQL's integer generate_series overloads. The next
 /// value is retained across Chunk boundaries; checked addition makes overflow
 /// terminate the source instead of wrapping back into the output range.
-pub struct Int4Series {
-    arguments: [Option<i32>; 3],
-    next: Option<i32>,
+pub struct IntegerSeries {
+    arguments: [Option<i64>; 3],
+    next: Option<i64>,
     opened: bool,
+    int8: bool,
     config: crate::adapter::ChunkConfig,
     schema: Vec<crate::adapter::SchemaColumn>,
 }
 
-impl Int4Series {
-    pub(crate) fn new(arguments: [Option<i32>; 3], maximum_chunk_size: usize) -> Self {
-        let field_type =
-            astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeLong);
+impl IntegerSeries {
+    pub(crate) fn new(arguments: [Option<i64>; 3], maximum_chunk_size: usize, int8: bool) -> Self {
+        let field_type = astersql_parser_types::NewFieldType(if int8 {
+            astersql_parser_mysql::r#type::TypeLonglong
+        } else {
+            astersql_parser_mysql::r#type::TypeLong
+        });
         Self {
             arguments,
+            int8,
             next: None,
             opened: false,
             config: crate::adapter::ChunkConfig {
@@ -1126,7 +1131,7 @@ impl Int4Series {
     }
 }
 
-impl crate::adapter::ExecExecutor for Int4Series {
+impl crate::adapter::ExecExecutor for IntegerSeries {
     fn Open(&mut self) -> crate::adapter::AdapterResult {
         self.next = None;
         self.opened = false;
@@ -1149,17 +1154,18 @@ impl crate::adapter::ExecExecutor for Int4Series {
     fn Next(&mut self, output: &mut astersql_util_chunk::Chunk) -> crate::adapter::AdapterResult {
         output.Reset();
         if !self.opened {
-            return Err(astersql_errors::New("int4 series executor is not open"));
+            return Err(astersql_errors::New("integer series executor is not open"));
         }
         while !output.IsFull() {
             let Some(value) = self.next else {
                 break;
             };
-            output.AppendInt64(0, i64::from(value));
+            output.AppendInt64(0, value);
             let end = self.arguments[1].expect("non-null series");
             let step = self.arguments[2].expect("non-null series");
             self.next = value
                 .checked_add(step)
+                .filter(|next| self.int8 || i32::try_from(*next).is_ok())
                 .filter(|next| if step > 0 { *next <= end } else { *next >= end });
         }
         Ok(())

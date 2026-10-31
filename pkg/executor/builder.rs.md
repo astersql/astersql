@@ -115,3 +115,8 @@ Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 
 ## 2026-11-01 INT4 FROM 序列行源
 
 BuildInt4Series 是普通 FROM 函数源进入现有 typed Chunk 执行器的构造入口；输入是已绑定的 int4/NULL，默认步长由会话传入，不经标量工厂。
+
+
+## 2026-11-01 INT8序列边界终止
+
+BuildInt8Series 与 BuildInt4Series 共用 IntegerSeries，构造时固定输出宽度，沿原 ExecExecutor 返回接口注册。

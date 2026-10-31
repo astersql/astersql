@@ -100,3 +100,8 @@ crate 依赖可在 `pkg/executor/Cargo.toml` 核对：本文件直接使用 exec
 ## 2026-11-01 INT4 FROM 序列行源
 
 Int4Series 实现 INT4 generate_series 的既有 ExecExecutor/Chunk 行源生命周期。Open 对非NULL参数检查零步长；Next 在跨块续读时用 checked_add 避免 int4 回绕，Close 丢弃游标，重开从起点开始。任一NULL产生零行。
+
+
+## 2026-11-01 INT8序列边界终止
+
+IntegerSeries 承接原 Int4Series 生命周期，以 i64 保存精确状态。INT8 checked_add 溢出后终止；INT4 额外检查 i32 范围，保留原边界契约。NULL、零步长、跨Chunk、重开/关闭行为共用原实现。
