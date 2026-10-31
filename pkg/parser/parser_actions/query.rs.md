@@ -109,3 +109,8 @@ OptWindowExclusion的语义动作构造独立排除枚举，OptWindowFrameClause
 ## 2026-10-31 窗口客户端差分
 
 PG的IGNORE/RESPECT NULLS在现有语义规约拒绝；非法帧按起止类别发42P20，位置来自原始bound token。
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+PG 专属 TableFactor 接收 FunctionCallGeneric、可选表别名及列别名，保存到 TableSource.FunctionSource；函数表达式读取既有 yySymType.expr，MySQL 保持拒绝该形态。

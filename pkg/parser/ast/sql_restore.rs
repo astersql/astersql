@@ -838,6 +838,26 @@ fn restore_with_clause(with: &parser_ast::WithClause) -> Result<String, String> 
 }
 
 fn restore_table_source(source: &parser_ast::TableSource) -> Result<String, String> {
+    if let Some(function) = &source.FunctionSource {
+        let mut out = restore_expr(function)?;
+        if !source.AsName.O.is_empty() {
+            out.push_str(" AS ");
+            out.push_str(&quote(&source.AsName.O));
+        }
+        if !source.ColumnNames.is_empty() {
+            out.push('(');
+            out.push_str(
+                &source
+                    .ColumnNames
+                    .iter()
+                    .map(|name| quote(&name.O))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            out.push(')');
+        }
+        return Ok(out);
+    }
     if let Some(query) = &source.QuerySource {
         let inner = query
             .with_node(restore_node)

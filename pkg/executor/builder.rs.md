@@ -110,3 +110,8 @@ Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 
 修改 reader/Index Join 时必须保持 fixed snapshot TS、`Tracker` 传递、动态分区排序/缓存和并发共享状态；修改 CTE 时必须保持双检存储、单次初始化与失败清理；修改 DML/SelectLock 时必须审计递归期间的状态标志恢复、for-update TS 和外键阶段顺序。新增外部能力优先扩展依赖 trait，不要在 builder 内重新引入全局服务定位。
 
 兼容性风险主要是 Go 分支遗漏、错误文本/顺序差异和锁/临时表语义；性能风险主要是重复取 snapshot、重复 partition pruning、提前打开 KV iterator、丢失列裁剪或错误复制大范围数据。任何变更都应与 `pkg/executor/builder.go` 的对应函数逐段核对，并同步最接近的独立 Rust 测试及必要的 Go 测试意图。
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+BuildInt4Series 是普通 FROM 函数源进入现有 typed Chunk 执行器的构造入口；输入是已绑定的 int4/NULL，默认步长由会话传入，不经标量工厂。

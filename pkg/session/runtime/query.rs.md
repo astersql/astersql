@@ -347,3 +347,8 @@ The direct fraction adapter reuses `pg_float4_cast_text_input` for its existing 
 ## Ordered-set client diagnostics
 
 Existing PgFunctionError constructors explicitly leave the new optional detail absent; execution and resolved group-key checks are unchanged.
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+pg_int4_series_field 在 append_relational_source_fields 分支分类普通 FROM SRF，仅绑定 generate_series(int4,int4[,int4])，Describe 固定 TypeLong（OID23/长度4/typmod-1）及别名，与行数和首行无关。其他重载/关联输入保留范围门禁。

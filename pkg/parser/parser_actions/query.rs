@@ -169,6 +169,7 @@ enum QueryRule {
     TableFactorAlt02,
     TableFactorAlt03,
     TableFactorAlt04,
+    PgFunctionSource,
     PartitionNameListOptAlt01,
     PartitionNameListOptAlt02,
     TableAsNameOptAlt01,
@@ -579,6 +580,9 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
             Some(QueryRule::TableFactorAlt03)
         }
         "tablefactor_tablerefs--76dd9f75764a4480" => Some(QueryRule::TableFactorAlt04),
+        "tablefactor_functioncallgeneric_tableasnameopt_i--d6046ddcd17dfb81" => {
+            Some(QueryRule::PgFunctionSource)
+        }
         "partitionnamelistopt--63bd7f0ca404da07" => Some(QueryRule::PartitionNameListOptAlt01),
         "partitionnamelistopt_partition_partitionnamelist--472022a361659a84" => {
             Some(QueryRule::PartitionNameListOptAlt02)
@@ -2769,6 +2773,33 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 QuerySource: Some(subquery.query),
                 AsName: alias,
                 Lateral: rule == QueryRule::TableFactorAlt03,
+                ColumnNames: columns,
+                ..Default::default()
+            }));
+        }
+        QueryRule::PgFunctionSource => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("table functions require PostgreSQL", &[]));
+                return Err(1);
+            }
+            let Some(function) = rhs[rhs_len - 2].expr.clone() else {
+                return Ok(false);
+            };
+            let alias = rhs[rhs_len - 1]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<parser_ast::CIStr>())
+                .cloned()
+                .unwrap_or_default();
+            let columns = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::CIStr>>())
+                .cloned()
+                .unwrap_or_default();
+            out.item = Some(Box::new(parser_ast::TableSource {
+                FunctionSource: Some(function),
+                AsName: alias,
                 ColumnNames: columns,
                 ..Default::default()
             }));

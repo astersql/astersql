@@ -146,3 +146,8 @@ percentile_disc restores the direct call followed by WITHIN GROUP ORDER BY and i
 ## 2026-10-31 continuous percentile
 
 Restore percentile_cont direct arguments and WITHIN GROUP ordering using the existing ordered-set AST representation.
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+TableSource.FunctionSource 还原原函数表达式、表别名和列别名，保持普通 FROM 源的结构，不伪装成持久表。

@@ -285,6 +285,13 @@ impl Resolver<'_> {
             return Ok(i);
         }
         if self.symbol(i, b'(') && !allow_columns {
+            // Function signatures are bound by the ordinary session FROM binder,
+            // rather than looked up as public relations or rewritten as tables.
+            if matches!(parts.as_slice(), [name] if name == "generate_series")
+                || matches!(parts.as_slice(), [schema, name] if schema == "pg_catalog" && name == "generate_series")
+            {
+                return Ok(self.close(i, end)? + 1);
+            }
             return Err(error("0A000", "native table functions are unsupported"));
         }
         if parts.len() > 3 {
@@ -774,7 +781,15 @@ fn alias_scope(
                 }
                 ast::ResultSetNode::TableSource(source) => {
                     let parts = &source.Source.PostgreSQLParts;
-                    let name = if source.AsName.O.is_empty() {
+                    let function_name = source.FunctionSource.as_ref().and_then(|call| match &call
+                        .Kind
+                    {
+                        ast::ExprKind::Function { FnName, .. } => Some(FnName),
+                        _ => None,
+                    });
+                    let name = if source.AsName.O.is_empty() && function_name.is_some() {
+                        function_name.expect("function name").L.clone()
+                    } else if source.AsName.O.is_empty() {
                         parts
                             .last()
                             .map(|p| p.Lookup.clone())

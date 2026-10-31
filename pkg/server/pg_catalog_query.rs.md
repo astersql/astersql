@@ -85,3 +85,8 @@ RustCodeGraph 对 `pg_catalog_query.rs::parse_shadowed` 的节点记录确认其
 - 新增查询 clause、JOIN 或表函数时修改 `Parser::select`/`relation`，保持复杂度预算并评估笛卡尔积、AST内存和 catalog 执行成本。必要时在 `pg_catalog.rs` 增加相应执行支持后才宣称功能可用。
 - 修改所有权启发式时同时审查 `parse_shadowed` 与 `implicit_positions`，确保字符串/注释、嵌套 FROM、逗号 JOIN、显式 `pg_catalog` 和 `shadowed` 的优先级不回归。
 - 回归至少扩展 `pg_catalog_query_test.rs` 的结构/边界测试；若影响绑定与执行，再同步 `pg_catalog_test.rs`；若影响简单或扩展协议路由，再同步 `pg_conn_test.rs`、`pg_extended_test.rs` 或 `pg_client_integration_test.rs`。兼容风险主要是误接管普通 SQL、改变 SQLSTATE/列类型；性能风险主要是放宽预算后带来的深递归、AST膨胀或高代价 catalog JOIN。
+
+
+## 2026-11-01 普通 INT4 FROM 函数所有权
+
+pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通 SRF 交由共享引擎；查询中若同时存在真实目录关系，原目录门禁仍生效。不在目录解释器内实现 generate_series，不改变其他目录表函数。

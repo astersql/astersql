@@ -1160,10 +1160,14 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
     };
     // Determine ownership without rewriting tokens: lexical CTE scope must
     // take precedence over a same-named public relation during parsing.
-    let catalog = tokens.windows(4).any(|w| {
+    let catalog = tokens.windows(4).enumerate().any(|(index, w)| {
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
             && w[2] == Token::Symbol('.')
+            // This ordinary SRF belongs to the shared execution engine. Real
+            // catalog relations in the same query still retain ownership.
+            && !(matches!(&w[3], Token::Word(s) | Token::Quoted(s) if s == "generate_series")
+                && tokens.get(index + 4) == Some(&Token::Symbol('(')))
     }) || tokens.windows(3).any(|w| {
         matches!(&w[0], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
             && w[1] == Token::Symbol('.')

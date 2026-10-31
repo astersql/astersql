@@ -6253,3 +6253,12 @@ pub fn BuildTypedPhysicalPlanWithRuntimeStats(
         stats,
     )
 }
+
+/// Construct the ordinary int4 FROM function leaf on the existing typed Chunk
+/// executor interface; no scalar-function factory participates in row expansion.
+pub fn BuildInt4Series(arguments: [Option<i32>; 3], maximum_chunk_size: usize) -> ExecutorBox {
+    Box::new(crate::physical_plan_runtime::Int4Series::new(
+        arguments,
+        maximum_chunk_size,
+    ))
+}

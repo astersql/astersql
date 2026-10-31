@@ -6743,3 +6743,58 @@ fn pg09_22_ordered_diagnostics() {
         );
     }
 }
+
+#[test]
+fn pg09_23_parser_from_function() {
+    use parser_ast::{ExprKind, Node, SqlDialect, Visitor};
+    struct Parameters(Vec<usize>);
+    impl Visitor for Parameters {
+        fn enter(&mut self, node: &dyn Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                if let ExprKind::ParamMarker { Offset } = expr.Kind {
+                    self.0.push(Offset);
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn Node) -> bool {
+            true
+        }
+    }
+    let sql = "SELECT g.v AS c FROM pg_catalog.generate_series($1::int4,$2::int4,$3::int4) AS g(v)";
+    let stmt = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let mut parameters = Parameters(Vec::new());
+    assert!(stmt.accept(&mut parameters));
+    assert_eq!(parameters.0.len(), 3);
+    for (offset, index) in parameters.0.iter().zip(1..=3) {
+        assert!(sql[*offset..].starts_with(&format!("${index}")));
+    }
+    let restored = parser_ast::sql_restore::restore_node(stmt.as_ref()).unwrap();
+    assert!(restored.contains("GENERATE_SERIES"), "{restored}");
+    assert!(restored.contains("`v`"), "{restored}");
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let parser_ast::ResultSetNode::TableSource(source) = select
+        .From
+        .as_ref()
+        .unwrap()
+        .TableRefs
+        .Left
+        .as_deref()
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(source.FunctionSource.is_some());
+    assert!(source.QuerySource.is_none());
+    assert_eq!(source.ColumnNames[0].L, "v");
+    assert!(
+        crate::Parser::default()
+            .ParseOneStmt("SELECT v FROM generate_series(1,3) AS g(v)", "", "")
+            .is_err()
+    );
+}

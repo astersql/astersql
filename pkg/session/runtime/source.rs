@@ -221,7 +221,9 @@ pub(super) fn collect_physical_table_sources<'a>(
     sources: &mut Vec<&'a ast::TableSource>,
 ) {
     match node {
-        ast::ResultSetNode::TableSource(source) if source.QuerySource.is_none() => {
+        ast::ResultSetNode::TableSource(source)
+            if source.QuerySource.is_none() && source.FunctionSource.is_none() =>
+        {
             sources.push(source);
         }
         ast::ResultSetNode::TableSource(_) => {}
@@ -238,7 +240,9 @@ pub(super) fn collect_physical_table_sources<'a>(
 
 pub(super) fn result_set_node_has_derived_source(node: &ast::ResultSetNode) -> bool {
     match node {
-        ast::ResultSetNode::TableSource(source) => source.QuerySource.is_some(),
+        ast::ResultSetNode::TableSource(source) => {
+            source.QuerySource.is_some() || source.FunctionSource.is_some()
+        }
         ast::ResultSetNode::Join(join) => {
             join.Left
                 .as_deref()
@@ -428,6 +432,64 @@ impl ConcreteSession {
         outer: Option<&HashMap<String, Option<String>>>,
         predicate: Option<&ast::ExprNode>,
     ) -> SessionResult<InsertSelectRows> {
+        if let Some(call) = &source.FunctionSource {
+            let field = self.pg_int4_series_field(source)?;
+            let ast::ExprKind::Function { Args, .. } = &call.Kind else {
+                unreachable!()
+            };
+            let mut values = [None, None, Some(1)];
+            for (index, arg) in Args.iter().enumerate() {
+                values[index] = self
+                    .relational_query_expression_value(arg, &HashMap::new(), None)?
+                    .map(|value| {
+                        value.parse::<i32>().map_err(|_| {
+                            super::query::pg_union_error("integer out of range", "22003")
+                        })
+                    })
+                    .transpose()?;
+            }
+            let mut executor = astersql_executor::builder::BuildInt4Series(values, 1024);
+            // Construction/Describe never evaluates the step. Open is the same
+            // execution-time error boundary as the existing executor leaves.
+            if let Err(error) = executor.Open() {
+                executor
+                    .Close()
+                    .map_err(|close| SessionError::new(close.to_string()))?;
+                return Err(super::query::pg_union_error(&error.to_string(), "22023"));
+            }
+            let name = field.column_as_name.L;
+            let mut chunk = executor.NewChunk();
+            let mut rows = Vec::new();
+            let result: SessionResult<()> = (|| {
+                loop {
+                    executor
+                        .Next(&mut chunk)
+                        .map_err(|error| SessionError::new(error.to_string()))?;
+                    if chunk.NumRows() == 0 {
+                        break;
+                    }
+                    for index in 0..chunk.NumRows() {
+                        rows.push(HashMap::from([(
+                            name.clone(),
+                            Some(chunk.GetRow(index).GetInt64(0).to_string()),
+                        )]));
+                    }
+                }
+                Ok(())
+            })();
+            let close = executor
+                .Close()
+                .map_err(|error| SessionError::new(error.to_string()));
+            result?;
+            close?;
+            return Ok(self.qualify_insert_select_rows(
+                InsertSelectRows {
+                    columns: vec![name],
+                    rows,
+                },
+                &field.table_as_name.L,
+            ));
+        }
         if let Some(query) = source.QuerySource.as_ref() {
             let mut result = query
                 .with_node(|node| self.execute_insert_select_node_with_outer(node, outer))
@@ -1861,7 +1923,10 @@ impl ConcreteSession {
                 let ast::ResultSetNode::TableSource(source) = node else {
                     return false;
                 };
-                if source.QuerySource.is_some() || source.AsOf.is_some() {
+                if source.QuerySource.is_some()
+                    || source.FunctionSource.is_some()
+                    || source.AsOf.is_some()
+                {
                     return false;
                 }
                 let database = if source.Source.Schema.L.is_empty() {
@@ -2201,7 +2266,7 @@ impl ConcreteSession {
                 else {
                     return false;
                 };
-                if table_source.QuerySource.is_some() {
+                if table_source.QuerySource.is_some() || table_source.FunctionSource.is_some() {
                     return false;
                 }
                 let ast::ExprKind::Column(group_column) = &select.GroupBy[0].Expr.Kind else {

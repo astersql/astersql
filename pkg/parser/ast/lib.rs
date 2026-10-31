@@ -553,6 +553,8 @@ pub struct IndexHint {
 pub struct TableSource {
     pub Source: TableName,
     pub QuerySource: Option<NodeRef>,
+    /// Ordinary FROM function call, distinct from a relation or derived query.
+    pub FunctionSource: Option<ExprNode>,
     pub AsName: CIStr,
     pub TableSample: Option<TableSample>,
     pub AsOf: Option<AsOfClause>,

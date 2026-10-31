@@ -324,7 +324,9 @@ children!(CallStmt => Procedure);
 children!(ShowStmt => Table, Column, Pattern, Where, ShowProfileLimit);
 impl Children for TableSource {
     fn visit_children(&self, v: &mut dyn Visitor) -> bool {
-        let source_ok = if let Some(query) = &self.QuerySource {
+        let source_ok = if let Some(function) = &self.FunctionSource {
+            function.visit(v)
+        } else if let Some(query) = &self.QuerySource {
             query.visit(v)
         } else {
             self.Source.visit(v)
@@ -334,7 +336,9 @@ impl Children for TableSource {
 }
 impl MutChildren for TableSource {
     fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
-        let source_ok = if let Some(query) = &mut self.QuerySource {
+        let source_ok = if let Some(function) = &mut self.FunctionSource {
+            function.visit_mut(v)
+        } else if let Some(query) = &mut self.QuerySource {
             query.visit_mut(v)
         } else {
             self.Source.visit_mut(v)

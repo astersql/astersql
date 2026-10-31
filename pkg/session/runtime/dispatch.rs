@@ -485,7 +485,7 @@ impl ConcreteSession {
         let Some(from) = select.From.as_ref() else {
             return false;
         };
-        matches!(from.TableRefs.Left.as_deref(), Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none())
+        matches!(from.TableRefs.Left.as_deref(), Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none() && source.FunctionSource.is_none())
             && from.TableRefs.Right.is_none()
             && select.With.is_none()
             && select.lock_info.is_none()

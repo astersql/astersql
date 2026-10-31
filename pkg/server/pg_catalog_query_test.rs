@@ -570,3 +570,20 @@ fn pg_function_01_catalog_ownership_keeps_numeric_magnitudes_lexical() {
     assert_eq!(query.projections[0].expr, Expr::Integer(i64::MIN));
     assert!(parse("SELECT 9223372036854775808 FROM pg_catalog.pg_database").is_err());
 }
+
+#[test]
+fn pg09_23_catalog_ownership() {
+    for sql in [
+        "SELECT g.v AS c FROM pg_catalog.generate_series(1::int4,3::int4) AS g(v)",
+        "SELECT g.v AS c FROM generate_series(1::int4,3::int4) AS g(v)",
+        "SELECT 'pg_catalog.generate_series(1,3)' AS c",
+    ] {
+        assert!(parse(sql).unwrap().is_none(), "{sql}");
+    }
+    for sql in [
+        "SELECT oid FROM pg_namespace CROSS JOIN pg_catalog.generate_series(1,2) AS g",
+        "SELECT oid FROM pg_namespace CROSS JOIN generate_series(1,2) AS g",
+    ] {
+        assert_eq!(parse(sql).unwrap_err().0, "0A000", "{sql}");
+    }
+}

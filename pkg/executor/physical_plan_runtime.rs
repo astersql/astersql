@@ -1096,3 +1096,105 @@ pub fn ExecutePhysicalPlan(
 ) -> PhysicalRuntimeResult<Vec<Row>> {
     execute_node(plan, source)
 }
+
+/// A typed FROM leaf for PostgreSQL's int4 generate_series overload. The next
+/// value is retained across Chunk boundaries; checked addition makes overflow
+/// terminate the source instead of wrapping back into the output range.
+pub struct Int4Series {
+    arguments: [Option<i32>; 3],
+    next: Option<i32>,
+    opened: bool,
+    config: crate::adapter::ChunkConfig,
+    schema: Vec<crate::adapter::SchemaColumn>,
+}
+
+impl Int4Series {
+    pub(crate) fn new(arguments: [Option<i32>; 3], maximum_chunk_size: usize) -> Self {
+        let field_type =
+            astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeLong);
+        Self {
+            arguments,
+            next: None,
+            opened: false,
+            config: crate::adapter::ChunkConfig {
+                fields: vec![field_type.clone()],
+                initial_capacity: maximum_chunk_size.max(1),
+                maximum_chunk_size: maximum_chunk_size.max(1),
+            },
+            schema: vec![crate::adapter::SchemaColumn { field_type }],
+        }
+    }
+}
+
+impl crate::adapter::ExecExecutor for Int4Series {
+    fn Open(&mut self) -> crate::adapter::AdapterResult {
+        self.next = None;
+        self.opened = false;
+        if let [Some(start), Some(end), Some(step)] = self.arguments {
+            if step == 0 {
+                return Err(astersql_errors::New("step size cannot equal zero"));
+            }
+            if (step > 0 && start <= end) || (step < 0 && start >= end) {
+                self.next = Some(start);
+            }
+        }
+        self.opened = true;
+        Ok(())
+    }
+    fn Close(&mut self) -> crate::adapter::AdapterResult {
+        self.next = None;
+        self.opened = false;
+        Ok(())
+    }
+    fn Next(&mut self, output: &mut astersql_util_chunk::Chunk) -> crate::adapter::AdapterResult {
+        output.Reset();
+        if !self.opened {
+            return Err(astersql_errors::New("int4 series executor is not open"));
+        }
+        while !output.IsFull() {
+            let Some(value) = self.next else {
+                break;
+            };
+            output.AppendInt64(0, i64::from(value));
+            let end = self.arguments[1].expect("non-null series");
+            let step = self.arguments[2].expect("non-null series");
+            self.next = value
+                .checked_add(step)
+                .filter(|next| if step > 0 { *next <= end } else { *next >= end });
+        }
+        Ok(())
+    }
+    fn ChunkConfig(&self) -> crate::adapter::ChunkConfig {
+        self.config.clone()
+    }
+    fn NewChunk(&self) -> astersql_util_chunk::Chunk {
+        *astersql_util_chunk::New(
+            self.config.fields.clone(),
+            self.config.initial_capacity,
+            self.config.maximum_chunk_size,
+        )
+    }
+    fn Schema(&self) -> &[crate::adapter::SchemaColumn] {
+        &self.schema
+    }
+    fn CalculateNoDelay(&self) -> bool {
+        false
+    }
+    fn IsWriteExecutor(&self) -> bool {
+        false
+    }
+    fn CheckForeignKeys(&mut self) -> crate::adapter::AdapterResult {
+        Ok(())
+    }
+    fn TakeForeignKeyCascades(&mut self) -> Vec<Box<dyn crate::adapter::CascadeBatch>> {
+        Vec::new()
+    }
+    fn HasForeignKeyCascades(&self) -> bool {
+        false
+    }
+    fn PrepareFKCascadeContext(&mut self) {}
+    fn AddFKCheckLockDuration(&mut self, _: std::time::Duration) {}
+    fn Detach(&mut self) -> Option<Box<dyn crate::adapter::ExecExecutor>> {
+        None
+    }
+}

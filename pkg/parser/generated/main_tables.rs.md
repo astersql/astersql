@@ -196,3 +196,8 @@ Regenerated from main.astergram with the PG percentile_disc WITHIN GROUP SumExpr
 ## Ordered-set client diagnostics
 
 Regenerated from main.astergram for the bounded ordered-set DISTINCT and missing-WITHIN productions; semantic diagnostics remain in existing parser actions.
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+由 main.astergram 的单个 FunctionCallGeneric FROM 产生式生成新 TableFactor 表项；对应 query action 清单245项。生成命令 cargo run --locked --release -p astersql-parsergen -- generate，仍使用既有解析表与动作分派。

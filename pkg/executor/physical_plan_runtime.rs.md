@@ -95,3 +95,8 @@ crate 依赖可在 `pkg/executor/Cargo.toml` 核对：本文件直接使用 exec
 - 增强 UnionScan 时应接入真实事务本地数据来源，处理删除标记、虚拟列、分区/global index 与锁生命周期，并以 `pkg/executor/union_scan.go` 的 `UnionScanExec` 为行为对照。
 - 改动扫描或 Limit 时必须保留 iterator 的无条件关闭与提前停止传播；测试至少覆盖错误路径、offset、count=0、过滤后取满和正/反向扫描。TopN/Sort 错误路径还应验证 executor 能否得到关闭。
 - 性能风险主要来自意外退回 `Vec<Row>` 物化、重复 Datum/SortValue 转换、UnionScan 全量排序以及固定单并发。兼容风险主要来自扩大支持范围时与 Go 的 NULL、collation、decimal/time 比较、聚合 mode 或事务可见性不一致。
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+Int4Series 实现 INT4 generate_series 的既有 ExecExecutor/Chunk 行源生命周期。Open 对非NULL参数检查零步长；Next 在跨块续读时用 checked_add 避免 int4 回绕，Close 丢弃游标，重开从起点开始。任一NULL产生零行。

@@ -99,3 +99,8 @@ Rust 测试逻辑保持在独立文件，没有内嵌到 `walk.rs`。
 5. 在独立测试中至少固定：enter/children/leave 顺序、skip、false 短路、可变写回；有条件分支时覆盖每条分支，有替换时覆盖 enter 与 leave 替换及错误类型约束。优先扩展现有 [`go_merge_25_test.rs`](go_merge_25_test.rs) / [`go_merge_27_test.rs`](go_merge_27_test.rs)，分区结构使用 [`go_merge_13_test.rs`](go_merge_13_test.rs)。
 
 兼容性风险主要是漏孩子、字段次序改变或停止传播错误，这会影响名称收集、改写、标志分析等所有 visitor；性能风险是引入分配、克隆或重复访问。保持宏字段列表简单、原地遍历零框架分配，并与 Go `Accept` / `AcceptInPlace` 逐字段对照，可降低这些风险。
+
+
+## 2026-11-01 INT4 FROM 序列行源
+
+TableSource.FunctionSource 通过原 Visitor/InPlaceVisitor 遍历函数参数，支持既有参数定位、重绑和查询分析；函数源不访问占位 TableName。

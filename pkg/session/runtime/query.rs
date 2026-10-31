@@ -51,7 +51,7 @@ pub(super) fn pg_union_unknown_inputs(node: &dyn ast::Node, fields: &mut [Concre
     }
 }
 
-fn pg_union_error(message: &str, state: &'static str) -> SessionError {
+pub(super) fn pg_union_error(message: &str, state: &'static str) -> SessionError {
     SessionError::with_source(
         message,
         astersql_errors::SharedError::new(super::pg_array::PgArrayError {
@@ -5199,6 +5199,89 @@ impl ConcreteSession {
         false
     }
 
+    /// Classify and bind the supported ordinary FROM SRF before any values are
+    /// read. Both Describe and execution use this fixed int4 output identity.
+    pub(super) fn pg_int4_series_field(
+        &self,
+        source: &ast::TableSource,
+    ) -> SessionResult<ConcreteResultField> {
+        let call = source.FunctionSource.as_ref().expect("function source");
+        let ast::ExprKind::Function {
+            Schema,
+            FnName,
+            Args,
+        } = &call.Kind
+        else {
+            return Err(pg_union_error("unsupported FROM function", "0A000"));
+        };
+        let types: Vec<_> = Args
+            .iter()
+            .map(|arg| self.pg_case_input_type(arg, &[]).GetType())
+            .collect();
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL
+            || FnName.L != "generate_series"
+            || !(Schema.L.is_empty() || Schema.L == "pg_catalog")
+            || !(2..=3).contains(&Args.len())
+        {
+            return Err(super::function_diagnostics::no_matching_function(
+                call, &types,
+            ));
+        }
+        if types.iter().any(|tp| {
+            !matches!(
+                *tp,
+                astersql_parser_mysql::r#type::TypeLong
+                    | astersql_parser_mysql::r#type::TypeShort
+                    | astersql_parser_mysql::r#type::TypeNull
+            )
+        }) {
+            return Err(pg_union_error(
+                "generate_series overload is not supported",
+                "0A000",
+            ));
+        }
+        for arg in Args {
+            let mut columns = HashSet::new();
+            collect_expression_column_names(arg, &mut columns);
+            if !columns.is_empty() || source.Lateral {
+                return Err(pg_union_error(
+                    "correlated FROM functions are not supported",
+                    "0A000",
+                ));
+            }
+        }
+        if source.ColumnNames.len() > 1 {
+            return Err(pg_union_error(
+                "table function has more column aliases than columns",
+                "42P10",
+            ));
+        }
+        let name = source
+            .ColumnNames
+            .first()
+            .cloned()
+            .unwrap_or_else(|| FnName.clone());
+        let alias = if source.AsName.O.is_empty() {
+            FnName.clone()
+        } else {
+            source.AsName.clone()
+        };
+        Ok(ConcreteResultField {
+            column: astersql_meta_model::ColumnInfo {
+                Name: name.clone(),
+                FieldType: astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeLong,
+                ),
+                ..Default::default()
+            },
+            column_as_name: name,
+            table_name: FnName.clone(),
+            table_as_name: alias,
+            db_name: ast::CIStr::default(),
+            column_origin: None,
+        })
+    }
+
     fn append_relational_source_fields(
         &self,
         source_node: &ast::ResultSetNode,
@@ -5218,6 +5301,10 @@ impl ConcreteSession {
             }
         };
 
+        if source.FunctionSource.is_some() {
+            fields.push(self.pg_int4_series_field(source)?);
+            return Ok(());
+        }
         if let Some(query) = source.QuerySource.as_ref() {
             let mut derived_fields = query
                 .with_node(|node| {
