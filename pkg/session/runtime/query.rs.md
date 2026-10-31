@@ -339,3 +339,7 @@ The aggregate adapter evaluates the direct fraction before filtering and feeds d
 ## 2026-10-31 continuous percentile
 
 Continuous percentiles use the shared float8 TypedHashAgg adapter for derived rows, keep the direct fraction outside FILTER, validate the float8 overload/grouped direct arguments, and describe a nullable float8 column before execution.
+
+## 2026-10-31 ordered-set direct fraction diagnostics
+
+The direct fraction adapter reuses `pg_float4_cast_text_input` for its existing typed float8 binary carrier decoding before parsing the fraction. Rebound NaNs now reach the shared percentile range validator and return 22003 rather than a carrier text parse error (22P02), independently of transition row count or FILTER. No protocol codec or ordinary aggregate behavior changes.

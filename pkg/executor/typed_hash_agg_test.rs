@@ -1526,3 +1526,34 @@ fn pg09_20_execution_boundaries_and_nonfinite() {
         }
     }
 }
+
+#[test]
+fn pg09_21_execution() {
+    use crate::typed_hash_agg::{PercentileCont, PercentileDisc, PercentileFractionError};
+    // Validate direct arguments independently of transition rows, for both overloads.
+    for fraction in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for values in [vec![], vec![None], vec![Some(1)]] {
+            let error =
+                PercentileDisc(context(), values.clone(), Some(fraction), false).unwrap_err();
+            assert!(error.downcast_ref::<PercentileFractionError>().is_some());
+            let error = PercentileCont(
+                context(),
+                values.into_iter().map(|v| v.map(|v| v as f64)).collect(),
+                Some(fraction),
+                false,
+            )
+            .unwrap_err();
+            assert!(error.downcast_ref::<PercentileFractionError>().is_some());
+        }
+    }
+    for fraction in [None, Some(0.0), Some(1.0)] {
+        assert_eq!(
+            PercentileDisc(context(), vec![], fraction, false).unwrap(),
+            None
+        );
+        assert_eq!(
+            PercentileCont(context(), vec![None], fraction, false).unwrap(),
+            None
+        );
+    }
+}

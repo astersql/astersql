@@ -24444,3 +24444,286 @@ fn pg09_20_sql() {
         row(&[Some("1")])
     );
 }
+
+#[test]
+fn pg09_21_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = Vec::new();
+        loop {
+            let message = read(s);
+            let done = message.0 == b'Z';
+            messages.push(message);
+            if done {
+                return messages;
+            }
+        }
+    }
+    fn error(messages: &[(u8, Vec<u8>)], state: &str) -> Vec<u8> {
+        let body = &messages
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("expected diagnostic")
+            .1;
+        let mut fields = std::collections::HashMap::new();
+        let mut at = 0;
+        while body[at] != 0 {
+            let key = body[at];
+            at += 1;
+            let end = at + body[at..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(key, body[at..end].to_vec());
+            at = end + 1;
+        }
+        assert_eq!(fields.get(&b'C').unwrap(), state.as_bytes(), "{messages:?}");
+        assert_eq!(fields.get(&b'S').unwrap(), b"ERROR");
+        assert!(!fields.get(&b'M').unwrap().is_empty());
+        assert_eq!(messages.last().unwrap(), &(b'Z', vec![b'I']));
+        fields.remove(&b'M').unwrap()
+    }
+    fn recover(s: &mut TcpStream) {
+        let messages = query(s, "SELECT 1::int4 AS c");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some("1")])]
+        );
+        assert_eq!(messages.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    for (function, ty, oid, length) in [
+        ("percentile_disc", "int4", 23u32, 4i16),
+        ("percentile_cont", "float8", 701u32, 8i16),
+    ] {
+        let source = format!("FROM (VALUES(0.25::float8,1::{ty}),(0.75::float8,2::{ty})) t(p,x)");
+        let invalid =
+            format!("SELECT {function}(p::float8) WITHIN GROUP(ORDER BY x) AS c {source}");
+        let messages = query(&mut s, &invalid);
+        assert_eq!(
+            error(&messages, "42803"),
+            b"column \"p\" must appear in the GROUP BY clause or be used in an aggregate function"
+        );
+        recover(&mut s);
+        // Parse/Describe must reject the ungrouped direct variable before Bind/Execute.
+        send(
+            &mut s,
+            b'P',
+            &[b"bad21\0".as_slice(), invalid.as_bytes(), &[0, 0, 0]].concat(),
+        );
+        send(&mut s, b'D', b"Sbad21\0");
+        send(&mut s, b'S', &[]);
+        error(&ready(&mut s), "42803");
+        recover(&mut s);
+        let messages = query(&mut s, &format!("{invalid} GROUP BY p ORDER BY p"));
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+        let expected = vec![row(&[Some("1")]), row(&[Some("2")])];
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for (call, suffix) in [
+            (format!("{function}(0.5::float8)"), ""),
+            (
+                format!("{function}(DISTINCT 0.5::float8) WITHIN GROUP(ORDER BY x)"),
+                "",
+            ),
+            (
+                format!("{function}(0.5::float8) WITHIN GROUP(ORDER BY x)"),
+                " OVER ()",
+            ),
+        ] {
+            let sql = format!("SELECT {call}{suffix} AS c {source}");
+            error(&query(&mut s, &sql), "42601");
+            recover(&mut s);
+        }
+        for predicate in ["", " WHERE false", " FILTER (WHERE false)"] {
+            for fraction in ["'-0.1'", "'1.1'", "'NaN'", "'Infinity'", "'-Infinity'"] {
+                let (filter, where_clause) = if predicate.starts_with(" FILTER") {
+                    (predicate, "")
+                } else {
+                    ("", predicate)
+                };
+                let sql = format!(
+                    "SELECT {function}({fraction}::float8) WITHIN GROUP(ORDER BY x){filter} AS c FROM (VALUES(NULL::{ty})) t(x){where_clause}"
+                );
+                assert_eq!(
+                    error(&query(&mut s, &sql), "22003"),
+                    b"percentile value must be between 0 and 1"
+                );
+                recover(&mut s);
+            }
+        }
+        for predicate in ["", " WHERE false"] {
+            let messages = query(
+                &mut s,
+                &format!(
+                    "SELECT {function}(0.5::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(NULL::{ty})) t(x){predicate}"
+                ),
+            );
+            assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|m| m.0 == b'D')
+                    .map(|m| m.1.clone())
+                    .collect::<Vec<_>>(),
+                vec![row(&[None])]
+            );
+            let description = &messages.iter().find(|m| m.0 == b'T').unwrap().1;
+            assert_eq!(&description[10..14], &oid.to_be_bytes());
+            assert_eq!(&description[14..16], &length.to_be_bytes());
+            assert_eq!(&description[16..20], &(-1i32).to_be_bytes());
+        }
+        let sql = format!(
+            "SELECT {function}($1::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(1::{ty}),(2::{ty})) t(x)"
+        );
+        send(
+            &mut s,
+            b'P',
+            &[
+                b"fraction21\0".as_slice(),
+                sql.as_bytes(),
+                &[0, 0, 1],
+                &701u32.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(&mut s, b'D', b"Sfraction21\0");
+        send(&mut s, b'S', &[]);
+        let messages = ready(&mut s);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+        let describe = &messages.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&describe[10..14], &oid.to_be_bytes());
+        assert_eq!(&describe[14..16], &length.to_be_bytes());
+        assert_eq!(&describe[16..20], &(-1i32).to_be_bytes());
+        for input_format in [0i16, 1] {
+            for output_format in [0i16, 1] {
+                for fraction in [
+                    Some(0.0f64),
+                    Some(f64::NAN),
+                    Some(1.0),
+                    Some(f64::INFINITY),
+                    Some(f64::NEG_INFINITY),
+                    Some(1.1),
+                    None,
+                    Some(-0.1),
+                    Some(0.5),
+                ] {
+                    let mut bind = b"\0fraction21\0".to_vec();
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(input_format.to_be_bytes());
+                    bind.extend(1i16.to_be_bytes());
+                    if let Some(value) = fraction {
+                        let value = if input_format == 0 {
+                            if value == f64::NEG_INFINITY {
+                                b"-Infinity".to_vec()
+                            } else if value == f64::INFINITY {
+                                b"Infinity".to_vec()
+                            } else {
+                                value.to_string().into_bytes()
+                            }
+                        } else {
+                            value.to_be_bytes().to_vec()
+                        };
+                        bind.extend((value.len() as i32).to_be_bytes());
+                        bind.extend(value);
+                    } else {
+                        bind.extend((-1i32).to_be_bytes());
+                    }
+                    bind.extend(1i16.to_be_bytes());
+                    bind.extend(output_format.to_be_bytes());
+                    send(&mut s, b'B', &bind);
+                    send(&mut s, b'D', b"P\0");
+                    send(&mut s, b'E', &[0; 5]);
+                    send(&mut s, b'S', &[]);
+                    let messages = ready(&mut s);
+                    let description = &messages.iter().find(|m| m.0 == b'T').unwrap().1;
+                    assert_eq!(&description[..20], &describe[..20]);
+                    assert_eq!(&description[20..22], &output_format.to_be_bytes());
+                    if fraction.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
+                        error(&messages, "22003");
+                        assert_eq!(
+                            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            [b'2', b'T', b'E', b'Z']
+                        );
+                        recover(&mut s);
+                    } else {
+                        assert_eq!(
+                            messages.iter().map(|m| m.0).collect::<Vec<_>>(),
+                            [b'2', b'T', b'D', b'C', b'Z']
+                        );
+                        let value: Option<f64> = fraction.map(|p| {
+                            if p == 0.0 {
+                                1.0
+                            } else if p == 1.0 {
+                                2.0
+                            } else if ty == "int4" {
+                                1.0
+                            } else {
+                                1.5
+                            }
+                        });
+                        let expected = if output_format == 0 {
+                            let text = value.map(|v| v.to_string());
+                            row(&[text.as_deref()])
+                        } else {
+                            let mut data = 1i16.to_be_bytes().to_vec();
+                            if let Some(v) = value {
+                                data.extend((length as i32).to_be_bytes());
+                                if ty == "int4" {
+                                    data.extend((v as i32).to_be_bytes());
+                                } else {
+                                    data.extend(v.to_be_bytes());
+                                }
+                            } else {
+                                data.extend((-1i32).to_be_bytes());
+                            }
+                            data
+                        };
+                        assert_eq!(messages.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+                    }
+                }
+            }
+        }
+        send(&mut s, b'C', b"Sfraction21\0");
+        send(&mut s, b'S', &[]);
+        ready(&mut s);
+    }
+}

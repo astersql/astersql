@@ -1123,6 +1123,10 @@ impl ConcreteSession {
                 rows.first().unwrap_or(&empty),
                 None,
             )?;
+            // Bound float8 NaNs retain a private binary carrier. Decode the
+            // typed direct argument before validating its fraction, including
+            // empty or filtered groups, rather than parsing the carrier as text.
+            let direct = super::relational_value::pg_float4_cast_text_input(&args[0], direct)?;
             astersql_expression::pg_cast_float8(direct.as_deref()).map_err(|e| {
                 SessionError::with_source(e.to_string(), astersql_errors::SharedError::new(e))
             })?
