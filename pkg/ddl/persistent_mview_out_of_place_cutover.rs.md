@@ -28,6 +28,8 @@
 
 ## 执行流程
 
+63ec01b244 的 revision-CAS 回归同时覆盖旧 ordinary-index 发布器未推进 Revision 的情况：在 worker 的同一事务内比较旧 MV 与构建前 shadow 的索引元数据，拒绝并发索引 DDL，避免在 SQL 刷新入口做非原子的预检查。
+
 1. `GetRefreshMaterializedViewCompleteOutOfPlaceCutoverArgs(job)` 解码参数。必须满足 `OldMViewID == job.table_id`、旧 ID 与 shadow ID 不同、`BuildReadTSO != 0`。
 2. 第一个 `context.with_transaction` 读取同一 schema 下的旧 MV 和 shadow table。旧对象必须有 `MaterializedView`，且当前实现只允许恰好一个 `BaseTableIDs`；如果参数携带 `ExpectedOldMViewRevision`，它必须等于旧对象的 `Revision`。
 3. shadow 必须处于 `Public`，必须以 `MaterializedViewShadow.SourceMViewID == OldMViewID` 指向旧 MV，并且不能已经是 MV、MLog、普通 View 或 Sequence。
@@ -83,7 +85,7 @@ job 在任何参数/元数据校验失败时变为 `Cancelled`；成功时变为
 
 ## 与 Go 版本的对应关系
 
-Go 实现还显式设置各 `TableInfo.UpdateTS`、用 `repairTableOrViewWithCheck` 更新表，并提供两个 cutover failpoint；目标 Rust 文件没有这些显式步骤或 failpoint。Go 的 `migrateMViewRefreshInfoForOutOfPlaceCutover` 使用 table API 原地维护四列系统表；Rust 的 session 实现使用 SELECT/UPDATE SQL。以上是可观察的迁移实现差异，不能写成“Rust 已与 Go 完全等价”。
+Go 实现还显式设置各 `TableInfo.UpdateTS`、用 `repairTableOrViewWithCheck` 更新表。63ec01b244 的迁移回归补齐 migrate-refresh-info 后、发布事件处及提交前的三个原 Go fault point；这些注入点返回取消错误，由既有 worker 事务统一回滚。Go 的 `migrateMViewRefreshInfoForOutOfPlaceCutover` 使用 table API 原地维护四列系统表；Rust 的 session 实现使用同一 worker 事务中的 SELECT/UPDATE SQL。以上实现差异应通过持久元数据、刷新信息、通知事件和告警的回归断言验证，而不能仅由编译结果宣称完全等价。
 
 Rust 独立测试目前只覆盖 ID 替换/去重、基表改写错误、事件携带新旧元数据和动作分派，不覆盖完整 `step` 的事务与失败恢复。
 

@@ -16,6 +16,12 @@ canonical session 与 MV merge/apply sink 的真实数据源、事务 writer 桥
 
 ## 执行流程
 
+63ec01b244：固定 MVCC 时间戳的数据源同时使用 Domain 既有的 `snapshot_info_schema(read_ts)`，使 MIN/MAX 回查在目标时刻可见的索引上规划，避免扫描目标快照时尚不存在的新索引；不另建历史 schema 子系统。
+
+构建拥有独立 SessionVars 的规划 context 时，通过既有可变 `SetSystemVar` 同步八个 TiFlash 设置的 native 字段和文本 getter；不只复制 hint 字符串。这样实际 source context 接收维护会话配置，原会话的恢复由协调器 guard 负责。
+
+`compile_mview_source_with_empty` 与既有 stats 编译共享同一实现；在 DoOptimize/resolve_indices 后、生成 typed executor 前调用 `FinalizeMViewDeltaMergeSource`。普通查询和 MIN/MAX 回查通过不传 merge 继续原路径，无空输入猜测；扫描仍绑定传入的真实 MVCC 时间戳。
+
 从已提交 InfoSchema 和定义 SQL 建立 MViewDefinition；使用 canonical planner 优化派生源，按实际物理 table/index scan 编码范围；读取 typed chunk 后调用现有 merge/apply sink。MIN/MAX lookup 使用同一 read TSO。
 
 ## 数据与状态
@@ -37,6 +43,8 @@ canonical session 与 MV merge/apply sink 的真实数据源、事务 writer 桥
 ConcreteSession 保持 Rc/RefCell 的线程内使用；snapshot retriever 由 Domain 保持存储生命；迭代器 Close/Drop 只结束一次并上报真实索引访问样本。
 
 ## 与 Go 版本的对应关系
+
+对应 63ec01b2440281b0debbfb05c5dfd378e94474d1 中 mview_refresh_builder.go 的优化后空输入判定；此处是取得真实 PhysicalPlan 的必要局部接线，而非新增通用 planner 子系统。
 
 compile_mview_source 另从真实物理树记录 explain_id、估算行数、算子类型及 explain_info，供数据变更步骤 observer 消费；该观测不生成模拟计划。
 

@@ -1505,6 +1505,7 @@ impl ConcreteSession {
     ) -> SessionResult<Option<ConcreteRecordSet>> {
         // Keep the completed statement's marker observable until the next SQL
         // statement starts, as Go's ResetContextOfStmt does.
+        self.check_materialized_shadow_access(statement)?;
         self.session_vars.BeginTableCacheStatement();
         struct StatementMDL<'a>(&'a ConcreteSession, bool);
         impl Drop for StatementMDL<'_> {

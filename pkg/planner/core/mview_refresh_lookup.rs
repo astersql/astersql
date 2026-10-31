@@ -189,3 +189,52 @@ pub fn ExtractMViewFullUpdateLookupTemplate(
         output_mv_offsets,
     })
 }
+
+/// Follow only the MLog side of the generated merge source. Estimates are not
+/// evidence: only an exact zero-row Dual below grouped aggregation proves emptiness.
+pub fn MViewRefreshMLogIsEmpty(mut plan: Option<&dyn base_dependency::PhysicalPlan>) -> bool {
+    use physicalop_dependency as op;
+    while let Some(current) = plan {
+        let any = current.as_any();
+        if let Some(dual) = any.downcast_ref::<op::PhysicalTableDual>() {
+            return dual.RowCount == 0;
+        }
+        let children = current.children();
+        let join_type = if let Some(join) = any.downcast_ref::<op::PhysicalHashJoin>() {
+            Some(join.BasePhysicalJoin.JoinType)
+        } else if let Some(join) = any.downcast_ref::<op::PhysicalMergeJoin>() {
+            Some(join.BasePhysicalJoin.JoinType)
+        } else if let Some(join) = any.downcast_ref::<op::PhysicalIndexJoin>() {
+            Some(join.BasePhysicalJoin.JoinType)
+        } else if let Some(join) = any.downcast_ref::<op::PhysicalIndexHashJoin>() {
+            Some(join.PhysicalIndexJoin.BasePhysicalJoin.JoinType)
+        } else if let Some(join) = any.downcast_ref::<op::PhysicalIndexMergeJoin>() {
+            Some(join.PhysicalIndexJoin.BasePhysicalJoin.JoinType)
+        } else {
+            None
+        };
+        if let Some(join_type) = join_type {
+            if join_type != base_dependency::JoinType::LeftOuterJoin || children.len() != 2 {
+                return false;
+            }
+            plan = Some(children[0]);
+            continue;
+        }
+        if let Some(agg) = any.downcast_ref::<op::PhysicalHashAgg>() {
+            if agg.BasePhysicalAgg.GroupByItems.is_empty() {
+                return false;
+            }
+        } else if let Some(agg) = any.downcast_ref::<op::PhysicalStreamAgg>() {
+            if agg.BasePhysicalAgg.GroupByItems.is_empty() {
+                return false;
+            }
+        } else if !any.is::<op::PhysicalProjection>() && !any.is::<op::PhysicalSelection>() {
+            return false;
+        }
+        if children.len() != 1 {
+            return false;
+        }
+        plan = Some(children[0]);
+    }
+    false
+}

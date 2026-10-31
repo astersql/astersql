@@ -1000,3 +1000,117 @@ fn import_select_rejects_enabled_ttl_even_with_disable_precheck() {
         vec![vec!["17".to_string()]]
     );
 }
+
+#[test]
+fn port_63ec01b244_initial_build_applies_and_restores_execution_variables() {
+    // Go SessionVars/initial_build: use the existing durable CREATE worker,
+    // and observe the actual build session through Go's original boundary.
+    let (f, table, mut job) = setup(JobVersion::V2);
+    let settings = [
+        (
+            "tidb_mview_maintain_mem_quota",
+            "tidb_mem_quota_query",
+            "268435456",
+        ),
+        (
+            "tidb_mview_maintain_isolation_read_engines",
+            "tidb_isolation_read_engines",
+            "tikv",
+        ),
+        ("tidb_max_tiflash_threads", "tidb_max_tiflash_threads", "8"),
+        (
+            "tidb_max_bytes_before_tiflash_external_join",
+            "tidb_max_bytes_before_tiflash_external_join",
+            "101",
+        ),
+        (
+            "tidb_max_bytes_before_tiflash_external_group_by",
+            "tidb_max_bytes_before_tiflash_external_group_by",
+            "202",
+        ),
+        (
+            "tidb_max_bytes_before_tiflash_external_sort",
+            "tidb_max_bytes_before_tiflash_external_sort",
+            "303",
+        ),
+        (
+            "tiflash_mem_quota_query_per_node",
+            "tiflash_mem_quota_query_per_node",
+            "404",
+        ),
+        (
+            "tiflash_query_spill_ratio",
+            "tiflash_query_spill_ratio",
+            "0.75",
+        ),
+        (
+            "tiflash_fine_grained_shuffle_stream_count",
+            "tiflash_fine_grained_shuffle_stream_count",
+            "16",
+        ),
+        (
+            "tiflash_fine_grained_shuffle_batch_size",
+            "tiflash_fine_grained_shuffle_batch_size",
+            "4096",
+        ),
+    ];
+    let mut lease = f.pool.acquire().unwrap();
+    let before = settings
+        .iter()
+        .map(|(_, target, _)| lease.query(format!("SELECT @@session.{target}")).unwrap())
+        .collect::<Vec<_>>();
+    drop(lease);
+    for (source, _, value) in settings {
+        job.session_vars.insert(source.to_owned(), value.to_owned());
+    }
+    job.session_vars
+        .insert("tidb_mview_maintain_import_threads".into(), "12".into());
+    job.session_vars.insert(
+        "tidb_mview_maintain_import_disk_quota".into(),
+        "64gib".into(),
+    );
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let captured = observed.clone();
+    let _applied = astersql_testkit_testfailpoint::enable_value_call(
+        "github.com/pingcap/tidb/pkg/ddl/createMaterializedViewBuildTiFlashSessionVarsApplied",
+        move |value| {
+            *captured.lock().unwrap() = Some(serde_json::from_str::<Vec<String>>(value).unwrap());
+        },
+    );
+    let log = f
+        .reader()
+        .get_table(f.db, f.table)
+        .unwrap()
+        .unwrap()
+        .MaterializedViewBase
+        .unwrap()
+        .MLogID;
+    rewrite_args(&mut job, &table, &[log]);
+    replace(&f, &mut job);
+    run(&f, &mut job).unwrap();
+    f.domain.reload().unwrap();
+    run(&f, &mut job).unwrap();
+    assert!(job.error.is_none(), "{:?}", job.error);
+    assert!(job.snapshot_ver > 0);
+    let mut lease = f.pool.acquire().unwrap();
+    assert_eq!(
+        lease
+            .query("SELECT payload FROM test.normal_mview")
+            .unwrap(),
+        vec![vec!["retained row".to_owned()]]
+    );
+    assert_eq!(
+        observed.lock().unwrap().as_ref(),
+        Some(
+            &settings
+                .iter()
+                .map(|(_, _, value)| (*value).to_owned())
+                .collect::<Vec<_>>()
+        )
+    );
+    let after = settings
+        .iter()
+        .map(|(_, target, _)| lease.query(format!("SELECT @@session.{target}")).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(after, before);
+}

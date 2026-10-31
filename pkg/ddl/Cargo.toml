@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+astersql-testkit-testfailpoint = { path = "../testkit/testfailpoint" }
 astersql-store-driver-error = { path = "../store/driver/error" }
 astersql-util-regionsplit = { path = "../util/regionsplit" }
 astersql-meta-autoid = { path = "../meta/autoid" }
@@ -60,7 +61,6 @@ legacy-tasks = ["task-1005", "task-1006", "task-1007", "task-1008", "task-1009",
 
 [dev-dependencies]
 astersql-util-intest = { path = "../util/intest" }
-astersql-testkit-testfailpoint = { path = "../testkit/testfailpoint" }
 astersql-planner-core = { path = "../planner/core" }
 astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage" }
 "astersql-ddl-mock" = { package = "astersql-ddl-mock", path = "mock" }

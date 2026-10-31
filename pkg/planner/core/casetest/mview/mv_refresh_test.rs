@@ -295,6 +295,7 @@ fn test_build_refresh_mv_fast_plan_with_min_max_and_snapshot() {
     let RefreshImplementPlan::Fast(plan) = plan else {
         panic!("expected fast plan")
     };
+    assert!(!plan.mlog_empty);
     assert!(plan.full_update_inner_source.is_some());
     assert_eq!(
         plan.full_update_snapshot,

@@ -1696,3 +1696,2001 @@ fn port_05fd982b2d_profile_requires_actual_operator_rows() {
         }
     }
 }
+
+#[test]
+fn port_63ec01b244_empty_mlog_optimized_plan_and_real_refresh() {
+    for (predicate, empty) in [
+        ("false", true),
+        ("g = 1 and g = 2", true),
+        ("g > 1 and g < 0", false),
+        ("g is null and g is not null", false),
+    ] {
+        // Only CREATE MV setup is metadata-based. Every source is optimized and
+        // executed by the real planner and KV runtime; refresh owns real transactions.
+        let definition = format!(
+            "SELECT g,COUNT(1),MAX(v),MIN(v),SUM(v) FROM test.src_runtime WHERE {predicate} GROUP BY g"
+        );
+        let (f, session) = fixture_definition(
+            "CREATE TABLE src_runtime (id int primary key,g int,v int not null,key idx_g(g))",
+            "(1,1,10),(2,1,20)",
+            "CREATE TABLE mv_runtime (g int,cnt bigint not null,mx int,mn int,s decimal(65,0))",
+            &definition,
+        );
+        query(&session, "INSERT INTO src_runtime VALUES (3,1,30)");
+        let table = f.domain.table_by_name("test", "mv_runtime").unwrap();
+        let (def, select, _) = super::mview_source::definition(&session, "test", &table).unwrap();
+        let log = f
+            .domain
+            .info_schema()
+            .TableByID(def.mlog_table_id)
+            .unwrap()
+            .ModelMeta()
+            .unwrap();
+        let (source, mut plan) =
+            astersql_planner_core::mview_refresh_source::BuildFastRefreshSource(
+                &def,
+                "mv_runtime",
+                &log.Name.O,
+                &select,
+                astersql_planner_core::MViewBuildOptions {
+                    from_ts: 0,
+                    to_ts: 0,
+                },
+            )
+            .unwrap();
+        let ts = f
+            .domain
+            .storage()
+            .with_storage(|store| store.CurrentVersion("global"))
+            .unwrap()
+            .Ver;
+        let _child = session
+            .compile_mview_source_with_empty(source, ts, None, Some(&mut plan))
+            .unwrap();
+        assert_eq!(plan.mlog_empty, empty, "{predicate}");
+        assert_eq!(
+            plan.full_update_inner_source.is_none(),
+            empty,
+            "{predicate}"
+        );
+        assert_eq!(
+            plan.full_update_index_ranges.is_empty(),
+            empty,
+            "{predicate}"
+        );
+        let dry = query(
+            &session,
+            "REFRESH MATERIALIZED VIEW mv_runtime FAST DRY RUN",
+        );
+        assert!(
+            dry.iter().any(|r| r[0].contains("DATA_CHANGE_FAST_MERGE")),
+            "{dry:?}"
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist"
+            ),
+            vec![vec!["0"]]
+        );
+        for suffix in ["", " WITH PROFILE"] {
+            let observed = query(
+                &session,
+                &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST{suffix}"),
+            );
+            if !suffix.is_empty() {
+                assert!(
+                    observed
+                        .iter()
+                        .any(|r| r[0].contains("DATA_CHANGE_FAST_MERGE")),
+                    "{observed:?}"
+                );
+                assert!(
+                    observed
+                        .iter()
+                        .any(|r| r[0].contains("MViewDeltaMerge") && r[0].contains("actRows:0")),
+                    "{observed:?}"
+                );
+            }
+            assert_eq!(session.session_vars.StmtCtx.AffectedRows(), 0);
+            assert_eq!(
+                session.session_vars.StmtCtx.GetMessage(),
+                "Rows inserted: 0  Updated: 0  Deleted: 0"
+            );
+            assert!(query(&session, "SELECT * FROM mv_runtime").is_empty());
+        }
+        assert_eq!(
+            query(
+                &session,
+                "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist WHERE REFRESH_STATUS='success' AND REFRESH_COMMIT_TSO>REFRESH_READ_TSO"
+            ),
+            vec![vec!["2"]]
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_shadow_import_empty_select_retains_actual_snapshot() {
+    let (f, session) = fixture();
+    query(
+        &session,
+        "CREATE TABLE shadow_import(g int not null,s decimal(65,0) not null,cnt bigint not null)",
+    );
+    let mut view = (*f.domain.table_by_name("test", "mv_runtime").unwrap()).clone();
+    view.MaterializedView.as_mut().unwrap().SQLContent =
+        "SELECT g,SUM(v),COUNT(*) FROM test.src_runtime WHERE FALSE GROUP BY g".into();
+    let mut shadow = (*f.domain.table_by_name("test", "shadow_import").unwrap()).clone();
+    shadow.MaterializedViewShadow = Some(astersql_meta_model::MaterializedViewShadowInfo {
+        SourceMViewID: view.ID,
+    });
+    save_meta(&f, shadow);
+    session.state.borrow_mut().in_restricted_sql = true;
+    let ts = f
+        .domain
+        .storage()
+        .with_storage(|store| store.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    let sql =
+        super::mview_refresh::build_shadow_sql("test", "shadow_import", &view, "TiKV", 12, "64gib")
+            .unwrap();
+    assert!(sql.contains("thread=12"), "{sql}");
+    assert!(sql.contains("64gib"), "{sql}");
+    for pinned in [None, Some(ts)] {
+        session.state.borrow_mut().snapshot_read_ts = pinned;
+        query(&session, &sql);
+        assert_eq!(session.protocol_state().affected_rows, 0);
+        let info: serde_json::Value =
+            serde_json::from_str(&session.state.borrow().last_query_info).unwrap();
+        let read = info["start_ts"]
+            .as_u64()
+            .expect("empty SELECT still records its read TSO");
+        assert!(read > 0, "{info}");
+        if let Some(ts) = pinned {
+            assert_eq!(read, ts, "{info}");
+        }
+        assert_eq!(session.state.borrow().snapshot_read_ts, pinned);
+        assert!(session.state.borrow().transaction.is_none());
+        assert!(query(&session, "SELECT * FROM shadow_import").is_empty());
+    }
+    assert!(
+        super::mview_refresh::build_shadow_sql("test", "shadow_import", &view, "tidb", 12, "64gib")
+            .unwrap()
+            .starts_with("INSERT INTO")
+    );
+}
+
+#[test]
+fn port_63ec01b244_real_cutover_publishes_complete_event_once() {
+    let (f, session) = fixture();
+    EnableMockDDLForTest(&f.domain).unwrap();
+    let old = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    query(&session, "INSERT INTO src_runtime VALUES (4,4,40)");
+    run(&session, "complete out of place", &mut Observer::default())
+        .1
+        .unwrap();
+    let new = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    assert_ne!(new, old);
+    let events = query(
+        &session,
+        "SELECT schema_change FROM mysql.tidb_ddl_notifier",
+    );
+    let cutovers = events
+        .iter()
+        .map(|row| serde_json::from_str::<serde_json::Value>(&row[0]).unwrap())
+        .filter(|event| {
+            event["type"].as_u64()
+                == Some(
+                    astersql_meta_model::group_3::ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER as u64,
+                )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cutovers.len(), 1);
+    let new_info: astersql_meta_model::TableInfo =
+        serde_json::from_value(cutovers[0]["table_info"].clone()).unwrap();
+    let old_info: astersql_meta_model::TableInfo =
+        serde_json::from_value(cutovers[0]["old_table_info"].clone()).unwrap();
+    assert_eq!((new_info.ID, old_info.ID), (new, old));
+    assert_eq!(
+        (new_info.Name.L.as_str(), old_info.Name.L.as_str()),
+        ("mv_runtime", "mv_runtime")
+    );
+}
+
+#[test]
+fn port_63ec01b244_statement_result_all_refresh_modes() {
+    // TestMaterializedViewRefreshStatementResult: each mode reports the writes
+    // it actually performs, including bounded FAST and shadow-table loading.
+    for (mode, inserted, updated, deleted) in [
+        ("fast", 1, 1, 1),
+        ("bounded fast", 1, 1, 1),
+        ("complete delta apply", 1, 1, 1),
+        ("complete in place", 2, 0, 2),
+        ("complete out of place", 2, 0, 0),
+    ] {
+        let (f, session) = fixture_definition(
+            "CREATE TABLE src_runtime (id int primary key,g int not null,v int not null)",
+            "(1,1,10),(2,2,20)",
+            "CREATE TABLE mv_runtime (g int not null,s decimal(65,0) not null,cnt bigint not null)",
+            "SELECT g,SUM(v),COUNT(1) FROM test.src_runtime GROUP BY g",
+        );
+        if mode == "complete out of place" {
+            EnableMockDDLForTest(&f.domain).unwrap();
+        }
+        query(&session, "UPDATE src_runtime SET v=11 WHERE id=1");
+        query(&session, "DELETE FROM src_runtime WHERE id=2");
+        query(&session, "INSERT INTO src_runtime VALUES (3,3,30)");
+        let command = if mode == "bounded fast" {
+            let target = f
+                .domain
+                .storage()
+                .with_storage(|store| store.CurrentVersion("global"))
+                .unwrap()
+                .Ver;
+            format!("fast AS OF TIMESTAMP {target}")
+        } else {
+            mode.to_owned()
+        };
+        query(
+            &session,
+            &format!("REFRESH MATERIALIZED VIEW mv_runtime {command}"),
+        );
+        assert_eq!(
+            session.session_vars.StmtCtx.AffectedRows(),
+            inserted + updated + deleted,
+            "{mode}"
+        );
+        assert_eq!(
+            session.session_vars.StmtCtx.GetMessage(),
+            format!("Rows inserted: {inserted}  Updated: {updated}  Deleted: {deleted}"),
+            "{mode}"
+        );
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            vec![vec!["1", "11", "1"], vec!["3", "30", "1"]],
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_bounded_minmax_uses_target_data_snapshot() {
+    // The deleted maximum requires a lookup. A later insert must not leak into
+    // that lookup at the earlier target (Go's MinMaxTargetSnapshot/data case).
+    let (f, session) = fixture_definition(
+        "CREATE TABLE src_runtime (id int primary key,g int not null,v int not null,key idx_g(g))",
+        "(1,1,10),(2,1,20),(3,1,30)",
+        "CREATE TABLE mv_runtime (g int not null,cnt bigint not null,mx int,mn int)",
+        "SELECT g,COUNT(1),MAX(v),MIN(v) FROM test.src_runtime GROUP BY g",
+    );
+    query(&session, "DELETE FROM src_runtime WHERE id=3");
+    let target = f
+        .domain
+        .storage()
+        .with_storage(|store| store.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    query(&session, "INSERT INTO src_runtime VALUES (4,1,100)");
+    query(
+        &session,
+        &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {target}"),
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime"),
+        vec![vec!["1", "2", "20", "10"]]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+        ),
+        vec![vec![target.to_string()]]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT REFRESH_READ_TSO,REFRESH_STATUS FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec![target.to_string(), "success".into()]]
+    );
+    // Equal target is a no-op, with a zero statement result and no extra history.
+    query(
+        &session,
+        &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {target}"),
+    );
+    assert_eq!(session.session_vars.StmtCtx.AffectedRows(), 0);
+    assert_eq!(
+        session.session_vars.StmtCtx.GetMessage(),
+        "Rows inserted: 0  Updated: 0  Deleted: 0"
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["1"]]
+    );
+    query(&session, "REFRESH MATERIALIZED VIEW mv_runtime FAST");
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime"),
+        vec![vec!["1", "3", "100", "10"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_refresh_info_and_rows_share_commit_snapshot() {
+    // requireRefreshInfoSnapshotMatchesLatestSuccessHist checks durable state
+    // at commit TSO, while the defining query must match at refresh read TSO.
+    for mode in [
+        "fast",
+        "bounded fast",
+        "complete delta apply",
+        "complete in place",
+    ] {
+        let (f, session) = fixture();
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let command = if mode == "bounded fast" {
+            let target = f
+                .domain
+                .storage()
+                .with_storage(|store| store.CurrentVersion("global"))
+                .unwrap()
+                .Ver;
+            format!("fast AS OF TIMESTAMP {target}")
+        } else {
+            mode.to_owned()
+        };
+        query(
+            &session,
+            &format!("REFRESH MATERIALIZED VIEW mv_runtime {command}"),
+        );
+        let history = query(
+            &session,
+            "SELECT REFRESH_READ_TSO,REFRESH_COMMIT_TSO FROM mysql.tidb_mview_refresh_hist WHERE REFRESH_STATUS='success'",
+        );
+        assert_eq!(history.len(), 1, "{mode}");
+        let read = history[0][0].parse::<u64>().unwrap();
+        let commit = history[0][1].parse::<u64>().unwrap();
+        assert!(commit > read && read > 0, "{mode}: {history:?}");
+        let refreshed = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        // A later refresh and base write must not rewrite either historical view.
+        query(&session, "INSERT INTO src_runtime VALUES (5,4,50)");
+        query(&session, "REFRESH MATERIALIZED VIEW mv_runtime FAST");
+        let reader = ConcreteSession::new(f.domain.clone());
+        query(&reader, "USE test");
+        reader.state.borrow_mut().snapshot_read_ts = Some(commit);
+        assert_eq!(
+            query(
+                &reader,
+                "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+            ),
+            vec![vec![read.to_string()]],
+            "{mode}"
+        );
+        assert_eq!(
+            query(&reader, "SELECT * FROM mv_runtime ORDER BY g"),
+            refreshed,
+            "{mode}"
+        );
+        reader.state.borrow_mut().snapshot_read_ts = Some(read);
+        assert_eq!(
+            query(
+                &reader,
+                "SELECT g,SUM(v),COUNT(1) FROM src_runtime GROUP BY g ORDER BY g"
+            ),
+            refreshed,
+            "{mode}"
+        );
+        reader.state.borrow_mut().snapshot_read_ts = None;
+    }
+}
+
+#[test]
+fn port_63ec01b244_manual_and_automatic_scheduling() {
+    for mode in ["fast", "complete delta apply", "complete out of place"] {
+        for (start, next) in [
+            (
+                "DATE_ADD(NOW(), INTERVAL 2 HOUR)",
+                "DATE_ADD(NOW(), INTERVAL 40 MINUTE)",
+            ),
+            ("DATE_ADD(NOW(), INTERVAL 2 HOUR)", ""),
+            ("", ""),
+        ] {
+            let (f, session) = fixture();
+            if mode == "complete out of place" {
+                EnableMockDDLForTest(&f.domain).unwrap();
+            }
+            let mut table = (*f.domain.table_by_name("test", "mv_runtime").unwrap()).clone();
+            let info = table.MaterializedView.as_mut().unwrap();
+            info.RefreshStartWith = start.into();
+            info.RefreshNext = next.into();
+            save_meta(&f, table);
+            let sentinel = chrono::Utc::now().timestamp() + 10800;
+            query(
+                &session,
+                &format!(
+                    "UPDATE mysql.tidb_mview_refresh_info SET NEXT_REFRESH_UNIX_SECONDS={sentinel},LAST_SUCCESS_REFRESH_END_UNIX_SECONDS={}",
+                    chrono::Utc::now().timestamp() - 120
+                ),
+            );
+            query(
+                &session,
+                &format!("REFRESH MATERIALIZED VIEW mv_runtime {mode}"),
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT NEXT_REFRESH_UNIX_SECONDS FROM mysql.tidb_mview_refresh_info"
+                ),
+                vec![vec![sentinel.to_string()]],
+                "manual {mode}"
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT REFRESH_METHOD,REFRESH_SCHEDULE_DURATION_SEC IS NULL FROM mysql.tidb_mview_refresh_hist ORDER BY REFRESH_JOB_ID DESC LIMIT 1"
+                ),
+                vec![vec![format!("{mode} manual"), "1".into()]]
+            );
+            query(
+                &session,
+                &format!(
+                    "UPDATE mysql.tidb_mview_refresh_info SET LAST_SUCCESS_REFRESH_END_UNIX_SECONDS={}",
+                    chrono::Utc::now().timestamp() - 120
+                ),
+            );
+            query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+            let metric = astersql_metrics::MVServiceRefreshScheduleDurationHistogram();
+            let count = metric.get_sample_count();
+            session.state.borrow_mut().in_restricted_sql = true;
+            query(
+                &session,
+                &format!("REFRESH MATERIALIZED VIEW mv_runtime {mode}"),
+            );
+            session.state.borrow_mut().in_restricted_sql = false;
+            let schedule = query(
+                &session,
+                "SELECT NEXT_REFRESH_UNIX_SECONDS FROM mysql.tidb_mview_refresh_info",
+            );
+            if next.is_empty() {
+                assert_eq!(schedule, vec![vec!["<nil>"]], "{mode}/{start}");
+            } else {
+                let seconds =
+                    schedule[0][0].parse::<i64>().unwrap() - chrono::Utc::now().timestamp();
+                assert!((1200..7200).contains(&seconds), "{mode}: {seconds}");
+            }
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT REFRESH_METHOD,REFRESH_SCHEDULE_DURATION_SEC >= 100,REFRESH_SCHEDULE_DURATION_SEC <= 150 FROM mysql.tidb_mview_refresh_hist ORDER BY REFRESH_JOB_ID DESC LIMIT 1"
+                ),
+                vec![vec![format!("{mode} auto"), "1".into(), "1".into()]]
+            );
+            assert!(metric.get_sample_count() > count);
+            query(
+                &session,
+                "UPDATE mysql.tidb_mview_refresh_info SET LAST_SUCCESS_REFRESH_END_UNIX_SECONDS=NULL",
+            );
+            session.state.borrow_mut().in_restricted_sql = true;
+            query(
+                &session,
+                &format!("REFRESH MATERIALIZED VIEW mv_runtime {mode}"),
+            );
+            session.state.borrow_mut().in_restricted_sql = false;
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT REFRESH_SCHEDULE_DURATION_SEC IS NOT NULL,REFRESH_SCHEDULE_DURATION_SEC >= 0 FROM mysql.tidb_mview_refresh_hist ORDER BY REFRESH_JOB_ID DESC LIMIT 1"
+                ),
+                vec![vec!["1", "1"]]
+            );
+        }
+    }
+}
+
+#[test]
+fn port_63ec01b244_failed_alert_survives_history_failures() {
+    for (early, history_failure) in [(false, false), (true, true), (false, true)] {
+        let (f, session) = fixture();
+        let mut table = (*f.domain.table_by_name("test", "mv_runtime").unwrap()).clone();
+        table.MaterializedView.as_mut().unwrap().AlertRefreshFailed = true;
+        save_meta(&f, table);
+        let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        let watermark = query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+        );
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let failure = astersql_testkit_testfailpoint::enable(
+            &format!(
+                "github.com/pingcap/tidb/pkg/executor/{}",
+                if early {
+                    "mockRefreshMaterializedViewErrorBeforeInsertHist"
+                } else {
+                    "mockRefreshMaterializedViewErrorAfterDataChanges"
+                }
+            ),
+            "return(\"refresh data failure\")",
+        );
+        let history = history_failure.then(|| {
+            astersql_testkit_testfailpoint::enable(
+                &format!(
+                    "github.com/pingcap/tidb/pkg/executor/{}",
+                    if early {
+                        "mockInsertRefreshHistFailedError"
+                    } else {
+                        "mockFinalizeRefreshHistError"
+                    }
+                ),
+                "return(true)",
+            )
+        });
+        let error = run(&session, "complete delta apply", &mut Observer::default())
+            .1
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refresh data failure"), "{error}");
+        assert_eq!(
+            query(
+                &session,
+                "SELECT REFRESH_FAILED,ALERT_LEVEL IS NULL FROM mysql.tidb_mview_refresh_alert"
+            ),
+            vec![vec!["YES", "1"]]
+        );
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            before
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+            ),
+            watermark
+        );
+        let hist = query(
+            &session,
+            "SELECT REFRESH_STATUS FROM mysql.tidb_mview_refresh_hist",
+        );
+        if early {
+            assert!(hist.is_empty(), "{hist:?}");
+        } else {
+            assert_eq!(
+                hist,
+                vec![vec![if history_failure { "running" } else { "failed" }]]
+            );
+        }
+        drop(history);
+        drop(failure);
+        query(
+            &session,
+            "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE DELTA APPLY",
+        );
+        assert!(query(&session, "SELECT * FROM mysql.tidb_mview_refresh_alert").is_empty());
+    }
+}
+
+#[test]
+fn port_63ec01b244_missing_refresh_info_and_constraint_check_modes() {
+    for mode in ["complete in place", "complete delta apply"] {
+        let (_, session) = fixture();
+        query(
+            &session,
+            "SET tidb_constraint_check_in_place_pessimistic=OFF",
+        );
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        query(
+            &session,
+            &format!("REFRESH MATERIALIZED VIEW mv_runtime {mode}"),
+        );
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            query(
+                &session,
+                "SELECT g,SUM(v),COUNT(1) FROM src_runtime GROUP BY g ORDER BY g"
+            )
+        );
+        let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        query(&session, "DELETE FROM mysql.tidb_mview_refresh_info");
+        let error = run(&session, mode, &mut Observer::default())
+            .1
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refresh info row missing"), "{error}");
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            before
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT REFRESH_STATUS,REFRESH_READ_TSO IS NULL,REFRESH_FAILED_REASON IS NOT NULL FROM mysql.tidb_mview_refresh_hist ORDER BY REFRESH_JOB_ID DESC LIMIT 1"
+            ),
+            vec![vec!["failed", "1", "1"]]
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_cutover_dependency_and_cas_contracts() {
+    struct Intervene {
+        session: ConcreteSession,
+        action: &'static str,
+        hit: bool,
+    }
+    impl StepObserver for Intervene {
+        fn on_step_start(&mut self, step: &ObserveStep, _: SystemTime) {
+            if step.name == "OUT_OF_PLACE_CUTOVER" && !self.hit {
+                self.hit = true;
+                match self.action {
+                    "watermark" => {
+                        query(
+                            &self.session,
+                            "UPDATE mysql.tidb_mview_refresh_info SET LAST_SUCCESS_READ_TSO=LAST_SUCCESS_READ_TSO+1",
+                        );
+                    }
+                    "revision" => {
+                        query(&self.session, "CREATE INDEX mv_s ON mv_runtime(s)");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn on_step_end(&mut self, _: &ObserveStep, _: SystemTime, _: Option<&str>) {}
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+    }
+    for action in ["success", "watermark", "revision"] {
+        let (f, session) = fixture();
+        EnableMockDDLForTest(&f.domain).unwrap();
+        let old = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+        let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let mut observer = Intervene {
+            session: session.clone(),
+            action,
+            hit: false,
+        };
+        let result = run(&session, "complete out of place", &mut observer).1;
+        assert!(observer.hit);
+        let new = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+        let base = f.domain.table_by_name("test", "src_runtime").unwrap();
+        let base_info = base.MaterializedViewBase.as_ref().unwrap();
+        let schema = f.domain.info_schema();
+        let log = schema
+            .TableByID(base_info.MLogID)
+            .unwrap()
+            .ModelMeta()
+            .unwrap();
+        let ids = &log.MaterializedViewLog.as_ref().unwrap().DependentMViewIDs;
+        if action == "success" {
+            result.unwrap();
+            assert_ne!(new, old);
+            assert!(base_info.MViewIDs.contains(&new) && !base_info.MViewIDs.contains(&old));
+            assert!(ids.contains(&new) && !ids.contains(&old));
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT MVIEW_ID FROM mysql.tidb_mview_refresh_info"
+                ),
+                vec![vec![new.to_string()]]
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT REFRESH_COMMIT_TSO IS NULL,REFRESH_READ_TSO>0 FROM mysql.tidb_mview_refresh_hist"
+                ),
+                vec![vec!["1", "1"]]
+            );
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains(if action == "watermark" {
+                    "stale LAST_SUCCESS_READ_TSO"
+                } else {
+                    "stale old materialized view revision"
+                }),
+                "{error}"
+            );
+            assert_eq!(new, old);
+            assert_eq!(ids, &[old]);
+            assert_eq!(
+                query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+                before
+            );
+            assert_eq!(
+                query(
+                    &session,
+                    "SELECT REFRESH_STATUS,REFRESH_READ_TSO IS NULL FROM mysql.tidb_mview_refresh_hist"
+                ),
+                vec![vec!["failed", "1"]]
+            );
+        }
+        assert_eq!(
+            query(
+                &session,
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='test' AND table_name LIKE '__mv_shadow_%'"
+            ),
+            vec![vec!["0"]]
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_index_ddl_keeps_materialized_view_columns_writable() {
+    let (f, session) = fixture();
+    EnableMockDDLForTest(&f.domain).unwrap();
+    let columns = f
+        .domain
+        .table_by_name("test", "mv_runtime")
+        .unwrap()
+        .Columns
+        .len();
+    query(&session, "CREATE INDEX idx_g ON mv_runtime(g)");
+    query(&session, "DROP INDEX idx_g ON mv_runtime");
+    for sql in [
+        "CREATE INDEX idx_expr ON mv_runtime ((g+1))",
+        "ALTER TABLE mv_runtime ADD INDEX idx_expr2 ((g+1))",
+    ] {
+        let error = session
+            .execute(sql)
+            .err()
+            .expect("expression index must be rejected")
+            .to_string();
+        assert!(error.contains("materialized view"), "{sql}: {error}");
+        assert_eq!(
+            f.domain
+                .table_by_name("test", "mv_runtime")
+                .unwrap()
+                .Columns
+                .len(),
+            columns
+        );
+    }
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE DELTA APPLY",
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        query(
+            &session,
+            "SELECT g,SUM(v),COUNT(1) FROM src_runtime GROUP BY g ORDER BY g"
+        )
+    );
+}
+
+#[test]
+fn port_63ec01b244_bounded_minmax_with_index_schema_changes() {
+    let (f, session) = fixture_definition(
+        "CREATE TABLE src_runtime (id int primary key,g int not null,v int not null,key idx_gv(g,v))",
+        "(1,1,10),(2,1,20),(3,1,30)",
+        "CREATE TABLE mv_runtime (g int not null,cnt bigint not null,mx int,mn int)",
+        "SELECT g,COUNT(1),MAX(v),MIN(v) FROM test.src_runtime GROUP BY g",
+    );
+    EnableMockDDLForTest(&f.domain).unwrap();
+    query(&session, "DELETE FROM src_runtime WHERE id=3");
+    let target = f
+        .domain
+        .storage()
+        .with_storage(|s| s.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    query(&session, "CREATE INDEX idx_g ON src_runtime(g)");
+    query(
+        &session,
+        "ALTER TABLE src_runtime ALTER INDEX idx_gv INVISIBLE",
+    );
+    query(
+        &session,
+        &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {target}"),
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime"),
+        vec![vec!["1", "2", "20", "10"]]
+    );
+    query(&session, "DELETE FROM src_runtime WHERE id=2");
+    let target = f
+        .domain
+        .storage()
+        .with_storage(|s| s.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    query(
+        &session,
+        &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {target}"),
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime"),
+        vec![vec!["1", "1", "10", "10"]]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+        ),
+        vec![vec![target.to_string()]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_dry_run_window_and_purge_guards() {
+    let (f, session) = fixture();
+    let last = query(
+        &session,
+        "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+    )[0][0]
+        .parse::<u64>()
+        .unwrap();
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    let target = f
+        .domain
+        .storage()
+        .with_storage(|s| s.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    for suffix in ["".to_owned(), format!(" AS OF TIMESTAMP {target}")] {
+        let rows = query(
+            &session,
+            &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST{suffix} DRY RUN"),
+        );
+        let text = format!("{rows:?}");
+        assert!(text.contains("[S04 DATA_CHANGE_FAST_MERGE]"), "{text}");
+        assert!(text.contains("MViewDeltaMerge"), "{text}");
+        assert!(text.contains("_tidb_commit_ts"), "{text}");
+        assert!(text.contains(&last.to_string()), "{text}");
+        if !suffix.is_empty() {
+            assert!(text.contains(&target.to_string()), "{text}");
+        }
+    }
+    let error = session
+        .execute(&format!(
+            "REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {} DRY RUN",
+            last - 1
+        ))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.contains("older than LAST_SUCCESS_READ_TSO"),
+        "{error}"
+    );
+    query(
+        &session,
+        &format!(
+            "UPDATE mysql.tidb_mlog_purge_info SET LAST_PURGED_TSO={}",
+            last + 1
+        ),
+    );
+    let error = session
+        .execute("REFRESH MATERIALIZED VIEW mv_runtime FAST DRY RUN")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("may have been purged"), "{error}");
+    let text = format!(
+        "{:?}",
+        query(
+            &session,
+            &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {last} DRY RUN")
+        )
+    );
+    assert!(text.contains("[S04 DATA_CHANGE_FAST_MERGE]"));
+    assert!(!text.contains("MViewDeltaMerge"), "{text}");
+    query(
+        &session,
+        &format!("REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {last}"),
+    );
+    assert_eq!(session.session_vars.StmtCtx.AffectedRows(), 0);
+    assert_eq!(
+        query(
+            &session,
+            "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["0"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_history_lifecycle_heartbeat_retry_and_monitor_stop() {
+    struct Inspect {
+        session: ConcreteSession,
+        inspected: bool,
+    }
+    impl StepObserver for Inspect {
+        fn on_step_start(&mut self, step: &ObserveStep, _: SystemTime) {
+            if step.name != "DATA_CHANGE_COMPLETE_DELTA_APPLY" {
+                return;
+            }
+            assert_eq!(
+                query(
+                    &self.session,
+                    "SELECT REFRESH_STATUS,REFRESH_END_TIME IS NULL,REFRESH_READ_TSO IS NULL,REFRESH_FAILED_REASON IS NULL,LAST_HEARTBEAT_TIME IS NOT NULL FROM mysql.tidb_mview_refresh_hist"
+                ),
+                vec![vec!["running", "1", "1", "1", "1"]]
+            );
+            let first = query(
+                &self.session,
+                "SELECT LAST_HEARTBEAT_TIME FROM mysql.tidb_mview_refresh_hist",
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if query(
+                    &self.session,
+                    "SELECT LAST_HEARTBEAT_TIME FROM mysql.tidb_mview_refresh_hist",
+                ) != first
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "heartbeat must update while the real refresh is paused"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            self.inspected = true;
+        }
+        fn on_step_end(&mut self, _: &ObserveStep, _: SystemTime, _: Option<&str>) {}
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+    }
+    let (_, session) = fixture();
+    let _poll = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockMVTaskMonitorPollInterval",
+        "return(5)",
+    );
+    let _heartbeat = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockMVTaskHistHeartbeatInterval",
+        "return(5)",
+    );
+    let polls = Arc::new(AtomicU64::new(0));
+    let count = polls.clone();
+    let _observe = astersql_testkit_testfailpoint::enable_concurrent_call(
+        "github.com/pingcap/tidb/pkg/executor/mvTaskMonitorPolled",
+        move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    let _retry = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockFinalizeRefreshHistError",
+        "1*return(true)",
+    );
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    let mut observer = Inspect {
+        session: session.clone(),
+        inspected: false,
+    };
+    run(&session, "complete delta apply", &mut observer)
+        .1
+        .unwrap();
+    assert!(observer.inspected);
+    assert_eq!(
+        query(
+            &session,
+            "SELECT REFRESH_STATUS,REFRESH_END_TIME IS NOT NULL,REFRESH_READ_TSO>0,REFRESH_FAILED_REASON IS NULL,LAST_HEARTBEAT_TIME IS NOT NULL FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["success", "1", "1", "1", "1"]]
+    );
+    let finished = polls.load(Ordering::SeqCst);
+    assert!(finished > 0);
+    std::thread::park_timeout(Duration::from_millis(30));
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        finished,
+        "joined monitor must not keep polling after refresh"
+    );
+}
+
+#[test]
+fn port_63ec01b244_fast_refresh_updates_persisted_stats_modify_count() {
+    let (f, session) = fixture();
+    let id = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    f.domain.dump_stats_delta_to_kv(true).unwrap();
+    query(&session, "ANALYZE TABLE mv_runtime");
+    assert_eq!(
+        query(
+            &session,
+            &format!("SELECT modify_count,count FROM mysql.stats_meta WHERE table_id={id}")
+        ),
+        vec![vec!["0", "2"]]
+    );
+    query(&session, "DELETE FROM src_runtime WHERE id=1");
+    query(&session, "DELETE FROM src_runtime WHERE id=3");
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,4)");
+    query(&session, "REFRESH MATERIALIZED VIEW mv_runtime FAST");
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        vec![vec!["1", "20", "1"], vec!["3", "4", "1"]]
+    );
+    f.domain.dump_stats_delta_to_kv(true).unwrap();
+    assert_eq!(
+        query(
+            &session,
+            &format!("SELECT modify_count,count FROM mysql.stats_meta WHERE table_id={id}")
+        ),
+        vec![vec!["3", "2"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_out_of_place_preserves_previous_commit_snapshot() {
+    let (f, session) = fixture();
+    EnableMockDDLForTest(&f.domain).unwrap();
+    let old_id = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    query(&session, "REFRESH MATERIALIZED VIEW mv_runtime FAST");
+    let hist = query(
+        &session,
+        "SELECT REFRESH_READ_TSO,REFRESH_COMMIT_TSO FROM mysql.tidb_mview_refresh_hist",
+    );
+    let read = hist[0][0].clone();
+    let commit = hist[0][1].parse::<u64>().unwrap();
+    let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+    query(&session, "INSERT INTO src_runtime VALUES (5,4,50)");
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE OUT OF PLACE",
+    );
+    let new_id = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    assert_ne!(new_id, old_id);
+    let reader = ConcreteSession::new(f.domain.clone());
+    query(&reader, "USE test");
+    query(&reader, &format!("SET tidb_snapshot='{commit}'"));
+    assert_eq!(
+        query(
+            &reader,
+            "SELECT MVIEW_ID,LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+        ),
+        vec![vec![old_id.to_string(), read]]
+    );
+    assert_eq!(
+        query(&reader, "SELECT * FROM mv_runtime ORDER BY g"),
+        before
+    );
+    query(&reader, "SET tidb_snapshot=''");
+}
+
+#[test]
+fn port_63ec01b244_bounded_gc_safe_point_only_guards_minmax_lookup() {
+    for minmax in [false, true] {
+        for dry in [false, true] {
+            let definition = if minmax {
+                "SELECT g,COUNT(1),MAX(v),MIN(v) FROM test.src_runtime GROUP BY g"
+            } else {
+                "SELECT g,SUM(v),COUNT(1) FROM test.src_runtime GROUP BY g"
+            };
+            let ddl = if minmax {
+                "CREATE TABLE mv_runtime(g int not null,cnt bigint not null,mx int,mn int)"
+            } else {
+                "CREATE TABLE mv_runtime(g int not null,s decimal(65,0),cnt bigint not null)"
+            };
+            let (f, session) = fixture_definition(
+                "CREATE TABLE src_runtime(id int primary key,g int not null,v int not null,key idx_g(g))",
+                "(1,1,10)",
+                ddl,
+                definition,
+            );
+            let watermark = query(
+                &session,
+                "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+            );
+            query(&session, "INSERT INTO src_runtime VALUES (2,1,20)");
+            let target = f
+                .domain
+                .storage()
+                .with_storage(|s| s.CurrentVersion("global"))
+                .unwrap()
+                .Ver;
+            let safe = chrono::DateTime::from_timestamp_millis((target >> 18) as i64 + 1000)
+                .unwrap()
+                .format("%Y%m%d-%H:%M:%S %z")
+                .to_string();
+            query(
+                &session,
+                &format!(
+                    "INSERT INTO mysql.tidb(variable_name,variable_value,comment) VALUES ('tikv_gc_safe_point','{safe}','safe point regression') ON DUPLICATE KEY UPDATE variable_value=VALUES(variable_value)"
+                ),
+            );
+            let sql = format!(
+                "REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP {target}{}",
+                if dry { " DRY RUN" } else { "" }
+            );
+            if minmax {
+                let error = session
+                    .execute(&sql)
+                    .err()
+                    .expect("MIN/MAX target older than GC safe point must fail")
+                    .to_string();
+                assert!(
+                    error.to_ascii_lowercase().contains("snapshot")
+                        && error.to_ascii_lowercase().contains("old"),
+                    "{error}"
+                );
+                assert_eq!(
+                    query(
+                        &session,
+                        "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+                    ),
+                    watermark
+                );
+                assert_eq!(
+                    query(&session, "SELECT * FROM mv_runtime"),
+                    vec![vec!["1", "1", "10", "10"]]
+                );
+                if !dry {
+                    assert_eq!(
+                        query(
+                            &session,
+                            "SELECT REFRESH_STATUS,REFRESH_READ_TSO,REFRESH_FAILED_REASON IS NOT NULL FROM mysql.tidb_mview_refresh_hist"
+                        ),
+                        vec![vec!["failed".into(), target.to_string(), "1".into()]]
+                    );
+                }
+            } else {
+                query(&session, &sql);
+                if !dry {
+                    assert_eq!(
+                        query(&session, "SELECT * FROM mv_runtime"),
+                        vec![vec!["1", "30", "2"]]
+                    );
+                    assert_eq!(
+                        query(
+                            &session,
+                            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+                        ),
+                        vec![vec![target.to_string()]]
+                    );
+                }
+            }
+            if dry {
+                assert!(query(&session, "SELECT * FROM mysql.tidb_mview_refresh_hist").is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn port_63ec01b244_unsigned_build_read_tso_survives_real_cutover() {
+    let (f, session) = fixture();
+    EnableMockDDLForTest(&f.domain).unwrap();
+    let old = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    let tso = (1_u64 << 63) + 12345;
+    let _override = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockRefreshMaterializedViewOutOfPlaceBuildReadTSO",
+        &format!("return(\"{tso}\")"),
+    );
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE OUT OF PLACE",
+    );
+    let new = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+    assert_ne!(new, old);
+    assert_eq!(
+        query(
+            &session,
+            "SELECT MVIEW_ID,LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+        ),
+        vec![vec![new.to_string(), tso.to_string()]]
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        vec![
+            vec!["1", "30", "2"],
+            vec!["2", "30", "1"],
+            vec!["3", "40", "1"]
+        ]
+    );
+}
+
+#[test]
+fn port_63ec01b244_shadow_is_protected_during_real_refresh() {
+    struct Probe {
+        session: ConcreteSession,
+        hit: bool,
+    }
+    impl StepObserver for Probe {
+        fn on_step_start(&mut self, _: &ObserveStep, _: SystemTime) {}
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+        fn on_step_end(&mut self, step: &ObserveStep, _: SystemTime, error: Option<&str>) {
+            if step.name != "OUT_OF_PLACE_CREATE_SHADOW" || error.is_some() {
+                return;
+            }
+            let shadows = query(
+                &self.session,
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='test' AND table_name LIKE '__mv_shadow_%'",
+            );
+            assert_eq!(shadows.len(), 1);
+            let name = &shadows[0][0];
+            let error = self
+                .session
+                .execute(&format!("CREATE MATERIALIZED VIEW LOG ON `{name}` (g)"))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.to_ascii_lowercase().contains("base table"), "{error}");
+            let mut caller = ConcreteSession::new(self.session.domain.clone());
+            query(&caller, "USE test");
+            caller.login_user = Some("shadow_probe".into());
+            caller.login_host = Some("%".into());
+            caller.authenticated_host = Some("%".into());
+            for (sql, expected) in [
+                (
+                    format!("INSERT INTO `{name}` VALUES(9,9,9)"),
+                    "not updatable",
+                ),
+                (
+                    format!("ALTER TABLE `{name}` ADD COLUMN x INT"),
+                    "materialized view shadow table",
+                ),
+                (
+                    format!("DROP TABLE `{name}`"),
+                    "materialized view shadow table",
+                ),
+                (
+                    format!("UPDATE src_runtime n JOIN `{name}` s ON n.g=s.g SET n.v=s.s"),
+                    "SELECT command denied",
+                ),
+                (
+                    format!("DELETE n FROM src_runtime n JOIN `{name}` s ON n.g=s.g"),
+                    "SELECT command denied",
+                ),
+            ] {
+                let error = caller
+                    .execute(&sql)
+                    .err()
+                    .expect("shadow operation must fail")
+                    .to_string();
+                assert!(error.contains(expected), "{sql}: {error}");
+            }
+            self.hit = true;
+        }
+    }
+    let (f, session) = fixture();
+    EnableMockDDLForTest(&f.domain).unwrap();
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    let mut probe = Probe {
+        session: session.clone(),
+        hit: false,
+    };
+    run(&session, "complete out of place", &mut probe)
+        .1
+        .unwrap();
+    assert!(probe.hit);
+    assert_eq!(
+        query(
+            &session,
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='test' AND table_name LIKE '__mv_shadow_%'"
+        ),
+        vec![vec!["0"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_complete_refresh_uses_locking_read_after_concurrent_preupdate() {
+    struct Preupdate {
+        caller: ConcreteSession,
+        watermark: bool,
+        hit: bool,
+    }
+    impl StepObserver for Preupdate {
+        fn on_step_start(&mut self, _: &ObserveStep, _: SystemTime) {}
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+        fn on_step_end(&mut self, step: &ObserveStep, _: SystemTime, error: Option<&str>) {
+            if step.name == "TXN_BEGIN" && error.is_none() && !self.hit {
+                self.hit = true;
+                if self.watermark {
+                    query(
+                        &self.caller,
+                        "UPDATE mysql.tidb_mview_refresh_info SET LAST_SUCCESS_READ_TSO=LAST_SUCCESS_READ_TSO+1000",
+                    );
+                } else {
+                    query(&self.caller, "INSERT INTO src_runtime VALUES (4,3,40)");
+                }
+            }
+        }
+    }
+    for watermark in [false, true] {
+        let (f, session) = fixture();
+        query(&session, "INSERT INTO src_runtime VALUES (5,4,50)");
+        let mut observer = Preupdate {
+            caller: session.clone(),
+            watermark,
+            hit: false,
+        };
+        run(&session, "complete delta apply", &mut observer)
+            .1
+            .unwrap();
+        assert!(observer.hit);
+        let actual = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        assert_eq!(
+            actual,
+            query(
+                &session,
+                "SELECT g,SUM(v),COUNT(1) FROM src_runtime GROUP BY g ORDER BY g"
+            )
+        );
+        let read = query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+        )[0][0]
+            .parse::<u64>()
+            .unwrap();
+        let reader = ConcreteSession::new(f.domain.clone());
+        query(&reader, "USE test");
+        reader.state.borrow_mut().snapshot_read_ts = Some(read);
+        assert_eq!(
+            query(
+                &reader,
+                "SELECT g,SUM(v),COUNT(1) FROM src_runtime GROUP BY g ORDER BY g"
+            ),
+            actual
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_cutover_failure_rolls_back_metadata_info_alerts_and_progress() {
+    use astersql_domain_infosync as infosync;
+    let syncer = infosync::getGlobalInfoSyncer().unwrap_or_else(|_| {
+        infosync::GlobalInfoSyncerInit(
+            "task15-cutover".into(),
+            Arc::new(|| 1),
+            None,
+            None,
+            None,
+            Default::default(),
+            false,
+            None,
+        )
+        .unwrap()
+    });
+    for point in [
+        "mockMViewRefreshOutOfPlaceCutoverAfterMigrateRefreshInfoError",
+        "asyncNotifyEventError",
+        "mockMViewRefreshOutOfPlaceCutoverBeforeCommitError",
+    ] {
+        let (f, session) = fixture();
+        EnableMockDDLForTest(&f.domain).unwrap();
+        f.domain
+            .set_tiflash_replica_for_test("test", "mv_runtime", 1, true)
+            .unwrap();
+        let old = f.domain.table_by_name("test", "mv_runtime").unwrap().ID;
+        syncer
+            .tiflashReplicaManager
+            .UpdateTiFlashProgressCache(old, 0.75);
+        let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        let watermark = query(
+            &session,
+            "SELECT MVIEW_ID,LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+        );
+        query(
+            &session,
+            &format!(
+                "INSERT INTO mysql.tidb_mview_refresh_alert(MVIEW_ID,MVIEW_SCHEMA,MVIEW_NAME,ALERT_LEVEL,UPDATE_TIME) VALUES({old},'test','mv_runtime','warning',NOW())"
+            ),
+        );
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let fault = astersql_testkit_testfailpoint::enable(
+            &format!("github.com/pingcap/tidb/pkg/ddl/{point}"),
+            "return(\"cutover injected failure\")",
+        );
+        let error = run(&session, "complete out of place", &mut Observer::default())
+            .1
+            .expect_err("cutover fault must roll back the real DDL transaction")
+            .to_string();
+        assert!(error.contains("cutover injected failure"), "{error}");
+        drop(fault);
+        assert_eq!(
+            f.domain.table_by_name("test", "mv_runtime").unwrap().ID,
+            old
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT MVIEW_ID,LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+            ),
+            watermark
+        );
+        assert_eq!(
+            query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+            before
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT MVIEW_ID FROM mysql.tidb_mview_refresh_alert"
+            ),
+            vec![vec![old.to_string()]]
+        );
+        assert_eq!(
+            syncer
+                .tiflashReplicaManager
+                .GetTiFlashProgressFromCache(old),
+            Some(0.75)
+        );
+        let base = f.domain.table_by_name("test", "src_runtime").unwrap();
+        let schema = f.domain.info_schema();
+        assert_eq!(
+            schema
+                .TableByID(base.MaterializedViewBase.as_ref().unwrap().MLogID)
+                .unwrap()
+                .ModelMeta()
+                .unwrap()
+                .MaterializedViewLog
+                .as_ref()
+                .unwrap()
+                .DependentMViewIDs,
+            vec![old]
+        );
+        query(
+            &session,
+            "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE OUT OF PLACE",
+        );
+        assert_eq!(
+            syncer
+                .tiflashReplicaManager
+                .GetTiFlashProgressFromCache(old),
+            None
+        );
+        assert!(
+            query(
+                &session,
+                &format!("SELECT * FROM mysql.tidb_mview_refresh_alert WHERE MVIEW_ID={old}")
+            )
+            .is_empty()
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_complete_basic_history_fields_match_go() {
+    let (_, session) = fixture();
+    query(&session, "INSERT INTO src_runtime VALUES (4,2,3),(5,3,4)");
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE DELTA APPLY",
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        vec![
+            vec!["1", "30", "2"],
+            vec!["2", "33", "2"],
+            vec!["3", "4", "1"]
+        ]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist WHERE MVIEW_SCHEMA='TEST' AND MVIEW_NAME='MV_RUNTIME'"
+        ),
+        vec![vec!["1"]]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT REFRESH_STATUS,REFRESH_METHOD='complete delta apply manual',REFRESH_END_TIME IS NOT NULL,REFRESH_ROWS IS NULL,REFRESH_DURATION_SEC=CAST(TIMESTAMPDIFF(MICROSECOND,REFRESH_START_TIME,REFRESH_END_TIME) AS DECIMAL(18,6))/1000000,REFRESH_DURATION_SEC>=0,REFRESH_READ_TSO>0,REFRESH_COMMIT_TSO>REFRESH_READ_TSO,REFRESH_FAILED_REASON IS NULL FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["success", "1", "1", "1", "1", "1", "1", "1", "1"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_cutover_and_shadow_cleanup_register_gc_ranges() {
+    for fail_build in [false, true] {
+        let (f, session) = fixture();
+        EnableMockDDLForTest(&f.domain).unwrap();
+        let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let guard = fail_build.then(|| astersql_testkit_testfailpoint::enable("github.com/pingcap/tidb/pkg/executor/mockRefreshMaterializedViewOutOfPlaceBuildErrorAfterLoadShadow", "return(\"shadow load failed\")"));
+        let result = run(&session, "complete out of place", &mut Observer::default()).1;
+        if fail_build {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("shadow load failed")
+            );
+            assert_eq!(
+                query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+                before
+            );
+        } else {
+            result.unwrap();
+        }
+        drop(guard);
+        let action = if fail_build { 94 } else { 92 };
+        let jobs = query(
+            &session,
+            "SELECT job_id FROM mysql.tidb_ddl_history ORDER BY job_id DESC LIMIT 20",
+        );
+        let job = jobs
+            .iter()
+            .filter_map(|row| {
+                f.reader()
+                    .get_history_ddl_job(row[0].parse::<i64>().unwrap())
+                    .unwrap()
+            })
+            .find(|job| job.tp == action)
+            .expect("real cutover/drop-shadow DDL history must exist");
+        let pending = query(
+            &session,
+            &format!(
+                "SELECT COUNT(*) FROM mysql.gc_delete_range WHERE job_id={}",
+                job.id
+            ),
+        )[0][0]
+            .parse::<u64>()
+            .unwrap();
+        let completed = query(
+            &session,
+            &format!(
+                "SELECT COUNT(*) FROM mysql.gc_delete_range_done WHERE job_id={}",
+                job.id
+            ),
+        )[0][0]
+            .parse::<u64>()
+            .unwrap();
+        assert!(
+            pending + completed > 0,
+            "action {action}, job {} must retain physical-range cleanup",
+            job.id
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_purge_history_committed_after_refresh_begin_is_rejected() {
+    struct PurgeDuringRefresh {
+        caller: ConcreteSession,
+        log: i64,
+        cutoff: u64,
+        hit: bool,
+    }
+    impl StepObserver for PurgeDuringRefresh {
+        fn on_step_start(&mut self, _: &ObserveStep, _: SystemTime) {}
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+        fn on_step_end(&mut self, step: &ObserveStep, _: SystemTime, error: Option<&str>) {
+            if step.name == "TXN_BEGIN" && error.is_none() && !self.hit {
+                self.hit = true;
+                query(
+                    &self.caller,
+                    &format!(
+                        "INSERT INTO mysql.tidb_mlog_purge_hist(PURGE_JOB_ID,MLOG_ID,BASE_TABLE_SCHEMA,BASE_TABLE_NAME,PURGE_METHOD,PURGE_START_TIME,PURGE_ROWS,PURGE_STATUS,PURGE_CUTOFF_TSO,LAST_HEARTBEAT_TIME) VALUES({},{},'test','src_runtime','manual',NOW(6),0,'running',{},NOW(6))",
+                        self.cutoff + 1000,
+                        self.log,
+                        self.cutoff
+                    ),
+                );
+            }
+        }
+    }
+    for concurrent in [false, true] {
+        let (f, session) = fixture();
+        let watermark = query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+        );
+        let last = watermark[0][0].parse::<u64>().unwrap();
+        let log = f
+            .domain
+            .table_by_name("test", "src_runtime")
+            .unwrap()
+            .MaterializedViewBase
+            .as_ref()
+            .unwrap()
+            .MLogID;
+        query(
+            &session,
+            &format!("UPDATE mysql.tidb_mlog_purge_info SET LAST_PURGED_TSO={last}"),
+        );
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let mut observer = PurgeDuringRefresh {
+            caller: session.clone(),
+            log,
+            cutoff: last + 1,
+            hit: false,
+        };
+        if !concurrent {
+            observer.on_step_end(
+                &astersql_executor::mview_refresh_steps::new_step_set(
+                    ast::RefreshMaterializedViewMode::Fast,
+                )[0],
+                SystemTime::now(),
+                None,
+            );
+        }
+        let error = run(&session, "fast", &mut observer)
+            .1
+            .unwrap_err()
+            .to_string();
+        assert!(observer.hit);
+        assert!(
+            error.contains("may have been purged beyond LAST_SUCCESS_READ_TSO"),
+            "{error}"
+        );
+        assert_eq!(
+            query(
+                &session,
+                "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+            ),
+            watermark
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_all_maintain_session_variables_restore() {
+    let (_, caller) = fixture();
+    let settings = [
+        (
+            "tidb_mview_maintain_mem_quota",
+            "tidb_mem_quota_query",
+            "4096",
+        ),
+        (
+            "tidb_mview_maintain_isolation_read_engines",
+            "tidb_isolation_read_engines",
+            "tikv",
+        ),
+        (
+            "tidb_mview_maintain_import_threads",
+            "tidb_mview_maintain_import_threads",
+            "12",
+        ),
+        (
+            "tidb_mview_maintain_import_disk_quota",
+            "tidb_mview_maintain_import_disk_quota",
+            "64gib",
+        ),
+        ("tidb_max_tiflash_threads", "tidb_max_tiflash_threads", "8"),
+        (
+            "tidb_max_bytes_before_tiflash_external_join",
+            "tidb_max_bytes_before_tiflash_external_join",
+            "101",
+        ),
+        (
+            "tidb_max_bytes_before_tiflash_external_group_by",
+            "tidb_max_bytes_before_tiflash_external_group_by",
+            "202",
+        ),
+        (
+            "tidb_max_bytes_before_tiflash_external_sort",
+            "tidb_max_bytes_before_tiflash_external_sort",
+            "303",
+        ),
+        (
+            "tiflash_mem_quota_query_per_node",
+            "tiflash_mem_quota_query_per_node",
+            "404",
+        ),
+        (
+            "tiflash_query_spill_ratio",
+            "tiflash_query_spill_ratio",
+            "0.75",
+        ),
+        (
+            "tiflash_fine_grained_shuffle_stream_count",
+            "tiflash_fine_grained_shuffle_stream_count",
+            "16",
+        ),
+        (
+            "tiflash_fine_grained_shuffle_batch_size",
+            "tiflash_fine_grained_shuffle_batch_size",
+            "4096",
+        ),
+    ];
+    for (source, _, value) in settings {
+        query(&caller, &format!("SET {source}='{value}'"));
+    }
+    for best_effort in [false, true] {
+        let internal = ConcreteSession::new(caller.domain.clone());
+        let table = caller.domain.table_by_name("test", "mv_runtime").unwrap();
+        let info = table.MaterializedView.as_ref().unwrap();
+        let before = settings
+            .iter()
+            .map(|(_, target, _)| internal.session_vars.GetSystemVar(target))
+            .collect::<Vec<_>>();
+        {
+            let _guard =
+                super::mview_refresh::initialize_session(&internal, info, &caller, best_effort)
+                    .unwrap();
+            for (_, target, expected) in settings {
+                assert_eq!(
+                    internal.session_vars.GetSystemVar(target).as_deref(),
+                    Some(expected),
+                    "{target}"
+                );
+            }
+        }
+        assert_eq!(
+            settings
+                .iter()
+                .map(|(_, target, _)| internal.session_vars.GetSystemVar(target))
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+}
+
+#[test]
+fn port_63ec01b244_finalize_and_cleanup_failure_keeps_committed_rows() {
+    let (_, session) = fixture();
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    let _finalize = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockFinalizeRefreshHistError",
+        "return(true)",
+    );
+    let _cleanup = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockReleaseMVRefreshAdvisoryLockFullyCount",
+        "return(0)",
+    );
+    let error = run(&session, "complete delta apply", &mut Observer::default())
+        .1
+        .expect_err("cleanup invariant failure after commit must remain visible")
+        .to_string();
+    assert!(
+        error.contains("advisory lock cleanup invariant violated"),
+        "{error}"
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        vec![
+            vec!["1", "30", "2"],
+            vec!["2", "30", "1"],
+            vec!["3", "40", "1"]
+        ]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT REFRESH_STATUS,REFRESH_END_TIME IS NULL,REFRESH_FAILED_REASON IS NULL FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["running", "1", "1"]]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT COUNT(*) FROM mysql.tidb_mview_refresh_hist WHERE REFRESH_STATUS='failed'"
+        ),
+        vec![vec!["0"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_cancel_watcher_stops_before_creating_shadow() {
+    struct CancelBeforeShadow {
+        caller: ConcreteSession,
+        watched: Arc<AtomicBool>,
+        hit: bool,
+    }
+    impl StepObserver for CancelBeforeShadow {
+        fn on_step_start(&mut self, step: &ObserveStep, _: SystemTime) {
+            if step.name != "OUT_OF_PLACE_CREATE_SHADOW" || self.hit {
+                return;
+            }
+            self.hit = true;
+            let job = query(&self.caller, "SELECT REFRESH_JOB_ID FROM mysql.tidb_mview_refresh_hist WHERE REFRESH_STATUS='running'")[0][0].clone();
+            query(
+                &self.caller,
+                &format!("CANCEL MATERIALIZED VIEW REFRESH JOB {job}"),
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !self.watched.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "watcher must consume the committed cancel request"
+                );
+                std::thread::park_timeout(Duration::from_millis(2));
+            }
+        }
+        fn on_step_end(&mut self, _: &ObserveStep, _: SystemTime, _: Option<&str>) {}
+        fn on_step_plan_rows(&mut self, _: &ObserveStep, _: Vec<Vec<String>>) {}
+    }
+    let (f, session) = fixture();
+    EnableMockDDLForTest(&f.domain).unwrap();
+    let jobs = query(&session, "SELECT COUNT(*) FROM mysql.tidb_ddl_history");
+    let before = query(&session, "SELECT * FROM mv_runtime ORDER BY g");
+    let watched = Arc::new(AtomicBool::new(false));
+    let callback = watched.clone();
+    let _watcher = astersql_testkit_testfailpoint::enable_concurrent_call(
+        "github.com/pingcap/tidb/pkg/executor/mvTaskCancelWatcherRequested",
+        move || {
+            callback.store(true, Ordering::Release);
+        },
+    );
+    let _interval = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/mockMVTaskMonitorPollInterval",
+        "return(5)",
+    );
+    let mut observer = CancelBeforeShadow {
+        caller: session.clone(),
+        watched,
+        hit: false,
+    };
+    let error = run(&session, "complete out of place", &mut observer)
+        .1
+        .unwrap_err()
+        .to_string();
+    assert!(
+        observer.hit && error.contains("canceled manually"),
+        "{error}"
+    );
+    assert_eq!(
+        query(&session, "SELECT COUNT(*) FROM mysql.tidb_ddl_history"),
+        jobs,
+        "a canceled refresh must not create and subsequently drop a shadow"
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        before
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT REFRESH_STATUS FROM mysql.tidb_mview_refresh_hist"
+        ),
+        vec![vec!["failed"]]
+    );
+}
+
+#[test]
+fn port_63ec01b244_execution_variable_apply_failure_matrix() {
+    for (mode, automatic, single) in [
+        ("complete delta apply", false, false),
+        ("complete delta apply", true, false),
+        ("complete delta apply", false, true),
+        ("complete delta apply", true, true),
+        ("complete out of place", true, false),
+        ("complete out of place", true, true),
+    ] {
+        let (f, session) = fixture();
+        EnableMockDDLForTest(&f.domain).unwrap();
+        query(&session, "SET tidb_max_tiflash_threads=8");
+        query(
+            &session,
+            "SET tidb_max_bytes_before_tiflash_external_join=101",
+        );
+        query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+        let point = if single {
+            "github.com/pingcap/tidb/pkg/ddl/mockMViewExecutionSessionVarApplyError"
+        } else {
+            "github.com/pingcap/tidb/pkg/executor/mockRefreshExecutionSessionVarsApplyError"
+        };
+        let guard = astersql_testkit_testfailpoint::enable(
+            point,
+            if single {
+                "return(\"tidb_max_tiflash_threads\")"
+            } else {
+                "return(true)"
+            },
+        );
+        session.state.borrow_mut().in_restricted_sql = automatic;
+        let result = session.execute(&format!("REFRESH MATERIALIZED VIEW mv_runtime {mode}"));
+        session.state.borrow_mut().in_restricted_sql = false;
+        if automatic {
+            result.unwrap();
+            assert_eq!(
+                query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+                vec![
+                    vec!["1", "30", "2"],
+                    vec!["2", "30", "1"],
+                    vec!["3", "40", "1"]
+                ]
+            );
+            let internal = ConcreteSession::new(f.domain.clone());
+            let view = f.domain.table_by_name("test", "mv_runtime").unwrap();
+            let default_threads = internal
+                .session_vars
+                .GetSystemVar("tidb_max_tiflash_threads");
+            {
+                let _settings = super::mview_refresh::initialize_session(
+                    &internal,
+                    view.MaterializedView.as_ref().unwrap(),
+                    &session,
+                    true,
+                )
+                .unwrap();
+                assert_eq!(
+                    internal
+                        .session_vars
+                        .GetSystemVar("tidb_max_tiflash_threads"),
+                    default_threads
+                );
+                if single {
+                    assert_eq!(
+                        internal
+                            .session_vars
+                            .GetSystemVar("tidb_max_bytes_before_tiflash_external_join")
+                            .as_deref(),
+                        Some("101")
+                    );
+                }
+            }
+            assert_eq!(
+                internal
+                    .session_vars
+                    .GetSystemVar("tidb_max_tiflash_threads"),
+                default_threads
+            );
+        } else {
+            let error = result
+                .err()
+                .expect("manual application failure must be returned")
+                .to_string();
+            assert!(
+                error.contains(if single {
+                    "tidb_max_tiflash_threads"
+                } else {
+                    "mock refresh execution session vars apply error"
+                }),
+                "{error}"
+            );
+        }
+        assert_eq!(
+            session
+                .session_vars
+                .GetSystemVar("tidb_max_tiflash_threads")
+                .as_deref(),
+            Some("8")
+        );
+        assert_eq!(
+            session
+                .session_vars
+                .GetSystemVar("tidb_max_bytes_before_tiflash_external_join")
+                .as_deref(),
+            Some("101")
+        );
+        drop(guard);
+    }
+}
+
+#[test]
+fn port_63ec01b244_complete_refresh_nowait_and_outer_timestamp_semantics() {
+    let (f, session) = fixture();
+    let locker = ConcreteSession::new(f.domain.clone());
+    query(&locker, "BEGIN PESSIMISTIC");
+    query(
+        &locker,
+        "SELECT MVIEW_ID FROM mysql.tidb_mview_refresh_info FOR UPDATE",
+    );
+    let error = run(&session, "complete delta apply", &mut Observer::default())
+        .1
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("NOWAIT"), "{error}");
+    query(&locker, "ROLLBACK");
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW mv_runtime COMPLETE DELTA APPLY",
+    );
+    query(&session, "SET time_zone='+08:00'");
+    query(&session, "INSERT INTO src_runtime VALUES (4,3,40)");
+    let millis = chrono::Utc::now().timestamp_millis() + 50;
+    let target = (millis as u64) << 18;
+    let local = chrono::DateTime::from_timestamp_millis(millis)
+        .unwrap()
+        .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    query(&session, &format!("SET @outer_refresh_target='{local}'"));
+    std::thread::park_timeout(Duration::from_millis(80));
+    query(
+        &session,
+        "REFRESH MATERIALIZED VIEW mv_runtime FAST AS OF TIMESTAMP @outer_refresh_target",
+    );
+    assert_eq!(
+        query(
+            &session,
+            "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info"
+        ),
+        vec![vec![target.to_string()]]
+    );
+    assert_eq!(
+        query(&session, "SELECT * FROM mv_runtime ORDER BY g"),
+        vec![
+            vec!["1", "30", "2"],
+            vec!["2", "30", "1"],
+            vec!["3", "40", "1"]
+        ]
+    );
+}

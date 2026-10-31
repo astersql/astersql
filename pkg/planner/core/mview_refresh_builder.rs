@@ -605,6 +605,7 @@ pub fn BuildRefreshMaterializedViewImplement(
             let full_update_key_result_col_indexes =
                 (0..definition.group_key_mv_offsets.len()).collect::<Vec<_>>();
             Ok(RefreshImplementPlan::Fast(MViewDeltaMerge {
+                mlog_empty: false,
                 source,
                 full_update_inner_source,
                 full_update_inner_column_count,
@@ -663,5 +664,23 @@ pub fn BuildRefreshMaterializedViewImplement(
                 },
             ))
         }
+    }
+}
+
+/// Finalize only after optimizing the real merge source, before building lookup
+/// executors. Unknown shapes retain all MIN/MAX lookup metadata.
+pub fn FinalizeMViewDeltaMergeSource(
+    plan: &mut MViewDeltaMerge,
+    source: &dyn base_dependency::PhysicalPlan,
+) {
+    plan.mlog_empty = crate::mview_refresh_lookup::MViewRefreshMLogIsEmpty(Some(source));
+    if plan.mlog_empty {
+        plan.full_update_inner_source = None;
+        plan.full_update_inner_column_count = 0;
+        plan.full_update_index_ranges.clear();
+        plan.full_update_key_off_to_index_off.clear();
+        plan.full_update_key_result_col_indexes.clear();
+        plan.full_update_output_mv_offsets.clear();
+        plan.full_update_snapshot = None;
     }
 }

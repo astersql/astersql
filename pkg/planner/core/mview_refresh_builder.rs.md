@@ -14,6 +14,8 @@
 
 ## 执行流程
 
+`FinalizeMViewDeltaMergeSource` 在真实 source 优化后运行：用 `MViewRefreshMLogIsEmpty` 设置标志；只有为真才清除 lookup source、列映射、range 与 snapshot。`BuildRefreshMaterializedViewImplement` 的轻量描述默认 false；真实运行时通过 mview_source 的编译入口调用 finalize，而非对符号树猜测空输入。
+
 公开请求先校验 view 和数据库，空 database 回退 current_database，observe 计划输出单列 `refresh steps`。FAST 先校验定义、要求 COUNT(*)，按聚合输出生成 delta 列，再追加 MV 列与可选 rowid。COUNT(*) 依赖 delta offset 0；COUNT/SUM 各一列；MIN/MAX 各有 added value/count、removed value/count 四列。nullable SUM 必须有同表达式 COUNT，依赖再追加 `delta_column_count + count.mv_offset`；nullable MIN/MAX 有匹配 COUNT 才追加。匹配会去空白、反引号并转 ASCII 小写，不去括号，也不做 AST 语义等价判定。
 
 FAST 时间窗口为 `(from_ts, to_ts]`，to_ts=0 时省略上界；结果记录 `read_from_tiflash=true`。group key 不可空用 `=`，可空用 `<=>`。实现入口实际创建 Selection(TableScan($mlog#ID))，MIN/MAX 再附无 children 的 IndexJoin 描述及占位 range；有 MIN/MAX 而无支持索引时拒绝。target_refresh_read_ts>0 才附 snapshot 值。
@@ -37,6 +39,8 @@ COMPLETE DELTA APPLY 选第一列可见元数据中的 NOT NULL 列为 marker，
 同步内存计算，使用 HashMap/HashSet、String/Vec 和拥有子树的 PlanNode，无锁、线程、异步或存储句柄。snapshot 是时间戳值。重用输入通过不可变借用，结果拥有克隆的列名/映射；大定义产生相应分配成本。
 
 ## 与 Go 版本的对应关系
+
+对应 63ec01b2440281b0debbfb05c5dfd378e94474d1 的 mview_refresh_builder.go 三处 hunk；Rust 的优化结果在会话源码编译阶段取得，故在该处作必要局部接线，保持原有优化器和方言边界。
 
 布局验证与 MLog 验证分离，COMPLETE diff 不要求日志存在；日志内部字段采用真实模型名称 _MLOG$_OLD_NEW / _MLOG$_DML_TYPE。
 

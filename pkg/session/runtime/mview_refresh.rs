@@ -374,6 +374,12 @@ impl RefreshMaterializedViewExec {
             return Ok(());
         }
         self.done = true;
+        self.session.state.borrow_mut().last_dml_report = None;
+        self.session.session_vars.StmtCtx.SetAffectedRows(0);
+        self.session
+            .session_vars
+            .StmtCtx
+            .SetMessage("Rows inserted: 0  Updated: 0  Deleted: 0".to_owned());
         self.execute(&mut observer)
     }
     fn execute(&mut self, observer: &mut Option<&mut dyn StepObserver>) -> SessionResult<()> {
@@ -518,14 +524,10 @@ impl RefreshMaterializedViewExec {
                 if mode == Mode::Fast && target_ts > 0 && watermark == Some(target_ts) {
                     return Ok(());
                 }
-                let read_ts = maintenance
-                    .state
-                    .borrow()
-                    .transaction
-                    .as_ref()
-                    .map(|tx| tx.StartTS())
-                    .map(Ok)
-                    .unwrap_or_else(|| allocate_tso(&maintenance))?;
+                // The pessimistic locking read can observe commits newer than
+                // txn.start_ts; its data snapshot and persisted watermark must
+                // include those commits as well.
+                let read_ts = allocate_tso(&maintenance)?;
                 job_id = read_ts;
                 let hist_index = if mode == Mode::CompleteOutOfPlace {
                     0
@@ -821,10 +823,17 @@ impl RefreshMaterializedViewExec {
             }
         }
         if acquired_lock {
-            match rows(
+            let released = rows(
                 &maintenance,
                 &format!("SELECT RELEASE_LOCK({})", quoted(&lock_name)),
+            );
+            let released = match astersql_testkit_testfailpoint::eval_string(
+                "github.com/pingcap/tidb/pkg/executor/mockReleaseMVRefreshAdvisoryLockFullyCount",
             ) {
+                Some(count) => released.map(|_| vec![vec![count]]),
+                None => released,
+            };
+            match released {
                 Ok(rows)
                     if rows
                         .first()
@@ -986,8 +995,16 @@ impl RefreshMaterializedViewExec {
         }
         let runtime_stats = observer.as_ref().map(|_| new_refresh_runtime_stats());
         let child = maintenance
-            .compile_mview_source_with_stats(source, read_ts, runtime_stats.as_ref())
+            .compile_mview_source_with_empty(
+                source,
+                read_ts,
+                runtime_stats.as_ref(),
+                delta.as_mut(),
+            )
             .map_err(|e| SessionError::new(e.to_string()))?;
+        if delta.as_ref().is_some_and(|plan| !plan.mlog_empty) {
+            check_minmax_gc_safe_point(history, &definition, target_ts)?;
+        }
         let mut source_plan_rows = vec![vec![
             if mode == Mode::Fast {
                 "MViewDeltaMerge_0"
@@ -1099,6 +1116,7 @@ impl RefreshMaterializedViewExec {
         monitor: &TaskMonitor,
     ) -> SessionResult<()> {
         timed_step(&mut self.timings.create_shadow, observer, &steps[1], || {
+            monitor.check_cancelled()?;
             shadow.create()
         })?;
         let load_plan = if observer.is_some() {
@@ -1164,6 +1182,12 @@ impl RefreshMaterializedViewExec {
                         "refresh materialized view complete OUT OF PLACE: invalid build read tso",
                     )
                 })?;
+                let actual_read = astersql_testkit_testfailpoint::eval_string(
+                    "github.com/pingcap/tidb/pkg/executor/mockRefreshMaterializedViewOutOfPlaceBuildReadTSO",
+                )
+                .map(|value| serde_json::from_str::<String>(&value).unwrap_or(value).parse::<u64>().map_err(|e| session_error("decode shadow build read tso", e)))
+                .transpose()?
+                .unwrap_or(actual_read);
                 shadow.read_ts.set(actual_read);
                 maintenance.session_vars.StmtCtx.SetAffectedRows(inserted);
                 maintenance
@@ -1194,6 +1218,12 @@ impl RefreshMaterializedViewExec {
             )?;
             shadow.armed.set(false);
             *committed = true;
+            if table.TiFlashReplica.is_some()
+                && astersql_domain_infosync::getGlobalInfoSyncer().is_ok()
+            {
+                astersql_domain_infosync::DeleteTiFlashTableSyncProgress(table)
+                    .map_err(|e| session_error("delete committed MV TiFlash progress", e))?;
+            }
             maintenance
                 .domain
                 .refresh_materialized_view_metadata()
@@ -1351,6 +1381,24 @@ pub(super) fn initialize_session(
             info.DefinitionDivPrecisionIncrement
         ),
     )?;
+    if astersql_testkit_testfailpoint::eval_bool(
+        "github.com/pingcap/tidb/pkg/executor/mockRefreshExecutionSessionVarsApplyError",
+    ) {
+        let message = "mock refresh execution session vars apply error";
+        if !best_effort {
+            return Err(SessionError::new(message));
+        }
+        session
+            .state
+            .borrow_mut()
+            .current_warnings
+            .push(SessionWarning::warning(message.to_owned()));
+        return Ok(guard);
+    }
+    let failed_variable = astersql_testkit_testfailpoint::eval_string(
+        "github.com/pingcap/tidb/pkg/ddl/mockMViewExecutionSessionVarApplyError",
+    )
+    .map(|value| serde_json::from_str::<String>(&value).unwrap_or(value));
     for (source, target) in [
         ("tidb_mview_maintain_mem_quota", "tidb_mem_quota_query"),
         (
@@ -1396,10 +1444,17 @@ pub(super) fn initialize_session(
             if let Some(original) = session.session_vars.GetSystemVar(target) {
                 guard.original.push((target, original));
             }
-            if let Err(error) = session
-                .session_vars
-                .SetHintSystemVarWithOldState(target, &value)
-            {
+            let applied = if failed_variable.as_deref() == Some(target) {
+                Err(format!(
+                    "mock execution session variable {target} apply error"
+                ))
+            } else {
+                session
+                    .session_vars
+                    .SetHintSystemVarWithOldState(target, &value)
+                    .map_err(|e| e.to_string())
+            };
+            if let Err(error) = applied {
                 if !best_effort {
                     return Err(SessionError::new(error.to_string()));
                 }
@@ -1526,26 +1581,39 @@ fn finalize_history(
     status: &str,
     read: Option<u64>,
     commit: Option<u64>,
-    _: &str,
-    duration: Duration,
+    start: &str,
+    _duration: Duration,
     schedule: Option<Duration>,
     scanned_rows: Option<u64>,
     reason: Option<&str>,
 ) -> SessionResult<()> {
-    let statement = format!(
-        "UPDATE mysql.tidb_mview_refresh_hist SET REFRESH_END_TIME=NOW(6),REFRESH_STATUS={},REFRESH_ROWS={},REFRESH_DURATION_SEC={},REFRESH_SCHEDULE_DURATION_SEC={},REFRESH_READ_TSO={},REFRESH_COMMIT_TSO={},REFRESH_FAILED_REASON={} WHERE REFRESH_JOB_ID={job} AND MVIEW_ID={id}",
-        quoted(status),
-        nullable(scanned_rows),
-        astersql_executor::mview_task::format_duration_seconds(duration),
-        schedule
-            .map(|value| astersql_executor::mview_task::format_duration_seconds(value))
-            .unwrap_or_else(|| "NULL".into()),
-        nullable(read),
-        nullable(commit),
-        reason.map(quoted).unwrap_or_else(|| "NULL".into())
-    );
+    let start =
+        chrono::NaiveDateTime::parse_from_str(start.trim_matches('\''), "%Y-%m-%d %H:%M:%S%.f")
+            .map_err(|e| session_error("decode refresh history start time", e))?;
     let run = || {
         fault("mockFinalizeRefreshHistError")?;
+        // Go persists duration from these same wall-clock endpoints. Keep
+        // time-unit AST support out of the generic DML expression evaluator.
+        let end = chrono::Utc::now().naive_utc();
+        let micros = end
+            .signed_duration_since(start)
+            .num_microseconds()
+            .unwrap_or(i64::MAX)
+            .max(0);
+        let statement = format!(
+            "UPDATE mysql.tidb_mview_refresh_hist SET REFRESH_END_TIME={},REFRESH_STATUS={},REFRESH_ROWS={},REFRESH_DURATION_SEC={}.{:06},REFRESH_SCHEDULE_DURATION_SEC={},REFRESH_READ_TSO={},REFRESH_COMMIT_TSO={},REFRESH_FAILED_REASON={} WHERE REFRESH_JOB_ID={job} AND MVIEW_ID={id}",
+            quoted(&end.format("%Y-%m-%d %H:%M:%S%.6f").to_string()),
+            quoted(status),
+            nullable(scanned_rows),
+            micros / 1_000_000,
+            micros % 1_000_000,
+            schedule
+                .map(|value| astersql_executor::mview_task::format_duration_seconds(value))
+                .unwrap_or_else(|| "NULL".into()),
+            nullable(read),
+            nullable(commit),
+            reason.map(quoted).unwrap_or_else(|| "NULL".into())
+        );
         sql(session, &statement)
     };
     match run() {
@@ -1581,6 +1649,41 @@ fn insert_failed(
         ),
     )
 }
+fn check_minmax_gc_safe_point(
+    session: &ConcreteSession,
+    definition: &astersql_planner_core::MViewDefinition,
+    target_ts: u64,
+) -> SessionResult<()> {
+    use astersql_planner_core::MViewAggKind;
+    if target_ts == 0
+        || !definition
+            .aggregates
+            .iter()
+            .any(|agg| matches!(agg.kind, MViewAggKind::Min | MViewAggKind::Max))
+    {
+        return Ok(());
+    }
+    let point = rows(
+        session,
+        "SELECT variable_value FROM mysql.tidb WHERE variable_name='tikv_gc_safe_point'",
+    )?;
+    let Some(value) = point.first().and_then(|row| row.first()) else {
+        return Ok(());
+    };
+    let safe = chrono::DateTime::parse_from_str(value, "%Y%m%d-%H:%M:%S %z")
+        .or_else(|_| chrono::DateTime::parse_from_str(value, "%Y%m%d-%H:%M:%S %z %Z"))
+        .map_err(|e| session_error("parse GC safe point", e))?;
+    if i128::from(target_ts >> 18) < i128::from(safe.timestamp_millis()) {
+        let error = &astersql_sessionctx_variable::error::ErrSnapshotTooOld;
+        return Err(SessionError::new(format!(
+            "[variable:{}]{}",
+            error.code,
+            error.format(&[value])
+        )));
+    }
+    Ok(())
+}
+
 fn check_log_integrity(
     history: &ConcreteSession,
     definition: &astersql_planner_core::MViewDefinition,
@@ -2037,6 +2140,104 @@ impl ConcreteSession {
 }
 
 impl ConcreteSession {
+    /// Shadow tables belong to the maintenance session until cutover commits.
+    pub(super) fn check_materialized_shadow_access(
+        &self,
+        statement: &dyn ast::Node,
+    ) -> SessionResult<()> {
+        if self.sql_dialect() != ast::SqlDialect::MySQL || self.state.borrow().in_restricted_sql {
+            return Ok(());
+        }
+        fn walk_join(join: &ast::Join, tables: &mut Vec<ast::TableName>) {
+            for child in [join.Left.as_deref(), join.Right.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                match child {
+                    ast::ResultSetNode::TableSource(source) => {
+                        if let Some(query) = &source.QuerySource {
+                            let _ = query.with_node(|node| collect(node, tables));
+                        } else {
+                            tables.push(source.Source.clone());
+                        }
+                    }
+                    ast::ResultSetNode::Join(child) => walk_join(child, tables),
+                }
+            }
+        }
+        fn collect(node: &dyn ast::Node, tables: &mut Vec<ast::TableName>) {
+            let refs = if let Some(insert) = node.as_any().downcast_ref::<ast::InsertStmt>() {
+                insert.Table.as_ref()
+            } else if let Some(update) = node.as_any().downcast_ref::<ast::UpdateStmt>() {
+                update.TableRefs.as_ref()
+            } else if let Some(delete) = node.as_any().downcast_ref::<ast::DeleteStmt>() {
+                delete.TableRefs.as_ref()
+            } else if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                select.From.as_ref()
+            } else {
+                None
+            };
+            if let Some(refs) = refs {
+                walk_join(&refs.TableRefs, tables);
+            }
+            if let Some(insert) = node.as_any().downcast_ref::<ast::InsertStmt>()
+                && let Some(source) = &insert.Select
+            {
+                collect(source.as_ref(), tables);
+            }
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                for child in &select.children {
+                    collect(child.as_ref(), tables);
+                }
+            }
+        }
+        let mut tables = Vec::new();
+        let ddl = if let Some(alter) = statement.as_any().downcast_ref::<ast::AlterTableStmt>() {
+            tables.push(alter.Table.clone());
+            Some("ALTER TABLE")
+        } else if let Some(drop) = statement.as_any().downcast_ref::<ast::DropTableStmt>() {
+            tables.extend(drop.Tables.iter().cloned());
+            Some("DROP TABLE")
+        } else {
+            collect(statement, &mut tables);
+            None
+        };
+        let schema = self.domain.info_schema();
+        for (position, table) in tables.iter().enumerate() {
+            let database = if table.Schema.L.is_empty() {
+                self.current_database()
+            } else {
+                table.Schema.O.clone()
+            };
+            if !self
+                .snapshot_table(&schema, &database, &table.Name.O)
+                .is_some_and(|info| info.MaterializedViewShadow.is_some())
+            {
+                continue;
+            }
+            if let Some(operation) = ddl {
+                return Err(SessionError::new(format!(
+                    "[ddl:8200]Unsupported {operation} on materialized view shadow table"
+                )));
+            }
+            let writes = statement.as_any().is::<ast::InsertStmt>()
+                || statement.as_any().is::<ast::UpdateStmt>()
+                || statement.as_any().is::<ast::DeleteStmt>();
+            return Err(SessionError::new(if writes && position == 0 {
+                format!(
+                    "[planner:1288]The target table {} is not updatable",
+                    table.Name.O
+                )
+            } else {
+                format!(
+                    "[planner:1142]SELECT command denied for materialized view shadow table {}",
+                    table.Name.O
+                )
+            }));
+        }
+        Ok(())
+    }
+
     pub(super) fn execute_refresh_sql(
         &self,
         statement: &ast::RefreshMaterializedViewStmt,
@@ -2078,7 +2279,8 @@ impl ConcreteSession {
         }
         let mut plain = statement.clone();
         plain.ObserveType = Observe::None;
-        let mut executor = RefreshMaterializedViewExec::new(self.clone(), plain.clone(), false);
+        let automatic = self.state.borrow().in_restricted_sql;
+        let mut executor = RefreshMaterializedViewExec::new(self.clone(), plain.clone(), automatic);
         match statement.ObserveType {
             Observe::None => {
                 executor.next(None)?;
@@ -2252,6 +2454,8 @@ impl ConcreteSession {
                     .with_storage(|store| store.CurrentVersion("global"))
                     .map_err(|e| session_error("read refresh plan TSO", e))?
                     .Ver;
+                let mut fast_merge = None;
+                let mut target_ts = 0;
                 let (source, operator) = if mode == Mode::Fast {
                     let history = ConcreteSession::new(self.domain.clone());
                     let history_rows = rows(
@@ -2267,7 +2471,7 @@ impl ConcreteSession {
                             "refresh materialized view fast: LAST_SUCCESS_READ_TSO is NULL",
                         )
                     })?;
-                    let target_ts = statement
+                    target_ts = statement
                         .AsOf
                         .as_ref()
                         .map(|a| self.evaluate_refresh_target_ts(&a.TsExpr))
@@ -2289,7 +2493,7 @@ impl ConcreteSession {
                         .ok_or_else(|| SessionError::new("materialized view log does not exist"))?
                         .ModelMeta()
                         .map_err(|e| session_error("read MLog plan metadata", e))?;
-                    let (source, _) =
+                    let (source, merge) =
                         astersql_planner_core::mview_refresh_source::BuildFastRefreshSource(
                             &definition,
                             &table.Name.O,
@@ -2301,6 +2505,7 @@ impl ConcreteSession {
                             },
                         )
                         .map_err(SessionError::new)?;
+                    fast_merge = Some(merge);
                     (source, "MViewDeltaMerge")
                 } else {
                     let (source, _) =
@@ -2315,8 +2520,11 @@ impl ConcreteSession {
                 // Building this executor compiles its physical source without opening it:
                 // no history, watermark, shadow or table mutation is performed.
                 let _child = maintenance
-                    .compile_mview_source(source, read_ts)
+                    .compile_mview_source_with_empty(source, read_ts, None, fast_merge.as_mut())
                     .map_err(|e| SessionError::new(e.to_string()))?;
+                if fast_merge.as_ref().is_some_and(|plan| !plan.mlog_empty) {
+                    check_minmax_gc_safe_point(&maintenance, &definition, target_ts)?;
+                }
                 let mut plan = vec![vec![format!("{operator}_0")]];
                 plan.extend(maintenance.mview_plan_rows.borrow().clone());
                 plans.insert(

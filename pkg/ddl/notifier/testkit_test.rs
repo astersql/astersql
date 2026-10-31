@@ -590,3 +590,52 @@ fn test_commit_failed() {
     );
     notifier.OnRetireOwner();
 }
+
+#[test]
+fn port_63ec01b244_cutover_event_delivers_new_and_old_ids_once() {
+    let store = fresh_store("test");
+    let notifier = NewDDLNotifier(
+        SessionPool::default(),
+        store.clone(),
+        Duration::from_millis(5),
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    notifier.RegisterHandler(
+        TestHandlerID,
+        Box::new({
+            let seen = seen.clone();
+            move |_, event| {
+                if event.GetType() == model::group_3::ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER {
+                    let (new, old) = event.GetMViewRefreshOutOfPlaceCutoverInfo();
+                    let new = new.unwrap();
+                    let old = old.unwrap();
+                    seen.lock().unwrap().push((
+                        new.ID,
+                        old.ID,
+                        new.Name.L.clone(),
+                        old.Name.L.clone(),
+                    ));
+                }
+                Ok(())
+            }
+        }),
+    );
+    PubSchemeChangeToStore(
+        &Session::default(),
+        63,
+        -1,
+        NewMViewRefreshOutOfPlaceCutoverEvent(table(22, "mv"), table(11, "mv")),
+        store.as_ref(),
+    )
+    .unwrap();
+    notifier.OnBecomeOwner();
+    eventually(Duration::from_secs(1), || seen.lock().unwrap().len() == 1);
+    consistently(Duration::from_millis(30), || {
+        seen.lock().unwrap().len() == 1
+    });
+    notifier.OnRetireOwner();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(22, 11, "mv".into(), "mv".into())]
+    );
+}

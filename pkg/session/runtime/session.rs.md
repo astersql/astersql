@@ -31,6 +31,8 @@
 
 ## 执行流程
 
+63ec01b244 的旧提交快照回归要求 cutover 后仍按历史表 ID 读取 MV。`runtime_stats_table` 在显式 snapshot_read_ts 下复用 Domain.snapshot_info_schema 解析表名；没有显式快照的查询沿用当前 catalog，PostgreSQL 标识符解析仍由 snapshot_table 的既有方言分支处理。
+
 `from_tikv_store_with_server_info_options` 建立 storage factory 后，若 diagnostic mode 开启，调用 `diagnostic::bootstrap_session_impl_diagnostic` 并提前返回，绕过后续正常启动分支。诊断入口先验证已有 bootstrap，再加载只读 metadata readers；这里不能沿用正常 bootstrap/upgrade 会创建、升级并写回系统表的描述。
 
 reader 在未配置 `skip_grant_table` 时逐表解码 user/global_priv/global_grants/db/tables_priv/columns_priv/default_roles/role_edges，排序 user 后合入权限 handle。绑定读取跳过 deleted 项，要求 original SQL 恰有一条语句，恢复默认库并在缺失 SQL digest 时计算 digest，逐项 upsert 全局绑定，最后 `sync_global_bindings`。

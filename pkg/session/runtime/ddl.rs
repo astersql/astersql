@@ -2933,6 +2933,11 @@ impl ConcreteSession {
                             ))
                         })?;
                     if current_table.MaterializedView.is_some() {
+                        if constraint.Keys.iter().any(|part| part.Expr.is_some()) {
+                            return Err(SessionError::new(
+                                "[ddl:8200]Unsupported expression index on materialized view table",
+                            ));
+                        }
                         let operation = match constraint.Tp {
                             ast::ConstraintType::Unique => Some("ADD UNIQUE INDEX"),
                             ast::ConstraintType::PrimaryKey => Some("ADD PRIMARY KEY"),

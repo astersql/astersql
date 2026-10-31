@@ -227,3 +227,117 @@ fn explain_ru_result_owns_occurrences_and_clears_stale_values() {
     assert!(explain.Rows[0][0].contains("Dual_9"));
     assert_eq!(explain.Rows[0][3..6], ["", "", ""]);
 }
+
+#[test]
+fn port_63ec01b244_mlog_proof_follows_only_grouped_left_input() {
+    use base_dependency::{JoinType, PhysicalPlan};
+    use physicalop_dependency as op;
+    let ctx = crate::cbo_test::cbo_plan_context();
+    let dual =
+        |rows| -> Box<dyn PhysicalPlan> { Box::new(op::PhysicalTableDual::New(ctx.clone(), rows)) };
+    let projection = |child| -> Box<dyn PhysicalPlan> {
+        let mut p = op::PhysicalProjection::New(ctx.clone());
+        p.set_children(vec![child]);
+        Box::new(p)
+    };
+    let agg = |child, grouped, stream| -> Box<dyn PhysicalPlan> {
+        let mut base = op::BasePhysicalAgg::New(op::PhysicalSchemaProducer::New(
+            op::BasePhysicalPlan::New(ctx.clone(), "Aggregation", 0),
+        ));
+        if grouped {
+            base.GroupByItems
+                .push(Box::new(expression_dependency::Column::default()));
+        }
+        let mut p: Box<dyn PhysicalPlan> = if stream {
+            Box::new(op::PhysicalStreamAgg {
+                BasePhysicalAgg: base,
+            })
+        } else {
+            Box::new(op::PhysicalHashAgg {
+                BasePhysicalAgg: base,
+                TiflashPreAggMode: String::new(),
+            })
+        };
+        p.set_children(vec![child]);
+        p
+    };
+    let join = |left, right, kind| -> Box<dyn PhysicalPlan> {
+        let base = op::BasePhysicalJoin::New(
+            op::PhysicalSchemaProducer::New(op::BasePhysicalPlan::New(ctx.clone(), "HashJoin", 0)),
+            kind,
+        );
+        let mut p = op::NewPhysicalHashJoin(base, 1, false);
+        p.set_children(vec![left, right]);
+        projection(Box::new(p))
+    };
+    let cases = vec![
+        ("zero-row Dual", dual(0), true),
+        ("one-row Dual", dual(1), false),
+        (
+            "empty grouped mlog",
+            join(
+                agg(projection(dual(0)), true, false),
+                dual(1),
+                JoinType::LeftOuterJoin,
+            ),
+            true,
+        ),
+        (
+            "empty stream aggregation",
+            join(agg(dual(0), true, true), dual(1), JoinType::LeftOuterJoin),
+            true,
+        ),
+        (
+            "empty MV side",
+            join(agg(dual(1), true, false), dual(0), JoinType::LeftOuterJoin),
+            false,
+        ),
+        (
+            "scalar hash aggregation",
+            join(agg(dual(0), false, false), dual(1), JoinType::LeftOuterJoin),
+            false,
+        ),
+        (
+            "scalar stream aggregation",
+            join(agg(dual(0), false, true), dual(1), JoinType::LeftOuterJoin),
+            false,
+        ),
+        (
+            "inner join",
+            join(dual(0), dual(1), JoinType::InnerJoin),
+            false,
+        ),
+        (
+            "right join",
+            join(dual(0), dual(1), JoinType::RightOuterJoin),
+            false,
+        ),
+        (
+            "unknown shape zero estimate",
+            Box::new(op::PhysicalSelection::New(ctx.clone())) as Box<dyn PhysicalPlan>,
+            false,
+        ),
+    ];
+    for (name, plan, empty) in cases {
+        assert_eq!(
+            crate::mview_refresh_lookup::MViewRefreshMLogIsEmpty(Some(plan.as_ref())),
+            empty,
+            "{name}"
+        );
+    }
+    assert!(!crate::mview_refresh_lookup::MViewRefreshMLogIsEmpty(None));
+}
+
+#[test]
+fn port_63ec01b244_zero_estimate_scan_is_not_empty_proof() {
+    use base_dependency::PhysicalPlan;
+    let ctx = crate::cbo_test::cbo_plan_context();
+    let mut scan = physicalop_dependency::PhysicalTableScan::New(ctx);
+    scan.set_stats(property_dependency::StatsInfo {
+        RowCount: 0.0,
+        ..Default::default()
+    });
+    assert!(!crate::mview_refresh_lookup::MViewRefreshMLogIsEmpty(Some(
+        &scan
+    )));
+}

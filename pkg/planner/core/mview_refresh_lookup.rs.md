@@ -14,6 +14,8 @@
 
 ## 执行流程
 
+`MViewRefreshMLogIsEmpty` 接收真实 `PhysicalPlan`。仅 RowCount=0 的 PhysicalTableDual 证明为空；投影/Selection 和有 GroupByItems 的 HashAgg/StreamAgg 须有一个孩子；Hash/Merge/Index/IndexHash/IndexMerge Join 只追踪恰好两个孩子的 LEFT JOIN 左侧。nil、scalar 聚合、Apply、未知形态与零估计均返回 false。
+
 索引筛选先将 group columns ASCII 小写并去重为集合，对每个可见索引的前 N 列做集合相等判断，允许 key 顺序不同，保留输入索引顺序。重排先把每个 group key MV offset 放到对应 key_result_col_indexes 位置，再将非 key lookup offsets 按原序填入未占用槽位。Extract 依次校验非空 schema/ranges、映射长度、key index offset 范围，调用重排，最后要求传入节点自身为 `PlanKind::IndexJoin`。
 
 ## 数据与状态
@@ -33,6 +35,8 @@
 同步纯内存操作，无 I/O、锁或线程。Extract 移动 inner_source 和向量取得所有权；筛选/重排分配集合及向量。没有真实 snapshot 或查询执行资源。
 
 ## 与 Go 版本的对应关系
+
+对应 63ec01b2440281b0debbfb05c5dfd378e94474d1 的 mview_refresh_lookup.go 新判定函数，保持逐算子保守白名单，不恢复后续提交的其他 lookup 比较助手。
 
 Go 可遍历优化物理计划并丢弃合成 outer probe，Rust 仅要求调用者显式传入 IndexJoin 描述，不遍历树、不剥离 child、不访问 InfoSchema，也不执行 lookup。
 

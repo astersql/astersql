@@ -323,6 +323,8 @@ pub struct DataReaderSnapshot {
 /// Physical FAST-refresh merge operator.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MViewDeltaMerge {
+    /// Only an optimizer-proven empty MLog permits omitting MIN/MAX lookup.
+    pub mlog_empty: bool,
     pub source: PlanNode,
     pub full_update_inner_source: Option<PlanNode>,
     pub full_update_inner_column_count: usize,

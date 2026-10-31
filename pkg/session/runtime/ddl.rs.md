@@ -30,6 +30,8 @@
 
 ## 执行流程
 
+63ec01b244 SQL 集成中的 writable-columns 契约：在物化视图上 ADD/CREATE expression index 必须在生成隐藏列之前返回 ddl:8200；普通索引仍可创建和删除。检查复用 CREATE INDEX 转换后的 ADD CONSTRAINT 入口，不增加新的 DDL 执行路径。
+
 1. [`runtime/dispatch.rs`](dispatch.rs) 识别 DDL AST。除本地临时表创建外，若当前存在事务，先调用 `finish_transaction(true)` 执行 MySQL/TiDB 的 DDL 隐式提交语义；随后分派到本文件的对应 `execute_*` 方法。`CREATE/DROP INDEX` 会被转换为 ALTER TABLE 或直接落到相同的 Domain 元数据接口。
 2. 各入口解析未限定 schema，通常以 `current_database()` 补齐，并先验证 database/table 是否存在、对象是否为 base table，以及权限、会话变量和语句选项。
 3. `execute_create_table` 安装 planner expression factory，构造或复制 `TableInfo`，清零 LIKE 来源的 ID/allocator/foreign key 状态，处理本地临时表的进程内高位 ID；共享表则建立 runtime job，调用 `Domain::ddl_create_table`，执行预切分，更新 schema version，并记录 AUTO_RANDOM 可用空间提示。

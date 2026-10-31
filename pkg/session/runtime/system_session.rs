@@ -1114,6 +1114,11 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
                     let old=session.session_vars.SetHintSystemVarWithOldState(target,value).map_err(sys_error)?;
                     restore.push((target.to_owned(),old));
                 }
+                // Preserve Go's initial-build observation boundary without
+                // requiring system-variable expressions in the build SELECT.
+                let applied_point = "github.com/pingcap/tidb/pkg/ddl/createMaterializedViewBuildTiFlashSessionVarsApplied";
+                let values = ["tidb_mem_quota_query", "tidb_isolation_read_engines", "tidb_max_tiflash_threads", "tidb_max_bytes_before_tiflash_external_join", "tidb_max_bytes_before_tiflash_external_group_by", "tidb_max_bytes_before_tiflash_external_sort", "tiflash_mem_quota_query_per_node", "tiflash_query_spill_ratio", "tiflash_fine_grained_shuffle_stream_count", "tiflash_fine_grained_shuffle_batch_size"].map(|name| session.session_vars.GetSystemVar(name).unwrap_or_default());
+                astersql_testkit_testfailpoint::inject_value(applied_point, &serde_json::to_string(&values).map_err(sys_error)?);
                 // One SQL statement observes a real transaction snapshot. Keeping
                 // that transaction explicit exposes the same query start TSO even
                 // for empty input; physical IMPORT remains independent of it.

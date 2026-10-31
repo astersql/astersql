@@ -36,6 +36,8 @@ DML/统计方法包括：`read_session_kv`、`apply_session_kv_mutations`、`exe
 
 ## 执行流程
 
+63ec01b244 的维护会话变量回归把八个已注册 TiFlash 线程/外部 join/group/sort 内存/每节点配额/spill ratio/细粒度 shuffle 设置接入既有 SET 验证与存储分支，避免 SET 成功却仍读取默认值。没有引入新变量或替代 registry；维护会话继续通过原 SessionInitGuard 复制、恢复这些实际值。
+
 典型 SQL 控制流程如下：
 
 1. `runtime/dispatch.rs` 在 statement 边界调用 `begin_txn_statement_observation`，刷新 digest、staleness 标记和 `RUNTIME_TXN_INFOS`；读请求还可通过 `refresh_session_stale_read_ts` 在每次语句开始重新计算负 staleness interval。

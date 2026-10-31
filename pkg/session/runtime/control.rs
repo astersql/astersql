@@ -7946,6 +7946,14 @@ impl ConcreteSession {
                 | "tidb_mview_maintain_isolation_read_engines"
                 | "tidb_mview_maintain_import_threads"
                 | "tidb_mview_maintain_import_disk_quota"
+                | "tidb_max_tiflash_threads"
+                | "tidb_max_bytes_before_tiflash_external_join"
+                | "tidb_max_bytes_before_tiflash_external_group_by"
+                | "tidb_max_bytes_before_tiflash_external_sort"
+                | "tiflash_mem_quota_query_per_node"
+                | "tiflash_query_spill_ratio"
+                | "tiflash_fine_grained_shuffle_stream_count"
+                | "tiflash_fine_grained_shuffle_batch_size"
                 | astersql_sessionctx_vardef::DivPrecisionIncrement
                 | astersql_sessionctx_vardef::CTEMaxRecursionDepth
                 | "tidb_dml_batch_size"

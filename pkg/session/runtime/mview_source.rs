@@ -267,6 +267,16 @@ impl ConcreteSession {
         read_ts: u64,
         stats: Option<&astersql_executor::builder::TypedRuntimeStats>,
     ) -> Result<ExecutorBox, BuildError> {
+        self.compile_mview_source_with_empty(select, read_ts, stats, None)
+    }
+
+    pub(super) fn compile_mview_source_with_empty(
+        &self,
+        select: ast::SelectStmt,
+        read_ts: u64,
+        stats: Option<&astersql_executor::builder::TypedRuntimeStats>,
+        merge: Option<&mut astersql_planner_core::MViewDeltaMerge>,
+    ) -> Result<ExecutorBox, BuildError> {
         let mut variables = astersql_sessionctx_variable::session::SessionVars::default();
         variables.EnableFullOuterJoin = true;
         variables.InRestrictedSQL = true;
@@ -277,10 +287,18 @@ impl ConcreteSession {
             "div_precision_increment",
             "tidb_isolation_read_engines",
             "tidb_mem_quota_query",
+            "tidb_max_tiflash_threads",
+            "tidb_max_bytes_before_tiflash_external_join",
+            "tidb_max_bytes_before_tiflash_external_group_by",
+            "tidb_max_bytes_before_tiflash_external_sort",
+            "tiflash_mem_quota_query_per_node",
+            "tiflash_query_spill_ratio",
+            "tiflash_fine_grained_shuffle_stream_count",
+            "tiflash_fine_grained_shuffle_batch_size",
         ] {
             if let Some(value) = self.session_vars.GetSystemVar(name) {
                 variables
-                    .SetHintSystemVarWithOldState(name, &value)
+                    .SetSystemVar(name, &value)
                     .map_err(|e| BuildError::new(e.to_string()))?;
             }
         }
@@ -291,7 +309,9 @@ impl ConcreteSession {
         let node = ast::NodeRef::new(Box::new(select));
         let (mut builder, _) = astersql_planner_core::NewPlanBuilder().Init(
             context.clone(),
-            self.domain.info_schema(),
+            self.domain
+                .snapshot_info_schema(read_ts)
+                .map_err(|e| BuildError::new(e.to_string()))?,
             astersql_util_hint::NewQBHintHandler(None),
         );
         let mut logical = builder
@@ -307,6 +327,12 @@ impl ConcreteSession {
         physical
             .resolve_indices()
             .map_err(|error| BuildError::new(error.to_string()))?;
+        if let Some(merge) = merge {
+            astersql_planner_core::mview_refresh_builder::FinalizeMViewDeltaMergeSource(
+                merge,
+                physical.as_ref(),
+            );
+        }
         let mut scans = Vec::new();
         fn collect(
             plan: &dyn astersql_planner_core_base::PhysicalPlan,

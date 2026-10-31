@@ -1440,7 +1440,11 @@ impl ConcreteSession {
         astersql_statistics_handle::StatsTableKey,
         astersql_meta_model::TableInfo,
     )> {
-        let table = self.snapshot_table(&self.domain.info_schema(), database, name)?;
+        let schema = match self.state.borrow().snapshot_read_ts {
+            Some(ts) => self.domain.snapshot_info_schema(ts).ok()?,
+            None => self.domain.info_schema(),
+        };
+        let table = self.snapshot_table(&schema, database, name)?;
         Some((
             astersql_statistics_handle::StatsTableKey::new(database, name, table.ID),
             (*table).clone(),

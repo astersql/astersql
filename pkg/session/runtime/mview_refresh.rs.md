@@ -14,6 +14,16 @@
 
 ## 执行流程
 
+63ec01b244 的迁移回归补充：开始执行时清零本语句结果；锁定刷新水位后另取实际读 TSO，避免遗漏事务开始后、锁定读取前提交的数据。restricted SQL 保留 automatic 标记。bounded MIN/MAX 的非空输入通过独立历史会话读取 GC safe point，纯增量聚合与已证明空输入不要求旧基表快照。历史时长由持久 start/end 时间计算；影子构建保留 u64 TSO，TiFlash 旧进度仅在 cutover 提交成功后清理。
+
+语句结果同时清理旧 `last_dml_report`，避免 no-op 再次发布前一条 DML 的 affected rows。历史收尾在 Rust 中按固定微秒 wall-clock 起止时间计算精确六位小数，再写入同一 UPDATE，保持 Go TIMESTAMPDIFF 等式；不向通用 DML 表达式系统补建时间单位 AST 支持。`check_materialized_shadow_access` 由 dispatch 前置调用，复用真实表元数据，保护用户写入、DDL 与 JOIN 读访问；restricted 维护语句仍可操作自己的 shadow。
+
+维护会话保留 Go 的整组 execution settings 与单变量 apply 故障点：手动刷新直接报错；automatic 模式记录警告并跳过失败项，其他变量继续应用。RAII guard 同时恢复已成功应用的原值，测试覆盖六种组合。
+
+CREATE_SHADOW 的观察回调之后、DDL 提交之前再次检查真实 monitor 的取消状态，防止收到取消后仍创建再删除 shadow。锁释放仍实际执行 RELEASE_LOCK；原 Go count fault point 只覆盖结果检查以复现提交后的清理异常，不能把已经提交的刷新数据回滚或追加 failed 历史。
+
+FAST 数据阶段把可变 delta 计划传给 `compile_mview_source_with_empty`；该编译取得真实优化器输出后更新 empty 标志，再构建同一个现有 DeltaMergeExec。空刷新仍运行事务/水位 CAS/提交/历史收尾，只有读合并写管线被省略。
+
 05fd982b2d SQL 入口在 MySQL 方言内检查事务、异步模式、AS OF 模式、OPERATE VIEW；观察模式还先检查 SHOW VIEW，然后检查基表 SELECT。普通语句运行既有协调器；DRY RUN 使用新的维护会话初始化定义环境并编译真实关系源并标识既有写入 sink，不打开源执行器，不写历史、水位或 shadow；PROFILE 运行真实刷新并按步骤回调收集时间、错误和计划。所有结果通过 ConcreteRecordSet 返回；Next/recordset 生命周期由既有会话框架管理。
 
 校验目标与基表权限，初始化维护会话；获取 advisory lock 与 refresh info 行锁；插入 running 历史；运行对应数据变更；CAS 水位并提交或持久 DDL cutover；更新历史与告警。错误路径 rollback、清理 shadow、补失败历史并释放锁。
@@ -39,6 +49,8 @@ done 标记保证重复 Next 无副作用；history 与 maintenance 使用不同
 TaskMonitor 使用后台独立会话记录 heartbeat/取消，Drop 唤醒并 join；维护会话变量由 guard 恢复，嵌套 collector 保留已有身份且只解绑自己创建的条目。
 
 ## 与 Go 版本的对应关系
+
+对应 63ec01b2440281b0debbfb05c5dfd378e94474d1 的 planner→executor MLogEmpty 传递在实际 Rust 会话所有者中的最小接线；公开 CREATE MATERIALIZED VIEW 既有 SQL 入口缺口不在本来源修复。
 
 FAST 成功历史的 REFRESH_ROWS 使用实际 MLog iterator 计数；关闭执行信息采集时保持 NULL。派生源的数据执行通过既有 SessionBoundAdapterOwner 的 SlowQuery 路径记录恢复后的内部实现语句文本。计划行在数据阶段开始与结束回调之间发出，先捕获实际派生源计划，避免 MIN/MAX 回查覆盖该计划。观察模式下 INSERT/DELETE/shadow load 通过同一维护会话编译真实 SELECT 物理输入，显示运行时实际使用的写入 sink 与物理源计划，避免通用 legacy EXPLAIN 的占位输出；merge/apply 收集实际编译源与对应 sink 算子。不生成虚假 runtime 计数。刷新提交之后重新建立 DML report，将真实 affected rows 送入协议层，避免 COMMIT 的语句重置丢失报告。
 

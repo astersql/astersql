@@ -280,6 +280,9 @@ pub fn recompute_layout(
     plan: &MViewDeltaMerge,
     mappings: &[AggregateMapping],
 ) -> Result<Option<RecomputeLayout>, BuildError> {
+    if plan.mlog_empty {
+        return Ok(None);
+    }
     let minmax: BTreeSet<_> = mappings
         .iter()
         .filter(|m| matches!(m.kind, MViewAggKind::Min | MViewAggKind::Max))
@@ -745,6 +748,9 @@ impl DeltaMergeExec {
         // actual worker, rather than inventing unused concurrency slots.
         let mut stats = crate::mviewdeltamergeagg::MergeRuntimeStats::new(1);
         let result = (|| -> Result<(), String> {
+            if self.plan.mlog_empty {
+                return Ok(());
+            }
             let mut chunk = self.child.NewChunk();
             loop {
                 let read_start = Instant::now();

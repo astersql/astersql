@@ -32,6 +32,8 @@
 
 ## 执行流程
 
+`MViewDeltaMerge::mlog_empty` 保存真实优化器的空输入证明，构建轻量描述时默认 false；它不根据 estimated_rows 推断。bool 是结构体的一部分，由 Rust 的类型布局/size_of 计入持有对象大小。
+
 物化视图的两个 `IntoPlanNode` 先计算 `ExplainInfo`，再生成新增的 `PlanKind::MViewDeltaMerge` 或 `MViewCompleteDeltaApply`。前者把 source 与可选 full-update source 放入 children，后者只有 source；其余 executor-facing 字段没有整体存入通用节点，转换后不能仅凭 `PlanNode` 还原完整执行元数据。FAST 展示 aggregate dependencies 和可选 `full_update:index_lookup`，COMPLETE 展示两侧 marker/group key/handle/行像偏移。
 
 计划主链从构建或反序列化开始。`pb_to_plan.rs::PBPlanBuilder::build_executor` 和其他 planner 文件调用 `PlanNode::New` 产生节点，随后填充 store、代价和展示字段；`plan.rs` 根据 `PlanKind::Window`、`StreamAgg`、`MergeJoin` 等形态包入 Shuffle sender/receiver；`flat_plan.rs::FlattenPhysicalPlan` 遍历 `PlanNode.children`，根据 Join、Reader、CTE 等种类生成展示所需的扁平森林。`PlanNode` 因此是构建、局部优化和 EXPLAIN 之间的公共数据面，而不是完整优化器 trait 层的替代品。
@@ -81,6 +83,8 @@
 `Explain::SetRUResult` 通过值移动取得 RU 快照所有权，随后 `RenderResult` 只借用它；这使结果与一次扁平计划 occurrence 对齐，无需共享锁。调用者若在其他线程并发读写同一个 `Explain`，必须在本文件之外提供同步。递归函数 `MemoryUsage`、`encode_explain` 和点查包装穿透的栈深与计划/JSON 树深成正比；当前没有深度限制或迭代退化保护。
 
 ## 与 Go 版本的对应关系
+
+对应 63ec01b2440281b0debbfb05c5dfd378e94474d1 的 common_plans.go 新增 MLogEmpty；通用 PlanNode 的统计值不替代精确 Dual 行数。
 
 Rust `NewLineFieldsInfo` 与 Go 版本的默认值、可选字段覆盖顺序一致；Rust/Go 测试使用相同七类 LOAD DATA 场景。`ExplainInfoForEncode` 的 JSON 字段名和省略规则与 Go struct tag 对齐，Rust 测试额外锁定了缩进、转义和尾随换行。
 

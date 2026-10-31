@@ -111,6 +111,8 @@ RustCodeGraph 对 `acquire_with_cancellation` 确认其构造 `SystemSessionLeas
 
 ## 与 Go 版本的对应关系
 
+63ec01b244 的 SessionVars/initial_build 测试在既有 worker 应用执行变量后复用 Go 原始 TiFlash 观察点；传递实际内存、engine 和八项 TiFlash 设置。真实构建 SQL、事务与恢复路径保持原有执行，回调只用于测试观察，不替代建表或查询。
+
 - `pkg/session/syssession/pool.go` 的 `AdvancedSessionPool` 是底层池语义来源：空池即新建、容量只限制 idle cache、Put 时检查 avoid-reuse/pending transaction/reset、Close 后拒绝 Get。Rust `SystemSessionPool::new_with_validator` 固定容量 5，并复用已移植的 syssession crate 实现这些规则。
 - Go 使用 session context 和 `infosync.StoreInternalSession/DeleteInternalSession`；Rust 不直接写全局 infosync，而是把 stable ID 与 `transaction_mdl` 交给 `session_factory.rs` 的 coordinator callbacks。这是实现形态差异，但借用期间可见、归还/销毁后删除的生命周期一致。
 - `ConcreteJobExecutionContext` 后半部分不是 Go 单一文件的逐行翻译，而是将 Go DDL worker 分散在 add-index、materialized view、table resource、analyze 和 delete-range 路径中的 session/domain side effects 汇聚到 Rust trait。源码注释明确标出的 Go 对照包括 `addIndexTxnWorker.BackfillData/fetchRowColVals` 和 `deriveMaterializedScheduleNextUnixSecondsForDDL`。

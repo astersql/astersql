@@ -112,6 +112,18 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
             "stale old materialized view revision detected before cutover",
         ));
     }
+    // Legacy ordinary-index DDL can leave Revision unchanged. The shadow is
+    // the pre-build index snapshot; compare it inside the worker transaction
+    // so concurrent MV index DDL is still subject to the cutover CAS.
+    if args.ExpectedOldMViewRevision.is_some()
+        && serde_json::to_value(&old.Indices).map_err(|e| cancel(job, e))?
+            != serde_json::to_value(&promoted.Indices).map_err(|e| cancel(job, e))?
+    {
+        return Err(invalid(
+            job,
+            "stale old materialized view revision detected before cutover",
+        ));
+    }
     if promoted.MaterializedView.is_some()
         || promoted.MaterializedViewLog.is_some()
         || promoted.View.is_some()
@@ -171,6 +183,10 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
     context
         .migrate_mview_refresh_info(&args)
         .map_err(|e| cancel(job, e))?;
+    cutover_fault(
+        job,
+        "mockMViewRefreshOutOfPlaceCutoverAfterMigrateRefreshInfoError",
+    )?;
     promoted.Name = old.Name.clone();
     promoted.Comment = old.Comment.clone();
     promoted.MaterializedView = old.MaterializedView.clone();
@@ -196,6 +212,7 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
         )?;
         Ok(Vec::new())
     })?;
+    cutover_fault(job, "asyncNotifyEventError")?;
     crate::persistent_actions::async_notify_event(
         context,
         job,
@@ -205,6 +222,7 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
             Some(Box::new(old)),
         ),
     )?;
+    cutover_fault(job, "mockMViewRefreshOutOfPlaceCutoverBeforeCommitError")?;
     job.finish_table_job(
         JobState::Done,
         SchemaState::Public,
@@ -212,4 +230,15 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
         Arc::new(promoted),
     );
     Ok(version)
+}
+
+// These Go fault points exercise the worker's existing transaction rollback,
+// including refresh-info migration and notifier publication in that transaction.
+fn cutover_fault(job: &mut Job, point: &str) -> Result<(), String> {
+    if let Some(message) = astersql_testkit_testfailpoint::eval_string(&format!(
+        "github.com/pingcap/tidb/pkg/ddl/{point}"
+    )) {
+        return Err(cancel(job, message));
+    }
+    Ok(())
 }

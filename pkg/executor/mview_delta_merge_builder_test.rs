@@ -45,6 +45,7 @@ fn row(v: &[i64]) -> Vec<Datum> {
 }
 fn plan() -> MViewDeltaMerge {
     MViewDeltaMerge {
+        mlog_empty: false,
         source: PlanNode::New(1, PlanKind::TableReader, vec![]),
         full_update_inner_source: None,
         full_update_inner_column_count: 0,
@@ -1816,4 +1817,55 @@ fn port_37a4cd4f43_writer_failure_registers_progress_without_success_result() {
         assert_eq!(coll.GetRootStatsStringShared(37), observed);
         exec.Close().unwrap();
     }
+}
+
+#[test]
+fn port_63ec01b244_empty_mlog_omits_unreachable_minmax_lookup() {
+    let mut p = minmax_plan();
+    p.mlog_empty = true;
+    p.full_update_inner_source = None;
+    p.full_update_index_ranges.clear();
+    let mapping = mappings(&p.agg_infos, &fields(8), 5, 3).unwrap();
+    assert!(recompute_layout(&p, &mapping).unwrap().is_none());
+    p.mlog_empty = false;
+    assert!(recompute_layout(&p, &mapping).is_err());
+}
+
+#[test]
+fn port_63ec01b244_empty_mlog_skips_reader_writer_and_publishes_zero_result() {
+    let mut p = minmax_plan();
+    p.mlog_empty = true;
+    p.full_update_inner_source = None;
+    p.full_update_index_ranges.clear();
+    let resource = Arc::new(Resource::new(vec![], RecomputeStrategy::Batch));
+    let mut child = Source::new(vec![], fields(8));
+    child.require_context = true; // Next without context must fail if ever called.
+    let mut exec = build(&p, Box::new(child), resource.clone(), reader()).unwrap();
+    for _ in 0..2 {
+        resource.statement.SetAffectedRows(99);
+        resource.statement.SetMessage("stale");
+        exec.Open().unwrap();
+        let mut out = exec.NewChunk();
+        exec.Next(&mut out).unwrap();
+        assert_eq!(out.NumRows(), 0);
+        assert_eq!(resource.statement.AffectedRows(), 0);
+        assert_eq!(
+            resource.statement.GetMessage(),
+            "Rows inserted: 0  Updated: 0  Deleted: 0"
+        );
+        assert!(resource.reads.lock().unwrap().is_empty());
+        assert!(resource.writes.lock().unwrap().rows.is_empty());
+        exec.Next(&mut out).unwrap();
+        exec.Close().unwrap();
+    }
+    let stats = resource
+        .statement
+        .RuntimeStatsColl
+        .as_ref()
+        .unwrap()
+        .GetRootStatsStringShared(37);
+    assert!(
+        stats.contains("insert:0, update:0, delete:0, noop:0"),
+        "{stats}"
+    );
 }

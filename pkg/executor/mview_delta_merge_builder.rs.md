@@ -14,6 +14,8 @@ FAST MV 刷新聚合 sink、快照重算与表 API 适配；由 builder::buildMV
 
 ## 执行流程
 
+`plan.mlog_empty` 为真时 `recompute_layout` 返回 None，允许真实优化后的空 MLog 省略 MIN/MAX lookup。`next_inner` 保留 child Open/Close 与 done/reopen 生命周期，跳过 reader/merge/writer；仍发布 affected_rows=0、零插入/更新/删除 message 和零统计。
+
 build 校验 target 类型、COUNT(*) 与重算布局。Next 读取 chunk，保存旧行并合并聚合；必要的 MIN/MAX 重算通过 Resources 在 ReaderSnapshot 中执行。写入阶段比较存在性、最终 count 和 touched，分别 insert/delete/update/noop。成功 EOF 发布 affected rows 和语句消息；退出时登记已观察统计。
 
 ## 数据与状态
@@ -33,6 +35,8 @@ Resources 继承 MutationRuntime，提供表字段、重算 reader 和可选 `(p
 当前 Rust pipeline 为同步单 worker，统计 total=1；不能按 Go configured worker 数虚构并发。局部计数不共享写入；收集器通过 RegisterStatsShared 加锁注册。每次执行创建新统计，Close 不保留旧统计。
 
 ## 与 Go 版本的对应关系
+
+对应 63ec01b2440281b0debbfb05c5dfd378e94474d1 的 mview_delta_merge_agg_builder.go 与 mviewdeltamergeagg/exec.go；本仓库真正运行的 sink 在本文件，不修改未承载该执行生命周期的 mviewdeltamergeagg/mod.rs。
 
 37a4cd4f439b97980a42d64d23c126933ba1f7be exec.go 的 Next/Close、pipeline 接线、reader/worker/writer 计时、writer.go setRuntimeStats；本路径是 Rust 真实所有者。键修复的可观察契约由既有结构化 Datum 键满足，以原矩阵和真实重算验证，未新增无用途的序列化副本。
 
