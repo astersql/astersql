@@ -1204,3 +1204,83 @@ impl crate::adapter::ExecExecutor for IntegerSeries {
         None
     }
 }
+
+/// Single int4 array leaf. The stored order and NULL slots survive paging and reopen.
+pub struct Int4Unnest {
+    elements: Vec<Option<i32>>,
+    position: usize,
+    opened: bool,
+    config: crate::adapter::ChunkConfig,
+    schema: Vec<crate::adapter::SchemaColumn>,
+}
+impl Int4Unnest {
+    pub(crate) fn new(elements: Vec<Option<i32>>, maximum_chunk_size: usize) -> Self {
+        let base = IntegerSeries::new([None; 3], maximum_chunk_size, false);
+        Self {
+            elements,
+            position: 0,
+            opened: false,
+            config: base.config,
+            schema: base.schema,
+        }
+    }
+}
+impl crate::adapter::ExecExecutor for Int4Unnest {
+    fn Open(&mut self) -> crate::adapter::AdapterResult {
+        self.position = 0;
+        self.opened = true;
+        Ok(())
+    }
+    fn Close(&mut self) -> crate::adapter::AdapterResult {
+        self.position = self.elements.len();
+        self.opened = false;
+        Ok(())
+    }
+    fn Next(&mut self, output: &mut astersql_util_chunk::Chunk) -> crate::adapter::AdapterResult {
+        output.Reset();
+        if !self.opened {
+            return Err(astersql_errors::New("unnest executor is not open"));
+        }
+        while !output.IsFull() && self.position < self.elements.len() {
+            match self.elements[self.position] {
+                Some(n) => output.AppendInt64(0, i64::from(n)),
+                None => output.AppendNull(0),
+            }
+            self.position += 1;
+        }
+        Ok(())
+    }
+    fn ChunkConfig(&self) -> crate::adapter::ChunkConfig {
+        self.config.clone()
+    }
+    fn NewChunk(&self) -> astersql_util_chunk::Chunk {
+        *astersql_util_chunk::New(
+            self.config.fields.clone(),
+            self.config.initial_capacity,
+            self.config.maximum_chunk_size,
+        )
+    }
+    fn Schema(&self) -> &[crate::adapter::SchemaColumn] {
+        &self.schema
+    }
+    fn CalculateNoDelay(&self) -> bool {
+        false
+    }
+    fn IsWriteExecutor(&self) -> bool {
+        false
+    }
+    fn CheckForeignKeys(&mut self) -> crate::adapter::AdapterResult {
+        Ok(())
+    }
+    fn TakeForeignKeyCascades(&mut self) -> Vec<Box<dyn crate::adapter::CascadeBatch>> {
+        Vec::new()
+    }
+    fn HasForeignKeyCascades(&self) -> bool {
+        false
+    }
+    fn PrepareFKCascadeContext(&mut self) {}
+    fn AddFKCheckLockDuration(&mut self, _: std::time::Duration) {}
+    fn Detach(&mut self) -> Option<Box<dyn crate::adapter::ExecExecutor>> {
+        None
+    }
+}

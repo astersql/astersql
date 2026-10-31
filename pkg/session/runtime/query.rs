@@ -5219,23 +5219,38 @@ impl ConcreteSession {
             .map(|arg| self.pg_case_input_type(arg, &[]).GetType())
             .collect();
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL
-            || FnName.L != "generate_series"
+            || !matches!(FnName.L.as_str(), "generate_series" | "unnest")
             || !(Schema.L.is_empty() || Schema.L == "pg_catalog")
-            || !(2..=3).contains(&Args.len())
+            || if FnName.L == "unnest" {
+                Args.len() != 1
+            } else {
+                !(2..=3).contains(&Args.len())
+            }
         {
             return Err(super::function_diagnostics::no_matching_function(
                 call, &types,
             ));
         }
-        if types.iter().any(|tp| {
-            !matches!(
-                *tp,
-                astersql_parser_mysql::r#type::TypeLong
-                    | astersql_parser_mysql::r#type::TypeShort
-                    | astersql_parser_mysql::r#type::TypeLonglong
-                    | astersql_parser_mysql::r#type::TypeNull
-            )
-        }) {
+        let unnest = FnName.L == "unnest";
+        if unnest
+            && self
+                .pg_case_input_type(&Args[0], &[])
+                .PostgreSQLArrayElement()
+                != Some(astersql_parser_types::PostgreSQLArrayElement::Int4)
+        {
+            return Err(pg_union_error("unnest overload is not supported", "0A000"));
+        }
+        if !unnest
+            && types.iter().any(|tp| {
+                !matches!(
+                    *tp,
+                    astersql_parser_mysql::r#type::TypeLong
+                        | astersql_parser_mysql::r#type::TypeShort
+                        | astersql_parser_mysql::r#type::TypeLonglong
+                        | astersql_parser_mysql::r#type::TypeNull
+                )
+            })
+        {
             return Err(pg_union_error(
                 "generate_series overload is not supported",
                 "0A000",
@@ -5271,7 +5286,7 @@ impl ConcreteSession {
             column: astersql_meta_model::ColumnInfo {
                 Name: name.clone(),
                 FieldType: astersql_parser_types::NewFieldType(
-                    if types.contains(&astersql_parser_mysql::r#type::TypeLonglong) {
+                    if !unnest && types.contains(&astersql_parser_mysql::r#type::TypeLonglong) {
                         astersql_parser_mysql::r#type::TypeLonglong
                     } else {
                         astersql_parser_mysql::r#type::TypeLong

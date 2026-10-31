@@ -1166,7 +1166,7 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
             && w[2] == Token::Symbol('.')
             // This ordinary SRF belongs to the shared execution engine. Real
             // catalog relations in the same query still retain ownership.
-            && !(matches!(&w[3], Token::Word(s) | Token::Quoted(s) if s == "generate_series")
+            && !(matches!(&w[3], Token::Word(s) | Token::Quoted(s) if matches!(s.as_str(), "generate_series" | "unnest"))
                 && tokens.get(index + 4) == Some(&Token::Symbol('(')))
     }) || tokens.windows(3).any(|w| {
         matches!(&w[0], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")

@@ -1128,3 +1128,66 @@ fn pg09_24_execution_chunks() {
     assert_eq!(chunk.GetRow(0).GetInt64(0), 1);
     source.Close().unwrap();
 }
+
+#[test]
+fn pg09_25_execution() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let mut results = session
+        .execute("SELECT u.v AS c FROM unnest(ARRAY[2,NULL,2]::int4[]) AS u(v)")
+        .unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = results[0].next_row().unwrap() {
+        rows.push(row);
+    }
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], vec!["2".to_string()]);
+    assert_eq!(rows[2], vec!["2".to_string()]);
+    results[0].close().unwrap();
+}
+
+#[test]
+fn pg09_25_execution_chunks() {
+    for elements in [
+        vec![],
+        vec![None, None],
+        vec![Some(2), None, Some(2), Some(i32::MIN), Some(i32::MAX)],
+    ] {
+        let mut source = crate::builder::BuildInt4Unnest(elements.clone(), 2);
+        let mut chunk = source.NewChunk();
+        assert!(source.Next(&mut chunk).is_err());
+        for _ in 0..2 {
+            source.Open().unwrap();
+            let mut values = Vec::new();
+            loop {
+                source.Next(&mut chunk).unwrap();
+                assert!(chunk.NumRows() <= 2);
+                if chunk.NumRows() == 0 {
+                    break;
+                }
+                for i in 0..chunk.NumRows() {
+                    let row = chunk.GetRow(i);
+                    values.push(if row.IsNull(0) {
+                        None
+                    } else {
+                        Some(row.GetInt64(0) as i32)
+                    });
+                }
+            }
+            assert_eq!(values, elements);
+            source.Close().unwrap();
+            source.Close().unwrap();
+            assert!(source.Next(&mut chunk).is_err());
+        }
+        source.Open().unwrap();
+        source.Next(&mut chunk).unwrap();
+        source.Close().unwrap();
+        source.Open().unwrap();
+        source.Next(&mut chunk).unwrap();
+        assert_eq!(chunk.NumRows(), elements.len().min(2));
+        source.Close().unwrap();
+    }
+}

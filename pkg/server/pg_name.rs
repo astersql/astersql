@@ -287,8 +287,8 @@ impl Resolver<'_> {
         if self.symbol(i, b'(') && !allow_columns {
             // Function signatures are bound by the ordinary session FROM binder,
             // rather than looked up as public relations or rewritten as tables.
-            if matches!(parts.as_slice(), [name] if name == "generate_series")
-                || matches!(parts.as_slice(), [schema, name] if schema == "pg_catalog" && name == "generate_series")
+            if matches!(parts.as_slice(), [name] if matches!(name.as_str(), "generate_series" | "unnest"))
+                || matches!(parts.as_slice(), [schema, name] if schema == "pg_catalog" && matches!(name.as_str(), "generate_series" | "unnest"))
             {
                 return Ok(self.close(i, end)? + 1);
             }

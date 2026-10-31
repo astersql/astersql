@@ -434,32 +434,58 @@ impl ConcreteSession {
     ) -> SessionResult<InsertSelectRows> {
         if let Some(call) = &source.FunctionSource {
             let field = self.pg_integer_series_field(source)?;
-            let ast::ExprKind::Function { Args, .. } = &call.Kind else {
+            let ast::ExprKind::Function { Args, FnName, .. } = &call.Kind else {
                 unreachable!()
             };
-            let mut values = [None, None, Some(1)];
-            for (index, arg) in Args.iter().enumerate() {
-                values[index] = self
-                    .relational_query_expression_value(arg, &HashMap::new(), None)?
-                    .map(|value| {
-                        value.parse::<i64>().map_err(|_| {
-                            super::query::pg_union_error("integer out of range", "22003")
+            let mut executor = if FnName.L == "unnest" {
+                use astersql_types::pg_array::{PgArray, PgArrayElement};
+                let value =
+                    self.relational_query_expression_value(&Args[0], &HashMap::new(), None)?;
+                let array = value
+                    .map(|text| {
+                        PgArray::from_text_with(text.as_bytes(), 23, -1, b',', |v, _| {
+                            v.parse::<i32>().map(PgArrayElement::Int4)
                         })
                     })
-                    .transpose()?;
-            }
-            let mut executor = if field.column.FieldType.GetType()
-                == astersql_parser_mysql::r#type::TypeLonglong
-            {
-                astersql_executor::builder::BuildInt8Series(values, 1024)
+                    .transpose()
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                let elements = array
+                    .map(|a| {
+                        a.elements()
+                            .iter()
+                            .map(|v| match v {
+                                Some(PgArrayElement::Int4(n)) => Some(*n),
+                                None => None,
+                                _ => unreachable!(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                astersql_executor::builder::BuildInt4Unnest(elements, 1024)
             } else {
-                let mut int4_values = [None; 3];
-                for (index, value) in values.into_iter().enumerate() {
-                    int4_values[index] = value.map(i32::try_from).transpose().map_err(|_| {
-                        super::query::pg_union_error("integer out of range", "22003")
-                    })?;
+                let mut values = [None, None, Some(1)];
+                for (index, arg) in Args.iter().enumerate() {
+                    values[index] = self
+                        .relational_query_expression_value(arg, &HashMap::new(), None)?
+                        .map(|value| {
+                            value.parse::<i64>().map_err(|_| {
+                                super::query::pg_union_error("integer out of range", "22003")
+                            })
+                        })
+                        .transpose()?;
                 }
-                astersql_executor::builder::BuildInt4Series(int4_values, 1024)
+                if field.column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeLonglong {
+                    astersql_executor::builder::BuildInt8Series(values, 1024)
+                } else {
+                    let mut int4_values = [None; 3];
+                    for (index, value) in values.into_iter().enumerate() {
+                        int4_values[index] =
+                            value.map(i32::try_from).transpose().map_err(|_| {
+                                super::query::pg_union_error("integer out of range", "22003")
+                            })?;
+                    }
+                    astersql_executor::builder::BuildInt4Series(int4_values, 1024)
+                }
             };
             // Construction/Describe never evaluates the step. Open is the same
             // execution-time error boundary as the existing executor leaves.
@@ -483,7 +509,11 @@ impl ConcreteSession {
                     for index in 0..chunk.NumRows() {
                         rows.push(HashMap::from([(
                             name.clone(),
-                            Some(chunk.GetRow(index).GetInt64(0).to_string()),
+                            if chunk.GetRow(index).IsNull(0) {
+                                None
+                            } else {
+                                Some(chunk.GetRow(index).GetInt64(0).to_string())
+                            },
                         )]));
                     }
                 }

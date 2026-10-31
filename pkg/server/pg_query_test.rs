@@ -25382,3 +25382,192 @@ fn pg09_24_sql() {
     );
     send(&mut s, b'X', &[]);
 }
+
+#[test]
+fn pg09_25_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    for (arg, expected) in [
+        ("ARRAY[2,NULL,2]::int4[]", vec![Some("2"), None, Some("2")]),
+        ("'{}'::int4[]", vec![]),
+        ("NULL::int4[]", vec![]),
+        ("ARRAY[NULL,NULL]::int4[]", vec![None, None]),
+        (
+            "'[0:1][3:4]={{1,NULL},{2,1}}'::int4[]",
+            vec![Some("1"), None, Some("2"), Some("1")],
+        ),
+        (
+            "ARRAY[-2147483648,2147483647]::int4[]",
+            vec![Some("-2147483648"), Some("2147483647")],
+        ),
+    ] {
+        let sql = format!("SELECT u.v AS c FROM unnest({arg}) AS u(v)");
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| text_row(&m.1))
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|v| vec![v.map(str::to_string)])
+                .collect::<Vec<_>>()
+        );
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &23u32.to_be_bytes());
+        assert_eq!(&d[14..16], &4i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    for arg in [
+        "ARRAY[1]::int4[],ARRAY[2]::int4[]",
+        "1::int4",
+        "ARRAY['a']::text[]",
+    ] {
+        let ms = query(
+            &mut s,
+            &format!("SELECT u.v AS c FROM unnest({arg}) AS u(v)"),
+        );
+        assert!(ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        assert_eq!(
+            query(&mut s, "SELECT 1::int4 AS c")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+    }
+    send(
+        &mut s,
+        b'P',
+        &[
+            b"unnest25\0SELECT u.v AS c FROM pg_catalog.unnest($1::int4[]) AS u(v)\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1007u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut s, b'D', b"Sunnest25\0");
+    send(&mut s, b'S', &[]);
+    fn ready(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = Vec::new();
+        loop {
+            let m = read(s);
+            let end = m.0 == b'Z';
+            ms.push(m);
+            if end {
+                return ms;
+            }
+        }
+    }
+    let ms = ready(&mut s);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        &ms.iter().find(|m| m.0 == b'T').unwrap().1[10..14],
+        &23u32.to_be_bytes()
+    );
+    for input_format in [0i16, 1] {
+        for output_format in [0i16, 1] {
+            for nonnull in [true, false, true] {
+                let mut bind = b"\0unnest25\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(input_format.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                if nonnull {
+                    let bytes = if input_format == 0 {
+                        b"[0:2]={2,NULL,2}".to_vec()
+                    } else {
+                        [
+                            1i32.to_be_bytes().as_slice(),
+                            &1i32.to_be_bytes(),
+                            &23u32.to_be_bytes(),
+                            &3i32.to_be_bytes(),
+                            &0i32.to_be_bytes(),
+                            &4i32.to_be_bytes(),
+                            &2i32.to_be_bytes(),
+                            &(-1i32).to_be_bytes(),
+                            &4i32.to_be_bytes(),
+                            &2i32.to_be_bytes(),
+                        ]
+                        .concat()
+                    };
+                    bind.extend((bytes.len() as i32).to_be_bytes());
+                    bind.extend(bytes);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(output_format.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready(&mut s);
+                assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+                let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+                assert_eq!(&d[10..14], &23u32.to_be_bytes());
+                assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+                assert_eq!(&d[20..22], &output_format.to_be_bytes());
+                let rows = ms
+                    .iter()
+                    .filter(|m| m.0 == b'D')
+                    .map(|m| m.1.clone())
+                    .collect::<Vec<_>>();
+                let value = if output_format == 0 {
+                    row(&[Some("2")])
+                } else {
+                    [
+                        1i16.to_be_bytes().as_slice(),
+                        &4i32.to_be_bytes(),
+                        &2i32.to_be_bytes(),
+                    ]
+                    .concat()
+                };
+                assert_eq!(
+                    rows,
+                    if nonnull {
+                        vec![value.clone(), row(&[None]), value]
+                    } else {
+                        vec![]
+                    }
+                );
+                assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+            }
+        }
+    }
+}

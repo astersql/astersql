@@ -6272,3 +6272,11 @@ pub fn BuildInt8Series(arguments: [Option<i64>; 3], maximum_chunk_size: usize) -
         true,
     ))
 }
+
+/// Construct the ordinary single int4 array FROM leaf.
+pub fn BuildInt4Unnest(elements: Vec<Option<i32>>, maximum_chunk_size: usize) -> ExecutorBox {
+    Box::new(crate::physical_plan_runtime::Int4Unnest::new(
+        elements,
+        maximum_chunk_size,
+    ))
+}

@@ -403,7 +403,49 @@ pub(super) fn analyze(
         }
     }
     let mut allowed = std::collections::HashSet::new();
-    for root in roots {
+    fn unnest_roots<'a>(node: &'a ast::ResultSetNode, roots: &mut Vec<&'a ast::ExprNode>) {
+        match node {
+            ast::ResultSetNode::TableSource(source) => {
+                if let Some(call) = &source.FunctionSource {
+                    if let ast::ExprKind::Function {
+                        Schema,
+                        FnName,
+                        Args,
+                    } = &call.Kind
+                    {
+                        if FnName.L == "unnest"
+                            && (Schema.L.is_empty() || Schema.L == "pg_catalog")
+                            && Args.len() == 1
+                        {
+                            roots.push(&Args[0]);
+                        }
+                    }
+                }
+            }
+            ast::ResultSetNode::Join(join) => {
+                if let Some(left) = join.Left.as_deref() {
+                    unnest_roots(left, roots);
+                }
+                if let Some(right) = join.Right.as_deref() {
+                    unnest_roots(right, roots);
+                }
+            }
+        }
+    }
+    let mut from_roots = Vec::new();
+    for statement in statements {
+        if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
+            if let Some(from) = &select.From {
+                if let Some(left) = from.TableRefs.Left.as_deref() {
+                    unnest_roots(left, &mut from_roots);
+                }
+                if let Some(right) = from.TableRefs.Right.as_deref() {
+                    unnest_roots(right, &mut from_roots);
+                }
+            }
+        }
+    }
+    for root in roots.into_iter().chain(from_roots) {
         let mut positions = ArrayPositions(std::collections::HashSet::new());
         root.accept(&mut positions);
         allowed.extend(positions.0);
