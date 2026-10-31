@@ -287,3 +287,10 @@ PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重�
 ## PostgreSQL jsonb 数组（任务42）
 
 既有PgArrayType动作将TypePgJsonb及重复数组后缀映射Jsonb元素，沿既有PostgreSQL方言门禁。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+
+## 2026-10-31 普通聚合差分接线
+
+普通 SumExpr 聚合节点保留函数名称的字节起始偏移，供 PostgreSQL 签名错误位置转换；不修改语法或聚合求值。
+
+PgAggregateArity 只为 PostgreSQL 的 COUNT/SUM/AVG 多参数非法调用构造既有 AggregateFunction，交由原分析阶段返回签名诊断；MySQL 继续拒绝。PgAggregateOrder 与普通 SumExpr 都保留节点位置。

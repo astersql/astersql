@@ -3829,15 +3829,57 @@ impl ConcreteSession {
                         && tp.GetFlag() & astersql_parser_mysql::r#type::IsBooleanFlag == 0
                         && tp.GetType() != astersql_parser_mysql::r#type::TypeNull
                     {
-                        self.scalar_cast_error =
-                            Some(super::relational_value::pg_bytea_input_error(
-                                "42804",
-                                "argument of FILTER must be type boolean",
-                            ));
+                        let name = match tp.PostgreSQLTypeOid() {
+                            Some(21) => "smallint",
+                            Some(23) => "integer",
+                            Some(20) => "bigint",
+                            Some(700) => "real",
+                            Some(701) => "double precision",
+                            Some(1700) => "numeric",
+                            Some(25) => "text",
+                            _ => "unknown",
+                        };
+                        let error = super::function_diagnostics::PgFunctionError {
+                            state: "42804",
+                            message: format!(
+                                "argument of FILTER must be type boolean, not type {name}"
+                            ),
+                            hint: None,
+                            position: Some(filter.OriginTextPosition as usize),
+                        };
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        ));
                     }
-                    if relational_expression_has_aggregate(filter)
-                        || relational_expression_has_window(filter)
-                    {
+                    if relational_expression_has_aggregate(filter) {
+                        struct AggregatePosition(Option<usize>);
+                        impl ast::ExprNodeVisitor for AggregatePosition {
+                            fn Enter(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                                if self.0.is_none()
+                                    && matches!(&expr.Kind, ast::ExprKind::AggregateFunction { .. })
+                                {
+                                    self.0 = Some(expr.OriginTextPosition as usize);
+                                }
+                                (expr.clone(), self.0.is_some())
+                            }
+                            fn Leave(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                                (expr.clone(), true)
+                            }
+                        }
+                        let mut position = AggregatePosition(None);
+                        filter.Accept(&mut position);
+                        let error = super::function_diagnostics::PgFunctionError {
+                            state: "42803",
+                            message: "aggregate functions are not allowed in FILTER".to_owned(),
+                            hint: None,
+                            position: position.0,
+                        };
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        ));
+                    } else if relational_expression_has_window(filter) {
                         self.scalar_cast_error =
                             Some(super::relational_value::pg_bytea_input_error(
                                 "42803",
@@ -3904,30 +3946,139 @@ impl ConcreteSession {
                         let (right, _) = right.Accept(&mut Normalize(sources));
                         left.Kind == right.Kind
                     }
-                    if Order
+                    if let Some(item) = Order
                         .iter()
-                        .any(|item| !Args.iter().any(|arg| same(arg, &item.Expr, self.sources)))
+                        .find(|item| !Args.iter().any(|arg| same(arg, &item.Expr, self.sources)))
                     {
-                        self.scalar_cast_error = Some(
-                            super::relational_value::pg_bytea_input_error(
-                                "42P10",
-                                "in an aggregate with DISTINCT, ORDER BY expressions must appear in argument list",
-                            ),
-                        );
+                        let error = super::function_diagnostics::PgFunctionError {
+                            state: "42P10",
+                            message: "in an aggregate with DISTINCT, ORDER BY expressions must appear in argument list".to_owned(),
+                            hint: None,
+                            position: Some(item.Expr.OriginTextPosition as usize),
+                        };
+                        self.scalar_cast_error = Some(SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        ));
                     }
                 }
-                // MySQL permits a DISTINCT argument tuple; PostgreSQL COUNT
-                // has only the star and single-expression signatures.
+                // Unknown literal input is converted during PostgreSQL analysis,
+                // before FILTER/empty input can hide a malformed aggregate argument.
+                // Reuse the strict converters; only add source context to their
+                // invalid-syntax diagnostics, without changing numeric transitions.
                 if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &input.Kind
-                    && Name.eq_ignore_ascii_case("count")
-                    && Args.len() > 1
+                    && matches!(Name.to_ascii_lowercase().as_str(), "count" | "sum" | "avg")
+                {
+                    for arg in Args {
+                        let ast::ExprKind::Cast {
+                            Expr,
+                            Tp,
+                            FunctionType,
+                            ..
+                        } = &arg.Kind
+                        else {
+                            continue;
+                        };
+                        let Some(value) = literal(Expr) else {
+                            continue;
+                        };
+                        let ast::ValueDatum::String(text) = &value.Datum else {
+                            continue;
+                        };
+                        let invalid_type = match FunctionType {
+                            ast::CastFunctionType::PostgreSQLNumeric
+                                if astersql_types::pg_numeric::PgNumeric::validate_modifier(Tp.GetFlen(), Tp.GetDecimal()).is_ok()
+                                    && matches!(text.parse::<astersql_types::pg_numeric::PgNumeric>(), Err(astersql_types::pg_numeric::PgNumericError::InvalidSyntax)) => Some("numeric"),
+                            ast::CastFunctionType::PostgreSQLFloat4
+                                if matches!(astersql_expression::pg_cast_float4(Some(text)), Err(astersql_expression::PgFloat4Error::InvalidSyntax)) => Some("real"),
+                            ast::CastFunctionType::PostgreSQLFloat8
+                                if matches!(astersql_expression::pg_cast_float8(Some(text)), Err(astersql_expression::PgFloat8Error::InvalidSyntax)) => Some("double precision"),
+                            _ => None,
+                        };
+                        if let Some(name) = invalid_type {
+                            let safe_input = astersql_objstore::parse::RedactURL(text);
+                            let error = super::function_diagnostics::PgFunctionError {
+                                state: "22P02",
+                                message: format!(
+                                    "invalid input syntax for type {name}: \"{safe_input}\""
+                                ),
+                                hint: None,
+                                position: Some(arg.OriginTextPosition as usize),
+                            };
+                            self.scalar_cast_error = Some(SessionError::with_source(
+                                error.to_string(),
+                                astersql_errors::SharedError::new(error),
+                            ));
+                            return (input.clone(), true);
+                        }
+                    }
+                }
+                // Explicit text is not an unknown literal: PostgreSQL must
+                // resolve the aggregate signature before MySQL's permissive
+                // numeric row conversion, even when no rows reach transition.
+                if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &input.Kind
+                    && matches!(Name.to_ascii_lowercase().as_str(), "sum" | "avg")
+                    && Args.len() == 1
+                    && self
+                        .session
+                        .pg_case_input_type(&Args[0], self.sources)
+                        .PostgreSQLTypeOid()
+                        == Some(25)
                 {
                     let error = super::function_diagnostics::PgFunctionError {
                         state: "42883",
-                        message: "function count with multiple arguments does not exist".to_owned(),
-                        hint: Some("COUNT accepts one expression or *."),
-                        position: (input.OriginTextPosition > 0)
-                            .then_some(input.OriginTextPosition as usize),
+                        message: format!(
+                            "function {}(text) does not exist",
+                            Name.to_ascii_lowercase()
+                        ),
+                        hint: Some(
+                            "No function matches the given name and argument types. You might need to add explicit type casts.",
+                        ),
+                        position: Some(input.OriginTextPosition as usize),
+                    };
+                    self.scalar_cast_error = Some(SessionError::with_source(
+                        error.to_string(),
+                        astersql_errors::SharedError::new(error),
+                    ));
+                    return (input.clone(), true);
+                }
+                // Retain parsed argument types in PostgreSQL's signature
+                // diagnostic instead of executing a partial argument list.
+                if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &input.Kind
+                    && matches!(Name.to_ascii_lowercase().as_str(), "count" | "sum" | "avg")
+                    && Args.len() > 1
+                {
+                    let arguments = Args
+                        .iter()
+                        .map(|arg| {
+                            match self
+                                .session
+                                .pg_case_input_type(arg, self.sources)
+                                .PostgreSQLTypeOid()
+                            {
+                                Some(21) => "smallint",
+                                Some(23) => "integer",
+                                Some(20) => "bigint",
+                                Some(700) => "real",
+                                Some(701) => "double precision",
+                                Some(1700) => "numeric",
+                                Some(25) => "text",
+                                Some(16) => "boolean",
+                                _ => "unknown",
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let error = super::function_diagnostics::PgFunctionError {
+                        state: "42883",
+                        message: format!(
+                            "function {}({arguments}) does not exist",
+                            Name.to_ascii_lowercase()
+                        ),
+                        hint: Some(
+                            "No function matches the given name and argument types. You might need to add explicit type casts.",
+                        ),
+                        position: Some(input.OriginTextPosition as usize),
                     };
                     self.scalar_cast_error = Some(SessionError::with_source(
                         error.to_string(),

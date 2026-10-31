@@ -171,3 +171,7 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## PostgreSQL json 数组（任务41）
 
 由release parsergen根据PgCastType : PgPostfixJson数组后缀规则重新生成；仅补通JSON[]语法，实际元素验证仍委托PgJson。使用同一生成器check核对输出一致性。
+
+## 2026-10-31 聚合签名载体
+
+由 `cargo run --release --locked -p astersql-parsergen -- generate` 随主文法生成。新增 `PgAggregateArity` 的 COUNT/SUM/AVG 多参数载体以及到 `SumExpr` 的转接，供 PostgreSQL 在分析阶段给出签名诊断；对应语义动作对 MySQL 继续拒绝。表状态编号与稀疏行的变动是生成结果，不承载新的聚合执行逻辑。

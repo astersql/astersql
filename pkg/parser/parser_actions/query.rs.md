@@ -87,3 +87,8 @@ Rust 文件不是 Go 同路径文件的逐行翻译；其直接语义来源是 `
 5. 测试放在独立文件。规则所有权/结构测试优先扩展 `pkg/parser/parser_actions/query_expression_aster_unit_test.rs`；端到端 AST 行为优先扩展 `pkg/parser/parser_test.rs`，并与 `pkg/parser/parser_test.go` 对应测试或 contract table 保持一致。不要在 `query.rs` 内加入 `#[cfg(test)]` 测试模块。
 
 兼容风险主要是 AST 字段遗漏、默认值变化和集合运算层级改变；性能风险主要来自列表分支不必要的深拷贝及大查询中的反复向量扩容；诊断兼容风险来自把 warning 升级为 error 或改变错误码/参数。扩展后应检查稳定 RuleId 唯一所有权与 235 库存基线是否按预期变化。
+
+
+## 2026-10-31 普通聚合差分接线
+
+ByItem 保留完整排序表达式的字节起始偏移，供 DISTINCT 聚合参数列表约束错误定位；排序方向和表达式语义保持原有规则。

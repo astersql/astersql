@@ -4403,3 +4403,9 @@ SumExpr : "AVG" "(" BuggyDefaultFalseDistinctOpt Expression PgAggregateOrder ")"
 SumExpr : builtinCount "(" DistinctKwd ExpressionList PgAggregateOrder ")" @action;
 SumExpr : builtinCount "(" Expression PgAggregateOrder ")" @action;
 SumExpr : builtinCount "(" "ALL" Expression PgAggregateOrder ")" @action;
+
+// Preserve invalid PostgreSQL aggregate argument lists until signature analysis.
+PgAggregateArity : builtinSum "(" BuggyDefaultFalseDistinctOpt Expression "," ExpressionList ")" @action;
+PgAggregateArity : "AVG" "(" BuggyDefaultFalseDistinctOpt Expression "," ExpressionList ")" @action;
+PgAggregateArity : builtinCount "(" Expression "," ExpressionList ")" @action;
+SumExpr : PgAggregateArity;

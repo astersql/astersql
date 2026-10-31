@@ -6257,3 +6257,60 @@ fn pg09_09_order_ast() {
         assert!(mysql.ParseOneStmt(&sql, "", "").is_err());
     }
 }
+
+#[test]
+fn pg09_11_aggregate_source_positions() {
+    let mut parser = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT sum('x'::text) AS v",
+        "SELECT 'é'::text, sum(DISTINCT x ORDER BY k + 1) AS v FROM t",
+        "SELECT avg(DISTINCT x ORDER BY (k)) AS v FROM t",
+    ] {
+        let stmt = parser.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields.last().unwrap().Expr.as_ref().unwrap();
+        let parser_ast::ExprKind::AggregateFunction { Name, Order, .. } = &expr.Kind else {
+            panic!("expected aggregate: {sql}");
+        };
+        let start = sql.find(&Name.to_ascii_lowercase()).unwrap();
+        assert_eq!(expr.OriginTextPosition as usize, start);
+        assert_eq!(expr.node_text.OriginTextPosition() as usize, start);
+        if let Some(item) = Order.first() {
+            assert_eq!(
+                item.Expr.OriginTextPosition as usize,
+                sql.find("ORDER BY ").unwrap() + 9
+            );
+        }
+    }
+}
+
+#[test]
+fn pg09_11_invalid_aggregate_arity_carrier() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let mut mysql = parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    for sql in [
+        "SELECT count(1,2) AS v",
+        "SELECT sum(1::int8,2::int8) AS v",
+        "SELECT avg(1::int8,2::int8) AS v",
+    ] {
+        let stmt = pg.ParseOneStmt(sql, "", "").unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let parser_ast::ExprKind::AggregateFunction { Args, .. } = &expr.Kind else {
+            panic!("{sql}");
+        };
+        assert_eq!(Args.len(), 2);
+        assert_eq!(expr.OriginTextPosition, 7);
+        assert!(
+            mysql
+                .ParseOneStmt(&sql.replace("::int8", ""), "", "")
+                .is_err()
+        );
+    }
+}

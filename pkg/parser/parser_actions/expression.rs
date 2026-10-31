@@ -21,6 +21,7 @@ use super::{Context, Rhs};
 enum ExpressionRule {
     PgAggregateFilter,
     PgAggregateOrder,
+    PgAggregateArity,
     PgExtractField,
     PgRow,
     RowFieldFirst,
@@ -340,6 +341,7 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        id if id.starts_with("pgaggregatearity_") => Some(ExpressionRule::PgAggregateArity),
         "sumexpr_builtinsum_buggydefaultfalsedistinctopt--87ebf3ac0fd2824c"
         | "sumexpr_avg_buggydefaultfalsedistinctopt_express--31cf4978a2696032"
         | "sumexpr_builtincount_all_expression_pgaggregateo--a258b1343534106e"
@@ -1180,6 +1182,31 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Flag: Default::default(),
             });
         }
+        ExpressionRule::PgAggregateArity => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("multiple aggregate arguments require PostgreSQL signature analysis", &[]));
+                return Err(1);
+            }
+            let name = rhs[1].ident.to_ascii_lowercase();
+            let first = if name == "count" { 3 } else { 4 };
+            let mut args = vec![rhs[first].expr.clone().unwrap()];
+            args.extend(rhs[first + 2].item.as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
+                .cloned().unwrap());
+            let distinct = name != "count" && rhs[3].item.as_deref()
+                .and_then(|item| item.downcast_ref::<bool>()).copied().unwrap_or(false);
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(rhs[1].offset);
+            out.expr = Some(parser_ast::ExprNode {
+                node_text,
+                Kind: parser_ast::ExprKind::AggregateFunction {
+                    Name: name, Args: args, Distinct: distinct,
+                    Order: Vec::new(), Filter: None,
+                },
+                OriginTextPosition: rhs[1].offset,
+                ..Default::default()
+            });
+        }
         ExpressionRule::PgAggregateOrder => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
                 yylex.AppendError(yylex.Errorf("aggregate ORDER BY requires PostgreSQL dialect", &[]));
@@ -1198,10 +1225,15 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .cloned().unwrap_or_default();
             let distinct = !plain_count && (rhs[3].ident.eq_ignore_ascii_case("distinct")
                 || rhs[3].item.as_deref().and_then(|item| item.downcast_ref::<bool>()).copied().unwrap_or(false));
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(rhs[1].offset);
             out.expr = Some(parser_ast::ExprNode {
+                node_text,
                 Kind: parser_ast::ExprKind::AggregateFunction {
                     Name: name, Args: args, Distinct: distinct, Order: order, Filter: None,
-                }, ..Default::default()
+                },
+                OriginTextPosition: rhs[1].offset,
+                ..Default::default()
             });
         }
         ExpressionRule::PgAggregateFilter => {
@@ -3036,9 +3068,12 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                         Order: order,
                         Filter: None,
                     },
-                    OriginTextPosition: 0,
+                    OriginTextPosition: rhs[rhs_len - name_back].offset,
                     Flag: Default::default(),
                 });
+                out.expr.as_mut().unwrap().node_text.SetOriginTextPosition(
+                    rhs[rhs_len - name_back].offset,
+                );
             }
         }
         ExpressionRule::FunctionCallGenericAlt01 => {

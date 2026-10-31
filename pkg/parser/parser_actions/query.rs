@@ -2034,9 +2034,13 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         QueryRule::ByItemAlt01 | QueryRule::ByItemAlt02 => {
             let expr_back = if rule == QueryRule::ByItemAlt01 { 0 } else { 1 };
-            let Some(expr) = rhs[rhs_len - (expr_back)].expr.clone() else {
+            let Some(mut expr) = rhs[rhs_len - (expr_back)].expr.clone() else {
                 return Ok(false);
             };
+            // Keep the complete ORDER BY expression's start for diagnostics,
+            // including DISTINCT aggregate argument-list restrictions.
+            expr.OriginTextPosition = rhs[rhs_len - expr_back].offset;
+            expr.node_text.SetOriginTextPosition(expr.OriginTextPosition);
             // Go rewrites signed integer value expressions to PositionExpr.
             // Retain the integer representation while exposing its reference flag.
             if matches!(&expr.Kind, parser_ast::ExprKind::Value(value)

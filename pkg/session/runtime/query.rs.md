@@ -312,3 +312,12 @@ Typed text→bytea evaluation uses the shared strict scalar input helper. COALES
 ### 来源 e48ac5fef19ea30a3cae73606ca8ad27c538e7f3 对齐
 
 来源 e48ac5fef1 的必要局部接线：选中覆盖索引访问时传递真实访问元数据和 Limit 至请求构造，访问标识为 IndexReader；其他访问仍沿用原分支。
+
+
+## 2026-10-31 普通聚合差分接线
+
+普通聚合客户端差分补齐：PG SUM/AVG 对显式 text 在分析阶段返回 42883（含提示和函数位置）；DISTINCT 聚合内非法 ORDER BY 通过既有 PgFunctionError 保留错误表达式位置。MySQL 路径不适用此检查。
+
+签名门禁同时拒绝 COUNT/SUM/AVG 的多参数普通调用，按实际参数身份构造 42883 消息及标准 hint。FILTER 非布尔输入包含实际类型和表达式位置，嵌套聚合定位到内层聚合；沿原错误链输出，不引入第二套求值逻辑。
+
+聚合参数的 numeric/real/double precision 非法常量复用已有严格输入转换器，在分析阶段补齐 22P02 的原值与源位置；输入文本先经既有 RedactURL 脱敏，避免凭证进入错误字段，不修改全局类型库或聚合状态机。

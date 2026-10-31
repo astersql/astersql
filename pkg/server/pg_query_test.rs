@@ -18974,7 +18974,7 @@ fn pg09_02_sql() {
     let ms = query(&mut s, "SELECT sum(1::int4,2::int4) AS s");
     assert!(
         ms.iter()
-            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42601\0")),
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42883\0")),
         "{ms:?}"
     );
     let ms = query(&mut s, "SELECT 1::int4 AS v");
@@ -19222,7 +19222,7 @@ fn pg09_03_sql() {
     let ms = query(&mut s, "SELECT sum(1::int8,2::int8) AS s");
     assert!(
         ms.iter()
-            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42601\0")),
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42883\0")),
         "{ms:?}"
     );
     let ms = query(&mut s, "SELECT sum('invalid'::numeric) AS s");
@@ -19499,7 +19499,7 @@ fn pg09_04_sql() {
     let ms = query(&mut s, "SELECT avg(1::int8,2::int8) AS s");
     assert!(
         ms.iter()
-            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42601\0")),
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42883\0")),
         "{ms:?}"
     );
     let ms = query(&mut s, "SELECT avg('invalid'::numeric) AS s");
