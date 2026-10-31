@@ -350,6 +350,8 @@ impl Scanner {
             && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`')
         {
             tok = match lit.to_ascii_lowercase().as_str() {
+                "within" if self.getNextToken() == token::group => token::pgWithin,
+                "percentile_disc" if self.getNextToken() == '(' as i32 => token::pgPercentileDisc,
                 "exclude" => token::pgExclude,
                 "ties" => token::pgTies,
                 "others" => token::pgOthers,

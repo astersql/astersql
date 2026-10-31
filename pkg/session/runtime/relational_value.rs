@@ -3823,19 +3823,23 @@ pub(super) fn relational_expression_type(
             result.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
             result
         }
-        ast::ExprKind::AggregateFunction { Name, Args, .. } => {
-            match Name.to_ascii_lowercase().as_str() {
-                "count" | "min_count" | "max_count" | "bit_xor" => {
-                    new_type(astersql_parser_mysql::r#type::TypeLonglong)
-                }
-                "sum" | "avg" => new_type(astersql_parser_mysql::r#type::TypeNewDecimal),
-                "min" | "max" => Args
-                    .first()
-                    .map(|argument| relational_expression_type(argument, table))
-                    .unwrap_or_else(|| new_type(astersql_parser_mysql::r#type::TypeVarString)),
-                _ => new_type(astersql_parser_mysql::r#type::TypeVarString),
+        ast::ExprKind::AggregateFunction {
+            Name, Args, Order, ..
+        } => match Name.to_ascii_lowercase().as_str() {
+            "percentile_disc" => Order
+                .first()
+                .map(|item| relational_expression_type(&item.Expr, table))
+                .unwrap_or_else(|| new_type(astersql_parser_mysql::r#type::TypeLong)),
+            "count" | "min_count" | "max_count" | "bit_xor" => {
+                new_type(astersql_parser_mysql::r#type::TypeLonglong)
             }
-        }
+            "sum" | "avg" => new_type(astersql_parser_mysql::r#type::TypeNewDecimal),
+            "min" | "max" => Args
+                .first()
+                .map(|argument| relational_expression_type(argument, table))
+                .unwrap_or_else(|| new_type(astersql_parser_mysql::r#type::TypeVarString)),
+            _ => new_type(astersql_parser_mysql::r#type::TypeVarString),
+        },
         _ => new_type(astersql_parser_mysql::r#type::TypeVarString),
     }
 }

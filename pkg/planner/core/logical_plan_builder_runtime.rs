@@ -3778,6 +3778,18 @@ fn build_select_aggregation(
                     ..
                 }] if value == "1"
             );
+        let ordered_args;
+        let Args = if Name.eq_ignore_ascii_case("percentile_disc") {
+            if Args.len() != 1 || Order.len() != 1 {
+                return Err(expression::errors::New(
+                    "percentile_disc requires one direct argument and one sort key",
+                ));
+            }
+            ordered_args = vec![Order[0].Expr.clone(), Args[0].clone()];
+            &ordered_args
+        } else {
+            Args
+        };
         let arguments = if Args.is_empty() || count_star {
             let mut field_type = expression::types::NewFieldType(expression::mysql::TypeLonglong);
             field_type.SetFlen(expression::mysql::MaxIntWidth as isize);
@@ -3806,8 +3818,16 @@ fn build_select_aggregation(
             }
             rewritten_arguments
         };
-        let mut function =
-            aggregation::NewAggFuncDesc(builder.ctx.GetExprCtx(), Name, arguments, *Distinct)?;
+        let mut function = aggregation::NewAggFuncDesc(
+            builder.ctx.GetExprCtx(),
+            if Name.eq_ignore_ascii_case("percentile_disc") {
+                "pg_percentile_disc"
+            } else {
+                Name
+            },
+            arguments,
+            *Distinct,
+        )?;
         function.Filter = Filter
             .as_deref()
             .map(|filter| rewrite_for_plan(builder, filter, source.as_ref(), table_info))

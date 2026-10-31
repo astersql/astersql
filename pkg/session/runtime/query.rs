@@ -1106,6 +1106,27 @@ impl ConcreteSession {
         filter: Option<&ast::ExprNode>,
         rows: &[HashMap<String, Option<String>>],
     ) -> SessionResult<Option<String>> {
+        // Direct arguments are evaluated once per group, including groups whose
+        // FILTER rejects every row. Keep them separate from transition inputs.
+        let direct_fraction = if name.eq_ignore_ascii_case("percentile_disc") {
+            if args.len() != 1 || order.len() != 1 || distinct {
+                return Err(super::relational_value::pg_bytea_input_error(
+                    "42883",
+                    "percentile_disc requires one direct argument and one sort key",
+                ));
+            }
+            let empty = HashMap::new();
+            let direct = self.relational_query_expression_value(
+                &args[0],
+                rows.first().unwrap_or(&empty),
+                None,
+            )?;
+            astersql_expression::pg_cast_float8(direct.as_deref()).map_err(|e| {
+                SessionError::with_source(e.to_string(), astersql_errors::SharedError::new(e))
+            })?
+        } else {
+            None
+        };
         // Filter each aggregate's input before evaluating its arguments. Group
         // formation and sibling aggregates continue to see the original rows.
         let filtered;
@@ -1133,6 +1154,35 @@ impl ConcreteSession {
         } else {
             rows
         };
+        if name.eq_ignore_ascii_case("percentile_disc") {
+            let values = rows
+                .iter()
+                .map(|row| {
+                    self.relational_query_expression_value(&order[0].Expr, row, None)?
+                        .map(|v| {
+                            v.parse::<i64>()
+                                .map_err(|e| session_error("parse percentile_disc int4", e))
+                        })
+                        .transpose()
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            return astersql_executor::typed_hash_agg::PercentileDisc(
+                self.AdapterPlanContext(),
+                values,
+                direct_fraction,
+                order[0].Desc,
+            )
+            .map(|value| value.map(|v| v.to_string()))
+            .map_err(|e| {
+                if e.downcast_ref::<astersql_executor::typed_hash_agg::PercentileFractionError>()
+                    .is_some()
+                {
+                    super::relational_value::pg_bytea_input_error("22003", &e.to_string())
+                } else {
+                    SessionError::with_source(e.to_string(), e)
+                }
+            });
+        }
         // Derived-table aggregation already feeds the shared TypedHashAgg
         // adapters. Preserve each aggregate's local input order at that boundary.
         let sorted;
@@ -3792,6 +3842,7 @@ impl ConcreteSession {
             session: &'a ConcreteSession,
             sources: &'a [ConcreteResultField],
             table: &'a astersql_meta_model::TableInfo,
+            group_by: &'a [ast::ByItem],
             unsupported: bool,
             boolean_error: Option<astersql_expression::PgBoolError>,
             numeric_error: Option<astersql_types::pg_numeric::PgNumericError>,
@@ -3801,6 +3852,64 @@ impl ConcreteSession {
         }
         impl ast::ExprNodeVisitor for Inputs<'_> {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::AggregateFunction {
+                    Name, Args, Order, ..
+                } = &input.Kind
+                    && Name.eq_ignore_ascii_case("percentile_disc")
+                {
+                    if Args.len() != 1
+                        || Order.len() != 1
+                        || self
+                            .session
+                            .pg_case_input_type(&Order[0].Expr, self.sources)
+                            .GetType()
+                            != astersql_parser_mysql::r#type::TypeLong
+                    {
+                        self.scalar_cast_error =
+                            Some(super::relational_value::pg_bytea_input_error(
+                                "42883",
+                                "percentile_disc requires a single int4 sort input",
+                            ));
+                    } else {
+                        // Direct parameters may reference group keys, never an
+                        // arbitrary first row of an ungrouped relation.
+                        struct Direct<'a> {
+                            groups: &'a [ast::ByItem],
+                            invalid: Option<String>,
+                        }
+                        impl ast::ExprNodeVisitor for Direct<'_> {
+                            fn Enter(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                                if let ast::ExprKind::Column(column) = &expr.Kind {
+                                    let grouped = self.groups.iter().any(|item| matches!(&item.Expr.Kind,
+                                        ast::ExprKind::Column(key) if key.Name.L == column.Name.L
+                                            && (key.Table.L.is_empty() || column.Table.L.is_empty() || key.Table.L == column.Table.L)));
+                                    if !grouped {
+                                        self.invalid = Some(column.Name.O.clone());
+                                    }
+                                }
+                                (expr.clone(), false)
+                            }
+                            fn Leave(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                                (expr.clone(), true)
+                            }
+                        }
+                        let mut direct = Direct {
+                            groups: self.group_by,
+                            invalid: None,
+                        };
+                        Args[0].Accept(&mut direct);
+                        if let Some(column) = direct.invalid {
+                            self.scalar_cast_error = Some(
+                                super::relational_value::pg_bytea_input_error(
+                                    "42803",
+                                    &format!(
+                                        "column \"{column}\" must appear in the GROUP BY clause or be used in an aggregate function"
+                                    ),
+                                ),
+                            );
+                        }
+                    }
+                }
                 if let ast::ExprKind::AggregateFunction {
                     Filter: Some(filter),
                     ..
@@ -4904,6 +5013,7 @@ impl ConcreteSession {
             session: self,
             sources: &sources,
             table: &table,
+            group_by: &select.GroupBy,
             unsupported: false,
             boolean_error: None,
             numeric_error: None,
@@ -6016,6 +6126,14 @@ impl ConcreteSession {
                 ) {
                     return source;
                 }
+            }
+            if let ast::ExprKind::AggregateFunction { Name, Order, .. } = &expression.Kind
+                && Name.eq_ignore_ascii_case("percentile_disc")
+                && let Some(item) = Order.first()
+            {
+                let mut tp = self.pg_case_input_type(&item.Expr, source_fields);
+                tp.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
+                return tp;
             }
             if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expression.Kind
                 && Name.eq_ignore_ascii_case("sum")

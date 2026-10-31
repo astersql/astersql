@@ -330,3 +330,8 @@ PG LAST_VALUE 的源字段类型绑定在无行输入时也递归解析参数身
 PG LAG/LEAD 与 last_value 一样从绑定首参数推导固定返回身份，零行 Describe 不从数据猜测类型。
 
 LAG/LEAD 在本 int4 域复用 pg_union_common_type 合并 value/default 的固定返回身份，覆盖未知 NULL value 与 int4 default、零行 Describe；值只对实际被 offset 引用的目标求值，NULL offset 不触发未访问表达式。
+
+
+## 2026-10-31 percentile_disc
+
+The aggregate adapter evaluates the direct fraction before filtering and feeds derived int4 rows to TypedHashAgg. Analysis rejects ungrouped direct columns, retains current int4 scope, maps fraction errors to 22003 and fixes result identity from the WITHIN GROUP input.

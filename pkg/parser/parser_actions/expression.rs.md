@@ -294,3 +294,8 @@ PgArrayType复用已有PgPostfixDate标量声明，注册Date数组身份；重�
 普通 SumExpr 聚合节点保留函数名称的字节起始偏移，供 PostgreSQL 签名错误位置转换；不修改语法或聚合求值。
 
 PgAggregateArity 只为 PostgreSQL 的 COUNT/SUM/AVG 多参数非法调用构造既有 AggregateFunction，交由原分析阶段返回签名诊断；MySQL 继续拒绝。PgAggregateOrder 与普通 SumExpr 都保留节点位置。
+
+
+## 2026-10-31 percentile_disc
+
+PgPercentileDisc registers the single-fraction int4 ordered-set call in SumExpr; Args retain the direct fraction and Order the WITHIN GROUP inputs for FILTER and visitors.

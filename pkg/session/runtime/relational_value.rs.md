@@ -368,3 +368,8 @@ relational_window_value将PostgreSQL AST排除枚举透传到现有int4 last_val
 ## 2026-10-31 窗口客户端差分
 
 LAG/LEAD静态签名检查复用typed函数错误；共享last_value帧offset适配保留starting/ending区分并以PgFunctionError传递22004/22013。
+
+
+## 2026-10-31 percentile_disc
+
+percentile_disc result inference follows the WITHIN GROUP expression independently of observed result rows.

@@ -187,3 +187,8 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## PostgreSQL 窗口 EXCLUDE
 
 既有main.astergram新增可选窗口排除产生式及非保留关键字；本文件由astersql-parsergen generate重建，不手改解析表。
+
+
+## 2026-10-31 percentile_disc
+
+Regenerated from main.astergram with the PG percentile_disc WITHIN GROUP SumExpr rule; its stable action ID dispatches to PgPercentileDisc.

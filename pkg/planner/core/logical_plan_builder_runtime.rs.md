@@ -130,3 +130,8 @@ Rust 不是逐行同名：它把 Go 文件的大型 `PlanBuilder` 方法群拆�
 - **新增公共 API**：先判断是否只需 `pub(crate)`；若 crate 外使用，再在 `lib.rs` 重导出。保持 Go 风格名称是当前移植兼容选择，不要为局部风格统一任意改名。
 
 主要风险：Schema 与 OutputNames 不同步会造成后续解析错列；列/计划 ID 顺序变化会破坏计划快照；遗漏优化标志会产生行为或性能回归；CTE/hint/outer schema 栈未恢复会污染后续查询；访问路径或类型合并简化会偏离 Go 兼容语义。任何行为修改均应先构造失败回归、再修复，并遵循仓库要求运行 `cargo fmt --all`，但本任务是纯文档分析且按计划不运行 Cargo。
+
+
+## 2026-10-31 percentile_disc
+
+The existing aggregation builder lowers percentile_disc AST direct/sort inputs to internal [ordered value, direct fraction] descriptors and preserves FILTER/order wiring.

@@ -124,3 +124,8 @@ PostgreSQL方言将UUID关键字映射为非保留identifier，复用既有cast�
 ## PostgreSQL 窗口 EXCLUDE
 
 PostgreSQL未加引号的exclude/ties/others映射到新增非保留词元；UnReservedKeyword允许其继续作标识符，MySQL及引号路径保持原处理。
+
+
+## 2026-10-31 percentile_disc
+
+PG contextual percentile_disc/within tokens feed the existing aggregate grammar; identifier and MySQL paths retain their prior tokens.

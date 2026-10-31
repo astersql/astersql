@@ -162,6 +162,17 @@ impl baseFuncDesc {
     // TypeInfer infers the arguments and return types of an function.
     pub fn TypeInfer(&mut self, ctx: &dyn expression::BuildContext) -> Result<(), Error> {
         match self.Name.as_str() {
+            "pg_percentile_disc" => {
+                if self.Args.len() != 2 {
+                    return Err(expression::errors::New(
+                        "percentile_disc requires input and direct fraction",
+                    ));
+                }
+                self.Args[1] = expression::WrapWithCastAsReal(ctx, self.Args[1].clone());
+                let mut result = self.Args[0].GetType(ctx.GetEvalCtx()).clone();
+                result.DelFlag(mysql::NotNullFlag);
+                self.RetTp = Some(result);
+            }
             ast::AggFuncCount | ast::AggFuncMaxCount | ast::AggFuncMinCount => {
                 self.typeInfer4Count()
             }
@@ -738,6 +749,8 @@ impl baseFuncDesc {
 // since the EvalXXX method called by the arg is determined by the corresponding arg type.
 pub fn noNeedCastAggFuncs() -> HashSet<&'static str> {
     HashSet::from([
+        // The ordered value and group-direct fraction have different types.
+        "pg_percentile_disc",
         ast::AggFuncCount,
         ast::AggFuncApproxCountDistinct,
         ast::AggFuncApproxPercentile,

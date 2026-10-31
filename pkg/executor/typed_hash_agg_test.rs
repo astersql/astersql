@@ -1326,3 +1326,76 @@ fn pg09_10_execution_count_and_smallint_sum_states() {
         );
     }
 }
+
+#[test]
+fn pg09_19_execution() {
+    use astersql_types::datum::{NewFloat64Datum, NewIntDatum};
+    let ctx = context();
+    let tp = *astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeLong);
+    for (fraction, desc, expected) in [
+        (0.5, false, 2),
+        (0.5, true, 3),
+        (0.0, false, 1),
+        (1.0, false, 4),
+    ] {
+        // Clone an existing descriptor so the red test reaches the real executor.
+        let mut f = astersql_expression_aggregation::NewAggFuncDesc(
+            ctx.GetExprCtx(),
+            "firstrow",
+            vec![Box::new(astersql_expression::Column::new(
+                tp.clone(),
+                1,
+                1,
+                0,
+            ))],
+            false,
+        )
+        .unwrap();
+        f.Name = "pg_percentile_disc".into();
+        f.Args
+            .push(Box::new(astersql_expression::Constant::with_type(
+                NewFloat64Datum(fraction),
+                *astersql_expression::types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDouble,
+                ),
+            )));
+        f.OrderByItems = vec![astersql_planner_util::ByItems {
+            Expr: f.Args[0].clone(),
+            Desc: desc,
+        }];
+        let result = pg10_run(
+            vec![f],
+            vec![tp.clone()],
+            [4, 1, 3, 2]
+                .into_iter()
+                .map(|v| vec![NewIntDatum(v)])
+                .collect(),
+        );
+        assert_eq!(result[0].GetInt64(), expected);
+    }
+}
+
+#[test]
+fn pg09_19_empty_null_duplicate_and_fraction() {
+    use crate::typed_hash_agg::PercentileDisc;
+    for (values, p, expected) in [
+        (vec![], Some(0.5), None),
+        (vec![None, None], Some(0.5), None),
+        (vec![Some(1), Some(1), Some(9), None], Some(0.5), Some(1)),
+        (vec![Some(1)], None, None),
+    ] {
+        assert_eq!(
+            PercentileDisc(context(), values, p, false).unwrap(),
+            expected
+        );
+    }
+    for p in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for values in [vec![], vec![None], vec![Some(1)]] {
+            let e = PercentileDisc(context(), values, Some(p), false).unwrap_err();
+            assert!(
+                e.downcast_ref::<crate::typed_hash_agg::PercentileFractionError>()
+                    .is_some()
+            );
+        }
+    }
+}

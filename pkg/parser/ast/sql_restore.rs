@@ -287,7 +287,14 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                         .join(",")
                 )
             };
-            Ok(format!("{Name}({distinct}{args}{order}){filter}"))
+            if Name.eq_ignore_ascii_case("percentile_disc") {
+                Ok(format!(
+                    "{Name}({args}) WITHIN GROUP({}){filter}",
+                    order.trim_start()
+                ))
+            } else {
+                Ok(format!("{Name}({distinct}{args}{order}){filter}"))
+            }
         }
         ExprKind::WindowFunction {
             Name, Args, Spec, ..

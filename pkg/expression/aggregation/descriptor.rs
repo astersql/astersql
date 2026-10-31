@@ -221,7 +221,10 @@ impl AggFuncDesc {
     pub fn CanSplitForPostgreSQL(&self) -> bool {
         !self.HasDistinct
             && self.OrderByItems.is_empty()
-            && !matches!(self.Name.as_str(), "pg_avg_float4" | "pg_avg_float8")
+            && !matches!(
+                self.Name.as_str(),
+                "pg_avg_float4" | "pg_avg_float8" | "pg_percentile_disc"
+            )
     }
 
     /// Relational adapters can carry PG identities with a static build context.

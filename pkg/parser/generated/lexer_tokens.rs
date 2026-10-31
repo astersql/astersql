@@ -957,4 +957,6 @@ mod token {
     pub const pgExclude: i32 = 58274;
     pub const pgTies: i32 = 58275;
     pub const pgOthers: i32 = 58276;
+    pub const pgWithin: i32 = 58277;
+    pub const pgPercentileDisc: i32 = 58278;
 }

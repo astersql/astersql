@@ -90,3 +90,10 @@ Rust 保留了 Go 的结构字段、函数分派、类型宽度/精度规则、�
 修改现有推断时应同步 `pkg/expression/aggregation/base_func_test.rs` 的独立入口及其委托的 `aggregation_aster_unit_test.rs` 用例，并与 `base_func_test.go` 的类型、clone、collation 与 AVG/SUM 精度断言对照。窗口参数及可空性还应同步 `window_func_test.rs`，PB 行为同步 `agg_to_pb_test.rs`。
 
 兼容风险集中在返回类型元数据（会影响协议、表达式求值和下推）、decimal 精度、collation、NULL flag 和参数 cast；性能风险主要是额外表达式包装、重复构造免 cast 集合和深克隆。扩展时不要把 SQL 参数合法性完全依赖于数组索引前提，并应保留错误文本或明确评估兼容性。
+
+
+## 2026-10-31 percentile_disc
+
+Internal pg_percentile_disc descriptors infer their result from the ordered input in Args[0]; Args[1] is the group-direct float8 fraction.
+
+The direct fraction receives its own real cast and skips the return-type-driven aggregate cast loop; otherwise an int4 result would truncate fractional probabilities.

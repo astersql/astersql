@@ -16,6 +16,10 @@ use crate::adapter::{
 };
 
 enum AggregateValue {
+    PercentileDisc {
+        values: Vec<Datum>,
+        fraction: Option<Datum>,
+    },
     Count(i64),
     FloatSum(Option<f64>),
     FloatAvg {
@@ -103,6 +107,15 @@ impl TypedHashAgg {
                 return Err("final numeric AVG requires count and sum arguments".to_owned());
             }
             match function.Name.as_str() {
+                "pg_percentile_disc" => {
+                    if function.Args.len() != 2
+                        || function.OrderByItems.len() != 1
+                        || function.HasDistinct
+                        || function.Mode != AggFunctionMode::CompleteMode
+                    {
+                        return Err("percentile_disc requires complete mode, one sort input and one direct fraction".into());
+                    }
+                }
                 astersql_parser_ast::AggFuncCount => {
                     if function.Args.is_empty()
                         && matches!(
@@ -198,6 +211,7 @@ impl TypedHashAgg {
                 .iter()
                 .map(|function| AggregateState {
                     value: match function.Name.as_str() {
+                        "pg_percentile_disc" => AggregateValue::PercentileDisc { values: Vec::new(), fraction: None },
                         astersql_parser_ast::AggFuncCount => AggregateValue::Count(0),
                         "pg_sum_float4" | "pg_sum_float8" => AggregateValue::FloatSum(None),
                         "pg_avg_float4" | "pg_avg_float8" => AggregateValue::FloatAvg { count: 0.0, sum: 0.0, squares: 0.0 },
@@ -487,6 +501,15 @@ fn update_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
     row: chunk::Row,
 ) -> AdapterResult {
+    if let AggregateValue::PercentileDisc { fraction, .. } = &mut state.value {
+        if fraction.is_none() {
+            *fraction = Some(
+                function.Args[1]
+                    .Eval(eval, row.clone())
+                    .map_err(|e| astersql_errors::New(e.to_string()))?,
+            );
+        }
+    }
     if let Some(filter) = &function.Filter {
         let (keep, _) = astersql_expression::EvalBool(
             eval,
@@ -504,7 +527,15 @@ fn update_aggregate(
             .map_err(|error| astersql_errors::New(error.to_string()))?;
         return Ok(());
     }
-    let values = evaluated_arguments(function, eval, row.clone())?;
+    let values = if function.Name == "pg_percentile_disc" {
+        vec![
+            function.Args[0]
+                .Eval(eval, row.clone())
+                .map_err(|e| astersql_errors::New(e.to_string()))?,
+        ]
+    } else {
+        evaluated_arguments(function, eval, row.clone())?
+    };
     if !function.OrderByItems.is_empty() {
         let keys = function
             .OrderByItems
@@ -557,6 +588,9 @@ fn update_values(
         }
     }
     match &mut state.value {
+        AggregateValue::PercentileDisc { values: input, .. } => {
+            input.push(values[0].clone());
+        }
         AggregateValue::FloatAvg {
             count,
             sum,
@@ -730,6 +764,26 @@ fn finish_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
 ) -> AdapterResult<Datum> {
     match &state.value {
+        AggregateValue::PercentileDisc { values, fraction } => {
+            let direct = match fraction {
+                Some(value) => value.clone(),
+                None => function.Args[1]
+                    .Eval(eval, chunk::Row::default())
+                    .map_err(|e| astersql_errors::New(e.to_string()))?,
+            };
+            if direct.IsNull() {
+                return Ok(Datum::default());
+            }
+            let p = direct.GetFloat64();
+            if p.is_nan() || !(0.0..=1.0).contains(&p) {
+                return Err(astersql_errors::SharedError::new(PercentileFractionError));
+            }
+            if values.is_empty() {
+                return Ok(Datum::default());
+            }
+            let rank = ((values.len() as f64 * p).ceil() as usize).max(1);
+            Ok(values[rank - 1].clone())
+        }
         AggregateValue::FloatAvg { count, sum, .. } => Ok(if *count == 0.0 {
             Datum::default()
         } else {
@@ -1066,9 +1120,11 @@ impl ExecExecutor for SumInput {
         }
         while !output.IsFull() && self.index < self.values.len() {
             if let Some(value) = &self.values[self.index] {
-                if self.schema[0].field_type.GetType()
-                    == astersql_parser_mysql::r#type::TypeLonglong
-                {
+                if matches!(
+                    self.schema[0].field_type.GetType(),
+                    astersql_parser_mysql::r#type::TypeLonglong
+                        | astersql_parser_mysql::r#type::TypeLong
+                ) {
                     output.AppendInt64(0, value.parse().expect("signed SUM input"));
                 } else if self.schema[0].field_type.GetType()
                     == astersql_parser_mysql::r#type::TypeFloat
@@ -1275,4 +1331,66 @@ fn FloatingAggregate(
     let value = result?;
     close?;
     Ok(value)
+}
+
+/// Invalid ordered-set fraction, retained as a typed error at the session boundary.
+#[derive(Debug)]
+pub struct PercentileFractionError;
+impl std::fmt::Display for PercentileFractionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("percentile value must be between 0 and 1")
+    }
+}
+impl std::error::Error for PercentileFractionError {}
+
+/// Adapt derived int4 rows into the same complete-mode HashAgg used by plans.
+pub fn PercentileDisc(
+    context: ContextRef,
+    values: Vec<Option<i64>>,
+    fraction: Option<f64>,
+    desc: bool,
+) -> AdapterResult<Option<i64>> {
+    let field_type =
+        astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeLong);
+    let input = SumInput {
+        values: values
+            .into_iter()
+            .map(|v| v.map(|v| v.to_string()))
+            .collect(),
+        index: 0,
+        opened: false,
+        schema: vec![SchemaColumn {
+            field_type: (*field_type).clone(),
+        }],
+    };
+    let mut function = astersql_expression_aggregation::NewAggFuncDesc(
+        context.GetExprCtx(),
+        "pg_percentile_disc",
+        vec![
+            Box::new(astersql_expression::Column::new(*field_type, 1, 1, 0)),
+            Box::new(astersql_expression::Constant::with_type(
+                fraction.map(NewFloat64Datum).unwrap_or_default(),
+                *astersql_expression::types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDouble,
+                ),
+            )),
+        ],
+        false,
+    )
+    .map_err(|e| astersql_errors::New(e.to_string()))?;
+    function.OrderByItems = vec![astersql_planner_util::ByItems {
+        Expr: function.Args[0].clone(),
+        Desc: desc,
+    }];
+    let mut executor = TypedHashAgg::new(Box::new(input), vec![function], vec![], context)
+        .map_err(astersql_errors::New)?;
+    executor.Open()?;
+    let mut output = executor.NewChunk();
+    let result = executor
+        .Next(&mut output)
+        .map(|()| (!output.GetRow(0).IsNull(0)).then(|| output.GetRow(0).GetInt64(0)));
+    let close = executor.Close();
+    let count = result?;
+    close?;
+    Ok(count)
 }

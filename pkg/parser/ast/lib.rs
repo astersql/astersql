@@ -816,6 +816,8 @@ pub enum ExprKind {
         FnName: CIStr,
         Args: Vec<ExprNode>,
     },
+    // For percentile_disc, Args are group-direct arguments and Order is the
+    // WITHIN GROUP input. Consumers classify by Name before rewriting Args.
     AggregateFunction {
         Name: String,
         Args: Vec<ExprNode>,

@@ -49,3 +49,32 @@ fn approx_percentile_reports_invalid_percentage_argument() {
         "APPROX_PERCENTILE: Invalid argument not-a-number"
     );
 }
+
+#[test]
+fn pg09_19_direct_fraction_survives_aggregate_casts() {
+    let ctx = exprstatic::NewExprContext(Vec::new());
+    let input = Box::new(expression::Constant::with_type(
+        types::NewIntDatum(2),
+        *types::NewFieldType(mysql::TypeLong),
+    ));
+    let fraction = Box::new(expression::Constant::with_type(
+        types::NewFloat64Datum(0.5),
+        *types::NewFieldType(mysql::TypeDouble),
+    ));
+    let mut desc =
+        NewAggFuncDesc(&ctx, "pg_percentile_disc", vec![input, fraction], false).unwrap();
+    desc.WrapCastForAggArgs(&ctx);
+    assert_eq!(desc.RetTp.as_ref().unwrap().GetType(), mysql::TypeLong);
+    assert_eq!(
+        desc.Args[1].GetType(ctx.GetEvalCtx()).GetType(),
+        mysql::TypeDouble
+    );
+    assert_eq!(
+        desc.Args[1]
+            .Eval(ctx.GetEvalCtx(), chunk::Row::default())
+            .unwrap()
+            .GetFloat64(),
+        0.5
+    );
+    assert!(!desc.CanSplitForPostgreSQL());
+}

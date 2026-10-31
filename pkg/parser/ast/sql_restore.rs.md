@@ -137,3 +137,8 @@ PostgreSQLFloat8恢复为既有CAST(... AS DOUBLE)，供参数值的解析/恢�
 ## PostgreSQL 窗口 EXCLUDE
 
 restore_frame_clause在基础帧后还原EXCLUDE CURRENT ROW/GROUP/TIES；NoOthers省略等价默认后缀。
+
+
+## 2026-10-31 percentile_disc
+
+percentile_disc restores the direct call followed by WITHIN GROUP ORDER BY and its optional FILTER.

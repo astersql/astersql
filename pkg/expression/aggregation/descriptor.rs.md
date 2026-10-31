@@ -121,3 +121,8 @@ Rust 保留了 Go 的字段、构造、hash/equality、格式化、深拷贝、�
 7. 测试放在独立文件。描述符协议优先扩展 `go_merge_44_test.rs` 或新增同目录独立 `*_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 模块接入；具体聚合运行时扩展相应的 `avg_test.rs`、`count_test.rs` 等。规划调用变化还应同步逻辑聚合/计划构建的独立测试。
 
 兼容性风险集中在中间结果列形状、模式转换和返回类型标志；这些变化可能影响 MPP/下推、并行 HashAgg、计划缓存等价性以及 spill/restore。性能风险主要是无意的深拷贝扩大、指纹遗漏造成错误复用，以及 GROUP_CONCAT 缓冲限制未从上下文传递。
+
+
+## 2026-10-31 percentile_disc
+
+CanSplitForPostgreSQL keeps discrete percentiles in complete mode because local percentile values are not merge states.

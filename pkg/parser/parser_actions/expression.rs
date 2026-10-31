@@ -19,6 +19,7 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ExpressionRule {
+    PgPercentileDisc,
     PgAggregateFilter,
     PgAggregateOrder,
     PgAggregateArity,
@@ -341,6 +342,7 @@ enum ExpressionRule {
 
 fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
     match rule_id.as_str() {
+        id if id.starts_with("sumexpr_pgpercentiledisc_") => Some(ExpressionRule::PgPercentileDisc),
         id if id.starts_with("pgaggregatearity_") => Some(ExpressionRule::PgAggregateArity),
         "sumexpr_builtinsum_buggydefaultfalsedistinctopt--87ebf3ac0fd2824c"
         | "sumexpr_avg_buggydefaultfalsedistinctopt_express--31cf4978a2696032"
@@ -1231,6 +1233,26 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 node_text,
                 Kind: parser_ast::ExprKind::AggregateFunction {
                     Name: name, Args: args, Distinct: distinct, Order: order, Filter: None,
+                },
+                OriginTextPosition: rhs[1].offset,
+                ..Default::default()
+            });
+        }
+        ExpressionRule::PgPercentileDisc => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("WITHIN GROUP requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            let order = rhs[8].item.as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::ByItem>>())
+                .cloned().unwrap_or_default();
+            let mut node_text = parser_ast::base::AstNode::default();
+            node_text.SetOriginTextPosition(rhs[1].offset);
+            out.expr = Some(parser_ast::ExprNode {
+                node_text,
+                Kind: parser_ast::ExprKind::AggregateFunction {
+                    Name: "percentile_disc".into(), Args: vec![rhs[3].expr.clone().unwrap()],
+                    Distinct: false, Order: order, Filter: None,
                 },
                 OriginTextPosition: rhs[1].offset,
                 ..Default::default()

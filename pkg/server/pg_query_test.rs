@@ -23694,3 +23694,365 @@ fn pg09_17_dual_listener_isolation() {
     assert!(TcpStream::connect(pg).is_err());
     assert!(TcpStream::connect(mysql).is_err());
 }
+
+#[test]
+fn pg09_19_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    for (fraction, direction, input, expected) in [
+        (
+            "0.5",
+            "ASC",
+            "(1::int4),(2::int4),(3::int4),(4::int4)",
+            Some("2"),
+        ),
+        (
+            "0.5",
+            "DESC",
+            "(1::int4),(2::int4),(3::int4),(4::int4)",
+            Some("3"),
+        ),
+        ("0", "ASC", "(4::int4),(1::int4)", Some("1")),
+        ("1", "ASC", "(4::int4),(1::int4)", Some("4")),
+        (
+            "0.5",
+            "ASC",
+            "(NULL::int4),(1::int4),(1::int4),(9::int4)",
+            Some("1"),
+        ),
+        ("0.5", "ASC", "(NULL::int4),(NULL::int4)", None),
+        ("NULL", "ASC", "(1::int4)", None),
+    ] {
+        let sql = format!(
+            "SELECT percentile_disc({fraction}::float8) WITHIN GROUP(ORDER BY x {direction}) AS c FROM (VALUES {input}) t(x)"
+        );
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[expected])],
+            "{sql}"
+        );
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &23u32.to_be_bytes());
+        assert_eq!(&d[14..16], &4i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+
+    for (suffix, expected) in [
+        ("WHERE false", vec![row(&[None])]),
+        ("WHERE false GROUP BY x", vec![]),
+        (
+            "GROUP BY x ORDER BY x",
+            vec![row(&[Some("1")]), row(&[Some("2")])],
+        ),
+    ] {
+        let sql = format!(
+            "SELECT percentile_disc(0.5::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(1::int4),(2::int4)) t(x) {suffix}"
+        );
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &23u32.to_be_bytes());
+    }
+    let sql = "SELECT percentile_disc(0.5::float8) WITHIN GROUP(ORDER BY x) FILTER (WHERE x <= 2) AS c, count(*) AS n FROM (VALUES(1::int4),(2::int4),(9::int4)) t(x)";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("1"), Some("3")])
+    );
+    fn fraction_error19(ms: &[(u8, Vec<u8>)]) {
+        let e = &ms.iter().find(|m| m.0 == b'E').unwrap().1;
+        let mut fields = std::collections::BTreeMap::new();
+        let mut at = 0;
+        while e[at] != 0 {
+            let key = e[at];
+            at += 1;
+            let end = at + e[at..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(key, e[at..end].to_vec());
+            at = end + 1;
+        }
+        assert_eq!(fields.get(&b'C').unwrap().as_slice(), b"22003");
+        assert_eq!(fields.get(&b'S').unwrap().as_slice(), b"ERROR");
+        assert_eq!(
+            fields.get(&b'M').unwrap().as_slice(),
+            b"percentile value must be between 0 and 1"
+        );
+        for key in [b'D', b'H', b'P'] {
+            assert!(!fields.contains_key(&key));
+        }
+    }
+    for p in ["'-0.1'", "'1.1'", "'NaN'", "'Infinity'", "'-Infinity'"] {
+        let sql = format!(
+            "SELECT percentile_disc({p}::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(NULL::int4)) t(x)"
+        );
+        let ms = query(&mut s, &sql);
+        fraction_error19(&ms);
+        let e = &ms.iter().find(|m| m.0 == b'E').expect("invalid fraction").1;
+        assert!(e.windows(7).any(|w| w == b"C22003\0"), "{ms:?}");
+        assert!(e.windows(7).any(|w| w == b"SERROR\0"));
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        assert_eq!(
+            query(&mut s, "SELECT 1::int4 AS c")
+                .iter()
+                .find(|m| m.0 == b'D')
+                .unwrap()
+                .1,
+            row(&[Some("1")])
+        );
+    }
+    fn ready19(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn identity19(ms: &[(u8, Vec<u8>)], format: i16) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        let d = &ms.iter().find(|m| m.0 == b'T').unwrap().1;
+        assert_eq!(&d[10..14], &23u32.to_be_bytes());
+        assert_eq!(&d[14..16], &4i16.to_be_bytes());
+        assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        assert_eq!(&d[20..22], &format.to_be_bytes());
+    }
+    send(&mut s, b'P', &[b"disc19\0SELECT percentile_disc($1::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(1::int4),(2::int4),(3::int4),(4::int4)) t(x)\0".as_slice(), &1i16.to_be_bytes(), &701u32.to_be_bytes()].concat());
+    send(&mut s, b'D', b"Sdisc19\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready19(&mut s);
+    identity19(&ms, 0);
+    assert_eq!(
+        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [b'1', b't', b'T', b'Z']
+    );
+    for infmt in [0i16, 1] {
+        for outfmt in [0i16, 1] {
+            for p in [Some(0.5f64), None, Some(0.0), Some(1.0), Some(1.1)] {
+                let mut bind = b"\0disc19\0".to_vec();
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(infmt.to_be_bytes());
+                bind.extend(1i16.to_be_bytes());
+                if let Some(p) = p {
+                    let v = if infmt == 0 {
+                        p.to_string().into_bytes()
+                    } else {
+                        p.to_be_bytes().to_vec()
+                    };
+                    bind.extend((v.len() as i32).to_be_bytes());
+                    bind.extend(v);
+                } else {
+                    bind.extend((-1i32).to_be_bytes());
+                }
+                bind.extend(1i16.to_be_bytes());
+                bind.extend(outfmt.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(&mut s, b'E', &[0; 5]);
+                send(&mut s, b'S', &[]);
+                let ms = ready19(&mut s);
+                if p == Some(1.1) {
+                    fraction_error19(&ms);
+                    assert_eq!(
+                        ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        [b'2', b'T', b'E', b'Z']
+                    );
+                    let e = &ms.iter().find(|m| m.0 == b'E').unwrap().1;
+                    assert!(e.windows(7).any(|w| w == b"C22003\0"), "{ms:?}");
+                    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+                    assert_eq!(
+                        query(&mut s, "SELECT 1::int4 AS c")
+                            .iter()
+                            .find(|m| m.0 == b'D')
+                            .unwrap()
+                            .1,
+                        row(&[Some("1")])
+                    );
+                    continue;
+                }
+                identity19(&ms, outfmt);
+                assert_eq!(
+                    ms.iter().map(|m| m.0).collect::<Vec<_>>(),
+                    [b'2', b'T', b'D', b'C', b'Z']
+                );
+                let n = p.map(|p| {
+                    if p == 0.0 {
+                        1i32
+                    } else if p == 1.0 {
+                        4
+                    } else {
+                        2
+                    }
+                });
+                let expected = if outfmt == 0 {
+                    let text = n.map(|n| n.to_string());
+                    row(&[text.as_deref()])
+                } else {
+                    let mut v = 1i16.to_be_bytes().to_vec();
+                    if let Some(n) = n {
+                        v.extend(4i32.to_be_bytes());
+                        v.extend(n.to_be_bytes());
+                    } else {
+                        v.extend((-1i32).to_be_bytes());
+                    }
+                    v
+                };
+                assert_eq!(ms.iter().find(|m| m.0 == b'D').unwrap().1, expected);
+            }
+        }
+    }
+
+    let sql = "SELECT percentile_disc(p::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(0::float8,1::int4),(0::float8,9::int4),(1::float8,2::int4),(1::float8,8::int4)) t(p,x) GROUP BY p ORDER BY p";
+    let ms = query(&mut s, sql);
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    assert_eq!(
+        ms.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("1")]), row(&[Some("8")])]
+    );
+    let ms = query(
+        &mut s,
+        "SELECT percentile_disc(p::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(0::float8,1::int4),(1::float8,8::int4)) t(p,x)",
+    );
+    assert!(
+        ms.iter()
+            .find(|m| m.0 == b'E')
+            .unwrap()
+            .1
+            .windows(7)
+            .any(|w| w == b"C42803\0")
+    );
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4 AS c")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+    send(&mut s, b'P', b"empty19\0SELECT percentile_disc(0.5::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(1::int4)) t(x) WHERE false GROUP BY x\0\0\0");
+    send(&mut s, b'D', b"Sempty19\0");
+    send(&mut s, b'S', &[]);
+    identity19(&ready19(&mut s), 0);
+    for fmt in [0i16, 1] {
+        let mut b = b"\0empty19\0".to_vec();
+        b.extend(0i16.to_be_bytes());
+        b.extend(0i16.to_be_bytes());
+        b.extend(1i16.to_be_bytes());
+        b.extend(fmt.to_be_bytes());
+        send(&mut s, b'B', &b);
+        send(&mut s, b'D', b"P\0");
+        send(&mut s, b'E', &[0; 5]);
+        send(&mut s, b'S', &[]);
+        let ms = ready19(&mut s);
+        identity19(&ms, fmt);
+        assert_eq!(ms.iter().filter(|m| m.0 == b'D').count(), 0);
+        assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+    }
+    // Real table input also exercises the normal planner/source boundary.
+    let ms = query(&mut s, "CREATE TABLE pg0919_disc (x integer)");
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    struct TableCleanup(TcpStream);
+    impl Drop for TableCleanup {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                query(&mut self.0, "ROLLBACK");
+                query(&mut self.0, "DROP TABLE IF EXISTS pg0919_disc");
+            }));
+        }
+    }
+    let table_cleanup = TableCleanup(s.try_clone().unwrap());
+    let ms = query(
+        &mut s,
+        "INSERT INTO pg0919_disc VALUES (4),(1),(3),(2),(NULL)",
+    );
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    let ms = query(
+        &mut s,
+        "SELECT percentile_disc(0.5::float8) WITHIN GROUP(ORDER BY x DESC) AS c FROM pg0919_disc",
+    );
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    identity19(&ms, 0);
+    assert_eq!(
+        ms.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("3")])
+    );
+    let ms = query(&mut s, "DROP TABLE pg0919_disc");
+    assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+    drop(table_cleanup);
+    assert_eq!(query(&mut s, "BEGIN").last().unwrap(), &(b'Z', vec![b'T']));
+    let ms = query(
+        &mut s,
+        "SELECT percentile_disc(2::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(1::int4)) t(x)",
+    );
+    assert!(
+        ms.iter()
+            .find(|m| m.0 == b'E')
+            .unwrap()
+            .1
+            .windows(7)
+            .any(|w| w == b"C22003\0")
+    );
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'E']));
+    assert_eq!(
+        query(&mut s, "ROLLBACK").last().unwrap(),
+        &(b'Z', vec![b'I'])
+    );
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4 AS c")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+}

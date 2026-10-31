@@ -955,6 +955,8 @@
 %token pgExclude 58274 "EXCLUDE";
 %token pgTies 58275 "TIES";
 %token pgOthers 58276 "OTHERS";
+%token pgWithin 58277;
+%token pgPercentileDisc 58278;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -4429,3 +4431,5 @@ SumExpr : PgAggregateArity;
 UnReservedKeyword : pgExclude;
 UnReservedKeyword : pgTies;
 UnReservedKeyword : pgOthers;
+
+SumExpr : pgPercentileDisc "(" Expression ")" pgWithin "GROUP" "(" OrderBy ")" @action;

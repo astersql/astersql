@@ -78,3 +78,8 @@
 ## PostgreSQL 窗口 EXCLUDE
 
 由既有生成器注册pgExclude/pgTies/pgOthers三个词元，供PostgreSQL窗口排除后缀与非保留标识符使用。
+
+
+## 2026-10-31 percentile_disc
+
+Adds contextual PG pgWithin and pgPercentileDisc tokens, preserving existing token numbers and MySQL token selection.

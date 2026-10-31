@@ -96,3 +96,8 @@ MAX_COUNT/MIN_COUNT 的具体语义由 Rust `pkg/executor/aggfuncs/func_max_min_
 改变分组或 DISTINCT 编码时必须保留 SQL 类型、时区/location、collation 和 NULL 语义，并评估编码兼容性与内存放大。增加 spill、并行或内存限制不是局部枚举改动：需要设计 group state 可移动/可合并性、child 拉取与取消同步、错误汇聚、顺序/分页、资源回收和统计接口，且应以 Go worker/spill 实现为行为参考而不是直接简化。
 
 回归测试应继续放在独立的 `pkg/executor/typed_hash_agg_test.rs`，不要嵌入生产文件。现有测试覆盖跨输入页归组和输出分页、空标量 COUNT、消费 child 前取消、MAX_COUNT/MIN_COUNT 的真实扫描及空输入；新增函数至少应补 NULL、DISTINCT、空输入、分组、多页输出、支持的 mode、错误传播和类型/collation 边界。若修改共享 count-extrema evaluator，还应同步检查 `pkg/executor/aggfuncs/func_max_min_count_test.go` 对应的 Go 语义证据和 Rust aggfuncs 自身独立测试。
+
+
+## 2026-10-31 percentile_disc
+
+Complete-mode pg_percentile_disc uses the existing ordered-input cache, retains duplicates and ignores NULL inputs, evaluates the direct fraction once per group, validates it even for empty groups, and selects ceil(p*n) with p=0 selecting the first value. The derived-row adapter enters the same TypedHashAgg and closes the child on errors.
