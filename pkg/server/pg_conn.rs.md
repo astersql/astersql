@@ -125,3 +125,8 @@ PgUuidCastError保留22P02非法输入及0A000未开放转换SQLSTATE，并沿�
 PgJson错误直接使用自身SQLSTATE（22P02、22021、0A000）。
 
 窗口帧边界诊断的精确消息映射：NULL offset 为 22004，负 offset 为 22013，非法起止为 42601。
+
+
+## 数值 RANGE 偏移（任务14）
+
+数值RANGE排序键数量错误映射42601；非数值/时间interval以及未实现GROUPS帧明确能力拒绝0A000。负/NULL偏移沿既有22013/22004映射。

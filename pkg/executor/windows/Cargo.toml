@@ -12,6 +12,7 @@ go-package = "pkg/executor/windows"
 legacy-tasks = ["task-1130", "task-1134", "task-1362"]
 
 [dependencies]
+astersql-types = { path = "../../types" }
 "astersql-executor-aggfuncs" = { package = "astersql-executor-aggfuncs", path = "../aggfuncs" }
 
 [target.'cfg(any())'.dependencies]

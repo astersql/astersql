@@ -1087,6 +1087,14 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
                 "22004"
             } else if message == "frame offset must not be negative" {
                 "22013"
+            } else if message
+                == "RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column"
+            {
+                "42601"
+            } else if message == "numeric RANGE requires a numeric ORDER BY key"
+                || message == "GROUPS frames are not supported for last_value"
+            {
+                "0A000"
             } else if message == "invalid window frame bounds" {
                 "42601"
             } else if message.starts_with("[kv:1062]") || message.starts_with("Duplicate entry ") {

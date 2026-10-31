@@ -87,3 +87,8 @@ Go `window_sql_test.go` 覆盖更多函数、类型与 SQL 集成情形；其中
 - 任何改变都应同时核对 `builder.rs` 和 `pipelined_window.rs`，因为它们共享这里的 frame/function/tracker 协议；若行为只在一条路径更新，会破坏两执行器结果一致性。
 
 LAST_VALUE 的整数适配器复用 aggfuncs::func_value::LastValue<i64>，保留帧末尾 NULL 与空帧 NULL；缓冲和流水线均通过 WindowFunction 调用，固定状态内存计入 tracker。
+
+
+## 数值 RANGE 偏移（任务14）
+
+FrameBound绑定numeric偏移和NULL排序；精确整数使用i128，numeric复用PgNumeric比较/加减，浮点键独立保留浮点算术。缓冲与流水线共用candidate_cmp_boundary；偏移帧要求一个排序键。

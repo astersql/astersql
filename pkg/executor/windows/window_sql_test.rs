@@ -628,3 +628,133 @@ fn pg09_13_execution_chunks_and_cleanup() {
         assert_eq!(executor.memory_bytes(), 0);
     }
 }
+
+#[test]
+fn pg09_14_execution() {
+    for pipelined in [false, true] {
+        for descending in [false, true] {
+            let mut values = vec![9007199254740994i64, 9007199254740995, 9007199254741001];
+            if descending {
+                values.reverse();
+            }
+            let result = execute(
+                sorted_rows(&values),
+                vec![],
+                order(0, descending),
+                Some(WindowFrame {
+                    frame_type: FrameType::Range,
+                    start: current_row(),
+                    end: FrameBound::following(1),
+                }),
+                vec![Box::new(super::LastValue::new(0))],
+                pipelined,
+            );
+            let expected = if descending {
+                vec![9007199254741001, 9007199254740994, 9007199254740994]
+            } else {
+                vec![9007199254740995, 9007199254740995, 9007199254741001]
+            };
+            assert_eq!(
+                result.iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
+                expected.into_iter().map(Value::Int).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn pg09_14_execution_chunks_and_cleanup() {
+    for pipelined in [false, true] {
+        let mut start = current_row();
+        start.set_numeric_range("0".parse().unwrap(), false);
+        let mut end = FrameBound::following(0);
+        end.set_numeric_range("0.1".parse().unwrap(), false);
+        let plan = build_plan(
+            2,
+            vec![],
+            order(0, false),
+            Some(WindowFrame {
+                frame_type: FrameType::Range,
+                start,
+                end,
+            }),
+            vec![Box::new(super::LastValue::new(1))],
+            pipelined,
+        );
+        let chunks = vec![
+            Chunk::new(vec![vec![
+                Value::Text("9007199254740992.1".into()),
+                Value::Int(1),
+            ]]),
+            Chunk::new(vec![
+                vec![Value::Text("9007199254740992.2".into()), Value::Int(2)],
+                vec![Value::Text("9007199254740992.4".into()), Value::Int(3)],
+                vec![Value::Null, Value::Int(4)],
+            ]),
+        ];
+        let mut exec =
+            super::build(plan, Box::new(super::VecChunkExecutor::new(chunks)), false).unwrap();
+        let cx = ExecContext::default();
+        exec.open(&cx).unwrap();
+        let mut values = vec![];
+        let mut output = Chunk::default();
+        loop {
+            exec.next(&cx, &mut output).unwrap();
+            if output.rows.is_empty() {
+                break;
+            }
+            values.extend(output.rows.iter().map(|r| r[2].clone()));
+        }
+        assert_eq!(
+            values,
+            vec![Value::Int(2), Value::Int(2), Value::Int(3), Value::Int(4)]
+        );
+        exec.close().unwrap();
+        assert_eq!(exec.memory_bytes(), 0);
+    }
+}
+
+#[test]
+fn pg09_14_exact_key_domains() {
+    for pipelined in [false, true] {
+        for keys in [
+            vec![
+                Value::UInt(u64::MAX - 2),
+                Value::UInt(u64::MAX - 1),
+                Value::UInt(u64::MAX),
+            ],
+            vec![
+                Value::Decimal(super::Decimal::new(90071992547409941, 1)),
+                Value::Decimal(super::Decimal::new(90071992547409951, 1)),
+                Value::Decimal(super::Decimal::new(90071992547409971, 1)),
+            ],
+        ] {
+            let expected = if matches!(keys[0], Value::Decimal(_)) {
+                vec![Value::Int(1), Value::Int(1), Value::Int(2)]
+            } else {
+                vec![Value::Int(1), Value::Int(2), Value::Int(2)]
+            };
+            let input = keys
+                .into_iter()
+                .enumerate()
+                .map(|(i, k)| vec![k, Value::Int(i as i64)])
+                .collect();
+            let result = execute(
+                input,
+                vec![],
+                order(0, false),
+                Some(WindowFrame {
+                    frame_type: FrameType::Range,
+                    start: current_row(),
+                    end: FrameBound::following(1),
+                }),
+                vec![Box::new(super::LastValue::new(1))],
+                pipelined,
+            );
+            assert_eq!(
+                result.iter().map(|r| r[2].clone()).collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+}

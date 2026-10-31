@@ -189,6 +189,69 @@ impl PgNumeric {
         out
     }
 
+    /// Exact ordering for RANGE keys, including PostgreSQL's special-value order.
+    /// Compare aligned digits without allocating a coefficient at the common scale.
+    pub fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let rank = |kind| match kind {
+            NumericKind::NegativeInfinity => 0,
+            NumericKind::Finite => 1,
+            NumericKind::Infinity => 2,
+            NumericKind::NaN => 3,
+        };
+        let special = rank(self.kind).cmp(&rank(other.kind));
+        if special != Ordering::Equal || self.kind != NumericKind::Finite {
+            return special;
+        }
+        if self.negative != other.negative {
+            return if self.negative {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        let zero_a = self.coefficient == "0";
+        let zero_b = other.coefficient == "0";
+        let magnitude = if zero_a || zero_b {
+            zero_b.cmp(&zero_a)
+        } else {
+            let a = self.coefficient.len() as isize - self.scale as isize;
+            let b = other.coefficient.len() as isize - other.scale as isize;
+            a.cmp(&b).then_with(|| {
+                (0..self.coefficient.len().max(other.coefficient.len()))
+                    .map(|i| {
+                        self.coefficient
+                            .as_bytes()
+                            .get(i)
+                            .copied()
+                            .unwrap_or(b'0')
+                            .cmp(&other.coefficient.as_bytes().get(i).copied().unwrap_or(b'0'))
+                    })
+                    .find(|cmp| *cmp != Ordering::Equal)
+                    .unwrap_or(Ordering::Equal)
+            })
+        };
+        if self.negative {
+            magnitude.reverse()
+        } else {
+            magnitude
+        }
+    }
+
+    /// Exact subtraction shares the existing coefficient addition implementation.
+    pub fn subtract(&self, other: &Self) -> Result<Self, PgNumericError> {
+        let mut other = other.clone();
+        other.kind = match other.kind {
+            NumericKind::Infinity => NumericKind::NegativeInfinity,
+            NumericKind::NegativeInfinity => NumericKind::Infinity,
+            kind => kind,
+        };
+        if other.kind == NumericKind::Finite && other.coefficient != "0" {
+            other.negative = !other.negative;
+        }
+        self.add(&other)
+    }
+
     /// Exact addition for numeric accumulators, retaining the larger display scale.
     pub fn add(&self, other: &Self) -> Result<Self, PgNumericError> {
         use NumericKind::*;

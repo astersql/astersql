@@ -417,9 +417,27 @@ pub struct FrameBound {
     pub unbounded: bool,
     pub num: u64,
     compare_columns: Vec<usize>,
+    numeric_offset: Option<astersql_types::pg_numeric::PgNumeric>,
+    nulls_first: Option<bool>,
+    floating_range: bool,
 }
 
 impl FrameBound {
+    /// Bind a typed numeric RANGE offset and the SQL NULL ordering.
+    pub fn set_numeric_range(
+        &mut self,
+        offset: astersql_types::pg_numeric::PgNumeric,
+        nulls_first: bool,
+    ) {
+        self.numeric_offset = Some(offset);
+        self.nulls_first = Some(nulls_first);
+    }
+
+    /// Floating keys retain their own arithmetic; exact keys never enter this path.
+    pub fn set_floating_range(&mut self) {
+        self.floating_range = true;
+    }
+
     /// 构造 PRECEDING n。
     pub fn preceding(num: u64) -> Self {
         Self {
@@ -452,6 +470,14 @@ impl FrameBound {
         if order_by.is_empty() {
             return Err(Error::new("RANGE frame requires an ORDER BY column"));
         }
+        if (self.numeric_offset.is_some()
+            || (!self.unbounded && self.bound_type != BoundType::CurrentRow))
+            && order_by.len() != 1
+        {
+            return Err(Error::new(
+                "RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column",
+            ));
+        }
         self.compare_columns = order_by.iter().map(|item| item.column).collect();
         Ok(())
     }
@@ -481,13 +507,138 @@ impl FrameBound {
             let current_value = current
                 .get(column)
                 .ok_or_else(|| Error::new(format!("ORDER BY column {column} is out of range")))?;
+            if let Some(offset) = &self.numeric_offset {
+                let ordering = match (candidate_value, current_value) {
+                    (Value::Null, Value::Null) => Ordering::Equal,
+                    (Value::Null, _) => {
+                        if self.nulls_first.unwrap_or(true) {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    }
+                    (_, Value::Null) => {
+                        if self.nulls_first.unwrap_or(true) {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    }
+                    _ => {
+                        let numeric =
+                            |value: &Value| -> Result<astersql_types::pg_numeric::PgNumeric> {
+                                let text = match value {
+                                    Value::Text(v) => v.clone(),
+                                    Value::Int(v) => v.to_string(),
+                                    Value::UInt(v) => v.to_string(),
+                                    Value::Real(v) => v.to_string(),
+                                    _ => {
+                                        return Err(Error::new(
+                                            "numeric RANGE requires a numeric ORDER BY key",
+                                        ));
+                                    }
+                                };
+                                text.parse()
+                                    .map_err(|e| Error::new(format!("numeric RANGE: {e}")))
+                            };
+                        if self.floating_range {
+                            let candidate = numeric(candidate_value)?
+                                .to_string()
+                                .parse::<f64>()
+                                .map_err(|e| Error::new(e.to_string()))?;
+                            let current = numeric(current_value)?
+                                .to_string()
+                                .parse::<f64>()
+                                .map_err(|e| Error::new(e.to_string()))?;
+                            let offset = offset
+                                .to_string()
+                                .parse::<f64>()
+                                .map_err(|e| Error::new(e.to_string()))?;
+                            let boundary = match (self.bound_type, item.descending) {
+                                (BoundType::CurrentRow, _) => current,
+                                (BoundType::Preceding, false) | (BoundType::Following, true) => {
+                                    current - offset
+                                }
+                                _ => current + offset,
+                            };
+                            return Ok(if candidate.is_nan() {
+                                if boundary.is_nan() {
+                                    Ordering::Equal
+                                } else {
+                                    Ordering::Greater
+                                }
+                            } else if boundary.is_nan() {
+                                Ordering::Less
+                            } else {
+                                candidate.partial_cmp(&boundary).unwrap_or(Ordering::Equal)
+                            });
+                        }
+                        let current = numeric(current_value)?;
+                        let boundary = match (self.bound_type, item.descending) {
+                            (BoundType::CurrentRow, _) => Ok(current),
+                            (BoundType::Preceding, false) | (BoundType::Following, true) => {
+                                current.subtract(offset)
+                            }
+                            _ => current.add(offset),
+                        }
+                        .map_err(|e| Error::new(e.to_string()))?;
+                        return Ok(numeric(candidate_value)?.compare(&boundary));
+                    }
+                };
+                // NULL ordering is already in sort order; callers reverse descending keys.
+                return Ok(if item.descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                });
+            }
             let ordering =
                 if index == 0 && self.bound_type != BoundType::CurrentRow && self.num != 0 {
-                    match (candidate_value.numeric(), current_value.numeric()) {
-                        (Some(candidate), Some(current)) => candidate
-                            .partial_cmp(&self.boundary_number(current, item.descending))
-                            .unwrap_or(Ordering::Equal),
-                        _ => candidate_value.sql_cmp(current_value),
+                    if let (Value::Int(candidate), Value::Int(current)) =
+                        (candidate_value, current_value)
+                    {
+                        let offset = i128::from(self.num);
+                        let current = i128::from(*current);
+                        let boundary = match (self.bound_type, item.descending) {
+                            (BoundType::Preceding, false) | (BoundType::Following, true) => {
+                                current - offset
+                            }
+                            _ => current + offset,
+                        };
+                        i128::from(*candidate).cmp(&boundary)
+                    } else if matches!(
+                        candidate_value,
+                        Value::Int(_) | Value::UInt(_) | Value::Decimal(_)
+                    ) && matches!(
+                        current_value,
+                        Value::Int(_) | Value::UInt(_) | Value::Decimal(_)
+                    ) {
+                        let exact = |value: &Value| -> astersql_types::pg_numeric::PgNumeric {
+                            let text = match value {
+                                Value::Int(v) => v.to_string(),
+                                Value::UInt(v) => v.to_string(),
+                                Value::Decimal(v) => format!("{}e-{}", v.coefficient, v.scale),
+                                _ => unreachable!(),
+                            };
+                            text.parse().expect("bounded integer/decimal RANGE key")
+                        };
+                        let offset = self.num.to_string().parse().expect("u64 offset");
+                        let current = exact(current_value);
+                        let boundary = match (self.bound_type, item.descending) {
+                            (BoundType::Preceding, false) | (BoundType::Following, true) => {
+                                current.subtract(&offset)
+                            }
+                            _ => current.add(&offset),
+                        }
+                        .map_err(|e| Error::new(e.to_string()))?;
+                        exact(candidate_value).compare(&boundary)
+                    } else {
+                        match (candidate_value.numeric(), current_value.numeric()) {
+                            (Some(candidate), Some(current)) => candidate
+                                .partial_cmp(&self.boundary_number(current, item.descending))
+                                .unwrap_or(Ordering::Equal),
+                            _ => candidate_value.sql_cmp(current_value),
+                        }
                     }
                 } else {
                     candidate_value.sql_cmp(current_value)

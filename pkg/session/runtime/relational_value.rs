@@ -3846,15 +3846,66 @@ where
                 .collect::<SessionResult<Vec<_>>>()
         })
         .collect::<SessionResult<Vec<_>>>()?;
+    let numeric_range = Name.eq_ignore_ascii_case("last_value")
+        && spec.Frame.as_ref().is_some_and(|f| {
+            f.Type == ast::FrameType::Ranges
+                && (f.Extent.Start.Expr.is_some() || f.Extent.End.Expr.is_some())
+        });
+    if numeric_range && spec.OrderBy.len() != 1 {
+        return Err(SessionError::new(
+            "RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column",
+        ));
+    }
+    if numeric_range
+        && !PG_CAST_TABLE.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|table| {
+                use astersql_parser_mysql::r#type::*;
+                matches!(
+                    relational_expression_type(&spec.OrderBy[0].Expr, table).GetType(),
+                    TypeTiny
+                        | TypeShort
+                        | TypeLong
+                        | TypeLonglong
+                        | TypeInt24
+                        | TypeNewDecimal
+                        | TypeFloat
+                        | TypeDouble
+                )
+            })
+        })
+    {
+        return Err(SessionError::new(
+            "numeric RANGE requires a numeric ORDER BY key",
+        ));
+    }
     let mut keyed = partition.into_iter().zip(keys).collect::<Vec<_>>();
     keyed.sort_by(|left, right| {
         for (i, item) in spec.OrderBy.iter().enumerate() {
-            let cmp = relational_order_compare(
-                left.1[i].as_deref(),
-                right.1[i].as_deref(),
-                item.Desc,
-                item.NullsFirst,
-            );
+            let numeric_cmp = if numeric_range {
+                left.1[i]
+                    .as_ref()
+                    .zip(right.1[i].as_ref())
+                    .and_then(|(a, b)| {
+                        let a = a.parse::<astersql_types::pg_numeric::PgNumeric>().ok()?;
+                        let b = b.parse::<astersql_types::pg_numeric::PgNumeric>().ok()?;
+                        let cmp = a.compare(&b);
+                        Some(if item.Desc { cmp.reverse() } else { cmp })
+                    })
+            } else {
+                None
+            };
+            let cmp = numeric_cmp.unwrap_or_else(|| {
+                relational_order_compare(
+                    left.1[i].as_deref(),
+                    right.1[i].as_deref(),
+                    item.Desc,
+                    if numeric_range {
+                        item.NullsFirst.or(Some(item.Desc))
+                    } else {
+                        item.NullsFirst
+                    },
+                )
+            });
             if !cmp.is_eq() {
                 return cmp;
             }
@@ -3889,6 +3940,49 @@ where
                 ast::BoundType::CurrentRow => windows::BoundType::CurrentRow,
                 ast::BoundType::Following => windows::BoundType::Following,
             };
+            if numeric_range && !b.UnBounded {
+                if b.Unit != ast::TimeUnitType::Invalid {
+                    return Err(SessionError::new(
+                        "numeric RANGE requires a numeric ORDER BY key",
+                    ));
+                }
+                let text = if b.Type == ast::BoundType::CurrentRow {
+                    "0".to_string()
+                } else {
+                    b.Expr
+                        .as_ref()
+                        .map(|e| evaluate(e, &rows[row_index].1))
+                        .transpose()?
+                        .flatten()
+                        .ok_or_else(|| SessionError::new("frame offset must not be null"))?
+                };
+                let offset = text
+                    .parse::<astersql_types::pg_numeric::PgNumeric>()
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                if text.eq_ignore_ascii_case("nan")
+                    || offset.compare(&"0".parse().expect("zero")) == std::cmp::Ordering::Less
+                {
+                    return Err(SessionError::new("frame offset must not be negative"));
+                }
+                let mut result = windows::FrameBound::default();
+                result.bound_type = kind;
+                result.set_numeric_range(
+                    offset,
+                    spec.OrderBy[0].NullsFirst.unwrap_or(spec.OrderBy[0].Desc),
+                );
+                if PG_CAST_TABLE.with(|slot| {
+                    slot.borrow().as_ref().is_some_and(|table| {
+                        matches!(
+                            relational_expression_type(&spec.OrderBy[0].Expr, table).GetType(),
+                            astersql_parser_mysql::r#type::TypeFloat
+                                | astersql_parser_mysql::r#type::TypeDouble
+                        )
+                    })
+                }) {
+                    result.set_floating_range();
+                }
+                return Ok(result);
+            }
             if b.UnBounded {
                 return Ok(windows::FrameBound::unbounded(kind));
             }
@@ -3912,6 +4006,13 @@ where
             })
         };
         let frame = if let Some(f) = &spec.Frame {
+            if f.Type == ast::FrameType::Groups
+                && (f.Extent.Start.Expr.is_some() || f.Extent.End.Expr.is_some())
+            {
+                return Err(SessionError::new(
+                    "GROUPS frames are not supported for last_value",
+                ));
+            }
             let start = &f.Extent.Start;
             let end = &f.Extent.End;
             if (start.UnBounded && start.Type == ast::BoundType::Following)
@@ -3922,11 +4023,6 @@ where
                     && end.Type != ast::BoundType::Following)
             {
                 return Err(SessionError::new("invalid window frame bounds"));
-            }
-            if f.Type != ast::FrameType::Rows && (start.Expr.is_some() || end.Expr.is_some()) {
-                return Err(SessionError::new(
-                    "explicit RANGE offsets are not supported for last_value",
-                ));
             }
             Some(windows::WindowFrame {
                 frame_type: if f.Type == ast::FrameType::Rows {
@@ -3976,14 +4072,29 @@ where
                 })
                 .transpose()?
                 .unwrap_or(windows::Value::Null);
-            input.push(vec![windows::Value::Int(peer), value]);
+            let key = if numeric_range {
+                keys[0]
+                    .as_ref()
+                    .map(|v| {
+                        v.parse::<astersql_types::pg_numeric::PgNumeric>()
+                            .map(|_| windows::Value::Text(v.clone()))
+                            .map_err(|_| {
+                                SessionError::new("numeric RANGE requires a numeric ORDER BY key")
+                            })
+                    })
+                    .transpose()?
+                    .unwrap_or(windows::Value::Null)
+            } else {
+                windows::Value::Int(peer)
+            };
+            input.push(vec![key, value]);
         }
         let plan = windows::PhysicalWindowPlan {
             schema_columns: 3,
             partition_by: vec![],
             order_by: vec![windows::OrderBy {
                 column: 0,
-                descending: false,
+                descending: numeric_range && spec.OrderBy[0].Desc,
             }],
             window_functions: vec![Box::new(windows::LastValue::new(1))],
             frame,

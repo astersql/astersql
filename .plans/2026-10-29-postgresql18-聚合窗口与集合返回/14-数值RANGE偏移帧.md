@@ -2,7 +2,7 @@
 
 批次：【批次 14】；调度依赖：批次13（共享源码/注册与验证资源串行）；行为依赖：13。
 
-状态：未开始
+状态：已完成
 
 目的：RANGE 按排序值距离而非行号划帧；10/10/20 使用 CURRENT ROW 至 5 FOLLOWING 得 10/10/20。升降序、peer、NULL、整数精确边界均不转 f64 丢精度。
 
@@ -111,10 +111,10 @@ offset 恰一排序键、非负非 NULL；时间键 interval RANGE 仍是4号类
 ## Progress
 
 
-- [ ] 确认行为依赖与实际入口。
-- [ ] 记录运行期失败或已有正确行为的当前证据。
-- [ ] 完成最小实现及同夹具通过验证。
-- [ ] Ready检查、diff自审与提交交接。
+- [x] 确认行为依赖与实际入口。
+- [x] 记录运行期失败或已有正确行为的当前证据。
+- [x] 完成最小实现及同夹具通过验证。
+- [x] Ready检查、diff自审与提交交接。
 
 ## Surprises & Discoveries
 
@@ -135,3 +135,74 @@ offset 恰一排序键、非负非 NULL；时间键 interval RANGE 仍是4号类
 
 
 此编号文件是依 `PLANS.md` 维护的活动ExecPlan。证据记录在本节，长期测试用例在独立测试文件；不修改只读整体指南。规划新增测试名不代表当前已注册或已通过。
+
+
+## 2026-10-31 前置接口核查与阻塞交接
+
+当前核查 HEAD：`ccecda92ec36bafb9bb9a6ee74115bc198070c7b`。只更新本编号任务，不修改只读 plan.md，不改生产代码、测试或其他任务的工作区变更。
+
+批次13已有提交 `ccecda92ec36bafb9bb9a6ee74115bc198070c7b`，编号文件保留为“已完成，待回归”，其中记录窗口内核2/2、server2/2及相邻验证通过；待回归项是既有admin规则库存553≠551。这是历史证据，未冒充本任务当前运行。真实入口确有 LastValue、PhysicalWindowPlan 与固定int4描述。批次2的AST边界载体已存在于 pkg/parser/ast/lib.rs:4437，包含 Expr/UnBounded/Type；这一前置满足。
+
+阻塞是本任务明列的外部3号数值比较/加减接口尚不足：
+
+- pkg/session/runtime/relational_value.rs:72 relational_compare 对整数使用精确比较，非整数走 parse::<f64>()；:3142 relational_order_compare 调用此比较器，:3850窗口先用它排序。数值键在进入物理帧之前就可能合并不同值，无法仅替换物理边界比较修复。
+- pkg/types/pg_numeric.rs 当前公开接口有 add、divide、编解码与修饰符，但没有精确比较（Ord/PartialOrd/cmp）或减法接口。不可把已存在的add推定为所需比较/加减接口整体完成。
+- pkg/executor/windows/window.rs:415 FrameBound仅承载u64偏移；:460 boundary_number及:485 candidate_cmp_boundary将有偏移数值转换为f64。:141 Decimal比较在scale对齐溢出时同样回退f64。这些是本任务后续必须处理的局部落点，但不应通过另写通用数值比较器来吞并外部3号责任。
+- pkg/session/runtime/relational_value.rs:3926当前明确拒绝显式RANGE偏移；:3979将排序键编码为peer编号，因此目标行为当前仍缺失，不能标“已完成，待回归”。
+
+精度探针（仅说明源码路径的数值风险，非SQL运行或行为验收）：Python float('9007199254740992.1') 与 float('9007199254740992.2') 均为9007199254740992.0，比较相等。后续需使用3号交付的定型精确比较及边界算术；不能把范围缩为int4代表SQL或用能力拒绝代替完整数值目标。
+
+已执行检查（仓库根目录）：
+
+- cat skills/do-task-plans/SKILL.md、总plan.md、本任务、任务13、PLANS.md、skills/rustcodegraph/SKILL.md及pkg/server/AGENTS.md：读取成功（0）。pkg/executor/windows/doc.go及pkg/session/doc.go不存在（cat退出1），文件搜索未找到目标目录doc.go。
+- git status --short、git log -6 --oneline、git rev-parse HEAD：0；已识别并保留其他任务的大量在途修改。
+- ~/.rustcodegraph/bin/rustcodegraph status：0，11847文件；explore 'PhysicalWindowPlan RANGE frame last_value'：0，结果过宽，继而使用node定点读取。
+- ~/.rustcodegraph/bin/rustcodegraph node --file pkg/executor/windows/window.rs --offset 400 --limit 132；--offset 30 --limit 110；--offset 126 --limit 77：均0。
+- ~/.rustcodegraph/bin/rustcodegraph node --file pkg/session/runtime/relational_value.rs --offset 3820 --limit 160；--offset 3978 --limit 70；--offset 70 --limit 85；--offset 3142 --limit 50：均0。
+- rg -n 'pub fn|impl (PartialOrd|Ord)|fn (cmp|partial_cmp|subtract|sub)' pkg/types/pg_numeric.rs：0，输出见上述现有公开接口，无精确比较/减法命中。
+- rg -n 'pub struct FrameBound|pub Expr:|pub UnBounded:' pkg/parser/ast/lib.rs：0，确认AST载体。
+- python3精度探针：0，equal=True；有效SQL/协议测试0，不计作行为通过。
+- test -f .agents/skills/tidb-verify-profile/SKILL.md：1，技能仍缺失。
+
+验证profile：仅前置只读分析，未进入WIP/Ready代码验证，不宣称检查通过。未执行Cargo、调用Cargo的脚本或使用槽位产物，因此未领取Cargo槽位，CARGO_TARGET_DIR未设置；没有自己的锁或进程需清理。未运行cargo fmt、pg09_14两组测试、make lint、解析器检查、真实PG18.6/RealTiKV或性能验证。生产行为尚未实现，正确性/兼容性/性能均未验收。
+
+决策：按本任务“实际外部前置”及执行技能“遇到阻碍（缺少依赖…）立即停止执行”要求停止，不扩建通用类型/排序系统。下一步由外部3号提供可复用精确数值比较/边界加减及对应测试，然后恢复本任务的独立TDD、必要局部接线和Ready验证。只有编号任务的状态及阻塞记录更新，按用户规则不提交、不删除本文件，无本任务提交SHA。
+
+
+## 2026-10-31 恢复实施
+
+用户补充授权允许在现有表示/执行链内补齐最小精确比较和偏移接口，前次静态阻塞结论被此决策替代。未修改plan.md。领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。新增pg09_14独立测试，kernel首个夹具通过后加强大整数降序边界，同过滤器退出101（1有效失败）；server退出101（1有效失败），目标SQL被明确拒绝。不是编译失败。
+
+生产修改依据：pkg/types/pg_numeric.rs/PgNumeric::compare、subtract仅提供RANGE所需的系数精确排序/现有add的符号翻转复用；pkg/executor/windows/window.rs/FrameBound对原整数偏移使用i128边界，新增定型numeric偏移绑定复用既有范围处理器；pkg/executor/windows/Cargo.toml新增已有workspace本地types依赖，不引入外部依赖或本地覆盖；pkg/session/runtime/relational_value.rs/relational_window_value仅对显式数值RANGE使用精确排序与真实键值，替换peer编号接线，保留原默认帧路径。未创建生产类型文件或第二执行器。对应.rs.md在交付时同步。
+
+
+## 最终交付证据（2026-10-31）
+
+状态已完成，前次阻塞已通过用户授权的最小局部接线解除；未改只读plan.md。新增生产文件0、外部依赖0；仅已有workspace astersql-types依赖成为窗口的活动依赖，Cargo.lock已含此依赖故无变更。对应.rs.md已同步。pkg/server/pg_conn.rs新增必要错误映射（单排序键42601、非数值/interval能力拒绝0A000），不把时间RANGE或GROUPS记为支持。所有Rust源文件已有AsterSQL标记，PingCAP版权保留。新增测试均独立于生产源码。
+
+精确边界：整数不转f64，Int/Int用i128避免上下溢，UInt/Decimal复用精确系数运算；SQL numeric排序/边界全程PgNumeric。浮点键独立使用自身浮点算术，未将它用于整数/numeric。代表10/10/20输出10/10/20；numeric 9007199254740992.1/.2/.4与offset0.1输出2/2/3；升降序、NULLS FIRST/LAST、int8两端、u64上端、小数、peer、合法空帧、空输入及跨Chunk均有当前测试。极小int8裸负数字面量原有解析/求值溢出未纳入修复，测试改用同值字符串显式cast保留边界本身；不以缩小数值范围绕过。
+
+协议证据：Q与Parse/statement Describe/Bind/portal Describe/Execute/Sync；结果固定r/int4 OID23/typlen4/typmod-1，零行描述不漂移；结果text/binary及参数text/binary四组合、NULL重绑、Execute不额外发描述。负/NULL偏移、无/多排序键在本地Execute失败，状态分别22013/22004/42601；原始S/V/C/M均输出，D/H/P未发送，非参考差分。每次Sync得到ReadyForQuery I，再SELECT1成功。双PG与同Server MySQL（使用其原生UNION ALL/ROWS语法）交错通过，临时socket/listener关闭且端口拒绝重连。当前错误阶段只记录实际值，未与PostgreSQL18.6逐阶段逐字比较，此差分属任务18，不宣称18.6参考通过。
+
+Profile：WIP红/绿后Ready；verify-profile技能确实缺失，按根AGENTS及testing-flow选择适用检查。无Go/解析器/Bazel/外部依赖变化，不触发bazel_prepare或parser系列；未运行bazel_lint_changed。窗口crate仅19个测试且共享边界比较影响全部帧与函数，因此完整运行这个小crate验证相邻行为，没有扩大到workspace。
+
+所有Cargo命令从根执行并继承 CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1（动态领取1号）。同一阶段内同一持有会话使用该槽位；最终阶段用EXIT/INT/TERM trap在所有子进程结束后清理自己的owner与锁，保留缓存。没有删除他人锁/进程。
+
+| 完整验证命令（Cargo均上述环境） | 退出码/有效计数 |
+| --- | --- |
+| cargo fmt --all | 0，实施后及最终运行 |
+| cargo check -p astersql-executor-windows | 0，0行为测试，仅编译证据 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor-windows --lib pg09_14 -- --nocapture | 初版1/1通过，加强边界后101（1有效失败）；修复后最终0，3/3 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_14 -- --nocapture | 首次101（1有效失败，显式RANGE拒绝）；极值裸字面量阶段101（1有效失败），同值显式cast后及最终0，2/2 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor-windows --lib -- --nocapture | 0，19/19（含既有9项Go对齐、内存、帧/排名及本项3项） |
+| env -u LDFLAGS cargo test --locked -p astersql-types --lib pg_numeric_test -- --nocapture | 0，10/10（本项1，既有numeric9） |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_13 -- --nocapture | 0，2/2 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_12 -- --nocapture | 0，2/2 |
+| make lint | 0 |
+| git diff --check | 0 |
+
+最初一次包含rm -f清理trap的shell被工具安全规则拒绝，整条命令未执行；改为核对自身session标识后由Python unlink/rmdir清理，最终阶段成功结束并释放1号锁。
+
+风险：正确性由上述局部行为约束；PG18.6错误消息/阶段、时间interval及其他窗口函数的完整numeric签名未据此验收。兼容性通过既有窗口、批次12/13及MySQL对照约束；没有修改通用关系排序器。性能仍沿现有逐行重建分区的会话路径，精确数值解析/运算可能增加CPU及临时分配，未压测、未作吞吐承诺。没有启动RealTiKV或外部PG参考进程；本项不依赖真实存储。
+
+代码自审完成，仅暂存本任务12个代码/测试/说明文件与本编号文件。其他工作区变更保持原样。按git-commit技能提交后在最终回复报告完整SHA及上述证据，再按用户要求删除本编号文件（删除不另作提交）。

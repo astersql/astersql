@@ -296,3 +296,40 @@ fn pg09_03_numeric_add() {
         Err(PgNumericError::OutOfRange)
     );
 }
+
+#[test]
+fn pg09_14_numeric_range_primitives() {
+    use std::cmp::Ordering;
+    let parse = |s: &str| s.parse::<PgNumeric>().unwrap();
+    for (a, b, cmp) in [
+        ("9007199254740992.1", "9007199254740992.2", Ordering::Less),
+        ("1.00", "1", Ordering::Equal),
+        ("-10", "-2", Ordering::Less),
+        ("0.000", "0.01", Ordering::Less),
+        ("-Infinity", "-1", Ordering::Less),
+        ("Infinity", "NaN", Ordering::Less),
+        ("NaN", "NaN", Ordering::Equal),
+    ] {
+        assert_eq!(parse(a).compare(&parse(b)), cmp);
+        assert_eq!(parse(b).compare(&parse(a)), cmp.reverse());
+    }
+    assert_eq!(
+        parse("9007199254740992.1")
+            .add(&parse("0.1"))
+            .unwrap()
+            .to_string(),
+        "9007199254740992.2"
+    );
+    assert_eq!(
+        parse("-9223372036854775808")
+            .subtract(&parse("1"))
+            .unwrap()
+            .to_string(),
+        "-9223372036854775809"
+    );
+    let big = format!("1{}1", "0".repeat(200));
+    assert_eq!(
+        parse(&big).compare(&parse(&format!("1{}2", "0".repeat(200)))),
+        Ordering::Less
+    );
+}

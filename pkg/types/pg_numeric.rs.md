@@ -21,3 +21,8 @@
 ## numeric SUM（任务 pg09_03）
 
 `add` 在既有 PgNumeric 系数/scale/特殊值载体内精确相加，保留较大显示 scale，异号无穷相加得到 NaN，整数位超出131072时报 OutOfRange。TypedHashAgg 的 NumericSum 状态跨 Chunk 保留此值，空输入与全 NULL 保持 NULL；会话 PG int8/numeric SUM 使用此状态，描述固定为 numeric、typmod -1，不经过 MyDecimal 或浮点。
+
+
+## 数值 RANGE 偏移（任务14）
+
+compare按符号、有效整数位和补零后的系数比较；subtract翻转符号后复用add。只为RANGE距离边界提供精确运算，不经f64。
