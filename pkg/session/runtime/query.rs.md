@@ -321,3 +321,5 @@ Typed text→bytea evaluation uses the shared strict scalar input helper. COALES
 签名门禁同时拒绝 COUNT/SUM/AVG 的多参数普通调用，按实际参数身份构造 42883 消息及标准 hint。FILTER 非布尔输入包含实际类型和表达式位置，嵌套聚合定位到内层聚合；沿原错误链输出，不引入第二套求值逻辑。
 
 聚合参数的 numeric/real/double precision 非法常量复用已有严格输入转换器，在分析阶段补齐 22P02 的原值与源位置；输入文本先经既有 RedactURL 脱敏，避免凭证进入错误字段，不修改全局类型库或聚合状态机。
+
+PG LAST_VALUE 的源字段类型绑定在无行输入时也递归解析参数身份；Describe 不通过首行值推断 int4。

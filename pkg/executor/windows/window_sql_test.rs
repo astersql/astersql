@@ -530,3 +530,101 @@ fn pg09_12_execution() {
         );
     }
 }
+
+#[test]
+fn pg09_13_execution() {
+    for pipelined in [false, true] {
+        for (rows, frame, expected) in [
+            (
+                sorted_rows(&[10, 10, 20]),
+                Some(WindowFrame {
+                    frame_type: FrameType::Range,
+                    start: FrameBound::unbounded(BoundType::Preceding),
+                    end: current_row(),
+                }),
+                vec![Value::Int(10), Value::Int(10), Value::Int(20)],
+            ),
+            (sorted_rows(&[10, 10, 20]), None, vec![Value::Int(20); 3]),
+            (
+                sorted_rows(&[10, 10, 20]),
+                Some(WindowFrame {
+                    frame_type: FrameType::Rows,
+                    start: current_row(),
+                    end: current_row(),
+                }),
+                vec![Value::Int(10), Value::Int(10), Value::Int(20)],
+            ),
+            (
+                sorted_rows(&[10]),
+                Some(WindowFrame {
+                    frame_type: FrameType::Rows,
+                    start: FrameBound::following(1),
+                    end: FrameBound::following(1),
+                }),
+                vec![Value::Null],
+            ),
+            (
+                vec![vec![Value::Int(10)], vec![Value::Null]],
+                None,
+                vec![Value::Null; 2],
+            ),
+            (vec![vec![Value::Null]; 2], None, vec![Value::Null; 2]),
+            (vec![], None, vec![]),
+        ] {
+            let result = execute(
+                rows,
+                vec![],
+                order(0, false),
+                frame,
+                vec![Box::new(super::LastValue::new(0))],
+                pipelined,
+            );
+            assert_eq!(
+                result.into_iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
+                expected,
+                "pipelined={pipelined}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pg09_13_execution_chunks_and_cleanup() {
+    for pipelined in [false, true] {
+        let plan = build_plan(
+            2,
+            vec![],
+            order(0, false),
+            Some(WindowFrame {
+                frame_type: FrameType::Range,
+                start: FrameBound::unbounded(BoundType::Preceding),
+                end: current_row(),
+            }),
+            vec![Box::new(super::LastValue::new(1))],
+            pipelined,
+        );
+        let chunks = vec![
+            Chunk::new(vec![vec![Value::Int(10), Value::Int(1)]]),
+            Chunk::new(vec![
+                vec![Value::Int(10), Value::Int(2)],
+                vec![Value::Int(20), Value::Null],
+            ]),
+        ];
+        let mut executor =
+            super::build(plan, Box::new(super::VecChunkExecutor::new(chunks)), false).unwrap();
+        let context = ExecContext::default();
+        executor.open(&context).unwrap();
+        let mut values = vec![];
+        let mut output = Chunk::default();
+        loop {
+            executor.next(&context, &mut output).unwrap();
+            if output.rows.is_empty() {
+                break;
+            }
+            values.extend(output.rows.iter().map(|r| r[2].clone()));
+        }
+        assert_eq!(values, vec![Value::Int(2), Value::Int(2), Value::Null]);
+        executor.close().unwrap();
+        assert_eq!(executor.memory_bytes(), 0);
+    }
+}

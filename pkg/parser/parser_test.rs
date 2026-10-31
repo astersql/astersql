@@ -6387,3 +6387,52 @@ fn pg09_12_null_order_ast() {
             .is_err()
     );
 }
+
+#[test]
+fn pg09_13_frame_offset_ast() {
+    for offset in [
+        "-1 PRECEDING",
+        "NULL PRECEDING",
+        "-1 FOLLOWING",
+        "NULL FOLLOWING",
+    ] {
+        let sql = format!(
+            "SELECT last_value(x) OVER(ROWS BETWEEN {offset} AND UNBOUNDED FOLLOWING) FROM t"
+        );
+        let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+        let (nodes, _) = pg.ParseSQL(&sql, &[]).unwrap();
+        let select = nodes[0]
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::WindowFunction { Spec, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("window AST")
+        };
+        let bound = &Spec.Frame.as_ref().unwrap().Extent.Start;
+        assert!(bound.Expr.is_some());
+        assert!(!bound.UnBounded);
+        assert!(
+            crate::New().ParseSQL(&sql, &[]).is_err(),
+            "MySQL dialect isolation: {sql}"
+        );
+    }
+}
+
+#[test]
+fn pg09_13_invalid_frame_bounds() {
+    for bounds in [
+        "CURRENT ROW AND 1 PRECEDING",
+        "1 FOLLOWING AND CURRENT ROW",
+        "UNBOUNDED FOLLOWING AND UNBOUNDED FOLLOWING",
+        "UNBOUNDED PRECEDING AND UNBOUNDED PRECEDING",
+    ] {
+        let sql = format!("SELECT last_value(x) OVER(ROWS BETWEEN {bounds}) FROM t");
+        assert!(
+            crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(&sql, &[])
+                .is_err()
+        );
+    }
+}

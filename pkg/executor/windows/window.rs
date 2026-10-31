@@ -629,6 +629,47 @@ impl WindowFunction for Rank {
     }
 }
 
+/// LAST_VALUE over the current frame, retaining SQL NULL at its final row.
+pub struct LastValue {
+    column: usize,
+    state: astersql_executor_aggfuncs::func_value::LastValue<i64>,
+}
+impl LastValue {
+    pub fn new(column: usize) -> Self {
+        Self {
+            column,
+            state: Default::default(),
+        }
+    }
+}
+impl WindowFunction for LastValue {
+    fn reset(&mut self) {
+        self.state.reset();
+    }
+    fn update(&mut self, rows: &[Row]) -> Result<()> {
+        if let Some(row) = rows.last() {
+            let value = match row.get(self.column) {
+                Some(Value::Int(value)) => Some(*value),
+                Some(Value::Null) => None,
+                _ => return Err(Error::new("LAST_VALUE requires an integer input column")),
+            };
+            self.state.update(&[value]);
+        }
+        Ok(())
+    }
+    fn result(&mut self) -> Result<Value> {
+        Ok(self
+            .state
+            .result()
+            .flatten()
+            .copied()
+            .map_or(Value::Null, Value::Int))
+    }
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
+    }
+}
+
 /// LAG(col, offset, default)：取向前 offset 行的列值。
 pub struct Lag {
     column: usize,

@@ -3722,6 +3722,16 @@ pub(super) fn relational_expression_type(
         {
             new_type(astersql_parser_mysql::r#type::TypeLonglong)
         }
+        ast::ExprKind::WindowFunction { Name, Args, .. }
+            if Name.eq_ignore_ascii_case("last_value") =>
+        {
+            let mut result = Args
+                .first()
+                .map(|argument| relational_expression_type(argument, table))
+                .unwrap_or_else(|| new_type(astersql_parser_mysql::r#type::TypeVarString));
+            result.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
+            result
+        }
         ast::ExprKind::AggregateFunction { Name, Args, .. } => {
             match Name.to_ascii_lowercase().as_str() {
                 "count" | "min_count" | "max_count" | "bit_xor" => {
@@ -3856,6 +3866,166 @@ where
         .iter()
         .position(|index| *index == row_index)
         .expect("current row belongs to its partition");
+    if Name.eq_ignore_ascii_case("last_value")
+        && PG_CAST_TABLE.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|table| {
+                Args.first().is_some_and(|arg| {
+                    relational_expression_type(arg, table).GetType()
+                        == astersql_parser_mysql::r#type::TypeLong
+                })
+            })
+        })
+    {
+        use astersql_executor::windows;
+        let argument = Args
+            .first()
+            .ok_or_else(|| SessionError::new("last_value requires one argument"))?;
+        if Args.len() != 1 {
+            return Err(SessionError::new("last_value requires one argument"));
+        }
+        let bound = |b: &ast::FrameBound| -> SessionResult<windows::FrameBound> {
+            let kind = match b.Type {
+                ast::BoundType::Preceding => windows::BoundType::Preceding,
+                ast::BoundType::CurrentRow => windows::BoundType::CurrentRow,
+                ast::BoundType::Following => windows::BoundType::Following,
+            };
+            if b.UnBounded {
+                return Ok(windows::FrameBound::unbounded(kind));
+            }
+            if b.Type == ast::BoundType::CurrentRow {
+                return Ok(windows::FrameBound::default());
+            }
+            let value = b
+                .Expr
+                .as_ref()
+                .map(|e| evaluate(e, &rows[row_index].1))
+                .transpose()?
+                .flatten()
+                .ok_or_else(|| SessionError::new("frame offset must not be null"))?;
+            let n = value
+                .parse::<u64>()
+                .map_err(|_| SessionError::new("frame offset must not be negative"))?;
+            Ok(if b.Type == ast::BoundType::Preceding {
+                windows::FrameBound::preceding(n)
+            } else {
+                windows::FrameBound::following(n)
+            })
+        };
+        let frame = if let Some(f) = &spec.Frame {
+            let start = &f.Extent.Start;
+            let end = &f.Extent.End;
+            if (start.UnBounded && start.Type == ast::BoundType::Following)
+                || (end.UnBounded && end.Type == ast::BoundType::Preceding)
+                || (start.Type == ast::BoundType::CurrentRow
+                    && end.Type == ast::BoundType::Preceding)
+                || (start.Type == ast::BoundType::Following
+                    && end.Type != ast::BoundType::Following)
+            {
+                return Err(SessionError::new("invalid window frame bounds"));
+            }
+            if f.Type != ast::FrameType::Rows && (start.Expr.is_some() || end.Expr.is_some()) {
+                return Err(SessionError::new(
+                    "explicit RANGE offsets are not supported for last_value",
+                ));
+            }
+            Some(windows::WindowFrame {
+                frame_type: if f.Type == ast::FrameType::Rows {
+                    windows::FrameType::Rows
+                } else {
+                    windows::FrameType::Range
+                },
+                start: bound(start)?,
+                end: bound(end)?,
+            })
+        } else if spec.OrderBy.is_empty() {
+            None
+        } else {
+            Some(windows::WindowFrame {
+                frame_type: windows::FrameType::Range,
+                start: windows::FrameBound::unbounded(windows::BoundType::Preceding),
+                end: windows::FrameBound::default(),
+            })
+        };
+        // Keys are already sorted using the SQL comparator. Encode peer identity
+        // to reuse the physical RANGE processor without losing NULL ordering.
+        let mut peer = 0i64;
+        let mut input = Vec::with_capacity(keyed.len());
+        for (i, (index, keys)) in keyed.iter().enumerate() {
+            if i > 0
+                && keys
+                    .iter()
+                    .zip(&keyed[i - 1].1)
+                    .zip(&spec.OrderBy)
+                    .any(|((a, b), item)| {
+                        !relational_order_compare(
+                            a.as_deref(),
+                            b.as_deref(),
+                            item.Desc,
+                            item.NullsFirst,
+                        )
+                        .is_eq()
+                    })
+            {
+                peer += 1;
+            }
+            let value = evaluate(argument, &rows[*index].1)?
+                .map(|v| {
+                    v.parse::<i64>()
+                        .map(windows::Value::Int)
+                        .map_err(|e| session_error("last_value integer", e))
+                })
+                .transpose()?
+                .unwrap_or(windows::Value::Null);
+            input.push(vec![windows::Value::Int(peer), value]);
+        }
+        let plan = windows::PhysicalWindowPlan {
+            schema_columns: 3,
+            partition_by: vec![],
+            order_by: vec![windows::OrderBy {
+                column: 0,
+                descending: false,
+            }],
+            window_functions: vec![Box::new(windows::LastValue::new(1))],
+            frame,
+            pipelined_enabled: false,
+        };
+        let mut executor = windows::build(
+            plan,
+            Box::new(windows::VecChunkExecutor::new(vec![windows::Chunk::new(
+                input,
+            )])),
+            false,
+        )
+        .map_err(|e| SessionError::new(e.to_string()))?;
+        let context = windows::ExecContext::default();
+        let result = (|| {
+            executor
+                .open(&context)
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            let mut output = windows::Chunk::default();
+            let mut offset = 0;
+            loop {
+                executor
+                    .next(&context, &mut output)
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                if output.rows.is_empty() {
+                    return Err(SessionError::new("missing last_value result"));
+                }
+                if position < offset + output.rows.len() {
+                    return match output.rows[position - offset].last() {
+                        Some(windows::Value::Int(v)) => Ok(Some(v.to_string())),
+                        Some(windows::Value::Null) => Ok(None),
+                        _ => Err(SessionError::new("invalid last_value result")),
+                    };
+                }
+                offset += output.rows.len();
+            }
+        })();
+        let closed = executor
+            .close()
+            .map_err(|e| SessionError::new(e.to_string()));
+        return result.and_then(|v| closed.map(|_| v));
+    }
     if matches!(Name.to_ascii_lowercase().as_str(), "row_number" | "rank") {
         use astersql_executor::windows;
         // Feed peer identities to the shared rank state. Equality must use the

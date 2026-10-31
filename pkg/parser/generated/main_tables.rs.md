@@ -175,3 +175,5 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## 2026-10-31 聚合签名载体
 
 由 `cargo run --release --locked -p astersql-parsergen -- generate` 随主文法生成。新增 `PgAggregateArity` 的 COUNT/SUM/AVG 多参数载体以及到 `SumExpr` 的转接，供 PostgreSQL 在分析阶段给出签名诊断；对应语义动作对 MySQL 继续拒绝。表状态编号与稀疏行的变动是生成结果，不承载新的聚合执行逻辑。
+
+任务13新增四条 PG 帧偏移语法规则后由 parsergen generate 再生主表。

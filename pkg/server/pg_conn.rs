@@ -1083,6 +1083,12 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
                 "22P02"
             } else if message == "ambiguous PG index relation name" {
                 "42725"
+            } else if message == "frame offset must not be null" {
+                "22004"
+            } else if message == "frame offset must not be negative" {
+                "22013"
+            } else if message == "invalid window frame bounds" {
+                "42601"
             } else if message.starts_with("[kv:1062]") || message.starts_with("Duplicate entry ") {
                 "23505"
             } else if message == "PostgreSQL int2not requires a smallint argument"

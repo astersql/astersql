@@ -117,6 +117,10 @@ enum QueryRule {
     WindowFrameUnitsAlt02,
     WindowFrameUnitsAlt03,
     WindowFrameExtentAlt01,
+    PgNegativePreceding,
+    PgNullPreceding,
+    PgNegativeFollowing,
+    PgNullFollowing,
     WindowFrameStartAlt01,
     WindowFrameStartAlt02,
     WindowFrameStartAlt03,
@@ -467,6 +471,14 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "windowframestart_interval_expression_timeunit_pr--6d8a3cce367206de" => {
             Some(QueryRule::WindowFrameStartAlt04)
         }
+        "windowframestart_numliteral_preceding--eff5f1cde6955840" => {
+            Some(QueryRule::PgNegativePreceding)
+        }
+        "windowframestart_null_preceding--40a9495852e6943f" => Some(QueryRule::PgNullPreceding),
+        "windowframebound_numliteral_following--ca3a8b4f323c21a6" => {
+            Some(QueryRule::PgNegativeFollowing)
+        }
+        "windowframebound_null_following--6fa66adc11730ce9" => Some(QueryRule::PgNullFollowing),
         "windowframestart_current_row--c4744ad7fcd1a4f6" => Some(QueryRule::WindowFrameStartAlt05),
         "windowframebetween_between_windowframebound_and--4dc4985d339471aa" => {
             Some(QueryRule::WindowFrameBetweenAlt01)
@@ -1125,6 +1137,47 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 },
             }));
         }
+        QueryRule::PgNegativePreceding
+        | QueryRule::PgNullPreceding
+        | QueryRule::PgNegativeFollowing
+        | QueryRule::PgNullFollowing => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf(
+                    "signed and NULL window offsets require PostgreSQL dialect",
+                    &[],
+                ));
+                return Err(1);
+            }
+            let negative = matches!(
+                rule,
+                QueryRule::PgNegativePreceding | QueryRule::PgNegativeFollowing
+            );
+            let expr = if negative {
+                parser_ast::ExprNode::Value(format!(
+                    "-{}",
+                    rhs[rhs_len - (1)]
+                        .item
+                        .as_deref()
+                        .map(semantic_value_text)
+                        .unwrap_or_default()
+                ))
+            } else {
+                parser_ast::ExprNode::NullValue()
+            };
+            out.item = Some(Box::new(parser_ast::FrameBound {
+                Type: if matches!(
+                    rule,
+                    QueryRule::PgNegativePreceding | QueryRule::PgNullPreceding
+                ) {
+                    parser_ast::BoundType::Preceding
+                } else {
+                    parser_ast::BoundType::Following
+                },
+                UnBounded: false,
+                Expr: Some(expr),
+                Unit: parser_ast::TimeUnitType::Invalid,
+            }));
+        }
         QueryRule::WindowFrameStartAlt01
         | QueryRule::WindowFrameStartAlt02
         | QueryRule::WindowFrameStartAlt03
@@ -1201,6 +1254,17 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             else {
                 return Ok(false);
             };
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL
+                && ((start.UnBounded && start.Type == parser_ast::BoundType::Following)
+                    || (end.UnBounded && end.Type == parser_ast::BoundType::Preceding)
+                    || (start.Type == parser_ast::BoundType::CurrentRow
+                        && end.Type == parser_ast::BoundType::Preceding)
+                    || (start.Type == parser_ast::BoundType::Following
+                        && end.Type != parser_ast::BoundType::Following))
+            {
+                yylex.AppendError(yylex.Errorf("invalid window frame bounds", &[]));
+                return Err(1);
+            }
             out.item = Some(Box::new(parser_ast::FrameExtent {
                 Start: start,
                 End: end,

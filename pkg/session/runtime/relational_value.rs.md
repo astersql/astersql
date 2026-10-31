@@ -339,3 +339,5 @@ Interval数组加入既有typed-array cast消费者门禁，使用同一规范�
 ## Task 42: typed text to bytea
 
 Explicit typed text→bytea preserves TypeBlob/binary result identity. pg_text_bytea_cast calls the existing strict bytea_text_input codec and stores the established binary hex carrier; SQL NULL stays NULL and malformed complete input retains its codec SQLSTATE.
+
+PG last_value(int4) 的描述复用参数字段类型；执行把 SQL 比较器排序后的 peer 编号和 int4 参数接到 PhysicalWindowPlan，默认 RANGE 截至当前同序组，显式 ROWS 使用既有边界处理器，关闭执行器后返回结果。其他类型沿既有入口处理，数值 RANGE 偏移由后续任务承担。

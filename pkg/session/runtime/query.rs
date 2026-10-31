@@ -5904,6 +5904,16 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            // Window output identity follows its bound argument even when the
+            // derived input contains no rows (there is no value to infer from).
+            if let ast::ExprKind::WindowFunction { Name, Args, .. } = &expression.Kind
+                && Name.eq_ignore_ascii_case("last_value")
+                && let Some(argument) = Args.first()
+            {
+                let mut result = self.pg_case_input_type(argument, source_fields);
+                result.DelFlag(astersql_parser_mysql::r#type::NotNullFlag);
+                return result;
+            }
             if let ast::ExprKind::Function {
                 FnName,
                 Schema,

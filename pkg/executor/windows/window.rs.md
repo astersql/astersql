@@ -85,3 +85,5 @@ Go `window_sql_test.go` 覆盖更多函数、类型与 SQL 集成情形；其中
 - 修改缓冲生命周期：保持 `result_chunks` 与 `remaining_rows_in_chunk` 同步、只输出已补齐块、错误后停止继续消费、close 归零父子 tracker。应同步 `window_executor_test.rs` 与 `window_memory_test.rs`。
 - 扩充值类型或迁移到真实 TiDB 类型：优先替换 `Value::{numeric_cmp,sql_cmp}` 和各聚合的类型分派，并逐项对照 Go expression/types/collation 语义；性能上警惕完整分区复制、`Lag::update` 的行克隆、MIN/MAX 的线性删除与每行线性极值扫描。
 - 任何改变都应同时核对 `builder.rs` 和 `pipelined_window.rs`，因为它们共享这里的 frame/function/tracker 协议；若行为只在一条路径更新，会破坏两执行器结果一致性。
+
+LAST_VALUE 的整数适配器复用 aggfuncs::func_value::LastValue<i64>，保留帧末尾 NULL 与空帧 NULL；缓冲和流水线均通过 WindowFunction 调用，固定状态内存计入 tracker。
