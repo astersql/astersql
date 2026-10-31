@@ -2,7 +2,7 @@
 
 批次：【批次 27】；调度依赖：批次26（共享源码/注册与验证资源串行）；行为依赖：24、25、26。
 
-状态：未开始
+状态：已完成
 
 目的：投影单SRF每外行展开至耗尽后进入下一外行；零行集合丢弃该外行，其他标量列按对应外行重复，保留固定输出描述。
 
@@ -109,15 +109,15 @@
 ## Progress
 
 
-- [ ] 确认行为依赖与实际入口。
-- [ ] 记录运行期失败或已有正确行为的当前证据。
-- [ ] 完成最小实现及同夹具通过验证。
-- [ ] Ready检查、diff自审与提交交接。
+- [x] 确认行为依赖与实际入口。
+- [x] 记录运行期失败或已有正确行为的当前证据。
+- [x] 完成最小实现及同夹具通过验证。
+- [x] Ready检查、diff自审与提交交接。
 
 ## Surprises & Discoveries
 
 
-当前仅有静态规划，没有运行结果。实施中在这里记录实际接口差异、缺失依赖和对应证据。
+实际接口、红绿灯及数组参数分析差异见下方2026-11-01实施记录。
 
 ## Decision Log
 
@@ -127,9 +127,63 @@
 ## Outcomes & Retrospective
 
 
-尚未实施。完成时填写实际输出、有效测试数量、参考版本、清理结果、剩余范围外依赖及完整SHA。
+任务行为和适用Ready检查已完成；具体计数、命令和边界见最终交接。
 
 ## Artifacts and Notes
 
 
 此编号文件是依 `PLANS.md` 维护的活动ExecPlan。证据记录在本节，长期测试用例在独立测试文件；不修改只读整体指南。规划新增测试名不代表当前已注册或已通过。
+
+
+## 2026-11-01 实施记录
+
+已读执行技能、RustCodeGraph技能、PLANS.md、根和server AGENTS、testing-flow；目标包无doc.go。24/25/26前置提交分别为b20f646283dc911df0a26a9f2f29bada16d7b0cf、28697d5ebe09c813eee97dceb294cd837de07671、5635e094130846b3d381d8020098bdf76fc8f18c，实际有BuildInt8Series/BuildInt4Unnest和逐左行重启路径及pg09_24/25/26独立测试。2号已有普通投影Function AST，不缺语法载体。plan.md只读。
+
+生产修改依据（拟实施）：session/runtime/source.rs::execute_insert_select_query_body_with_outer在WHERE后复用既有FROM SRF执行链逐外行展开，然后使用既有投影/排序/LIMIT；query.rs::relational_select_requires_full_query路由无FROM调用及物理表投影到同一关系入口，结果类型绑定和验证复用pg_integer_series_field，保持零行描述。无新增生产类型/文件或外部依赖。
+
+首次动态领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1，PID19201；/tmp/pg0927-cargo.sh使用mkdir原子领取、记录owner并trap释放。cargo fmt --all退出0；executor同过滤器红灯退出101，有效1测试在普通会话返回unsupported scalar function generate_series，是运行期行为失败。server红灯待完成。
+
+
+server红灯同过滤器退出101，有效1项失败，SQLSTATE42883/unsupported scalar function generate_series。初版实现曾有SelectStmt无Clone和未初始化编译错误，已改为仅SRF查询克隆FieldList；不把编译错误算行为证据。中间扩展协议测试曾重复Parse同名statement出现42P05，已在重载切换时显式Close；不变更产品逻辑来适配测试。
+
+同过滤器executor/server各1项已通过，中间日志/tmp/pg0927-{executor,server}.log。server正常夹具含代表相关投影、正反向、INT8超2^53及上界、零行/NULL严格、空外行、全NULL外行、UNNEST含NULL元素/重复元素、外层LIMIT/OFFSET和2052行跨Chunk重启。40次整数扩展绑定（两重载×四格式×5参数/步长情形）及16次数组绑定（四格式×4次正常/空/NULL/恢复）逐行检查字节、固定OID23或20/长度4或8/typmod-1、参数Describe、portal Describe唯一T和ReadyForQuery I。22023检查S,V,C,M，D/H/P无字段；扩展Sync后SELECT1恢复，事务失败E后ROLLBACK/I再SELECT1。
+
+生产实际改动仅query.rs/source.rs及既有.rs.md：source在WHERE后、ORDER/LIMIT前复用原FunctionSource调用，每行完整消费现有执行器；内部NUL前缀列不会进入通配符输出，普通列名使用原始投影。仅SRF查询克隆FieldList；无新增AST/物理类型、解析器/Go/Bazel/manifest/依赖改动。LIMIT0在签名绑定后不打开SRF。
+
+已执行bash /tmp/pg0927-reference.sh，退出0：PG/psql18.6、aarch64-apple-darwin25.1.0、Apple clang16.0.0、64位、SQL_ASCII、Asia/Shanghai；独立mktemp数据目录、仅Unix socket、trap停止删除。代表相关序列仅(1,1)/(1,2)/(4,1)，数组NULL元素保留、空/NULL数组丢行，超2^53及上界精确，LIMIT/OFFSET同预期，WHEREfalse屏蔽零步长，非空零步长22023/int.c:1558。完整输出/tmp/pg0927-reference.log。不是任务30完整客户端差分。
+
+Ready阶段动态领取槽位1，PID29508，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；bash /tmp/pg0927-cargo.sh bash /tmp/pg0927-ready.sh执行中。另一次make lint已退出0，最终仍按Ready重跑。无Go/Bazel/解析器/真实存储变化，不触发Bazel准备、parser Make目标、Go failpoints或RealTiKV。缺失verify-profile技能不宣称已运行。
+
+
+最终补充夹具暴露直接UNNEST(ARRAY[NULL,NULL]::int4[])报0A000/ARRAY analysis requires a direct SELECT constructor；首次Ready server同过滤器实际1失败，不能算已完成。必要局部接线新增pg_array.rs::analyze：仅把直接投影UNNEST参数加入原FROM数组分析根，复用现有显式int4[]定型；独立pg_array_test.rs::pg09_27_array_projection_analysis覆盖空/全NULL/括号以及WHERE仍拒绝，并同步既有.rs.md。不扩大数组类型库。
+
+首次Ready executor同过滤器1通过；executor pg09_2共13通过。server pg09_2选择过宽：8通过、2失败，除本次全NULL数组缺口外，误选任务22客户端测试缺少PG18_REFERENCE_DSN；后续精确过滤pg_query_test::pg09_2，不启动或修复任务22整套客户端平台。
+
+
+## 2026-11-01 最终完成证据
+
+第二次Ready包装命令bash /tmp/pg0927-cargo.sh bash /tmp/pg0927-ready.sh退出0；动态原子领取槽位1，持有PID36021，绝对CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。本任务所有Cargo阶段均实际领取槽位1，所有子进程结束后trap删除自己的owner及锁目录，保留缓存；参考进程及临时数据目录已清理。默认features，未增加依赖或本地覆盖。
+
+| 完整验证命令 | 退出码 / 有效测试数 |
+| --- | --- |
+| cargo fmt --all | 0 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor --lib pg09_27 -- --nocapture | 0 / 1通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_27 -- --nocapture | 0 / 1通过，含56次扩展绑定 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor --lib pg09_2 -- --nocapture | 0 / 13通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg09_2 -- --nocapture | 0 / 8通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_array_test -- --nocapture | 0 / 45通过，含pg09_27_array_projection_analysis |
+| env -u LDFLAGS cargo test --locked -p astersql-session --lib mysql_relational_query_compat_test -- --nocapture | 0 / 6通过 |
+| make lint | 0 |
+| git diff --check | 0 |
+| bash /tmp/pg0927-reference.sh | 0 / PG18.6独立同型夹具观测 |
+| git diff --quiet -- .plans/2026-10-29-postgresql18-聚合窗口与集合返回/plan.md | 0 |
+
+不同过滤器有重复覆盖，不能相加为唯一测试数。日志/tmp/pg0927-ready-{fmt,executor,server,executor-neighbors,server-neighbors,array-neighbors,mysql-neighbors,lint,diff}.log；第一次Ready（含数组缺口和无关任务22 DSN失败）日志保留为/tmp/pg0927-first-ready-*.log，初始TDD红灯/tmp/pg0927-{executor,server}-red.log。补充全NULL数组后同过滤器已通过，LIMIT0不打开SRF、全NULL数组发出两行NULL、空数组零行、INT8负边界固定身份均实测。
+
+Profile：WIP用于红绿灯与局部修复，Ready用于交付；verify-profile技能路径缺失，依根AGENTS与testing-flow执行适用检查，不宣称技能已运行。未改Go/Bazel/解析器/依赖，不触发bazel_prepare或parser生成；不涉及真实存储，不运行RealTiKV。
+
+变更仅三个生产文件query.rs/source.rs/pg_array.rs、对应三份既有.rs.md、三个独立测试文件physical_plan_runtime_test.rs/pg_query_test.rs/pg_array_test.rs和本编号记录。各生产依据见实施记录，所有可用Rust文件已有AsterSQL版权，保留PingCAP原注释。diff自审通过，未暂存其他计划删除、expression/hint/planner/server handler/session runtime.rs/compression等既有改动，plan.md完全未改。
+
+正确性证据限于单一直接投影SRF及既有重载，不将多SRF、嵌套SRF/聚合或窗口混用、portal暂停恢复归入完成范围。兼容性通过上述MySQL和既有PG邻测约束，未跑全套MySQL/全workspace/清洁checkout。现有关系入口仍物化全部输出，内存随结果量增长，未测吞吐、真实TiKV或大结果取消压力。PG18.6仅局部实际观测；任务22客户端差分曾因无PG18_REFERENCE_DSN失败，不将其伪装为通过或扩建本任务范围。完整SRF客户端矩阵由任务30承担。
+
+下一步按原批次继续28多SRF协调与非法位置门禁。完成记录随本任务提交，完整SHA在最终回复交接；提交妥当后按执行契约删除本编号文件，保留只读plan.md。

@@ -1914,6 +1914,44 @@ impl ConcreteSession {
         select: &ast::SelectStmt,
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
+        // Bind before observing rows, including an empty outer source. A private
+        // column carries each emitted value through the ordinary scalar projection.
+        let calls = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            select
+                .Fields
+                .Fields
+                .iter()
+                .enumerate()
+                .filter_map(|(index, field)| {
+                    super::query::pg_projection_srf(field.Expr.as_ref()?).map(|call| (index, call))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut expanded_fields = None;
+        let projection_source = if let [(index, call)] = calls.as_slice() {
+            let fields = self.relational_select_source_fields(select)?;
+            let source = ast::TableSource {
+                FunctionSource: Some((*call).clone()),
+                ColumnNames: vec![ast::NewCIStr("\0pg_projection_srf")],
+                ..Default::default()
+            };
+            self.pg_integer_series_field(&source, Some(&fields))?;
+            let mut fields = select.Fields.clone();
+            fields.Fields[*index].Expr = Some(ast::ExprNode {
+                Kind: ast::ExprKind::Column(ast::ColumnName {
+                    Name: ast::NewCIStr("\0pg_projection_srf"),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            expanded_fields = Some(fields);
+            Some(source)
+        } else {
+            None
+        };
+        let projection_fields = expanded_fields.as_ref().unwrap_or(&select.Fields);
         let conditional_sources = if self.sql_dialect() == ast::SqlDialect::MySQL
             && select
                 .Fields
@@ -2155,6 +2193,7 @@ impl ConcreteSession {
             && !subquery_projection
             && outer.is_none()
             && streamable_projection
+            && projection_source.is_none()
             && from
                 .TableRefs
                 .Left
@@ -2308,9 +2347,30 @@ impl ConcreteSession {
                 .filter_map(|(row, keep)| keep.then_some(row))
                 .collect();
         }
+        if let Some(function) = &projection_source {
+            // LIMIT 0 never opens a target-list SRF, although its signature has
+            // already been bound above for the fixed result description.
+            if relational_limit_window(select)?.is_some_and(|window| window.count == 0) {
+                source.rows.clear();
+            }
+            let mut expanded = Vec::new();
+            for row in source.rows {
+                let values =
+                    self.execute_insert_select_table_source_with_outer(function, Some(&row))?;
+                for value in values.rows {
+                    let mut output = row.clone();
+                    output.insert(
+                        "\0pg_projection_srf".into(),
+                        value.get("\0pg_projection_srf").cloned().flatten(),
+                    );
+                    expanded.push(output);
+                }
+            }
+            source.rows = expanded;
+        }
         if !aggregate_query {
             let order_by =
-                resolve_select_order_by(&select.OrderBy, &select.Fields, &source.columns)?;
+                resolve_select_order_by(&select.OrderBy, projection_fields, &source.columns)?;
             source = self.apply_insert_select_order_limit(
                 source,
                 &order_by,
@@ -2506,7 +2566,7 @@ impl ConcreteSession {
             }
             let mut output = HashMap::new();
             let mut column_index = 0;
-            for (field_index, field) in select.Fields.Fields.iter().enumerate() {
+            for (field_index, field) in projection_fields.Fields.iter().enumerate() {
                 if let Some(wildcard) = field.WildCard.as_ref() {
                     for source_column in wildcard_columns(wildcard) {
                         output.insert(

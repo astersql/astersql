@@ -1820,3 +1820,35 @@ fn pg09_26_array_values_analysis() {
         "42P18"
     );
 }
+
+#[test]
+fn pg09_27_array_projection_analysis() {
+    for sql in [
+        "SELECT unnest(ARRAY[NULL,NULL]::int4[]) AS v",
+        "SELECT (unnest(ARRAY[]::int4[])) AS v",
+    ] {
+        let (statements, _) =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(sql, &[])
+                .unwrap();
+        let (types, _) = super::pg_array::analyze(sql, &statements, None).unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            types.values().next(),
+            Some(&astersql_parser_types::PostgreSQLArrayElement::Int4)
+        );
+    }
+    let sql = "SELECT 1::int4 AS c WHERE unnest(ARRAY[1]::int4[]) = 1::int4";
+    let (statements, _) =
+        astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+    assert_eq!(
+        super::pg_array::analyze(sql, &statements, None)
+            .unwrap_err()
+            .pg_array_error()
+            .unwrap()
+            .state,
+        "0A000"
+    );
+}

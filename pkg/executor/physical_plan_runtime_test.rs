@@ -1241,3 +1241,20 @@ fn pg09_26_execution_chunks() {
     assert_eq!(rows[1026], vec!["4".to_string(), "2".to_string()]);
     sets[0].close().unwrap();
 }
+
+#[test]
+fn pg09_27_execution() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let sql = "SELECT t.id AS id,generate_series(1::int4,t.n,1::int4) AS v FROM (VALUES ROW(1::int4,2::int4),ROW(2,0),ROW(3,NULL::int4),ROW(4,1)) t(id,n) ORDER BY t.id,v";
+    let mut sets = session.execute(sql).unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = sets[0].next_row().unwrap() {
+        rows.push(row);
+    }
+    assert_eq!(rows, vec![vec!["1", "1"], vec!["1", "2"], vec!["4", "1"]]);
+    sets[0].close().unwrap();
+}

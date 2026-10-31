@@ -435,6 +435,20 @@ pub(super) fn analyze(
     let mut from_roots = Vec::new();
     for statement in statements {
         if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
+            // Direct target-list UNNEST consumes the same typed array as a FROM
+            // function. Do not admit constructors in arbitrary scalar contexts.
+            for field in &select.Fields.Fields {
+                if let Some(call) = field
+                    .Expr
+                    .as_ref()
+                    .and_then(super::query::pg_projection_srf)
+                    && let ast::ExprKind::Function { FnName, Args, .. } = &call.Kind
+                    && FnName.L == "unnest"
+                    && Args.len() == 1
+                {
+                    from_roots.push(&Args[0]);
+                }
+            }
             if let Some(from) = &select.From {
                 if let Some(left) = from.TableRefs.Left.as_deref() {
                     unnest_roots(left, &mut from_roots);

@@ -173,6 +173,21 @@ pub(super) fn pg_union_common_type(
     Ok(result)
 }
 
+/// The supported direct target-list SRF. Nested/multiple SRFs have a separate
+/// coordination contract; keep this step local to a single direct call.
+pub(super) fn pg_projection_srf(expression: &ast::ExprNode) -> Option<&ast::ExprNode> {
+    match &expression.Kind {
+        ast::ExprKind::Parentheses(inner) => pg_projection_srf(inner),
+        ast::ExprKind::Function { FnName, Schema, .. }
+            if matches!(FnName.L.as_str(), "generate_series" | "unnest")
+                && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
+        {
+            Some(expression)
+        }
+        _ => None,
+    }
+}
+
 fn projection_original_text(text: &str) -> String {
     let mut remaining = text;
     let mut output = String::with_capacity(text.len());
@@ -3396,7 +3411,9 @@ impl ConcreteSession {
                     if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
                         && matches!(
                             FnName.L.as_str(),
-                            "int4not"
+                            "generate_series"
+                                | "unnest"
+                                | "int4not"
                                 | "int8not"
                                 | "float4abs"
                                 | "float8abs"
@@ -3846,6 +3863,22 @@ impl ConcreteSession {
             .chain(select.Where.as_ref())
             .collect::<Vec<_>>();
         let sources = self.relational_select_source_fields(select)?;
+        for expression in select
+            .Fields
+            .Fields
+            .iter()
+            .filter_map(|field| field.Expr.as_ref())
+        {
+            if let Some(call) = pg_projection_srf(expression) {
+                self.pg_integer_series_field(
+                    &ast::TableSource {
+                        FunctionSource: Some(call.clone()),
+                        ..Default::default()
+                    },
+                    Some(&sources),
+                )?;
+            }
+        }
         let mut table = astersql_meta_model::TableInfo::default();
         table.Columns = sources.iter().map(|field| field.column.clone()).collect();
         // Comparisons already produce SQL predicates, whereas scalar integer
@@ -6256,6 +6289,17 @@ impl ConcreteSession {
         source_fields: &[ConcreteResultField],
     ) -> astersql_parser_types::types::FieldType {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            if let Some(call) = pg_projection_srf(expression)
+                && let Ok(field) = self.pg_integer_series_field(
+                    &ast::TableSource {
+                        FunctionSource: Some(call.clone()),
+                        ..Default::default()
+                    },
+                    Some(source_fields),
+                )
+            {
+                return field.column.FieldType;
+            }
             // Window output identity follows its bound argument even when the
             // derived input contains no rows (there is no value to infer from).
             if let ast::ExprKind::WindowFunction { Name, Args, .. } = &expression.Kind

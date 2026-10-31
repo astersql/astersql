@@ -363,3 +363,7 @@ pg_integer_series_field 将含 INT8 参数的整数 generate_series 固定绑定
 `pg_integer_series_field` 在描述阶段只从已经累积的左侧字段绑定参数，拒绝不可见或歧义列，选择固定的 int4/int8/unnest 返回身份；执行阶段复用已绑定列的类型，不从首行或空行推断。
 
 PG 派生表字段统一按投影名绑定，包括 SELECT 表达式且未提供列别名列表的情况；空左输入也保留原 int4 身份，不由值或零行推导为 text。
+
+## 单SRF投影行扩展
+
+pg_projection_srf识别直接generate_series/unnest投影（含括号），路由共享关系查询。分析及描述复用pg_integer_series_field选择固定int4/int8身份，空输入和NULL重绑不依赖首行值。

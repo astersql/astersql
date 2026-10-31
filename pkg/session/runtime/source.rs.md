@@ -144,3 +144,7 @@ SELECT投影及INSERT SELECT的求值错误若携带PgJsonCastError则直接传�
 PG 的 FROM 函数沿现有逐外行 LATERAL 连接入口执行，函数可省略 LATERAL。参数从当前左行求值，每次调用独立 Open/Next/Close；LEFT 在 ON 无匹配或函数零行时用固定右侧列补 NULL，不更改函数自身零行语义。
 
 隐式关联函数通过 `function_source_is_correlated` 排除旧的非关联 CROSS 流式路径；无关联函数保留原路径。RIGHT JOIN 仅拒绝实际含列引用的函数，分析阶段与执行阶段使用同一判定。
+
+## 单SRF投影行扩展
+
+单SRF投影在WHERE后按每外行复用既有函数行源完整耗尽，零行不输出该外行。内部专用列仅携带当前SRF值，不改变通配符字段；原投影负责重复标量和列名，排序/LIMIT处理展开后的行。现有关系入口仍物化结果，暂停/恢复和多SRF由后续任务负责。
