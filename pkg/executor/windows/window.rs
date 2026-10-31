@@ -585,6 +585,50 @@ impl WindowFunction for RowNumber {
     }
 }
 
+/// Adapt the shared rank state machine to whole-partition window execution.
+pub struct Rank {
+    state: astersql_executor_aggfuncs::func_rank::Rank<Row>,
+}
+impl Default for Rank {
+    fn default() -> Self {
+        Self {
+            state: astersql_executor_aggfuncs::func_rank::Rank::new(false),
+        }
+    }
+}
+impl WindowFunction for Rank {
+    fn reset(&mut self) {
+        self.state.reset();
+    }
+    fn update(&mut self, rows: &[Row]) -> Result<()> {
+        self.state.update(rows.iter().cloned());
+        Ok(())
+    }
+    fn result(&mut self) -> Result<Value> {
+        self.state
+            .next()
+            .map(Value::Int)
+            .ok_or_else(|| Error::new("rank partition exhausted"))
+    }
+    fn slide(&mut self, _rows: &[Row], _start: u64, _end: u64) -> Result<bool> {
+        Ok(true)
+    }
+    fn partial_result_memory_usage(&self) -> i64 {
+        let rows = &self.state.state().rows;
+        (rows.capacity() * size_of::<Row>()) as i64
+            + rows
+                .iter()
+                .map(|row| {
+                    (row.capacity() * size_of::<Value>()) as i64
+                        + row.iter().map(Value::heap_memory_usage).sum::<i64>()
+                })
+                .sum::<i64>()
+    }
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
+    }
+}
+
 /// LAG(col, offset, default)：取向前 offset 行的列值。
 pub struct Lag {
     column: usize,

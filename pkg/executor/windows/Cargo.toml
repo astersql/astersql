@@ -11,8 +11,10 @@ path = "lib.rs"
 go-package = "pkg/executor/windows"
 legacy-tasks = ["task-1130", "task-1134", "task-1362"]
 
-[target.'cfg(any())'.dependencies]
+[dependencies]
 "astersql-executor-aggfuncs" = { package = "astersql-executor-aggfuncs", path = "../aggfuncs" }
+
+[target.'cfg(any())'.dependencies]
 "astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
 "astersql-executor-internal-vecgroupchecker" = { package = "astersql-executor-internal-vecgroupchecker", path = "../internal/vecgroupchecker" }
 "astersql-expression" = { package = "astersql-expression", path = "../../expression" }

@@ -3138,6 +3138,38 @@ pub(super) fn relational_expression_value(
     }
 }
 
+// NULL placement is independent of direction; an absent policy retains MySQL defaults.
+pub(super) fn relational_order_compare(
+    left: Option<&str>,
+    right: Option<&str>,
+    desc: bool,
+    nulls_first: Option<bool>,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let first = nulls_first.unwrap_or(!desc);
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => {
+            if first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (Some(_), None) => {
+            if first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        (Some(a), Some(b)) => {
+            let order = relational_compare(a, b);
+            if desc { order.reverse() } else { order }
+        }
+    }
+}
+
 /// 按 ORDER BY 对关系行排序。
 pub(super) fn sort_relational_rows(
     rows: &mut [RelationalRow],
@@ -3145,7 +3177,7 @@ pub(super) fn sort_relational_rows(
 ) -> SessionResult<()> {
     let expressions = order_by
         .iter()
-        .map(|item| (item.Expr.clone(), item.Desc))
+        .map(|item| (item.Expr.clone(), item.Desc, item.NullsFirst))
         .collect::<Vec<_>>();
     let mut decorated = rows
         .iter()
@@ -3153,23 +3185,18 @@ pub(super) fn sort_relational_rows(
         .map(|row| {
             let keys = expressions
                 .iter()
-                .map(|(expression, _)| relational_expression_value(expression, &row.1))
+                .map(|(expression, _, _)| relational_expression_value(expression, &row.1))
                 .collect::<SessionResult<Vec<_>>>()?;
             Ok((row, keys))
         })
         .collect::<SessionResult<Vec<_>>>()?;
     decorated.sort_by(|left, right| {
-        for (index, (_, desc)) in expressions.iter().enumerate() {
+        for (index, (_, desc, nulls_first)) in expressions.iter().enumerate() {
             let left_value = left.1[index].as_deref();
             let right_value = right.1[index].as_deref();
-            let ordering = match (left_value, right_value) {
-                (Some(left), Some(right)) => relational_compare(left, right),
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            };
-            if ordering != std::cmp::Ordering::Equal {
-                return if *desc { ordering.reverse() } else { ordering };
+            let ordering = relational_order_compare(left_value, right_value, *desc, *nulls_first);
+            if !ordering.is_eq() {
+                return ordering;
             }
         }
         std::cmp::Ordering::Equal
@@ -3273,6 +3300,7 @@ pub(super) fn resolve_select_order_by(
                 |expression| ast::ByItem {
                     Expr: expression,
                     Desc: item.Desc,
+                    NullsFirst: item.NullsFirst,
                 },
             ))
         })
@@ -3309,6 +3337,7 @@ pub(super) fn resolve_select_group_by(
             Ok(ast::ByItem {
                 Expr: expression,
                 Desc: item.Desc,
+                NullsFirst: item.NullsFirst,
             })
         })
         .collect()
@@ -3688,7 +3717,7 @@ pub(super) fn relational_expression_type(
         ast::ExprKind::WindowFunction { Name, .. }
             if matches!(
                 Name.to_ascii_lowercase().as_str(),
-                "min_count" | "max_count"
+                "min_count" | "max_count" | "row_number" | "rank"
             ) =>
         {
             new_type(astersql_parser_mysql::r#type::TypeLonglong)
@@ -3791,16 +3820,117 @@ where
             .collect()
     };
     let current_partition = partition_key(row_index)?;
-    let partition = (0..rows.len())
+    let mut partition = (0..rows.len())
         .map(|index| partition_key(index).map(|key| (key == current_partition).then_some(index)))
         .collect::<SessionResult<Vec<_>>>()?
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    // Evaluate keys before sorting so expression failures propagate normally.
+    let keys = partition
+        .iter()
+        .map(|index| {
+            spec.OrderBy
+                .iter()
+                .map(|item| evaluate(&item.Expr, &rows[*index].1))
+                .collect::<SessionResult<Vec<_>>>()
+        })
+        .collect::<SessionResult<Vec<_>>>()?;
+    let mut keyed = partition.into_iter().zip(keys).collect::<Vec<_>>();
+    keyed.sort_by(|left, right| {
+        for (i, item) in spec.OrderBy.iter().enumerate() {
+            let cmp = relational_order_compare(
+                left.1[i].as_deref(),
+                right.1[i].as_deref(),
+                item.Desc,
+                item.NullsFirst,
+            );
+            if !cmp.is_eq() {
+                return cmp;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    partition = keyed.iter().map(|(index, _)| *index).collect();
     let position = partition
         .iter()
         .position(|index| *index == row_index)
         .expect("current row belongs to its partition");
+    if matches!(Name.to_ascii_lowercase().as_str(), "row_number" | "rank") {
+        use astersql_executor::windows;
+        // Feed peer identities to the shared rank state. Equality must use the
+        // same comparator as sorting (e.g. numeric 10 and 10.00 are peers),
+        // rather than the textual rendering of a typed key.
+        let mut peer = 0i64;
+        let mut input = Vec::with_capacity(keyed.len());
+        for (index, (_, keys)) in keyed.iter().enumerate() {
+            if index > 0
+                && keys.iter().zip(&keyed[index - 1].1).zip(&spec.OrderBy).any(
+                    |((left, right), item)| {
+                        !relational_order_compare(
+                            left.as_deref(),
+                            right.as_deref(),
+                            item.Desc,
+                            item.NullsFirst,
+                        )
+                        .is_eq()
+                    },
+                )
+            {
+                peer += 1;
+            }
+            input.push(vec![windows::Value::Int(peer)]);
+        }
+        let function: Box<dyn windows::WindowFunction> = if Name.eq_ignore_ascii_case("rank") {
+            Box::new(windows::Rank::default())
+        } else {
+            Box::new(windows::RowNumber::default())
+        };
+        let plan = windows::PhysicalWindowPlan {
+            schema_columns: 2,
+            partition_by: vec![],
+            order_by: vec![],
+            window_functions: vec![function],
+            frame: None,
+            pipelined_enabled: false,
+        };
+        let mut executor = windows::build(
+            plan,
+            Box::new(windows::VecChunkExecutor::new(vec![windows::Chunk::new(
+                input,
+            )])),
+            false,
+        )
+        .map_err(|e| SessionError::new(e.to_string()))?;
+        let context = windows::ExecContext::default();
+        let result = (|| {
+            executor
+                .open(&context)
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            let mut output = windows::Chunk::default();
+            let mut offset = 0;
+            loop {
+                executor
+                    .next(&context, &mut output)
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                if output.rows.is_empty() {
+                    return Err(SessionError::new("missing window rank result"));
+                }
+                if position < offset + output.rows.len() {
+                    return match output.rows[position - offset].last() {
+                        Some(windows::Value::Int(value)) => Ok(Some(value.to_string())),
+                        Some(windows::Value::UInt(value)) => Ok(Some(value.to_string())),
+                        _ => Err(SessionError::new("invalid window rank result")),
+                    };
+                }
+                offset += output.rows.len();
+            }
+        })();
+        let closed = executor
+            .close()
+            .map_err(|e| SessionError::new(e.to_string()));
+        return result.and_then(|value| closed.map(|_| value));
+    }
     let argument = |index: usize, offset: usize| -> SessionResult<Option<String>> {
         Args.get(offset)
             .map(|argument| evaluate(argument, &rows[index].1))

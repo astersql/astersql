@@ -248,35 +248,54 @@ pub(crate) fn adapt_with_context(sql: &str, context: &dyn TiDBContext) -> ParseR
 // PG omits ROW before each VALUES tuple. Reuse the row-list AST while
 // retaining an exact map back to original parameter byte offsets.
 fn values_row_insertions(tokens: &[Token]) -> Vec<usize> {
-    if !tokens.first().is_some_and(|token| token.word("values")) {
-        return Vec::new();
-    }
     let mut insertions = Vec::new();
-    let mut depth = 0usize;
-    let mut row_start = true;
-    for token in tokens.iter().skip(1) {
-        if depth == 0 && row_start && token.symbol(b'(') {
-            insertions.push(token.start);
-            row_start = false;
+    for (index, token) in tokens.iter().enumerate() {
+        // INSERT VALUES already uses bare tuples in the shared grammar. Only
+        // query-level VALUES (including derived tables and CTEs) needs ROW.
+        if !token.word("values") || (index != 0 && !tokens[index - 1].symbol(b'(')) {
+            continue;
         }
-        if token.symbol(b'(') {
-            depth += 1;
-        } else if token.symbol(b')') {
-            depth = depth.saturating_sub(1);
-        } else if depth == 0 && token.symbol(b',') {
-            row_start = true;
-        } else if depth == 0 {
-            break;
+        let mut depth = 0usize;
+        let mut row_start = true;
+        for token in &tokens[index + 1..] {
+            if depth == 0 && row_start && token.symbol(b'(') {
+                insertions.push(token.start);
+                row_start = false;
+            }
+            if token.symbol(b'(') {
+                depth += 1;
+            } else if token.symbol(b')') {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            } else if depth == 0 && token.symbol(b',') {
+                row_start = true;
+            } else if depth == 0 {
+                break;
+            }
         }
     }
+    insertions.sort_unstable();
+    insertions.dedup();
     insertions
+}
+
+// Keep every insertion four bytes long so parameter offsets stay reversible,
+// including the legal no-whitespace spelling VALUES(...).
+fn values_row_prefix(sql: &str, start: usize) -> String {
+    if start > 0 && sql.as_bytes()[start - 1].is_ascii_alphanumeric() {
+        " ROW".to_owned()
+    } else {
+        "ROW ".to_owned()
+    }
 }
 
 pub(crate) fn values_parameter_source(sql: &str) -> ParseResult<(String, Vec<usize>)> {
     let insertions = values_row_insertions(&tokens(sql)?);
     let edits = insertions
         .iter()
-        .map(|start| (*start, (*start, "ROW ".to_owned())))
+        .map(|start| (*start, (*start, values_row_prefix(sql, *start))))
         .collect();
     Ok((apply(sql, edits)?, insertions))
 }
@@ -293,7 +312,7 @@ fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<S
         }
     }
     for start in values_row_insertions(&tokens) {
-        edits.insert(start, (start, "ROW ".to_owned()));
+        edits.insert(start, (start, values_row_prefix(sql, start)));
     }
     if first.word("alter") && tokens.get(1).is_some_and(|token| token.word("table")) {
         adapt_alter(sql, &tokens, edits, context)

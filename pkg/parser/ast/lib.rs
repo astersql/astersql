@@ -1522,6 +1522,8 @@ pub struct FieldList {
 pub struct ByItem {
     pub Expr: ExprNode,
     pub Desc: bool,
+    /// Resolved NULL placement; None retains the MySQL default.
+    pub NullsFirst: Option<bool>,
 }
 
 /// ALTER排序项结构体。

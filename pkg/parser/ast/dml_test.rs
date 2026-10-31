@@ -695,6 +695,7 @@ fn parse_by_item_list(p: &mut P) -> Result<Vec<parser_ast::ByItem>, String> {
         items.push(parser_ast::ByItem {
             Expr: expr,
             Desc: desc,
+            NullsFirst: None,
         });
         if !p.eat_sym(',') {
             break;
@@ -2853,6 +2854,7 @@ fn TestDMLVisitorCover() {
     let by_item = || parser_ast::ByItem {
         Expr: ce(),
         Desc: false,
+        NullsFirst: None,
     };
     let mut nodes = vec![
         (

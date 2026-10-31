@@ -21269,3 +21269,403 @@ fn pg09_10_sql() {
     drop(_cleanup);
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg09_12_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    fn identity(ms: &[(u8, Vec<u8>)], expected: usize) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        assert!(ms.iter().any(|m| m.0 == b'T'), "fixed description");
+        for (_, d) in ms.iter().filter(|m| m.0 == b'T') {
+            let count = i16::from_be_bytes(d[..2].try_into().unwrap()) as usize;
+            assert_eq!(count, expected);
+            let mut offset = 2;
+            for column in 0..count {
+                let end = offset + d[offset..].iter().position(|b| *b == 0).unwrap();
+                let name = if count == 1 || column == 1 {
+                    b"r"
+                } else {
+                    b"n"
+                };
+                assert_eq!(&d[offset..end], name);
+                offset = end + 1;
+                assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+                assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+                assert_eq!(&d[offset + 12..offset + 16], &(-1i32).to_be_bytes());
+                offset += 18;
+            }
+        }
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    fn ready12(socket: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut messages = vec![];
+        loop {
+            let m = read(socket);
+            let done = m.0 == b'Z';
+            messages.push(m);
+            if done {
+                return messages;
+            }
+        }
+    }
+    let values = query(&mut s, "VALUES (NULL::int4),(1::int4)");
+    assert!(!values.iter().any(|m| m.0 == b'E'));
+    assert_eq!(
+        values
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[None]), row(&[Some("1")])]
+    );
+    let d = &values.iter().find(|m| m.0 == b'T').unwrap().1;
+    let offset = 3 + d[2..].iter().position(|b| *b == 0).unwrap();
+    assert_eq!(&d[offset + 6..offset + 10], &23u32.to_be_bytes());
+    assert_eq!(&d[offset + 10..offset + 12], &4i16.to_be_bytes());
+    let scalar = query(&mut s, "SELECT row_number() OVER() AS n,rank() OVER() AS r");
+    identity(&scalar, 2);
+    assert_eq!(
+        scalar
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| text_row(&m.1))
+            .collect::<Vec<_>>(),
+        vec![vec![Some("1".to_owned()), Some("1".to_owned())]]
+    );
+    for (order, expected) in [
+        ("x", vec!["3", "1", "1", "4"]),
+        ("x DESC", vec!["2", "3", "3", "1"]),
+        ("x NULLS FIRST", vec!["4", "2", "2", "1"]),
+        ("x DESC NULLS LAST", vec!["1", "2", "2", "4"]),
+    ] {
+        let sql = format!(
+            "SELECT rank() OVER(ORDER BY {order}) AS r FROM (VALUES(1,20::int4),(2,10::int4),(3,10::int4),(4,NULL::int4)) t(id,x) ORDER BY id"
+        );
+        let ms = query(&mut s, &sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+        identity(&ms, 1);
+        let rows = ms
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| text_row(&m.1)[0].clone().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rows, expected, "{sql}");
+        let sql = format!(
+            "SELECT rank() OVER(ORDER BY id) AS r FROM (VALUES(1,20::int4),(2,10::int4),(3,10::int4),(4,NULL::int4)) t(id,x) ORDER BY {order},id"
+        );
+        let ms = query(&mut s, &sql);
+        identity(&ms, 1);
+        let expected = match order {
+            "x" => vec!["2", "3", "1", "4"],
+            "x DESC" => vec!["4", "1", "2", "3"],
+            "x NULLS FIRST" => vec!["4", "2", "3", "1"],
+            _ => vec!["1", "2", "3", "4"],
+        };
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| text_row(&m.1)[0].clone().unwrap())
+                .collect::<Vec<_>>(),
+            expected,
+            "outer NULL order: {sql}"
+        );
+    }
+    for (input, expected) in [
+        (
+            "(VALUES (1,1,10.0::numeric),(2,1,10.00::numeric))",
+            vec![vec!["1", "1"], vec!["2", "1"]],
+        ),
+        (
+            "(VALUES (1,1,9223372036854775807::int8),(2,1,9223372036854775806::int8))",
+            vec![vec!["2", "2"], vec!["1", "1"]],
+        ),
+        (
+            "(VALUES (1,1,10::int4),(2,1,10::int4),(3,1,20::int4),(4,2,5::int4))",
+            vec![
+                vec!["1", "1"],
+                vec!["2", "1"],
+                vec!["3", "3"],
+                vec!["1", "1"],
+            ],
+        ),
+        (
+            "(SELECT 1 AS id,1 AS p,NULL::int4 AS x WHERE false)",
+            vec![],
+        ),
+        ("(VALUES (1,1,NULL::int4))", vec![vec!["1", "1"]]),
+        (
+            "(VALUES (1,1,NULL::int4),(2,1,NULL::int4))",
+            vec![vec!["1", "1"], vec!["2", "1"]],
+        ),
+    ] {
+        let sql = format!(
+            "SELECT row_number() OVER(PARTITION BY p ORDER BY x,id) AS n,rank() OVER(PARTITION BY p ORDER BY x) AS r FROM {input} t(id,p,x) ORDER BY id"
+        );
+        let ms = query(&mut s, &sql);
+        identity(&ms, 2);
+        let actual = ms
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| {
+                text_row(&m.1)
+                    .into_iter()
+                    .map(Option::unwrap)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{sql}");
+        for format in [0i16, 1] {
+            // Extended protocol must retain the same identity even for empty input.
+            send(
+                &mut s,
+                b'P',
+                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+            );
+            send(&mut s, b'D', b"S\0");
+            send(
+                &mut s,
+                b'B',
+                &[
+                    b"\0\0".as_slice(),
+                    &0i16.to_be_bytes(),
+                    &0i16.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                    &format.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(&mut s, b'D', b"P\0");
+            send(
+                &mut s,
+                b'E',
+                &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+            );
+            send(&mut s, b'S', &[]);
+            let mut ms = vec![];
+            loop {
+                let m = read(&mut s);
+                let done = m.0 == b'Z';
+                ms.push(m);
+                if done {
+                    break;
+                }
+            }
+            identity(&ms, 2);
+            assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 2);
+            let actual = ms
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| {
+                    if format == 0 {
+                        text_row(&m.1)
+                            .into_iter()
+                            .map(Option::unwrap)
+                            .collect::<Vec<_>>()
+                    } else {
+                        let mut offset = 2;
+                        (0..2)
+                            .map(|_| {
+                                assert_eq!(&m.1[offset..offset + 4], &8i32.to_be_bytes());
+                                offset += 4;
+                                let value =
+                                    i64::from_be_bytes(m.1[offset..offset + 8].try_into().unwrap())
+                                        .to_string();
+                                offset += 8;
+                                value
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    let sql = "SELECT row_number() OVER(ORDER BY x,id) AS n,rank() OVER(ORDER BY x NULLS FIRST) AS r FROM (VALUES(1,$1::int4),(2,10::int4)) t(id,x) ORDER BY id";
+    send(
+        &mut s,
+        b'P',
+        &[
+            b"w12\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut s, b'D', b"Sw12\0");
+    send(&mut s, b'S', &[]);
+    let metadata = ready12(&mut s);
+    identity(&metadata, 2);
+    assert_eq!(
+        metadata.iter().find(|m| m.0 == b't').unwrap().1,
+        [
+            1i16.to_be_bytes().as_slice(),
+            23u32.to_be_bytes().as_slice()
+        ]
+        .concat()
+    );
+    for parameter_format in [0i16, 1] {
+        for result_format in [0i16, 1] {
+            for is_null in [false, true, false] {
+                let value = if parameter_format == 0 {
+                    b"5".to_vec()
+                } else {
+                    5i32.to_be_bytes().to_vec()
+                };
+                let mut bind = b"\0w12\0".to_vec();
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&parameter_format.to_be_bytes());
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(
+                    &(if is_null { -1i32 } else { value.len() as i32 }).to_be_bytes(),
+                );
+                if !is_null {
+                    bind.extend_from_slice(&value);
+                }
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&result_format.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(
+                    &mut s,
+                    b'E',
+                    &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+                );
+                send(&mut s, b'S', &[]);
+                let messages = ready12(&mut s);
+                identity(&messages, 2);
+                assert_eq!(
+                    messages.iter().filter(|m| m.0 == b'T').count(),
+                    1,
+                    "Execute must not resend descriptions"
+                );
+                let expected = if is_null {
+                    [[2i64, 1], [1, 2]]
+                } else {
+                    [[1i64, 1], [2, 2]]
+                };
+                let expected = expected
+                    .iter()
+                    .map(|pair| {
+                        if result_format == 0 {
+                            let values = [pair[0].to_string(), pair[1].to_string()];
+                            row(&[Some(values[0].as_str()), Some(values[1].as_str())])
+                        } else {
+                            let mut body = 2i16.to_be_bytes().to_vec();
+                            for value in pair {
+                                body.extend_from_slice(&8i32.to_be_bytes());
+                                body.extend_from_slice(&value.to_be_bytes());
+                            }
+                            body
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|m| m.0 == b'D')
+                        .map(|m| m.1.clone())
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "parameter={parameter_format}, result={result_format}, NULL={is_null}"
+                );
+            }
+        }
+    }
+    send(&mut s, b'C', b"Sw12\0");
+    send(&mut s, b'S', &[]);
+    let closed = ready12(&mut s);
+    assert!(!closed.iter().any(|m| m.0 == b'E'));
+    assert!(closed.iter().any(|m| m.0 == b'3'));
+    assert_eq!(closed.last().unwrap(), &(b'Z', vec![b'I']));
+    let ms = query(&mut s, "SELECT row_number() AS n");
+    assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    assert!(ms.iter().any(|m| m.0 == b'E'), "missing OVER must fail");
+    fn diagnostic(ms: &[(u8, Vec<u8>)], phase: &str) {
+        let body = &ms
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("missing OVER rejection")
+            .1;
+        let mut fields = std::collections::BTreeMap::new();
+        let mut offset = 0;
+        while body[offset] != 0 {
+            let tag = body[offset] as char;
+            offset += 1;
+            let len = body[offset..].iter().position(|b| *b == 0).unwrap();
+            fields.insert(
+                tag,
+                String::from_utf8(body[offset..offset + len].to_vec()).unwrap(),
+            );
+            offset += len + 1;
+        }
+        assert_eq!(fields.get(&'S').map(String::as_str), Some("ERROR"));
+        assert_eq!(fields.get(&'C').unwrap().len(), 5);
+        assert!(!fields.get(&'M').unwrap().is_empty());
+        println!("pg09_12 {phase} diagnostics: {fields:?}");
+    }
+    diagnostic(&ms, "Q");
+    send(
+        &mut s,
+        b'P',
+        &[
+            b"\0SELECT row_number() AS n\0".as_slice(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut s, b'S', &[]);
+    let mut rejected = vec![];
+    loop {
+        let m = read(&mut s);
+        let done = m.0 == b'Z';
+        rejected.push(m);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(rejected.last().unwrap(), &(b'Z', vec![b'I']));
+    diagnostic(&rejected, "Parse/Sync");
+
+    assert_eq!(
+        query(&mut s, "SELECT 1::int4")
+            .iter()
+            .find(|m| m.0 == b'D')
+            .unwrap()
+            .1,
+        row(&[Some("1")])
+    );
+}

@@ -3401,6 +3401,8 @@ impl ConcreteSession {
                 .filter_map(|field| field.Expr.as_ref())
                 .any(|expression| {
                     (relational_expression_has_aggregate(expression) && !scalar_count)
+                        || (self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                            && relational_expression_has_window(expression))
                         || relational_expression_has_subquery(expression)
                         || relational_expression_has_tidb_row_checksum(expression)
                         || relational_expression_has_json_temporal(expression)
@@ -5051,6 +5053,18 @@ impl ConcreteSession {
                     self.relational_query_node_result_fields_with_ctes(node, &[], ctes)
                 })
                 .ok_or_else(|| SessionError::new("derived table query is unavailable"))??;
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                if source.ColumnNames.len() > derived_fields.len() {
+                    return Err(pg_union_error(
+                        "derived table has more column aliases than columns",
+                        "42P10",
+                    ));
+                }
+                for (field, alias) in derived_fields.iter_mut().zip(&source.ColumnNames) {
+                    field.column_as_name = alias.clone();
+                    field.column.Name = alias.clone();
+                }
+            }
             if !source.AsName.L.is_empty() {
                 for field in &mut derived_fields {
                     field.table_as_name = source.AsName.clone();
@@ -7127,6 +7141,40 @@ impl ConcreteSession {
         Ok(())
     }
 
+    /// Reuse typed VALUES evaluation for both top-level results and derived sources.
+    pub(super) fn execute_pg_values_rows(
+        &self,
+        select: &ast::SelectStmt,
+    ) -> SessionResult<(InsertSelectRows, Vec<ConcreteResultField>)> {
+        let fields = self.pg_values_fields(select)?;
+        let mut rows = Vec::new();
+        for row in &select.Lists {
+            let values = row
+                .Values
+                .iter()
+                .zip(&fields)
+                .map(|(expr, field)| {
+                    let source = self.pg_case_input_type(expr, &[]);
+                    let value =
+                        self.relational_query_expression_value(expr, &HashMap::new(), None)?;
+                    self.pg_union_cast_value(value, &source, &field.column.FieldType)
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            rows.push(values);
+        }
+        let columns = fields
+            .iter()
+            .map(|field| field.column_as_name.O.clone())
+            .collect::<Vec<_>>();
+        let order = resolve_select_order_by(&select.OrderBy, &select.Fields, &columns)?;
+        let selected = self.apply_insert_select_order_limit(
+            self.insert_select_rows_from_values(&columns, rows),
+            &order,
+            select.Limit.as_ref(),
+        )?;
+        Ok((selected, fields))
+    }
+
     pub(super) fn execute_relational_query_record_set(
         &self,
         node: &dyn ast::Node,
@@ -7135,32 +7183,8 @@ impl ConcreteSession {
             && let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>()
             && select.Kind == ast::SelectStmtKind::Values
         {
-            let fields = self.pg_values_fields(select)?;
-            let mut rows = Vec::new();
-            for row in &select.Lists {
-                let values = row
-                    .Values
-                    .iter()
-                    .zip(&fields)
-                    .map(|(expr, field)| {
-                        let source = self.pg_case_input_type(expr, &[]);
-                        let value =
-                            self.relational_query_expression_value(expr, &HashMap::new(), None)?;
-                        self.pg_union_cast_value(value, &source, &field.column.FieldType)
-                    })
-                    .collect::<SessionResult<Vec<_>>>()?;
-                rows.push(values);
-            }
-            let columns = fields
-                .iter()
-                .map(|field| field.column_as_name.O.clone())
-                .collect::<Vec<_>>();
-            let order = resolve_select_order_by(&select.OrderBy, &select.Fields, &columns)?;
-            let selected = self.apply_insert_select_order_limit(
-                self.insert_select_rows_from_values(&columns, rows),
-                &order,
-                select.Limit.as_ref(),
-            )?;
+            let (selected, fields) = self.execute_pg_values_rows(select)?;
+            let columns = selected.columns.clone();
             let rows = selected
                 .rows
                 .iter()

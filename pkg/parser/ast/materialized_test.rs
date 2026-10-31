@@ -283,10 +283,12 @@ fn go_merge_7_materialized_view_restores_complex_typed_select_without_source_tex
     select.GroupBy.push(ByItem {
         Expr: column(),
         Desc: false,
+        NullsFirst: None,
     });
     select.OrderBy.push(ByItem {
         Expr: column(),
         Desc: true,
+        NullsFirst: None,
     });
     select.Limit = Some(Limit {
         Count: Some(value(5)),

@@ -46,6 +46,8 @@ enum QueryRule {
     ByListAlt02,
     ByItemAlt01,
     ByItemAlt02,
+    OrderedByItemNullsFirst,
+    OrderedByItemNullsLast,
     OrderAlt01,
     OrderAlt02,
     OptOrderAlt01,
@@ -263,6 +265,16 @@ enum QueryRule {
 
 fn identify(rule_id: RuleId) -> Option<QueryRule> {
     match rule_id.as_str() {
+        "orderedbylist_orderedbyitem--03ea0452c9437fc1" => Some(QueryRule::ByListAlt01),
+        "orderedbylist_orderedbylist_orderedbyitem--180701798ff07df1" => {
+            Some(QueryRule::ByListAlt02)
+        }
+        "orderedbyitem_byitem_nulls_first--4d3314922f5f6803" => {
+            Some(QueryRule::OrderedByItemNullsFirst)
+        }
+        "orderedbyitem_byitem_nulls_last--88dd5d0331c7947f" => {
+            Some(QueryRule::OrderedByItemNullsLast)
+        }
         "field_prec--adfc6ad80526339b" => Some(QueryRule::FieldAlt01),
         "field_identifier_prec--bd90d8902cf5ebba" => Some(QueryRule::FieldAlt02),
         "field_identifier_identifier_prec--87242d3ad01f8af5" => Some(QueryRule::FieldAlt03),
@@ -295,7 +307,7 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "values_values_exprordefault--ee853389c4e15d37" => Some(QueryRule::ValuesAlt01),
         "values_exprordefault--eac802d91f003701" => Some(QueryRule::ValuesAlt02),
         "exprordefault_default--95128c402163c3e4" => Some(QueryRule::ExprOrDefaultAlt02),
-        "orderby_order_by_bylist--e28ffaa53722e00d" => Some(QueryRule::OrderByAlt01),
+        "orderby_order_by_orderedbylist--a6d648c242260364" => Some(QueryRule::OrderByAlt01),
         "bylist_byitem--e3d44ccbbf5e5b83" => Some(QueryRule::ByListAlt01),
         "bylist_bylist_byitem--6f9751166328cfae" => Some(QueryRule::ByListAlt02),
         "byitem_expression--29ec47482a998488" => Some(QueryRule::ByItemAlt01),
@@ -313,7 +325,9 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "tablename_identifier--7d846223712c4126" => Some(QueryRule::TableNameAlt01),
         "tablename_identifier_identifier--01188383505f340b" => Some(QueryRule::TableNameAlt02),
         "tablename_identifier--cd0532a691a4662a" => Some(QueryRule::TableNameAlt03),
-        "tablename_identifier_identifier_identifier--ef335475158fb064" => Some(QueryRule::PgQualifiedRelation),
+        "tablename_identifier_identifier_identifier--ef335475158fb064" => {
+            Some(QueryRule::PgQualifiedRelation)
+        }
         "tablenamelist_tablename--20400d6a3ec9fcec" => Some(QueryRule::TableNameListAlt01),
         "tablenamelist_tablenamelist_tablename--325702bb5eceb0ff" => {
             Some(QueryRule::TableNameListAlt02)
@@ -428,7 +442,7 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
             Some(QueryRule::OptPartitionClauseAlt02)
         }
         "optwindoworderbyclause--e42428033649509a" => Some(QueryRule::OptWindowOrderByClauseAlt01),
-        "optwindoworderbyclause_order_by_bylist--3e91e427461f0b0d" => {
+        "optwindoworderbyclause_order_by_orderedbylist--8d8e0cc26024cc64" => {
             Some(QueryRule::OptWindowOrderByClauseAlt02)
         }
         "optwindowframeclause--deb1a9327ffdf8da" => Some(QueryRule::OptWindowFrameClauseAlt01),
@@ -536,7 +550,7 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "tablefactor_tablename_partitionnamelistopt_table--576f7b92df05ff5e" => {
             Some(QueryRule::TableFactorAlt01)
         }
-        "tablefactor_subselect_tableasnameopt--d10ccb0196334c6f" => {
+        "tablefactor_subselect_tableasnameopt_identlistwi--a9479bbafde08a18" => {
             Some(QueryRule::TableFactorAlt02)
         }
         "tablefactor_lateral_subselect_tableasname_identl--661840cd0f69db58" => {
@@ -962,7 +976,9 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             out.item = Some(Box::new(parser_ast::CommonTableExpression {
                 Name: {
                     let (mut name, identity) = super::identifier(parser_state, &rhs[rhs_len - 3]);
-                    if let Some(identity) = identity { name.L = identity.Lookup; }
+                    if let Some(identity) = identity {
+                        name.L = identity.Lookup;
+                    }
                     name
                 },
                 ColNameList: columns,
@@ -2032,6 +2048,22 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             }
             out.item = Some(Box::new(items));
         }
+        QueryRule::OrderedByItemNullsFirst | QueryRule::OrderedByItemNullsLast => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("NULLS ordering requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            let Some(mut item) = rhs[rhs_len - 2]
+                .item
+                .as_deref()
+                .and_then(|v| v.downcast_ref::<parser_ast::ByItem>())
+                .cloned()
+            else {
+                return Ok(false);
+            };
+            item.NullsFirst = Some(rule == QueryRule::OrderedByItemNullsFirst);
+            out.item = Some(Box::new(item));
+        }
         QueryRule::ByItemAlt01 | QueryRule::ByItemAlt02 => {
             let expr_back = if rule == QueryRule::ByItemAlt01 { 0 } else { 1 };
             let Some(mut expr) = rhs[rhs_len - (expr_back)].expr.clone() else {
@@ -2040,7 +2072,8 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             // Keep the complete ORDER BY expression's start for diagnostics,
             // including DISTINCT aggregate argument-list restrictions.
             expr.OriginTextPosition = rhs[rhs_len - expr_back].offset;
-            expr.node_text.SetOriginTextPosition(expr.OriginTextPosition);
+            expr.node_text
+                .SetOriginTextPosition(expr.OriginTextPosition);
             // Go rewrites signed integer value expressions to PositionExpr.
             // Retain the integer representation while exposing its reference flag.
             if matches!(&expr.Kind, parser_ast::ExprKind::Value(value)
@@ -2058,6 +2091,8 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             out.item = Some(Box::new(parser_ast::ByItem {
                 Expr: expr,
                 Desc: desc,
+                NullsFirst: (parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL)
+                    .then_some(desc),
             }));
         }
         QueryRule::OrderAlt01 | QueryRule::OptOrderAlt01 | QueryRule::OptOrderAlt02 => {
@@ -2361,7 +2396,9 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         QueryRule::PgQualifiedRelation => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
-                yylex.AppendError(yylex.Errorf("three-part relation names require PostgreSQL dialect", &[]));
+                yylex.AppendError(
+                    yylex.Errorf("three-part relation names require PostgreSQL dialect", &[]),
+                );
                 return Err(1);
             }
             // The shared native schema remains the PG schema here. The PG name
@@ -2370,8 +2407,10 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             out.item = Some(Box::new(parser_ast::TableName {
                 Schema: super::identifier(parser_state, &rhs[rhs_len - 2]).0,
                 Name: super::identifier(parser_state, &rhs[rhs_len]).0,
-                PostgreSQLParts: [4, 2, 0].into_iter()
-                    .filter_map(|back| super::identifier(parser_state, &rhs[rhs_len - back]).1).collect(),
+                PostgreSQLParts: [4, 2, 0]
+                    .into_iter()
+                    .filter_map(|back| super::identifier(parser_state, &rhs[rhs_len - back]).1)
+                    .collect(),
                 ..Default::default()
             }));
         }
@@ -2563,12 +2602,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             }));
         }
         QueryRule::TableFactorAlt02 | QueryRule::TableFactorAlt03 => {
-            let subquery_back = if rule == QueryRule::TableFactorAlt02 {
-                1
-            } else {
-                2
-            };
-            let Some(subquery) = rhs[rhs_len - (subquery_back)]
+            let Some(subquery) = rhs[rhs_len - 2]
                 .item
                 .take()
                 .and_then(|item| item.downcast::<SubquerySemantic>().ok())
@@ -2576,30 +2610,34 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             else {
                 return Ok(false);
             };
-            out.item = Some(Box::new(parser_ast::TableSource {
-                QuerySource: Some(subquery.query),
-                AsName: rhs[rhs_len
-                    - (if rule == QueryRule::TableFactorAlt02 {
-                        0
-                    } else {
-                        1
-                    })]
+            let alias = rhs[rhs_len - 1]
                 .item
                 .as_deref()
                 .and_then(|item| item.downcast_ref::<parser_ast::CIStr>())
                 .cloned()
-                .unwrap_or_default(),
+                .unwrap_or_default();
+            let columns = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<Vec<parser_ast::CIStr>>())
+                .cloned()
+                .unwrap_or_default();
+            if rule == QueryRule::TableFactorAlt02
+                && !columns.is_empty()
+                && (parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                    || alias.O.is_empty())
+            {
+                yylex.AppendError(yylex.Errorf(
+                    "derived column aliases require a PostgreSQL table alias",
+                    &[],
+                ));
+                return Err(1);
+            }
+            out.item = Some(Box::new(parser_ast::TableSource {
+                QuerySource: Some(subquery.query),
+                AsName: alias,
                 Lateral: rule == QueryRule::TableFactorAlt03,
-                ColumnNames: if rule == QueryRule::TableFactorAlt03 {
-                    rhs[rhs_len - (0)]
-                        .item
-                        .as_deref()
-                        .and_then(|item| item.downcast_ref::<Vec<parser_ast::CIStr>>())
-                        .cloned()
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                },
+                ColumnNames: columns,
                 ..Default::default()
             }));
         }

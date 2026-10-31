@@ -429,13 +429,53 @@ impl ConcreteSession {
         predicate: Option<&ast::ExprNode>,
     ) -> SessionResult<InsertSelectRows> {
         if let Some(query) = source.QuerySource.as_ref() {
-            let result = query
+            let mut result = query
                 .with_node(|node| self.execute_insert_select_node_with_outer(node, outer))
                 .unwrap_or_else(|| {
                     Err(SessionError::new(
                         "INSERT SELECT derived table query is unavailable",
                     ))
                 })?;
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !source.ColumnNames.is_empty() {
+                if source.ColumnNames.len() > result.columns.len() {
+                    return Err(SessionError::new(
+                        "derived table has more column aliases than columns",
+                    ));
+                }
+                let renamed = result
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(index, old)| {
+                        source
+                            .ColumnNames
+                            .get(index)
+                            .map(|name| name.L.clone())
+                            .unwrap_or_else(|| old.clone())
+                    })
+                    .collect::<Vec<_>>();
+                result.rows = result
+                    .rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut output = HashMap::new();
+                        for (old, new) in result.columns.iter().zip(&renamed) {
+                            output.insert(new.clone(), row.get(old).cloned().unwrap_or(None));
+                            for marker in [
+                                relational_string_column_marker as fn(&str) -> String,
+                                relational_float32_column_marker,
+                                relational_vector_column_marker,
+                            ] {
+                                if let Some(value) = row.get(&marker(old)) {
+                                    output.insert(marker(new), value.clone());
+                                }
+                            }
+                        }
+                        output
+                    })
+                    .collect();
+                result.columns = renamed;
+            }
             return Ok(self.qualify_insert_select_rows(result, &source.AsName.L));
         }
         if source.Source.Schema.L.is_empty()
@@ -1321,6 +1361,20 @@ impl ConcreteSession {
                 .collect::<SessionResult<Vec<_>>>()?;
             keyed.sort_by(|left, right| {
                 for (index, item) in order_by.iter().enumerate() {
+                    if item.NullsFirst.is_some()
+                        && (left.1[index].is_none() || right.1[index].is_none())
+                    {
+                        let order = super::relational_value::relational_order_compare(
+                            left.1[index].as_deref(),
+                            right.1[index].as_deref(),
+                            item.Desc,
+                            item.NullsFirst,
+                        );
+                        if !order.is_eq() {
+                            return order;
+                        }
+                        continue;
+                    }
                     let ordering = match (&left.1[index], &right.1[index]) {
                         (None, None) => std::cmp::Ordering::Equal,
                         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -2431,6 +2485,20 @@ impl ConcreteSession {
                 .collect::<Vec<_>>();
             keyed.sort_by(|left, right| {
                 for (index, item) in select.OrderBy.iter().enumerate() {
+                    if item.NullsFirst.is_some()
+                        && (left.1[index].is_none() || right.1[index].is_none())
+                    {
+                        let order = super::relational_value::relational_order_compare(
+                            left.1[index].as_deref(),
+                            right.1[index].as_deref(),
+                            item.Desc,
+                            item.NullsFirst,
+                        );
+                        if !order.is_eq() {
+                            return order;
+                        }
+                        continue;
+                    }
                     let ordering = match (&left.1[index], &right.1[index]) {
                         (None, None) => std::cmp::Ordering::Equal,
                         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -2494,6 +2562,11 @@ impl ConcreteSession {
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
         if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                && select.Kind == ast::SelectStmtKind::Values
+            {
+                return self.execute_pg_values_rows(select).map(|(rows, _)| rows);
+            }
             return self.execute_insert_select_query_with_outer(select, outer);
         }
         if let Some(set_operation) = node.as_any().downcast_ref::<ast::SetOprStmt>() {

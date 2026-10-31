@@ -115,6 +115,8 @@ const QUERY_NONTERMINALS: &[&str] = &[
     "Order",
     "OrderBy",
     "OrderByOptional",
+    "OrderedByItem",
+    "OrderedByList",
     "PartitionNameListOpt",
     "Priority",
     "PriorityOpt",
@@ -219,10 +221,10 @@ fn query_expression_rule_coverage() {
 
     assert_eq!(
         expression_expected.len(),
-        296,
+        314,
         "expression RuleId inventory changed"
     );
-    assert_eq!(query_expected.len(), 237, "query RuleId inventory changed");
+    assert_eq!(query_expected.len(), 241, "query RuleId inventory changed");
     assert!(expression_expected.is_disjoint(&query_expected));
 
     for rule_id in RULE_IDS_BY_REDUCTION.iter().copied() {
@@ -339,13 +341,24 @@ fn pg_scalar_12_parser_preserves_numeric_spelling() {
 
 #[test]
 fn pg05_int4_array_type_action_has_one_owner() {
-    let rules = RULE_IDS_BY_REDUCTION.iter().copied()
+    let rules = RULE_IDS_BY_REDUCTION
+        .iter()
+        .copied()
         .filter(|rule| rule.as_str().starts_with("pgcasttype_pgcasttype--"))
         .collect::<Vec<_>>();
     assert_eq!(rules.len(), 1);
     let rule = rules[0];
     assert!(expression::owns(rule));
-    let owners = [ddl::owns(rule), dml::owns(rule), expression::owns(rule), query::owns(rule), security::owns(rule), admin::owns(rule), misc::owns(rule), mview::owns(rule)];
+    let owners = [
+        ddl::owns(rule),
+        dml::owns(rule),
+        expression::owns(rule),
+        query::owns(rule),
+        security::owns(rule),
+        admin::owns(rule),
+        misc::owns(rule),
+        mview::owns(rule),
+    ];
     assert_eq!(owners.into_iter().filter(|owns| *owns).count(), 1);
     assert!(super::has_semantic_action(rule));
 }

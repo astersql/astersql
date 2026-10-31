@@ -8,6 +8,9 @@
 
 #![allow(dead_code)]
 
+/// Shared physical window execution used by relational session planning.
+pub use astersql_executor_windows as windows;
+
 // —— 适配与慢查询日志 ——
 /// 执行器与会话/事务边界的适配层。
 pub mod adapter;

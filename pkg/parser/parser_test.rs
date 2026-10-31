@@ -6314,3 +6314,76 @@ fn pg09_11_invalid_aggregate_arity_carrier() {
         );
     }
 }
+
+#[test]
+fn pg09_12_null_order_ast() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for (suffix, expected) in [
+        ("", false),
+        ("DESC", true),
+        ("NULLS FIRST", true),
+        ("DESC NULLS LAST", false),
+    ] {
+        for sql in [
+            "SELECT rank() OVER(PARTITION BY x NULLS FIRST) FROM t",
+            "SELECT x FROM t GROUP BY x NULLS FIRST",
+            "SELECT rank() OVER(ORDER BY x NULLS FIRST NULLS LAST) FROM t",
+        ] {
+            assert!(
+                pg.ParseOneStmt(sql, "", "").is_err(),
+                "illegal NULL ordering accepted: {sql}"
+            );
+        }
+        let stmt = pg
+            .ParseOneStmt(
+                &format!("SELECT rank() OVER(ORDER BY x {suffix}) AS r FROM t"),
+                "",
+                "",
+            )
+            .unwrap();
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let parser_ast::ExprKind::WindowFunction { Spec, .. } =
+            &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+        else {
+            panic!("window AST")
+        };
+        assert_eq!(Spec.OrderBy[0].NullsFirst, Some(expected));
+    }
+    let stmt = pg
+        .ParseOneStmt(
+            "SELECT rank() OVER(ORDER BY x) AS r FROM (VALUES ROW(1),ROW(2)) t(x)",
+            "",
+            "",
+        )
+        .unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let parser_ast::ResultSetNode::TableSource(source) = select
+        .From
+        .as_ref()
+        .unwrap()
+        .TableRefs
+        .Left
+        .as_deref()
+        .unwrap()
+    else {
+        panic!("derived source")
+    };
+    assert_eq!(source.ColumnNames[0].O, "x");
+    assert!(
+        parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+            .ParseOneStmt("SELECT x FROM (SELECT 1 AS x) t(x)", "", "")
+            .is_err()
+    );
+    assert!(!source.Lateral);
+    assert!(
+        parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+            .ParseOneStmt("SELECT x FROM t ORDER BY x NULLS FIRST", "", "")
+            .is_err()
+    );
+}

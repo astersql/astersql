@@ -312,6 +312,7 @@ pub fn BuildFastRefreshSource(
             .map(|name| ast::ByItem {
                 Expr: column("", name),
                 Desc: false,
+                NullsFirst: None,
             })
             .collect(),
         ..Default::default()
@@ -519,6 +520,7 @@ pub fn BuildBoundMinMaxLookup(
             .map(|name| ast::ByItem {
                 Expr: column("", name),
                 Desc: false,
+                NullsFirst: None,
             })
             .collect(),
         ..Default::default()

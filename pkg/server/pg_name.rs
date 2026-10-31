@@ -243,7 +243,10 @@ impl Resolver<'_> {
             i += 1;
         }
         if self.symbol(i, b'(') {
-            if !self.word(i + 1, "select") && !self.word(i + 1, "with") {
+            if !self.word(i + 1, "select")
+                && !self.word(i + 1, "with")
+                && !self.word(i + 1, "values")
+            {
                 let close = self.close(i, end)?;
                 let bare = self.tokens[i + 1..close]
                     .iter()

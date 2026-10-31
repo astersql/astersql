@@ -120,3 +120,31 @@ fn pg_scalar_20_float_column_aliases() {
         "CREATE TABLE t (f FLOAT, d DOUBLE)"
     );
 }
+
+#[test]
+fn pg09_12_values_source() {
+    let sql = "SELECT rank() OVER(ORDER BY x) FROM (VALUES ($1),(NULL::int4)) t(x)";
+    let (source, offsets) = crate::pg_sql::values_parameter_source(sql).unwrap();
+    assert_eq!(
+        source,
+        "SELECT rank() OVER(ORDER BY x) FROM (VALUES ROW ($1),ROW (NULL::int4)) t(x)"
+    );
+    assert_eq!(
+        offsets,
+        vec![sql.find("($1").unwrap(), sql.find("(NULL").unwrap()]
+    );
+    assert_eq!(crate::pg_sql::adapt(sql).unwrap(), source);
+    assert_eq!(
+        crate::pg_sql::adapt("SELECT x FROM (VALUES(1),(2)) t(x)").unwrap(),
+        "SELECT x FROM (VALUES ROW(1),ROW (2)) t(x)"
+    );
+    for sql in [
+        "INSERT INTO t VALUES ($1),($2)",
+        "SELECT 'VALUES ($1),($2)' AS s",
+    ] {
+        assert_eq!(
+            crate::pg_sql::values_parameter_source(sql).unwrap(),
+            (sql.to_owned(), vec![])
+        );
+    }
+}

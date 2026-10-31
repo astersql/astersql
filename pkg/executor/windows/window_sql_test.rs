@@ -463,3 +463,70 @@ fn canonical_window_values_keep_sql_null_and_decimal_types_distinct() {
         Value::Decimal(super::Decimal::new(120, 2))
     );
 }
+
+#[test]
+fn pg09_12_execution() {
+    for pipelined in [false, true] {
+        assert!(
+            execute(
+                vec![],
+                vec![],
+                vec![],
+                None,
+                vec![Box::new(super::Rank::default())],
+                pipelined
+            )
+            .is_empty()
+        );
+        let nulls = execute(
+            vec![vec![Value::Null], vec![Value::Null]],
+            vec![],
+            order(0, false),
+            None,
+            vec![Box::new(super::Rank::default())],
+            pipelined,
+        );
+        assert_eq!(
+            nulls.iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
+            vec![Value::Int(1), Value::Int(1)]
+        );
+        let result = execute(
+            vec![
+                vec![Value::Int(1), Value::Int(10)],
+                vec![Value::Int(1), Value::Int(10)],
+                vec![Value::Int(1), Value::Int(20)],
+                vec![Value::Int(2), Value::Null],
+            ],
+            vec![0],
+            order(1, false),
+            None,
+            vec![Box::new(super::RowNumber::default())],
+            pipelined,
+        );
+        assert_eq!(
+            result.iter().map(|r| r[2].clone()).collect::<Vec<_>>(),
+            vec![
+                Value::UInt(1),
+                Value::UInt(2),
+                Value::UInt(3),
+                Value::UInt(1)
+            ]
+        );
+        let result = execute(
+            vec![
+                vec![Value::Int(10)],
+                vec![Value::Int(10)],
+                vec![Value::Int(20)],
+            ],
+            vec![],
+            order(0, false),
+            None,
+            vec![Box::new(super::Rank::default())],
+            pipelined,
+        );
+        assert_eq!(
+            result.iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
+            vec![Value::Int(1), Value::Int(1), Value::Int(3)]
+        );
+    }
+}
