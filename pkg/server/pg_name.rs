@@ -1038,13 +1038,27 @@ pub(crate) fn adapt(
     let path = session
         .effective_explicit_path(context)
         .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+    // Reuse the existing VALUES-to-ROW source map before parsing. The AST
+    // retains original semantic structure; only inserted ROW bytes are removed
+    // when converting diagnostics back to the client's query.
+    let (parse_sql, insertions) = crate::pg_sql::values_parameter_source(sql)?;
+    let original_offset = |offset: usize| {
+        offset.saturating_sub(
+            insertions
+                .iter()
+                .enumerate()
+                .filter(|(index, start)| **start + 4 * index < offset)
+                .count()
+                * 4,
+        )
+    };
     let parsed = astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
-        .ParseSQL(sql, &[]);
+        .ParseSQL(&parse_sql, &[]);
     if let Err(error) = &parsed
         && let Some(window) = error.downcast_ref::<astersql_parser::PostgreSQLWindowError>()
     {
         session.relation_error_position = sql
-            .get(..window.offset)
+            .get(..original_offset(window.offset))
             .map(|prefix| prefix.chars().count() + 1);
         return Err((window.state, window.message.clone()));
     }
@@ -1054,9 +1068,11 @@ pub(crate) fn adapt(
             && let Some(function) = error.pg_function_error()
         {
             session.function_error_hint = function.hint;
-            session.relation_error_position = function
-                .position
-                .and_then(|offset| sql.get(..offset).map(|prefix| prefix.chars().count() + 1));
+            session.error_detail = function.detail;
+            session.relation_error_position = function.position.and_then(|offset| {
+                sql.get(..original_offset(offset))
+                    .map(|prefix| prefix.chars().count() + 1)
+            });
             return Err((function.state, function.message));
         }
     }

@@ -6687,3 +6687,59 @@ fn pg09_20_ordered_ast() {
         pg.ParseOneStmt(sql, "", "").unwrap();
     }
 }
+
+#[test]
+fn pg09_22_ordered_diagnostics() {
+    let mut pg = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for name in ["percentile_disc", "percentile_cont"] {
+        for (call, state, message, offset) in [
+            (
+                format!("{name}(DISTINCT 0.5) WITHIN GROUP(ORDER BY x)"),
+                "42601",
+                "cannot use DISTINCT with WITHIN GROUP".to_string(),
+                None,
+            ),
+            (
+                format!("{name}(0.5) WITHIN GROUP(ORDER BY x) OVER()"),
+                "0A000",
+                format!("OVER is not supported for ordered-set aggregate {name}"),
+                Some(8),
+            ),
+        ] {
+            let sql = format!("SELECT 'é', {call} FROM t");
+            let error = pg.ParseSQL(&sql, &[]).err().unwrap();
+            let diag = error
+                .downcast_ref::<crate::PostgreSQLWindowError>()
+                .unwrap();
+            assert_eq!(diag.state, state);
+            assert_eq!(diag.message, message);
+            let expected = offset
+                .map(|_| sql.find(name).unwrap())
+                .unwrap_or_else(|| sql.find("WITHIN").unwrap());
+            assert_eq!(diag.offset, expected);
+            pg.ParseSQL("SELECT 1", &[]).unwrap();
+        }
+        // The missing-WITHIN call reaches function resolution, which owns 42883.
+        pg.ParseSQL(&format!("SELECT {name}(0.5) AS v"), &[])
+            .unwrap();
+        assert!(
+            crate::New()
+                .ParseSQL(
+                    &format!("SELECT {name}(0.5) WITHIN GROUP(ORDER BY x) FROM t"),
+                    &[]
+                )
+                .is_err()
+        );
+    }
+    for sql in [
+        "SELECT percentile_disc(,) OVER()",
+        "SELECT percentile_cont(DISTINCT ,) WITHIN GROUP(ORDER BY x)",
+    ] {
+        let error = pg.ParseSQL(sql, &[]).err().unwrap();
+        assert!(
+            error
+                .downcast_ref::<crate::PostgreSQLWindowError>()
+                .is_none()
+        );
+    }
+}

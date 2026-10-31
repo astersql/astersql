@@ -118,3 +118,9 @@ validate_relations 直接使用 PostgreSQL Parser 解析原 SQL；本轮原生�
 ## 2026-10-31 窗口客户端差分
 
 adapt消费parser的typed窗口错误，保留原始SQL字节位置到PG字符位置转换，不匹配SQL或错误字符串。
+
+## Ordered-set client diagnostics
+
+Original AST ordered-set preflight carries function detail together with original position before SQL relation restoration.
+
+The preflight reuses pg_sql::values_parameter_source and reverses its four-byte ROW insertions before converting diagnostic byte offsets to original-query character positions, including CTEs and Unicode.

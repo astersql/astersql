@@ -1243,16 +1243,51 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 yylex.AppendError(yylex.Errorf("WITHIN GROUP requires PostgreSQL dialect", &[]));
                 return Err(1);
             }
-            let order = rhs[8].item.as_deref()
+            if rhs_len == 11 {
+                yylex.AppendError(errors::SharedError::new(super::super::PostgreSQLWindowError {
+                    state: "0A000",
+                    message: format!("OVER is not supported for ordered-set aggregate {}", rhs[1].ident.to_ascii_lowercase()),
+                    offset: rhs[1].offset.max(0) as usize,
+                }));
+                return Err(1);
+            }
+            if rhs_len == 10 {
+                yylex.AppendError(errors::SharedError::new(
+                    super::super::PostgreSQLWindowError {
+                        state: "42601",
+                        message: "cannot use DISTINCT with WITHIN GROUP".into(),
+                        offset: rhs[6].offset.max(0) as usize,
+                    },
+                ));
+                return Err(1);
+            }
+            if rhs_len == 4 {
+                let mut call = parser_ast::ExprNode::Function(
+                    parser_ast::CIStr::default(),
+                    parser_ast::NewCIStr(&rhs[1].ident),
+                    vec![rhs[3].expr.clone().unwrap()],
+                );
+                call.OriginTextPosition = rhs[1].offset;
+                call.node_text.SetOriginTextPosition(rhs[1].offset);
+                out.expr = Some(call);
+                return Ok(true);
+            }
+            let order = rhs[8]
+                .item
+                .as_deref()
                 .and_then(|item| item.downcast_ref::<Vec<parser_ast::ByItem>>())
-                .cloned().unwrap_or_default();
+                .cloned()
+                .unwrap_or_default();
             let mut node_text = parser_ast::base::AstNode::default();
             node_text.SetOriginTextPosition(rhs[1].offset);
             out.expr = Some(parser_ast::ExprNode {
                 node_text,
                 Kind: parser_ast::ExprKind::AggregateFunction {
-                    Name: rhs[1].ident.to_ascii_lowercase(), Args: vec![rhs[3].expr.clone().unwrap()],
-                    Distinct: false, Order: order, Filter: None,
+                    Name: rhs[1].ident.to_ascii_lowercase(),
+                    Args: vec![rhs[3].expr.clone().unwrap()],
+                    Distinct: false,
+                    Order: order,
+                    Filter: None,
                 },
                 OriginTextPosition: rhs[1].offset,
                 ..Default::default()

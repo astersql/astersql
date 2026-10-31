@@ -19,3 +19,7 @@ timestamptz数组字面量同标量在Parse调用pg_timestamptz_array_input冻�
 ## 任务39：interval数组必要接线
 
 准备期Interval数组常量使用canonical_interval_text按当时IntervalStyle冻结分量，并沿既有常量替换机制保存；不把Execute时样式变化重新施加到原字面量。
+
+## Ordered-set client diagnostics
+
+Existing temporal PgFunctionError leaves optional detail absent; temporal conversion behavior is unchanged.

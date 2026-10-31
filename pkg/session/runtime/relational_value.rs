@@ -194,6 +194,7 @@ pub(super) fn pg_pattern_value(
         .is_some_and(|(l, r)| l != r)
     {
         let error = super::function_diagnostics::PgFunctionError {
+            detail: None,
             state: "42P21",
             message: "collation mismatch between explicit collations".into(),
             hint: None,
@@ -252,6 +253,7 @@ pub(super) fn pg_pattern_value(
                 shared.downcast_ref::<astersql_expression::formal_registry::PgPatternError>()
             {
                 let error = super::function_diagnostics::PgFunctionError {
+                    detail: None,
                     state: e.state,
                     message: e.message.into(),
                     hint: e.hint,
@@ -1003,6 +1005,7 @@ pub(super) fn pg_conditional_collation(
                 .is_some_and(|(l, r)| l != r)
             {
                 let error = super::function_diagnostics::PgFunctionError {
+                    detail: None,
                     state: "42P21",
                     message: "collation mismatch between explicit collations".into(),
                     hint: None,
@@ -1026,6 +1029,7 @@ pub(super) fn pg_conditional_collation(
                 if let Some(name) = pg_conditional_collation(arg)? {
                     if chosen.as_ref().is_some_and(|old| old != &name) {
                         let error = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42P21",
                             message: "collation mismatch between explicit collations C and POSIX"
                                 .into(),
@@ -4200,6 +4204,7 @@ where
         let bound = |b: &ast::FrameBound, starting: bool| -> SessionResult<windows::FrameBound> {
             let offset_error = |null: bool| {
                 let diagnostic = super::function_diagnostics::PgFunctionError {
+                    detail: None,
                     state: if null { "22004" } else { "22013" },
                     message: format!(
                         "frame {} offset must not be {}",
@@ -6126,6 +6131,7 @@ pub(super) fn pg_int4range_error(
     error: &astersql_types::pg_int4range::PgInt4RangeError,
 ) -> SessionError {
     let diagnostic = super::function_diagnostics::PgFunctionError {
+        detail: None,
         state: error.state,
         message: error.message.clone(),
         position: None,

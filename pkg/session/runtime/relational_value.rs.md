@@ -377,3 +377,7 @@ percentile_disc result inference follows the WITHIN GROUP expression independent
 ## 2026-10-31 continuous percentile
 
 The relational result-type helper carries percentile_cont as float8 before execution, including empty/grouped outputs.
+
+## Ordered-set client diagnostics
+
+Existing PgFunctionError constructors leave optional detail absent, preserving prior type/conditional diagnostics.

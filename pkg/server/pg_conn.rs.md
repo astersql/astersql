@@ -135,3 +135,7 @@ PgJson错误直接使用自身SQLSTATE（22P02、22021、0A000）。
 ## GROUPS 同序组帧（任务16）
 
 GROUPS 缺少 ORDER BY 的结构错误映射 SQLSTATE 42601，移除已实现的 GROUPS 偏移能力拒绝；偏移 NULL/负值仍为22004/22013。
+
+## Ordered-set client diagnostics
+
+Reuse the existing PostgreSQL error encoder to send detail, hint and position together for structured function errors, including simple-query ordered-set diagnostics.

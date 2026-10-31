@@ -248,3 +248,7 @@ Parse允许2951，Bind的text/binary数组分派使用PgUuid/既有2950 binary c
 ## PostgreSQL jsonb 数组（任务42）
 
 Parse支持3807；text/binary数组输入复用3802标量codec与通用容器校验，逐元素版本检查及错误分类沿标量。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+## Ordered-set client diagnostics
+
+Parse/Describe/Execute preserve optional function detail and position through the existing failed-until-Sync lifecycle and error encoder.

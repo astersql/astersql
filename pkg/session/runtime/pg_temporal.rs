@@ -19,6 +19,7 @@ pub(super) fn pg_temporal_input_error(error: SessionError, source: &ast::ExprNod
         )
     {
         let diagnostic = super::function_diagnostics::PgFunctionError {
+            detail: None,
             state: cause.sqlstate(),
             message: error.to_string(),
             hint: None,

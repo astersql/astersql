@@ -192,3 +192,7 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## 2026-10-31 percentile_disc
 
 Regenerated from main.astergram with the PG percentile_disc WITHIN GROUP SumExpr rule; its stable action ID dispatches to PgPercentileDisc.
+
+## Ordered-set client diagnostics
+
+Regenerated from main.astergram for the bounded ordered-set DISTINCT and missing-WITHIN productions; semantic diagnostics remain in existing parser actions.

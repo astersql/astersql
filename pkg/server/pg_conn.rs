@@ -494,12 +494,14 @@ impl PgService {
                                             sql.get(..offset)
                                                 .map(|prefix| prefix.chars().count() + 1)
                                         });
-                                        write_function_error(
+                                        write_function_error_with_severity(
                                             socket,
+                                            "ERROR",
                                             function.state,
                                             &function.message,
                                             position,
                                             function.hint,
+                                            function.detail,
                                         )?;
                                     } else if let crate::conn::ConnError::PgArray(array) = &error {
                                         let position = array.position.and_then(|offset| {
@@ -669,12 +671,14 @@ impl PgService {
                                                     .get(..offset)
                                                     .map(|prefix| prefix.chars().count() + 1)
                                             });
-                                            write_function_error(
+                                            write_function_error_with_severity(
                                                 socket,
+                                                "ERROR",
                                                 function.state,
                                                 &function.message,
                                                 position,
                                                 function.hint,
+                                                function.detail,
                                             )?;
                                         } else if matches!(
                                             &error,
@@ -712,7 +716,15 @@ impl PgService {
                             Err((state, message)) => {
                                 extended.session.record_error(context.as_ref());
                                 if let Some(detail) = extended.session.error_detail {
-                                    write_error_detail(socket, state, &message, detail)?;
+                                    write_function_error_with_severity(
+                                        socket,
+                                        "ERROR",
+                                        state,
+                                        &message,
+                                        extended.session.relation_error_position,
+                                        extended.session.function_error_hint,
+                                        Some(detail),
+                                    )?;
                                 } else if let Some(hint) = extended.session.function_error_hint {
                                     write_function_error(
                                         socket,
@@ -1003,7 +1015,7 @@ pub(crate) fn write_error_detail(
     write_function_error_with_severity(socket, "ERROR", state, message, None, None, Some(detail))
 }
 
-fn write_function_error_with_severity(
+pub(crate) fn write_function_error_with_severity(
     socket: &mut TcpStream,
     severity: &str,
     state: &str,

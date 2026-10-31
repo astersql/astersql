@@ -782,7 +782,9 @@ fn finish_aggregate(
             }
             let p = direct.GetFloat64();
             if p.is_nan() || !(0.0..=1.0).contains(&p) {
-                return Err(astersql_errors::SharedError::new(PercentileFractionError));
+                return Err(astersql_errors::SharedError::new(PercentileFractionError(
+                    p,
+                )));
             }
             if values.is_empty() {
                 return Ok(Datum::default());
@@ -797,15 +799,9 @@ fn finish_aggregate(
                 }
                 let hi = values[upper].GetFloat64();
                 let weight = rank - lower as f64;
-                // Opposite finite extremes may overflow the subtraction even
-                // though their interpolated value is representable. Keep IEEE
-                // arithmetic for non-finite inputs instead of dropping them.
-                let delta = hi - lo;
-                let value = if lo.is_finite() && hi.is_finite() && !delta.is_finite() {
-                    lo * (1.0 - weight) + hi * weight
-                } else {
-                    lo + delta * weight
-                };
+                // PostgreSQL's float8_lerp retains IEEE overflow in the
+                // subtraction; rescaling finite extremes would change results.
+                let value = lo + weight * (hi - lo);
                 return Ok(NewFloat64Datum(value));
             }
             let rank = ((values.len() as f64 * p).ceil() as usize).max(1);
@@ -1362,10 +1358,37 @@ fn FloatingAggregate(
 
 /// Invalid ordered-set fraction, retained as a typed error at the session boundary.
 #[derive(Debug)]
-pub struct PercentileFractionError;
+pub struct PercentileFractionError(pub f64);
 impl std::fmt::Display for PercentileFractionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("percentile value must be between 0 and 1")
+        let value = if self.0.is_nan() {
+            "NaN".into()
+        } else if self.0 == f64::INFINITY {
+            "Infinity".into()
+        } else if self.0 == f64::NEG_INFINITY {
+            "-Infinity".into()
+        } else {
+            // Match orderedsetaggs.c's six-significant-digit %g diagnostic,
+            // rather than Rust's shortest round-trip Display representation.
+            let mut buffer = [0u8; 64];
+            // SAFETY: the fixed format takes one promoted double. snprintf
+            // bounds the write; its returned length is checked before slicing.
+            let length = unsafe {
+                libc::snprintf(
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    c"%g".as_ptr(),
+                    self.0,
+                )
+            };
+            if length < 0 || length as usize >= buffer.len() {
+                return Err(std::fmt::Error);
+            }
+            std::str::from_utf8(&buffer[..length as usize])
+                .map_err(|_| std::fmt::Error)?
+                .to_owned()
+        };
+        write!(f, "percentile value {value} is not between 0 and 1")
     }
 }
 impl std::error::Error for PercentileFractionError {}

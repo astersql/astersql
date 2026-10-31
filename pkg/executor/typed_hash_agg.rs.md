@@ -105,3 +105,11 @@ Complete-mode pg_percentile_disc uses the existing ordered-input cache, retains 
 ## 2026-10-31 continuous percentile
 
 Continuous float8 percentiles reuse the complete-mode ordered state, select floor/ceil of (n-1)*p and interpolate. Exact ranks retain the sample, empty/NULL fractions return NULL, invalid fractions remain typed errors. Opposite finite extremes use a weighted sum to avoid an overflowing intermediate difference; non-finite samples retain IEEE arithmetic. PercentileCont adapts derived float8 inputs to TypedHashAgg and closes its child on errors.
+
+## Ordered-set client diagnostics
+
+PercentileFractionError now retains the rejected direct float8 value and formats PostgreSQL ordered-set diagnostics, including NaN and signed Infinity, without changing fraction validation or sorting.
+
+The float8 interpolation uses PostgreSQL's `lo + weight * (hi - lo)` operation order, retaining IEEE subtraction overflow for opposite finite extremes. The real 18.6 differential proves signed Infinity in ascending/descending order.
+
+Finite rejected fractions use the existing libc dependency to match PostgreSQL orderedsetaggs.c `%g` precision/exponent diagnostics in a bounded buffer; special IEEE spellings remain explicit.

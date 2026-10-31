@@ -1156,7 +1156,15 @@ impl Extended {
                     None
                 };
                 if let Some(detail) = self.session.error_detail {
-                    crate::pg_conn::write_error_detail(socket, state, &message, detail)?;
+                    crate::pg_conn::write_function_error_with_severity(
+                        socket,
+                        "ERROR",
+                        state,
+                        &message,
+                        self.session.relation_error_position,
+                        self.session.function_error_hint,
+                        Some(detail),
+                    )?;
                 } else if let Some(hint) = self.session.function_error_hint {
                     crate::pg_conn::write_function_error(
                         socket,
@@ -1349,6 +1357,7 @@ impl Extended {
                     self.session.function_error_hint = crate::pg_conn::temporal_error_hint(&error);
                     if let crate::conn::ConnError::PgFunction(function) = &error {
                         self.session.function_error_hint = function.hint;
+                        self.session.error_detail = function.detail;
                         self.session.relation_error_position =
                             function.position.and_then(|offset| {
                                 analysis_sql
@@ -1908,6 +1917,7 @@ impl Extended {
                                 crate::pg_conn::temporal_error_hint(&e);
                             if let crate::conn::ConnError::PgFunction(function) = &e {
                                 self.session.function_error_hint = function.hint;
+                                self.session.error_detail = function.detail;
                             }
                             return Err(engine(e));
                         }

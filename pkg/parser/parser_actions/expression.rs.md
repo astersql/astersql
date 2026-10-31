@@ -10,7 +10,7 @@
 - 以 `apply_rule` 实现表达式文法的 AST 构造：列名、字面量、变量、算术/逻辑/比较谓词、子查询、函数和聚合、CASE、CAST、日期时间单位、JSON 运算等。
 - 维护归约间的中间语义值。AST 节点写入 `yySymType.expr`；列表、布尔开关、操作符、类型和枚举等写入类型擦除的 `yySymType.item`；标识符结果写入 `yySymType.ident`。
 - 在构造阶段完成 Go 文法要求的局部验证和归一化，例如字符集/排序规则检查、CAST 精度检查、`LIKE ... ESCAPE` 长度检查、`SignedNum` 的 `i64` 边界检查，以及系统变量作用域解析。
-- 保持当前 Rust action 清单完整且与其他 action 模块互斥。`pkg/parser/parser_actions/query_expression_aster_unit_test.rs::query_expression_rule_coverage` 从 `grammar/main.astergram` 计算出 296 个需要 action 的表达式产生式，并逐个要求 `expression::owns` 命中。
+- 保持当前 Rust action 清单完整且与其他 action 模块互斥。`pkg/parser/parser_actions/query_expression_aster_unit_test.rs::query_expression_rule_coverage` 从 `grammar/main.astergram` 计算出 318 个需要 action 的表达式产生式，并逐个要求 `expression::owns` 命中。
 
 ## 主要符号
 
@@ -303,3 +303,7 @@ PgPercentileDisc registers the single-fraction int4 ordered-set call in SumExpr;
 ## 2026-10-31 continuous percentile
 
 The existing ordered-set production retains its source function identifier, allowing percentile_cont to share the percentile_disc AST carrier and FILTER suffix.
+
+## Ordered-set client diagnostics
+
+The ordered-set action rejects DISTINCT at the original WITHIN token. A complete call with OVER returns 0A000 at the original function token. A call without WITHIN retains a Function node and original position for ordinary signature diagnostics.

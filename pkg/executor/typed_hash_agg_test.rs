@@ -1466,13 +1466,13 @@ fn pg09_20_execution_boundaries_and_nonfinite() {
             vec![Some(-f64::MAX), Some(f64::MAX)],
             Some(0.5),
             false,
-            Some(0.0),
+            Some(f64::INFINITY),
         ),
         (
             vec![Some(-f64::MAX), Some(f64::MAX)],
             Some(0.5),
             true,
-            Some(0.0),
+            Some(f64::NEG_INFINITY),
         ),
         (
             vec![Some(f64::MAX), Some(f64::MAX)],
@@ -1555,5 +1555,47 @@ fn pg09_21_execution() {
             PercentileCont(context(), vec![None], fraction, false).unwrap(),
             None
         );
+    }
+}
+
+#[test]
+fn pg09_22_fraction_diagnostics() {
+    for (fraction, display) in [
+        (-0.1, "-0.1"),
+        (1.1, "1.1"),
+        (-0.123456789, "-0.123457"),
+        (-1e-10, "-1e-10"),
+        (1e10, "1e+10"),
+        (f64::NAN, "NaN"),
+        (f64::INFINITY, "Infinity"),
+        (f64::NEG_INFINITY, "-Infinity"),
+    ] {
+        for empty in [false, true] {
+            let disc = crate::typed_hash_agg::PercentileDisc(
+                context(),
+                if empty { vec![] } else { vec![Some(1)] },
+                Some(fraction),
+                false,
+            )
+            .unwrap_err();
+            let cont = crate::typed_hash_agg::PercentileCont(
+                context(),
+                if empty { vec![] } else { vec![Some(1.0)] },
+                Some(fraction),
+                false,
+            )
+            .unwrap_err();
+            for error in [disc, cont] {
+                assert!(
+                    error
+                        .downcast_ref::<crate::typed_hash_agg::PercentileFractionError>()
+                        .is_some()
+                );
+                assert_eq!(
+                    error.to_string(),
+                    format!("percentile value {display} is not between 0 and 1")
+                );
+            }
+        }
     }
 }

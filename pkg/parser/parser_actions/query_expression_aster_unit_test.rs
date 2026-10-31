@@ -221,7 +221,7 @@ fn query_expression_rule_coverage() {
 
     assert_eq!(
         expression_expected.len(),
-        314,
+        318,
         "expression RuleId inventory changed"
     );
     assert_eq!(query_expected.len(), 244, "query RuleId inventory changed");

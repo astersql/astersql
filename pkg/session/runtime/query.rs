@@ -1499,6 +1499,7 @@ impl ConcreteSession {
                         .is_some()
                     {
                         let diagnostic = PgFunctionError {
+                            detail: None,
                             state: "22003",
                             message: error.to_string(),
                             hint: None,
@@ -4000,6 +4001,7 @@ impl ConcreteSession {
                             _ => "unknown",
                         };
                         let error = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42804",
                             message: format!(
                                 "argument of FILTER must be type boolean, not type {name}"
@@ -4030,6 +4032,7 @@ impl ConcreteSession {
                         let mut position = AggregatePosition(None);
                         filter.Accept(&mut position);
                         let error = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42803",
                             message: "aggregate functions are not allowed in FILTER".to_owned(),
                             hint: None,
@@ -4111,6 +4114,7 @@ impl ConcreteSession {
                         .find(|item| !Args.iter().any(|arg| same(arg, &item.Expr, self.sources)))
                     {
                         let error = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42P10",
                             message: "in an aggregate with DISTINCT, ORDER BY expressions must appear in argument list".to_owned(),
                             hint: None,
@@ -4158,6 +4162,7 @@ impl ConcreteSession {
                         if let Some(name) = invalid_type {
                             let safe_input = astersql_objstore::parse::RedactURL(text);
                             let error = super::function_diagnostics::PgFunctionError {
+                                detail: None,
                                 state: "22P02",
                                 message: format!(
                                     "invalid input syntax for type {name}: \"{safe_input}\""
@@ -4186,6 +4191,7 @@ impl ConcreteSession {
                         == Some(25)
                 {
                     let error = super::function_diagnostics::PgFunctionError {
+                        detail: None,
                         state: "42883",
                         message: format!(
                             "function {}(text) does not exist",
@@ -4230,6 +4236,7 @@ impl ConcreteSession {
                         .collect::<Vec<_>>()
                         .join(", ");
                     let error = super::function_diagnostics::PgFunctionError {
+                        detail: None,
                         state: "42883",
                         message: format!(
                             "function {}({arguments}) does not exist",
@@ -4274,6 +4281,7 @@ impl ConcreteSession {
                             _ => "unknown",
                         });
                         let diagnostic = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42883",
                             message: format!(
                                 "operator does not exist: {} {} {}",
@@ -4310,6 +4318,7 @@ impl ConcreteSession {
                             _ => "unknown",
                         });
                         let error = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42883",
                             message: format!(
                                 "operator does not exist: {} || {}",
@@ -4361,6 +4370,7 @@ impl ConcreteSession {
                     }
                     self.scalar_cast_error = Some(if let Some(position) = position {
                         let diagnostic = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42804",
                             message: format!("{} types cannot be matched", FnName.L.to_uppercase()),
                             hint: None,
@@ -4388,6 +4398,7 @@ impl ConcreteSession {
                         || super::relational_value::pg_text_numeric_pair(&right, &left)
                     {
                         let error = super::function_diagnostics::PgFunctionError {
+                            detail: None,
                             state: "42883",
                             message: "operator does not exist for typed text and numeric operands"
                                 .into(),
@@ -4796,6 +4807,7 @@ impl ConcreteSession {
                         None
                     };
                     let error = super::function_diagnostics::PgFunctionError {
+                        detail: None,
                         state: "42804",
                         message: "COALESCE types cannot be matched with text".into(),
                         hint: None,

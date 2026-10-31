@@ -4433,3 +4433,6 @@ UnReservedKeyword : pgTies;
 UnReservedKeyword : pgOthers;
 
 SumExpr : pgPercentileDisc "(" Expression ")" pgWithin "GROUP" "(" OrderBy ")" @action;
+SumExpr : pgPercentileDisc "(" "DISTINCT" Expression ")" pgWithin "GROUP" "(" OrderBy ")" @action;
+SumExpr : pgPercentileDisc "(" Expression ")" @action;
+SumExpr : pgPercentileDisc "(" Expression ")" pgWithin "GROUP" "(" OrderBy ")" "OVER" WindowNameOrSpec @action;

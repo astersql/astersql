@@ -5,6 +5,7 @@ use astersql_parser_ast::Node;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PgFunctionError {
+    pub detail: Option<&'static str>,
     pub state: &'static str,
     pub message: String,
     pub hint: Option<&'static str>,
@@ -44,6 +45,7 @@ pub(super) fn no_matching_function(expression: &ast::ExprNode, types: &[u8]) -> 
         .collect::<Vec<_>>()
         .join(", ");
     let error = PgFunctionError {
+        detail: None,
         state: "42883",
         message: format!("function {name}({arguments}) does not exist"),
         hint: Some(
@@ -102,6 +104,7 @@ pub(super) fn constant_integer_input_error(expression: &ast::ExprNode) -> Option
                 && let Err(error) = astersql_expression::pg_cast_int4(Some(text))
             {
                 let error = PgFunctionError {
+                    detail: None,
                     state: error.sqlstate(),
                     message: error.to_string(),
                     hint: None,
@@ -159,6 +162,29 @@ pub fn ValidatePostgreSQLExclusiveFunctions(
             if self.0.is_some() {
                 return true;
             }
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>()
+                && let Some(error) = ordered_set_direct_error(select)
+            {
+                self.0 = Some(error);
+                return true;
+            }
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
+                && matches!(&expr.Kind, ast::ExprKind::Function { FnName, .. } if matches!(FnName.L.as_str(), "percentile_disc" | "percentile_cont"))
+            {
+                let ast::ExprKind::Function { Args, .. } = &expr.Kind else {
+                    unreachable!()
+                };
+                let types = Args
+                    .iter()
+                    .map(|arg| match &arg.Kind {
+                        ast::ExprKind::Cast { Tp, .. } => Tp.GetType(),
+                        ast::ExprKind::Value(value) => value.Type.GetType(),
+                        _ => astersql_parser_mysql::r#type::TypeNull,
+                    })
+                    .collect::<Vec<_>>();
+                self.0 = Some(no_matching_function(expr, &types));
+                return true;
+            }
             if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
                 && let Err(error) = super::relational_value::pg_offset_window_signature(expr)
             {
@@ -182,4 +208,105 @@ pub fn ValidatePostgreSQLExclusiveFunctions(
         statement.accept(&mut visitor);
     }
     visitor.0.map_or(Ok(()), Err)
+}
+
+/// Validate direct arguments on the original AST, before relation restoration
+/// changes aliases or byte positions. The execution adapter retains its own
+/// resolved group-key check for callers that bypass the protocol preflight.
+fn ordered_set_direct_error(select: &ast::SelectStmt) -> Option<SessionError> {
+    struct Calls<'a> {
+        select: &'a ast::SelectStmt,
+        error: Option<SessionError>,
+    }
+    impl ast::ExprNodeVisitor for Calls<'_> {
+        fn Enter(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            if self.error.is_some() {
+                return (expr.clone(), true);
+            }
+            if let ast::ExprKind::AggregateFunction { Name, Args, .. } = &expr.Kind
+                && matches!(Name.as_str(), "percentile_disc" | "percentile_cont")
+                && Args.len() == 1
+            {
+                struct Direct<'a> {
+                    groups: &'a [ast::ByItem],
+                    invalid: Option<ast::ExprNode>,
+                }
+                impl ast::ExprNodeVisitor for Direct<'_> {
+                    fn Enter(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                        if let ast::ExprKind::Column(column) = &expr.Kind {
+                            let grouped = self.groups.iter().any(|item| matches!(&item.Expr.Kind,
+                                ast::ExprKind::Column(key) if key.Name.L == column.Name.L
+                                    && (key.Table.L.is_empty() || column.Table.L.is_empty() || key.Table.L == column.Table.L)));
+                            if !grouped && self.invalid.is_none() {
+                                self.invalid = Some(expr.clone());
+                            }
+                        }
+                        (expr.clone(), false)
+                    }
+                    fn Leave(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                        (expr.clone(), true)
+                    }
+                }
+                let mut direct = Direct {
+                    groups: &self.select.GroupBy,
+                    invalid: None,
+                };
+                Args[0].Accept(&mut direct);
+                if let Some(column_expr) = direct.invalid {
+                    let ast::ExprKind::Column(column) = &column_expr.Kind else {
+                        unreachable!()
+                    };
+                    let qualifier = if !column.Table.L.is_empty() {
+                        column.Table.L.as_str()
+                    } else if let Some(from) = &self.select.From
+                        && from.TableRefs.Right.is_none()
+                        && let Some(ast::ResultSetNode::TableSource(source)) =
+                            from.TableRefs.Left.as_deref()
+                    {
+                        if source.AsName.L.is_empty() {
+                            source.Source.Name.L.as_str()
+                        } else {
+                            source.AsName.L.as_str()
+                        }
+                    } else {
+                        ""
+                    };
+                    let name = if qualifier.is_empty() {
+                        column.Name.L.clone()
+                    } else {
+                        format!("{qualifier}.{}", column.Name.L)
+                    };
+                    let diagnostic = PgFunctionError {
+                        state: "42803",
+                        message: format!(
+                            "column \"{name}\" must appear in the GROUP BY clause or be used in an aggregate function"
+                        ),
+                        detail: Some(
+                            "Direct arguments of an ordered-set aggregate must use only grouped columns.",
+                        ),
+                        hint: None,
+                        position: Some(column_expr.OriginTextPosition.max(0) as usize),
+                    };
+                    self.error = Some(SessionError::with_source(
+                        diagnostic.to_string(),
+                        astersql_errors::SharedError::new(diagnostic),
+                    ));
+                }
+            }
+            (expr.clone(), false)
+        }
+        fn Leave(&mut self, expr: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            (expr.clone(), true)
+        }
+    }
+    let mut calls = Calls {
+        select,
+        error: None,
+    };
+    for field in &select.Fields.Fields {
+        if let Some(expr) = &field.Expr {
+            expr.Accept(&mut calls);
+        }
+    }
+    calls.error
 }

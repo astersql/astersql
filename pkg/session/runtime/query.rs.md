@@ -343,3 +343,7 @@ Continuous percentiles use the shared float8 TypedHashAgg adapter for derived ro
 ## 2026-10-31 ordered-set direct fraction diagnostics
 
 The direct fraction adapter reuses `pg_float4_cast_text_input` for its existing typed float8 binary carrier decoding before parsing the fraction. Rebound NaNs now reach the shared percentile range validator and return 22003 rather than a carrier text parse error (22P02), independently of transition row count or FILTER. No protocol codec or ordinary aggregate behavior changes.
+
+## Ordered-set client diagnostics
+
+Existing PgFunctionError constructors explicitly leave the new optional detail absent; execution and resolved group-key checks are unchanged.

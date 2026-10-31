@@ -23804,7 +23804,7 @@ fn pg09_19_sql() {
         ms.iter().find(|m| m.0 == b'D').unwrap().1,
         row(&[Some("1"), Some("3")])
     );
-    fn fraction_error19(ms: &[(u8, Vec<u8>)]) {
+    fn fraction_error19(ms: &[(u8, Vec<u8>)], p: &str) {
         let e = &ms.iter().find(|m| m.0 == b'E').unwrap().1;
         let mut fields = std::collections::BTreeMap::new();
         let mut at = 0;
@@ -23819,7 +23819,11 @@ fn pg09_19_sql() {
         assert_eq!(fields.get(&b'S').unwrap().as_slice(), b"ERROR");
         assert_eq!(
             fields.get(&b'M').unwrap().as_slice(),
-            b"percentile value must be between 0 and 1"
+            format!(
+                "percentile value {} is not between 0 and 1",
+                p.trim_matches('\'')
+            )
+            .as_bytes()
         );
         for key in [b'D', b'H', b'P'] {
             assert!(!fields.contains_key(&key));
@@ -23830,7 +23834,7 @@ fn pg09_19_sql() {
             "SELECT percentile_disc({p}::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(NULL::int4)) t(x)"
         );
         let ms = query(&mut s, &sql);
-        fraction_error19(&ms);
+        fraction_error19(&ms, p);
         let e = &ms.iter().find(|m| m.0 == b'E').expect("invalid fraction").1;
         assert!(e.windows(7).any(|w| w == b"C22003\0"), "{ms:?}");
         assert!(e.windows(7).any(|w| w == b"SERROR\0"));
@@ -23898,7 +23902,7 @@ fn pg09_19_sql() {
                 send(&mut s, b'S', &[]);
                 let ms = ready19(&mut s);
                 if p == Some(1.1) {
-                    fraction_error19(&ms);
+                    fraction_error19(&ms, "1.1");
                     assert_eq!(
                         ms.iter().map(|m| m.0).collect::<Vec<_>>(),
                         [b'2', b'T', b'E', b'Z']
@@ -24120,13 +24124,13 @@ fn pg09_20_sql() {
             "0.5",
             "ASC",
             "('-1.7976931348623157e308'::float8),('1.7976931348623157e308'::float8)",
-            Some("0"),
+            Some("Infinity"),
         ),
         (
             "0.5",
             "DESC",
             "('-1.7976931348623157e308'::float8),('1.7976931348623157e308'::float8)",
-            Some("0"),
+            Some("-Infinity"),
         ),
         (
             "1",
@@ -24192,7 +24196,7 @@ fn pg09_20_sql() {
         ms.iter().find(|m| m.0 == b'D').unwrap().1,
         row(&[Some("1.5"), Some("3")])
     );
-    fn fraction_error20(ms: &[(u8, Vec<u8>)]) {
+    fn fraction_error20(ms: &[(u8, Vec<u8>)], p: &str) {
         let e = &ms.iter().find(|m| m.0 == b'E').unwrap().1;
         let mut fields = std::collections::BTreeMap::new();
         let mut at = 0;
@@ -24207,7 +24211,11 @@ fn pg09_20_sql() {
         assert_eq!(fields.get(&b'S').unwrap().as_slice(), b"ERROR");
         assert_eq!(
             fields.get(&b'M').unwrap().as_slice(),
-            b"percentile value must be between 0 and 1"
+            format!(
+                "percentile value {} is not between 0 and 1",
+                p.trim_matches('\'')
+            )
+            .as_bytes()
         );
         for key in [b'D', b'H', b'P'] {
             assert!(!fields.contains_key(&key));
@@ -24218,7 +24226,7 @@ fn pg09_20_sql() {
             "SELECT percentile_cont({p}::float8) WITHIN GROUP(ORDER BY x) AS c FROM (VALUES(NULL::float8)) t(x)"
         );
         let ms = query(&mut s, &sql);
-        fraction_error20(&ms);
+        fraction_error20(&ms, p);
         let e = &ms.iter().find(|m| m.0 == b'E').expect("invalid fraction").1;
         assert!(e.windows(7).any(|w| w == b"C22003\0"), "{ms:?}");
         assert!(e.windows(7).any(|w| w == b"SERROR\0"));
@@ -24286,7 +24294,7 @@ fn pg09_20_sql() {
                 send(&mut s, b'S', &[]);
                 let ms = ready20(&mut s);
                 if p == Some(1.1) {
-                    fraction_error20(&ms);
+                    fraction_error20(&ms, "1.1");
                     assert_eq!(
                         ms.iter().map(|m| m.0).collect::<Vec<_>>(),
                         [b'2', b'T', b'E', b'Z']
@@ -24534,7 +24542,7 @@ fn pg09_21_sql() {
         let messages = query(&mut s, &invalid);
         assert_eq!(
             error(&messages, "42803"),
-            b"column \"p\" must appear in the GROUP BY clause or be used in an aggregate function"
+            b"column \"t.p\" must appear in the GROUP BY clause or be used in an aggregate function"
         );
         recover(&mut s);
         // Parse/Describe must reject the ungrouped direct variable before Bind/Execute.
@@ -24558,19 +24566,21 @@ fn pg09_21_sql() {
                 .collect::<Vec<_>>(),
             expected
         );
-        for (call, suffix) in [
-            (format!("{function}(0.5::float8)"), ""),
+        for (call, suffix, state) in [
+            (format!("{function}(0.5::float8)"), "", "42883"),
             (
                 format!("{function}(DISTINCT 0.5::float8) WITHIN GROUP(ORDER BY x)"),
                 "",
+                "42601",
             ),
             (
                 format!("{function}(0.5::float8) WITHIN GROUP(ORDER BY x)"),
                 " OVER ()",
+                "0A000",
             ),
         ] {
             let sql = format!("SELECT {call}{suffix} AS c {source}");
-            error(&query(&mut s, &sql), "42601");
+            error(&query(&mut s, &sql), state);
             recover(&mut s);
         }
         for predicate in ["", " WHERE false", " FILTER (WHERE false)"] {
@@ -24585,7 +24595,11 @@ fn pg09_21_sql() {
                 );
                 assert_eq!(
                     error(&query(&mut s, &sql), "22003"),
-                    b"percentile value must be between 0 and 1"
+                    format!(
+                        "percentile value {} is not between 0 and 1",
+                        fraction.trim_matches('\'')
+                    )
+                    .as_bytes()
                 );
                 recover(&mut s);
             }
