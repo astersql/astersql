@@ -707,3 +707,42 @@ fn crossks_align_lifecycle_expired_validator_rejects_writes_but_read_only_commit
     drop(lease);
     pool.close();
 }
+
+/// ff54393a0c changes the baseline and restoration assertion, not hint application.
+#[test]
+fn port_ff54393a0c_restores_actual_statement_tracker_to_explicit_baseline() {
+    let (_domain, session) = super::CreateAnalyzeSession().expect("canonical session");
+    for sql in [
+        "use test",
+        "create table t(a int, b int, index idx(a))",
+        "set @@tidb_mem_quota_query = 536870912",
+        "select a, b from t",
+    ] {
+        session
+            .execute(sql)
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+    let baseline = session
+        .last_statement_tracker
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .GetBytesLimit();
+    assert_eq!(baseline, 536870912);
+    session.execute("create global binding for select * from t using select /*+ MAX_EXECUTION_TIME(100), SET_VAR(TIKV_CLIENT_READ_TIMEOUT=20), MEMORY_QUOTA(2 GB) */ * from t use index(idx)").unwrap();
+    session.execute("select * from t").unwrap();
+    // Keep the existing hint matching assertions; this commit changes only
+    // how the ordinary statement's real tracker baseline is established.
+    assert_eq!(session.LastStatementHintsForTest(), (2147483648, 100));
+    session.execute("select a, b from t").unwrap();
+    assert_eq!(
+        session
+            .last_statement_tracker
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .GetBytesLimit(),
+        baseline
+    );
+    assert_eq!(session.LastStatementHintsForTest().1, 0);
+}

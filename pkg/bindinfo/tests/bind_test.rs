@@ -225,6 +225,42 @@ fn test_stmt_hints() {
 }
 
 #[test]
+fn port_ff54393a0c_stmt_hints_restore_explicit_session_memory_baseline() {
+    let (store, _domain) = testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = testkit::NewTestKit(store);
+    tk.MustExec("use test", vec![]);
+    tk.MustExec("drop table if exists t", vec![]);
+    tk.MustExec("create table t(a int, b int, index idx(a))", vec![]);
+    // Avoid depending on the environment's default memory quota, as in Go.
+    tk.MustExec("set @@tidb_mem_quota_query = 536870912", vec![]);
+    tk.MustQuery("select @@tidb_mem_quota_query", vec![])
+        .Check(testkit::Rows(&["536870912"]));
+    tk.MustQuery("select a, b from t", vec![])
+        .Check(testkit::Rows(&[]));
+    let baseline = tk.MustQuery("select @@tidb_mem_quota_query", vec![]).Rows();
+    assert_eq!(baseline, testkit::Rows(&["536870912"]));
+    tk.MustExec(
+        "create global binding for select * from t using select /*+ MAX_EXECUTION_TIME(100), SET_VAR(TIKV_CLIENT_READ_TIMEOUT=20), MEMORY_QUOTA(2 GB) */ * from t use index(idx)",
+        vec![],
+    );
+    tk.MustQuery("select * from t", vec![])
+        .Check(testkit::Rows(&[]));
+    let hinted = tk.Session().LastStatementHintsForTest();
+    assert_eq!(hinted.MemQuotaQuery, 2147483648);
+    assert_eq!(hinted.MaxExecutionTime, 100);
+    tk.MustQuery("select a, b from t", vec![])
+        .Check(testkit::Rows(&[]));
+    let restored = tk.Session().LastStatementHintsForTest();
+    // Zero denotes no statement override; the session quota remains explicit.
+    assert_eq!(restored.MemQuotaQuery, 0);
+    assert_eq!(
+        tk.MustQuery("select @@tidb_mem_quota_query", vec![]).Rows(),
+        baseline
+    );
+    assert_eq!(restored.MaxExecutionTime, 0);
+}
+
+#[test]
 fn test_binding_with_isolation_read() {
     let statement = [bindinfo::TableName {
         Name: "t".to_owned(),
