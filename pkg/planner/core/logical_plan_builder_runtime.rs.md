@@ -135,3 +135,7 @@ Rust 不是逐行同名：它把 Go 文件的大型 `PlanBuilder` 方法群拆�
 ## 2026-10-31 percentile_disc
 
 The existing aggregation builder lowers percentile_disc AST direct/sort inputs to internal [ordered value, direct fraction] descriptors and preserves FILTER/order wiring.
+
+## 2026-10-31 continuous percentile
+
+The ordinary aggregate builder lowers percentile_cont into pg_percentile_cont with [ordered value, direct fraction], preserving existing FILTER/order wiring.

@@ -3779,11 +3779,13 @@ fn build_select_aggregation(
                 }] if value == "1"
             );
         let ordered_args;
-        let Args = if Name.eq_ignore_ascii_case("percentile_disc") {
+        let Args = if Name.eq_ignore_ascii_case("percentile_disc")
+            || Name.eq_ignore_ascii_case("percentile_cont")
+        {
             if Args.len() != 1 || Order.len() != 1 {
-                return Err(expression::errors::New(
-                    "percentile_disc requires one direct argument and one sort key",
-                ));
+                return Err(expression::errors::New(format!(
+                    "{Name} requires one direct argument and one sort key"
+                )));
             }
             ordered_args = vec![Order[0].Expr.clone(), Args[0].clone()];
             &ordered_args
@@ -3822,6 +3824,8 @@ fn build_select_aggregation(
             builder.ctx.GetExprCtx(),
             if Name.eq_ignore_ascii_case("percentile_disc") {
                 "pg_percentile_disc"
+            } else if Name.eq_ignore_ascii_case("percentile_cont") {
+                "pg_percentile_cont"
             } else {
                 Name
             },

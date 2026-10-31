@@ -1251,7 +1251,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             out.expr = Some(parser_ast::ExprNode {
                 node_text,
                 Kind: parser_ast::ExprKind::AggregateFunction {
-                    Name: "percentile_disc".into(), Args: vec![rhs[3].expr.clone().unwrap()],
+                    Name: rhs[1].ident.to_ascii_lowercase(), Args: vec![rhs[3].expr.clone().unwrap()],
                     Distinct: false, Order: order, Filter: None,
                 },
                 OriginTextPosition: rhs[1].offset,

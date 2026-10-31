@@ -6648,3 +6648,42 @@ fn pg09_19_ordered_ast() {
         pg.ParseOneStmt(sql, "", "").unwrap();
     }
 }
+
+#[test]
+fn pg09_20_ordered_ast() {
+    let sql = "SELECT percentile_cont(0.5::float8) WITHIN GROUP (ORDER BY x DESC) FILTER (WHERE keep) AS c";
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let stmt = pg.ParseOneStmt(sql, "", "").unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+    let parser_ast::ExprKind::AggregateFunction {
+        Name,
+        Args,
+        Order,
+        Filter,
+        ..
+    } = &expr.Kind
+    else {
+        panic!("ordered aggregate AST");
+    };
+    assert_eq!(Name, "percentile_cont");
+    assert_eq!(Args.len(), 1);
+    assert_eq!(Order.len(), 1);
+    assert!(Order[0].Desc);
+    assert!(Filter.is_some());
+    let restored = parser_ast::sql_restore::restore_expr(expr).unwrap();
+    assert!(restored.contains("WITHIN GROUP"));
+    pg.ParseOneStmt(&format!("SELECT {restored}"), "", "")
+        .unwrap();
+    let mut mysql = parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(mysql.ParseOneStmt(sql, "", "").is_err());
+    mysql
+        .ParseOneStmt("SELECT percentile_cont(0.5)", "", "")
+        .unwrap();
+    for sql in ["SELECT within FROM t", "SELECT percentile_cont FROM t"] {
+        pg.ParseOneStmt(sql, "", "").unwrap();
+    }
+}

@@ -335,3 +335,7 @@ LAG/LEAD 在本 int4 域复用 pg_union_common_type 合并 value/default 的固�
 ## 2026-10-31 percentile_disc
 
 The aggregate adapter evaluates the direct fraction before filtering and feeds derived int4 rows to TypedHashAgg. Analysis rejects ungrouped direct columns, retains current int4 scope, maps fraction errors to 22003 and fixes result identity from the WITHIN GROUP input.
+
+## 2026-10-31 continuous percentile
+
+Continuous percentiles use the shared float8 TypedHashAgg adapter for derived rows, keep the direct fraction outside FILTER, validate the float8 overload/grouped direct arguments, and describe a nullable float8 column before execution.

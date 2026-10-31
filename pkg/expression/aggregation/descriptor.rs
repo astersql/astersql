@@ -223,7 +223,7 @@ impl AggFuncDesc {
             && self.OrderByItems.is_empty()
             && !matches!(
                 self.Name.as_str(),
-                "pg_avg_float4" | "pg_avg_float8" | "pg_percentile_disc"
+                "pg_avg_float4" | "pg_avg_float8" | "pg_percentile_disc" | "pg_percentile_cont"
             )
     }
 

@@ -129,3 +129,7 @@ PostgreSQL未加引号的exclude/ties/others映射到新增非保留词元；UnR
 ## 2026-10-31 percentile_disc
 
 PG contextual percentile_disc/within tokens feed the existing aggregate grammar; identifier and MySQL paths retain their prior tokens.
+
+## 2026-10-31 continuous percentile
+
+PostgreSQL percentile_cont shares the ordered-set token with percentile_disc; the semantic action retains the actual function identifier. MySQL and quoted identifiers preserve existing tokenization.

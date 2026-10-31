@@ -299,3 +299,7 @@ PgAggregateArity 只为 PostgreSQL 的 COUNT/SUM/AVG 多参数非法调用构造
 ## 2026-10-31 percentile_disc
 
 PgPercentileDisc registers the single-fraction int4 ordered-set call in SumExpr; Args retain the direct fraction and Order the WITHIN GROUP inputs for FILTER and visitors.
+
+## 2026-10-31 continuous percentile
+
+The existing ordered-set production retains its source function identifier, allowing percentile_cont to share the percentile_disc AST carrier and FILTER suffix.

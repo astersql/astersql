@@ -351,7 +351,7 @@ impl Scanner {
         {
             tok = match lit.to_ascii_lowercase().as_str() {
                 "within" if self.getNextToken() == token::group => token::pgWithin,
-                "percentile_disc" if self.getNextToken() == '(' as i32 => token::pgPercentileDisc,
+                "percentile_disc" | "percentile_cont" if self.getNextToken() == '(' as i32 => token::pgPercentileDisc,
                 "exclude" => token::pgExclude,
                 "ties" => token::pgTies,
                 "others" => token::pgOthers,

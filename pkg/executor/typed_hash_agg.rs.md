@@ -101,3 +101,7 @@ MAX_COUNT/MIN_COUNT 的具体语义由 Rust `pkg/executor/aggfuncs/func_max_min_
 ## 2026-10-31 percentile_disc
 
 Complete-mode pg_percentile_disc uses the existing ordered-input cache, retains duplicates and ignores NULL inputs, evaluates the direct fraction once per group, validates it even for empty groups, and selects ceil(p*n) with p=0 selecting the first value. The derived-row adapter enters the same TypedHashAgg and closes the child on errors.
+
+## 2026-10-31 continuous percentile
+
+Continuous float8 percentiles reuse the complete-mode ordered state, select floor/ceil of (n-1)*p and interpolate. Exact ranks retain the sample, empty/NULL fractions return NULL, invalid fractions remain typed errors. Opposite finite extremes use a weighted sum to avoid an overflowing intermediate difference; non-finite samples retain IEEE arithmetic. PercentileCont adapts derived float8 inputs to TypedHashAgg and closes its child on errors.

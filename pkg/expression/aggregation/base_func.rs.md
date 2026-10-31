@@ -97,3 +97,7 @@ Rust 保留了 Go 的结构字段、函数分派、类型宽度/精度规则、�
 Internal pg_percentile_disc descriptors infer their result from the ordered input in Args[0]; Args[1] is the group-direct float8 fraction.
 
 The direct fraction receives its own real cast and skips the return-type-driven aggregate cast loop; otherwise an int4 result would truncate fractional probabilities.
+
+## 2026-10-31 continuous percentile
+
+pg_percentile_cont infers nullable float8, casts its ordered input and direct fraction as real independently, and bypasses generic aggregate argument casting.

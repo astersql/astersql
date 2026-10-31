@@ -287,7 +287,9 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
                         .join(",")
                 )
             };
-            if Name.eq_ignore_ascii_case("percentile_disc") {
+            if Name.eq_ignore_ascii_case("percentile_disc")
+                || Name.eq_ignore_ascii_case("percentile_cont")
+            {
                 Ok(format!(
                     "{Name}({args}) WITHIN GROUP({}){filter}",
                     order.trim_start()

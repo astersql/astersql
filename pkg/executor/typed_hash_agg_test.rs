@@ -1399,3 +1399,130 @@ fn pg09_19_empty_null_duplicate_and_fraction() {
         }
     }
 }
+
+#[test]
+fn pg09_20_execution() {
+    use astersql_types::datum::NewFloat64Datum;
+    let ctx = context();
+    let tp = *astersql_expression::types::NewFieldType(astersql_parser_mysql::r#type::TypeDouble);
+    for (fraction, desc, expected) in [
+        (0.5, false, 2.5),
+        (0.5, true, 2.5),
+        (0.0, false, 1.0),
+        (1.0, false, 4.0),
+    ] {
+        // Clone an existing descriptor so the red test reaches the real executor.
+        let mut f = astersql_expression_aggregation::NewAggFuncDesc(
+            ctx.GetExprCtx(),
+            "firstrow",
+            vec![Box::new(astersql_expression::Column::new(
+                tp.clone(),
+                1,
+                1,
+                0,
+            ))],
+            false,
+        )
+        .unwrap();
+        f.Name = "pg_percentile_cont".into();
+        f.Args
+            .push(Box::new(astersql_expression::Constant::with_type(
+                NewFloat64Datum(fraction),
+                *astersql_expression::types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeDouble,
+                ),
+            )));
+        f.OrderByItems = vec![astersql_planner_util::ByItems {
+            Expr: f.Args[0].clone(),
+            Desc: desc,
+        }];
+        let result = pg10_run(
+            vec![f],
+            vec![tp.clone()],
+            [4, 1, 3, 2]
+                .into_iter()
+                .map(|v| vec![NewFloat64Datum(v as f64)])
+                .collect(),
+        );
+        assert_eq!(result[0].GetFloat64(), expected);
+    }
+}
+
+#[test]
+fn pg09_20_execution_boundaries_and_nonfinite() {
+    use crate::typed_hash_agg::PercentileCont;
+    for (values, p, desc, expected) in [
+        (vec![], Some(0.5), false, None),
+        (vec![None, None], Some(0.5), false, None),
+        (vec![Some(7.0)], None, false, None),
+        (vec![Some(7.0)], Some(0.5), false, Some(7.0)),
+        (
+            vec![Some(1.0), Some(1.0), Some(9.0), None],
+            Some(0.5),
+            false,
+            Some(1.0),
+        ),
+        (
+            vec![Some(-f64::MAX), Some(f64::MAX)],
+            Some(0.5),
+            false,
+            Some(0.0),
+        ),
+        (
+            vec![Some(-f64::MAX), Some(f64::MAX)],
+            Some(0.5),
+            true,
+            Some(0.0),
+        ),
+        (
+            vec![Some(f64::MAX), Some(f64::MAX)],
+            Some(0.5),
+            false,
+            Some(f64::MAX),
+        ),
+        (
+            vec![Some(1.0), Some(f64::INFINITY)],
+            Some(1.0),
+            false,
+            Some(f64::INFINITY),
+        ),
+        (
+            vec![Some(1.0), Some(f64::INFINITY)],
+            Some(0.5),
+            false,
+            Some(f64::INFINITY),
+        ),
+        (
+            (1..=2050).rev().map(|v| Some(v as f64)).collect(),
+            Some(0.5),
+            false,
+            Some(1025.5),
+        ),
+    ] {
+        assert_eq!(
+            PercentileCont(context(), values, p, desc).unwrap(),
+            expected
+        );
+    }
+    for values in [
+        vec![Some(f64::NAN)],
+        vec![Some(f64::NEG_INFINITY), Some(f64::INFINITY)],
+    ] {
+        assert!(
+            PercentileCont(context(), values, Some(0.5), false)
+                .unwrap()
+                .unwrap()
+                .is_nan()
+        );
+    }
+    for p in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for values in [vec![], vec![None], vec![Some(1.0)]] {
+            let error = PercentileCont(context(), values, Some(p), false).unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<crate::typed_hash_agg::PercentileFractionError>()
+                    .is_some()
+            );
+        }
+    }
+}

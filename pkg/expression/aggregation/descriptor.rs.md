@@ -126,3 +126,7 @@ Rust 保留了 Go 的字段、构造、hash/equality、格式化、深拷贝、�
 ## 2026-10-31 percentile_disc
 
 CanSplitForPostgreSQL keeps discrete percentiles in complete mode because local percentile values are not merge states.
+
+## 2026-10-31 continuous percentile
+
+Continuous percentile states require complete mode and cannot split into local/final aggregates.

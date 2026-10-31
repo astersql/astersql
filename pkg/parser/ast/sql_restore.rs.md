@@ -142,3 +142,7 @@ restore_frame_clause在基础帧后还原EXCLUDE CURRENT ROW/GROUP/TIES；NoOthe
 ## 2026-10-31 percentile_disc
 
 percentile_disc restores the direct call followed by WITHIN GROUP ORDER BY and its optional FILTER.
+
+## 2026-10-31 continuous percentile
+
+Restore percentile_cont direct arguments and WITHIN GROUP ordering using the existing ordered-set AST representation.

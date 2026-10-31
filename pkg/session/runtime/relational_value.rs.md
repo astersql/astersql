@@ -373,3 +373,7 @@ LAG/LEAD静态签名检查复用typed函数错误；共享last_value帧offset适
 ## 2026-10-31 percentile_disc
 
 percentile_disc result inference follows the WITHIN GROUP expression independently of observed result rows.
+
+## 2026-10-31 continuous percentile
+
+The relational result-type helper carries percentile_cont as float8 before execution, including empty/grouped outputs.

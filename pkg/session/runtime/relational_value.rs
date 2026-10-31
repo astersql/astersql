@@ -3826,6 +3826,7 @@ pub(super) fn relational_expression_type(
         ast::ExprKind::AggregateFunction {
             Name, Args, Order, ..
         } => match Name.to_ascii_lowercase().as_str() {
+            "percentile_cont" => new_type(astersql_parser_mysql::r#type::TypeDouble),
             "percentile_disc" => Order
                 .first()
                 .map(|item| relational_expression_type(&item.Expr, table))

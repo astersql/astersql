@@ -1108,11 +1108,13 @@ impl ConcreteSession {
     ) -> SessionResult<Option<String>> {
         // Direct arguments are evaluated once per group, including groups whose
         // FILTER rejects every row. Keep them separate from transition inputs.
-        let direct_fraction = if name.eq_ignore_ascii_case("percentile_disc") {
+        let direct_fraction = if name.eq_ignore_ascii_case("percentile_disc")
+            || name.eq_ignore_ascii_case("percentile_cont")
+        {
             if args.len() != 1 || order.len() != 1 || distinct {
                 return Err(super::relational_value::pg_bytea_input_error(
                     "42883",
-                    "percentile_disc requires one direct argument and one sort key",
+                    &format!("{name} requires one direct argument and one sort key"),
                 ));
             }
             let empty = HashMap::new();
@@ -1154,6 +1156,37 @@ impl ConcreteSession {
         } else {
             rows
         };
+        if name.eq_ignore_ascii_case("percentile_cont") {
+            let values = rows
+                .iter()
+                .map(|row| {
+                    let value =
+                        self.relational_query_expression_value(&order[0].Expr, row, None)?;
+                    astersql_expression::pg_cast_float8(value.as_deref()).map_err(|e| {
+                        SessionError::with_source(
+                            e.to_string(),
+                            astersql_errors::SharedError::new(e),
+                        )
+                    })
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            return astersql_executor::typed_hash_agg::PercentileCont(
+                self.AdapterPlanContext(),
+                values,
+                direct_fraction,
+                order[0].Desc,
+            )
+            .map(|value| value.map(|v| v.to_string()))
+            .map_err(|e| {
+                if e.downcast_ref::<astersql_executor::typed_hash_agg::PercentileFractionError>()
+                    .is_some()
+                {
+                    super::relational_value::pg_bytea_input_error("22003", &e.to_string())
+                } else {
+                    SessionError::with_source(e.to_string(), e)
+                }
+            });
+        }
         if name.eq_ignore_ascii_case("percentile_disc") {
             let values = rows
                 .iter()
@@ -3855,7 +3888,8 @@ impl ConcreteSession {
                 if let ast::ExprKind::AggregateFunction {
                     Name, Args, Order, ..
                 } = &input.Kind
-                    && Name.eq_ignore_ascii_case("percentile_disc")
+                    && (Name.eq_ignore_ascii_case("percentile_disc")
+                        || Name.eq_ignore_ascii_case("percentile_cont"))
                 {
                     if Args.len() != 1
                         || Order.len() != 1
@@ -3863,12 +3897,23 @@ impl ConcreteSession {
                             .session
                             .pg_case_input_type(&Order[0].Expr, self.sources)
                             .GetType()
-                            != astersql_parser_mysql::r#type::TypeLong
+                            != if Name.eq_ignore_ascii_case("percentile_cont") {
+                                astersql_parser_mysql::r#type::TypeDouble
+                            } else {
+                                astersql_parser_mysql::r#type::TypeLong
+                            }
                     {
                         self.scalar_cast_error =
                             Some(super::relational_value::pg_bytea_input_error(
                                 "42883",
-                                "percentile_disc requires a single int4 sort input",
+                                &format!(
+                                    "{Name} requires a single {} sort input",
+                                    if Name.eq_ignore_ascii_case("percentile_cont") {
+                                        "float8"
+                                    } else {
+                                        "int4"
+                                    }
+                                ),
                             ));
                     } else {
                         // Direct parameters may reference group keys, never an
@@ -6128,7 +6173,8 @@ impl ConcreteSession {
                 }
             }
             if let ast::ExprKind::AggregateFunction { Name, Order, .. } = &expression.Kind
-                && Name.eq_ignore_ascii_case("percentile_disc")
+                && (Name.eq_ignore_ascii_case("percentile_disc")
+                    || Name.eq_ignore_ascii_case("percentile_cont"))
                 && let Some(item) = Order.first()
             {
                 let mut tp = self.pg_case_input_type(&item.Expr, source_fields);

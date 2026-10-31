@@ -162,14 +162,20 @@ impl baseFuncDesc {
     // TypeInfer infers the arguments and return types of an function.
     pub fn TypeInfer(&mut self, ctx: &dyn expression::BuildContext) -> Result<(), Error> {
         match self.Name.as_str() {
-            "pg_percentile_disc" => {
+            "pg_percentile_disc" | "pg_percentile_cont" => {
                 if self.Args.len() != 2 {
-                    return Err(expression::errors::New(
-                        "percentile_disc requires input and direct fraction",
-                    ));
+                    return Err(expression::errors::New(format!(
+                        "{} requires input and direct fraction",
+                        self.Name
+                    )));
                 }
                 self.Args[1] = expression::WrapWithCastAsReal(ctx, self.Args[1].clone());
-                let mut result = self.Args[0].GetType(ctx.GetEvalCtx()).clone();
+                let mut result = if self.Name == "pg_percentile_cont" {
+                    self.Args[0] = expression::WrapWithCastAsReal(ctx, self.Args[0].clone());
+                    *types::NewFieldType(mysql::TypeDouble)
+                } else {
+                    self.Args[0].GetType(ctx.GetEvalCtx()).clone()
+                };
                 result.DelFlag(mysql::NotNullFlag);
                 self.RetTp = Some(result);
             }
@@ -751,6 +757,7 @@ pub fn noNeedCastAggFuncs() -> HashSet<&'static str> {
     HashSet::from([
         // The ordered value and group-direct fraction have different types.
         "pg_percentile_disc",
+        "pg_percentile_cont",
         ast::AggFuncCount,
         ast::AggFuncApproxCountDistinct,
         ast::AggFuncApproxPercentile,
