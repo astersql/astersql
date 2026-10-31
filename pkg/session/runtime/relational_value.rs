@@ -897,6 +897,23 @@ pub(super) fn relational_hex_value(argument: &ast::ExprNode, value: &str) -> Str
         .collect()
 }
 
+/// Check an inline GROUPS specification before row evaluation, including empty
+/// inputs. Referenced/named windows are checked after their existing resolution.
+pub(super) fn pg_groups_window_spec(expression: &ast::ExprNode) -> SessionResult<()> {
+    if let ast::ExprKind::WindowFunction { Spec, .. } = &expression.Kind
+        && Spec.Name.L.is_empty()
+        && Spec.Ref.L.is_empty()
+        && Spec
+            .Frame
+            .as_ref()
+            .is_some_and(|frame| frame.Type == ast::FrameType::Groups)
+        && Spec.OrderBy.is_empty()
+    {
+        return Err(SessionError::new("GROUPS mode requires an ORDER BY clause"));
+    }
+    Ok(())
+}
+
 /// Validate the locally supported int4 offset-window signature before execution,
 /// including empty inputs where runtime argument evaluation never occurs.
 pub(super) fn pg_offset_window_signature(expression: &ast::ExprNode) -> SessionResult<()> {
@@ -4229,12 +4246,8 @@ where
             })
         };
         let frame = if let Some(f) = &spec.Frame {
-            if f.Type == ast::FrameType::Groups
-                && (f.Extent.Start.Expr.is_some() || f.Extent.End.Expr.is_some())
-            {
-                return Err(SessionError::new(
-                    "GROUPS frames are not supported for last_value",
-                ));
+            if f.Type == ast::FrameType::Groups && spec.OrderBy.is_empty() {
+                return Err(SessionError::new("GROUPS mode requires an ORDER BY clause"));
             }
             let start = &f.Extent.Start;
             let end = &f.Extent.End;
@@ -4265,8 +4278,10 @@ where
                 end: windows::FrameBound::default(),
             })
         };
-        // Keys are already sorted using the SQL comparator. Encode peer identity
-        // to reuse the physical RANGE processor without losing NULL ordering.
+        // Keys are already sorted using the SQL comparator. Dense peer ordinals
+        // make GROUPS offsets distances between groups, including multi-key and
+        // NULL peers. Reuse the physical RANGE processor on those ordinals;
+        // explicit numeric RANGE alone uses the original typed key below.
         let mut peer = 0i64;
         let mut input = Vec::with_capacity(keyed.len());
         for (i, (index, keys)) in keyed.iter().enumerate() {

@@ -2,7 +2,7 @@
 
 批次：【批次 16】；调度依赖：批次15（共享源码/注册与验证资源串行）；行为依赖：14。
 
-状态：未开始
+状态：已完成
 
 目的：GROUPS 以 peer 组计偏移；10/10/20 CURRENT ROW 至 1 FOLLOWING 的 last_value 均20；分区边界、空帧、NULL peer和多键 peer遵守同序定义。
 
@@ -111,15 +111,15 @@ GROUPS 以 peer 组计偏移；10/10/20 CURRENT ROW 至 1 FOLLOWING 的 last_val
 ## Progress
 
 
-- [ ] 确认行为依赖与实际入口。
-- [ ] 记录运行期失败或已有正确行为的当前证据。
-- [ ] 完成最小实现及同夹具通过验证。
-- [ ] Ready检查、diff自审与提交交接。
+- [x] 确认行为依赖与实际入口。
+- [x] 记录运行期失败或已有正确行为的当前证据。
+- [x] 完成最小实现及同夹具通过验证。
+- [x] Ready检查与diff自审；按git-commit技能提交本任务交接。
 
 ## Surprises & Discoveries
 
 
-当前仅有静态规划，没有运行结果。实施中在这里记录实际接口差异、缺失依赖和对应证据。
+已确认现有dense peer ordinal与RANGE物理内核足以执行GROUPS；实际缺口是会话能力拒绝与空输入时ORDER BY校验。运行期红/绿及详细证据见最终完成证据。
 
 ## Decision Log
 
@@ -129,9 +129,48 @@ GROUPS 以 peer 组计偏移；10/10/20 CURRENT ROW 至 1 FOLLOWING 的 last_val
 ## Outcomes & Retrospective
 
 
-尚未实施。完成时填写实际输出、有效测试数量、参考版本、清理结果、剩余范围外依赖及完整SHA。
+已完成本任务int4 last_value GROUPS行为与Ready验证；代表SQL20/20/20、有效测试计数、清理与未验证范围见最终完成证据，完整提交SHA在最终回复交接。
 
 ## Artifacts and Notes
 
 
 此编号文件是依 `PLANS.md` 维护的活动ExecPlan。证据记录在本节，长期测试用例在独立测试文件；不修改只读整体指南。规划新增测试名不代表当前已注册或已通过。
+
+2026-10-31 实施记录：调度依赖15为 ad1b3591f7fb0abc170eadef432c9c64aee481c0；行为依赖14为 de5b853e46cdbbd922564d0d75246f5e08d04cd4。已核对独立测试 pg09_14/15 与实际 relational_window_value、FrameType::Groups AST、parser_actions/query.rs GROUPS 分派。目标目录未发现 doc.go；读取 server/AGENTS.md、PLANS.md 与 testing-flow。verify-profile 技能不存在。
+生产修改依据：pkg/session/runtime/relational_value.rs::relational_window_value → 允许 GROUPS 偏移，要求 ORDER BY；复用现有多键/NULL peer 连续组号和 RANGE 物理执行器，组号差即 GROUPS 偏移，不新建窗口内核。pkg/server/pg_conn.rs 错误映射 → 缺 ORDER BY 返回42601。相关 .rs.md 同步说明。仅Rust无Bazel/Go/依赖触发，不运行 bazel_prepare；未修改解析器，不运行parser目标。
+
+WIP第一轮：动态mkdir领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1，shell PID42931持有。cargo fmt --all退出0；env -u LDFLAGS cargo test --locked -p astersql-executor-windows --lib pg09_16 -- --nocapture退出0，1/1真实测试通过，确认现有dense peer ordinal + RANGE内核已正确；server同过滤器首次编译仍进行中。make lint退出0。初次含rm -f trap的命令被工具安全规则整体拒绝（未执行），改用Python仅unlink自身owner并rmdir锁的trap。RustCodeGraph status与node/query有效；宽explore结果太泛、callers查询耗时过长后停止自身PID25351，不作为覆盖/行为证据。
+
+第一轮server命令退出101，有效运行1失败1；代表SQL在Execute返回0A000及主消息 GROUPS frames are not supported for last_value，Parse/Bind/两次Describe成功，ReadyForQuery I。完整原始字段见/tmp/pg09_16-server-before.log。这是运行期行为失败，不是编译失败。
+新增必要局部接线依据：relational_value.rs::pg_groups_window_spec + planning.rs::validate_function_visibility 对inline GROUPS在行求值前检查ORDER BY，保证零行不跳过；解析引用规格仍由既有分派处理。pg_conn.rs::错误映射将缺ORDER BY映射42601并移除旧GROUPS能力拒绝分支。不改变外部依赖、MySQL语法、通用排序器或第二套窗口内核。
+
+
+## 最终完成证据（2026-10-31）
+
+已完成：以原有 SQL 排序、多键/NULL peer 连续编号和真实 PhysicalWindowPlan/RANGE 处理器执行 GROUPS；10/10/20 的 CURRENT ROW..1 FOLLOWING 返回20/20/20。未新建执行器或生产类型/文件，未改解析器、外部依赖、Go和只读plan.md。新增窗口和协议测试独立于生产文件，原PingCAP版权和AsterSQL标记保留。
+
+成功夹具13组：重复peer、分区边界、降序、多键peer、NULLS FIRST/LAST、全NULL、FOLLOWING空帧、PRECEDING空帧、起点超过终点、i64最大偏移、单行无界帧和零行；Q及扩展协议均验证实际行数/有序值/NULL，固定别名r、OID23、长度4、typmod-1。两次Describe仅来自statement/portal，Execute不重发描述。参数text/binary×结果text/binary四组合，每种非NULL/NULL/非NULL三次重绑，合计12次执行；参数OID23固定。负偏移/NULL偏移在Execute分别22013/22004，缺ORDER BY（含空输入）在Parse为42601；原始S/V/C/M及适用P见日志，D/H未发送，本任务不声称与PG18.6精确错误阶段/消息已差分。Q错误后以及扩展协议Sync后均SELECT1成功、ReadyForQuery I。服务监听在Drop关闭，端口拒绝重连。
+
+内核使用连续peer组号复用已有RANGE，覆盖两种执行模式请求、跨Chunk的同序组、分区重置、close后内存归零与耗尽输入重开无结果残留。kernel初次通过证明既有内核正确；server初次运行期失败后同过滤器转绿，未使用编译失败或零测试作为行为证据。
+
+Profile：WIP红/绿后Ready；verify-profile技能缺失，按根AGENTS/testing-flow选择Rust与SQL/协议适用检查。make lint在本任务Go未变条件下复用已通过证据。三阶段均重新动态mkdir领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；各阶段EXIT/INT/TERM trap仅删除自身owner和rmdir自身锁，所有Cargo/产物进程结束后已释放，缓存保留。其他会话锁保持不动。
+
+| 完整验证命令（Cargo均继承上述绝对路径环境） | 退出码/有效计数 |
+| --- | --- |
+| cargo fmt --all | 0，测试新增后及生产修改后各一次 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor-windows --lib pg09_16 -- --nocapture | 修复前0、1/1；修复后0、1/1 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_16 -- --nocapture | 修复前101、1运行1失败（0A000）；修复后0、1/1 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor-windows --lib pg09_ -- --nocapture | 0、9/9 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_12 -- --nocapture | 0、2/2 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_13 -- --nocapture | 0、2/2 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_14 -- --nocapture | 0、2/2 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_15 -- --nocapture | 0、2/2 |
+| make lint | 0 |
+| git diff --check | 0 |
+| git diff --cached --check | 0 |
+
+日志：/tmp/pg09_16-{executor,server}-{before,after}.log、/tmp/pg09_16-executor-neighbors.log、/tmp/pg09_16-server-pg09_{12,13,14,15}.log、/tmp/pg09_16-lint.log、/tmp/pg09_16-fmt-{before,after}.log。首次server冷构建后测试成功可运行，生产修改后仅增量编译。
+
+风险与未验证：正确性以本任务int4 last_value与已存在peer比较域为界；其他返回类型、命名窗口继承扩建、其他窗口函数完整GROUPS能力不在本行为闭环。兼容性由任务12–15的真实PG服务/同Server MySQL交错和既有窗口回归约束；未改MySQL语法/共享内核。性能仍沿现有逐行重建分区的会话路径，未压测、不作吞吐承诺。未验证真实PostgreSQL18.6参考客户端差分（任务18负责），未运行RealTiKV/workspace广扫；本项无真实存储依赖。无Go/import/Bazel/依赖触发，不运行bazel_prepare；未改parser不运行parser系列；未运行禁止默认执行的bazel_lint_changed。
+
+自审仅本任务8个代码/测试/说明文件及编号文件，生产变更逐项依据已记录。提交前执行git diff --cached --check并核对范围；完整SHA在最终回复报告，交接后删除本编号文件，不另提交删除。plan.md保持只读，已有用户/其他任务修改全部保留。

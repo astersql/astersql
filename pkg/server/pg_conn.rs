@@ -1089,11 +1089,10 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
                 "22013"
             } else if message
                 == "RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column"
+                || message == "GROUPS mode requires an ORDER BY clause"
             {
                 "42601"
-            } else if message == "numeric RANGE requires a numeric ORDER BY key"
-                || message == "GROUPS frames are not supported for last_value"
-            {
+            } else if message == "numeric RANGE requires a numeric ORDER BY key" {
                 "0A000"
             } else if message == "invalid window frame bounds" {
                 "42601"

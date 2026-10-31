@@ -3270,7 +3270,8 @@ pub(super) fn validate_function_visibility(
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
             if self.dialect == ast::SqlDialect::PostgreSQL
                 && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
-                && let Err(error) = super::relational_value::pg_offset_window_signature(expr)
+                && let Err(error) = super::relational_value::pg_groups_window_spec(expr)
+                    .and_then(|_| super::relational_value::pg_offset_window_signature(expr))
                     .and_then(|_| super::relational_value::pg_conditional_collation(expr))
             {
                 self.validation_error.get_or_insert(error);

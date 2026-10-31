@@ -22891,3 +22891,321 @@ fn pg09_15_dual_listener_isolation() {
     assert!(TcpStream::connect(pg).is_err());
     assert!(TcpStream::connect(mysql).is_err());
 }
+
+#[test]
+fn pg09_16_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    fn ready16(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn check16(ms: &[(u8, Vec<u8>)], expected: &[Option<&str>], binary: bool) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        for (_, d) in ms.iter().filter(|m| m.0 == b'T') {
+            assert_eq!(&d[..2], &1i16.to_be_bytes());
+            assert_eq!(&d[2..4], b"r\0");
+            assert_eq!(&d[10..14], &23u32.to_be_bytes());
+            assert_eq!(&d[14..16], &4i16.to_be_bytes());
+            assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        }
+        let expected = expected
+            .iter()
+            .map(|v| {
+                if binary {
+                    let mut b = 1i16.to_be_bytes().to_vec();
+                    b.extend_from_slice(&(if v.is_some() { 4i32 } else { -1 }).to_be_bytes());
+                    if let Some(v) = v {
+                        b.extend_from_slice(&v.parse::<i32>().unwrap().to_be_bytes());
+                    }
+                    b
+                } else {
+                    row(&[*v])
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    fn extended16(s: &mut TcpStream, sql: &str, expected: &[Option<&str>]) {
+        println!("pg09_16 extended {sql}");
+        for format in [0i16, 1] {
+            send(
+                s,
+                b'P',
+                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+            );
+            send(s, b'D', b"S\0");
+            send(
+                s,
+                b'B',
+                &[
+                    b"\0\0".as_slice(),
+                    &0i16.to_be_bytes(),
+                    &0i16.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                    &format.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(s, b'D', b"P\0");
+            send(s, b'E', &[b"\0".as_slice(), &0i32.to_be_bytes()].concat());
+            send(s, b'S', &[]);
+            let ms = ready16(s);
+            check16(&ms, expected, format == 1);
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'T').count(),
+                2,
+                "statement and portal descriptions only"
+            );
+        }
+    }
+    for (sql, expected) in [
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(10::int4),(10::int4),(20::int4)) t(x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(PARTITION BY p ORDER BY x GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(1,10::int4),(1,10::int4),(1,20::int4),(2,30::int4)) t(p,x)",
+            vec![Some("20"), Some("20"), Some("20"), Some("30")],
+        ),
+        (
+            "SELECT last_value(y) OVER(ORDER BY x DESC GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) AS r FROM (VALUES(10::int4,1::int4),(10::int4,2::int4),(20::int4,3::int4)) t(x,y)",
+            vec![Some("2"), Some("2"), Some("3")],
+        ),
+        (
+            "SELECT last_value(y) OVER(ORDER BY x,z GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(10::int4,1,1::int4),(10::int4,1,2::int4),(10::int4,2,3::int4),(20::int4,1,4::int4)) t(x,z,y)",
+            vec![Some("3"), Some("3"), Some("4"), Some("4")],
+        ),
+        (
+            "SELECT last_value(y) OVER(ORDER BY x NULLS FIRST GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(NULL::int4,1::int4),(NULL::int4,2::int4),(10::int4,3::int4)) t(x,y)",
+            vec![Some("3"), Some("3"), Some("3")],
+        ),
+        (
+            "SELECT last_value(y) OVER(ORDER BY x NULLS LAST GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(10::int4,1::int4),(NULL::int4,2::int4),(NULL::int4,3::int4)) t(x,y)",
+            vec![Some("3"), Some("3"), Some("3")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(NULL::int4),(NULL::int4)) t(x)",
+            vec![None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN 1 FOLLOWING AND 1 FOLLOWING) AS r FROM (VALUES(10::int4),(10::int4),(20::int4)) t(x)",
+            vec![Some("20"), Some("20"), None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN 2 PRECEDING AND 1 PRECEDING) AS r FROM (VALUES(10::int4),(10::int4),(20::int4)) t(x)",
+            vec![None, None, Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN 2 FOLLOWING AND 1 FOLLOWING) AS r FROM (VALUES(10::int4),(20::int4),(30::int4)) t(x)",
+            vec![None, None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN CURRENT ROW AND 9223372036854775807 FOLLOWING) AS r FROM (VALUES(10::int4),(20::int4)) t(x)",
+            vec![Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM (VALUES(10::int4)) t(x)",
+            vec![Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN CURRENT ROW AND CURRENT ROW) AS r FROM (SELECT 1::int4 AS x WHERE false) t",
+            vec![],
+        ),
+    ] {
+        extended16(&mut s, sql, &expected);
+        let simple = query(&mut s, sql);
+        check16(&simple, &expected, false);
+        assert_eq!(simple.iter().filter(|m| m.0 == b'T').count(), 1);
+    }
+    let sql = "SELECT last_value(x) OVER(ORDER BY id GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS r FROM (VALUES(1,10::int4),(2,$1::int4)) t(id,x) ORDER BY id";
+    send(
+        &mut s,
+        b'P',
+        &[
+            b"w16\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut s, b'D', b"Sw16\0");
+    send(&mut s, b'S', &[]);
+    let metadata = ready16(&mut s);
+    assert!(!metadata.iter().any(|m| m.0 == b'E'), "{metadata:?}");
+    assert_eq!(
+        metadata.iter().find(|m| m.0 == b't').unwrap().1,
+        [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+    );
+    for pf in [0i16, 1] {
+        for rf in [0i16, 1] {
+            for null in [false, true, false] {
+                let value = if pf == 0 {
+                    b"5".to_vec()
+                } else {
+                    5i32.to_be_bytes().to_vec()
+                };
+                let mut bind = b"\0w16\0".to_vec();
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&pf.to_be_bytes());
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(
+                    &(if null { -1i32 } else { value.len() as i32 }).to_be_bytes(),
+                );
+                if !null {
+                    bind.extend_from_slice(&value);
+                }
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&rf.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(
+                    &mut s,
+                    b'E',
+                    &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+                );
+                send(&mut s, b'S', &[]);
+                let ms = ready16(&mut s);
+                check16(&ms, &[if null { None } else { Some("5") }; 2], rf == 1);
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+            }
+        }
+    }
+    send(&mut s, b'C', b"Sw16\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready16(&mut s);
+    assert!(ms.iter().any(|m| m.0 == b'3'));
+    assert!(!ms.iter().any(|m| m.0 == b'E'));
+    for (frame, state, source) in [
+        (
+            "ORDER BY x GROUPS BETWEEN CURRENT ROW AND -1 FOLLOWING",
+            "22013",
+            "(VALUES(1::int4)) t(x)",
+        ),
+        (
+            "ORDER BY x GROUPS BETWEEN CURRENT ROW AND NULL FOLLOWING",
+            "22004",
+            "(VALUES(1::int4)) t(x)",
+        ),
+        (
+            "GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING",
+            "42601",
+            "(VALUES(1::int4)) t(x)",
+        ),
+        (
+            "GROUPS BETWEEN CURRENT ROW AND CURRENT ROW",
+            "42601",
+            "(SELECT 1::int4 AS x WHERE false) t",
+        ),
+    ] {
+        let sql = format!("SELECT last_value(x) OVER({frame}) AS r FROM {source}");
+        let ms = query(&mut s, &sql);
+        let error = &ms
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("invalid frame rejection")
+            .1;
+        assert!(
+            error
+                .windows(6)
+                .any(|w| w == [state.as_bytes(), b"\0"].concat()),
+            "{frame}: {error:?}"
+        );
+        assert!(error.windows(7).any(|w| w == b"SERROR\0"));
+        assert!(error.windows(7).any(|w| w == b"VERROR\0"));
+        println!("pg09_16 Q frame={frame} error={error:?}");
+        check16(&query(&mut s, "SELECT 1::int4 AS r"), &[Some("1")], false);
+        send(
+            &mut s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+        );
+        send(
+            &mut s,
+            b'B',
+            &[
+                b"\0\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(
+            &mut s,
+            b'E',
+            &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+        send(&mut s, b'S', &[]);
+        let rejected = ready16(&mut s);
+        let error = &rejected
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("extended invalid frame")
+            .1;
+        assert!(
+            error
+                .windows(6)
+                .any(|w| w == [state.as_bytes(), b"\0"].concat()),
+            "{frame}: {error:?}"
+        );
+        println!(
+            "pg09_16 extended frame={frame} ParseComplete={} BindComplete={} error={error:?}",
+            rejected.iter().any(|m| m.0 == b'1'),
+            rejected.iter().any(|m| m.0 == b'2')
+        );
+        assert_eq!(rejected.last().unwrap(), &(b'Z', vec![b'I']));
+
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        check16(&query(&mut s, "SELECT 1::int4 AS r"), &[Some("1")], false);
+    }
+    drop(s);
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err(), "listener released");
+}

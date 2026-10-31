@@ -353,3 +353,8 @@ last_value(int4)显式数值RANGE使用真实排序值与精确numeric排序，�
 pg_offset_window_signature 仅检查本任务 int4 LAG/LEAD 签名；relational_window_value 将当前行 offset/default 与整分区输入绑定到 PhysicalWindowPlan/Lag；default 只在对应行越界时求值。保留现有 SQL 分区排序，结果身份继承首参数。
 
 LAG/LEAD 在本 int4 域复用 pg_union_common_type 合并 value/default 的固定返回身份，覆盖未知 NULL value 与 int4 default、零行 Describe；值只对实际被 offset 引用的目标求值，NULL offset 不触发未访问表达式。
+
+
+## GROUPS 同序组帧（任务16）
+
+GROUPS 复用 SQL 排序后连续 peer 组号与真实 RANGE 帧处理器，偏移计组而非计行或原值距离；多键与 NULL 同序身份沿既有比较器。pg_groups_window_spec 在无引用的 inline 规格上提前要求 ORDER BY，覆盖零行；命名规格在既有解析后由执行入口检查。非负/非 NULL 的整数偏移沿原边界绑定。

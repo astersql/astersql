@@ -840,3 +840,68 @@ fn pg09_15_execution_row_arguments_chunks_cleanup() {
         }
     }
 }
+
+#[test]
+fn pg09_16_execution() {
+    // Session supplies dense peer ordinals after sorting all ORDER BY keys.
+    // Exercise that existing RANGE processor contract across chunks/partitions.
+    for pipelined in [false, true] {
+        for (start, end, expected) in [
+            (
+                current_row(),
+                FrameBound::following(1),
+                vec![20, 20, 30, 30, 90],
+            ),
+            (
+                FrameBound::preceding(1),
+                current_row(),
+                vec![11, 11, 20, 30, 90],
+            ),
+        ] {
+            let plan = build_plan(
+                3,
+                vec![0],
+                order(1, false),
+                Some(WindowFrame {
+                    frame_type: FrameType::Range,
+                    start,
+                    end,
+                }),
+                vec![Box::new(super::LastValue::new(2))],
+                pipelined,
+            );
+            let rows = [(1, 0, 10), (1, 0, 11), (1, 1, 20), (1, 2, 30), (2, 0, 90)]
+                .into_iter()
+                .map(|(p, k, v)| vec![Value::Int(p), Value::Int(k), Value::Int(v)])
+                .collect::<Vec<_>>();
+            let chunks = rows.chunks(1).map(|r| Chunk::new(r.to_vec())).collect();
+            let mut exec =
+                super::build(plan, Box::new(super::VecChunkExecutor::new(chunks)), false).unwrap();
+            let cx = ExecContext::default();
+            {
+                exec.open(&cx).unwrap();
+                let mut actual = vec![];
+                let mut chunk = Chunk::default();
+                loop {
+                    exec.next(&cx, &mut chunk).unwrap();
+                    if chunk.rows.is_empty() {
+                        break;
+                    }
+                    actual.extend(chunk.rows.iter().map(|r| r[3].clone()));
+                }
+                assert_eq!(
+                    actual,
+                    expected.iter().copied().map(Value::Int).collect::<Vec<_>>()
+                );
+                exec.close().unwrap();
+                assert_eq!(exec.memory_bytes(), 0);
+                // VecChunkExecutor is exhausted on reopen: no prior frame leaks.
+                exec.open(&cx).unwrap();
+                exec.next(&cx, &mut chunk).unwrap();
+                assert!(chunk.rows.is_empty());
+                exec.close().unwrap();
+                assert_eq!(exec.memory_bytes(), 0);
+            }
+        }
+    }
+}

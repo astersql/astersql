@@ -309,3 +309,8 @@ prepared推断和显式Uuid数组cast返回2951，与标量2950分离。
 ## 2026-10-31 LAG/LEAD 逐行偏移
 
 protocol_parameter_types 对 LAG/LEAD 的直接未知参数提供本任务 int4 域约束，显式不兼容参数在 Parse 返回42883；validate_function_visibility 接入局部窗口签名检查，覆盖空输入。
+
+
+## GROUPS 同序组帧（任务16）
+
+validate_function_visibility 对 PostgreSQL 调用 pg_groups_window_spec，在行求值前检查 inline GROUPS 的 ORDER BY，空输入也不跳过。其余签名、可见性与条件排序规则保持原校验链。
