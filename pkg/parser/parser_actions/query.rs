@@ -113,6 +113,11 @@ enum QueryRule {
     OptWindowOrderByClauseAlt02,
     OptWindowFrameClauseAlt01,
     OptWindowFrameClauseAlt02,
+    PgExcludeNone,
+    PgExcludeCurrent,
+    PgExcludeGroup,
+    PgExcludeTies,
+    PgExcludeNoOthers,
     WindowFrameUnitsAlt01,
     WindowFrameUnitsAlt02,
     WindowFrameUnitsAlt03,
@@ -449,9 +454,14 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
             Some(QueryRule::OptWindowOrderByClauseAlt02)
         }
         "optwindowframeclause--deb1a9327ffdf8da" => Some(QueryRule::OptWindowFrameClauseAlt01),
-        "optwindowframeclause_windowframeunits_windowfram--b69bc2eaf7933d16" => {
+        "optwindowframeclause_windowframeunits_windowfram--747ad6b3f811df2d" => {
             Some(QueryRule::OptWindowFrameClauseAlt02)
         }
+        "optwindowexclusion--e39c8f040824e4ae" => Some(QueryRule::PgExcludeNone),
+        "optwindowexclusion_exclude_current_row--38b937f4f9af2a70" => Some(QueryRule::PgExcludeCurrent),
+        "optwindowexclusion_exclude_group--c74ecbc94d919dda" => Some(QueryRule::PgExcludeGroup),
+        "optwindowexclusion_exclude_ties--255608ca6443b0ec" => Some(QueryRule::PgExcludeTies),
+        "optwindowexclusion_exclude_no_others--ad37bc6b497b8eed" => Some(QueryRule::PgExcludeNoOthers),
         "windowframeunits_rows--003e9d2c85bb972f" => Some(QueryRule::WindowFrameUnitsAlt01),
         "windowframeunits_range--99ba8418cadbf047" => Some(QueryRule::WindowFrameUnitsAlt02),
         "windowframeunits_groups--2c888d21058d9220" => Some(QueryRule::WindowFrameUnitsAlt03),
@@ -1087,14 +1097,32 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                     .unwrap_or_default(),
             ))
         }
+        QueryRule::PgExcludeNone
+        | QueryRule::PgExcludeCurrent
+        | QueryRule::PgExcludeGroup
+        | QueryRule::PgExcludeTies
+        | QueryRule::PgExcludeNoOthers => {
+            if rule != QueryRule::PgExcludeNone
+                && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+            {
+                yylex.AppendError(yylex.Errorf("EXCLUDE requires PostgreSQL dialect", &[]));
+                return Err(1);
+            }
+            out.item = Some(Box::new(match rule {
+                QueryRule::PgExcludeCurrent => parser_ast::FrameExclusion::CurrentRow,
+                QueryRule::PgExcludeGroup => parser_ast::FrameExclusion::Group,
+                QueryRule::PgExcludeTies => parser_ast::FrameExclusion::Ties,
+                _ => parser_ast::FrameExclusion::NoOthers,
+            }));
+        }
         QueryRule::OptWindowFrameClauseAlt02 => {
-            let frame_type = rhs[rhs_len - (1)]
+            let frame_type = rhs[rhs_len - 2]
                 .item
                 .as_deref()
                 .and_then(|item| item.downcast_ref::<parser_ast::FrameType>())
                 .copied()
                 .unwrap_or_default();
-            let Some(extent) = rhs[rhs_len - (0)]
+            let Some(extent) = rhs[rhs_len - 1]
                 .item
                 .as_deref()
                 .and_then(|item| item.downcast_ref::<parser_ast::FrameExtent>())
@@ -1102,9 +1130,16 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             else {
                 return Ok(false);
             };
+            let exclusion = rhs[rhs_len]
+                .item
+                .as_deref()
+                .and_then(|item| item.downcast_ref::<parser_ast::FrameExclusion>())
+                .copied()
+                .unwrap_or_default();
             out.item = Some(Box::new(parser_ast::FrameClause {
                 Type: frame_type,
                 Extent: extent,
+                Exclusion: exclusion,
             }));
         }
         QueryRule::WindowFrameUnitsAlt01

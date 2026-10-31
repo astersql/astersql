@@ -73,3 +73,8 @@
 完成语法修改后，应使用 `astersql-parsergen generate` 重新生成三个静态产物，并用 parsergen 的 check 流程确认无漂移。至少同步独立测试：生成稳定性/漂移行为在 `pkg/parser/parsergen/generate_aster_unit_test.rs`，特殊 token 名渲染在 `pkg/parser/parsergen/render_test.rs`，静态消费契约在 `pkg/parser/parser_generated_sources_aster_unit_test.rs`，实际词法边界优先扩展 `pkg/parser/lexer_5_aster_unit_test.rs`；主语法行为还应放入相应 parser 独立测试，而不是把测试嵌入生成文件。
 
 兼容风险主要是编号错配导致解析表误判，行为风险是新增关键字把既有合法标识符变成保留词，性能风险则来自 lexer 新增预读或分支，而不是常量读取本身。评审生成差异时应确认三份产物同步、token 值无意外整体漂移、Go 对照行为仍被测试覆盖，并保留文件的 AsterSQL 版权头与 generated 标记。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+由既有生成器注册pgExclude/pgTies/pgOthers三个词元，供PostgreSQL窗口排除后缀与非保留标识符使用。

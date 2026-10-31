@@ -6458,3 +6458,83 @@ fn pg09_15_offset_expression_ast() {
         );
     }
 }
+
+#[test]
+fn pg09_17_parse() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for suffix in ["CURRENT ROW", "GROUP", "TIES", "NO OTHERS"] {
+        let sql = format!(
+            "SELECT last_value(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE {suffix}) FROM t"
+        );
+        let stmt = pg.ParseOneStmt(&sql, "", "").expect(&sql);
+        let select = stmt
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        let expr = select.Fields.Fields[0].Expr.as_ref().unwrap();
+        let parser_ast::ExprKind::WindowFunction { Spec, .. } = &expr.Kind else {
+            panic!("window AST");
+        };
+        let expected = match suffix {
+            "CURRENT ROW" => parser_ast::FrameExclusion::CurrentRow,
+            "GROUP" => parser_ast::FrameExclusion::Group,
+            "TIES" => parser_ast::FrameExclusion::Ties,
+            _ => parser_ast::FrameExclusion::NoOthers,
+        };
+        assert_eq!(Spec.Frame.as_ref().unwrap().Exclusion, expected);
+        assert_eq!(Spec.clone().Frame.as_ref().unwrap().Exclusion, expected);
+        let restored = parser_ast::sql_restore::restore_node(stmt.as_ref()).unwrap();
+        assert!(
+            restored.contains(&format!("EXCLUDE {suffix}")) || suffix == "NO OTHERS",
+            "{restored}"
+        );
+        pg.ParseOneStmt(&restored, "", "").unwrap();
+        assert!(
+            parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+                .ParseOneStmt(&sql, "", "")
+                .is_err()
+        );
+    }
+    for sql in [
+        "SELECT last_value(x) OVER (ORDER BY x EXCLUDE GROUP) FROM t",
+        "SELECT last_value(x) OVER (ROWS CURRENT ROW EXCLUDE UNKNOWN) FROM t",
+        "SELECT last_value(x) OVER (ROWS CURRENT ROW EXCLUDE GROUP EXCLUDE TIES) FROM t",
+    ] {
+        assert!(pg.ParseOneStmt(sql, "", "").is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn pg09_17_parse_independent_windows() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT last_value(x) OVER (ROWS CURRENT ROW EXCLUDE GROUP), last_value(x) OVER (ROWS CURRENT ROW EXCLUDE TIES) FROM t",
+        "SELECT last_value(x) OVER w FROM t WINDOW w AS (ROWS CURRENT ROW EXCLUDE CURRENT ROW)",
+        "SELECT * FROM (SELECT last_value(x) OVER (ROWS CURRENT ROW EXCLUDE GROUP) AS x FROM t) q",
+        "SELECT exclude, ties, others, \"exclude\" FROM t",
+    ] {
+        let stmt = pg.ParseOneStmt(sql, "", "").expect(sql);
+        let restored = parser_ast::sql_restore::restore_node(stmt.as_ref()).unwrap();
+        pg.ParseOneStmt(&restored, "", "").unwrap();
+    }
+    let stmt = pg
+        .ParseOneStmt(
+            "SELECT last_value(x) OVER (ROWS CURRENT ROW) FROM t",
+            "",
+            "",
+        )
+        .unwrap();
+    let select = stmt
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    let parser_ast::ExprKind::WindowFunction { Spec, .. } =
+        &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+    else {
+        panic!("window AST");
+    };
+    assert_eq!(
+        Spec.Frame.as_ref().unwrap().Exclusion,
+        parser_ast::FrameExclusion::NoOthers
+    );
+}

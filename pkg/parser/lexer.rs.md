@@ -119,3 +119,8 @@ PG 数值常量在 Lex 保留小数、指数及超 u64 的原始文本，交给�
 ## UUID类型名
 
 PostgreSQL方言将UUID关键字映射为非保留identifier，复用既有cast类型名语法；MySQL维持原UUID token与函数入口。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+PostgreSQL未加引号的exclude/ties/others映射到新增非保留词元；UnReservedKeyword允许其继续作标识符，MySQL及引号路径保持原处理。

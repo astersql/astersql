@@ -484,9 +484,15 @@ fn restore_frame_clause(frame: &parser_ast::FrameClause) -> Result<String, Strin
         parser_ast::FrameType::Groups => "GROUPS",
     };
     Ok(format!(
-        "{kind} BETWEEN {} AND {}",
+        "{kind} BETWEEN {} AND {}{}",
         restore_frame_bound(&frame.Extent.Start)?,
-        restore_frame_bound(&frame.Extent.End)?
+        restore_frame_bound(&frame.Extent.End)?,
+        match frame.Exclusion {
+            parser_ast::FrameExclusion::NoOthers => "",
+            parser_ast::FrameExclusion::CurrentRow => " EXCLUDE CURRENT ROW",
+            parser_ast::FrameExclusion::Group => " EXCLUDE GROUP",
+            parser_ast::FrameExclusion::Ties => " EXCLUDE TIES",
+        }
     ))
 }
 

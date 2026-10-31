@@ -19,6 +19,7 @@ fn range_current_row_keeps_adjacent_large_integers_in_distinct_peer_groups() {
                 descending: false,
             }],
             Some(WindowFrame {
+                exclusion: Default::default(),
                 frame_type: FrameType::Range,
                 start: current_row.clone(),
                 end: current_row,

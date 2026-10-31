@@ -1349,6 +1349,7 @@ fn run_bit_xor_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
         order_by: Vec::new(),
         window_functions: vec![Box::new(BitXor::new(0))],
         frame: Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::preceding(1),
             end: WindowFrameBound::following(1),
@@ -1400,6 +1401,7 @@ fn run_average_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
         order_by: Vec::new(),
         window_functions: vec![Box::new(Average::new(0))],
         frame: Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::preceding(1),
             end: WindowFrameBound::following(1),
@@ -1457,6 +1459,7 @@ fn run_decimal_average_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue
         order_by: Vec::new(),
         window_functions: vec![Box::new(DecimalAverage::new(0))],
         frame: Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::preceding(1),
             end: WindowFrameBound::following(1),
@@ -1519,6 +1522,7 @@ fn run_decimal_sum_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
         order_by: Vec::new(),
         window_functions: vec![Box::new(DecimalSum::new(0))],
         frame: Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::preceding(1),
             end: WindowFrameBound::following(1),
@@ -1576,6 +1580,7 @@ fn run_max_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
         order_by: Vec::new(),
         window_functions: vec![Box::new(MaxValue::new(0))],
         frame: Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::preceding(1),
             end: WindowFrameBound::following(1),
@@ -1628,6 +1633,7 @@ fn run_min_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
         order_by: Vec::new(),
         window_functions: vec![Box::new(MinValue::new(0))],
         frame: Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::preceding(1),
             end: WindowFrameBound::following(1),
@@ -2116,6 +2122,7 @@ fn run_window_functions_with_frame_exact_go_matrix() {
             (
                 WindowBenchmarkFunction::RowNumber,
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: WindowFrameType::Rows,
                     start: WindowFrameBound::unbounded(WindowBoundType::Preceding),
                     end: WindowFrameBound::default(),
@@ -2170,6 +2177,7 @@ fn benchmark_window_functions_with_frame_representative() {
         WindowBenchmarkFunction::BitXor,
     ] {
         let frame = matches!(function, WindowBenchmarkFunction::RowNumber).then(|| WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::unbounded(WindowBoundType::Preceding),
             end: WindowFrameBound::default(),
@@ -2211,6 +2219,7 @@ fn benchmark_buffered_row_number_frame_preserves_state_across_result_chunks() {
         1,
         WindowBenchmarkInput::Real,
         Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: WindowFrameType::Rows,
             start: WindowFrameBound::unbounded(WindowBoundType::Preceding),
             end: WindowFrameBound::default(),
@@ -2258,6 +2267,7 @@ fn validate_unbounded_partition_max(rows: &[Vec<WindowValue>], expected_rows: us
 /// UNBOUNDED MAX：缓冲/流水线均在分区边界重置。
 fn benchmark_unbounded_max_validates_partition_reset_for_both_executors() {
     let frame = WindowFrame {
+        exclusion: Default::default(),
         frame_type: WindowFrameType::Rows,
         start: WindowFrameBound::unbounded(WindowBoundType::Preceding),
         end: WindowFrameBound::unbounded(WindowBoundType::Following),
@@ -2409,6 +2419,7 @@ fn run_sliding_window_go_matrix(row_count: usize, ndv: usize) {
                     1,
                     input,
                     Some(WindowFrame {
+                        exclusion: Default::default(),
                         frame_type,
                         start: WindowFrameBound::preceding(10),
                         end: WindowFrameBound::following(10),

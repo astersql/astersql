@@ -358,3 +358,8 @@ LAG/LEAD 在本 int4 域复用 pg_union_common_type 合并 value/default 的固�
 ## GROUPS 同序组帧（任务16）
 
 GROUPS 复用 SQL 排序后连续 peer 组号与真实 RANGE 帧处理器，偏移计组而非计行或原值距离；多键与 NULL 同序身份沿既有比较器。pg_groups_window_spec 在无引用的 inline 规格上提前要求 ORDER BY，覆盖零行；命名规格在既有解析后由执行入口检查。非负/非 NULL 的整数偏移沿原边界绑定。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+relational_window_value将PostgreSQL AST排除枚举透传到现有int4 last_value物理帧，保留基础ROWS/RANGE/GROUPS和dense peer身份。未接线的帧敏感签名返回0A000，避免旧求值器忽略EXCLUDE；rank/lag/lead等忽略帧的既有路径不受排除影响。

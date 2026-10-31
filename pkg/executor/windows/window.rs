@@ -676,9 +676,20 @@ impl FrameBound {
     }
 }
 
+/// Rows removed after computing the base frame; peer identity is unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FrameExclusion {
+    #[default]
+    NoOthers,
+    CurrentRow,
+    Group,
+    Ties,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// 完整窗口帧：类型 + 起止边界。
 pub struct WindowFrame {
+    pub exclusion: FrameExclusion,
     pub frame_type: FrameType,
     pub start: FrameBound,
     pub end: FrameBound,
@@ -1770,6 +1781,8 @@ impl WindowProcessor for AggWindowProcessor {
 
 /// ROWS 帧处理器：按行偏移计算每行帧。
 pub struct RowFrameWindowProcessor {
+    pub exclusion: FrameExclusion,
+    pub order_by: Vec<OrderBy>,
     pub window_functions: Vec<Box<dyn WindowFunction>>,
     pub start: FrameBound,
     pub end: FrameBound,
@@ -1820,15 +1833,59 @@ fn calculate_frames(
     memory_tracker: &WindowMemoryTracker,
     rows: &[Row],
     frames: impl IntoIterator<Item = (u64, u64)>,
+    current_start: u64,
+    exclusion: FrameExclusion,
+    order_by: &[OrderBy],
+    numeric_range: bool,
     initialized_sliding: &mut bool,
 ) -> Result<Vec<Vec<Value>>> {
     let mut output = Vec::new();
-    for (start, end) in frames {
+    for (offset, (start, end)) in frames.into_iter().enumerate() {
+        let current = current_start as usize + offset;
         // SQL permits syntactically valid frames whose start is after their end.
         // Represent those as an empty half-open range so sliding implementations
         // never receive an invalid slice while still advancing their state.
         let end = end.max(start);
-        let frame = &rows[start as usize..end as usize];
+        let base = &rows[start as usize..end as usize];
+        // Exclusion is applied only to the base frame, with peers determined
+        // from the original partition/order keys, even for ROWS frames.
+        let filtered;
+        let frame = if exclusion == FrameExclusion::NoOthers {
+            base
+        } else {
+            filtered = base
+                .iter()
+                .enumerate()
+                .filter_map(|(i, row)| {
+                    let index = start as usize + i;
+                    let peer = || -> bool {
+                        order_by.iter().all(|key| {
+                            let a = &row[key.column];
+                            let b = &rows[current][key.column];
+                            if numeric_range {
+                                if let (Value::Text(a), Value::Text(b)) = (a, b) {
+                                    if let (Ok(a), Ok(b)) = (
+                                        a.parse::<astersql_types::pg_numeric::PgNumeric>(),
+                                        b.parse::<astersql_types::pg_numeric::PgNumeric>(),
+                                    ) {
+                                        return a.compare(&b).is_eq();
+                                    }
+                                }
+                            }
+                            a.sql_cmp(b).is_eq()
+                        })
+                    };
+                    let keep = match exclusion {
+                        FrameExclusion::NoOthers => true,
+                        FrameExclusion::CurrentRow => index != current,
+                        FrameExclusion::Group => !peer(),
+                        FrameExclusion::Ties => index == current || !peer(),
+                    };
+                    keep.then(|| row.clone())
+                })
+                .collect::<Vec<_>>();
+            &filtered
+        };
         let mut values = Vec::with_capacity(functions.len());
         for (index, function) in functions.iter_mut().enumerate() {
             if function.ignores_frame() {
@@ -1843,7 +1900,7 @@ fn calculate_frames(
                 values.push(function.result()?);
                 continue;
             }
-            let slid = if *initialized_sliding {
+            let slid = if *initialized_sliding && exclusion == FrameExclusion::NoOthers {
                 function.slide(rows, start, end)?
             } else {
                 false
@@ -1887,6 +1944,10 @@ impl WindowProcessor for RowFrameWindowProcessor {
             &self.memory_tracker,
             rows,
             frames,
+            self.current_row - remained as u64,
+            self.exclusion,
+            &self.order_by,
+            false,
             &mut self.initialized_sliding_window,
         )
     }
@@ -1900,6 +1961,7 @@ impl WindowProcessor for RowFrameWindowProcessor {
 
 /// RANGE 帧处理器：按 ORDER BY 值域推进边界。
 pub struct RangeFrameWindowProcessor {
+    pub exclusion: FrameExclusion,
     pub window_functions: Vec<Box<dyn WindowFunction>>,
     pub start: FrameBound,
     pub end: FrameBound,
@@ -1965,6 +2027,10 @@ impl WindowProcessor for RangeFrameWindowProcessor {
             &self.memory_tracker,
             rows,
             frames,
+            self.current_row - remained as u64,
+            self.exclusion,
+            &self.order_by,
+            self.start.numeric_offset.is_some() || self.end.numeric_offset.is_some(),
             &mut self.initialized_sliding_window,
         )
     }

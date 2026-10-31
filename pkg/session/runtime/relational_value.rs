@@ -4261,6 +4261,12 @@ where
                 return Err(SessionError::new("invalid window frame bounds"));
             }
             Some(windows::WindowFrame {
+                exclusion: match f.Exclusion {
+                    ast::FrameExclusion::NoOthers => windows::FrameExclusion::NoOthers,
+                    ast::FrameExclusion::CurrentRow => windows::FrameExclusion::CurrentRow,
+                    ast::FrameExclusion::Group => windows::FrameExclusion::Group,
+                    ast::FrameExclusion::Ties => windows::FrameExclusion::Ties,
+                },
                 frame_type: if f.Type == ast::FrameType::Rows {
                     windows::FrameType::Rows
                 } else {
@@ -4273,6 +4279,7 @@ where
             None
         } else {
             Some(windows::WindowFrame {
+                exclusion: Default::default(),
                 frame_type: windows::FrameType::Range,
                 start: windows::FrameBound::unbounded(windows::BoundType::Preceding),
                 end: windows::FrameBound::default(),
@@ -4449,6 +4456,35 @@ where
             .close()
             .map_err(|e| SessionError::new(e.to_string()));
         return result.and_then(|value| closed.map(|_| value));
+    }
+    if spec
+        .Frame
+        .as_ref()
+        .is_some_and(|f| f.Exclusion != ast::FrameExclusion::NoOthers)
+        && matches!(
+            Name.to_ascii_lowercase().as_str(),
+            "last_value"
+                | "first_value"
+                | "nth_value"
+                | "sum"
+                | "count"
+                | "min"
+                | "max"
+                | "min_count"
+                | "max_count"
+                | "var_pop"
+        )
+    {
+        // Only the typed shared window path above can apply non-contiguous
+        // frames. Never silently ignore exclusion in the legacy evaluator.
+        return Err(SessionError::with_source(
+            "EXCLUDE is not supported for this window function signature",
+            astersql_errors::SharedError::new(super::pg_array::PgArrayError {
+                state: "0A000",
+                message: "EXCLUDE is not supported for this window function signature".into(),
+                position: None,
+            }),
+        ));
     }
     let argument = |index: usize, offset: usize| -> SessionResult<Option<String>> {
         Args.get(offset)

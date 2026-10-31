@@ -136,6 +136,7 @@ pub fn useDefaultFrameWindowFuncs() -> HashMap<String, ast::FrameClause> {
     HashMap::from([(
         ast::WindowFuncRowNumber.to_owned(),
         ast::FrameClause {
+            Exclusion: Default::default(),
             Type: ast::FrameType::Rows,
             Extent: ast::FrameExtent {
                 Start: ast::FrameBound {

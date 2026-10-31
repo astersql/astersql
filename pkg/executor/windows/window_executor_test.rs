@@ -123,6 +123,7 @@ fn go_test_window_executors_basic_matches_buffered_and_pipelined() {
                 Vec::new(),
                 order_by_value(),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Rows,
                     start: FrameBound::preceding(1),
                     end: current_row(),
@@ -181,6 +182,7 @@ fn go_test_window_return_column_nullable_attribute_matches_empty_frame_values() 
     let context = ExecContext::default();
     // “下一行到下一行”的帧会让末行得到空帧，用于核对各函数的空输入约定。
     let frame = WindowFrame {
+        exclusion: Default::default(),
         frame_type: FrameType::Rows,
         start: FrameBound::following(1),
         end: FrameBound::following(1),

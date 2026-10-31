@@ -97,3 +97,8 @@ FrameBound绑定numeric偏移和NULL排序；精确整数使用i128，numeric复
 ## 2026-10-31 LAG/LEAD 逐行偏移
 
 Lag 复用既有状态，新增 with_row_arguments 绑定逐行 offset/default 与 lead 方向；signed 偏移用 i128 计算，NULL offset 返回 NULL，越界才选择当前行 default。requires_partition 标识整分区读取；窄帧处理器仅初始化一次该状态，保留目标 NULL。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+WindowFrame新增FrameExclusion；calculate_frames先求基础帧，再按原始分区当前行位置及ORDER BY peer筛选CURRENT ROW/GROUP/TIES。ROWS排除仍使用peer键；TIES仅保留基础帧内的当前行，不把帧外当前行加入。排除帧不使用连续slide，空帧仍产生NULL结果，忽略帧的窗口函数沿原路径执行。数值RANGE的文本键按PgNumeric比较peer。

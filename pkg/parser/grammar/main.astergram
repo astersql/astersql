@@ -952,6 +952,9 @@
 %token pgInterval 58271;
 %token pgCatalogDivide 58272;
 %token pgFilter 58273;
+%token pgExclude 58274 "EXCLUDE";
+%token pgTies 58275 "TIES";
+%token pgOthers 58276 "OTHERS";
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -2932,7 +2935,12 @@ OptPartitionClause : "PARTITION" "BY" ByList @action;
 OptWindowOrderByClause : ε @action;
 OptWindowOrderByClause : "ORDER" "BY" OrderedByList @action;
 OptWindowFrameClause : ε @action;
-OptWindowFrameClause : WindowFrameUnits WindowFrameExtent @action;
+OptWindowFrameClause : WindowFrameUnits WindowFrameExtent OptWindowExclusion @action;
+OptWindowExclusion : ε @action;
+OptWindowExclusion : "EXCLUDE" "CURRENT" "ROW" @action;
+OptWindowExclusion : "EXCLUDE" "GROUP" @action;
+OptWindowExclusion : "EXCLUDE" "TIES" @action;
+OptWindowExclusion : "EXCLUDE" "NO" "OTHERS" @action;
 WindowFrameUnits : "ROWS" @action;
 WindowFrameUnits : "RANGE" @action;
 WindowFrameUnits : "GROUPS" @action;
@@ -4417,3 +4425,7 @@ PgAggregateArity : builtinSum "(" BuggyDefaultFalseDistinctOpt Expression "," Ex
 PgAggregateArity : "AVG" "(" BuggyDefaultFalseDistinctOpt Expression "," ExpressionList ")" @action;
 PgAggregateArity : builtinCount "(" Expression "," ExpressionList ")" @action;
 SumExpr : PgAggregateArity;
+
+UnReservedKeyword : pgExclude;
+UnReservedKeyword : pgTies;
+UnReservedKeyword : pgOthers;

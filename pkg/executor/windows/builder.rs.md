@@ -100,3 +100,8 @@ Go 测试 `window_executor_test.go::TestWindowExecutorsBasic`、`TestBuildOrdere
 ## 2026-10-31 LAG/LEAD 逐行偏移
 
 存在 requires_partition 函数时复用缓冲式执行器；任意 signed LAG/LEAD 偏移不能依赖流水线当前帧已就绪条件。此回退不创建第二执行器。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+build将含非默认排除的计划路由至既有缓冲ROWS/RANGE处理器；透传排除枚举及ROWS的ORDER BY键。NO OTHERS保留原流水线选择，排除路径不创建第二执行器。

@@ -132,3 +132,8 @@ PostgreSQLFloat4 类型动作恢复为 CAST(... AS FLOAT4)，保留参数/关系
 ## float8 参数局部接线（任务17）
 
 PostgreSQLFloat8恢复为既有CAST(... AS DOUBLE)，供参数值的解析/恢复保持目标身份。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+restore_frame_clause在基础帧后还原EXCLUDE CURRENT ROW/GROUP/TIES；NoOthers省略等价默认后缀。

@@ -94,3 +94,8 @@ TiFlash 资格判断是另一条流程。`CanPushDownToTiFlash` 递归检查参�
 - 扩展 TiFlash 下推时，必须同时验证参数类型、嵌套标量函数的裸名与 signature 黑名单、PB 可编码性、客户端支持的 ExprType，以及窗口函数白名单。只改 `CanPushDownToTiFlash` 不会改变 `WindowFuncToPBExpr` 的生产序列化路径；若需要统一门禁，应先确认 planner 的调用契约。
 - 修改 PB 结构时，应更新 `WindowFuncToPBExpr` 及 `PhysicalWindow::ToPB` 的相关独立测试，覆盖客户端不支持、子表达式转换失败和返回字段类型。测试逻辑应继续放在 `window_func_test.rs` 或其他独立测试文件中，不嵌入生产源文件。
 - 性能上，`UseDefaultFrame` 当前每次分配一个 `HashMap`；若默认帧种类或调用频率增加，可在保持返回独立帧值和线程安全的前提下评估静态匹配或惰性只读表。递归下推检查也会为每个节点创建 PB converter/编码结果，改变时需避免放宽语义门禁。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+既有默认帧构造显式补NoOthers，保持ROW_NUMBER默认帧语义；实际排除在共享窗口执行器基础帧之后应用。

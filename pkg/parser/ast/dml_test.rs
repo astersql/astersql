@@ -857,6 +857,7 @@ fn parse_frame_clause(p: &mut P) -> Result<Option<Box<parser_ast::FrameClause>>,
         (start, end)
     };
     Ok(Some(Box::new(parser_ast::FrameClause {
+        Exclusion: Default::default(),
         Type: frame_type,
         Extent: parser_ast::FrameExtent {
             Start: start,

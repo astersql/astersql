@@ -84,6 +84,7 @@ fn window_values(
         Vec::new(),
         order(0, false),
         Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type,
             start,
             end,
@@ -142,6 +143,7 @@ fn go_test_window_functions_covers_partition_rows_and_range_frames() {
         );
 
         let rows_frame = WindowFrame {
+            exclusion: Default::default(),
             frame_type: FrameType::Rows,
             start: FrameBound::preceding(1),
             end: current_row(),
@@ -166,6 +168,7 @@ fn go_test_window_functions_covers_partition_rows_and_range_frames() {
 
     // RANGE 的 preceding/following 基于排序值而非物理行位置，且降序时方向也要反转。
     let range_frame = WindowFrame {
+        exclusion: Default::default(),
         frame_type: FrameType::Range,
         start: FrameBound::preceding(1),
         end: FrameBound::following(2),
@@ -243,6 +246,7 @@ fn go_test_window_functions_data_reference_preserves_lag_across_chunks() {
 /// 验证滑动 `ROWS` 帧内各聚合函数在传统与流水线模式下同步增删帧成员。
 fn go_test_sliding_window_functions_matches_rows_and_pipeline_modes() {
     let frame = WindowFrame {
+        exclusion: Default::default(),
         frame_type: FrameType::Rows,
         start: FrameBound::preceding(1),
         end: FrameBound::following(1),
@@ -393,6 +397,7 @@ fn go_test_issue_45964_and_46050_preserves_empty_frame_nullability() {
         vec![0],
         order(1, false),
         Some(WindowFrame {
+            exclusion: Default::default(),
             frame_type: FrameType::Rows,
             start: FrameBound::following(1),
             end: FrameBound::following(1),
@@ -538,6 +543,7 @@ fn pg09_13_execution() {
             (
                 sorted_rows(&[10, 10, 20]),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Range,
                     start: FrameBound::unbounded(BoundType::Preceding),
                     end: current_row(),
@@ -548,6 +554,7 @@ fn pg09_13_execution() {
             (
                 sorted_rows(&[10, 10, 20]),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Rows,
                     start: current_row(),
                     end: current_row(),
@@ -557,6 +564,7 @@ fn pg09_13_execution() {
             (
                 sorted_rows(&[10]),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Rows,
                     start: FrameBound::following(1),
                     end: FrameBound::following(1),
@@ -596,6 +604,7 @@ fn pg09_13_execution_chunks_and_cleanup() {
             vec![],
             order(0, false),
             Some(WindowFrame {
+                exclusion: Default::default(),
                 frame_type: FrameType::Range,
                 start: FrameBound::unbounded(BoundType::Preceding),
                 end: current_row(),
@@ -642,6 +651,7 @@ fn pg09_14_execution() {
                 vec![],
                 order(0, descending),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Range,
                     start: current_row(),
                     end: FrameBound::following(1),
@@ -674,6 +684,7 @@ fn pg09_14_execution_chunks_and_cleanup() {
             vec![],
             order(0, false),
             Some(WindowFrame {
+                exclusion: Default::default(),
                 frame_type: FrameType::Range,
                 start,
                 end,
@@ -744,6 +755,7 @@ fn pg09_14_exact_key_domains() {
                 vec![],
                 order(0, false),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Range,
                     start: current_row(),
                     end: FrameBound::following(1),
@@ -772,6 +784,7 @@ fn pg09_15_execution() {
             vec![],
             vec![],
             Some(WindowFrame {
+                exclusion: Default::default(),
                 frame_type: FrameType::Rows,
                 start: current_row(),
                 end: current_row(),
@@ -801,6 +814,7 @@ fn pg09_15_execution_row_arguments_chunks_cleanup() {
                 vec![],
                 vec![],
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Rows,
                     start: current_row(),
                     end: current_row(),
@@ -863,6 +877,7 @@ fn pg09_16_execution() {
                 vec![0],
                 order(1, false),
                 Some(WindowFrame {
+                    exclusion: Default::default(),
                     frame_type: FrameType::Range,
                     start,
                     end,
@@ -904,4 +919,141 @@ fn pg09_16_execution() {
             }
         }
     }
+}
+
+#[test]
+fn pg09_17_execution() {
+    use super::FrameExclusion::*;
+    for pipelined in [false, true] {
+        for frame_type in [FrameType::Rows, FrameType::Range] {
+            for (exclusion, expected) in [
+                (
+                    NoOthers,
+                    vec![
+                        Value::Int(10),
+                        Value::Int(11),
+                        Value::Int(20),
+                        Value::Int(90),
+                    ],
+                ),
+                (
+                    CurrentRow,
+                    vec![Value::Null, Value::Int(10), Value::Int(11), Value::Null],
+                ),
+                (
+                    Group,
+                    vec![Value::Null, Value::Null, Value::Int(11), Value::Null],
+                ),
+                (
+                    Ties,
+                    vec![
+                        Value::Int(10),
+                        Value::Int(11),
+                        Value::Int(20),
+                        Value::Int(90),
+                    ],
+                ),
+            ] {
+                let expected = if frame_type == FrameType::Range {
+                    match exclusion {
+                        NoOthers => vec![
+                            Value::Int(11),
+                            Value::Int(11),
+                            Value::Int(20),
+                            Value::Int(90),
+                        ],
+                        CurrentRow => {
+                            vec![Value::Int(11), Value::Int(10), Value::Int(11), Value::Null]
+                        }
+                        _ => expected,
+                    }
+                } else {
+                    expected
+                };
+                let plan = build_plan(
+                    3,
+                    vec![0],
+                    order(1, false),
+                    Some(WindowFrame {
+                        exclusion,
+                        frame_type,
+                        start: FrameBound::unbounded(BoundType::Preceding),
+                        end: current_row(),
+                    }),
+                    vec![
+                        Box::new(super::LastValue::new(2)),
+                        Box::new(super::RowNumber::default()),
+                    ],
+                    pipelined,
+                );
+                let rows = [(1, 0, 10), (1, 0, 11), (1, 1, 20), (2, 0, 90)]
+                    .into_iter()
+                    .map(|(p, k, v)| {
+                        Chunk::new(vec![vec![Value::Int(p), Value::Int(k), Value::Int(v)]])
+                    })
+                    .collect();
+                let mut exec =
+                    super::build(plan, Box::new(super::VecChunkExecutor::new(rows)), false)
+                        .unwrap();
+                let cx = ExecContext::default();
+                exec.open(&cx).unwrap();
+                let mut chunk = Chunk::default();
+                let mut actual = vec![];
+                let mut numbers = vec![];
+                loop {
+                    exec.next(&cx, &mut chunk).unwrap();
+                    if chunk.rows.is_empty() {
+                        break;
+                    }
+                    actual.extend(chunk.rows.iter().map(|r| r[3].clone()));
+                    numbers.extend(chunk.rows.iter().map(|r| r[4].clone()));
+                }
+                assert_eq!(
+                    actual, expected,
+                    "{exclusion:?} {frame_type:?} pipelined={pipelined}"
+                );
+                assert_eq!(
+                    numbers,
+                    vec![
+                        Value::UInt(1),
+                        Value::UInt(2),
+                        Value::UInt(3),
+                        Value::UInt(1)
+                    ]
+                );
+                exec.close().unwrap();
+                assert_eq!(exec.memory_bytes(), 0);
+                exec.open(&cx).unwrap();
+                exec.next(&cx, &mut chunk).unwrap();
+                assert!(chunk.rows.is_empty());
+                exec.close().unwrap();
+                assert_eq!(exec.memory_bytes(), 0);
+            }
+        }
+    }
+    // Distinct ordering keys reproduce the task's canonical NULL/10/10 case.
+    let actual = execute(
+        vec![
+            vec![Value::Int(1), Value::Int(10)],
+            vec![Value::Int(2), Value::Int(10)],
+            vec![Value::Int(3), Value::Int(20)],
+        ],
+        vec![],
+        order(0, false),
+        Some(WindowFrame {
+            exclusion: CurrentRow,
+            frame_type: FrameType::Rows,
+            start: FrameBound::unbounded(BoundType::Preceding),
+            end: current_row(),
+        }),
+        vec![Box::new(super::LastValue::new(1))],
+        false,
+    );
+    assert_eq!(
+        actual
+            .into_iter()
+            .map(|r| r.last().unwrap().clone())
+            .collect::<Vec<_>>(),
+        vec![Value::Null, Value::Int(10), Value::Int(10)]
+    );
 }

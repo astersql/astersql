@@ -23209,3 +23209,488 @@ fn pg09_16_sql() {
     drop(_cleanup);
     assert!(TcpStream::connect(addr).is_err(), "listener released");
 }
+
+#[test]
+fn pg09_17_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    s.write_all(&body).unwrap();
+    while read(&mut s).0 != b'Z' {}
+
+    fn ready17(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut ms = vec![];
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            ms.push(m);
+            if done {
+                return ms;
+            }
+        }
+    }
+    fn check17(ms: &[(u8, Vec<u8>)], expected: &[Option<&str>], binary: bool) {
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        for (_, d) in ms.iter().filter(|m| m.0 == b'T') {
+            assert_eq!(&d[..2], &1i16.to_be_bytes());
+            assert_eq!(&d[2..4], b"r\0");
+            assert_eq!(&d[10..14], &23u32.to_be_bytes());
+            assert_eq!(&d[14..16], &4i16.to_be_bytes());
+            assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+        }
+        let expected = expected
+            .iter()
+            .map(|v| {
+                if binary {
+                    let mut b = 1i16.to_be_bytes().to_vec();
+                    b.extend_from_slice(&(if v.is_some() { 4i32 } else { -1 }).to_be_bytes());
+                    if let Some(v) = v {
+                        b.extend_from_slice(&v.parse::<i32>().unwrap().to_be_bytes());
+                    }
+                    b
+                } else {
+                    row(&[*v])
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    fn extended17(s: &mut TcpStream, sql: &str, expected: &[Option<&str>]) {
+        println!("pg09_17 extended {sql}");
+        for format in [0i16, 1] {
+            send(
+                s,
+                b'P',
+                &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+            );
+            send(s, b'D', b"S\0");
+            send(
+                s,
+                b'B',
+                &[
+                    b"\0\0".as_slice(),
+                    &0i16.to_be_bytes(),
+                    &0i16.to_be_bytes(),
+                    &1i16.to_be_bytes(),
+                    &format.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            send(s, b'D', b"P\0");
+            send(s, b'E', &[b"\0".as_slice(), &0i32.to_be_bytes()].concat());
+            send(s, b'S', &[]);
+            let ms = ready17(s);
+            check17(&ms, expected, format == 1);
+            assert_eq!(
+                ms.iter().filter(|m| m.0 == b'T').count(),
+                2,
+                "statement and portal descriptions only"
+            );
+        }
+    }
+    for (sql, expected) in [
+        (
+            "SELECT last_value(x) OVER(ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![None, Some("10"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE NO OTHERS) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE NO OTHERS) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("10")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE NO OTHERS) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("20"), Some("20"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("10"), Some("10"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![None, None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![Some("10"), Some("10"), Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING EXCLUDE TIES) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![None, Some("20"), None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+            vec![None, None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x GROUPS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE CURRENT ROW) AS r FROM (VALUES(NULL::int4),(NULL::int4)) t(x)",
+            vec![None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE CURRENT ROW) AS r FROM (SELECT 1::int4 AS x WHERE false) t",
+            vec![],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE CURRENT ROW) AS r FROM (VALUES(10::int4)) t(x)",
+            vec![None],
+        ),
+        (
+            "SELECT last_value(x) OVER(PARTITION BY p ORDER BY x DESC GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE GROUP) AS r FROM (VALUES(1,10::int4),(1,20::int4),(2,30::int4)) t(p,x) ORDER BY p,x",
+            vec![Some("20"), None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY k NULLS FIRST, id RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE GROUP) AS r FROM (VALUES(NULL::int4,1,10::int4),(NULL::int4,1,20::int4),(1,2,30::int4)) t(k,id,x)",
+            vec![None, None, Some("20")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY k RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE CURRENT ROW) AS r FROM (VALUES(10,1::int4),(10,2::int4),(20,3::int4)) t(k,x)",
+            vec![Some("2"), Some("1"), None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY k RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP) AS r FROM (VALUES(10,1::int4),(10,2::int4),(20,3::int4)) t(k,x)",
+            vec![None, None, None],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY k RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES) AS r FROM (VALUES(10,1::int4),(10,2::int4),(20,3::int4)) t(k,x)",
+            vec![Some("1"), Some("2"), Some("3")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY k RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE NO OTHERS) AS r FROM (VALUES(10,1::int4),(10,2::int4),(20,3::int4)) t(k,x)",
+            vec![Some("2"), Some("2"), Some("3")],
+        ),
+        (
+            "SELECT last_value(x) OVER(ORDER BY k RANGE BETWEEN 0 PRECEDING AND 0 FOLLOWING EXCLUDE CURRENT ROW) AS r FROM (VALUES(1.0::numeric,1::int4),(1.00::numeric,2::int4),(2.0::numeric,3::int4)) t(k,x)",
+            vec![Some("2"), Some("1"), None],
+        ),
+    ] {
+        extended17(&mut s, sql, &expected);
+        let simple = query(&mut s, sql);
+        check17(&simple, &expected, false);
+        assert_eq!(simple.iter().filter(|m| m.0 == b'T').count(), 1);
+    }
+    let sql = "SELECT last_value(x) OVER(ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) AS r FROM (VALUES(1,10::int4),(2,$1::int4)) t(id,x) ORDER BY id";
+    send(
+        &mut s,
+        b'P',
+        &[
+            b"w17\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut s, b'D', b"Sw17\0");
+    send(&mut s, b'S', &[]);
+    let metadata = ready17(&mut s);
+    assert!(!metadata.iter().any(|m| m.0 == b'E'), "{metadata:?}");
+    assert_eq!(
+        metadata.iter().find(|m| m.0 == b't').unwrap().1,
+        [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+    );
+    for pf in [0i16, 1] {
+        for rf in [0i16, 1] {
+            for null in [false, true, false] {
+                let value = if pf == 0 {
+                    b"5".to_vec()
+                } else {
+                    5i32.to_be_bytes().to_vec()
+                };
+                let mut bind = b"\0w17\0".to_vec();
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&pf.to_be_bytes());
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(
+                    &(if null { -1i32 } else { value.len() as i32 }).to_be_bytes(),
+                );
+                if !null {
+                    bind.extend_from_slice(&value);
+                }
+                bind.extend_from_slice(&1i16.to_be_bytes());
+                bind.extend_from_slice(&rf.to_be_bytes());
+                send(&mut s, b'B', &bind);
+                send(&mut s, b'D', b"P\0");
+                send(
+                    &mut s,
+                    b'E',
+                    &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+                );
+                send(&mut s, b'S', &[]);
+                let ms = ready17(&mut s);
+                check17(
+                    &ms,
+                    &[if null { None } else { Some("5") }, Some("10")],
+                    rf == 1,
+                );
+                assert_eq!(ms.iter().filter(|m| m.0 == b'T').count(), 1);
+            }
+        }
+    }
+    send(&mut s, b'C', b"Sw17\0");
+    send(&mut s, b'S', &[]);
+    let ms = ready17(&mut s);
+    assert!(ms.iter().any(|m| m.0 == b'3'));
+    assert!(!ms.iter().any(|m| m.0 == b'E'));
+    for (frame, state, source) in [
+        (
+            "ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE CURRENT ROW",
+            "0A000",
+            "(VALUES('a'::text)) t(x)",
+        ),
+        (
+            "ORDER BY x ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE BOGUS",
+            "42601",
+            "(VALUES(1::int4)) t(x)",
+        ),
+        (
+            "ORDER BY x EXCLUDE CURRENT ROW",
+            "42601",
+            "(VALUES(1::int4)) t(x)",
+        ),
+        (
+            "ORDER BY x ROWS BETWEEN CURRENT ROW AND NULL FOLLOWING EXCLUDE TIES",
+            "22004",
+            "(VALUES(1::int4)) t(x)",
+        ),
+        (
+            "ORDER BY x ROWS BETWEEN CURRENT ROW AND -1 FOLLOWING EXCLUDE GROUP",
+            "22013",
+            "(VALUES(1::int4)) t(x)",
+        ),
+    ] {
+        let sql = format!("SELECT last_value(x) OVER({frame}) AS r FROM {source}");
+        let ms = query(&mut s, &sql);
+        let error = &ms
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("invalid frame rejection")
+            .1;
+        assert!(
+            error
+                .windows(6)
+                .any(|w| w == [state.as_bytes(), b"\0"].concat()),
+            "{frame}: {error:?}"
+        );
+        assert!(error.windows(7).any(|w| w == b"SERROR\0"));
+        assert!(error.windows(7).any(|w| w == b"VERROR\0"));
+        println!("pg09_17 Q frame={frame} error={error:?}");
+        check17(&query(&mut s, "SELECT 1::int4 AS r"), &[Some("1")], false);
+        send(
+            &mut s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0", &0i16.to_be_bytes()].concat(),
+        );
+        send(
+            &mut s,
+            b'B',
+            &[
+                b"\0\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(
+            &mut s,
+            b'E',
+            &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+        send(&mut s, b'S', &[]);
+        let rejected = ready17(&mut s);
+        let error = &rejected
+            .iter()
+            .find(|m| m.0 == b'E')
+            .expect("extended invalid frame")
+            .1;
+        assert!(
+            error
+                .windows(6)
+                .any(|w| w == [state.as_bytes(), b"\0"].concat()),
+            "{frame}: {error:?}"
+        );
+        println!(
+            "pg09_17 extended frame={frame} ParseComplete={} BindComplete={} error={error:?}",
+            rejected.iter().any(|m| m.0 == b'1'),
+            rejected.iter().any(|m| m.0 == b'2')
+        );
+        assert_eq!(rejected.last().unwrap(), &(b'Z', vec![b'I']));
+
+        assert_eq!(ms.last().unwrap(), &(b'Z', vec![b'I']));
+        check17(&query(&mut s, "SELECT 1::int4 AS r"), &[Some("1")], false);
+    }
+    drop(s);
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err(), "listener released");
+}
+
+#[test]
+fn pg09_17_dual_listener_isolation() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, MysqlTestClient, TextValue, WireResponse,
+    };
+    struct Driver;
+    impl crate::server::ServerDriver for Driver {
+        fn name(&self) -> &str {
+            "tidb"
+        }
+    }
+    struct Domain;
+    impl crate::server::Domain for Domain {
+        fn server_id(&self) -> u64 {
+            1
+        }
+        fn start_timestamp(&self) -> i64 {
+            1
+        }
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let server = crate::server::Server::new_test(
+        crate::server::ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            postgres_port: Some(0),
+            status: crate::server::StatusConfig {
+                report_status: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(Driver),
+    );
+    server
+        .set_connection_runtime(driver, Arc::new(CanonicalConnectionDomain::new(domain)))
+        .unwrap();
+    struct Cleanup(Arc<crate::server::Server>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let cleanup = Cleanup(server.clone());
+    server.run(Arc::new(Domain)).unwrap();
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql = server.listener_addr().unwrap();
+    fn connect(addr: std::net::SocketAddr) -> TcpStream {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [
+            196610u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        while read(&mut s).0 != b'Z' {}
+        s
+    }
+    let mut a = connect(pg);
+    let mut b = connect(pg);
+    let mut my = MysqlTestClient::connect(mysql, CLIENT_DEPRECATE_EOF, Some("test"), &[]).unwrap();
+    for index in 0..3 {
+        let pg = if index == 1 { &mut b } else { &mut a };
+        let ms = query(
+            pg,
+            "SELECT last_value(x) OVER(ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) AS r FROM (VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)",
+        );
+        assert!(!ms.iter().any(|m| m.0 == b'E'));
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[None]), row(&[Some("10")]), row(&[Some("10")])]
+        );
+        let sql = "SELECT last_value(x) OVER(ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM (SELECT 10 AS x UNION ALL SELECT 20) t";
+        let WireResponse::ResultSet(result) = my.query(sql).unwrap() else {
+            panic!("MySQL window result")
+        };
+        assert_eq!(result.rows, vec![vec![TextValue::Bytes(b"20".to_vec())]; 2]);
+    }
+    send(&mut a, b'X', &[]);
+    send(&mut b, b'X', &[]);
+    drop(a);
+    drop(b);
+    drop(my);
+    drop(cleanup);
+    assert!(TcpStream::connect(pg).is_err());
+    assert!(TcpStream::connect(mysql).is_err());
+}

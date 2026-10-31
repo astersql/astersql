@@ -346,6 +346,16 @@ impl Scanner {
                 self.lastKeyword = keyword;
             }
         }
+        if self.postgres && tok == token::identifier
+            && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`')
+        {
+            tok = match lit.to_ascii_lowercase().as_str() {
+                "exclude" => token::pgExclude,
+                "ties" => token::pgTies,
+                "others" => token::pgOthers,
+                _ => tok,
+            };
+        }
         // FILTER is a PG aggregate suffix; quoted identifiers retain their name.
         if self.postgres && tok == token::identifier && lit.eq_ignore_ascii_case("filter")
             && self.r.s.as_bytes().get(pos.Offset as usize).is_some_and(|b| *b != b'"' && *b != b'`')

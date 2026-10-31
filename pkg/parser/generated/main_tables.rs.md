@@ -182,3 +182,8 @@ main.astergram新增PgCastType : PgPostfixDate [ ]，通过parsergen generate再
 ## 2026-10-31 LAG/LEAD 逐行偏移
 
 由既有 astersql-parsergen generate 生成；OptLeadLagInfo 的 NumLiteral/paramMarker 合并为 Expression，以承载 PG 逐行、负数、NULL 与 cast 偏移。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+既有main.astergram新增可选窗口排除产生式及非保留关键字；本文件由astersql-parsergen generate重建，不手改解析表。

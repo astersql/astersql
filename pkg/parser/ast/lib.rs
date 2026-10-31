@@ -4448,9 +4448,20 @@ pub struct FrameExtent {
     pub End: FrameBound,
 }
 
+/// Rows removed after computing the base frame; peer identity is unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FrameExclusion {
+    #[default]
+    NoOthers,
+    CurrentRow,
+    Group,
+    Ties,
+}
+
 /// 窗口帧子句。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FrameClause {
+    pub Exclusion: FrameExclusion,
     pub Type: FrameType,
     pub Extent: FrameExtent,
 }

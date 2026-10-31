@@ -117,7 +117,13 @@ pub fn build(
         .ok_or_else(|| Error::new("window function count exceeds schema columns"))?;
     // Arbitrary signed offsets can reach either end of the partition.
     // Keep the existing buffered processor for these functions.
-    let pipelined = (force_pipelined || plan.pipelined_enabled)
+    // Exclusion can split a frame and needs peer rows outside a ROWS frame.
+    // Use the existing buffered processors instead of dropping those rows early.
+    let pipelined = plan
+        .frame
+        .as_ref()
+        .is_none_or(|f| f.exclusion == crate::window::FrameExclusion::NoOthers)
+        && (force_pipelined || plan.pipelined_enabled)
         && !plan
             .window_functions
             .iter()
@@ -184,6 +190,8 @@ pub fn build(
         }),
         // ROWS 帧：按行偏移滑动窗口。
         Some(frame) if frame.frame_type == FrameType::Rows => Box::new(RowFrameWindowProcessor {
+            exclusion: frame.exclusion,
+            order_by: plan.order_by,
             window_functions: plan.window_functions,
             start: frame.start,
             end: frame.end,
@@ -196,6 +204,7 @@ pub fn build(
             frame.start.update_compare_cols(&plan.order_by)?;
             frame.end.update_compare_cols(&plan.order_by)?;
             Box::new(RangeFrameWindowProcessor {
+                exclusion: frame.exclusion,
                 window_functions: plan.window_functions,
                 start: frame.start,
                 end: frame.end,

@@ -99,3 +99,8 @@ PG ROWS 的负数和 NULL PRECEDING/FOLLOWING 规则生成既有 FrameBound；�
 ## 2026-10-31 LAG/LEAD 逐行偏移
 
 OptLeadLagInfo 复用 Expression 载体接收逐行 offset，原 NumLiteral/paramMarker 两条归并为一条动作；MySQL 仍限制原有数字或参数形式。
+
+
+## PostgreSQL 窗口 EXCLUDE
+
+OptWindowExclusion的语义动作构造独立排除枚举，OptWindowFrameClause将其装配到真实AST；显式后缀仅PostgreSQL方言允许。

@@ -954,4 +954,7 @@ mod token {
     pub const pgInterval: i32 = 58271;
     pub const pgCatalogDivide: i32 = 58272;
     pub const pgFilter: i32 = 58273;
+    pub const pgExclude: i32 = 58274;
+    pub const pgTies: i32 = 58275;
+    pub const pgOthers: i32 = 58276;
 }

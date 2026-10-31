@@ -2925,6 +2925,7 @@ fn build_select_windows(
         if aggregation::NeedFrame(Name) {
             if spec.Frame.is_none() && !spec.OrderBy.is_empty() {
                 spec.Frame = Some(Box::new(crate::ast::FrameClause {
+                    Exclusion: Default::default(),
                     Type: crate::ast::FrameType::Ranges,
                     Extent: crate::ast::FrameExtent {
                         Start: crate::ast::FrameBound {
