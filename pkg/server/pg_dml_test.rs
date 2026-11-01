@@ -1542,3 +1542,237 @@ fn pg10_04_behavior() {
     assert_eq!(guard.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg10_05_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    for c in [&mut w, &mut o] {
+        let isolation = pg10_rows(&pg10_ok(
+            c,
+            "SELECT @@transaction_isolation AS isolation",
+            b'I',
+        ));
+        eprintln!("pg10_05 isolation: {:?}", isolation);
+        assert_eq!(isolation.len(), 1);
+    }
+    let scan = "SELECT id,v,note FROM public.pg10_05 ORDER BY id";
+    let initial = vec![
+        text_row(&[Some("1"), Some("10"), None]),
+        text_row(&[Some("2"), Some("20"), Some("b")]),
+    ];
+    for kind in ["INSERT", "UPDATE", "DELETE"] {
+        for zero in [false, true] {
+            for commit in [false, true] {
+                pg10_ok(
+                    &mut w,
+                    "CREATE TABLE public.pg10_05(id integer PRIMARY KEY,v integer,note text)",
+                    b'I',
+                );
+                pg10_ok(
+                    &mut w,
+                    "INSERT INTO public.pg10_05 VALUES (1,10,NULL),(2,20,'b')",
+                    b'I',
+                );
+                let predicate = if zero { "false" } else { "true" };
+                let sql = match kind {
+                    "INSERT" => format!(
+                        "INSERT INTO public.pg10_05 SELECT id+$1,v+1,$2 FROM public.pg10_05 WHERE {predicate} RETURNING id,v,note"
+                    ),
+                    "UPDATE" => format!(
+                        "UPDATE public.pg10_05 SET v=v+$1,note=$2 WHERE {predicate} RETURNING id,v,note"
+                    ),
+                    _ => format!(
+                        "DELETE FROM public.pg10_05 WHERE id<=$1 AND {predicate} RETURNING id,v,note"
+                    ),
+                };
+                let oids: &[u32] = if kind == "DELETE" { &[23] } else { &[23, 25] };
+                parse(&mut w, "pg10_05_s", &sql, oids);
+                assert_eq!(read(&mut w), (b'1', vec![]));
+                send(&mut w, b'D', b"Spg10_05_s\0");
+                let parameters = read(&mut w);
+                assert_eq!(parameters.0, b't');
+                let mut expected_parameters = (oids.len() as i16).to_be_bytes().to_vec();
+                for oid in oids {
+                    expected_parameters.extend_from_slice(&oid.to_be_bytes());
+                }
+                assert_eq!(parameters.1, expected_parameters);
+                let description = read(&mut w);
+                assert_eq!(description.0, b'T');
+                let fields = pg10_description(&description.1);
+                assert_eq!(
+                    fields
+                        .iter()
+                        .map(|f| (f.0.as_str(), f.1, f.2, f.3, f.5))
+                        .collect::<Vec<_>>(),
+                    vec![
+                        ("id", 23, 4, -1, 1),
+                        ("v", 23, 4, -1, 2),
+                        ("note", 25, -1, -1, 3)
+                    ]
+                );
+                assert_ne!(fields[0].4, 0);
+                assert!(fields.iter().all(|f| f.4 == fields[0].4));
+                sync(&mut w);
+                for c in [&mut w, &mut o] {
+                    assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                }
+                pg10_ok(&mut w, "BEGIN", b'T');
+                let mut stored = initial.clone();
+                // Each Bind is a new execution. A suspended or completed portal
+                // must reuse its original result even when the write is not idempotent.
+                for round in 0..2 {
+                    let value: &[u8] = match (kind, round) {
+                        ("INSERT", 0) => b"10",
+                        ("INSERT", _) => b"100",
+                        ("UPDATE", 0) => b"1",
+                        ("UPDATE", _) => b"2",
+                        (_, 0) => b"1",
+                        _ => b"2",
+                    };
+                    let values = if kind == "DELETE" {
+                        vec![Some(value)]
+                    } else {
+                        vec![
+                            Some(value),
+                            if round == 0 {
+                                None
+                            } else {
+                                Some(b"next".as_slice())
+                            },
+                        ]
+                    };
+                    let before = stored.clone();
+                    bind(&mut w, "pg10_05_p", "pg10_05_s", &[], &values, &[]);
+                    assert_eq!(read(&mut w), (b'2', vec![]));
+                    send(&mut w, b'D', b"Ppg10_05_p\0");
+                    assert_eq!(read(&mut w), description);
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', b"T".to_vec()));
+                    assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'T')), before);
+                    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                    let returned = if zero {
+                        vec![]
+                    } else {
+                        match (kind, round) {
+                            ("INSERT", 0) => vec![
+                                text_row(&[Some("11"), Some("11"), None]),
+                                text_row(&[Some("12"), Some("21"), None]),
+                            ],
+                            ("INSERT", _) => vec![
+                                text_row(&[Some("101"), Some("11"), Some("next")]),
+                                text_row(&[Some("102"), Some("21"), Some("next")]),
+                                text_row(&[Some("111"), Some("12"), Some("next")]),
+                                text_row(&[Some("112"), Some("22"), Some("next")]),
+                            ],
+                            ("UPDATE", 0) => vec![
+                                text_row(&[Some("1"), Some("11"), None]),
+                                text_row(&[Some("2"), Some("21"), None]),
+                            ],
+                            ("UPDATE", _) => vec![
+                                text_row(&[Some("1"), Some("13"), Some("next")]),
+                                text_row(&[Some("2"), Some("23"), Some("next")]),
+                            ],
+                            (_, 0) => vec![initial[0].clone()],
+                            _ => vec![initial[1].clone()],
+                        }
+                    };
+                    if !zero {
+                        match kind {
+                            "INSERT" => stored.extend(returned.clone()),
+                            "UPDATE" => stored = returned.clone(),
+                            _ => stored.retain(|r| !returned.contains(r)),
+                        }
+                    }
+                    stored.sort();
+                    let tag = if kind == "INSERT" {
+                        format!("INSERT 0 {}\0", returned.len())
+                    } else {
+                        format!("{kind} {}\0", returned.len())
+                    }
+                    .into_bytes();
+                    let mut rows = vec![];
+                    loop {
+                        let mut request = b"pg10_05_p\0".to_vec();
+                        request.extend_from_slice(&1u32.to_be_bytes());
+                        send(&mut w, b'E', &request);
+                        let end = loop {
+                            let message = read(&mut w);
+                            if message.0 == b'D' {
+                                rows.push(message.1);
+                            } else {
+                                assert!(
+                                    message.0 == b's' || message == (b'C', tag.clone()),
+                                    "{kind}/{round}: {message:?}"
+                                );
+                                break message.0;
+                            }
+                        };
+                        // The whole write happens once, before the first page.
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', b"T".to_vec()));
+                        assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'T')), stored);
+                        assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                        if end == b'C' {
+                            break;
+                        }
+                    }
+                    rows.sort();
+                    let mut expected = returned;
+                    expected.sort();
+                    assert_eq!(rows, expected);
+                    execute(&mut w, "pg10_05_p");
+                    assert_eq!(read(&mut w), (b'C', tag));
+                    send(&mut w, b'D', b"Ppg10_05_p\0");
+                    assert_eq!(read(&mut w), description);
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', b"T".to_vec()));
+                    assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'T')), stored);
+                    send(&mut w, b'C', b"Ppg10_05_p\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                }
+                pg10_ok(&mut w, if commit { "COMMIT" } else { "ROLLBACK" }, b'I');
+                for c in [&mut w, &mut o] {
+                    assert_eq!(
+                        pg10_rows(&pg10_ok(c, scan, b'I')),
+                        if commit {
+                            stored.clone()
+                        } else {
+                            initial.clone()
+                        }
+                    );
+                }
+                send(&mut w, b'C', b"Spg10_05_s\0");
+                assert_eq!(read(&mut w), (b'3', vec![]));
+                sync(&mut w);
+                pg10_ok(&mut w, "DROP TABLE public.pg10_05", b'I');
+            }
+        }
+    }
+    for c in [&mut w, &mut o] {
+        pg10_ok(c, "ROLLBACK", b'I');
+        send(c, b'X', &[]);
+    }
+    drop(w);
+    drop(o);
+    service.0.close();
+    assert_eq!(service.0.resource_counts(), (0, 0, 0));
+    drop(service);
+    assert!(TcpStream::connect(addr).is_err());
+}
