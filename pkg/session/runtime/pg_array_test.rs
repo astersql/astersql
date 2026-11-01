@@ -1852,3 +1852,56 @@ fn pg09_27_array_projection_analysis() {
         "0A000"
     );
 }
+
+#[test]
+fn pg09_30_from_parameter_and_diagnostics() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "SELECT u.v FROM unnest(?::int4[]) u(v)",
+        "SELECT u.v FROM pg_catalog.unnest((?::int4[])) u(v)",
+        "SELECT u.v FROM (VALUES ROW(1)) t(id) CROSS JOIN unnest(?::int4[]) u(v)",
+    ] {
+        assert_eq!(
+            session.protocol_parameter_types(sql, &[]).unwrap(),
+            [1007],
+            "{sql}"
+        );
+        assert_eq!(
+            session.protocol_parameter_types(sql, &[1007]).unwrap(),
+            [1007],
+            "{sql}"
+        );
+    }
+    let sql = "SELECT unnest('{broken}'::int4[]) AS v";
+    let failure = session
+        .prepare_protocol_statement(sql)
+        .err()
+        .expect("invalid array at Prepare");
+    assert_eq!(failure.pg_array_error().unwrap().state, "22P02");
+    let failure = session.execute(sql).err().expect("invalid SRF input");
+    let diagnostic = failure.pg_array_error().unwrap();
+    assert_eq!(diagnostic.state, "22P02");
+    assert_eq!(
+        diagnostic.message,
+        "invalid input syntax for type integer: \"broken\""
+    );
+    assert_eq!(diagnostic.position, Some(sql.find('\'').unwrap()));
+    for sql in [
+        "SELECT CASE WHEN true THEN generate_series(1,2) ELSE 0 END",
+        "SELECT COALESCE(NULL,generate_series(1,2))",
+    ] {
+        let failure = session.execute(sql).err().expect("invalid SRF input");
+        let diagnostic = failure.pg_function_error().unwrap();
+        assert_eq!(diagnostic.state, "0A000");
+        assert_eq!(
+            diagnostic.position,
+            Some(sql.find("generate_series").unwrap())
+        );
+        assert_eq!(
+            diagnostic.hint,
+            Some("You might be able to move the set-returning function into a LATERAL FROM item.")
+        );
+        session.execute("SELECT 1::int4").unwrap();
+    }
+}

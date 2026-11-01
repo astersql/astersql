@@ -284,7 +284,8 @@ def run(port,database,evidence,mysql_port):
             name=('param_'+shape).encode();oids=[20 if wide else 23]
             def prepare_param():
                 for side,conn in conns.items():
-                    assert pq.observe(pq.PQprepare(conn,name,sql.encode(),0,None))['status']==1
+                    prepared=save(side,shape,'libpq-Parse',pq.observe(pq.PQprepare(conn,name,sql.encode(),0,None)))
+                    assert prepared['status']==1,prepared
                     desc=save(side,'params','statement-describe',pq.observe(pq.PQdescribePrepared(conn,name)))
                     assert desc['parameters']==[parameter_oid],desc
                     metadata(desc,oids)

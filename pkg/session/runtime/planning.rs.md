@@ -314,3 +314,8 @@ protocol_parameter_types 对 LAG/LEAD 的直接未知参数提供本任务 int4 
 ## GROUPS 同序组帧（任务16）
 
 validate_function_visibility 对 PostgreSQL 调用 pg_groups_window_spec，在行求值前检查 inline GROUPS 的 ORDER BY，空输入也不跳过。其余签名、可见性与条件排序规则保持原校验链。
+
+
+## 集合返回真实客户端差分（任务30）
+
+`protocol_parameter_types` 在 Parse 时也遍历 FROM 函数及 JOIN 两侧的函数参数，复用显式转换约束；`unnest(?::int4[])` 无需 Bind 值即可固定参数 OID 1007。

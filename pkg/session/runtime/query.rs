@@ -3977,6 +3977,7 @@ impl ConcreteSession {
         struct SetCalls {
             count: usize,
             context: Option<&'static str>,
+            position: Option<usize>,
         }
         impl ast::ExprNodeVisitor for SetCalls {
             fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
@@ -3985,6 +3986,8 @@ impl ConcreteSession {
                     && (Schema.L.is_empty() || Schema.L == "pg_catalog"))
                 {
                     self.count += 1;
+                    self.position = (input.OriginTextPosition >= 0)
+                        .then_some(input.OriginTextPosition as usize);
                 }
                 if matches!(input.Kind, ast::ExprKind::Case { .. }) {
                     self.context = Some("CASE");
@@ -4014,21 +4017,28 @@ impl ConcreteSession {
             let mut calls = SetCalls {
                 count: 0,
                 context: None,
+                position: None,
             };
             let _ = expression.Accept(&mut calls);
             if calls.count > 0
                 && (!target || pg_projection_srf(expression).is_none() || calls.count > 1)
             {
-                return Err(pg_union_error(
-                    &match calls.context {
-                        Some(context) => {
-                            format!("set-returning functions are not allowed in {context}")
-                        }
-                        None => {
-                            "set-returning functions are not supported in this expression".into()
-                        }
-                    },
-                    "0A000",
+                let message = match calls.context {
+                    Some(context) => {
+                        format!("set-returning functions are not allowed in {context}")
+                    }
+                    None => "set-returning functions are not supported in this expression".into(),
+                };
+                let error = super::function_diagnostics::PgFunctionError {
+                    state: "0A000",
+                    message,
+                    detail: None,
+                    hint: calls.context.map(|_| "You might be able to move the set-returning function into a LATERAL FROM item."),
+                    position: calls.position,
+                };
+                return Err(SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
                 ));
             }
         }

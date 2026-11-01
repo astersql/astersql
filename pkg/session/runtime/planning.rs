@@ -3146,6 +3146,32 @@ impl ConcreteSession {
                         let _ = expression.Accept(&mut constraints);
                     }
                 }
+                // FROM function arguments carry the same explicit-cast constraints
+                // as projections, even when Bind has supplied no value yet.
+                fn from_constraints(node: &ast::ResultSetNode, constraints: &mut Constraints) {
+                    match node {
+                        ast::ResultSetNode::TableSource(source) => {
+                            if let Some(call) = &source.FunctionSource {
+                                let _ = call.Accept(constraints);
+                            }
+                        }
+                        ast::ResultSetNode::Join(join) => {
+                            for child in join.Left.iter().chain(join.Right.iter()) {
+                                from_constraints(child, constraints);
+                            }
+                        }
+                    }
+                }
+                if let Some(from) = &select.From {
+                    for child in from
+                        .TableRefs
+                        .Left
+                        .iter()
+                        .chain(from.TableRefs.Right.iter())
+                    {
+                        from_constraints(child, &mut constraints);
+                    }
+                }
                 for expression in select.Where.iter().chain(select.Having.iter()) {
                     let _ = expression.Accept(&mut constraints);
                 }

@@ -379,3 +379,8 @@ validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影�
 ## SRF暂停恢复与释放（任务29）
 
 `execute_relational_query_record_set`在既有类型绑定链选择非阻塞SRF结果所有者，返回原ConcreteRecordSet和固定字段；不从首行推断描述。需要阻塞操作的查询保留既有执行路径。
+
+
+## 集合返回真实客户端差分（任务30）
+
+`validate_pg_integer_select_inputs` 对 CASE/COALESCE 中的 SRF 拒绝通过既有 `PgFunctionError` 保留 0A000、LATERAL FROM 建议及 SRF 调用的原 SQL 字节位置；协议层负责转为字符位置。

@@ -1116,7 +1116,16 @@ fn typed_array_with_modifier(
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
             Element::Int4 => astersql_expression::pg_cast_int4(Some(text))
                 .map(|v| PgArrayElement::Int4(v.unwrap()))
-                .map_err(|e| error(e.sqlstate(), e.to_string())),
+                .map_err(|e| {
+                    error(
+                        e.sqlstate(),
+                        if e.sqlstate() == "22P02" {
+                            format!("invalid input syntax for type integer: \"{text}\"")
+                        } else {
+                            e.to_string()
+                        },
+                    )
+                }),
             Element::Int8 => astersql_expression::pg_cast_int8(Some(text))
                 .map(|v| PgArrayElement::Int8(v.unwrap()))
                 .map_err(|e| error(e.sqlstate(), e.to_string())),
@@ -1306,6 +1315,29 @@ pub(super) fn validate_cast(
         return Err(error("0A000", "array cast source is not supported"));
     }
     if supported(expr, target.PostgreSQLArrayElement().unwrap()) {
+        // Unknown literal input is converted at analysis, including Prepare and
+        // empty scans. Parameter values remain deferred until Bind/Execute.
+        let mut literal = expr;
+        while let ast::ExprKind::Parentheses(inner) = &literal.Kind {
+            literal = inner;
+        }
+        if target.PostgreSQLArrayElement() == Some(Element::Int4)
+            && let ast::ExprKind::Value(v) = &literal.Kind
+            && let ast::ValueDatum::String(text) = &v.Datum
+        {
+            typed_array(text.as_bytes(), Element::Int4).map_err(|failure| {
+                if let Some(diagnostic) = failure.pg_array_error()
+                    && literal.OriginTextPosition >= 0
+                {
+                    return error_at(
+                        diagnostic.state,
+                        diagnostic.message,
+                        literal.OriginTextPosition as usize,
+                    );
+                }
+                failure
+            })?;
+        }
         Ok(())
     } else {
         Err(error("0A000", "array cast source is not supported"))
