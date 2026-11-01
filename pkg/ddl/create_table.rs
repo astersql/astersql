@@ -1708,7 +1708,8 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
         table.PlacementPolicyRef = placement_policy_ref.cloned();
     }
     if let Some(partition) = statement.Partition.as_ref() {
-        let partition = build_partition_info(partition)?;
+        let options = interval_partition_options(context.GetExprCtx(), partition, &table)?;
+        let partition = build_partition_info(&options)?;
         validate_extract_partition_expression(&table, &partition)?;
         table.Partition = Some(partition);
         crate::storage_class::normalize_partition_definitions(context.GetExprCtx(), &mut table)
@@ -2459,4 +2460,502 @@ fn check_table_info_valid_extra(table: &model::TableInfo) -> BuildResult<()> {
         }
     }
     Ok(())
+}
+
+/// Generate an owned INTERVAL request; callers may retry with the original AST.
+/// Go generatePartitionDefinitionsFromInterval keeps validation writes off the request.
+pub fn interval_partition_options(
+    ctx: &dyn astersql_expression::BuildContext,
+    options: &ast::PartitionOptions,
+    table: &model::TableInfo,
+) -> BuildResult<ast::PartitionOptions> {
+    use ast::TimeUnitType as U;
+    use model::mysql;
+    let Some(interval) = &options.PartitionMethod.Interval else {
+        return Ok(options.clone());
+    };
+    if options.PartitionMethod.Tp != ast::PartitionType::Range {
+        return Err(build_error(
+            "INTERVAL partitioning, only allowed on RANGE partitioning",
+        ));
+    }
+    if options.PartitionMethod.ColumnNames.len() > 1 {
+        return Err(build_error(
+            "INTERVAL partitioning, does not allow RANGE COLUMNS with more than one column",
+        ));
+    }
+    let first = interval.FirstRangeEnd.as_ref().ok_or_else(|| {
+        build_error(
+            "INTERVAL partitioning, currently requires FIRST and LAST partitions to be defined",
+        )
+    })?;
+    let last = interval.LastRangeEnd.as_ref().ok_or_else(|| {
+        build_error(
+            "INTERVAL partitioning, currently requires FIRST and LAST partitions to be defined",
+        )
+    })?;
+    let step = interval
+        .IntervalExpr
+        .Expr
+        .as_ref()
+        .ok_or_else(|| build_error("INTERVAL, should be a positive number"))?;
+    let step = expression_text(step)?;
+    if !step
+        .trim_matches('\'')
+        .starts_with(|c: char| ('1'..='9').contains(&c))
+    {
+        return Err(build_error("INTERVAL, should be a positive number"));
+    }
+    let unit = match interval.IntervalExpr.TimeUnit {
+        U::Invalid => None,
+        U::Year => Some("YEAR"),
+        U::Quarter => Some("QUARTER"),
+        U::Month => Some("MONTH"),
+        U::Week => Some("WEEK"),
+        U::Day => Some("DAY"),
+        U::Hour => Some("HOUR"),
+        U::Minute => Some("MINUTE"),
+        U::Second => Some("SECOND"),
+        _ => {
+            return Err(build_error(
+                "INTERVAL partitioning, only supports YEAR, QUARTER, MONTH, WEEK, DAY, HOUR, MINUTE and SECOND as time unit",
+            ));
+        }
+    };
+    let column = options
+        .PartitionMethod
+        .ColumnNames
+        .first()
+        .map(|name| {
+            table
+                .Columns
+                .iter()
+                .find(|column| column.Name.L == name.Name.L)
+                .ok_or_else(|| {
+                    build_error("INTERVAL partitioning, could not find any RANGE COLUMNS")
+                })
+        })
+        .transpose()?;
+    if let Some(column) = column {
+        if !matches!(
+            column.GetType(),
+            mysql::TypeTiny
+                | mysql::TypeShort
+                | mysql::TypeInt24
+                | mysql::TypeLong
+                | mysql::TypeLonglong
+                | mysql::TypeDate
+                | mysql::TypeDatetime
+        ) {
+            return Err(build_error(
+                "INTERVAL partitioning, only supports Date, Datetime and INT types",
+            ));
+        }
+    }
+    let unsigned = column.is_some_and(|c| mysql::HasUnsignedFlag(c.GetFlag()))
+        || options.PartitionMethod.Expr.as_ref().is_some_and(|expr| {
+            expression_text(expr)
+                .ok()
+                .and_then(|sql| {
+                    astersql_expression::ParseSimpleExpr(
+                        ctx,
+                        &sql,
+                        vec![astersql_expression::WithTableInfo("", table)],
+                    )
+                    .ok()
+                })
+                .is_some_and(|expr| {
+                    mysql::HasUnsignedFlag(expr.GetType(ctx.GetEvalCtx()).GetFlag())
+                })
+        });
+    let start = expression_text(first)?;
+    let end = expression_text(last)?;
+    let eval = |sql: &str| -> BuildResult<String> {
+        if unit.is_none() {
+            return crate::storage_class::range_value(ctx, sql, unsigned).map_err(build_error);
+        }
+        let expr = astersql_expression::ParseSimpleExpr(ctx, sql, Vec::new())
+            .map_err(|e| build_error(e.to_string()))?;
+        let value = expr
+            .Eval(ctx.GetEvalCtx(), astersql_util_chunk::Row::default())
+            .map_err(|e| build_error(e.to_string()))?;
+        if value.IsNull() {
+            return Err(build_error(
+                "INTERVAL partitioning: Error when generating partition values",
+            ));
+        }
+        let target = model::types::NewFieldType(mysql::TypeDatetime);
+        let value = value
+            .ConvertTo(ctx.GetEvalCtx().TypeCtx(), &target)
+            .map_err(|e| build_error(e.to_string()))?;
+        let text = value.GetMysqlTime().to_string();
+        Ok(if column.is_some_and(|c| c.GetType() == mysql::TypeDate) {
+            text[..10].to_owned()
+        } else {
+            text
+        })
+    };
+    let end_value = eval(&end)?;
+    let mut generated = Vec::new();
+    let definition = |name: &str, value: &str| -> BuildResult<ast::PartitionDefinition> {
+        let expr = if value == "MAXVALUE" {
+            ast::ExprNode {
+                Kind: ast::ExprKind::MaxValue,
+                ..Default::default()
+            }
+        } else if unit.is_some() {
+            ast::ExprNode::StringValue(value.into(), "", "")
+        } else if unsigned {
+            ast::ExprNode::UintValue(
+                value
+                    .parse()
+                    .map_err(|_| build_error("partition integer overflow"))?,
+            )
+        } else {
+            ast::ExprNode::IntValue(
+                value
+                    .parse()
+                    .map_err(|_| build_error("partition integer overflow"))?,
+            )
+        };
+        Ok(ast::PartitionDefinition {
+            Name: ast::NewCIStr(name),
+            Clause: ast::PartitionDefinitionClause::LessThan(vec![expr]),
+            ..Default::default()
+        })
+    };
+    if interval.NullPart {
+        let min = if unit.is_some() {
+            "0000-01-01".into()
+        } else if unsigned {
+            "0".into()
+        } else {
+            match column.map(|c| c.GetType()) {
+                Some(mysql::TypeTiny) => i8::MIN.to_string(),
+                Some(mysql::TypeShort) => i16::MIN.to_string(),
+                Some(mysql::TypeInt24) => (-8388608_i64).to_string(),
+                Some(mysql::TypeLong) => i32::MIN.to_string(),
+                _ => i64::MIN.to_string(),
+            }
+        };
+        generated.push(definition("P_NULL", &min)?);
+    }
+    let mut matched = false;
+    for i in 0..crate::partition::PARTITION_COUNT_LIMIT {
+        let sql = if i == 0 {
+            start.clone()
+        } else if let Some(unit) = unit {
+            format!("date_add(cast({start} as datetime), INTERVAL ({i} * {step}) {unit})")
+        } else {
+            format!("({start}) + {i} * ({step})")
+        };
+        let value = eval(&sql)?;
+        let ordering = if unit.is_some() {
+            value.cmp(&end_value)
+        } else {
+            value
+                .parse::<i128>()
+                .map_err(|_| build_error("partition integer overflow"))?
+                .cmp(
+                    &end_value
+                        .parse::<i128>()
+                        .map_err(|_| build_error("partition integer overflow"))?,
+                )
+        };
+        if ordering.is_gt() {
+            return Err(build_error(
+                "INTERVAL: expr not matching FIRST + n INTERVALs",
+            ));
+        }
+        generated.push(definition(&format!("P_LT_{value}"), &value)?);
+        if ordering.is_eq() {
+            matched = true;
+            break;
+        }
+    }
+    if !matched {
+        return Err(build_error("Too many partitions"));
+    }
+    if interval.MaxValPart {
+        generated.push(definition("P_MAXVALUE", "MAXVALUE")?);
+    }
+    if generated.len() > crate::partition::PARTITION_COUNT_LIMIT {
+        return Err(build_error("Too many partitions"));
+    }
+    if !options.Definitions.is_empty() {
+        if generated.len() != options.Definitions.len() {
+            return Err(build_error(
+                "INTERVAL partition definitions do not match generated definitions",
+            ));
+        }
+        for (expected, supplied) in generated.iter().zip(&options.Definitions) {
+            if !supplied.Options.is_empty() || !supplied.Sub.is_empty() {
+                return Err(build_error(format!(
+                    "partition {} does have unsupported options",
+                    supplied.Name.O
+                )));
+            }
+            let values = |clause: &ast::PartitionDefinitionClause| -> BuildResult<Vec<String>> {
+                let ast::PartitionDefinitionClause::LessThan(values) = clause else {
+                    return Err(build_error(
+                        "INTERVAL partition definitions do not match generated definitions",
+                    ));
+                };
+                values
+                    .iter()
+                    .map(|value| {
+                        if matches!(value.Kind, ast::ExprKind::MaxValue) {
+                            Ok("MAXVALUE".into())
+                        } else {
+                            eval(&expression_text(value)?)
+                        }
+                    })
+                    .collect()
+            };
+            if values(&supplied.Clause)? != values(&expected.Clause)? {
+                return Err(build_error(
+                    "INTERVAL partition definitions do not match generated definitions",
+                ));
+            }
+        }
+        generated = options.Definitions.clone();
+    }
+    let mut result = options.clone();
+    result.Definitions = generated;
+    Ok(result)
+}
+
+/// Infer the same interval from current bounds as Go getPartitionIntervalFromTable,
+/// then generate FIRST/LAST definitions without modifying the ALTER request.
+pub fn alter_interval_partition_definitions(
+    ctx: &dyn astersql_expression::BuildContext,
+    table: &model::TableInfo,
+    spec: &ast::AlterTableSpec,
+) -> BuildResult<Vec<model::PartitionDefinition>> {
+    use ast::TimeUnitType as U;
+    let pi = table
+        .Partition
+        .as_ref()
+        .ok_or_else(|| build_error("partition metadata missing"))?;
+    if pi.Type != model::ast::PartitionTypeRange {
+        return Err(build_error(
+            "does not seem like an INTERVAL partitioned table",
+        ));
+    }
+    let empty_options = ast::PartitionOptions::default();
+    let options = spec.Partition.as_ref().unwrap_or(&empty_options);
+    if !options.Definitions.is_empty() {
+        return Err(build_error(
+            "table info already contains partition definitions",
+        ));
+    }
+    if !spec.PartDefinitions.is_empty() {
+        return Err(build_error("Unsupported ADD PARTITION"));
+    }
+    let mut bounds = pi.Definitions.as_slice();
+    let null_part = interval_null_partition_offset(table) == 1;
+    if null_part {
+        bounds = &bounds[1..];
+    }
+    let max_part = bounds.last().is_some_and(|d| {
+        d.LessThan
+            .first()
+            .is_some_and(|s| s.eq_ignore_ascii_case("MAXVALUE"))
+    });
+    if max_part {
+        bounds = &bounds[..bounds.len() - 1];
+    }
+    if bounds.len() < 2 {
+        return Err(build_error(
+            "does not seem like an INTERVAL partitioned table",
+        ));
+    }
+    let first = bounds
+        .first()
+        .unwrap()
+        .LessThan
+        .first()
+        .ok_or_else(|| build_error("invalid interval boundary"))?;
+    let last = bounds
+        .last()
+        .unwrap()
+        .LessThan
+        .first()
+        .ok_or_else(|| build_error("invalid interval boundary"))?;
+    let time = pi
+        .Columns
+        .first()
+        .and_then(|name| table.Columns.iter().find(|c| c.Name.L == name.L))
+        .is_some_and(|c| {
+            matches!(
+                c.GetType(),
+                model::mysql::TypeDate | model::mysql::TypeDatetime
+            )
+        });
+    let eval_int = |sql: &str| -> BuildResult<i64> {
+        let expr = astersql_expression::ParseSimpleExpr(ctx, sql, Vec::new())
+            .map_err(|e| build_error(e.to_string()))?;
+        let (value, null) = expr
+            .EvalInt(ctx.GetEvalCtx(), astersql_util_chunk::Row::default())
+            .map_err(|e| build_error(e.to_string()))?;
+        if null {
+            return Err(build_error("invalid interval boundary"));
+        }
+        Ok(value)
+    };
+    let unsigned = pi
+        .Columns
+        .first()
+        .and_then(|name| table.Columns.iter().find(|c| c.Name.L == name.L))
+        .is_some_and(|c| model::mysql::HasUnsignedFlag(c.GetFlag()))
+        || (!pi.Expr.is_empty()
+            && astersql_expression::ParseSimpleExpr(
+                ctx,
+                &pi.Expr,
+                vec![astersql_expression::WithTableInfo("", table)],
+            )
+            .is_ok_and(|expr| {
+                model::mysql::HasUnsignedFlag(expr.GetType(ctx.GetEvalCtx()).GetFlag())
+            }));
+    let (step, unit) = if time {
+        let seconds = eval_int(&format!("timestampdiff(SECOND, {first}, {last})"))?
+            / (bounds.len() - 1) as i64;
+        if seconds < 28 * 86400 {
+            (seconds, U::Second)
+        } else {
+            (
+                seconds / (if bounds.len() - 1 <= 3 { 28 } else { 30 } * 86400),
+                U::Month,
+            )
+        }
+    } else {
+        (
+            eval_int(&format!("(({last}) - ({first})) DIV {}", bounds.len() - 1))?,
+            U::Invalid,
+        )
+    };
+    if step < 1 {
+        return Err(build_error(
+            "does not seem like an INTERVAL partitioned table",
+        ));
+    }
+    let boundary = |text: &str| -> BuildResult<ast::ExprNode> {
+        if time {
+            Ok(ast::ExprNode::StringValue(
+                text.trim_matches('\'').into(),
+                "",
+                "",
+            ))
+        } else {
+            Ok(ast::ExprNode::DecimalValue(
+                crate::storage_class::range_value(ctx, text, unsigned).map_err(build_error)?,
+            ))
+        }
+    };
+    let mut inferred = ast::PartitionOptions {
+        PartitionMethod: ast::PartitionMethod {
+            Tp: ast::PartitionType::Range,
+            ColumnNames: pi
+                .Columns
+                .iter()
+                .map(|name| ast::ColumnName {
+                    Name: name.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            Interval: Some(ast::PartitionInterval {
+                IntervalExpr: ast::PartitionIntervalExpr {
+                    Expr: Some(ast::ExprNode::IntValue(step)),
+                    TimeUnit: unit,
+                },
+                FirstRangeEnd: Some(boundary(first)?),
+                LastRangeEnd: Some(boundary(last)?),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let checked = build_partition_info(&interval_partition_options(ctx, &inferred, table)?)?;
+    if checked.Definitions.len() != bounds.len()
+        || checked
+            .Definitions
+            .iter()
+            .zip(bounds)
+            .any(|(a, b)| a.LessThan != b.LessThan)
+    {
+        return Err(build_error(
+            "does not seem like an INTERVAL partitioned table",
+        ));
+    }
+    let target = spec
+        .PartitionExpr
+        .clone()
+        .or_else(|| options.PartitionMethod.Expr.clone())
+        .ok_or_else(|| build_error("interval endpoint missing"))?;
+    let last_operation = spec.Tp == ast::AlterTableType::AddLastPartition;
+    if last_operation && max_part {
+        return Err(build_error("LAST PARTITION when MAXVALUE partition exists"));
+    }
+    if !last_operation && spec.Tp != ast::AlterTableType::DropFirstPartition {
+        return Err(build_error("unknown interval alter type"));
+    }
+    let interval = inferred.PartitionMethod.Interval.as_mut().unwrap();
+    if last_operation {
+        interval.FirstRangeEnd = Some(boundary(last)?);
+    }
+    interval.LastRangeEnd = Some(target);
+    let generated = interval_partition_options(ctx, &inferred, table)?;
+    let mut definitions = build_partition_info(&generated)?.Definitions;
+    if last_operation {
+        definitions.remove(0);
+        if pi.Definitions.len() + definitions.len() > crate::partition::PARTITION_COUNT_LIMIT {
+            return Err(build_error("Too many partitions"));
+        }
+    }
+    Ok(definitions)
+}
+
+/// Detect the optional NULL partition by its type lower bound, not its user name.
+pub fn interval_null_partition_offset(table: &model::TableInfo) -> usize {
+    use model::mysql as m;
+    let Some(pi) = &table.Partition else {
+        return 0;
+    };
+    let column = pi
+        .Columns
+        .first()
+        .and_then(|name| table.Columns.iter().find(|c| c.Name.L == name.L));
+    let ctx = astersql_expression_exprstatic::NewExprContext(Vec::new());
+    let unsigned = column.is_some_and(|c| m::HasUnsignedFlag(c.GetFlag()))
+        || (!pi.Expr.is_empty()
+            && astersql_expression::ParseSimpleExpr(
+                &ctx,
+                &pi.Expr,
+                vec![astersql_expression::WithTableInfo("", table)],
+            )
+            .is_ok_and(|expr| {
+                m::HasUnsignedFlag(
+                    expr.GetType(astersql_expression::BuildContext::GetEvalCtx(&ctx))
+                        .GetFlag(),
+                )
+            }));
+    let minimum = if unsigned {
+        "0".into()
+    } else {
+        match column.map(|c| c.GetType()) {
+            Some(m::TypeTiny) => i8::MIN.to_string(),
+            Some(m::TypeShort) => i16::MIN.to_string(),
+            Some(m::TypeInt24) => (-8388608_i64).to_string(),
+            Some(m::TypeLong) => i32::MIN.to_string(),
+            Some(m::TypeDate | m::TypeDatetime) => "0000-01-01".into(),
+            _ => i64::MIN.to_string(),
+        }
+    };
+    usize::from(
+        pi.Definitions
+            .first()
+            .and_then(|d| d.LessThan.first())
+            .is_some_and(|value| value.trim_matches('\'') == minimum),
+    )
 }

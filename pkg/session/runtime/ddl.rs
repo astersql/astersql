@@ -2216,6 +2216,50 @@ impl ConcreteSession {
                     self.update_self_version_with_retry()?;
                     return Ok(());
                 }
+                ast::AlterTableType::AddLastPartition | ast::AlterTableType::DropFirstPartition => {
+                    let (_, table) = self
+                        .domain
+                        .stats_table(database, &statement.Table.Name.L)
+                        .ok_or_else(|| SessionError::new("partition table metadata missing"))?;
+                    let ctx = astersql_expression_exprstatic::NewExprContext(Vec::new());
+                    let generated =
+                        astersql_ddl::alter_interval_partition_definitions(&ctx, &table, spec)
+                            .map_err(|e| session_error("ALTER interval partition", e))?;
+                    let (removed, added) = if spec.Tp == ast::AlterTableType::AddLastPartition {
+                        (BTreeSet::new(), generated)
+                    } else {
+                        let pi = table
+                            .Partition
+                            .as_ref()
+                            .ok_or_else(|| SessionError::new("partition metadata missing"))?;
+                        let offset = astersql_ddl::interval_null_partition_offset(&table);
+                        if !spec.PartitionNames.is_empty()
+                            || generated.len() <= 1
+                            || generated.len() >= pi.Definitions.len() - offset
+                        {
+                            return Err(SessionError::new(
+                                "FIRST PARTITION, number of partitions does not match",
+                            ));
+                        }
+                        (
+                            pi.Definitions
+                                .iter()
+                                .skip(offset)
+                                .take(generated.len() - 1)
+                                .map(|d| d.Name.L.clone())
+                                .collect(),
+                            Vec::new(),
+                        )
+                    };
+                    self.domain
+                        .ddl_replace_partitions(database, &statement.Table.Name.L, &removed, added)
+                        .map_err(|e| session_error("ALTER interval partition", e))?;
+                    if spec.Tp == ast::AlterTableType::AddLastPartition {
+                        self.pre_split_and_scatter(database, &statement.Table.Name.L)?;
+                    }
+                    self.update_self_version_with_retry()?;
+                    return Ok(());
+                }
                 ast::AlterTableType::AddPartitions => {
                     self.domain
                         .ddl_replace_partitions(

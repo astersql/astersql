@@ -730,6 +730,16 @@ pub fn check_final_definitions(table: &model::TableInfo) -> Result<()> {
             return Err(format!("duplicate partition name '{}'", definition.Name.O));
         }
     }
+    if partition.Type == model::ast::model::PartitionTypeList {
+        let mut values = std::collections::HashSet::new();
+        for definition in &partition.Definitions {
+            for tuple in &definition.InValues {
+                if !values.insert(tuple.clone()) {
+                    return Err("Multiple definition of same constant in list partitioning".into());
+                }
+            }
+        }
+    }
     if partition.Type == model::ast::model::PartitionTypeRange && partition.Columns.len() <= 1 {
         for adjacent in partition.Definitions.windows(2) {
             if let ([left], [right]) = (
@@ -751,4 +761,33 @@ pub fn check_final_definitions(table: &model::TableInfo) -> Result<()> {
 /// Check metadata using the same static expression context as Go partition helpers.
 pub fn normalize_checked_partitions(table: &mut model::TableInfo) -> Result<()> {
     normalize_partition_definitions(&exprstatic::NewExprContext(Vec::new()), table)
+}
+
+/// A nonterminal RANGE replacement must end at the original physical boundary.
+/// Compare each typed column on a clone so neither metadata snapshot is rewritten.
+pub fn check_reorganized_end_boundary(
+    table: &model::TableInfo,
+    old: &model::PartitionDefinition,
+    new: &model::PartitionDefinition,
+) -> Result<()> {
+    if old.LessThan.len() != new.LessThan.len() {
+        return Err("VALUES LESS THAN value must be strictly increasing".into());
+    }
+    for (i, (left, right)) in old.LessThan.iter().zip(&new.LessThan).enumerate() {
+        let mut column_table = table.clone();
+        if let Some(pi) = &mut column_table.Partition {
+            if !pi.Columns.is_empty() {
+                pi.Columns = vec![
+                    pi.Columns
+                        .get(i)
+                        .ok_or("partition column count mismatch")?
+                        .clone(),
+                ];
+            }
+        }
+        if compare_range(&column_table, left, right)? != std::cmp::Ordering::Equal {
+            return Err("VALUES LESS THAN value must be strictly increasing".into());
+        }
+    }
+    Ok(())
 }

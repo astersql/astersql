@@ -96,3 +96,11 @@ RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开�
 最终schema diff保留新旧table ID及按Go规则零填充配对的物理分区ID，供InfoSchema/placement重载。V1/V2真实事务fixture分别覆盖增加/移除分区：先准备真实目标行与local index，再恢复最终化；检查三种持久化counter迁移、旧表和旧物理ID、事件旧表ID及最终SQL行/索引。在真实notifier SQL入口注入错误，事务回滚后旧表仍在、新表元数据未发布，重试成功后通知唯一。隐藏列回归验证先清理一个索引后继续使用剩余索引的实时offset，避免将Go指针集合机械翻译成过期深拷贝。
 
 表ID/持久化counter迁移与新表元数据暂存先于最终PD placement，随后才发布schema/table版本；两阶段仍属于同一个调用方事务，PD或通知失败会回滚内部元数据。V2完成参数在新增GC字段时保留原PartNames和完整canonical PartInfo，不经过精简compatibility PartInfo投影丢失字段；V1保持原来的两项finished数组布局。
+
+### 截断返回值顺序
+
+`truncate_table_partitions` 按请求old_ids顺序查找、克隆旧定义并替换ID，返回相同顺序的old/new definitions；表中定义顺序不变。对应Go d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 partition.go replaceTruncatePartitions的显式顺序契约。TiFlash清理仍由现有调用在替换后执行，不包含PD label/bundle新接线。
+
+### 元数据更新故障边界
+
+`check_partition_metadata_update`提供Go同名的metadata update故障注入，供canonical_domain::replace_partitions真实事务调用；错误必须返回调用者，不能吞掉或继续发布。用实际SQL及持久化表快照回归，不把事务替换为mock。

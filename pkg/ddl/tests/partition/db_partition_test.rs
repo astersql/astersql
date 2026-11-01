@@ -454,3 +454,105 @@ fn invalid_partition_definition_rolls_back_without_catalog_residue() {
         2
     );
 }
+
+#[test]
+fn port_d1f1bd2b2a_first_last_interval_sql() {
+    let mut tk = TestKit::new(CreateAnalyzeStatsStore());
+    tk.MustExec("create table interval_t(id int) partition by range columns(id) interval(10) first partition less than(10) last partition less than(50) null partition maxvalue partition", Vec::new());
+    tk.MustExec(
+        "insert into interval_t values(null),(5),(25),(45),(100)",
+        Vec::new(),
+    );
+    let invalid = "alter table interval_t first partition less than(35)";
+    assert!(
+        tk.ExecToErr(invalid)
+            .to_string()
+            .contains("not matching FIRST + n INTERVALs")
+    );
+    assert_eq!(tk.Session().QueryString(), invalid);
+    tk.MustExec(
+        "alter table interval_t first partition less than(30)",
+        Vec::new(),
+    );
+    assert_eq!(
+        tk.Session().QueryString(),
+        "alter table interval_t first partition less than(30)"
+    );
+    tk.MustQuery("select id from interval_t order by id", Vec::new())
+        .Check(vec![vec!["<nil>"], vec!["25"], vec!["45"], vec!["100"]]);
+    let table = real_table(&tk, "interval_t");
+    assert_eq!(
+        table
+            .Partition
+            .unwrap()
+            .Definitions
+            .iter()
+            .map(|d| d.Name.O.as_str())
+            .collect::<Vec<_>>(),
+        vec!["P_NULL", "P_LT_30", "P_LT_40", "P_LT_50", "P_MAXVALUE"]
+    );
+    tk.MustExec("create table last_t(id int) partition by range(id) (partition p0 values less than(10),partition p1 values less than(20))", Vec::new());
+    tk.MustExec(
+        "alter table last_t last partition less than(40)",
+        Vec::new(),
+    );
+    let table = real_table(&tk, "last_t");
+    assert_eq!(
+        table
+            .Partition
+            .unwrap()
+            .Definitions
+            .iter()
+            .map(|d| d.LessThan[0].as_str())
+            .collect::<Vec<_>>(),
+        vec!["10", "20", "30", "40"]
+    );
+}
+
+#[test]
+fn port_d1f1bd2b2a_drop_propagates_metadata_update_error() {
+    let mut tk = TestKit::new(CreateAnalyzeStatsStore());
+    tk.MustExec("create table drop_error_t(id int) partition by range(id) (partition p0 values less than(10),partition p1 values less than(20))", Vec::new());
+    let before = serde_json::to_value(real_table(&tk, "drop_error_t")).unwrap();
+    let guard = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/ddl/mockUpdateVersionAndTableInfoErr",
+        "return(true)",
+    );
+    let error = tk.ExecToErr("alter table drop_error_t drop partition p0");
+    assert!(
+        error
+            .to_string()
+            .contains("mock update version and tableInfo error")
+    );
+    assert_eq!(
+        serde_json::to_value(real_table(&tk, "drop_error_t")).unwrap(),
+        before
+    );
+    drop(guard);
+    tk.MustExec("alter table drop_error_t drop partition p0", Vec::new());
+    assert_eq!(
+        real_table(&tk, "drop_error_t")
+            .Partition
+            .unwrap()
+            .Definitions
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn port_d1f1bd2b2a_reorg_failure_preserves_boundaries() {
+    let mut tk = TestKit::new(CreateAnalyzeStatsStore());
+    tk.MustExec("create table reorg_error_t(id int) partition by range(id) (partition p0 values less than(100),partition p1 values less than(200))", Vec::new());
+    let before = serde_json::to_value(real_table(&tk, "reorg_error_t")).unwrap();
+    let error = tk.ExecToErr("alter table reorg_error_t reorganize partition p0 into(partition p0 values less than(25 + 25))");
+    assert!(
+        error
+            .to_string()
+            .contains("VALUES LESS THAN value must be strictly increasing")
+    );
+    assert_eq!(
+        serde_json::to_value(real_table(&tk, "reorg_error_t")).unwrap(),
+        before
+    );
+}

@@ -108,3 +108,13 @@ Rust `BuildTableInfoFromAST` 对应 Go 同名函数；二者均以默认 utf8mb4
 - 若扩展涉及真正持久化、回滚或 schema state，请在 `persistent_create_table.rs`/worker 路径实现，不要把事务或 owner 逻辑塞进本 AST 构建器。
 
 兼容性风险主要来自 Go 错误优先级、错误码/消息、默认 charset/collation、隐藏列命名和元数据字段序义；性能风险主要是对每个约束重复遍历大表达式或大列集合。安全扩展应先对照 Go 增量，再新增独立 Rust 回归，最后验证 session/ALTER 调用者仍走统一辅助。
+
+### INTERVAL 请求所有权与实际接线
+
+`interval_partition_options` 接受不可变AST与真实表列类型，返回独立PartitionOptions；CREATE的BuildTableInfoFromAST在build_partition_info之前调用，失败不会改写请求。整数使用既有表达式求值器，日期使用Datum类型转换和DATE_ADD（从原始起点加n倍间隔，避免逐次月份截断漂移）；支持YEAR/QUARTER/MONTH/WEEK/DAY/HOUR/MINUTE/SECOND。生成NULL/MAXVALUE，验证显式定义选项和边界，保留自定义名称。
+
+`alter_interval_partition_definitions` 复用相同生成器，从现有首尾及分区数量按Go算法推导数值、秒或月份间隔，验证当前所有边界后生成FIRST/LAST定义；读取Rust parser实际存储的PartitionExpr，保持原请求不变。`interval_null_partition_offset`按列类型下界辨别NULL分区，兼容自定义分区名。由session runtime真实ALTER入口调用，不是仅测试可见。依据来源d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 executor.go及partition.go的请求不改写hunk和必需局部接线。
+
+边界：依赖已安装的表达式构造工厂，错误通过BuildResult返回。生成限制使用既有8192分区限制；对应原提交的重复请求、整数/日期、NULL/MAXVALUE、自定义名称、不支持选项、非法端点及FIRST/LAST真实SQL回归见独立测试。此增量不补建完整Go DDL worker子系统。
+
+数值表达式与列按既有类型推断保留unsigned标志；不以signed截断代替无符号端点。生成期间只使用局部Vec，用户定义与请求的嵌套AST通过Clone隔离。已有表的FIRST/LAST推断与重新生成均在写事务前执行，非法端点不会发布部分定义。

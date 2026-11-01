@@ -96,3 +96,7 @@ Rust 独立测试用内存模型复现计数、主要动作分支、约束与列
 - 修改错误计数时，同时对照 Go `pkg/ddl/rollingback_test.go` 的第 4 次失败边界和错误文案，并覆盖 `limit = 0` 等边界。
 - 修改列批处理时，应明确是否保留当前“遇错前的修改不回滚”语义；若要求原子性，应先验证所有 ID，再统一写入，并增加“中途缺失 ID”回归测试。
 - 性能上，各动作分派为常数成本；列更新为 `O(index_column_ids × columns)` 的嵌套线性查找。若真实宽表或大索引会调用该模型，再考虑一次构建 ID 到下标的映射，同时维持重复 ID 和错误行为。
+
+### 持久化分区恢复入口
+
+`convert_partition_metadata_to_rollback` 由 `partition::rollback_persisted_partition` 在真实事务中调用。DeleteReorganization 阶段按 OriginalPartitionIDsOrder 查找物理 ID，克隆定义，排除新增替换分区；缺失 ID 返回 `Internal error, failed to find original partition definitions: missing partition ID …`，不替换 Definitions。调用者负责 schema version、表元数据与作业持久化；本函数本身不提交事务。此路径对应 Go d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 的 restoreOriginalPartitionDefinitions 和转换调用点，区别于上文简化 RollbackJob 决策接口。

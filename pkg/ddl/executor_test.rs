@@ -307,3 +307,160 @@ fn killed_ddl_retries_transient_cancel_before_clearing_job_id() {
     assert_eq!(2, ddl.backend().cancel_attempts);
     assert_eq!(None, session.ddl_job_id);
 }
+
+#[test]
+fn port_d1f1bd2b2a_restore_nonadjacent_partitions_by_id() {
+    use astersql_meta_model::group_3::{ACTION_REORGANIZE_PARTITION, Job};
+    use astersql_meta_model::{PartitionDefinition, PartitionInfo, SchemaState, TableInfo};
+    let definition = |id| PartitionDefinition {
+        ID: id,
+        ..Default::default()
+    };
+    let mut table = TableInfo {
+        Partition: Some(PartitionInfo {
+            DDLState: SchemaState::DeleteReorganization,
+            Definitions: [100, 10, 30, 101, 50, 102]
+                .into_iter()
+                .map(definition)
+                .collect(),
+            DroppingDefinitions: [20, 40].into_iter().map(definition).collect(),
+            OriginalPartitionIDsOrder: vec![10, 20, 30, 40, 50],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut job = Job {
+        tp: ACTION_REORGANIZE_PARTITION,
+        ..Default::default()
+    };
+    crate::rollingback::convert_partition_metadata_to_rollback(&mut table, &mut job).unwrap();
+    let pi = table.Partition.unwrap();
+    assert_eq!(
+        pi.Definitions.iter().map(|d| d.ID).collect::<Vec<_>>(),
+        vec![10, 20, 30, 40, 50]
+    );
+    assert_eq!(pi.OriginalPartitionIDsOrder, vec![10, 20, 30, 40, 50]);
+    assert_eq!(pi.Num, 5);
+    assert_eq!(pi.DDLState, SchemaState::WriteReorganization);
+}
+
+#[test]
+fn port_d1f1bd2b2a_restore_missing_id_preserves_definitions() {
+    use astersql_meta_model::group_3::{ACTION_REORGANIZE_PARTITION, Job};
+    use astersql_meta_model::{PartitionDefinition, PartitionInfo, SchemaState, TableInfo};
+    let mut table = TableInfo {
+        Partition: Some(PartitionInfo {
+            DDLState: SchemaState::DeleteReorganization,
+            Definitions: vec![PartitionDefinition {
+                ID: 1,
+                ..Default::default()
+            }],
+            DroppingDefinitions: vec![PartitionDefinition {
+                ID: 3,
+                ..Default::default()
+            }],
+            OriginalPartitionIDsOrder: vec![1, 2, 3],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let before = table.Partition.as_ref().unwrap().Definitions.clone();
+    let mut job = Job {
+        tp: ACTION_REORGANIZE_PARTITION,
+        ..Default::default()
+    };
+    assert!(
+        crate::rollingback::convert_partition_metadata_to_rollback(&mut table, &mut job)
+            .unwrap_err()
+            .contains("missing partition ID 2")
+    );
+    assert_eq!(
+        serde_json::to_value(&table.Partition.as_ref().unwrap().Definitions).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+}
+
+#[test]
+fn port_d1f1bd2b2a_validation_preserves_owned_requests() {
+    use crate::partition::*;
+    let original = PartitionInfo {
+        partition_type: PartitionType::List,
+        definitions: vec![PartitionDefinition {
+            name: "p0".into(),
+            in_values: vec![vec![PartitionValue::Int(1)]],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let request = PartitionInfo {
+        partition_type: PartitionType::List,
+        definitions: vec![
+            PartitionDefinition {
+                name: "p1".into(),
+                in_values: vec![vec![PartitionValue::Int(2)]],
+                ..Default::default()
+            },
+            PartitionDefinition {
+                name: "p2".into(),
+                in_values: vec![vec![PartitionValue::Int(2)]],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let before = (original.clone(), request.clone());
+    assert_eq!(
+        check_add_partition_value(&original, &request),
+        Err(PartitionError::DuplicateListValue(vec![
+            PartitionValue::Int(2)
+        ]))
+    );
+    assert_eq!((original.clone(), request.clone()), before);
+    let mut cloned = request.clone();
+    cloned.definitions[0].in_values[0][0] = PartitionValue::Int(99);
+    cloned.definitions[1].in_values[0] = vec![PartitionValue::Int(100)];
+    assert_eq!(request, before.1);
+    let range = vec![PartitionDefinition {
+        less_than: vec![PartitionValue::Int(10)],
+        ..Default::default()
+    }];
+    let mut cloned = range.clone();
+    cloned[0].less_than[0] = PartitionValue::Int(20);
+    assert_eq!(range[0].less_than, vec![PartitionValue::Int(10)]);
+}
+
+#[test]
+fn port_d1f1bd2b2a_truncate_returns_request_id_order() {
+    use crate::partition::*;
+    let mut table = PartitionedTableInfo {
+        partition: Some(PartitionInfo {
+            definitions: vec![
+                PartitionDefinition {
+                    id: 10,
+                    name: "p0".into(),
+                    ..Default::default()
+                },
+                PartitionDefinition {
+                    id: 20,
+                    name: "p1".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (old, new) = truncate_table_partitions(&mut table, &[20, 10], &[200, 100]).unwrap();
+    assert_eq!(old.iter().map(|d| d.id).collect::<Vec<_>>(), vec![20, 10]);
+    assert_eq!(new.iter().map(|d| d.id).collect::<Vec<_>>(), vec![200, 100]);
+    assert_eq!(
+        table
+            .partition
+            .unwrap()
+            .definitions
+            .iter()
+            .map(|d| d.id)
+            .collect::<Vec<_>>(),
+        vec![100, 200]
+    );
+}

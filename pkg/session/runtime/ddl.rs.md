@@ -116,3 +116,7 @@ NextGen、MySQL、dist task、已有persistent service、普通非唯一非列�
 ## 验证依据
 
 `cargo test -p astersql-session --features nextgen --lib port_0766a90d52_ -- --test-threads=1`：2通过、0忽略，覆盖运行中真实重试/无暂停、并发DML、自动恢复与索引结果，以及启动前回滚的索引归属保护。Ready另含fmt检查、make lint及NextGen二进制构建；PG六组与无本任务基线逐失败名称比较无新增失败。
+
+### FIRST/LAST interval 的局部执行接线
+
+ALTER的AddLastPartition/DropFirstPartition调用DDL的alter_interval_partition_definitions得到独立定义，FIRST保留NULL前缀及端点分区，LAST新增定义走现有Domain::ddl_replace_partitions真实元数据事务。整个过程中不改AST、PartitionNames或query字符串，因此成功/失败均保留请求；不依赖query文本重写。该接线对应Go d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 DropTablePartition和BuildAddedPartitionInfo的请求所有权增量。原SQL数据可见性由既有分区物理路由维护。完整原测试意图仍须以任务记录中的回归验收，不把该说明当作完成证据。

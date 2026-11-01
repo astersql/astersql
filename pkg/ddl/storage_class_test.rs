@@ -493,3 +493,187 @@ fn storage_class_go_json_zero_values_duplicates_and_transition_boundaries() {
         });
     assert!(parts[0].StorageClassTransitions.is_empty());
 }
+
+#[test]
+fn port_d1f1bd2b2a_checked_add_failure_preserves_request() {
+    let table = build(
+        "create table t (id int) partition by range(id) (partition p0 values less than(100))",
+    );
+    let before_table = serde_json::to_value(&table).unwrap();
+    let mut added = table.Partition.as_ref().unwrap().clone();
+    added.Definitions = vec![model::PartitionDefinition {
+        Name: ast::NewCIStr("p1"),
+        LessThan: vec!["25 + 25".into()],
+        ..Default::default()
+    }];
+    let before_request = serde_json::to_value(&added).unwrap();
+    let error =
+        CheckAndUpdateAddedPartitionDefinitions(&context(), &table, &mut added, 1).unwrap_err();
+    assert!(error.contains("VALUES LESS THAN value must be strictly increasing"));
+    assert_eq!(serde_json::to_value(&table).unwrap(), before_table);
+    assert_eq!(serde_json::to_value(&added).unwrap(), before_request);
+}
+
+#[test]
+fn port_d1f1bd2b2a_list_failure_preserves_unfolded_request() {
+    let table = build("create table t (id int) partition by list(id) (partition p0 values in(1))");
+    let before_table = serde_json::to_value(&table).unwrap();
+    let mut added = table.Partition.as_ref().unwrap().clone();
+    added.Definitions = vec![
+        model::PartitionDefinition {
+            Name: ast::NewCIStr("p1"),
+            InValues: vec![vec!["2 + 0".into()]],
+            ..Default::default()
+        },
+        model::PartitionDefinition {
+            Name: ast::NewCIStr("p2"),
+            InValues: vec![vec!["2".into()]],
+            ..Default::default()
+        },
+    ];
+    let before_request = serde_json::to_value(&added).unwrap();
+    let error =
+        CheckAndUpdateAddedPartitionDefinitions(&context(), &table, &mut added, 1).unwrap_err();
+    assert!(error.contains("Multiple definition of same constant in list partitioning"));
+    assert_eq!(serde_json::to_value(&table).unwrap(), before_table);
+    assert_eq!(serde_json::to_value(&added).unwrap(), before_request);
+}
+
+#[test]
+fn port_d1f1bd2b2a_interval_ast_is_repeatable() {
+    context();
+    for (suffix, bounds) in [
+        (
+            "interval (10) first partition less than (10) last partition less than (30)",
+            vec!["10", "20", "30"],
+        ),
+        (
+            "interval (10) first partition less than (10) last partition less than (25)",
+            vec![],
+        ),
+    ] {
+        let sql = format!("create table t (id int) partition by range(id) {suffix}");
+        let stmt = astersql_parser::New().ParseOneStmt(&sql, "", "").unwrap();
+        let stmt = stmt
+            .as_any()
+            .downcast_ref::<ast::CreateTableStmt>()
+            .unwrap();
+        let before = stmt.Partition.clone();
+        let ctx = astersql_meta_metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+        for _ in 0..2 {
+            let result = crate::BuildTableInfoFromAST(&ctx, stmt);
+            if bounds.is_empty() {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("not matching FIRST + n INTERVALs")
+                );
+            } else {
+                assert_eq!(
+                    result
+                        .unwrap()
+                        .Partition
+                        .unwrap()
+                        .Definitions
+                        .iter()
+                        .map(|d| d.LessThan[0].as_str())
+                        .collect::<Vec<_>>(),
+                    bounds
+                );
+            }
+            assert_eq!(stmt.Partition, before);
+        }
+    }
+}
+
+#[test]
+fn port_d1f1bd2b2a_interval_null_max_names_and_time() {
+    for (sql, expected) in [
+        (
+            "create table t (id int) partition by range columns(id) interval(10) first partition less than(10) last partition less than(30) null partition maxvalue partition",
+            vec!["-2147483648", "10", "20", "30", "MAXVALUE"],
+        ),
+        (
+            "create table t (id int) partition by range(id) interval(10) first partition less than(10) last partition less than(30) (partition first_named values less than(10), partition middle_named values less than(20), partition last_named values less than(30))",
+            vec!["10", "20", "30"],
+        ),
+        (
+            "create table t (id date) partition by range columns(id) interval(1 day) first partition less than('2023-01-01') last partition less than('2023-01-03')",
+            vec!["'2023-01-01'", "'2023-01-02'", "'2023-01-03'"],
+        ),
+    ] {
+        let table = build(sql);
+        assert_eq!(
+            table
+                .Partition
+                .unwrap()
+                .Definitions
+                .iter()
+                .map(|d| d.LessThan[0].as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn port_d1f1bd2b2a_alter_interval_preserves_ast_on_success_and_error() {
+    let table = build(
+        "create table t(id int) partition by range(id) (partition p0 values less than(10),partition p1 values less than(20))",
+    );
+    for endpoint in [40, 35] {
+        let sql = format!("alter table t last partition less than({endpoint})");
+        let stmt = astersql_parser::New().ParseOneStmt(&sql, "", "").unwrap();
+        let stmt = stmt.as_any().downcast_ref::<ast::AlterTableStmt>().unwrap();
+        let spec = &stmt.Specs[0];
+        let before = spec.clone();
+        for _ in 0..2 {
+            let result = crate::alter_interval_partition_definitions(&context(), &table, spec);
+            if endpoint == 35 {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("not matching FIRST + n INTERVALs")
+                );
+            } else {
+                assert_eq!(
+                    result
+                        .unwrap()
+                        .iter()
+                        .map(|d| d.LessThan[0].as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["30", "40"]
+                );
+            }
+            assert_eq!(spec.Partition, before.Partition);
+            assert_eq!(spec.PartitionExpr, before.PartitionExpr);
+            assert_eq!(spec.PartitionNames, before.PartitionNames);
+            assert_eq!(spec.PartDefinitions, before.PartDefinitions);
+        }
+    }
+}
+
+#[test]
+fn port_d1f1bd2b2a_interval_options_failure_keeps_user_definition() {
+    context();
+    let sql = "create table t(id int) partition by range columns(id) interval(10) first partition less than(10) last partition less than(30) (partition first_named values less than(10) comment 'first',partition middle_named values less than(20),partition last_named values less than(30))";
+    let stmt = astersql_parser::New().ParseOneStmt(sql, "", "").unwrap();
+    let stmt = stmt
+        .as_any()
+        .downcast_ref::<ast::CreateTableStmt>()
+        .unwrap();
+    let before = stmt.Partition.clone();
+    let ctx = astersql_meta_metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    for _ in 0..2 {
+        let error = crate::BuildTableInfoFromAST(&ctx, stmt)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("partition first_named does have unsupported options"));
+        assert_eq!(stmt.Partition, before);
+    }
+}

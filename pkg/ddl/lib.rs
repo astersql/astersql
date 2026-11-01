@@ -24,7 +24,8 @@ mod create_table;
 
 pub use create_table::{
     BuildColumnInfoFromAST, BuildPartialIndexCondition, BuildPartitionInfo, BuildTableInfoFromAST,
-    BuildTableInfoWithStmt, MaterializeExpressionIndexColumns, expression_text,
+    BuildTableInfoWithStmt, MaterializeExpressionIndexColumns,
+    alter_interval_partition_definitions, expression_text, interval_null_partition_offset,
 };
 
 pub mod add_column;

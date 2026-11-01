@@ -272,3 +272,37 @@ fn codec_unbounded_region_ranges_match_client_go() {
         "client-go rejects keyspace IDs wider than uint24"
     );
 }
+
+#[test]
+fn port_d1f1bd2b2a_cloned_rule_reset_preserves_snapshot_and_ids() {
+    let codec = tikv::NewCodecV1();
+    let mut rule = NewRule();
+    rule.Labels = vec![RegionLabel {
+        Key: "a".into(),
+        Value: "table".into(),
+        ..Default::default()
+    }];
+    rule.Reset(
+        codec.clone(),
+        "old_db".into(),
+        "old_t".into(),
+        String::new(),
+        vec![100],
+    );
+    let before = serde_json::to_value(&*rule).unwrap();
+    let ids = vec![30, 10, 20];
+    let mut result = rule.Clone();
+    result.Reset(
+        codec.clone(),
+        "db".into(),
+        "t".into(),
+        String::new(),
+        ids.clone(),
+    );
+    assert_eq!(
+        result.ID,
+        NewRuleID(codec, "db".into(), "t".into(), String::new())
+    );
+    assert_eq!(serde_json::to_value(&*rule).unwrap(), before);
+    assert_eq!(ids, vec![30, 10, 20]);
+}

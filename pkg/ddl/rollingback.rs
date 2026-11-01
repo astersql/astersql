@@ -367,7 +367,7 @@ pub(crate) fn convert_partition_metadata_to_rollback(
                         .chain(&pi.DroppingDefinitions)
                         .find(|d| d.ID == *id)
                         .cloned()
-                        .ok_or_else(|| format!("original partition {id} missing"))
+                        .ok_or_else(|| format!("Internal error, failed to find original partition definitions: missing partition ID {id}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             pi.Definitions = original;

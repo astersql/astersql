@@ -122,3 +122,9 @@ Go `pkg/domain/domain_test.go` 覆盖 Domain reload、关闭和外部 workload �
 ## 验证依据
 
 `canonical_domain_test::port_d0665b0713_drop_schema_external_ttl_failure_restores_registrations_and_metadata` 使用真实内存 KV 事务和生产 Domain，外部 Manager 是边界替身。覆盖启用/禁用/无 TTL，原删除错误及补偿失败，逆序恢复、错误时元数据保留，以及随后成功删除与统计目录清理。修复前原同名无前缀用例通过，摘要改造后保持原断言并扩展成功分支；命令和数量保存在独立提交正文。
+
+### 分区元数据更新失败传播
+
+`replace_partitions` 继续复用mutate的真实KV事务，候选定义校验及storage-class重建后、catalog发布前执行与Go同名的mockUpdateVersionAndTableInfoErr故障边界；错误经`?`返回Domain和SQL调用者，事务目录未发布，释放故障可重试。对应d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 DROP metadata update错误传播意图。本路径仍为现有canonical事务模型，没有新增或伪称实现Go worker的完整阶段状态机。
+
+中间RANGE重组还需保持原结束边界：replace_partitions记录替换区间终点，候选规范化后调用check_reorganized_end_boundary，按对应列类型比较全部LessThan分量。最后一个原分区被替换时允许改变结束边界，与Go checkAndNormalizeReorgPartitionDefinitions一致。所有检查都在catalog发布前，失败保留旧物理定义及请求。

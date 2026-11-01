@@ -520,15 +520,11 @@ pub fn truncate_table_partitions(
         .partition
         .as_mut()
         .ok_or(PartitionError::UnsupportedType)?;
-    let replacement: BTreeMap<i64, i64> = old_ids
-        .iter()
-        .copied()
-        .zip(new_ids.iter().copied())
-        .collect();
     let mut old = Vec::new();
     let mut new = Vec::new();
-    for definition in &mut info.definitions {
-        if let Some(new_id) = replacement.get(&definition.id) {
+    // Go replaceTruncatePartitions returns matching definitions in request order.
+    for (old_id, new_id) in old_ids.iter().zip(new_ids) {
+        if let Some(definition) = info.definitions.iter_mut().find(|d| d.id == *old_id) {
             old.push(definition.clone());
             definition.id = *new_id;
             new.push(definition.clone());
@@ -1723,5 +1719,16 @@ pub fn stage_reorganize_partition_definitions(
     partition.DDLColumns = requested.Columns.clone();
     partition.AddingDefinitions = requested.Definitions.clone();
     partition.DroppingDefinitions = dropped;
+    Ok(())
+}
+
+/// Shared metadata update failure injection for the real partition transaction.
+/// Keep this before publication so the caller must propagate the update error.
+pub fn check_partition_metadata_update() -> Result<(), String> {
+    if astersql_testkit_testfailpoint::eval_bool(
+        "github.com/pingcap/tidb/pkg/ddl/mockUpdateVersionAndTableInfoErr",
+    ) {
+        return Err("mock update version and tableInfo error".into());
+    }
     Ok(())
 }

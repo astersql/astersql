@@ -95,3 +95,9 @@ Rust 还包含 Go 同路径文件中没有的局部接线 helper：`CheckStorage
 新增分区作用域时，最合适的接入点是 `normalize` 的互斥校验、`BuildStorageClassForPartitions` 的适用性验证与匹配分支，以及新增/重组分区的最终视图路径。同步测试应放在独立的 `pkg/ddl/storage_class_test.rs`；涉及完整 DDL SQL 接线时还应扩展相邻的 Rust 建表/分区测试，并对照 Go 的 `storage_class_partition_test.go`。应覆盖大小写、引号、`NULL`/`MAXVALUE`、有符号/无符号边界、RANGE COLUMNS collation、多定义优先级和失败不部分写入。
 
 兼容性风险主要是既有 JSON 接受集合或错误文案变化；正确性风险集中于作用域优先级、常量表达式规范化和 RANGE 比较；性能风险集中于对每个分区逐定义扫描以及反复解析表达式。当前复杂度近似为“分区数 × 有作用域定义数”，修改时不要在内层额外引入存储访问或不必要的全表克隆。
+
+### 本提交的候选布局所有权
+
+`CheckAndUpdateAddedPartitionDefinitions` 克隆current与requested定义，在候选表完成表达式规范化、名称/RANGE/LIST重复值校验以及storage class重建后，才将检查过的新增定义写回。失败保留两份输入，包括尚未折叠的LIST表达式。`check_final_definitions` 的LIST集合检查是来源d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 storage_class_partition_test.go失败请求保护回归不可缺少的局部前置；不替代完整LIST类型/排序规则校验。
+
+`check_reorganized_end_boundary` 对非末尾RANGE替换执行原结束边界等价检查；逐列克隆比较上下文，保留RANGE COLUMNS类型与MAXVALUE边界。由canonical_domain真实replace_partitions调用，对应Go checkAndNormalizeReorgPartitionDefinitions的规范化后边界约束。

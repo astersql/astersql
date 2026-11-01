@@ -854,6 +854,11 @@ impl DdlMetadataService {
                 .iter()
                 .position(|definition| removed_names.contains(&definition.Name.L))
                 .unwrap_or(partition.Definitions.len());
+            let added_count = added.len();
+            let replaced_end = partition
+                .Definitions
+                .iter()
+                .rposition(|d| removed_names.contains(&d.Name.L));
             partition
                 .Definitions
                 .retain(|definition| !removed_names.contains(&definition.Name.L));
@@ -864,6 +869,22 @@ impl DdlMetadataService {
             astersql_ddl::storage_class::normalize_checked_partitions(&mut new)
                 .map_err(kv::errors::New)?;
             astersql_ddl::storage_class::check_final_definitions(&new).map_err(kv::errors::New)?;
+            if added_count != 0 {
+                if let (Some(original), Some(end)) = (&old.Partition, replaced_end) {
+                    if original.Type == astersql_meta_model::ast::PartitionTypeRange
+                        && end + 1 != original.Definitions.len()
+                    {
+                        let final_def =
+                            &new.Partition.as_ref().unwrap().Definitions[offset + added_count - 1];
+                        astersql_ddl::storage_class::check_reorganized_end_boundary(
+                            &old,
+                            &original.Definitions[end],
+                            final_def,
+                        )
+                        .map_err(kv::errors::New)?;
+                    }
+                }
+            }
             astersql_ddl::storage_class::rebuild_partitions(&mut new).map_err(kv::errors::New)?;
             // Go copies only the checked new definitions into the job. Existing
             // physical partitions retain their metadata, including current tiers.
@@ -878,6 +899,7 @@ impl DdlMetadataService {
             }
             let partition = new.Partition.as_mut().unwrap();
             partition.Num = partition.Definitions.len() as u64;
+            astersql_ddl::partition::check_partition_metadata_update().map_err(kv::errors::New)?;
             catalog.tables.insert(key, new.clone());
             Ok(DdlMetadataChange {
                 old_tables: vec![(database.clone(), old)],
