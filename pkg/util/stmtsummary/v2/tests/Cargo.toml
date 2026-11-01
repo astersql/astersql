@@ -16,4 +16,7 @@ astersql-parser = { package = "astersql-parser", path = "../../../../parser" }
 astersql-util-stmtsummary-v2 = { package = "astersql-util-stmtsummary-v2", path = ".." }
 
 [dev-dependencies]
+astersql-errors = { path = "../../../../errors" }
+serde_json = "1"
+tempfile = "3"
 astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

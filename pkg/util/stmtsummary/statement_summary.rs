@@ -466,6 +466,10 @@ pub struct StmtExecInfo {
     pub Charset: String,
     pub Collation: String,
     pub NormalizedSQL: String,
+    /// Owned SecureText snapshot; sensitive statements take precedence over parameters.
+    pub SensitiveStmt: Option<String>,
+    /// Parameters frozen while the current statement is alive.
+    pub SampleParams: Option<String>,
     pub Digest: String,
     pub PrevSQL: String,
     pub PrevSQLDigest: String,
@@ -529,6 +533,8 @@ impl Default for StmtExecInfo {
             Charset: String::new(),
             Collation: String::new(),
             NormalizedSQL: String::new(),
+            SensitiveStmt: None,
+            SampleParams: None,
             Digest: String::new(),
             PrevSQL: String::new(),
             PrevSQLDigest: String::new(),

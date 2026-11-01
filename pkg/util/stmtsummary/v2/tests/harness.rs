@@ -401,6 +401,7 @@ impl Env {
         if opts.warning {
             info.StmtCtx.SetHintWarning("statement warning");
         }
+        info.StmtCtx.OriginalSQL = sample.clone();
         info.LazyInfo = Box::new(LazyInfo {
             original_sql: sample,
             encoded_plan: opts.plan.to_owned(),

@@ -127,3 +127,9 @@ Go/Rust 已有对齐证据包括：`FormatSQL` 的 `QueryLogMaxLen` 字节限制
 - 改动 RU 结算时维持“first outcome wins”和“无 typed evidence 不猜测”两个不变量，并同步 `pkg/executor/statement_ru_plan_walk_test.rs`、`statement_ru_result_test.rs` 及 session runtime 测试。
 - 改动日志文本时同步 `FormatSQL`、hint 移除、`GetTextToLog` 的会话/全局脱敏选择和 UTF-8 截断测试；避免把简单字符串处理扩展成不完整 SQL 解析器。
 - 与 Go 移植对齐时以 `pkg/executor/adapter.go` 的对应增量和测试意图为准，只引入必要局部接线；当前文档不是补建整个 session/runtime 子系统的授权。
+
+## 70970592ab 延迟样本脱敏
+
+SummaryStmt 将 StatementNode 已提供且不同于普通文本的非空 secure_text 保存到 StatementSummary.sensitive_sql；空安全文本不覆盖样本。该字段经会话桥接送至持久化记录，不读取全局脱敏模式提前替换内存样本。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

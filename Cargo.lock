@@ -12910,11 +12910,13 @@ dependencies = [
 name = "astersql-util-stmtsummary-v2"
 version = "0.1.0"
 dependencies = [
+ "astersql-errors",
  "astersql-sessionctx-stmtctx",
  "astersql-testkit-testsetup",
  "astersql-util-chunk",
  "astersql-util-execdetails",
  "astersql-util-plancodec",
+ "astersql-util-redact",
  "astersql-util-stmtsummary",
  "base64 0.22.1",
  "chrono",
@@ -12932,9 +12934,12 @@ dependencies = [
 name = "astersql-util-stmtsummary-v2-tests"
 version = "0.1.0"
 dependencies = [
+ "astersql-errors",
  "astersql-parser",
  "astersql-testkit-testsetup",
  "astersql-util-stmtsummary-v2",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

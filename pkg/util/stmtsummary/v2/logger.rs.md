@@ -81,3 +81,9 @@ RustCodeGraph 已索引该文件并识别 21 个符号；精确 `callers/callees
 若要把 `StmtLogStorage<W>` 接入生产路径，必须先为实际窗口实现 `StmtWindowForLog`，明确记录锁顺序、淘汰聚合是否应带 `evicted` 标记，并协调或替换 [`stmtsummary.rs`](stmtsummary.rs) 已有的 `fileStmtStorage`，避免两套落盘路径重复写入。还应增加独立 logger 测试文件，而不是把 Rust 单元测试嵌入 `logger.rs`；至少覆盖首个普通记录写失败后的短路、空/非空聚合淘汰记录、部分状态已修改但 I/O 失败、`sync` 传播和并发附加字段更新。
 
 性能相关改动应保留批量淘汰只做一次 `write_all` 的特性，并评估全局读锁覆盖完整 JSON 编码的竞争。若要求真正落盘，不能只依赖当前 `sync` 的 `Write::flush`，需要在具体文件后端定义 `sync_all` 语义；若要求与 Go 滚动日志完全等价，还需在本文件之外提供日志初始化、轮转和指标接线。
+
+## 70970592ab 延迟样本脱敏
+
+marshalStmtRecordWithEvicted 在每次序列化时读取 astersql_errors::RedactLogEnabled。ON 使用 NormalizedSQL，MARKER 调用既有 redact::String 转义包裹样本，OFF 保持原文。只处理输出副本，内存读者仍持有原始样本；普通/驱逐和有/无附加字段四条路径共用此边界。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

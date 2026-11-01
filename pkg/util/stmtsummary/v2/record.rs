@@ -134,6 +134,7 @@ pub struct StmtRecord {
     pub IsInternal: bool,
     pub BindingSQL: String,
     pub BindingDigest: String,
+    #[serde(rename = "sample_sql", alias = "sample_s_q_l")]
     pub SampleSQL: String,
     pub Charset: String,
     pub Collation: String,
@@ -449,7 +450,14 @@ pub fn NewStmtRecord(info: &StmtExecInfo) -> Box<StmtRecord> {
         IsInternal: info.IsInternal,
         BindingSQL: binding_sql,
         BindingDigest: binding_digest,
-        SampleSQL: formatSQL(info.LazyInfo.GetOriginalSQL()),
+        SampleSQL: formatSQL(match &info.SensitiveStmt {
+            Some(secure) => secure.clone(),
+            None => format!(
+                "{}{}",
+                info.StmtCtx.OriginalSQL,
+                info.SampleParams.as_deref().unwrap_or("")
+            ),
+        }),
         Charset: info.Charset.clone(),
         Collation: info.Collation.clone(),
         PrevSQL: info.PrevSQL.clone(),
@@ -885,6 +893,7 @@ impl StmtExecLazyInfo for mockLazyInfo {
 pub fn GenerateStmtExecInfo4Test(digest: impl Into<String>) -> Box<StmtExecInfo> {
     let mut ctx = *NewStmtCtx();
     ctx.StmtType = "Select".to_owned();
+    ctx.OriginalSQL = mockLazyInfo.GetOriginalSQL();
     ctx.SetLogicalPlanTables(vec![
         TableEntry {
             DB: "db1".into(),

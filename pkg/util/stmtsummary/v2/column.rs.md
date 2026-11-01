@@ -80,3 +80,9 @@
 选择返回类型时按 SQL 列类型使用 `Int`、`Uint`、`Float`、`String`、`Time` 或专用 `Datum`；尤其不可将 `u64` 最大值经 `i64` 中转。派生平均值必须先判定其分母属于 `ExecCount` 还是 `CommitCount`，并补零分母测试。时间列需复用 `timestamp_value` 并覆盖目标时区/epoch 边界；可空字符串应明确是否复用 `convertEmptyToNil`。
 
 修改热路径时关注每行每列的 clone、join、排序和 plan 解码成本。若需要改变错误策略、并列 backoff 次序或 sample-user 确定性，这些都属于可观察兼容行为，应先更新 Go 对照与独立回归测试，而不是在工厂内静默改变。新增表列但遗漏注册会在 reader 构造阶段 panic，因此应增加“请求新列并执行工厂”的测试来证明接线完整。
+
+## 70970592ab 延迟样本脱敏
+
+PLAN 解码错误日志只使用 NormalizedSQL 作为 query，不泄漏延迟脱敏的 SampleSQL；保留计划字段、错误与空输出。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

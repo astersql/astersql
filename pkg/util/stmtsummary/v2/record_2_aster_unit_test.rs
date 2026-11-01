@@ -222,6 +222,7 @@ fn record_truncates_plans_and_sql_at_configured_limits() {
     SetGlobalMaxSQLLengthForTest(4);
     SetMaxEncodedPlanSizeInBytesForTest(3);
     let mut info = exec_info("digest", "alice", 10);
+    info.StmtCtx.OriginalSQL = "abcdefgh".into();
     info.LazyInfo = Box::new(LazyInfo {
         sql: "abcdefgh".to_owned(),
         encoded_plan: "1234".to_owned(),

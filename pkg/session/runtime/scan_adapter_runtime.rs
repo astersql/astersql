@@ -1501,6 +1501,11 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             Charset: charset,
             Collation: collation,
             NormalizedSQL: summary.normalized_sql.clone(),
+            SensitiveStmt: summary.sensitive_sql.clone(),
+            SampleParams: Some(
+                self.session
+                    .WithSessionVars(|vars| vars.PlanCacheParams.String()),
+            ),
             Digest: summary.sql_digest.clone(),
             PlanDigest: summary.plan_digest.clone(),
             PrevSQL: previous.0,
@@ -1514,6 +1519,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             LazyInfo: Box::new(AdapterSummaryLazyInfo(summary.clone())),
             ..Default::default()
         };
+        info.StmtCtx.OriginalSQL = summary.original_sql.clone();
         info.StmtCtx.StmtType = stmt_type;
         info.StmtCtx.SetAffectedRows(affected);
         info.RUDetail = astersql_util_stmtsummary_v2::SelectRUDetailsForStatementSummary(

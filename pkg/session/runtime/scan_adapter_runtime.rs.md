@@ -99,3 +99,9 @@ Rust 版本的结构差异是显式 trait 化：Go 可直接调用 session/txn m
 ## 2026-10-24 预处理重解析身份
 
 StatementRUInstallState 对执行语句（包括 prepared_text）重新解析以推导只读/SELECT 标志时，使用所持 ConcreteSession 的不可变方言，并保留原 SQLMode。该局部接线不增加规划或求值上下文能力。
+
+## 70970592ab 延迟样本脱敏
+
+Summary 将 adapter 的原始 SQL 写入 StmtCtx.OriginalSQL，把 sensitive_sql 和当前 PlanCacheParams.String() 冻结到 StmtExecInfo；参数为拥有所有权的快照，不引用下一语句可复用的会话内存。这是 70970592ab 的必要局部采集接线。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

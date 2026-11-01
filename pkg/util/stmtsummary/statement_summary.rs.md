@@ -81,3 +81,9 @@ Rust 保留了 Go 的主要类型与方法命名、编译期默认值、LRU/othe
 修改窗口策略应集中在 `AddStatement`、`stmtSummaryByDigest::add`、`stmtSummaryByDigestElement::{add,onExpire}` 和 `collectHistorySummaries`，并同步检查 `evicted.rs` 的窗口匹配。修改容量或清理行为要同时维护 `other` 和两个 gauge。惰性字段应优先扩展 `StmtExecLazyInfo`，但必须评估其所有实现者，尤其是 session adapter、v2 record 和测试桩。
 
 测试必须放在独立文件而非本源文件。优先扩展 `pkg/util/stmtsummary/statement_summary_test.rs`（Go 对齐的主行为与并发/reader 覆盖）和 `statement_summary_2_aster_unit_test.rs`（迁移补充边界），并对照 `statement_summary_test.go`。关键回归应覆盖同键多次执行、跨窗口、历史 0/缩容、LRU 淘汰、纯内部与混合条目、按用户分组切换、计划错误/超限、UTF-8 截断、零分母、缺失执行细节及 add/merge 一致性。性能风险主要来自扩大每条摘要、增加克隆量或延长全局 mutex 临界区。
+
+## 70970592ab 延迟样本脱敏
+
+StmtExecInfo 新增 SensitiveStmt（拥有所有权的 SecureText 快照）与 SampleParams（本语句参数快照），默认 None。Rust 使用 String 快照避免 Go 当前语句内接口借用生命周期跨语句；记录构造优先安全文本，否则原文加参数。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

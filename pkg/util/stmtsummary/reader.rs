@@ -1177,7 +1177,7 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
     stat_field!(map, QuerySampleTextStr, sampleSQL);
     stat_field!(map, PrevSampleTextStr, prevSQL);
     digest_field!(map, PlanDigestStr, planDigest);
-    insert_factory!(map, PlanStr, |_reader, _ssElement, _ssbd, ssStats| {
+    insert_factory!(map, PlanStr, |_reader, _ssElement, ssbd, ssStats| {
         // DecodePlan 失败时 Go 代码记录结构化日志并返回空字符串；这里保留错误处理分支。
         match plancodec::DecodePlan(&ssStats.samplePlan) {
             Ok(plan) => plan,
@@ -1185,7 +1185,8 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
                 log::error!(
                     "decode plan in statement summary failed: plan={:?}, query={:?}, error={}",
                     ssStats.samplePlan,
-                    ssStats.sampleSQL,
+                    ssbd.map(|digest| digest.normalizedSQL.as_str())
+                        .unwrap_or(""),
                     err,
                 );
                 Vec::new()

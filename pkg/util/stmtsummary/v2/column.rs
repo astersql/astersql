@@ -715,7 +715,7 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
                     std::io::stderr().lock(),
                     "decode plan in statement summary failed: plan={:?}, query={:?}, error={error}",
                     record.SamplePlan,
-                    record.SampleSQL,
+                    record.NormalizedSQL,
                 );
                 Vec::new()
             }

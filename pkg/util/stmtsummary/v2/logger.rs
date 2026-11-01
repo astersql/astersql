@@ -90,6 +90,25 @@ pub fn marshalStmtRecordWithEvicted(
     record: &StmtRecord,
     evicted: bool,
 ) -> Result<Vec<u8>, serde_json::Error> {
+    // Readers retain the original sample; only the serialized snapshot is redacted.
+    let output;
+    let record = match astersql_errors::RedactLogEnabled.Load() {
+        astersql_errors::RedactLogEnable => {
+            output = StmtRecord {
+                SampleSQL: record.NormalizedSQL.clone(),
+                ..record.clone()
+            };
+            &output
+        }
+        astersql_errors::RedactLogMarker => {
+            output = StmtRecord {
+                SampleSQL: astersql_util_redact::String("MARKER", &record.SampleSQL),
+                ..record.clone()
+            };
+            &output
+        }
+        _ => record,
+    };
     let fields = STMT_LOG_ADDITIONAL_FIELDS
         .read()
         .expect("stmt log fields lock poisoned");

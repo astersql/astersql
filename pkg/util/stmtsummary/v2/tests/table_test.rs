@@ -742,3 +742,66 @@ fn test_performance_schema_for_plan_cache() {
     assert_eq!(rows[0], vec!["3".to_owned(), "1".to_owned()]);
     env.close();
 }
+
+#[test]
+fn port_70970592ab_memory_sample_and_persisted_log() {
+    use astersql_util_stmtsummary_v2::{Config, NewStmtSummary, QuerySampleTextStr};
+    struct Restore(&'static str);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_errors::RedactLogEnabled.Store(self.0);
+        }
+    }
+    let _restore = Restore(astersql_errors::RedactLogEnabled.Load());
+    astersql_errors::RedactLogEnabled.Store("ON");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("statements.log");
+    let summary = NewStmtSummary(&Config {
+        Filename: path.to_str().unwrap().into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let sql = "select * from sample_redaction where a = 'unique_secret_42'";
+    let normalized = "select * from `sample_redaction` where `a` = ?";
+    let mut info = GenerateStmtExecInfo4Test("port44-secret");
+    info.StmtCtx.OriginalSQL = sql.into();
+    info.NormalizedSQL = normalized.into();
+    summary.Add(&info);
+    let columns = [DigestStr, QuerySampleTextStr].map(|name| {
+        let mut c = model::ColumnInfo::default();
+        c.Name.O = name.into();
+        c
+    });
+    let reader = NewMemReader(
+        Some(summary.as_ref()),
+        &columns,
+        "",
+        UTC,
+        None,
+        false,
+        None,
+        vec![],
+    );
+    let rows = reader.Rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].GetString(), "port44-secret");
+    assert_eq!(rows[0][1].GetString(), sql);
+    summary.Close();
+    let data = std::fs::read_to_string(path).unwrap();
+    let records: Vec<serde_json::Value> = data
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let record = records
+        .iter()
+        .find(|r| r["digest"] == "port44-secret")
+        .expect("sample must be written");
+    assert_eq!(record["sample_sql"], normalized);
+    assert!(
+        !record["sample_sql"]
+            .as_str()
+            .unwrap()
+            .contains("unique_secret_42")
+    );
+    assert_eq!(rows[0][1].GetString(), sql);
+}

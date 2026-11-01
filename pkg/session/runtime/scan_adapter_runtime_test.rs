@@ -3545,3 +3545,81 @@ fn port_74dc8d6e87_sql_point_backend_bytes_and_classic_gate() {
     }
     domain.close();
 }
+
+#[test]
+fn port_70970592ab_adapter_samples_reach_real_persistence() {
+    use astersql_util_stmtsummary_v2::{Close, Config, Setup};
+    struct Cleanup {
+        path: std::path::PathBuf,
+        mode: &'static str,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            Close();
+            astersql_errors::RedactLogEnabled.Store(self.mode);
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+    let path = std::env::temp_dir().join(format!(
+        "aster-port44-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    let _cleanup = Cleanup {
+        path: path.clone(),
+        mode: astersql_errors::RedactLogEnabled.Load(),
+    };
+    let mut session = canonical_dml_session();
+    Arc::get_mut(&mut session.session_vars)
+        .unwrap()
+        .PlanCacheParams
+        .Append(&["unique_secret_42".into()]);
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    for mode in ["OFF", "ON"] {
+        astersql_errors::RedactLogEnabled.Store(mode);
+        let file = path.join(format!("{mode}.log"));
+        Setup(&Config {
+            Filename: file.to_str().unwrap().into(),
+            ..Default::default()
+        })
+        .unwrap();
+        for sensitive in [false, true] {
+            let mut stmt = dml_stmt(
+                owner.clone(),
+                "select ?",
+                astersql_executor::adapter::PlanKind::Query,
+            );
+            let digest = format!("port44-{sensitive}");
+            stmt.StatementCtx.sql_digest.text = digest;
+            stmt.StatementCtx.sql_normalized = "select ?".into();
+            if sensitive {
+                stmt.StmtNode.secure_text = "select ***".into();
+            }
+            stmt.SummaryStmt(true);
+        }
+        Close();
+        let content = std::fs::read_to_string(file).unwrap();
+        let rows: Vec<serde_json::Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for sensitive in [false, true] {
+            let digest = format!("port44-{sensitive}");
+            let row = rows
+                .iter()
+                .find(|row| row["digest"] == digest)
+                .expect("adapter record written");
+            assert_eq!(
+                row["sample_sql"],
+                if mode == "ON" {
+                    "select ?"
+                } else if sensitive {
+                    "select ***"
+                } else {
+                    "select ? [arguments: unique_secret_42]"
+                }
+            );
+        }
+    }
+}

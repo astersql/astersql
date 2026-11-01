@@ -295,3 +295,62 @@ fn ia_columns_round_trip_through_chunk_with_unsigned_maxima() {
     }
     assert_eq!(factories[4](&context, &record).into_datum().GetInt64(), 0);
 }
+
+#[test]
+fn port_70970592ab_persisted_samples_redact_output_copy() {
+    use astersql_errors::{RedactLogEnable, RedactLogEnabled, RedactLogMarker};
+    struct Restore(&'static str);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RedactLogEnabled.Store(self.0);
+        }
+    }
+    let _restore = Restore(RedactLogEnabled.Load());
+    let record = crate::StmtRecord {
+        SampleSQL: "select 'unique_secret_42‹›'".into(),
+        NormalizedSQL: "select ?".into(),
+        ..Default::default()
+    };
+    for (mode, expected) in [
+        (RedactLogEnable, "select ?"),
+        (RedactLogMarker, "‹select 'unique_secret_42‹‹››'›"),
+        ("OFF", "select 'unique_secret_42‹›'"),
+    ] {
+        RedactLogEnabled.Store(mode);
+        for evicted in [false, true] {
+            for extra in [false, true] {
+                crate::setStmtLogAdditionalFields(if extra {
+                    [("keyspace".into(), "test".into())].into()
+                } else {
+                    Default::default()
+                });
+                let data = crate::marshalStmtRecordWithEvicted(&record, evicted).unwrap();
+                let json: serde_json::Value = serde_json::from_slice(&data).unwrap();
+                assert_eq!(json["sample_sql"], expected);
+                assert_eq!(record.SampleSQL, "select 'unique_secret_42‹›'");
+                assert_eq!(json.get("evicted").is_some(), evicted);
+                assert_eq!(json.get("additional_fields").is_some(), extra);
+            }
+        }
+    }
+    crate::setStmtLogAdditionalFields(Default::default());
+    let legacy: crate::StmtRecord =
+        serde_json::from_str(r#"{"sample_s_q_l":"legacy sample"}"#).unwrap();
+    assert_eq!(legacy.SampleSQL, "legacy sample");
+}
+
+#[test]
+fn port_70970592ab_sample_uses_original_and_secure_precedence() {
+    let mut info = crate::GenerateStmtExecInfo4Test("port44");
+    info.StmtCtx.OriginalSQL = "select ?".into();
+    info.SampleParams = Some(" [arguments: secret]".into());
+    assert_eq!(
+        crate::NewStmtRecord(&info).SampleSQL,
+        "select ? [arguments: secret]"
+    );
+    info.SensitiveStmt = Some("set password = ***".into());
+    assert_eq!(crate::NewStmtRecord(&info).SampleSQL, "set password = ***");
+    info.SensitiveStmt = None;
+    info.SampleParams = None;
+    assert_eq!(crate::NewStmtRecord(&info).SampleSQL, "select ?");
+}

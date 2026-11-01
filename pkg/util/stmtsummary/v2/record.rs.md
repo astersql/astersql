@@ -105,3 +105,9 @@ Rust 保留了 Go 的核心两阶段协议：“`NewStmtRecord` 保存基本信�
 测试应继续放在独立文件，不嵌入 `record.rs`：Go 对照回归在 [`record_test.go`](./record_test.go)，主要 Rust 移植回归在 [`record_test.rs`](./record_test.rs)，更完整的 Cop/2PC/流量/截断/驱逐覆盖在 [`record_2_aster_unit_test.rs`](./record_2_aster_unit_test.rs)。字段若暴露为表列，还应同步 [`column_test.rs`](./column_test.rs)；若影响持久化读取，则同步 reader/logger 相关独立测试。
 
 兼容与性能风险集中在：高频 `Add` 路径增加锁或分配；漏合并造成驱逐统计偏小；错误的 max/min 初值；跨窗口 JSON 格式漂移；首样本无限增长；以及在持有窗口/commit 锁时做昂贵工作。扩展应优先复用现有宏和一次性首样本策略，并用不同大小、空 `Option`、多用户和多记录 merge 夹具验证。
+
+## 70970592ab 延迟样本脱敏
+
+NewStmtRecord 读取 StmtCtx.OriginalSQL；SensitiveStmt 存在时优先使用安全快照且不附参数，否则追加 SampleParams，最后按现有 formatSQL 截断。SampleSQL JSON 字段显式使用来源契约 sample_sql，并兼容读取旧 sample_s_q_l 名称。测试生成器同步初始化原始 SQL，避免依赖已被替换的 LazyInfo.GetOriginalSQL。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

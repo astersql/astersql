@@ -87,3 +87,9 @@ Go 的 `any` 工厂返回值在 Rust 中由 `StmtSummaryValue` 显式建模；Go
 选择平均值分母前应核对 Go 工厂：执行观测通常使用 `execCount`，仅提交时产生的指标使用 `commitCount`。涉及 `u64` 大值时避免先压到 `i64`；时间字段要明确单位并沿用时区转换。新增可能失败的转换时，应决定是列级降级（类似 `PLAN`）、跳过行还是传播错误，并与 Go 行为保持一致。
 
 测试应优先扩展 `pkg/util/stmtsummary/reader_test.rs`（列工厂类型/字节边界）或 `pkg/util/stmtsummary/statement_summary_test.rs`（当前/历史/淘汰/权限的端到端聚合）；同时对照 `statement_summary_test.go`。若将 Rust reader 接入 executor，应另补 executor 层针对 cumulative/current/history 表选择、digest 下推和列顺序的测试，并关注全局锁内计划解码的性能风险。
+
+## 70970592ab 延迟样本脱敏
+
+PLAN 解码失败的错误日志 query 字段使用 digest.normalizedSQL，不输出 sampleSQL；缺少 digest 的驱逐记录使用空串。返回空计划的既有行为不变。
+
+来源：Go commit `70970592ab0719ffd90e5415dac5ad34b0635187`；不改变 SQL 方言、协议、事务或类型语义。

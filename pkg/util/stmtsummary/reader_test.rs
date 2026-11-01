@@ -100,3 +100,43 @@ fn plan_column_keeps_go_string_bytes() {
     assert_eq!(datum.Kind(), text.Kind());
     assert_eq!(datum.Collation(), text.Collation());
 }
+
+#[test]
+fn port_70970592ab_decode_error_logs_normalized_query_only() {
+    struct Capture(std::sync::Mutex<Vec<String>>);
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            self.0.lock().unwrap().push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+    static CAPTURE: Capture = Capture(std::sync::Mutex::new(Vec::new()));
+    log::set_logger(&CAPTURE).unwrap();
+    log::set_max_level(log::LevelFilter::Error);
+    let reader = NewStmtSummaryReader(None, true, Vec::new(), String::new(), chrono_tz::UTC);
+    let stats = stmtSummaryStats {
+        samplePlan: "not-base64!".into(),
+        sampleSQL: "secret_70970592ab".into(),
+        ..Default::default()
+    };
+    let digest = stmtSummaryByDigest {
+        normalizedSQL: "select ?".into(),
+        ..Default::default()
+    };
+    let factories = columnValueFactoryMap();
+    for info in [Some(&digest), None] {
+        let value = factories[PlanStr](&reader, None, info, &stats).into_datum();
+        assert!(value.GetBytes().is_empty());
+    }
+    let entries = CAPTURE.0.lock().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries[0].contains("select ?"));
+    assert!(
+        entries
+            .iter()
+            .all(|line| !line.contains("secret_70970592ab"))
+    );
+}

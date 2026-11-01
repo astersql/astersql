@@ -1969,6 +1969,7 @@ pub struct SupplementaryFinishMetrics {
 /// 语句摘要信息（供 statements_summary 系统表）。
 pub struct StatementSummary {
     pub original_sql: String,
+    pub sensitive_sql: Option<String>,
     pub normalized_sql: String,
     pub sql_digest: String,
     pub plan_digest: String,
@@ -2218,6 +2219,9 @@ impl ExecStmt {
             SelectRUDetailsForStatementLog(ru_details, self.Ctx.RUVersion(), total_ru_v2, is_write);
         let summary = StatementSummary {
             original_sql: self.GetOriginalSQL(),
+            sensitive_sql: (!self.StmtNode.secure_text.is_empty()
+                && self.StmtNode.secure_text != self.StmtNode.text)
+                .then(|| self.StmtNode.secure_text.clone()),
             normalized_sql: self.StatementCtx.sql_normalized.clone(),
             sql_digest: self.StatementCtx.sql_digest.text.clone(),
             plan_digest: plan_digest.text,
