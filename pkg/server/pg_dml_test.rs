@@ -1392,3 +1392,153 @@ fn pg10_03_behavior() {
     assert_eq!(guard.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg10_04_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let guard = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    let scan = "SELECT id,v,note FROM public.pg10_04 ORDER BY id";
+    for c in [&mut w, &mut o] {
+        eprintln!(
+            "pg10_04 isolation {:?}",
+            pg10_rows(&pg10_ok(
+                c,
+                "SELECT @@transaction_isolation AS isolation",
+                b'I'
+            ))
+        );
+    }
+    for verb in ["INSERT", "UPDATE", "DELETE"] {
+        for missing in [false, true] {
+            for extended in [false, true] {
+                for transaction in [false, true] {
+                    pg10_ok(
+                        &mut w,
+                        "CREATE TABLE public.pg10_04(id integer PRIMARY KEY,v integer,note text)",
+                        b'I',
+                    );
+                    // INSERT keeps the same two-row input while existing rows stay disjoint.
+                    let initial = if verb == "INSERT" {
+                        pg10_ok(
+                            &mut w,
+                            "INSERT INTO public.pg10_04 VALUES (8,80,NULL),(9,90,'before')",
+                            b'I',
+                        );
+                        vec![
+                            text_row(&[Some("8"), Some("80"), None]),
+                            text_row(&[Some("9"), Some("90"), Some("before")]),
+                        ]
+                    } else {
+                        pg10_ok(
+                            &mut w,
+                            "INSERT INTO public.pg10_04 VALUES (1,10,NULL),(2,20,'before')",
+                            b'I',
+                        );
+                        vec![
+                            text_row(&[Some("1"), Some("10"), None]),
+                            text_row(&[Some("2"), Some("20"), Some("before")]),
+                        ]
+                    };
+                    if transaction {
+                        pg10_ok(&mut w, "BEGIN", b'T');
+                        pg10_ok(
+                            &mut w,
+                            "INSERT INTO public.pg10_04 VALUES (3,30,'pending')",
+                            b'T',
+                        );
+                    }
+                    let body = match verb {
+                        "INSERT" => "INSERT INTO public.pg10_04 VALUES (1,10,NULL),(2,20,'new')",
+                        "UPDATE" => "UPDATE public.pg10_04 SET v=v+1 WHERE id<3",
+                        _ => "DELETE FROM public.pg10_04 WHERE id<3",
+                    };
+                    let sql = format!(
+                        "{body} RETURNING {} AS boom",
+                        if missing { "missing" } else { "10/(id-2)" }
+                    );
+                    let expected = if missing { "42703" } else { "22012" };
+                    let state = if transaction { b'E' } else { b'I' };
+                    if extended {
+                        parse(&mut w, "atomic", &sql, &[]);
+                        let parsed = read(&mut w);
+                        if missing {
+                            assert_eq!(parsed.0, b'E');
+                            assert_eq!(error_state(&parsed.1), Some(expected));
+                        } else {
+                            assert_eq!(parsed, (b'1', vec![]));
+                            bind(&mut w, "atomic_p", "atomic", &[], &[], &[]);
+                            assert_eq!(read(&mut w), (b'2', vec![]));
+                            send(&mut w, b'D', b"Patomic_p\0");
+                            let description = read(&mut w);
+                            assert_eq!(description.0, b'T');
+                            let fields = pg10_description(&description.1);
+                            assert_eq!(fields.len(), 1);
+                            assert_eq!(
+                                (&*fields[0].0, fields[0].1, fields[0].2, fields[0].3),
+                                ("boom", 23, 4, -1)
+                            );
+                            assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                            execute(&mut w, "atomic_p");
+                            let error = read(&mut w);
+                            assert_eq!(error.0, b'E', "{sql}: {error:?}");
+                            assert_eq!(error_state(&error.1), Some(expected));
+                        }
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', vec![state]));
+                    } else {
+                        let messages = simple_query(&mut w, &sql);
+                        assert_eq!(
+                            error_state(&messages[0].1),
+                            Some(expected),
+                            "{sql}: {messages:?}"
+                        );
+                        assert!(!messages.iter().any(|m| matches!(m.0, b'D' | b'C')));
+                        assert_eq!(messages.last(), Some(&(b'Z', vec![state])));
+                    }
+                    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                    if transaction {
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', vec![b'E']));
+                        let aborted = simple_query(&mut w, "SELECT 1 AS ok");
+                        assert_eq!(error_state(&aborted[0].1), Some("25P02"));
+                        assert_eq!(aborted.last(), Some(&(b'Z', vec![b'E'])));
+                        pg10_ok(&mut w, "ROLLBACK", b'I');
+                    }
+                    for c in [&mut w, &mut o] {
+                        assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                        pg10_ok(c, "SELECT 1 AS ok", b'I');
+                    }
+                    if extended && !missing {
+                        send(&mut w, b'C', b"Satomic\0");
+                        assert_eq!(read(&mut w), (b'3', vec![]));
+                        sync(&mut w);
+                    }
+                    pg10_ok(&mut w, "DROP TABLE public.pg10_04", b'I');
+                }
+            }
+        }
+    }
+    send(&mut w, b'X', &[]);
+    send(&mut o, b'X', &[]);
+    drop(w);
+    drop(o);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0));
+    assert!(TcpStream::connect(addr).is_err());
+}
