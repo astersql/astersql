@@ -1399,7 +1399,7 @@ def endpoint(conn):
 
 
 def returning_handoff():
-    """Keep syntax, safe rejection and RETURNING execution as distinct layers."""
+    """Keep read-only metadata checks separate from INSERT RETURNING execution."""
     scope = f'dialect_04_{os.getpid()}_{int(sys.argv[2])}'
     connections = {}
     prepared = []
@@ -1408,7 +1408,7 @@ def returning_handoff():
     done = False
     cleanup_ok = True
     reference_schema_created = False
-    gate_cases = 0
+    returning_cases = 0
     eligible = 0
     reference_dsn = os.environ['PG18_REFERENCE_DSN']
     local_dsn = f'host=127.0.0.1 port={int(sys.argv[2])} dbname={sys.argv[3]} user=root connect_timeout=5'
@@ -1474,10 +1474,10 @@ def returning_handoff():
                         arguments=None, parameter_formats=None, result_format=0, encoding='UTF8', timezone='UTC',
                         role={s: connection_user(connections[s]).decode() for s in ['aster', 'reference']}, search_path='public', initial_state='I',
                         object_mapping={'aster': f'{sys.argv[3]}.t', 'reference': f'{scope}.t'},
-                        expected_basis='task4 syntax/gate contract and exact PostgreSQL18.6 PQprepare',
+                        expected_basis='task4 metadata contract, task10 INSERT execution, exact PostgreSQL18.6 PQprepare',
                         expected={'aster': '42601' if kind == 'invalid' else 'success',
                                   'reference': '42601' if kind == 'invalid' else 'success'},
-                        unverified='RETURNING row execution remains gated; successful Prepare/Describe is not execution support')
+                        unverified='transactional INSERT RETURNING only; other DML families remain separate')
             registry.append(data)
             (evidence / 'cases.json').write_text(json.dumps(registry, indent=2))
             before = {side: snapshot(side) for side in ['aster', 'reference']}
@@ -1509,20 +1509,23 @@ def returning_handoff():
                     check([origin[1] for origin in origins] == expected_attributes, 'physical attribute identity lost')
                     check(all((oid != 0) == (attribute != 0) for oid, attribute in origins), 'physical table identity lost')
                     check(desc['formats'] == [0] * len(expected_fields), 'nontext descriptor')
-                    if kind == 'returning' and side == 'aster':
+                    if kind == 'returning':
+                        check(query(conn, 'BEGIN')['status'] == 1, 'returning begin failed')
                         result = observe(exec_prepared(conn, statement, len(oids),
                             (text * len(oids))(*([b'7'] * len(oids))) if oids else None,
                             None, (integer * len(oids))(*([0] * len(oids))) if oids else None, 0))
-                        archive(name + '_execute_gate', side,
+                        archive(name + '_execute_returning', side,
                             dict(phase='PQexecPrepared', statement=statement.decode(), arguments=['7'] * len(oids), parameter_formats=[0] * len(oids), result_format=0), result)
-                        check(result['state'] == '0A000' and result['message'] == 'DML RETURNING is unsupported by the PostgreSQL listener', 'Execute crossed the write boundary')
+                        expected_rows = {'projection': [['7','8','7',None]], 'quoted': [['7','7',None]], 'null_star': [[None,None]], 'bare_alias': [['9']]}[name]
+                        check(result['status'] == 2 and result['state'] == '' and result['rows'] == expected_rows and result['fields'] == expected_fields and result['command_tag'] == 'INSERT 0 1', 'INSERT RETURNING execution mismatch')
+                        check(snapshot(side) == before[side], 'uncommitted returning visible to observer')
                         recovery(conn, side, name + '_execute')
-                        check(snapshot(side) == before[side], 'Execute gate wrote rows')
+                        check(snapshot(side) == before[side], 'INSERT RETURNING rollback failed')
                     check(observe(close_prepared(conn, statement))['status'] == 1, 'statement close failed')
                     prepared.remove((conn, statement))
                 recovery(conn, side, name)
                 check(snapshot(side) == before[side], 'prepare/describe/rejection wrote rows')
-            check(compare(results['aster'], results['reference'], kind, sql, ref_sql), 'syntax/gate comparator mismatch')
+            check(compare(results['aster'], results['reference'], kind, sql, ref_sql), 'syntax comparator mismatch')
             for mutation in ['state', 'status']:
                 changed = copy.deepcopy(results['aster']); changed[mutation] = 'XX000' if mutation == 'state' else 0
                 assert not compare(changed, results['reference'], kind, sql, ref_sql)
@@ -1533,7 +1536,7 @@ def returning_handoff():
                 assert not compare_metadata(changed, descriptors['reference'], 'describe')
                 self_checks += 1
                 eligible += 1
-                gate_cases += 1
+                returning_cases += 1
                 if oids:
                     for side in ['aster', 'reference']:
                         conn = connections[side]
@@ -1547,11 +1550,16 @@ def returning_handoff():
                         check(observe(close_prepared(conn, b'inferred_returning'))['status'] == 1, 'inferred statement close failed')
                         check(snapshot(side) == before[side], 'inference wrote rows')
                 if not oids:
-                    result = query(connections['aster'], sql)
-                    archive(name + '_simple_gate', 'aster', dict(phase='PQexec', sql=sql), result)
-                    check(result['status'] == 7 and result['state'] == '0A000', 'simple gate failed')
-                    recovery(connections['aster'], 'aster', name + '_simple')
-                    check(snapshot('aster') == before['aster'], 'simple gate wrote rows')
+                    for side in ['aster', 'reference']:
+                        check(query(connections[side], 'BEGIN')['status'] == 1, 'simple returning begin failed')
+                        actual_sql = ref_sql if side == 'reference' else sql
+                        result = query(connections[side], actual_sql)
+                        archive(name + '_simple_returning', side, dict(phase='PQexec', sql=actual_sql), result)
+                        expected_rows = {'quoted': [['7','7',None]], 'null_star': [[None,None]], 'bare_alias': [['9']]}[name]
+                        check(result['status'] == 2 and result['state'] == '' and result['rows'] == expected_rows and result['command_tag'] == 'INSERT 0 1', 'simple INSERT RETURNING mismatch')
+                        check(snapshot(side) == before[side], 'simple uncommitted returning visible')
+                        recovery(connections[side], side, name + '_simple')
+                        check(snapshot(side) == before[side], 'simple returning rollback failed')
             elif kind == 'invalid':
                 for side in ['aster', 'reference']:
                     actual_sql = ref_sql if side == 'reference' else sql
@@ -1629,11 +1637,11 @@ def returning_handoff():
                 finish(conn)
         summary = dict(cases=len(cases), assertions=checks, self_checks=self_checks,
                        syntax_eligible=len(cases) if done and cleanup_ok else 0,
-                       gate_cases=gate_cases if done and cleanup_ok else 0,
+                       gate_cases=0,
                        unique_effective=eligible if done and cleanup_ok else 0,
-                       semantic_returning_success=0, cleanup_ok=cleanup_ok,
-                       returning_metadata_success=gate_cases if done and cleanup_ok else 0,
-                       scope='readonly RETURNING Prepare/Describe; execution remains gated and has zero semantic success')
+                       semantic_returning_success=returning_cases if done and cleanup_ok else 0, cleanup_ok=cleanup_ok,
+                       returning_metadata_success=returning_cases if done and cleanup_ok else 0,
+                       scope='read-only Prepare/Describe plus transactional INSERT RETURNING and rollback')
         (evidence/'summary.json').write_text(json.dumps(summary, indent=2))
     assert done and cleanup_ok, 'incomplete run/cleanup'
     print(json.dumps(summary), flush=True)

@@ -263,8 +263,12 @@ enum DdlRule {
     ReferOptAlt03,
     ReferOptAlt04,
     ReferOptAlt05,
+    DefaultValueExprArithmetic,
+    PgDefaultAdd,
+    PgDefaultSubtract,
+    PgDefaultMultiply,
+    PgDefaultGroup,
     DefaultValueExprAlt05,
-    DefaultValueExprAlt06,
     CreateIndexStmtAlt01,
     IndexPartSpecificationListOptAlt01,
     IndexPartSpecificationListOptAlt02,
@@ -1195,8 +1199,12 @@ fn identify(rule_id: RuleId) -> Option<DdlRule> {
         "referopt_set_null--09a14460483cbc10" => Some(DdlRule::ReferOptAlt03),
         "referopt_no_action--e15092dddc15ce0c" => Some(DdlRule::ReferOptAlt04),
         "referopt_set_default--b4c995049b1cf19e" => Some(DdlRule::ReferOptAlt05),
+        "defaultvalueexpr_pgdefaultsum--59d99a37ad015775" => Some(DdlRule::DefaultValueExprArithmetic),
+        "pgdefaultsum_pgdefaultsum_pgdefaultterm--afeb3ce5c829e153" => Some(DdlRule::PgDefaultAdd),
+        "pgdefaultsum_pgdefaultsum_pgdefaultterm--29817094d0f9afc1" => Some(DdlRule::PgDefaultSubtract),
+        "pgdefaultterm_pgdefaultterm_pgdefaultfactor--22fbd842008a8e41" => Some(DdlRule::PgDefaultMultiply),
+        "pgdefaultfactor_pgdefaultsum--9df3959ddbdc3727" => Some(DdlRule::PgDefaultGroup),
         "defaultvalueexpr_identifier--ddcbab35eef8a443" => Some(DdlRule::DefaultValueExprAlt05),
-        "defaultvalueexpr_signedliteral--abcedb20e3a1a9d1" => Some(DdlRule::DefaultValueExprAlt06),
         "createindexstmt_create_indexkeytypeopt_index_ifn--385d4ba1c3b4e6c8" => {
             Some(DdlRule::CreateIndexStmtAlt01)
         }
@@ -4756,6 +4764,40 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             }
             out.item = Some(Box::new(value));
         }
+        DdlRule::PgDefaultAdd | DdlRule::PgDefaultSubtract | DdlRule::PgDefaultMultiply => {
+            let left = rhs.borrow(rhs_len - 2).expect("DEFAULT left").expr.clone().unwrap();
+            let right = rhs.borrow(rhs_len).expect("DEFAULT right").expr.clone().unwrap();
+            let operator = match rule {
+                DdlRule::PgDefaultAdd => "+",
+                DdlRule::PgDefaultSubtract => "-",
+                _ => "*",
+            };
+            out.expr = Some(parser_ast::ExprNode::Binary(
+                operator.to_owned(), Box::new(left), Box::new(right),
+            ));
+        }
+        DdlRule::PgDefaultGroup => {
+            out.expr = Some(parser_ast::ExprNode {
+                Kind: parser_ast::ExprKind::Parentheses(Box::new(
+                    rhs.borrow(rhs_len - 1).expect("DEFAULT group").expr.clone().unwrap(),
+                )),
+                ..Default::default()
+            });
+        }
+        DdlRule::DefaultValueExprArithmetic => {
+            let expression = rhs.borrow(rhs_len - 1).expect("DEFAULT expression").expr.clone()
+                .expect("DEFAULT has an expression");
+            let literal = matches!(expression.Kind, parser_ast::ExprKind::Value(_))
+                || matches!(&expression.Kind, parser_ast::ExprKind::Unary { Op, V }
+                    if matches!(Op.as_str(), "+" | "-") && matches!(V.Kind, parser_ast::ExprKind::Value(_)));
+            if !literal && (parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                || !pg_integer_default(&expression))
+            {
+                yylex.AppendError(yylex.Errorf("unsupported parenthesized DEFAULT expression", &[]));
+                return Err(1);
+            }
+            out.expr = Some(expression);
+        }
         DdlRule::DefaultValueExprAlt05 => {
             out.expr = Some(parser_ast::ExprNode::Column(parser_ast::ColumnName {
                 Name: parser_ast::NewCIStr(
@@ -4763,20 +4805,6 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 ),
                 ..Default::default()
             }));
-        }
-        DdlRule::DefaultValueExprAlt06 => {
-            out.expr = rhs
-                .borrow(
-                    rhs_len
-                        - (if rule == DdlRule::DefaultValueExprAlt06 {
-                            1
-                        } else {
-                            0
-                        }),
-                )
-                .expect("DDL RHS position")
-                .expr
-                .clone()
         }
         DdlRule::CreateIndexStmtAlt01 => {
             let lock_algorithm = rhs
@@ -7988,4 +8016,23 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         }
     }
     Ok(true)
+}
+
+
+// Only constant integer +, -, and * are opened by the PG INSERT contract.
+// Functions, column references and other operator families retain their gates.
+fn pg_integer_default(expression: &parser_ast::ExprNode) -> bool {
+    match &expression.Kind {
+        parser_ast::ExprKind::Value(value) => matches!(
+            value.Datum, parser_ast::ValueDatum::Int64(_) | parser_ast::ValueDatum::Uint64(_)
+        ),
+        parser_ast::ExprKind::Parentheses(inner) => pg_integer_default(inner),
+        parser_ast::ExprKind::Unary { Op, V } => {
+            matches!(Op.as_str(), "+" | "-") && pg_integer_default(V)
+        }
+        parser_ast::ExprKind::Binary { Op, L, R } => {
+            matches!(Op.as_str(), "+" | "-" | "*") && pg_integer_default(L) && pg_integer_default(R)
+        }
+        _ => false,
+    }
 }

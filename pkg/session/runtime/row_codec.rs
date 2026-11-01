@@ -1158,3 +1158,47 @@ pub(super) fn relational_index_mutations(
         .map(|(key, value)| (kv::Key(key), value))
         .collect())
 }
+
+impl ConcreteSession {
+    /// Evaluate PostgreSQL arithmetic defaults at INSERT, preserving the stored
+    /// expression and reporting evaluation errors before any row is written.
+    pub(super) fn insert_column_default(
+        &self,
+        column: &astersql_meta_model::ColumnInfo,
+    ) -> SessionResult<Option<String>> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && column.DefaultIsExpr
+            && let Some(astersql_meta_model::DefaultValue::String(bytes)) = column.GetDefaultValue()
+        {
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|error| session_error("decode DEFAULT expression", error))?;
+            // Existing function/identifier defaults keep their established path.
+            if !matches!(
+                text.trim_start().as_bytes().first().copied(),
+                Some(b'(' | b'+' | b'-' | b'0'..=b'9')
+            ) {
+                return Ok(insert_default_runtime_value(column));
+            }
+            let statements =
+                parse_in_dialect(&format!("SELECT {text}"), ast::SqlDialect::PostgreSQL)?;
+            if let Some(select) = statements
+                .first()
+                .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
+                && let Some(expr) = select
+                    .Fields
+                    .Fields
+                    .first()
+                    .and_then(|field| field.Expr.as_ref())
+                && matches!(
+                    expr.Kind,
+                    ast::ExprKind::Binary { .. }
+                        | ast::ExprKind::Parentheses(_)
+                        | ast::ExprKind::Unary { .. }
+                )
+            {
+                return crate::dml_runtime::EvalExpr(expr, &HashMap::new(), None);
+            }
+        }
+        Ok(insert_default_runtime_value(column))
+    }
+}

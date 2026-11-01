@@ -3215,7 +3215,10 @@ impl ConcreteSession {
         Ok(())
     }
 
-    fn validate_pg_boolean_insert(&self, statement: &ast::InsertStmt) -> SessionResult<()> {
+    pub(super) fn validate_pg_boolean_insert(
+        &self,
+        statement: &ast::InsertStmt,
+    ) -> SessionResult<()> {
         if self.sql_dialect() != ast::SqlDialect::PostgreSQL {
             return Ok(());
         }

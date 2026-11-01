@@ -2186,6 +2186,25 @@ impl ConcreteSession {
         select_columns: Option<&[String]>,
         embedding_load_row_count: Option<u64>,
     ) -> SessionResult<(u64, u64)> {
+        self.execute_relational_insert_with_output(
+            statement,
+            plan,
+            from_select,
+            select_columns,
+            embedding_load_row_count,
+            None,
+        )
+    }
+
+    pub(super) fn execute_relational_insert_with_output(
+        &self,
+        statement: &ast::InsertStmt,
+        plan: crate::dml_runtime::InsertPlan,
+        from_select: bool,
+        select_columns: Option<&[String]>,
+        embedding_load_row_count: Option<u64>,
+        returning_output: Option<&mut Option<ConcreteRecordSet>>,
+    ) -> SessionResult<(u64, u64)> {
         let insert_started = std::time::Instant::now();
         // Go's ResetContextOfStmt turns truncation into warnings for INSERT
         // IGNORE even under a strict sql_mode, preserving a valid numeric
@@ -2561,7 +2580,10 @@ impl ConcreteSession {
                     &expression.Kind,
                     ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
                 ) {
-                    column_info.and_then(insert_default_runtime_value)
+                    column_info
+                        .map(|column| self.insert_column_default(column))
+                        .transpose()?
+                        .flatten()
                 } else if plan.Ignore
                     && column_info.is_some_and(|column| {
                         column.GetType() == astersql_parser_mysql::r#type::TypeEnum
@@ -2964,7 +2986,7 @@ impl ConcreteSession {
                 {
                     None
                 } else {
-                    insert_default_runtime_value(column)
+                    self.insert_column_default(column)?
                 }
                 .or_else(|| {
                     (!strict_sql_mode
@@ -3681,6 +3703,46 @@ impl ConcreteSession {
             .as_ref()
             .filter(|info| info.Enable)
             .map_or(0, |_| lock_rows.len());
+        // Project the actual inserted row images before applying mutations so
+        // an output-expression error cannot commit a partial INSERT.
+        let returning = if returning_output.is_some() {
+            let fields = self.insert_returning_fields(statement)?;
+            let alias = statement
+                .Table
+                .as_ref()
+                .and_then(|refs| refs.TableRefs.Left.as_deref())
+                .and_then(|source| match source {
+                    ast::ResultSetNode::TableSource(source) if !source.AsName.L.is_empty() => {
+                        Some(source.AsName.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| table.Name.clone());
+            // Projection reads the row maps; its scan-handle tuple slot is unused.
+            let inserted_rows = lock_rows
+                .iter()
+                .cloned()
+                .map(|row| (0, row))
+                .collect::<Vec<_>>();
+            let (columns, rows, _) = project_relational_rows(
+                database,
+                &alias,
+                &table,
+                &inserted_rows,
+                &ast::FieldList {
+                    Fields: statement.Returning.clone(),
+                },
+                &[],
+                |args, row| self.execute_embed_text(args, row),
+            )?;
+            Some(ConcreteRecordSet::new_with_fields(
+                columns,
+                rows,
+                fields.into_iter().map(Some).collect(),
+            ))
+        } else {
+            None
+        };
         self.apply_relational_mutations_with_autocommit(
             &plan.Table,
             if plan.Replace { "Replace" } else { "Insert" },
@@ -3707,6 +3769,9 @@ impl ConcreteSession {
             report.ForeignKeyCheckTime = foreign_key_check_time;
             report.HasInsertRuntimeStats = true;
             report.HasForeignKeyChecks = has_foreign_key_checks;
+        }
+        if let Some(output) = returning_output {
+            *output = returning;
         }
         self.record_ttl_insert_rows(&table, ttl_insert_rows);
         let stats_after = working_rows.into_values().collect::<Vec<_>>();

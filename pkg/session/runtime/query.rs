@@ -1023,6 +1023,38 @@ pub(super) fn pg_returning_expression_type(
     })
 }
 
+// Execution is narrower than read-only RETURNING analysis. The existing PG
+// projection kernel proves int4 arithmetic; other widths and remainder must
+// stay gated until their value/error semantics have execution evidence.
+fn validate_pg_returning_execution(
+    expression: &ast::ExprNode,
+    sources: &[ConcreteResultField],
+) -> SessionResult<()> {
+    match &expression.Kind {
+        ast::ExprKind::Binary { Op, L, R } => {
+            for operand in [L.as_ref(), R.as_ref()] {
+                if Op == "%"
+                    || pg_returning_expression_type(operand, sources)?.GetType()
+                        != astersql_parser_mysql::r#type::TypeLong
+                {
+                    return Err(SessionError::new(
+                        "PostgreSQL RETURNING arithmetic execution is unsupported for this operator or width",
+                    ));
+                }
+            }
+            validate_pg_returning_execution(L, sources)?;
+            validate_pg_returning_execution(R, sources)?;
+        }
+        ast::ExprKind::Parentheses(inner)
+        | ast::ExprKind::Unary { V: inner, .. }
+        | ast::ExprKind::Cast { Expr: inner, .. } => {
+            validate_pg_returning_execution(inner, sources)?
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 // Keep connection-owned facts on the session-aware recursion path when nested
 // in an existing conditional expression. This only recognizes AST identity;
 // signature resolution and evaluation remain in the formal factory below.
@@ -7883,6 +7915,18 @@ impl ConcreteSession {
     /// 对齐 Go `InsertExec.Next`：执行 SELECT 子树，再把全部结果交给同一
     /// `execute_relational_insert` 路径完成默认值、约束检查与原子 mutations。
     pub(super) fn execute_insert_select(&self, statement: &ast::InsertStmt) -> SessionResult<()> {
+        let (values_statement, select_columns) = self.materialize_insert_select(statement)?;
+        if values_statement.Lists.is_empty() {
+            return Ok(());
+        }
+        let plan = crate::dml_runtime::PlanInsert(&values_statement)?;
+        self.execute_relational_insert(&values_statement, plan, true, Some(&select_columns))
+    }
+
+    fn materialize_insert_select(
+        &self,
+        statement: &ast::InsertStmt,
+    ) -> SessionResult<(ast::InsertStmt, Vec<String>)> {
         let _target = statement
             .Table
             .as_ref()
@@ -7906,9 +7950,6 @@ impl ConcreteSession {
             return Err(SessionError::new(
                 "INSERT SELECT target/source column counts differ",
             ));
-        }
-        if selected.rows.is_empty() {
-            return Ok(());
         }
         let select_columns = selected.columns.clone();
         let lists = selected
@@ -7984,8 +8025,64 @@ impl ConcreteSession {
             RowAlias: statement.RowAlias.clone(),
             ColumnAliases: statement.ColumnAliases.clone(),
         };
-        let plan = crate::dml_runtime::PlanInsert(&values_statement)?;
-        self.execute_relational_insert(&values_statement, plan, true, Some(&select_columns))
+        Ok((values_statement, select_columns))
+    }
+
+    /// RETURNING consumes the shared INSERT's stored row images, never a
+    /// second SELECT against the target or a repeated write.
+    pub(super) fn execute_pg_insert_returning(
+        &self,
+        statement: &ast::InsertStmt,
+    ) -> SessionResult<ConcreteRecordSet> {
+        if statement.IgnoreErr || statement.IsReplace || !statement.OnDuplicate.is_empty() {
+            return Err(SessionError::new(
+                "PostgreSQL RETURNING requires an ordinary INSERT",
+            ));
+        }
+        if statement.PostgreSQLConflict.is_some() {
+            return Err(SessionError::new(
+                "PostgreSQL ON CONFLICT is unsupported by the shared executor",
+            ));
+        }
+        self.validate_pg_boolean_insert(statement)?;
+        let fields = self.insert_returning_fields(statement)?;
+        let sources = self.relational_select_source_fields(&ast::SelectStmt {
+            From: statement.Table.clone(),
+            ..Default::default()
+        })?;
+        for field in &statement.Returning {
+            if let Some(expression) = &field.Expr {
+                validate_pg_returning_execution(expression, &sources)?;
+            }
+        }
+        let materialized;
+        let (values, select_columns) = if statement.Select.is_some() {
+            materialized = self.materialize_insert_select(statement)?;
+            if materialized.0.Lists.is_empty() {
+                return Ok(ConcreteRecordSet::new_with_fields(
+                    fields
+                        .iter()
+                        .map(|field| field.column_as_name.O.clone())
+                        .collect(),
+                    vec![],
+                    fields.into_iter().map(Some).collect(),
+                ));
+            }
+            (&materialized.0, Some(materialized.1.as_slice()))
+        } else {
+            (statement, None)
+        };
+        let plan = crate::dml_runtime::PlanInsert(values)?;
+        let mut output = None;
+        self.execute_relational_insert_with_output(
+            values,
+            plan,
+            statement.Select.is_some(),
+            select_columns,
+            None,
+            Some(&mut output),
+        )?;
+        output.ok_or_else(|| SessionError::new("INSERT RETURNING produced no result set"))
     }
 
     /// 执行关系型 SELECT（扫表/过滤/投影）。

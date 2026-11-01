@@ -351,20 +351,22 @@ fn pg_dialect_04_returning_metadata() {
     );
     assert_eq!(session.protocol_integer_parameter_types(sql).unwrap(), [23]);
     assert_eq!(session.describe_result_fields(sql).unwrap().len(), 4);
-    let error = session
+    let mut returned = session
         .execute_protocol_statement(id, &[crate::runtime::ConcretePreparedArgument::Signed(7)])
-        .err()
-        .unwrap();
+        .unwrap()
+        .remove(0);
     assert_eq!(
-        error.to_string(),
-        "DML RETURNING is unsupported by the PostgreSQL listener"
+        returned.next_row().unwrap().unwrap(),
+        ["7", "8", "7", "<nil>"]
     );
+    assert!(returned.next_row().unwrap().is_none());
     session.close_protocol_statement(id).unwrap();
-    assert!(
+    assert_eq!(
         session.execute("SELECT id FROM t").unwrap()[0]
             .next_row()
             .unwrap()
-            .is_none()
+            .unwrap(),
+        ["7"]
     );
     for sql in [
         "INSERT INTO t(id) VALUES (1) RETURNING missing+1",
@@ -427,4 +429,118 @@ fn pg_dialect_05_update_returning_metadata() {
     session
         .execute("DROP DATABASE update_returning_metadata")
         .unwrap();
+}
+
+#[test]
+fn pg10_01_default_arithmetic() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    mysql.execute("CREATE DATABASE pg10_01_default").unwrap();
+    mysql.execute("USE pg10_01_default").unwrap();
+    assert!(
+        mysql
+            .execute("CREATE TABLE mysql_gate(id INT DEFAULT (40 + 2))")
+            .is_err()
+    );
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("USE pg10_01_default").unwrap();
+    pg.execute("CREATE TABLE t(id integer PRIMARY KEY DEFAULT (40 + 2), v integer, note text)")
+        .unwrap();
+    pg.execute("INSERT INTO t(v,note) VALUES (7,NULL)").unwrap();
+    let mut rows = pg.execute("SELECT id,v,note FROM t").unwrap().remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap()[..2], ["42", "7"]);
+    pg.execute("DELETE FROM t").unwrap();
+    pg.execute("INSERT INTO t(v,note) VALUES (8,NULL)").unwrap();
+    assert_eq!(
+        pg.execute("SELECT id FROM t").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        ["42"]
+    );
+    pg.execute("INSERT INTO t VALUES (43,9,NULL)").unwrap();
+    assert!(pg.execute("INSERT INTO t VALUES (NULL,10,NULL)").is_err());
+    pg.execute("CREATE TABLE ops(id integer PRIMARY KEY DEFAULT ((40 + 2) * 2 - 1),v integer)")
+        .unwrap();
+    pg.execute("INSERT INTO ops(v) VALUES (7)").unwrap();
+    assert_eq!(
+        pg.execute("SELECT id FROM ops").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .unwrap(),
+        ["83"]
+    );
+    pg.execute("CREATE TABLE bad(id integer PRIMARY KEY DEFAULT (2147483647 + 1),v integer)")
+        .unwrap();
+    assert!(pg.execute("INSERT INTO bad(v) VALUES (7)").is_err());
+    assert!(
+        pg.execute("SELECT * FROM bad").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .is_none()
+    );
+    pg.execute("DROP DATABASE pg10_01_default").unwrap();
+}
+
+#[test]
+fn pg10_01_returning_rows_and_atomicity() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    mysql.execute("CREATE DATABASE pg10_01_shared").unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("USE pg10_01_shared").unwrap();
+    pg.execute("CREATE TABLE t(id integer PRIMARY KEY DEFAULT (40 + 2),v integer,note text)")
+        .unwrap();
+    let mut result = pg
+        .execute("INSERT INTO t(v,note) VALUES (7,NULL) RETURNING id AS generated_id,v,note")
+        .unwrap()
+        .remove(0);
+    assert_eq!(result.columns(), ["generated_id", "v", "note"]);
+    let row = result.next_row().unwrap().unwrap();
+    assert_eq!(&row[..2], ["42", "7"]);
+    assert_eq!(row[2], "<nil>");
+    assert!(result.next_row().unwrap().is_none());
+    for sql in [
+        "INSERT INTO t VALUES (1,10,NULL),(42,20,'duplicate') RETURNING id",
+        "INSERT INTO t VALUES (2,11,NULL) RETURNING 10 / (v - 11) AS boom",
+        "INSERT INTO t VALUES (3,12,NULL) RETURNING missing",
+        "INSERT INTO t VALUES (4,13,NULL) ON CONFLICT (id) DO NOTHING RETURNING id",
+    ] {
+        assert!(pg.execute(sql).is_err(), "{sql}");
+    }
+    let mut result = pg
+        .execute("SELECT id,v FROM t ORDER BY id")
+        .unwrap()
+        .remove(0);
+    assert_eq!(result.next_row().unwrap().unwrap(), ["42", "7"]);
+    assert!(result.next_row().unwrap().is_none());
+    pg.execute("DROP DATABASE pg10_01_shared").unwrap();
+}
+
+#[test]
+fn pg10_01_execution_boundaries() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, setup) = CreateAnalyzeSession().unwrap();
+    setup.execute("CREATE DATABASE pg10_01_boundaries").unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    pg.execute("USE pg10_01_boundaries").unwrap();
+    pg.execute("CREATE TABLE t(id integer PRIMARY KEY,v bigint)")
+        .unwrap();
+    for sql in [
+        "INSERT INTO t VALUES (1,7) RETURNING id % 0",
+        "INSERT INTO t VALUES (2,7) RETURNING v / 2",
+        "INSERT IGNORE INTO t VALUES (3,7) RETURNING id",
+    ] {
+        assert!(
+            pg.execute(sql).is_err(),
+            "unproven execution shape must stay gated: {sql}"
+        );
+    }
+    assert!(
+        pg.execute("SELECT * FROM t").unwrap()[0]
+            .next_row()
+            .unwrap()
+            .is_none()
+    );
+    pg.execute("DROP DATABASE pg10_01_boundaries").unwrap();
 }

@@ -1990,7 +1990,7 @@ impl Extended {
                         "PostgreSQL ON CONFLICT DO NOTHING is unsupported by the shared executor",
                     ));
                 }
-                if portal.returning {
+                if portal.returning && portal.command != Some("INSERT") {
                     return Err(error(
                         "0A000",
                         "DML RETURNING is unsupported by the PostgreSQL listener",

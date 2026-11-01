@@ -6846,3 +6846,27 @@ fn pg09_26_parser() {
         assert!(crate::Parser::default().ParseOneStmt(&sql, "", "").is_err());
     }
 }
+
+#[test]
+fn pg10_01_default_arithmetic_syntax() {
+    use parser_ast::SqlDialect;
+    for sql in [
+        "CREATE TABLE t(id integer PRIMARY KEY DEFAULT (40 + 2),v integer,note text)",
+        "CREATE TABLE t(id integer DEFAULT ((40 + 2) * 2 - 1))",
+    ] {
+        let mut pg = crate::Parser::with_dialect(SqlDialect::PostgreSQL);
+        assert!(pg.ParseSQL(sql, &[]).is_ok(), "{sql}");
+        assert!(crate::New().ParseSQL(sql, &[]).is_err(), "{sql}");
+    }
+    for sql in [
+        "CREATE TABLE t(id INT DEFAULT (42))",
+        "CREATE TABLE t(id INT DEFAULT (-42))",
+    ] {
+        assert!(crate::New().ParseSQL(sql, &[]).is_ok(), "{sql}");
+    }
+    assert!(
+        crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseSQL("CREATE TABLE t(id INT DEFAULT (other + 2))", &[])
+            .is_err()
+    );
+}

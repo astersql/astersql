@@ -521,3 +521,29 @@ git diff --check
 分别实际执行 1/10/1/1 个测试，均通过；fmt、lint、diff 检查退出 0。Ready 按根规则执行，verify-profile 技能当前缺失。未改 Go/import/Bazel/依赖，未触发 bazel_prepare，未运行 bazel_lint_changed。
 
 libpq 未暴露的 portal 原始字段沿用批次 9 的真实 TCP 回归证据，不默认字段相等；本差分不比较表 OID/列来源、错误消息全文或错误位置。裸 `SELECT 1` 的默认整数定型不同（AsterSQL int8、参考端 int4），恢复探针显式使用本批范围的 `1::int4`，默认字面量定型留作范围外工作。此轮不代表 PostgreSQL18 全量兼容、18.6 对照、生产鉴权、RealTiKV 分布式存储或性能验收。
+
+## 2026-11-01 INSERT RETURNING
+
+普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT、UPDATE/DELETE RETURNING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
+
+为原验收输入增加了仅 PG 的括号整数 DEFAULT 加减乘规则，`DEFAULT (40 + 2)` 保留为表达式元数据，在 INSERT 时复用共享求值器得到 42。MySQL 仍拒绝算术默认值，原字面量和函数默认值路径保持。没有新增默认函数、任意列引用或完整默认表达式子系统。
+
+`pg_dml_test::pg10_01_behavior` 使用 CreateAnalyzeSession 测试存储和真实 TCP，两连接检查生成值/NULL、星号、多行、表达式别名、零行、描述不写入、独立命令标签、提交/回滚可见性、重复 Execute 不重写和新 Bind 换值。启动响应核对 UTF8/UTC，实际隔离为 REPEATABLE-READ。除零在 Execute 报 22012；显式事务随后为 E/25P02，ROLLBACK 撤销前缀写入并恢复 I；自动提交错误保留初值。正常清理关闭 statement/portal/客户端、删除自建表、关闭 listener 并检查服务资源为零。MySQL 共享会话预处理查询在 PG 流程期间保持自身事务与值。
+
+聚焦验证入口（从仓库根目录运行，先按活动任务规则原子领取共享槽位并设置绝对路径 CARGO_TARGET_DIR）：
+
+```bash
+cargo fmt --all
+cargo test --locked -p astersql-parser --lib pg10_01_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_01_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_01_behavior -- --exact --nocapture --test-threads=1
+CARGO_PROFILE_DEV_OPT_LEVEL=2 cargo run --locked -p astersql-parsergen -- check
+make lint
+git diff --check
+```
+
+失败证据为 `/tmp/pg10-default-red.log`（默认值建表失败）、`/tmp/pg10-returning-red3.log`（原 INSERT RETURNING 的 0A000）和 `/tmp/pg10-boundary-red.log`（未证明的余数执行越过门禁）；对应最终日志以 `/tmp/pg10-ready-` 为前缀。生成与验证动态使用仓库共享槽位 1、3，缓存分别位于仓库根目录 `target/rust-slot-1`、`target/rust-slot-3`，结束时释放自己的锁并保留缓存。
+
+原独立 libpq 返回元数据夹具同步为 INSERT 成功及回滚目标，但本任务未运行其 PostgreSQL 18.6/独立 MySQL 参考端差分；后续客户端专项补齐该证据。未验证 RealTiKV、持久重启、大结果集性能或完整 PostgreSQL RETURNING；当前行集使用内存缓冲，不宣称流式内存或吞吐改进。
+
+本次19个不同聚焦/相邻测试有通过证据，另有未修改的 `pg_query_test::simple_query_roundtrip` 在未引导夹具上执行 `SELECT 1` 失败；同一断言也在本任务实现前保留的二进制复现（`/tmp/pg10-preimplementation-query-baseline.log`）。编号任务因此保留为“已完成，待回归”，不把该既有失败算作通过，也不在本任务扩写普通查询/引导基础设施。

@@ -4586,11 +4586,11 @@ fn pg_dialect_libpq(task: u8) {
         if task == 4 { 10 } else { 12 }
     );
     if task == 4 {
-        // Gate evidence is distinct from RETURNING result semantics.
-        assert_eq!(summary["gate_cases"], 4);
+        // Metadata remains read-only; INSERT execution now has rollback evidence.
+        assert_eq!(summary["gate_cases"], 0);
         assert_eq!(summary["unique_effective"], 8);
         assert_eq!(summary["returning_metadata_success"], 4);
-        assert_eq!(summary["semantic_returning_success"], 0);
+        assert_eq!(summary["semantic_returning_success"], 4);
     } else {
         summary["unique_effective"] = 10.into();
     }

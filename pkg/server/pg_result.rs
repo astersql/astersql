@@ -231,7 +231,7 @@ pub(crate) struct PrepareCommand {
     pub analysis_sql: Option<String>,
 }
 
-/// Preparing RETURNING binds metadata without permitting DML execution.
+/// Preparing RETURNING binds metadata without executing DML.
 pub(crate) fn prepare_command(sql: &str) -> Result<PrepareCommand, (&'static str, String)> {
     command_for_phase(sql, true)
 }
@@ -267,12 +267,6 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
             return Err((
                 "0A000",
                 "PostgreSQL ON CONFLICT is unsupported by the shared executor".into(),
-            ));
-        }
-        if !insert.Returning.is_empty() && !prepare {
-            return Err((
-                "0A000",
-                "DML RETURNING is unsupported by the PostgreSQL listener".into(),
             ));
         }
         "INSERT"

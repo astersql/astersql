@@ -3064,11 +3064,6 @@ impl ConcreteSession {
             }
         }
         if let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() {
-            if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !insert.Returning.is_empty() {
-                return Err(SessionError::new(
-                    "DML RETURNING is unsupported by the PostgreSQL listener",
-                ));
-            }
             if self.state.borrow().transaction_stale_read_ts.is_some() {
                 return Err(SessionError::new(
                     "cannot execute write statement in a read-only staleness transaction",
@@ -3076,6 +3071,9 @@ impl ConcreteSession {
             }
             self.ensure_implicit_transaction()?;
             self.register_statement_mdl(statement)?;
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !insert.Returning.is_empty() {
+                return self.execute_pg_insert_returning(insert).map(Some);
+            }
             if self.execute_mysql_tidb_insert(insert, statement_sql.unwrap_or_default())? {
                 return Ok(None);
             }
