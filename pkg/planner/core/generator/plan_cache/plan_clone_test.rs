@@ -165,3 +165,12 @@ fn TestPlanClone() {
         "cloned.Conditions = utilfuncp.CloneExpressionsForPlanCache(op.Conditions, nil)"
     ));
 }
+
+#[test]
+fn port_e2f259adf7_generator_deep_clones_i64_slices() {
+    let structure = Structure::physical("LMTest", vec![StructField::new("Forced", "[]int64")]);
+    let bytes = gen_plan_clone_for_plan_cache(&structure).expect("int64 slices are cloneable");
+    let output = String::from_utf8(bytes).unwrap();
+    assert!(output.contains("cloned.Forced = make([]int64, len(op.Forced))"));
+    assert!(output.contains("copy(cloned.Forced, op.Forced)"));
+}

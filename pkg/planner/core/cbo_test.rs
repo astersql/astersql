@@ -465,9 +465,16 @@ impl base::PlanContext for CboPlanContext {
 
 /// 构造挂好谓词简化透传与默认 ranger 配置的规划上下文引用。
 pub(crate) fn cbo_plan_context() -> base::ContextRef {
+    cbo_plan_context_with_config(|_| {})
+}
+
+pub(crate) fn cbo_plan_context_with_config(
+    configure: impl FnOnce(&mut variable_dependency::session::SessionVars),
+) -> base::ContextRef {
     logicalop::InstallPredicateSimplificationPassthrough();
     let mut session_vars = variable_dependency::session::SessionVars::default();
     session_vars.SetCurrentDB("test");
+    configure(&mut session_vars);
     let ranger_expression_context: Arc<dyn expression::exprctx::BuildContext> =
         Arc::new(exprstatic_dependency::NewExprContext(Vec::new()));
     Arc::new(CboPlanContext {

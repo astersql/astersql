@@ -125,3 +125,9 @@ Rust 独立测试 `base_physical_plan_test.rs` 已锁定两项关键对应：v2 
 - 修改统计收集或 probe 缩放时，同步更新 `base_physical_plan_test.rs`；修改 cost 缓存时同时覆盖普通、TRACE 和 `COST_FLAG_RECALCULATE`。
 - 性能风险主要是候选爆炸、重复深克隆和递归树扫描。新增候选/后处理前应确认缓存命中粒度，并避免在每个候选上重复遍历整棵树。
 - 兼容风险集中在 EXPLAIN ID、隐藏列身份、TiKV/TiFlash 任务边界与 Go 输出。所有新逻辑应先从 Go 对应实现或现有 Rust 测试取得证据；没有证据的预期行为应标为未验证。
+
+### e2f259adf7 来源增量
+
+对应 Go exhaust_physical_plans.go 两处、find_best_task.go 一处及 physical_table_scan.go Source构造字段的规范Rust物理化入口：ExhaustPhysicalPlans 在 LogicalTableScan 转 PhysicalTableScan 以及双读 TiKVSingleGather 构造表侧扫描时，克隆 Source.TiFlashLMFilterColumnIDs 到 ForcedLateMaterializationFilterColumnIDs。已有源别名、Schema、统计、范围、存储类型和 residual Selection 流程不变；不更改固定 SQL Explain。与 index_join_probe.rs 的索引连接内表构造共同覆盖本地实际扫描创建位置。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。
+
+来源必要局部接线（真实optimizer红灯取得后）：attach_canonical_scan_filter 在已启用LM且有强制列清单时，绕过既有pseudo-statistics合并过滤捷径，调用真实强制LM选择；所有未选谓词（含IN/EQ/OR）保留为实际PhysicalSelection，避免强制列之外的条件被legacy扫描分类消去。仍优先保留runtime scalar安全分支；无强制hint或LM关闭时沿用原分支。

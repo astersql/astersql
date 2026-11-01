@@ -248,6 +248,16 @@ impl DataSource {
                 .map_or("", |n| n.L.as_str())
                 .as_bytes(),
         );
+        match &self.TiFlashLMFilterColumnIDs {
+            None => h.write_u8(0),
+            Some(ids) => {
+                h.write_u8(1);
+                h.write_usize(ids.len());
+                for id in ids {
+                    h.write_i64(*id);
+                }
+            }
+        }
         hash_exprs(h, &self.PushedDownConds);
         hash_exprs(h, &self.AllConds);
         h.write_i64(self.PhysicalTableID);
@@ -262,6 +272,7 @@ impl DataSource {
             && equal_exprs(&self.AllConds, &o.AllConds)
             && self.PhysicalTableID == o.PhysicalTableID
             && self.PreferStoreType == o.PreferStoreType
+            && self.TiFlashLMFilterColumnIDs == o.TiFlashLMFilterColumnIDs
             && self.IsForUpdateRead == o.IsForUpdateRead
     }
 }

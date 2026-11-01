@@ -2878,6 +2878,14 @@ impl TableOptimizerHint {
                 }
                 value
             }
+            ("tiflash_lm_filter", _) => {
+                let mut value = tables.first().ok_or("LM hint requires a table")?.clone();
+                for column in &self.indexes {
+                    value.push_str(", ");
+                    value.push_str(&quote_name(column));
+                }
+                value
+            }
             ("qb_name", _) if !tables.is_empty() => tables.join(". "),
             (
                 "use_index"

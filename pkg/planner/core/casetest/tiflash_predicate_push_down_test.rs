@@ -129,7 +129,11 @@ fn replay_go_suite(name: &str, inverted: bool, late_materialization: bool) {
         }
 
         let cases = suite_cases(&suite, name, cascades);
-        assert_eq!(cases.len(), 15, "{name} complete Go fixture inventory");
+        assert_eq!(
+            cases.len(),
+            if late_materialization { 17 } else { 15 },
+            "{name} complete Go fixture inventory"
+        );
         for (index, case) in cases.iter().enumerate() {
             let actual = ConvertRowsToStrings(&tk.MustQuery(&case.sql, Vec::new()).Rows());
             assert_eq!(
@@ -149,7 +153,7 @@ fn replay_go_suite(name: &str, inverted: bool, late_materialization: bool) {
 }
 
 /// Go `TestTiFlashLateMaterialization`: setup, replica/session side effects,
-/// all 15 inputs, and every normalized-plan row in both planner modes.
+/// all 17 inputs, and every normalized-plan row in both planner modes.
 #[test]
 fn tiflash_late_materialization_matches_go_goldens() {
     replay_go_suite("TestTiFlashLateMaterialization", false, true);

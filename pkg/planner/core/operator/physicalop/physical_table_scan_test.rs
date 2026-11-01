@@ -149,3 +149,17 @@ fn ru_columnar_index_metadata_is_cloned_and_rejects_plan_cache() {
     assert_eq!(clone.UsedColumnarIndexes.len(), 1);
     assert!(crate::cache_snapshot::CachedPlan::try_capture(&scan).is_err());
 }
+
+#[test]
+fn port_e2f259adf7_forced_columns_clone_and_memory() {
+    let mut scan = PhysicalTableScan::New(context());
+    let before = scan.MemoryUsage();
+    scan.ForcedLateMaterializationFilterColumnIDs = Vec::with_capacity(8);
+    scan.ForcedLateMaterializationFilterColumnIDs
+        .extend([101, 102]);
+    assert_eq!(scan.MemoryUsage() - before, 8 * 8);
+    let mut clone = scan.Clone(context()).unwrap();
+    assert_eq!(clone.ForcedLateMaterializationFilterColumnIDs, [101, 102]);
+    clone.ForcedLateMaterializationFilterColumnIDs[0] = 999;
+    assert_eq!(scan.ForcedLateMaterializationFilterColumnIDs, [101, 102]);
+}

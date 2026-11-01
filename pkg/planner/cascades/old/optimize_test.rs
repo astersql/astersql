@@ -302,3 +302,40 @@ fn test_applied_rule_set() {
         "Go require.Equal(1, rule.appliedTimes)"
     );
 }
+
+#[test]
+fn port_e2f259adf7_old_cascades_scan_retains_owned_forced_columns() {
+    use crate::{ImplTableScan, ImplementationRule};
+    use astersql_planner_core_operator_logicalop::{DataSource, LogicalPlan, LogicalTableScan};
+    let ctx = context();
+    let mut source = DataSource::default().Init(ctx.clone(), 0);
+    source.TiFlashLMFilterColumnIDs = Some(vec![101, 102]);
+    source.TableStats.HistColl = Some(Arc::new(*astersql_statistics::NewHistColl(9, 10, 0, 1, 0)));
+    let source = Rc::new(std::cell::RefCell::new(source));
+    let mut scan = LogicalTableScan::default().Init(ctx, 0);
+    scan.Source = Some(source.clone());
+    scan.SetSchema(one_column_schema());
+    let group = memo::Convert2Group(Box::new(scan));
+    group.borrow_mut().Prop.Stats = Some(Box::new(astersql_planner_property::StatsInfo {
+        RowCount: 10.0,
+        ..Default::default()
+    }));
+    let expr = group.borrow().Equivalents[0].clone();
+    let mut required = astersql_planner_property::PhysicalProperty::default();
+    required.ExpectedCnt = f64::MAX;
+    let implementations = ImplTableScan
+        .OnImplement(&expr.borrow(), &required)
+        .unwrap();
+    assert_eq!(implementations.len(), 1);
+    source.borrow_mut().TiFlashLMFilterColumnIDs = None;
+    let implementation = implementations[0].borrow();
+    let physical = implementation
+        .GetPlan()
+        .as_any()
+        .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalTableScan>()
+        .unwrap();
+    assert_eq!(
+        physical.ForcedLateMaterializationFilterColumnIDs,
+        [101, 102]
+    );
+}

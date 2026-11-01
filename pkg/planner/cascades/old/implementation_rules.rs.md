@@ -104,3 +104,7 @@ Rust 为适配所有权、动态类型和拆分后的 crate 边界增加了明�
 - 修改 scan/reader 或成本模型时，在 `PlanAdapter` 相应 trait impl 接入；核对普通表/临时表、唯一/非唯一索引、顺序/逆序、range 数、直方图缺失、系统变量未设置或无法解析、并发度为 unset/非正数等分支。成本改变会影响全局计划选择，应补成本及计划选择测试，而不只测试 `OnImplement` 返回非空。
 - 扩展 Join 时必须逐一列举所有 `JoinType`、inner child 与 build side，保持 `getImplForHashJoin` 的 outer expected-count 缩放；MergeJoin 还需验证左右键顺序、父属性来源和多个候选枚举。`FullOuterJoin` 目前明确无右建表候选，改变时需同步独立回归。
 - 保持 Go 增量对齐原则：先对照 `implementation_rules.go` 的同名规则和相邻 `optimize.go` 调用链，只移植必要语义；Rust 测试继续与生产文件分离。若修改 Rust 源码，应遵循仓库要求保留 PingCAP 许可与顶部 `// Copyright 2026 AsterSQL.`，并在完成后运行 `cargo fmt --all`；本说明任务本身不修改源码也不运行 Cargo。
+
+### e2f259adf7 必要扫描接线
+
+ImplTableScan.OnImplement调用简化的GetPhysicalScan4LogicalTableScan后，克隆Source.TiFlashLMFilterColumnIDs到PhysicalTableScan.ForcedLateMaterializationFilterColumnIDs，防止旧Cascades构造入口丢失强制列属性。仅复制该拥有字段，不修改统计、代价、排序或其他实现规则。对应Go physical_table_scan.go同名构造器来源增量，完整SHA e2f259adf7ddb775cdc02e1514712b534498d05f。独立测试通过真实memo Group/ImplTableScan入口校验副本，不使用SQL固定输出。

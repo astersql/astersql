@@ -99,3 +99,7 @@ Rust 保留了 Go 的字符规则、运算符/扫描函数注册内容、关键�
 新增运算符或特殊前缀时，修改 `buildRuleTable` 中恰当的单字节、字符串或函数注册段；确认共享前缀的最短和最长形式都正确，且扫描函数应挂在每个首字节还是多级路径。新增 Hint 时同步 `hintTokenMap`；若要允许新语句承载 Hint，还需评估 `hintedTokens` 和 `lexer.rs` 的 Hint 启动逻辑。
 
 测试逻辑必须继续放在独立文件。最直接的回归位置是 [`pkg/parser/misc_2_aster_unit_test.rs`](misc_2_aster_unit_test.rs)；表与 grammar 关系使用 [`pkg/parser/consistent_test.rs`](consistent_test.rs)，保留字例外使用 [`pkg/parser/reserved_words_test.rs`](reserved_words_test.rs)，公开 Parser/摘要路径的词法行为使用 [`pkg/parser/lexer_test.rs`](lexer_test.rs)。兼容风险主要是 token 编号或分类变化导致语法含义改变；性能风险主要是线性表继续增长；限定名和 SQL mode 分支必须与 Go 保持一致。
+
+### 本次来源增量
+
+来源 e2f259adf7ddb775cdc02e1514712b534498d05f：Hint 关键字映射新增 `TIFLASH_LM_FILTER`，映射到 Rust 自有 hint.astergram 声明的 token；普通 SQL 与 PostgreSQL 关键字规则不变。

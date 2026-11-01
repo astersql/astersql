@@ -142,18 +142,25 @@ fn build_and_optimize_tiflash(
     context: &base_dependency::ContextRef,
     sql: &str,
 ) -> Box<dyn base_dependency::PhysicalPlan> {
+    build_and_optimize_tiflash_with_provider(context, sql, Arc::new(MppStatsProvider))
+}
+
+fn build_and_optimize_tiflash_with_provider(
+    context: &base_dependency::ContextRef,
+    sql: &str,
+    provider: Arc<dyn crate::DataSourceProvider>,
+) -> Box<dyn base_dependency::PhysicalPlan> {
+    let mut hint_processor = hint_dependency::NewQBHintHandler(None);
     let statement = crate::ast::NodeRef::new(
-        parser_dependency::New()
-            .ParseOneStmt(sql, "", "")
-            .unwrap_or_else(|error| panic!("parse TiFlash query {sql:?}: {error}")),
+        hint_processor.Process(
+            parser_dependency::New()
+                .ParseOneStmt(sql, "", "")
+                .unwrap_or_else(|error| panic!("parse TiFlash query {sql:?}: {error}")),
+        ),
     );
     let (mut builder, _) = crate::NewPlanBuilder()
-        .withDataSourceProvider(Arc::new(MppStatsProvider))
-        .Init(
-            context.clone(),
-            mpp_info_schema(),
-            hint_dependency::NewQBHintHandler(None),
-        );
+        .withDataSourceProvider(provider)
+        .Init(context.clone(), mpp_info_schema(), hint_processor);
     let mut logical = builder
         .buildResultSetNode(crate::context::TODO(), &statement, false)
         .unwrap_or_else(|error| panic!("build TiFlash query {sql:?}: {error}"));
@@ -513,4 +520,81 @@ fn find_operator<T: 'static>(plan: &dyn base_dependency::PhysicalPlan) -> Option
         return Some(found);
     }
     plan.children().into_iter().find_map(find_operator::<T>)
+}
+
+#[test]
+fn port_e2f259adf7_real_optimizer_preserves_forced_and_residual_filters() {
+    fn scan(
+        plan: &dyn base_dependency::PhysicalPlan,
+    ) -> Option<&physicalop_dependency::PhysicalTableScan> {
+        if let Some(scan) = plan
+            .as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalTableScan>()
+        {
+            return Some(scan);
+        }
+        plan.children().into_iter().find_map(scan)
+    }
+    fn residuals(plan: &dyn base_dependency::PhysicalPlan) -> usize {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalSelection>()
+            .map_or(0, |s| s.Conditions.len())
+            + plan.children().into_iter().map(residuals).sum::<usize>()
+    }
+    for enabled in [false, true] {
+        let context = crate::cbo_test::cbo_plan_context_with_config(|vars| {
+            vars.EnableLateMaterialization = enabled;
+        });
+        let plan = build_and_optimize_tiflash_with_provider(
+            &context,
+            "select /*+ read_from_storage(tiflash[t]) tiflash_lm_filter(t, a, b) */ * from t where a + b > 100 and c in (1,2,3)",
+            Arc::new(MppColumnSizeStatsProvider),
+        );
+        let scan = scan(plan.as_ref()).expect("real TiFlash scan");
+        assert_eq!(scan.ForcedLateMaterializationFilterColumnIDs.len(), 2);
+        assert_eq!(
+            scan.LateMaterializationFilterCondition.len(),
+            usize::from(enabled)
+        );
+        assert!(
+            residuals(plan.as_ref()) >= if enabled { 1 } else { 2 },
+            "unselected predicates remain executable selections"
+        );
+        if enabled {
+            let ids = expression_dependency::ExtractColumns(
+                scan.LateMaterializationFilterCondition[0].as_ref(),
+            )
+            .iter()
+            .map(|c| c.UniqueID)
+            .collect::<Vec<_>>();
+            assert!(
+                ids.iter()
+                    .all(|id| scan.ForcedLateMaterializationFilterColumnIDs.contains(id))
+            );
+        }
+    }
+}
+
+#[test]
+fn port_e2f259adf7_real_optimizer_honors_named_table_query_block() {
+    fn has_forced_scan(plan: &dyn base_dependency::PhysicalPlan) -> bool {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalTableScan>()
+            .is_some_and(|s| {
+                s.ForcedLateMaterializationFilterColumnIDs.len() == 2
+                    && !s.LateMaterializationFilterCondition.is_empty()
+            })
+            || plan.children().into_iter().any(has_forced_scan)
+    }
+    let context =
+        crate::cbo_test::cbo_plan_context_with_config(|v| v.EnableLateMaterialization = true);
+    let plan = build_and_optimize_tiflash_with_provider(
+        &context,
+        "select /*+ qb_name(chosen) read_from_storage(tiflash[t]) tiflash_lm_filter(t@chosen, a, b) */ * from t where a + b > 100 and c in (1,2,3)",
+        Arc::new(MppColumnSizeStatsProvider),
+    );
+    assert!(
+        has_forced_scan(plan.as_ref()),
+        "named QB hint must reach the real scan"
+    );
 }

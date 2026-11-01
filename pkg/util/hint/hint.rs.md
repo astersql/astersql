@@ -106,3 +106,7 @@ Go 同目录没有独立 `*_test.go`；Rust 的最近单测 [`hint_2_aster_unit_
 - `SET_VAR`、`write_slow_log` 与受限 Hint：`pkg/planner/core/hint_test.rs`。
 - 真实 SQL 到 `StmtHints`/`PlanHints`：`pkg/planner/core/casetest/hint/hint_test.rs`。
 - 子查询 flags：`pkg/planner/core/casetest/correlated/correlated_test.rs`；JOIN/QB 名和 build/probe：`pkg/planner/core/casetest/join/join_test.rs`。
+
+### e2f259adf7 来源增量
+
+Go hint.go 的九处增量：新增 HintTiFlashLMFilter、PlanHints.TiFlashLMFilters 与 HintedColumn。ParsePlanHints 校验表与至少一列、默认当前数据库，并优先采用表级 QBName，再采用 hint 级 QBName 解析查询块偏移。HintedColumn.Match 保留查询块、表别名及双向数据库星号通配；ColumnString 保留库表原名、列名使用小写。CollectUnmatchedHintWarnings 在 index/index-merge 之后、join 之前生成列提示未匹配警告。传出的列列表是拥有的值，不共享可变状态。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

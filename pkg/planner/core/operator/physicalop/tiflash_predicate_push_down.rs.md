@@ -33,7 +33,7 @@
 
 1. `base_physical_plan.rs` 在 TiFlash 表扫描构造下推 Selection 时，将子计划向下转型为 `PhysicalTableScan` 并调用 `handle_physical_tiflash_late_materialization`。
 2. 入口先拒绝非 TiFlash、要求顺序、无过滤条件或未开启 `EnableLateMaterialization` 的扫描。
-3. 它优先从 `TblColHists` 取得 `statistics::HistColl`，否则尝试 `stats_info().HistColl`；类型擦除对象无法下转型或 `RealtimeCount <= 8192` 时直接返回。
+3. 它优先从 `TblColHists` 取得 `statistics::HistColl`，否则尝试 `stats_info().HistColl`；类型擦除对象无法下转型时返回；`RealtimeCount <= 8192` 仅在没有强制列清单时返回。
 4. 每个非高代价条件通过 `ExtractColumnsMapFromExpressions` 提取列 ID；列 ID 排序后作为 `BTreeMap<Vec<i64>, ...>` 的确定性分组键，涉及列数超过 3 的条件被跳过。
 5. 每组调用 `cardinality::Selectivity`。估算失败的组经 `.ok()` 被跳过；选择率大于 0.6 的组也被丢弃。候选先按选择率升序，再按组大小和逆序表达式哈希打破平局。
 6. 贪心循环把候选组与已选条件合并并重新估算。若列数不增加，或预计过滤超过一个 pack 且调整后收益提高，则接受；若预计过滤行数小于一个 pack，则提前停止。
@@ -84,3 +84,7 @@ Rust 当前生产调用点位于 `base_physical_plan.rs`，只调用真实节点
 - 修改阈值、收益公式或排序平局规则会改变计划稳定性与性能，应覆盖 pack 边界、0.6 边界、相同选择率/组大小、估算失败、重复/同列索引以及列数超过 3 的用例。
 - 增减高代价函数必须同步真实表达式与 `PhysicalExpr` 两个检查器，并与 Go `withHeavyCostFunctionForTiFlashPrefetch` 核对；不要把 Rust 测试内嵌进生产文件。
 - 改动索引提示时需保持大小写归一化、`FORCE` 优先级、仅扫描作用域、公开单列倒排索引和同列后者覆盖等兼容规则，并评估重复索引是否仍需保留。
+
+### e2f259adf7 来源增量
+
+对应来源六处Go差异：真实 handle_physical_tiflash_late_materialization 在启用LM、TiFlash、非有序、非空条件的既有门槛内，允许非空强制清单绕过小表阈值。full-text仍优先阻止LM。强制分支先调用 split_forced_late_materialization_conditions，不走代价启发式回退；列集合必须非空且全部 UniqueID 被强制，已使用倒排索引的简单比较按物理 Column.ID 排除，复杂表达式仍可使用LM。常量、未命中列和索引简单比较保留为残余条件。通过真实 cardinality::Selectivity 估计；错误记录警告并回退同Go的cost::SelectionFactor（0.8），更新LM条件/选择率及扫描统计。轻量TiFlashTableScan模型同步强制清单、小表门槛及倒排互斥，但不是SQL完成证据。本提交不补建既有真实倒排索引选择或通用Explain子系统；实际被选/强制索引元数据由调用者提供，真实谓词拆分使用其tipb::InvertedQueryInfo。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

@@ -586,6 +586,8 @@ fn source_probe(
             .SetSchema(source.Schema().Clone());
         table_scan.Table = Some(source.TableInfo.Clone());
         table_scan.Columns = source.Columns.clone();
+        table_scan.ForcedLateMaterializationFilterColumnIDs =
+            source.TiFlashLMFilterColumnIDs.clone().unwrap_or_default();
         table_scan.IsCommonHandle = source.TableInfo.IsCommonHandle;
         table_scan.TblColHists = result.scan.TblColHists.clone();
         table_scan.DBName = source.DBName.O.clone();

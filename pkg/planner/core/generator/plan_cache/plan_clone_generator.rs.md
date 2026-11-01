@@ -99,3 +99,7 @@ Go `main` 固定写 `plan_clone_generated.go` 并以日志终止报告失败；R
 新增算子必须同时加入 `PHYSICAL_STRUCTURES` 和 `physical_structure_fields`，并与 Go `structures` 顺序保持一致。修改固定 import 或生成文件头时同步 `CODE_GEN_PLAN_CACHE_PREFIX` 与 Go 原版。若启用 `write_generated_file` 进入生产流程，应额外设计原子写、格式化和并发写约束；当前接口不提供这些保证。
 
 测试应继续放在独立文件 `pkg/planner/core/generator/plan_cache/plan_clone_test.rs`，不要嵌入生产源文件。字段模板变化应增加精确片段断言；全量目录变化应保持与 `pkg/planner/core/operator/physicalop/plan_clone_generated.go` 的字节对比。Go 侧同步更新 `plan_clone_generator.go` 和 `plan_clone_test.go`，并按仓库生成流程刷新目标文件。主要风险是：漏字段导致跨会话别名（正确性/隔离风险），错误深拷贝导致性能回退，错误 `MustNil` 导致计划缓存命中减少，以及 Rust 静态目录与 Go 反射结果漂移。
+
+### e2f259adf7 来源增量
+
+对应 Go plan_clone_generator.go simple slice 新增 []int64：write_field_clone 为其生成 make/copy 深克隆；PhysicalTableScan 的结构目录加入 ForcedLateMaterializationFilterColumnIDs。生成器继续产出用于Go契约对照的代码，Rust真实缓存行为由 physicalop/cache_snapshot.rs 的拥有快照实现；不覆盖 Go 已生成源码或其他生成物。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

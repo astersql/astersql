@@ -358,3 +358,101 @@ fn hint_2_remove_duplicates_keeps_first_restored_hint() {
 
     assert_eq!(result, vec![first, second]);
 }
+
+#[test]
+fn port_e2f259adf7_plan_hint_recognized_before_binding() {
+    let mut h = table_hint("tiflash_lm_filter", "t");
+    h.Indexes = vec![ci("A"), ci("b")];
+    let mut processor = QBHintHandler::default();
+    let mut warnings = Warnings::default();
+    let (plan, _) = ParsePlanHints(
+        vec![h],
+        1,
+        "test".into(),
+        &mut processor,
+        false,
+        false,
+        false,
+        true,
+        &mut warnings,
+    )
+    .unwrap();
+    assert!(warnings.text.is_empty());
+    assert_eq!(
+        CollectUnmatchedHintWarnings(&plan),
+        ["tiflash_lm_filter(test.t, a, b) is inapplicable, check whether the table(test.t) exists"]
+    );
+}
+
+#[test]
+fn port_e2f259adf7_column_hint_match_restore_and_empty_arguments() {
+    let column = HintedColumn {
+        DBName: ci("*"),
+        TblName: ci("Orders"),
+        SelectOffset: 2,
+        Columns: vec![ci("A"), ci("b")],
+        Matched: false,
+    };
+    assert!(column.Match(&hinted_table("sales", "orders", 2)));
+    assert!(!column.Match(&hinted_table("sales", "orders", 1)));
+    assert!(!column.Match(&hinted_table("sales", "alias", 2)));
+    assert_eq!(column.ColumnString(), "*.Orders, a, b");
+    let mut processor = QBHintHandler::default();
+    let mut warnings = Warnings::default();
+    let (_, _) = ParsePlanHints(
+        vec![
+            table_hint(HintTiFlashLMFilter, "t"),
+            ast::TableOptimizerHint {
+                HintName: ci(HintTiFlashLMFilter),
+                ..Default::default()
+            },
+        ],
+        1,
+        "test".into(),
+        &mut processor,
+        false,
+        false,
+        false,
+        true,
+        &mut warnings,
+    )
+    .unwrap();
+    assert_eq!(warnings.text.len(), 2);
+    assert!(warnings.text[0].contains("please specify at least one column name"));
+    assert!(warnings.text[1].contains("Please specify the table names"));
+    let mut h = table_hint(HintTiFlashLMFilter, "t");
+    h.Indexes = vec![ci("a"), ci("b")];
+    h.QBName = ci("sel_1");
+    assert_eq!(
+        RestoreTableOptimizerHint(&h),
+        "tiflash_lm_filter(@`sel_1` `t`, `a`, `b`)"
+    );
+}
+
+#[test]
+fn port_e2f259adf7_table_qb_overrides_hint_qb_and_database_defaults() {
+    let mut processor = QBHintHandler::default();
+    processor.QBNameToSelOffset.insert("outer".into(), 2);
+    processor.QBNameToSelOffset.insert("inner".into(), 3);
+    let mut hint = table_hint(HintTiFlashLMFilter, "T");
+    hint.Indexes = vec![ci("A")];
+    hint.QBName = ci("outer");
+    hint.Tables[0].QBName = ci("inner");
+    let mut warnings = Warnings::default();
+    let (plan, _) = ParsePlanHints(
+        vec![hint],
+        1,
+        "Sales".into(),
+        &mut processor,
+        false,
+        false,
+        false,
+        true,
+        &mut warnings,
+    )
+    .unwrap();
+    assert!(warnings.text.is_empty());
+    assert_eq!(plan.TiFlashLMFilters[0].SelectOffset, 3);
+    assert_eq!(plan.TiFlashLMFilters[0].DBName.O, "Sales");
+    assert_eq!(plan.TiFlashLMFilters[0].TblName.O, "T");
+}

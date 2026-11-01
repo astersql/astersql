@@ -99,3 +99,7 @@ RustCodeGraph 将本文件标记为被 `base_physical_plan.rs` 使用；图查�
 调整 Fix44855 时必须同时审查 `access_rows_floor` 的默认 ON 语义、`ndv_lower_bound` 上界的默认 OFF 语义、`RecordRelevantOptFix` 调用，以及 Go 的 `indexJoinProbeAccessRowsFloor`、`getColsNDVLowerBoundFromHistColl` 和相关构造函数。性能验证应关注候选数、范围内存、表达式克隆、选择率调用和每个候选的 `get_plan_cost_ver2`。
 
 最低测试同步面是 `pkg/planner/core/operator/physicalop/index_join_probe_test.rs`：为纯行数函数增加表驱动边界，为范围模板增加 collator/槽位/manager 断言，为候选选择增加至少两个竞争路径。若改动影响最终 SQL 计划选择，还应同步 Go 对照回归或 Rust 对应的计划集成测试；现有 Go 证据包括 Issue 69974 场景。
+
+### e2f259adf7 来源增量
+
+对应 Go constructDS2TableScanTask/constructDS2IndexScanTask 的本地必要接线：source_probe 在构建索引连接内表 PhysicalTableScan 时，克隆 Source 的 TiFlashLMFilterColumnIDs 到扫描的强制LM字段。仅传递元数据，不更改原范围、关联条件、索引选择、事务或执行期探测算法。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

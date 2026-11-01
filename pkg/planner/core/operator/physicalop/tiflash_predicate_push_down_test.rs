@@ -21,6 +21,7 @@ fn scan(filters: Vec<PhysicalExpr>, indexes: Vec<ColumnarIndex>) -> TiFlashTable
         indexes,
         used_indexes: Vec::new(),
         late_materialization: false,
+        forced_late_materialization_filter_column_ids: Vec::new(),
         late_filter_conditions: Vec::new(),
         late_selectivity: 1.0,
         expression_selectivity: BTreeMap::new(),

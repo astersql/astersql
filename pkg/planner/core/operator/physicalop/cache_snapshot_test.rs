@@ -1225,3 +1225,30 @@ fn go_merge_187_join_aggregation_attach_keeps_concrete_variant() {
             .KeepOuterOrder
     );
 }
+
+#[test]
+fn port_e2f259adf7_cached_scan_retains_owned_forced_column_ids() {
+    let mut scan = PhysicalTableScan::New(context());
+    scan.ForcedLateMaterializationFilterColumnIDs = vec![101, 102];
+    let cached = CachedPlan::try_capture(&scan).unwrap();
+    scan.ForcedLateMaterializationFilterColumnIDs[0] = 999;
+    let mut restored = cached.restore(context()).unwrap();
+    let restored = restored
+        .as_any_mut()
+        .downcast_mut::<PhysicalTableScan>()
+        .unwrap();
+    assert_eq!(
+        restored.ForcedLateMaterializationFilterColumnIDs,
+        [101, 102]
+    );
+    restored.ForcedLateMaterializationFilterColumnIDs.push(103);
+    let second = cached.restore(context()).unwrap();
+    assert_eq!(
+        second
+            .as_any()
+            .downcast_ref::<PhysicalTableScan>()
+            .unwrap()
+            .ForcedLateMaterializationFilterColumnIDs,
+        [101, 102]
+    );
+}

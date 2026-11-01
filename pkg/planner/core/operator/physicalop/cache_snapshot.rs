@@ -1812,6 +1812,7 @@ pub struct CachedTableScan {
     filter_condition: Vec<expression::CachedExpression>,
     late_materialization_filter_condition: Vec<expression::CachedExpression>,
     late_materialization_selectivity: f64,
+    forced_late_materialization_filter_column_ids: Vec<i64>,
     filter_stats: Option<property::StatsInfo>,
     store_type: kv::StoreType,
     is_partition: bool,
@@ -1843,6 +1844,9 @@ impl CachedTableScan {
                 &value.LateMaterializationFilterCondition,
             )?,
             late_materialization_selectivity: value.LateMaterializationSelectivity,
+            forced_late_materialization_filter_column_ids: value
+                .ForcedLateMaterializationFilterColumnIDs
+                .clone(),
             filter_stats: value.FilterStats.clone(),
             store_type: value.StoreType,
             is_partition: value.IsPartition,
@@ -1877,6 +1881,9 @@ impl CachedTableScan {
                 expression_context,
             )?,
             LateMaterializationSelectivity: self.late_materialization_selectivity,
+            ForcedLateMaterializationFilterColumnIDs: self
+                .forced_late_materialization_filter_column_ids
+                .clone(),
             FilterStats: self.filter_stats.clone(),
             StoreType: self.store_type,
             IsPartition: self.is_partition,

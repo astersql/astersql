@@ -445,6 +445,15 @@ pub fn RestoreTableOptimizerHint(hint: &ast::TableOptimizerHint) -> String {
                 );
             }
         }
+        "tiflash_lm_filter" => {
+            if let Some(table) = hint.Tables.first() {
+                output.push_str(&restoreHintTable(table));
+                for column in &hint.Indexes {
+                    output.push_str(", ");
+                    output.push_str(&quoteName(&column.O));
+                }
+            }
+        }
         "qb_name" => {
             if !hint.Tables.is_empty() {
                 output.push_str(", ");

@@ -98,3 +98,7 @@ Rust 直接回归 `pkg/planner/core/planbuilder_runtime_test.rs::init_uses_the_s
 - 回归测试不要内嵌到本文件。初始化和局部状态对齐放在 `planbuilder_runtime_test.rs`；真实 parser AST 与 provider 边界放在 `real_result_set_builder_aster_unit_test.rs`；完整 DML/EXPLAIN 路径放在 `integration_test.rs` 或邻近独立测试文件，并与 Go 对应测试保持语义一致。
 
 主要风险是 DML 列布局与 executor 不兼容（正确性）、Go/Rust 分派差异导致功能误判（兼容性）、过早增加/删除 projection 或列使优化和索引维护退化（性能与正确性），以及在多轮优化间泄漏 builder/session 状态（稳定性）。
+
+### e2f259adf7 必要查询块接线
+
+来源新hint通过hintProcessor.GetHintOffset解析查询块；Rust复用Init传入的既有QBHintHandler，通过crate内部plan_hint_processor访问器交给ParsePlanHints，避免运行时另建空handler丢失已处理AST的QB_NAME和sel_N偏移。无新增查询块框架，调用方仍负责原有Process阶段；未处理AST的空查询块保持原偏移。真实优化器命名表QB测试取得红灯后修复。来源完整SHA：e2f259adf7ddb775cdc02e1514712b534498d05f。

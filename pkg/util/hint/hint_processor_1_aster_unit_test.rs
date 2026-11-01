@@ -53,6 +53,7 @@ fn table_source(name: &str, index_hints: Vec<ast::IndexHint>) -> ast::ResultSetN
             ..Default::default()
         },
         QuerySource: None,
+        FunctionSource: None,
         AsName: ast::CIStr::default(),
         TableSample: None,
         AsOf: None,

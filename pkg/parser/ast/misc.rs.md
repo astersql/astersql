@@ -94,6 +94,10 @@ Go `misc.go` 还包含 materialized view 等节点，主 Rust `lib.rs` 也存在
 
 兼容风险集中在外部可观察 SQL 文本、参数排序和错误文本；安全风险集中在漏打码；性能风险集中在长列表分配、递归列表和 clone。任何新分支都应确认这些三类风险，并检查已确认的 `redact_url` 生产调用者。
 
+### 本次来源增量
+
+来源 e2f259adf7ddb775cdc02e1514712b534498d05f 的 Restore 分支：`tiflash_lm_filter` 将首张表后面的 Indexes 解释为列名，以逗号分隔、逐项引用；查询块前缀沿用既有还原逻辑。此处仅完成 AST 文本还原，不表示规划提示已接线。
+
 ## cb395494e6 增量对齐
 
 对应 Go misc.go 的 RedactURL：统一无效 URL 占位为 (invalid URL)，移除 userinfo；对支持的存储协议清除 fragment、拒绝 query 的非法 percent escape/裸分号并删除整个 query。SSE-KMS context 为敏感键，若原始 JSON 因裸 & 等被拆开或无法解析，则删除整个 query，避免泄漏拆分值。保留普通本地路径，不修改任何方言或 SQL/类型/会话语义。

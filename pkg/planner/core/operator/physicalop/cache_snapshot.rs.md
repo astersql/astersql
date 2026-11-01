@@ -111,3 +111,7 @@ Rust 没有复用 Go 的对象内 `CloneForPlanCache` 方法，而是拆成不�
 5. 检查 `pkg/session/runtime/planning.rs` 的入口是否确实能到达新类型，以及 `PlanCacheValue` 的内存估计/可缓存性检查是否需要配套调整。
 
 主要风险是漏复制会影响执行或 explain 的字段、错误共享 session-bound 数据、遗漏递归 child、恢复派生字段不完整，以及 Rust 支持矩阵与 Go 生成清单漂移。范围/range、表达式、统计和 reader flatten 状态还可能带来内存与性能变化，应优先复用现有 cached 表示而不是引入整棵原计划克隆。
+
+### e2f259adf7 来源增量
+
+对应 Go plan_clone_generated.go 新字段深拷贝的 Rust 真实缓存路径：CachedTableScan capture 保存独立 forced_late_materialization_filter_column_ids，restore 为每次命中重新克隆 Vec。修改源扫描或一个恢复副本均不影响缓存快照及后续副本。保持既有列存索引不可缓存拒绝策略；新增清单本身可以缓存，不改变表达式参数重建和事务上下文。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

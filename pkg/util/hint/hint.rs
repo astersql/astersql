@@ -106,6 +106,8 @@ pub const HintIgnorePlanCache: &str = "ignore_plan_cache";
 pub const HintUsePlanCache: &str = "use_plan_cache";
 /// Limit 下推到 coprocessor。
 pub const HintLimitToCop: &str = "limit_to_cop";
+/// Force TiFlash late-materialization filter columns.
+pub const HintTiFlashLMFilter: &str = "tiflash_lm_filter";
 /// CTE merge hint。
 pub const HintMerge: &str = "merge";
 /// 半连接改写（子查询场景）。
@@ -761,6 +763,7 @@ pub struct PlanHints {
     pub IndexHintList: Vec<HintedIndex>, // use_index, ignore_index
     pub IndexMergeHintList: Vec<HintedIndex>, // use_index_merge
     pub TiFlashTables: Vec<HintedTable>, // isolation_read_engines(xx=tiflash)
+    pub TiFlashLMFilters: Vec<HintedColumn>,
     pub TiKVTables: Vec<HintedTable>, // isolation_read_engines(xx=tikv)
     pub LeadingJoinOrder: Vec<HintedTable>, // leading
     pub LeadingList: Option<ast::LeadingList>, // leading recursive
@@ -797,6 +800,30 @@ impl HintedTable {
         self.SelectOffset == other.SelectOffset
             && self.TblName.L == other.TblName.L
             && (self.DBName.L == other.DBName.L || self.DBName.L == "*" || other.DBName.L == "*")
+    }
+}
+
+/// Column names in a TIFLASH_LM_FILTER hint, scoped to a query block and table alias.
+#[derive(Clone, Debug, Default)]
+pub struct HintedColumn {
+    pub DBName: ast::CIStr,
+    pub TblName: ast::CIStr,
+    pub SelectOffset: i32,
+    pub Columns: Vec<ast::CIStr>,
+    pub Matched: bool,
+}
+impl HintedColumn {
+    pub fn Match(&self, other: &HintedTable) -> bool {
+        self.SelectOffset == other.SelectOffset && self.TblName.L == other.TblName.L
+            && (self.DBName.L == other.DBName.L || self.DBName.L == "*" || other.DBName.L == "*")
+    }
+    pub fn ColumnString(&self) -> String {
+        let mut value = format!("{}.{}", self.DBName.O, self.TblName.O);
+        if !self.Columns.is_empty() {
+            value.push_str(", ");
+            value.push_str(&self.Columns.iter().map(|c| c.L.as_str()).collect::<Vec<_>>().join(", "));
+        }
+        value
     }
 }
 
@@ -1046,6 +1073,7 @@ pub fn ParsePlanHints(
             | HintNoOrderIndex
             | HintIndexLookUpPushDown
             | HintIndexMerge
+            | HintTiFlashLMFilter
             | HintLeading => {
                 if hint.Tables.is_empty() {
                     let restored = RestoreTableOptimizerHint(hint);
@@ -1261,6 +1289,20 @@ pub fn ParsePlanHints(
                     }),
                     PushDownLookUp: pushDownLookUp,
                     ..Default::default()
+                });
+            }
+            HintTiFlashLMFilter => {
+                if hint.Indexes.is_empty() {
+                    warnHandler.SetHintWarning("The TIFLASH_LM_FILTER hint is not used correctly, please specify at least one column name.".into());
+                    continue;
+                }
+                let table = &hint.Tables[0];
+                let db = if table.DBName.L.is_empty() { ast::NewCIStr(&currentDB) } else { table.DBName.clone() };
+                let qb = if table.QBName.L.is_empty() { &hint.QBName } else { &table.QBName };
+                p.TiFlashLMFilters.push(HintedColumn {
+                    DBName: db, TblName: table.TableName.clone(),
+                    SelectOffset: hintProcessor.GetHintOffset(qb, currentLevel),
+                    Columns: hint.Indexes.clone(), Matched: false,
                 });
             }
             HintReadFromStorage => match hintDataCIStr(&hint.HintData).L.as_str() {
@@ -1553,6 +1595,12 @@ pub fn CollectUnmatchedHintWarnings(hintInfo: &PlanHints) -> Vec<String> {
         hintInfo.IndexMergeHintList.clone(),
         true,
     ));
+    for column_hint in &hintInfo.TiFlashLMFilters {
+        if !column_hint.Matched {
+            warnings.push(format!("{}({}) is inapplicable, check whether the table({}.{}) exists",
+                HintTiFlashLMFilter, column_hint.ColumnString(), column_hint.DBName.O, column_hint.TblName.O));
+        }
+    }
     warnings.extend(collectUnmatchedJoinHintWarning(
         HintINLJ,
         TiDBIndexNestedLoopJoin,

@@ -131,6 +131,12 @@ Rust 不是逐行同名：它把 Go 文件的大型 `PlanBuilder` 方法群拆�
 
 主要风险：Schema 与 OutputNames 不同步会造成后续解析错列；列/计划 ID 顺序变化会破坏计划快照；遗漏优化标志会产生行为或性能回归；CTE/hint/outer schema 栈未恢复会污染后续查询；访问路径或类型合并简化会偏离 Go 兼容语义。任何行为修改均应先构造失败回归、再修复，并遵循仓库要求运行 `cargo fmt --all`，但本任务是纯文档分析且按计划不运行 Cargo。
 
+### e2f259adf7 来源增量
+
+对应 Go logical_plan_builder.go 的 getDataSourceHintTable/setTiFlashLMFilterColumns 及 buildDataSource 接线：真实 build_table_source 分配 schema/UniqueID 并填充 source 后，复用既有 alias/query-block HintTable 调用 set_tiflash_lm_filter_columns。通过列名映射到 TblCols.UniqueID；表命中先设置 Matched。单条 hint 含任何未知列时整条拒绝并报告原 Go 文案，其他合法 hint 仍可累积。最终 ID 排序去重；没有合法列时保留 None。此步骤在设置存储偏好之前执行，不更改 PostgreSQL 的解析、类型、事务或协议。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。
+
+查询块局部接线：ParsePlanHints现在使用PlanBuilder.Init收到的同一个QBHintHandler；不再创建空handler。这样命名hint及表级QB覆盖hint级QB可与调用方Process过的AST保持同一偏移空间。
+
 
 ## 2026-10-31 percentile_disc
 

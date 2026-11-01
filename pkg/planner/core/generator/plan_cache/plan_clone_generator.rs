@@ -318,7 +318,7 @@ fn write_field_clone(
     let name = &field.name;
     let field_type = field.field_type.as_str();
     match field_type {
-        "[]int" | "[]byte" | "[]float" | "[]bool" | "[]uint32" => {
+        "[]int" | "[]int64" | "[]byte" | "[]float" | "[]bool" | "[]uint32" => {
             generator.line(format!(
                 "cloned.{name} = make({field_type}, len(op.{name}))"
             ));
@@ -542,6 +542,7 @@ fn physical_structure_fields(name: &str) -> Vec<StructField> {
                 "LateMaterializationFilterCondition",
                 "[]expression.Expression",
             ),
+            field("ForcedLateMaterializationFilterColumnIDs", "[]int64"),
             field("HandleIdx", "[]int"),
             field("HandleCols", "util.HandleCols"),
             field("ByItems", "[]*util.ByItems"),

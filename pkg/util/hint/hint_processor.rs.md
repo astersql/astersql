@@ -114,3 +114,7 @@ Rust `ParseHintsSet` 与 Go 一样：只接受一条语句、先收集再处理�
 - 扩大 warning 筛选时应添加精确 error identity/code 测试，避免退化为字符串匹配。
 - 修改历史 binding 完整性规则时，应同步 Go 实现或明确记录迁移差异，尤其要澄清三表阈值、schema/name 去重方式、大小写以及表达式子查询变体；还要评估是否影响自动 binding 的计划稳定性。
 - 性能上应避免在深层遍历中增加重复全树扫描；恢复新参数时可按现有模式一次分配输出，并保持线性处理。兼容性上，恢复文本会参与 binding ID，哪怕等价 SQL 的大小写、空格、引号或顺序变化也可能影响匹配与持久化数据。
+
+### e2f259adf7 来源增量
+
+不可缺少的本地 Restore 接线：来源 ast/misc.go 的 TIFLASH_LM_FILTER 首表与后续列逗号分隔规则同步到 Rust 实际 binding/警告归一化使用的 RestoreTableOptimizerHint。继续沿用此工具既有小写归一化策略；AST misc.rs 的 restore 仍输出大写 hint 名。该变更不会实现或模拟物理规划。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

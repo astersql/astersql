@@ -694,6 +694,8 @@ impl ImplementationRule for ImplTableScan {
         );
         physical.Table = Some(source.TableInfo.clone());
         physical.Columns = source.Columns.clone();
+        physical.ForcedLateMaterializationFilterColumnIDs =
+            source.TiFlashLMFilterColumnIDs.clone().unwrap_or_default();
         physical.Ranges = astersql_util_ranger::Ranges(scan.Ranges.clone());
         if !req_prop.IsSortItemEmpty() {
             physical.KeepOrder = true;

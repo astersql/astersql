@@ -483,6 +483,8 @@ pub struct DataSource {
     pub TblColsByID: HashMap<i64, Column>,
     pub CommonHandleCols: Vec<Column>,
     pub CommonHandleLens: Vec<isize>,
+    /// Forced LM unique column IDs; None preserves Go nil versus an empty slice.
+    pub TiFlashLMFilterColumnIDs: Option<Vec<i64>>,
     pub PreferStoreType: i32,
     pub IsForUpdateRead: bool,
     pub ContainExprPrefixUk: bool,
@@ -520,6 +522,7 @@ impl Default for DataSource {
             TblColsByID: HashMap::new(),
             CommonHandleCols: Vec::new(),
             CommonHandleLens: Vec::new(),
+            TiFlashLMFilterColumnIDs: None,
             PreferStoreType: 0,
             IsForUpdateRead: false,
             ContainExprPrefixUk: false,

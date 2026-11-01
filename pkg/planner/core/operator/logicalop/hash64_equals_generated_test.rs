@@ -95,3 +95,25 @@ fn show_ddl_job_number_is_excluded_like_go_generated_contract() {
         hash(&|hasher| right.Hash64(hasher))
     );
 }
+
+#[test]
+fn port_e2f259adf7_lm_columns_hash_and_equals_preserve_nil_order_and_values() {
+    let variants = [
+        None,
+        Some(vec![]),
+        Some(vec![1]),
+        Some(vec![2]),
+        Some(vec![1, 2]),
+        Some(vec![2, 1]),
+    ];
+    for (i, left) in variants.iter().enumerate() {
+        for (j, right) in variants.iter().enumerate() {
+            let mut a = DataSource::default();
+            let mut b = DataSource::default();
+            a.TiFlashLMFilterColumnIDs = left.clone();
+            b.TiFlashLMFilterColumnIDs = right.clone();
+            assert_eq!(a.Equals(&b), i == j, "{left:?} vs {right:?}");
+            assert_eq!(hash(&|h| a.Hash64(h)) == hash(&|h| b.Hash64(h)), i == j);
+        }
+    }
+}

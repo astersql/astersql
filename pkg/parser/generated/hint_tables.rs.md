@@ -9,7 +9,7 @@
 - 保存 hint lexer token 的整数编号，包括 `(`、`)`、`,` 等字面量以及 `hintHashJoin`、`hintMemoryQuota`、`hintLeading` 等 optimizer hint token。
 - 用 `GENERATED_HINT_XLAT` 将 lexer 输出的稀疏 token 编号翻译为解析表的紧凑列下标，并用 `GENERATED_HINT_SYMBOL_NAMES` 提供终结符和非终结符的可读名称。
 - 用 `GENERATED_HINT_REDUCTIONS`、`GENERATED_HINT_LEGACY_RULES` 和 `GENERATED_HINT_ACTION_REQUIRED` 保留每条产生式的左部符号、右部长度、手写语义动作规则号与动作必需性元数据。
-- 用 `GENERATED_HINT_PARSE_TABLE` 保存 338 个状态的稀疏 action/goto 行，由运行时完成 shift、reduce、accept 或 error 判定。
+- 用 `GENERATED_HINT_PARSE_TABLE` 保存 340 个状态的稀疏 action/goto 行，由运行时完成 shift、reduce、accept 或 error 判定。
 
 该文件不负责词法扫描、语义值构造、诊断累积或 AST 创建；这些分别由 `hintparserimpl.rs`、`hintparser.rs::reduce_hint` 及其 lexer 协议完成。
 
@@ -17,12 +17,12 @@
 
 - `mod tokens`：私有 token 常量集；`hintparser.rs` 在同一 `include!` 作用域中通过 `pub use tokens::*` 将它们提供给 lexer/parser 实现。数值与 `grammar/hint.astergram` 的 `%token` 声明对齐。
 - `GENERATED_HINT_ACCEPT: i32 = i32::MIN`：独立的接受动作哨兵值；`yyhintParse` 在普通正数 shift 之前先检查它。
-- `GENERATED_HINT_XLAT`：102 个 `(token_number, symbol_column)` 项，包含 EOF 的 `(0, 0)`；按 token 编号排序，供 `yyhint_tables::xlat` 二分查找。
-- `GENERATED_HINT_SYMBOL_NAMES`：139 个符号名，列下标同时被 action/goto 表和 reduction 左部引用。
-- `GENERATED_HINT_REDUCTIONS`：231 个 `(lhs_symbol, rhs_component_count)` 项，描述规约后应弹出的栈元素数以及 goto 所用非终结符。
-- `GENERATED_HINT_LEGACY_RULES`：231 个以 1 为基的文法规则号，把 parsergen 内部规约顺序映射到 `hintparser.rs::reduce_hint` 的 `match rule`。
-- `GENERATED_HINT_ACTION_REQUIRED`：231 个布尔标记，其中 65 个为 `true`。当前 hint 运行时不直接读取它，但 `parser_manifest_hint_matches_rust_reductions` 用它校验生成表未与文法动作标记漂移。
-- `GENERATED_HINT_PARSE_TABLE`：338 行稀疏 `(symbol_column, encoded_action)` 数组；每行按列号排序，供 `yyhint_tables::action` 二分查找。
+- `GENERATED_HINT_XLAT`：103 个 `(token_number, symbol_column)` 项，包含 EOF 的 `(0, 0)`；按 token 编号排序，供 `yyhint_tables::xlat` 二分查找。
+- `GENERATED_HINT_SYMBOL_NAMES`：140 个符号名，列下标同时被 action/goto 表和 reduction 左部引用。
+- `GENERATED_HINT_REDUCTIONS`：233 个 `(lhs_symbol, rhs_component_count)` 项，描述规约后应弹出的栈元素数以及 goto 所用非终结符。
+- `GENERATED_HINT_LEGACY_RULES`：233 个以 1 为基的文法规则号，把 parsergen 内部规约顺序映射到 `hintparser.rs::reduce_hint` 的 `match rule`。
+- `GENERATED_HINT_ACTION_REQUIRED`：233 个布尔标记，其中 65 个为 `true`。当前 hint 运行时不直接读取它，但 `parser_manifest_hint_matches_rust_reductions` 用它校验生成表未与文法动作标记漂移。
+- `GENERATED_HINT_PARSE_TABLE`：340 行稀疏 `(symbol_column, encoded_action)` 数组；每行按列号排序，供 `yyhint_tables::action` 二分查找。
 
 除 `tokens` 中的 `pub const` 外，所有表都是包含作用域内的私有符号；本文件没有类型、trait、函数、`impl` 或条件编译项。
 
@@ -72,3 +72,7 @@ Rust 表不是对 Go 数组的逐字节拷贝，而是从可维护的 `grammar/h
 2. 用 `astersql-parsergen generate` 重新生成签入产物，并用它的 `check` 模式检查漂移。评审时应将 grammar、生成表、语义动作和测试视为一个原子变更。
 3. 在独立测试文件中扩展覆盖：语法/表不变式改动对应 `parser_manifest_aster_unit_test.rs` 和 `parsergen_baseline_aster_unit_test.rs`；生成链改动对应 `parser_generated_sources_aster_unit_test.rs` 及 `parsergen/generate_aster_unit_test.rs`；用户可见语义对应 `hintparser_test.rs`。不要把 Rust 测试嵌入生成源文件。
 4. 兼容性风险主要是 token 编号漂移、legacy rule 映射错位、优先级/冲突解决变化和 Rust/Go AST 载荷分歧；性能风险主要是状态数或稀疏行显著膨胀。扩展时应同时保留成功、不完整输入、未知 token 和空输入轨迹。
+
+### 本次来源增量
+
+来源 e2f259adf7ddb775cdc02e1514712b534498d05f 的 hintparser.y 三处改动移植至 Rust hint.astergram；通过 parsergen CLI 重新生成。新增 token `hintTiFlashLMFilter = 57438`、支持索引级 Hint 与 Identifier 的产生式，保留原 token 编号。其余规约/状态编号变化是生成结果，非手改；main_tables.rs、lexer_tokens.rs无变化。这里只证明语法表能力，不表示 util hint 或规划生产接线已完成。

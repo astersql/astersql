@@ -596,3 +596,163 @@ fn range_fallback_drops_next_column_range_but_keeps_leading_in() {
         vec!["gt:[aaa]", "lt:[bbb]"]
     );
 }
+
+fn port_e2f259adf7_source(
+    plan: &dyn logicalop_dependency::LogicalPlan,
+) -> Option<&logicalop_dependency::DataSource> {
+    if let Some(source) = plan
+        .as_any()
+        .downcast_ref::<logicalop_dependency::DataSource>()
+    {
+        return Some(source);
+    }
+    plan.Children()
+        .iter()
+        .find_map(|child| port_e2f259adf7_source(child.as_ref()))
+}
+
+#[test]
+fn port_e2f259adf7_real_builder_binds_lm_columns() {
+    let (_, _, built) = crate::main_test::build_runtime_for_test(
+        "select /*+ tiflash_lm_filter(x, b, a, b) */ * from t x where a + b > 100 and c in (1,2,3)",
+    )
+    .unwrap();
+    let crate::BuiltRuntimePlan::Logical(plan) = built else {
+        panic!("logical plan")
+    };
+    let source = port_e2f259adf7_source(plan.as_ref()).unwrap();
+    let mut expected = source
+        .Columns
+        .iter()
+        .zip(&source.TblCols)
+        .filter(|(c, _)| ["a", "b"].contains(&c.Name.L.as_str()))
+        .map(|(_, c)| c.UniqueID)
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert!(!expected.is_empty());
+    assert_eq!(source.TiFlashLMFilterColumnIDs, Some(expected));
+}
+
+#[test]
+fn port_e2f259adf7_builder_alias_validation_and_duplicate_hints_are_atomic() {
+    for (hint_text, expected_names, warning) in [
+        ("tiflash_lm_filter(t, a)", vec![], "table(test.t) exists"),
+        (
+            "tiflash_lm_filter(x, a, missing)",
+            vec![],
+            "columns (missing) exist",
+        ),
+        (
+            "tiflash_lm_filter(x, a, missing) tiflash_lm_filter(x, b)",
+            vec!["b"],
+            "columns (missing) exist",
+        ),
+        (
+            "tiflash_lm_filter(x, a) tiflash_lm_filter(x, a, b)",
+            vec!["a", "b"],
+            "",
+        ),
+    ] {
+        let (ctx, _, built) = crate::main_test::build_runtime_for_test(&format!(
+            "select /*+ {hint_text} */ * from t x"
+        ))
+        .unwrap();
+        let crate::BuiltRuntimePlan::Logical(plan) = built else {
+            panic!("logical")
+        };
+        let source = port_e2f259adf7_source(plan.as_ref()).unwrap();
+        let mut expected = source
+            .Columns
+            .iter()
+            .zip(&source.TblCols)
+            .filter(|(c, _)| expected_names.contains(&c.Name.L.as_str()))
+            .map(|(_, c)| c.UniqueID)
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        assert_eq!(
+            source.TiFlashLMFilterColumnIDs.clone().unwrap_or_default(),
+            expected,
+            "{hint_text}"
+        );
+        let warnings = ctx
+            .GetSessionVars()
+            .StmtCtx
+            .GetWarnings()
+            .iter()
+            .filter_map(|w| w.Err.as_ref().map(ToString::to_string))
+            .collect::<Vec<_>>();
+        if warning.is_empty() {
+            assert!(warnings.is_empty(), "{warnings:?}");
+        } else {
+            assert!(warnings.iter().any(|w| w.contains(warning)), "{warnings:?}");
+        }
+    }
+}
+
+#[test]
+fn port_e2f259adf7_canonical_scan_enumeration_owns_lm_ids() {
+    use base_dependency::Plan as _;
+    use logicalop_dependency::LogicalPlan as _;
+    let ctx = crate::cbo_test::cbo_plan_context();
+    let mut source = logicalop_dependency::DataSource::default().Init(ctx.clone(), 0);
+    source.TiFlashLMFilterColumnIDs = Some(vec![101, 102]);
+    source.TableStats.RowCount = 10.0;
+    let source = std::rc::Rc::new(std::cell::RefCell::new(source));
+    let path = planner_util_dependency::AccessPath {
+        IsIntHandlePath: true,
+        StoreType: kv_dependency::StoreType::TiFlash,
+        ..Default::default()
+    };
+    let gather = logicalop_dependency::DataSource::buildTableGather(source.clone(), &path);
+    let candidates = physicalop_dependency::ExhaustPhysicalPlans(
+        gather.Children()[0].as_ref(),
+        &property_dependency::PhysicalProperty::default(),
+    )
+    .unwrap();
+    assert_eq!(candidates.len(), 1);
+    source
+        .borrow_mut()
+        .TiFlashLMFilterColumnIDs
+        .as_mut()
+        .unwrap()
+        .push(999);
+    let scan = candidates[0]
+        .as_any()
+        .downcast_ref::<physicalop_dependency::PhysicalTableScan>()
+        .unwrap();
+    assert_eq!(scan.ForcedLateMaterializationFilterColumnIDs, [101, 102]);
+    assert_eq!(scan.StoreType, kv_dependency::StoreType::TiFlash);
+}
+
+#[test]
+fn port_e2f259adf7_double_read_table_scan_owns_lm_ids() {
+    use logicalop_dependency::LogicalPlan as _;
+    let ctx = crate::cbo_test::cbo_plan_context();
+    let mut source = logicalop_dependency::DataSource::default().Init(ctx.clone(), 0);
+    source.TiFlashLMFilterColumnIDs = Some(vec![101]);
+    source.TableStats.RowCount = 10.0;
+    let source = std::rc::Rc::new(std::cell::RefCell::new(source));
+    let mut gather = logicalop_dependency::TiKVSingleGather::default().Init(ctx, 0);
+    gather.Source = Some(source.clone());
+    gather.IsIndexGather = true;
+    gather.IsDoubleRead = true;
+    let candidates = physicalop_dependency::ExhaustPhysicalPlans(
+        &gather,
+        &property_dependency::PhysicalProperty::default(),
+    )
+    .unwrap();
+    assert_eq!(candidates.len(), 1);
+    source.borrow_mut().TiFlashLMFilterColumnIDs = None;
+    let lookup = candidates[0]
+        .as_any()
+        .downcast_ref::<physicalop_dependency::PhysicalIndexLookUpReader>()
+        .unwrap();
+    let scan = lookup
+        .TablePlan
+        .as_ref()
+        .unwrap()
+        .as_any()
+        .downcast_ref::<physicalop_dependency::PhysicalTableScan>()
+        .unwrap();
+    assert_eq!(scan.ForcedLateMaterializationFilterColumnIDs, [101]);
+}

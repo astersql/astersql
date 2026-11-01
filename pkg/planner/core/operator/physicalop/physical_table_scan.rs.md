@@ -191,3 +191,7 @@
   `pkg/planner/core/physical_plan_test.go::TestPhysicalTableScanExtractCorrelatedCols`。
 - 正确性风险集中在范围漏谓词、分区 ID、Schema/列顺序和相关列；兼容风险集中在 Explain
   文本与 PB 字段；性能风险集中在表达式/范围克隆、范围爆炸和过粗行宽估算。
+
+### e2f259adf7 来源增量
+
+对应来源 physical_table_scan.go 的 ForcedLateMaterializationFilterColumnIDs：New 初始化空清单；Clone 独立复制 Vec；MemoryUsage 计入 capacity * size_of::<i64>()。现有 BuildIndexMergeTableScan 经 Clone 自动保留清单并保持副本独立。真实 Source 到表扫描的转换在 base_physical_plan.rs 与 index_join_probe.rs 注入清单，本文件简化构造辅助 API 不凭空增加 Source。清单是表达式 UniqueID，不写成物理列 ID；实际LM条件按既有 ToPB 逻辑编码。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

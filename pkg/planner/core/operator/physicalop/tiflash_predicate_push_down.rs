@@ -470,7 +470,9 @@ pub fn handle_physical_tiflash_late_materialization(scan: &mut crate::PhysicalTa
     let Some(histograms) = histograms else {
         return;
     };
-    if histograms.RealtimeCount as f64 <= TIFLASH_DATA_PACK_SIZE {
+    if histograms.RealtimeCount as f64 <= TIFLASH_DATA_PACK_SIZE
+        && scan.ForcedLateMaterializationFilterColumnIDs.is_empty()
+    {
         return;
     }
 
@@ -483,6 +485,28 @@ pub fn handle_physical_tiflash_late_materialization(scan: &mut crate::PhysicalTa
         cardinality::Selectivity(&context, histograms, expressions, &[]).ok()
     };
 
+    if scan
+        .UsedColumnarIndexes
+        .iter()
+        .any(|index| index.QueryInfo.has_fts_query_info())
+    {
+        return;
+    }
+    if !scan.ForcedLateMaterializationFilterColumnIDs.is_empty() {
+        let (forced, _) = split_forced_late_materialization_conditions(&scan.FilterCondition, scan);
+        if !forced.is_empty() {
+            let selectivity = cardinality::Selectivity(&context, histograms, &forced, &[]).unwrap_or_else(|error| {
+                eprintln!("calculate selectivity failed, use selection factor for late materialization: {error}");
+                cardinality::cost::SelectionFactor
+            });
+            scan.LateMaterializationFilterCondition = forced;
+            scan.LateMaterializationSelectivity = selectivity;
+            let mut stats = scan.stats_info().clone();
+            stats.RowCount *= selectivity;
+            scan.set_stats(stats);
+        }
+        return;
+    }
     let mut grouped = BTreeMap::<Vec<i64>, Vec<expression::ExprBox>>::new();
     for condition in &scan.FilterCondition {
         if with_heavy_cost_function_expression(condition.as_ref()) {
@@ -693,6 +717,7 @@ pub struct TiFlashTableScan {
     pub indexes: Vec<ColumnarIndex>,
     pub used_indexes: Vec<ColumnarIndex>,
     pub late_materialization: bool,
+    pub forced_late_materialization_filter_column_ids: Vec<i64>,
     pub late_filter_conditions: Vec<PhysicalExpr>,
     pub late_selectivity: f64,
     pub expression_selectivity: BTreeMap<String, f64>,
@@ -860,6 +885,37 @@ fn predicate_push_down_to_table_scan(conditions: &[PhysicalExpr], scan: &mut TiF
     if scan.full_text_push_down {
         return;
     }
+    if !scan
+        .forced_late_materialization_filter_column_ids
+        .is_empty()
+    {
+        let forced = scan
+            .forced_late_materialization_filter_column_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let inverted = scan
+            .used_indexes
+            .iter()
+            .filter(|i| i.kind == ColumnarIndexKind::Inverted)
+            .flat_map(|i| i.column_ids.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let selected = conditions
+            .iter()
+            .filter(|c| {
+                let columns = c.columns();
+                !columns.is_empty()
+                    && columns.is_subset(&forced)
+                    && !(is_predicate_simple_compare(c) && columns.is_subset(&inverted))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !selected.is_empty() {
+            scan.late_selectivity = estimate_selectivity(scan, &selected);
+            scan.late_filter_conditions = selected;
+        }
+        return;
+    }
     let groups = group_by_columns_sort_by_selectivity(conditions, scan);
     let mut selected = Vec::new();
     let mut selected_income = 0.0;
@@ -913,7 +969,12 @@ pub fn handle_tiflash_predicate_push_down(
     scan: &mut TiFlashTableScan,
     hints: &[IndexHint],
 ) -> Result<(), String> {
-    if scan.realtime_count <= TIFLASH_DATA_PACK_SIZE || scan.keep_order || scan.filters.is_empty() {
+    let small_table = scan.realtime_count <= TIFLASH_DATA_PACK_SIZE;
+    let forced_lm = scan.late_materialization
+        && !scan
+            .forced_late_materialization_filter_column_ids
+            .is_empty();
+    if (small_table && !forced_lm) || scan.keep_order || scan.filters.is_empty() {
         return Ok(());
     }
     if scan
@@ -940,7 +1001,8 @@ pub fn handle_tiflash_predicate_push_down(
         .indexes
         .iter()
         .filter(|index| {
-            index.public
+            !small_table
+                && index.public
                 && index.kind == ColumnarIndexKind::Inverted
                 && index.column_ids.len() == 1
                 && (hints.is_empty()
@@ -1002,4 +1064,57 @@ pub fn handle_tiflash_predicate_push_down(
         scan.used_indexes.sort_by_key(|index| index.id);
     }
     Ok(())
+}
+
+/// Partition real predicates using unique IDs for hints and physical IDs for inverted indexes.
+/// Empty-column expressions remain residual; an unmatched forced list never falls back to cost selection.
+pub fn split_forced_late_materialization_conditions(
+    conditions: &[expression::ExprBox],
+    scan: &crate::PhysicalTableScan,
+) -> (Vec<expression::ExprBox>, Vec<expression::ExprBox>) {
+    if scan.ForcedLateMaterializationFilterColumnIDs.is_empty() {
+        return (
+            Vec::new(),
+            conditions.iter().map(|c| c.CloneExpr()).collect(),
+        );
+    }
+    let forced = scan
+        .ForcedLateMaterializationFilterColumnIDs
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let inverted = scan
+        .UsedColumnarIndexes
+        .iter()
+        .filter(|i| i.QueryInfo.has_inverted_query_info())
+        .map(|i| i.QueryInfo.get_inverted_query_info().get_column_id())
+        .collect::<BTreeSet<_>>();
+    let mut selected = Vec::new();
+    let mut remaining = Vec::new();
+    for condition in conditions {
+        let columns = expression::ExtractColumns(condition.as_ref());
+        let matched = !columns.is_empty() && columns.iter().all(|c| forced.contains(&c.UniqueID));
+        let uses_inverted = is_real_predicate_simple_compare(condition.as_ref())
+            && columns.iter().all(|c| inverted.contains(&c.ID));
+        if matched && !uses_inverted {
+            selected.push(condition.CloneExpr());
+        } else {
+            remaining.push(condition.CloneExpr());
+        }
+    }
+    (selected, remaining)
+}
+fn is_real_predicate_simple_compare(condition: &dyn expression::Expression) -> bool {
+    let Some(function) = condition.as_scalar_function() else {
+        return false;
+    };
+    let args = function.GetArgs();
+    match function.FuncName.L.as_str() {
+        "eq" | "ge" | "le" | "lt" | "gt" | "in" => true,
+        "and" | "or" if args.len() == 2 => args
+            .iter()
+            .all(|a| is_real_predicate_simple_compare(a.as_ref())),
+        "not" if args.len() == 1 => is_real_predicate_simple_compare(args[0].as_ref()),
+        _ => false,
+    }
 }

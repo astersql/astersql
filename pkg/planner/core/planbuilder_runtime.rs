@@ -977,6 +977,12 @@ impl PlanBuilder {
         modified
     }
 
+    /// Reuse the handler initialized by the caller so named/default query
+    /// blocks resolve against the same AST offsets as data-source binding.
+    pub(crate) fn plan_hint_processor(&mut self) -> &mut hint::QBHintHandler {
+        &mut self.hintProcessor
+    }
+
     /// 由 AST 结果集节点构建逻辑计划。
     pub fn buildResultSetNode(
         &mut self,

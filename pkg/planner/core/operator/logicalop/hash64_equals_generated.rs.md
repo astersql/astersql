@@ -90,3 +90,7 @@ Rust 引用消除了 Go 接收者的 nil/type assertion 分支；Rust `Vec` 也�
 给已有算子增加语义字段时，先对照 Go 同名结构与生成文件确认字段是否属于身份，再同步更新哈希和相等投影。列表需同时编码长度、顺序和元素；无序映射应像 `LogicalLock` 一样先建立稳定顺序；可选值应编码存在标志，避免 `None` 与合法零值无谓碰撞。若改变共享辅助函数，要审计所有使用者。
 
 最直接的 Rust 测试入口是同目录 `hash64_equals_generated_test.rs`；覆盖面更广的迁移测试在 `logicalop_test/hash64_equals_test.rs`，该文件属于独立测试 crate；`logical_generated_aster_unit_test.rs` 还覆盖 DataSource 与 Projection。Go 意图由 `logicalop_test/hash64_equals_test.go` 提供。性能敏感扩展需关注表达式重复生成 `CanonicalHashCode()`、深层列表遍历以及锁键排序的成本。
+
+### e2f259adf7 来源增量
+
+对应来源 Go DataSource.Hash64/Equals 两处增量：TiFlashLMFilterColumnIDs 使用 Option 的 None/Some 标记、长度与逐个 i64 值参与哈希，并以完整 Option/Vec 相等性参与 Equals。保留 nil 与空列表、长度、顺序和不同列值的区别，不把不同强制LM列清单合并成同一逻辑计划。哈希具体字节编码沿用 Rust Hasher，不承诺跨语言逐字节同值。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

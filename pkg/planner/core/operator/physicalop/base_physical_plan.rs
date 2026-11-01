@@ -6104,6 +6104,9 @@ fn attach_canonical_scan_filter(
                     })
                 })
             });
+        let forced_lm = child.StoreType == kv::StoreType::TiFlash
+            && child.s_ctx().GetSessionVars().EnableLateMaterialization
+            && !child.ForcedLateMaterializationFilterColumnIDs.is_empty();
         let conditions = if child.StoreType == kv::StoreType::TiFlash && has_runtime_scalar {
             let conditions = child
                 .FilterCondition
@@ -6113,6 +6116,24 @@ fn attach_canonical_scan_filter(
                 .collect();
             child.FilterCondition.clear();
             conditions
+        } else if forced_lm {
+            // A forced list is exclusive from both cost selection and the
+            // pseudo-statistics combined-filter shortcut. Every unselected
+            // predicate remains an executable Selection, including IN/EQ/OR.
+            crate::tiflash_predicate_push_down::handle_physical_tiflash_late_materialization(
+                &mut child,
+            );
+            child
+                .FilterCondition
+                .iter()
+                .filter(|condition| {
+                    !child
+                        .LateMaterializationFilterCondition
+                        .iter()
+                        .any(|late| late.Equal(eval, condition.as_ref()))
+                })
+                .map(|condition| condition.CloneExpr())
+                .collect()
         } else if combined_pseudo_filters {
             // With pseudo statistics TiFlash cannot rank individual conjuncts.
             // Go keeps the complete conjunction on one Selection so its
@@ -9375,6 +9396,8 @@ pub fn ExhaustPhysicalPlans(
                 );
                 table_scan.Table = Some(source.TableInfo.Clone());
                 table_scan.Columns = source.Columns.clone();
+                table_scan.ForcedLateMaterializationFilterColumnIDs =
+                    source.TiFlashLMFilterColumnIDs.clone().unwrap_or_default();
                 table_scan.DBName = source.DBName.O.clone();
                 table_scan.TableAsName = source
                     .TableAsName
@@ -9602,6 +9625,8 @@ pub fn ExhaustPhysicalPlans(
             .O
             .clone();
         scan.PhysicalTableID = source.PhysicalTableID;
+        scan.ForcedLateMaterializationFilterColumnIDs =
+            source.TiFlashLMFilterColumnIDs.clone().unwrap_or_default();
         scan.Ranges = ranger::Ranges(logical.Ranges.clone());
         scan.AccessCondition = logical
             .AccessConds

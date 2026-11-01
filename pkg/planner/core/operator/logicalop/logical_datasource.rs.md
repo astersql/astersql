@@ -106,3 +106,7 @@ RustCodeGraph 的文件节点还显示 `memtable_infoschema_extractor.rs`、`phy
 修改统计时，必须一起维护点估计及 min/max 风险边界，并避免原地修改共享 `HistColl`。修改物理候选构造时，检查 Range、过滤条件、`StoreType`、`NoncacheableReason`、单扫/双读标志在 Scan 与 Gather 间是否完整传递。
 
 测试必须放在独立文件，不内嵌到生产 `.rs`。首选扩展 `logical_datasource_test.rs`（Range、句柄布局、统计风险）和 `logical_datasource_aster_unit_test.rs`（键、裁剪、属性）；涉及物理转换时还应同步 `logical_table_scan_test.rs`、`logical_index_scan_test.rs`、`logical_tikv_single_gather_test.rs` 或 physicalop 路由测试。Go 对照回归可参考 `pkg/planner/core/logical_plans_test.go` 的谓词下推/列裁剪，以及 `pkg/planner/core/casetest/index/index_test.go` 的部分索引计划缓存/裁剪用例。
+
+### e2f259adf7 来源增量
+
+对应 Go DataSource 新字段 TiFlashLMFilterColumnIDs。Rust 使用 Option<Vec<i64>>，None 对应 Go nil，Some(empty) 与 nil 可在哈希/相等性中区分；有效绑定存放排序去重的表达式 UniqueID，而非表列的物理 ID。source 转换为 LogicalTableScan 的 Source 引用继续拥有该清单，物理枚举时克隆；不改变既有访问路径枚举或列ID分配规则。 来源完整 SHA：`e2f259adf7ddb775cdc02e1514712b534498d05f`。

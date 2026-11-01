@@ -1221,14 +1221,13 @@ fn build_select_runtime(
     ctes: &mut CteEnvironment,
 ) -> Result<logicalop::LogicalPlanRef, expression::Error> {
     let query_block = select.QueryBlockOffset as i32;
-    let mut processor = hint::NewQBHintHandler(None);
     let mut warnings = RuntimeHintWarnings::default();
     let subquery_context = builder.subQueryCtx;
     let (plan_hints, hint_flags) = hint::ParsePlanHints(
         select.TableHints.clone(),
         query_block,
         builder.ctx.GetSessionVars().CurrentDB(),
-        &mut processor,
+        builder.plan_hint_processor(),
         select
             .From
             .as_ref()
@@ -4935,6 +4934,9 @@ fn build_table_source_runtime(
         SelectOffset: source.QueryBlockOffset(),
         ..Default::default()
     };
+    if let Some(plan_hints) = builder.tableHintInfo.last_mut() {
+        set_tiflash_lm_filter_columns(&mut source, plan_hints, &hinted_table);
+    }
     let (force_tikv, force_tiflash) =
         builder
             .tableHintInfo
@@ -6301,4 +6303,53 @@ pub fn appendDynamicVisitInfo(
 ) -> Vec<VisitInfo> {
     visit_info.push(VisitInfo::dynamic(privileges, with_grant, error));
     visit_info
+}
+
+/// Go setTiFlashLMFilterColumns; called after real schema/unique-ID allocation.
+fn set_tiflash_lm_filter_columns(
+    source: &mut logicalop::DataSource,
+    hints: &mut hint::PlanHints,
+    alias: &hint::HintedTable,
+) {
+    let columns = source
+        .Columns
+        .iter()
+        .zip(&source.TblCols)
+        .map(|(info, column)| (info.Name.L.clone(), column.UniqueID))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut ids = source.TiFlashLMFilterColumnIDs.clone().unwrap_or_default();
+    for target in &mut hints.TiFlashLMFilters {
+        if !target.Match(alias) {
+            continue;
+        }
+        target.Matched = true;
+        let invalid = target
+            .Columns
+            .iter()
+            .filter(|c| !columns.contains_key(&c.L))
+            .map(|c| c.O.as_str())
+            .collect::<Vec<_>>();
+        if !invalid.is_empty() {
+            source
+                .SCtx()
+                .expect("bound data source context")
+                .GetSessionVars()
+                .StmtCtx
+                .SetHintWarning(format!(
+                    "{}({}) is inapplicable, check whether the columns ({}) exist in table {}.{}",
+                    hint::HintTiFlashLMFilter,
+                    target.ColumnString(),
+                    invalid.join(", "),
+                    alias.DBName.O,
+                    alias.TblName.O
+                ));
+            continue;
+        }
+        ids.extend(target.Columns.iter().map(|c| columns[&c.L]));
+    }
+    if !ids.is_empty() {
+        ids.sort_unstable();
+        ids.dedup();
+        source.TiFlashLMFilterColumnIDs = Some(ids);
+    }
 }

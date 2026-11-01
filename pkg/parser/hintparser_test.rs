@@ -506,3 +506,22 @@ fn test_parse_hint_preserves_all_go_ast_payload_shapes() {
         );
     }
 }
+
+#[test]
+fn port_e2f259adf7_lm_hint_payload_and_restore() {
+    let hints = parse_ok("TIFLASH_LM_FILTER(@qb1 tbl1 a, b) TIFLASH_LM_FILTER(tbl2@qb2 c)");
+    assert_eq!(hints.len(), 2);
+    assert_eq!(hints[0].HintName.L, "tiflash_lm_filter");
+    assert_eq!(hints[0].QBName.O, "qb1");
+    assert_eq!(hints[0].Tables[0].TableName.O, "tbl1");
+    assert_eq!(
+        hints[0]
+            .Indexes
+            .iter()
+            .map(|c| c.O.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(hints[1].Tables[0].QBName.O, "qb2");
+    assert_eq!(hints[1].Indexes[0].O, "c");
+}

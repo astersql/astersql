@@ -566,6 +566,30 @@ fn test_set_pwd_stmt_secure_text() {
 }
 
 #[test]
+fn port_e2f259adf7_lm_hint_restore() {
+    for (qb_name, columns, expected) in [
+        ("", vec!["c1", "c2"], "TIFLASH_LM_FILTER(`t1`, `c1`, `c2`)"),
+        (
+            "sel_1",
+            vec!["c1"],
+            "TIFLASH_LM_FILTER(@`sel_1` `t1`, `c1`)",
+        ),
+    ] {
+        let hint = TableOptimizerHint {
+            hint_name: "tiflash_lm_filter".into(),
+            qb_name: qb_name.into(),
+            tables: vec![HintTable {
+                table_name: "t1".into(),
+                ..Default::default()
+            }],
+            indexes: columns.into_iter().map(str::to_owned).collect(),
+            ..Default::default()
+        };
+        assert_eq!(hint.restore().unwrap(), expected);
+    }
+}
+
+#[test]
 fn port_cb395494e6_storage_context_redaction() {
     for (raw, expected) in [
         (

@@ -60,6 +60,8 @@ pub struct PhysicalTableScan {
     pub LateMaterializationFilterCondition: Vec<ExprBox>,
     /// 延迟物化条件应用于原始扫描行的选择率。
     pub LateMaterializationSelectivity: f64,
+    /// Unique column IDs explicitly selected by TIFLASH_LM_FILTER.
+    pub ForcedLateMaterializationFilterColumnIDs: Vec<i64>,
     /// 扫描后过滤完成的基数，用于物化 pushed-down Selection。
     pub FilterStats: Option<StatsInfo>,
     /// 目标存储类型（TiKV/TiFlash 等）。
@@ -129,6 +131,7 @@ impl PhysicalTableScan {
             FilterCondition: Vec::new(),
             LateMaterializationFilterCondition: Vec::new(),
             LateMaterializationSelectivity: 1.0,
+            ForcedLateMaterializationFilterColumnIDs: Vec::new(),
             FilterStats: None,
             StoreType: kv::StoreType::TiKV,
             IsPartition: false,
@@ -178,6 +181,9 @@ impl PhysicalTableScan {
                 .map(|e| e.CloneExpr())
                 .collect(),
             LateMaterializationSelectivity: self.LateMaterializationSelectivity,
+            ForcedLateMaterializationFilterColumnIDs: self
+                .ForcedLateMaterializationFilterColumnIDs
+                .clone(),
             FilterStats: self.FilterStats.clone(),
             StoreType: self.StoreType,
             IsPartition: self.IsPartition,
@@ -504,6 +510,8 @@ impl PhysicalTableScan {
     pub fn MemoryUsage(&self) -> i64 {
         self.PhysicalSchemaProducer.MemoryUsage()
             + self.Columns.capacity() as i64 * std::mem::size_of::<ColumnInfo>() as i64
+            + self.ForcedLateMaterializationFilterColumnIDs.capacity() as i64
+                * std::mem::size_of::<i64>() as i64
             + self
                 .AccessCondition
                 .iter()
