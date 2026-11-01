@@ -88,6 +88,9 @@ pub struct AccessPath {
     pub grouped_ranges: Vec<Vec<Range>>,
     pub group_by_col_idxs: Vec<usize>,
     pub sample_path: bool,
+    pub eq_cond_count: usize,
+    pub eq_or_in_cond_count: usize,
+    pub const_cols: Vec<bool>,
 }
 /// AccessPath 路径类型判断。
 impl AccessPath {
@@ -1148,6 +1151,127 @@ pub fn getIndexCandidate(
     c.indexCondsColMap = expr_columns(&conds);
     c
 }
+
+const PRUNED_RANGE_MAX_ROWS_PER_SAVED_SEEK: f64 = 100.0;
+
+/// Build a shorter-prefix range alternative for an IN-list access path.
+pub fn buildPrunedRangeAccessPath(original: &AccessPath, cutoff: usize) -> Option<AccessPath> {
+    if cutoff == 0 || cutoff >= original.index_columns.len() {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    for range in &original.ranges {
+        if range.low.len() < cutoff || range.high.len() < cutoff {
+            return None;
+        }
+        let shortened = Range {
+            low: range.low[..cutoff].to_vec(),
+            high: range.high[..cutoff].to_vec(),
+            low_exclusive: range.low_exclusive,
+            high_exclusive: range.high_exclusive,
+        };
+        if !ranges.iter().any(|existing: &Range| {
+            existing.low == shortened.low
+                && existing.high == shortened.high
+                && existing.low_exclusive == shortened.low_exclusive
+                && existing.high_exclusive == shortened.high_exclusive
+        }) {
+            ranges.push(shortened);
+        }
+    }
+    if ranges.is_empty() || ranges.len() >= original.ranges.len() {
+        return None;
+    }
+    let kept = original.index_columns[..cutoff]
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut pruned = original.clone();
+    pruned.ranges = ranges;
+    pruned.access_conditions = original
+        .access_conditions
+        .iter()
+        .filter(|condition| {
+            condition
+                .column
+                .is_some_and(|column| kept.contains(&column))
+        })
+        .cloned()
+        .collect();
+    pruned.table_filters = original
+        .access_conditions
+        .iter()
+        .filter(|condition| {
+            condition
+                .column
+                .is_none_or(|column| !kept.contains(&column))
+        })
+        .chain(original.table_filters.iter())
+        .cloned()
+        .collect();
+    pruned.eq_cond_count = original.eq_cond_count.min(cutoff);
+    pruned.eq_or_in_cond_count = cutoff;
+    pruned.const_cols.truncate(cutoff);
+    pruned.count_after_access = pruned.count_after_access.max(original.count_after_access);
+    pruned.max_count_after_access = pruned.max_count_after_access.max(pruned.count_after_access);
+    Some(pruned)
+}
+
+pub fn rangesCoverAllIndexColumns(path: &AccessPath) -> bool {
+    path.index.as_ref().is_some_and(|index| {
+        path.ranges
+            .iter()
+            .all(|range| range.low.len() == index.columns.len())
+    })
+}
+
+/// Add shorter range-prefix candidates after skyline pruning.
+pub fn appendPrunedRangeCandidates(
+    ds: &DataSource,
+    prop: &PhysicalProperty,
+    candidates: Vec<candidatePath>,
+) -> Vec<candidatePath> {
+    if ds.sample || ds.table_pseudo {
+        return candidates;
+    }
+    let mut result = candidates.clone();
+    for candidate in &candidates {
+        let path = &candidate.path;
+        let Some(index) = path.index.as_ref() else {
+            continue;
+        };
+        let in_lists = (0..path.eq_or_in_cond_count)
+            .filter(|offset| !path.const_cols.get(*offset).copied().unwrap_or(false))
+            .count();
+        if path.is_index_merge()
+            || index.multi_valued
+            || path.eq_or_in_cond_count <= path.eq_cond_count
+            || path.ranges.len() <= 1
+            || (path.eq_cond_count <= 1 && in_lists < 2)
+            || ds
+                .index_pseudo
+                .contains(&index.columns.first().copied().unwrap_or_default())
+            || (index.unique && rangesCoverAllIndexColumns(path))
+        {
+            continue;
+        }
+        for cutoff in path.eq_cond_count.max(1)..path.eq_or_in_cond_count {
+            let Some(pruned) = buildPrunedRangeAccessPath(path, cutoff) else {
+                continue;
+            };
+            let saved_seeks = (path.ranges.len() - pruned.ranges.len()) as f64;
+            if pruned.max_count_after_access > saved_seeks * PRUNED_RANGE_MAX_ROWS_PER_SAVED_SEEK {
+                continue;
+            }
+            let pruned_candidate = getIndexCandidate(ds, &pruned, prop);
+            if prop.partial_order.is_some() && !pruned_candidate.partialOrderMatchResult.matched {
+                continue;
+            }
+            result.push(pruned_candidate);
+        }
+    }
+    result
+}
 /// 为 Index Join 场景构造索引候选。
 pub fn getIndexCandidateForIndexJoin(
     ds: &DataSource,
@@ -1606,7 +1730,7 @@ pub fn findBestTask4LogicalDataSource(
     if let Some(dual) = tryToGetDualTask(ds) {
         return dual;
     }
-    let candidates = skylinePruning(ds, prop);
+    let candidates = appendPrunedRangeCandidates(ds, prop, skylinePruning(ds, prop));
     let mut best = Task::invalid("no access path");
     for candidate in &candidates {
         let task = if ds.sample || candidate.path.sample_path {

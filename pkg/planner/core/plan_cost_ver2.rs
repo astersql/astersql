@@ -201,6 +201,21 @@ fn canonical_term(
     )
 }
 
+fn canonical_range_seek_cost(
+    option: &costusage_dependency::PlanCostOption,
+    ranges: f64,
+    scan_factor: f64,
+) -> costusage_dependency::CostVer2 {
+    canonical_term(
+        option,
+        "rangeSeek",
+        "tikv_scan_factor",
+        scan_factor,
+        ranges * 10.0 * 8.0_f64.log2(),
+        format!("{}*10*log2(8)", canonical_number(ranges)),
+    )
+}
+
 pub fn canonical_index_lookup_cost(
     plan: &dyn base::PhysicalPlan,
     outer_rows: f64,
@@ -997,7 +1012,7 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
             ));
         }
     }
-    if any.is::<physicalop::PhysicalIndexScan>() {
+    if let Some(index_scan) = any.downcast_ref::<physicalop::PhysicalIndexScan>() {
         let width = canonical_row_size(plan);
         let scan = canonical_term(
             option,
@@ -1011,7 +1026,15 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
                 width.max(2.0)
             ),
         );
-        return Ok(costusage_dependency::mul_cost_ver2(&scan, 1.0));
+        let seek = if index_scan.Ranges.0.len() > 1 && index_scan.RangeInfo.is_empty() {
+            canonical_range_seek_cost(option, index_scan.Ranges.0.len() as f64, 40.7)
+        } else {
+            costusage_dependency::new_zero_cost_ver2(costusage_dependency::trace_cost(Some(option)))
+        };
+        return Ok(costusage_dependency::mul_cost_ver2(
+            &costusage_dependency::sum_cost_ver2(&[scan, seek]),
+            1.0,
+        ));
     }
     if let Some(scan) = any.downcast_ref::<physicalop::PhysicalTableScan>() {
         let width = canonical_row_size(plan)
@@ -1133,7 +1156,18 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
                 1.0,
             ));
         }
-        return Ok(costusage_dependency::mul_cost_ver2(&scan_cost, 1.0));
+        let seek = if scan.Ranges.0.len() > 1
+            && scan.RangeInfo.is_empty()
+            && !inl.first().copied().unwrap_or(false)
+        {
+            canonical_range_seek_cost(option, scan.Ranges.0.len() as f64, factor)
+        } else {
+            costusage_dependency::new_zero_cost_ver2(costusage_dependency::trace_cost(Some(option)))
+        };
+        return Ok(costusage_dependency::mul_cost_ver2(
+            &costusage_dependency::sum_cost_ver2(&[scan_cost, seek]),
+            1.0,
+        ));
     }
     if let Some(projection) = any.downcast_ref::<physicalop::PhysicalProjection>() {
         let child = plan.children().into_iter().next();
@@ -2360,6 +2394,16 @@ pub fn indexJoinSeekingCostVer2(
     )
 }
 
+/// Per-range TiKV seek cost for ordinary index/table scans.
+pub fn rangeSeekCostVer2(option: &PlanCostOption, ranges: f64, factor: CostVer2Factor) -> CostVer2 {
+    CostVer2::new(
+        factor,
+        ranges * 10.0 * 8.0_f64.log2(),
+        format!("rangeSeek({ranges}*10*log2(8))"),
+        option.trace,
+    )
+}
+
 /// TiFlash 表扫额外惩罚：小扫、宽列、keep_order；TiKV/临时表为 0。
 pub fn getTableScanPenalty(plan: &PlanNode, rows: f64) -> f64 {
     if plan.store != StoreType::TiFlash || plan.flags.temporary_table {
@@ -2447,6 +2491,9 @@ pub fn GetPlanCostVer2(plan: &mut PlanNode, task: TaskType, option: &PlanCostOpt
         }
         PlanKind::IndexScan | PlanKind::TableScan => {
             let mut c = scanCostVer2(option, rows, plan.row_size(), scan_factor(plan, task, &f));
+            if plan.ranges > 1 && !plan.labels.contains_key("index_join_inner") {
+                c += rangeSeekCostVer2(option, plan.ranges as f64, scan_factor(plan, task, &f));
+            }
             if plan.kind == PlanKind::TableScan {
                 c += CostVer2::new(
                     cpu,

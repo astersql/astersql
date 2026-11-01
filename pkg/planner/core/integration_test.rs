@@ -4845,3 +4845,246 @@ fn unsigned_handle_predicates_keep_declared_index_ranges_and_counts() {
         assert!(!range.LowExclude && !range.HighExclude);
     }
 }
+
+#[test]
+fn port_1c0793ea57_in_list_pruning_and_seek_cost_cover_scan_variants() {
+    use crate::find_best_task::{
+        AccessPath, DataSource, Datum, IndexInfo, PhysicalProperty, Range,
+        appendPrunedRangeCandidates, getIndexCandidate,
+    };
+    use crate::plan_cost_ver1::PlanCostOption;
+    use crate::plan_cost_ver2::GetPlanCostVer2;
+    use crate::task::{Expression, PlanKind, PlanNode, StatsInfo, StoreType, TaskType};
+
+    let ranges = (1..=6)
+        .flat_map(|b| {
+            (1..=10).map(move |c| Range {
+                low: vec![Datum::Int(1), Datum::Int(b), Datum::Int(c)],
+                high: vec![Datum::Int(1), Datum::Int(b), Datum::Int(c)],
+                ..Default::default()
+            })
+        })
+        .collect::<Vec<_>>();
+    let path = AccessPath {
+        index: Some(IndexInfo {
+            columns: vec![0, 1, 2, 3],
+            prefix_lengths: vec![None; 4],
+            unique: false,
+            global: false,
+            multi_valued: false,
+            vector: false,
+        }),
+        ranges,
+        index_columns: vec![0, 1, 2, 3],
+        access_conditions: vec![
+            Expression {
+                column: Some(0),
+                ..Default::default()
+            },
+            Expression {
+                column: Some(1),
+                ..Default::default()
+            },
+            Expression {
+                column: Some(2),
+                ..Default::default()
+            },
+        ],
+        eq_cond_count: 1,
+        eq_or_in_cond_count: 3,
+        const_cols: vec![true, false, false],
+        count_after_access: 60.0,
+        max_count_after_access: 60.0,
+        ..Default::default()
+    };
+    let ds = DataSource {
+        paths: vec![path.clone()],
+        ..Default::default()
+    };
+    let prop = PhysicalProperty::default();
+    let candidates =
+        appendPrunedRangeCandidates(&ds, &prop, vec![getIndexCandidate(&ds, &path, &prop)]);
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.path.ranges.len() == 6),
+        "the (a,b) prefix must remain as a six-range alternative"
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.path.ranges.len() == 1),
+        "the (a) prefix must remain as a one-range alternative"
+    );
+    let six_range = candidates
+        .iter()
+        .find(|candidate| candidate.path.ranges.len() == 6)
+        .expect("six-range prefix candidate");
+    assert_eq!(six_range.path.access_conditions.len(), 2);
+    assert!(
+        six_range
+            .path
+            .table_filters
+            .iter()
+            .any(|filter| filter.column == Some(2)),
+        "the dropped c IN-list remains as a result-preserving filter"
+    );
+
+    let mut pseudo = ds.clone();
+    pseudo.index_pseudo.insert(0);
+    assert_eq!(
+        appendPrunedRangeCandidates(
+            &pseudo,
+            &prop,
+            vec![getIndexCandidate(&pseudo, &path, &prop)]
+        )
+        .len(),
+        1,
+        "pseudo index statistics cannot justify seek pruning"
+    );
+    let mut guarded_path = path.clone();
+    guarded_path.max_count_after_access = 100_000.0;
+    assert_eq!(
+        appendPrunedRangeCandidates(
+            &ds,
+            &prop,
+            vec![getIndexCandidate(&ds, &guarded_path, &prop)]
+        )
+        .len(),
+        1,
+        "the saved-seek row upper bound rejects unsafe pruning"
+    );
+    let mut unique_path = path.clone();
+    let unique_index = unique_path.index.as_mut().expect("index");
+    unique_index.unique = true;
+    unique_index.columns.truncate(3);
+    unique_index.prefix_lengths.truncate(3);
+    unique_path.index_columns.truncate(3);
+    assert_eq!(
+        appendPrunedRangeCandidates(
+            &ds,
+            &prop,
+            vec![getIndexCandidate(&ds, &unique_path, &prop)]
+        )
+        .len(),
+        1,
+        "full-key unique ranges remain point lookups"
+    );
+
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let schema = integration_multi_info_schema(&["seek_cost"], false, Some(("ib", &["b"])), &[]);
+    let physical = optimize_integration_query_with_schema(
+        "select * from seek_cost use index(ib) where b in ('a','b','c')",
+        &context,
+        schema,
+    );
+    let source_scan = find_physical_index_scan(physical.as_ref()).expect("physical index scan");
+    let range = source_scan.Ranges.0[0].clone();
+    let mut physical_scan = physicalop_dependency::PhysicalIndexScan::New(context.clone());
+    physical_scan.Ranges.0 = vec![range; 3];
+    let canonical_option = costusage_dependency::new_default_plan_cost_option()
+        .with_cost_flag(costusage_dependency::COST_FLAG_TRACE);
+    let canonical_cost = crate::plan_cost_ver2::GetCanonicalPlanCostVer2(
+        &physical_scan,
+        property_dependency::CopSingleReadTaskType,
+        &canonical_option,
+        &[],
+    )
+    .expect("cost physical multi-range index scan");
+    assert!(
+        canonical_cost
+            .get_trace()
+            .expect("cost trace")
+            .get_formula()
+            .contains("rangeSeek"),
+        "canonical physical scan must charge every range seek"
+    );
+    physical_scan.RangeInfo = "outer.a".into();
+    let inner_cost = crate::plan_cost_ver2::GetCanonicalPlanCostVer2(
+        &physical_scan,
+        property_dependency::CopSingleReadTaskType,
+        &canonical_option,
+        &[],
+    )
+    .expect("cost IndexJoin inner index scan");
+    assert!(
+        !inner_cost
+            .get_trace()
+            .expect("inner trace")
+            .get_formula()
+            .contains("rangeSeek"),
+        "RangeInfo marks seeks already charged by IndexJoin"
+    );
+
+    let mut table_scan = physicalop_dependency::PhysicalTableScan::New(context.clone());
+    table_scan.Ranges.0 = physical_scan.Ranges.0.clone();
+    let table_cost = crate::plan_cost_ver2::GetCanonicalPlanCostVer2(
+        &table_scan,
+        property_dependency::CopSingleReadTaskType,
+        &canonical_option,
+        &[],
+    )
+    .expect("cost physical multi-range table scan");
+    assert!(
+        table_cost
+            .get_trace()
+            .expect("table trace")
+            .get_formula()
+            .contains("rangeSeek")
+    );
+    let lookup_table_cost = crate::plan_cost_ver2::GetCanonicalPlanCostVer2(
+        &table_scan,
+        property_dependency::CopMultiReadTaskType,
+        &canonical_option,
+        &[true],
+    )
+    .expect("cost IndexLookup row-id scan");
+    assert!(
+        !lookup_table_cost
+            .get_trace()
+            .expect("lookup table trace")
+            .get_formula()
+            .contains("rangeSeek"),
+        "IndexLookup parent owns row-id seek cost"
+    );
+
+    let option = PlanCostOption {
+        trace: true,
+        ..Default::default()
+    };
+    let scan = |kind: PlanKind| PlanNode {
+        kind: kind.clone(),
+        ranges: 3,
+        store: StoreType::TiKv,
+        stats: StatsInfo {
+            row_count: 10.0,
+            avg_row_size: 8.0,
+            ..Default::default()
+        },
+        ..PlanNode::new(kind)
+    };
+    for kind in [PlanKind::IndexScan, PlanKind::TableScan] {
+        let mut multi = scan(kind.clone());
+        let multi_cost = GetPlanCostVer2(&mut multi, TaskType::CopSingleRead, &option);
+        assert!(
+            multi_cost
+                .traces
+                .iter()
+                .any(|trace| trace.formula.contains("rangeSeek(3*10*log2(8))")),
+            "{kind:?} must expose its per-range seek term"
+        );
+
+        let mut index_join_inner = scan(kind);
+        index_join_inner
+            .labels
+            .insert("index_join_inner".into(), 1.0);
+        let inner_cost = GetPlanCostVer2(&mut index_join_inner, TaskType::CopSingleRead, &option);
+        assert!(
+            inner_cost
+                .traces
+                .iter()
+                .all(|trace| !trace.formula.contains("rangeSeek")),
+            "IndexJoin inner seeks are charged by indexJoinSeekingCostVer2"
+        );
+    }
+}

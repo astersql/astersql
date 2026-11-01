@@ -23,7 +23,7 @@
 - `GetCanonicalPlanCostVer2`：真实 `PhysicalPlan` 的公开 v2 入口；负责工作栈调度、子节点缓存和环检测。
 - `get_canonical_plan_cost_ver2_inner`：canonical 算子分派与公式主体，错误类型为 `expression_dependency::Error`。
 - `CostTrace`、`CostVer2`、`CostVer2Factor`、`costVer2Factors`：兼容路径的 trace 条目、五维成本容器、单因子和默认因子集合。`CostVer2::GetCost` 返回五维之和，`Add`/`AddAssign` 同时拼接 trace，`div` 用至少 1 的除数分摊并发成本。
-- `scanCostVer2`、`netCostVer2`、`filterCostVer2`、`aggCostVer2`、`groupCostVer2`、`orderCostVer2`、`hashBuildCostVer2`、`hashProbeCostVer2`、`doubleReadCostVer2`、`indexJoinSeekingCostVer2`：兼容树复用的基础公式。
+- `scanCostVer2`、`rangeSeekCostVer2`、`netCostVer2`、`filterCostVer2`、`aggCostVer2`、`groupCostVer2`、`orderCostVer2`、`hashBuildCostVer2`、`hashProbeCostVer2`、`doubleReadCostVer2`、`indexJoinSeekingCostVer2`：兼容树复用的基础公式。
 - `getTableScanPenalty`：只给非临时 TiFlash 表扫增加小扫描、宽列和保序惩罚。
 - `getNumberOfRanges`：递归精确累加自身与后代的 range 数，不为零 range 人为补 1。
 - `GetPlanCostVer2`、`GetPlanCost`：兼容 `PlanNode` v2 主分派与 model version 总入口。
@@ -87,6 +87,8 @@ Go/Rust 浮点计算都可能产生很大有限值；canonical 路径对非法�
 兼容 trace hook 的生命周期跨调用：首次访问初始化 `OnceLock`，`SetGenPlanCostTrace` 用写锁替换 `Option<Arc<...>>`，成本完成时用读锁调用。hook 必须 `Send + Sync`；锁中毒通过 `expect` panic。由于回调在读锁仍持有时执行，扩展 hook 时不应在回调内调用 `SetGenPlanCostTrace`，否则存在自阻塞风险。
 
 ## 与 Go 版本的对应关系
+
+来源 `1c0793ea5765e203868fbed4c0840541cabb46d2`：普通 TiKV IndexScan 与多 range TableScan 追加 `rangeSeek(ranges*10*log2(8))`，真实物理计划使用扫描因子生成可见 trace；`RangeInfo` 非空的 IndexJoin 内侧扫描以及 IndexLookup 的 RowID 子扫描不重复收费，因为父 IndexJoin 已按 build rows 计 seek。兼容 `PlanNode` 以 `index_join_inner` 标签表达同一排除边界。
 
 已核对的等价意图包括：扫描使用 `rows * log2(rowSize) * factor`；列/常量复杂度为 0.01，顶层标量函数为 1；reader 合并存储子成本、网络与并发；TiKV/TiFlash 使用不同 CPU/内存/扫描/网络因子；TiFlash 表扫有启动与延迟物化项；IndexLookup/IndexJoin 有双读、批量与请求成本；HashAgg CPU 可按并发分摊而特定内存项不分摊；FullOuterJoin 对 build 未匹配行增加尾扫；cost trace 的组合形状在可观察处保持 Go 顺序与括号。
 

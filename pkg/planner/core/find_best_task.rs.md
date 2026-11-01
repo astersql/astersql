@@ -48,7 +48,7 @@ DataSource 分支的主流程如下：
 
 1. `tryToGetDualTask` 发现无列引用且名字为 `false` 的已下推条件时，直接返回零行 `TableDual` Root Task。
 2. `skylinePruning` 将每条 `AccessPath` 包装成 table、index 或 IndexMerge candidate；对每个新候选与已保留候选逐一执行 `compareCandidates`，丢弃被支配者并移除它支配的旧候选。
-3. `findBestTask4LogicalDataSource` 按优先判定顺序选择转换函数：TABLESAMPLE、IndexMerge、单 range PointGet、多 range BatchPointGet、TableScan、IndexScan。
+3. `appendPrunedRangeCandidates` 对有分析统计、多个 IN 列且非唯一全键点查的索引候选，构造更短等值/IN 前缀并去重 ranges；被移除的访问条件回到表过滤，候选还要通过每个节省 seek 最多扫描 100 行的上界保护。随后 `findBestTask4LogicalDataSource` 按优先判定顺序选择转换函数：TABLESAMPLE、IndexMerge、单 range PointGet、多 range BatchPointGet、TableScan、IndexScan。
 4. 各转换函数先验证 Task 类型、排序匹配、保序强制、存储能力或 PointGet 唯一性；不满足时返回 Invalid Task。满足时创建 `PlanNode`，设置统计、schema、range、条件、store 与 flags，并以 `selection` 包裹剩余过滤。
 5. 每个有效转换结果由 `compareTaskCost` 与当前最优项比较。函数最终调用 `validateTableSamplePlan`，但当前代码丢弃其 `Result`，随后返回 best Task。
 
@@ -97,6 +97,8 @@ DataSource 分支的主流程如下：
 `Task::into_root` 和 `attach2Task` 消费或拥有 Task/计划值；转换函数不会保留指向调用栈局部值的引用。MPP/Cop 在这里只是计划形态，不会启动远程执行或持有存储连接。
 
 ## 与 Go 版本的对应关系
+
+来源 `1c0793ea5765e203868fbed4c0840541cabb46d2`：`AccessPath` 保存 `eq_cond_count`、`eq_or_in_cond_count` 与 `const_cols`；`buildPrunedRangeAccessPath`、`rangesCoverAllIndexColumns` 和 `appendPrunedRangeCandidates` 对齐 Go 的短前缀 IN-list 备选、唯一索引排除、分析统计门槛和 saved-seek 行数保护。Rust 精简模型没有 Go 的完整 histogram/ranger，因此短前缀的 range 由现有 ranges 投影去重，保留既有行数上下界，而不是声称重做完整基数估算。
 
 Rust 独立测试与 Go `find_best_task_test.go` 对齐了三类核心回归：代价溢出不使 Task 无效、只有允许或 hint 要求时才通过 Sort 强制属性、hint 不可应用时回退并记录一次告警。Rust 还增加了 MPP 分区缓存键区分，以及 Index Join 调整行数稳定/不稳定两种 skyline 行为。
 
