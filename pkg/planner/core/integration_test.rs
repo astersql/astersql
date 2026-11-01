@@ -5088,3 +5088,22 @@ fn port_1c0793ea57_in_list_pruning_and_seek_cost_cover_scan_variants() {
         );
     }
 }
+
+#[test]
+fn port_87ffb1fda6_nullable_join_reverse_sort_keeps_sort() {
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let schema = integration_multi_info_schema(&["t"], false, Some(("idx_a", &["a"])), &[]);
+    // All four source golden increments add Sort for nullable reverse expressions.
+    // Canonical join enumeration currently has no ordered MergeJoin candidate;
+    // this regression checks the source increment without adding that subsystem.
+    for expr in ["-t1.a", "-t1.a+3", "1-t1.a", "1-t1.a+3"] {
+        let sql = format!(
+            "select /*+ TIDB_SMJ(t1,t2) */ t1.a from t t1, t t2 where t1.a=t2.b order by {expr}"
+        );
+        let plan = optimize_integration_query_with_schema(&sql, &context, schema.clone());
+        assert!(
+            physical_plan_contains::<physicalop_dependency::PhysicalSort>(plan.as_ref()),
+            "missing Sort: {sql}"
+        );
+    }
+}

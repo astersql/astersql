@@ -347,6 +347,12 @@ pub fn GetPropByOrderByItemsContainScalarFunc(
             let Some(column) = column else {
                 return (None, false);
             };
+            // Reversing values leaves NULL unchanged, so a reverse index scan
+            // cannot satisfy the expression's NULL order for a nullable column.
+            if desc != item.Desc && !mysql::r#type::HasNotNullFlag(column.GetStaticType().GetFlag())
+            {
+                return (None, false);
+            }
             property.SortItems.push(property::SortItem {
                 Col: column.Clone(),
                 Desc: desc,

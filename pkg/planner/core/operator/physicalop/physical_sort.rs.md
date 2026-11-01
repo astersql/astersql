@@ -90,7 +90,7 @@
 
 - 节点自身可变状态仅为公共计划状态、`ByItems` 和 `IsPartialSort`。排序数据不保存在计划节点中，而在执行侧 `SortExec` 生命周期内处理。
 - `ByItems` 的顺序和 `Desc` 是语义数据；`MatchItems` 只允许 `required.SortItems` 匹配它的前缀，不能跳项或忽略方向。
-- `GetPropByOrderByItemsContainScalarFunc` 对可还原为单列的标量函数可能翻转方向，采用 `GetSingleColumn` 返回的 `desc`，不能直接沿用原始 `item.Desc`。
+- `GetPropByOrderByItemsContainScalarFunc` 对可还原为单列的标量函数可能翻转方向，采用 `GetSingleColumn` 返回的 `desc`，不能直接沿用原始 `item.Desc`。若方向发生反转且原列没有 NOT NULL 标志，则返回 `(None, false)`，防止反向索引扫描错误改变 NULL 的位置；偶数次反转和 NOT NULL 列仍可推导属性。
 - `PhysicalSort` 的输出 Schema 应与孩子一致。宏生成的 `schema_operator` 优先读取孩子 Schema；独立 Rust 测试还验证替换孩子后 Schema 会随之变化，而非继续暴露节点中旧的缓存 Schema。
 - `Clone` 对排序项做语义克隆，不共享原 `ByItems` 容器；`IsPartialSort` 是值复制。基础节点和 Schema 的复制规则委托给 `PhysicalSchemaProducer`/`BasePhysicalPlan`。
 - `MemoryUsage` 是计划对象的估算，不代表执行排序所需的全部行缓冲内存；后者由执行器和内存跟踪器管理。
@@ -139,6 +139,8 @@
 partial sort 与分布式资源边界有关但不自行管理资源：规划器先保证 MPP 分区属性，再把 `IsPartialSort` 编入 PB；存储侧 executor 按分区执行。`ToPB` 借用 `BuildPBContext`，递归取得拥有的孩子 executor，返回后不保留对 context/client 的借用。
 
 ## 与 Go 版本的对应关系
+
+Go `87ffb1fda61331e7c3e38503d080d0be1912bdad` 在 `GetSingleColumn` 后新增的 nullable 反转保护对应本文件同名函数的方向/NotNullFlag 检查。现有 `NominalSort::FromLogical` 已接入该函数，无需新增模块或依赖；独立属性、规划器和真实会话测试覆盖拒绝反向属性、四个来源 join SQL 的显式 Sort 以及原 SQL 结果。当前 canonical join 枚举在请求排序属性非空时返回空候选，尚未接入来源 golden 中完整的 ordered MergeJoin 树；此既有缺口不在本次排序属性增量中补建。本处不改变方言的 NULL 比较规则或 PostgreSQL 协议、会话与事务处理。
 
 - Go 测试 `pkg/planner/core/physical_plan_test.go::TestPhysicalPlanMemoryTrace` 与 Rust 测试共同验证 `ByItems` 会增加内存估算；Go `optimizer_test.go` 的窗口/shuffle 场景证明只有 partial sort 传播细粒度 shuffle stream count，普通 Sort 会禁用该路径。
 

@@ -129,3 +129,46 @@ fn sort_replacement_preserves_child_output_schema() {
         vec![10]
     );
 }
+
+#[test]
+fn port_87ffb1fda6_reverse_nullable_sort_properties() {
+    let ctx = exprstatic::NewExprContext(vec![]);
+    for not_null in [false, true] {
+        for desc in [false, true] {
+            for reversals in [1, 2] {
+                let mut tp = *expression::types::NewFieldType(expression::mysql::TypeDouble);
+                if not_null {
+                    tp.AddFlag(expression::mysql::NotNullFlag);
+                }
+                let column = expression::Column::new(tp.clone(), 1, 1, 0);
+                let mut expr: Box<dyn expression::Expression> = Box::new(column);
+                for _ in 0..reversals {
+                    expr = expression::NewFunctionBase(
+                        &ctx,
+                        expression::ast::UnaryMinus,
+                        tp.clone(),
+                        vec![expr],
+                    )
+                    .unwrap();
+                }
+                let (prop, only_columns) =
+                    crate::GetPropByOrderByItemsContainScalarFunc(&[planner_util::ByItems {
+                        Expr: expr,
+                        Desc: desc,
+                    }]);
+                assert!(!only_columns);
+                assert_eq!(
+                    prop.is_some(),
+                    not_null || reversals == 2,
+                    "not_null={not_null}, desc={desc}, reversals={reversals}"
+                );
+                if let Some(prop) = prop {
+                    assert_eq!(
+                        prop.SortItems[0].Desc,
+                        if reversals == 1 { !desc } else { desc }
+                    );
+                }
+            }
+        }
+    }
+}

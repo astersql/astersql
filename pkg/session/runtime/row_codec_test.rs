@@ -629,3 +629,83 @@ fn port_4150cef7a2_binary_expression_defaults_sql() {
     );
     query(&session, "drop table binary_defaults");
 }
+
+#[test]
+fn port_87ffb1fda6_reverse_expression_sort_nullable_column() {
+    use super::mview_refresh_test::query;
+    let f = super::normal_ddl_fixture::Fixture::new();
+    super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+    super::EnableMockDDLForTest(&f.domain).unwrap();
+    let session = super::ConcreteSession::new(f.domain.clone());
+    query(&session, "use test");
+    query(
+        &session,
+        "create table reverse_sort (id int primary key, c double, key i(c))",
+    );
+    query(
+        &session,
+        "insert into reverse_sort values (1,null),(2,0.3),(3,0.7),(4,0.8)",
+    );
+    for expr in ["-c", "0-c", "-(c+1)"] {
+        assert_eq!(
+            query(
+                &session,
+                &format!("select id from reverse_sort use index(i) order by {expr} desc,id")
+            ),
+            vec![vec!["2"], vec!["3"], vec!["4"], vec!["1"]]
+        );
+        assert_eq!(
+            query(
+                &session,
+                &format!("select id from reverse_sort use index(i) order by {expr},id")
+            ),
+            vec![vec!["1"], vec!["4"], vec!["3"], vec!["2"]]
+        );
+    }
+    assert_eq!(
+        query(
+            &session,
+            "select id from reverse_sort order by -(-c) desc,id"
+        ),
+        vec![vec!["4"], vec!["3"], vec!["2"], vec!["1"]]
+    );
+    query(&session, "delete from reverse_sort where c is null");
+    query(
+        &session,
+        "alter table reverse_sort modify c double not null",
+    );
+    assert_eq!(
+        query(&session, "select id from reverse_sort order by -c desc,id"),
+        vec![vec!["2"], vec!["3"], vec!["4"]]
+    );
+    let plan = query(
+        &session,
+        "explain format='brief' select id from reverse_sort use index(i) order by -c desc,id",
+    );
+    assert!(!format!("{plan:?}").contains("Sort"), "{plan:?}");
+}
+
+#[test]
+fn port_87ffb1fda6_reverse_join_golden_results() {
+    use super::mview_refresh_test::query;
+    let f = super::normal_ddl_fixture::Fixture::new();
+    super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+    super::EnableMockDDLForTest(&f.domain).unwrap();
+    let session = super::ConcreteSession::new(f.domain.clone());
+    query(&session, "use test");
+    query(
+        &session,
+        "create table t (a int, b int, index idx_a(a), index idx_b(b))",
+    );
+    query(&session, "insert into t values (1,1),(1,2),(2,4),(3,5)");
+    for expr in ["-t1.a", "-t1.a+3", "1-t1.a", "1-t1.a+3"] {
+        let sql = format!(
+            "select /*+ TIDB_SMJ(t1,t2) */ t1.a from t t1, t t2 where t1.a=t2.b order by {expr}"
+        );
+        assert_eq!(
+            query(&session, &sql),
+            vec![vec!["2"], vec!["1"], vec!["1"]],
+            "{sql}"
+        );
+    }
+}
