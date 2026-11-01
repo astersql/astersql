@@ -305,6 +305,7 @@ members = [
     "pkg/metaservice",
     "pkg/metrics",
     "pkg/metrics/common",
+    "pkg/mvservice",
     "pkg/objstore",
     "pkg/objstore/compressedio",
     "pkg/objstore/mockobjstore",

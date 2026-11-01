@@ -1,0 +1,12 @@
+[package]
+name = "astersql-mvservice"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[lib]
+path = "lib.rs"
+[dependencies]
+crossbeam-channel = "0.5"
+cpu_crate = { package = "astersql-util-cpu", path = "../util/cpu" }
+memory_crate = { package = "astersql-util-memory", path = "../util/memory" }
+log = "0.4"

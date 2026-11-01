@@ -5995,6 +5995,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "astersql-mvservice"
+version = "0.1.0"
+dependencies = [
+ "astersql-util-cpu",
+ "astersql-util-memory",
+ "crossbeam-channel",
+ "log",
+]
+
+[[package]]
 name = "astersql-objstore"
 version = "0.1.0"
 dependencies = [
