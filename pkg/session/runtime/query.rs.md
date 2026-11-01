@@ -367,3 +367,8 @@ PG 派生表字段统一按投影名绑定，包括 SELECT 表达式且未提供
 ## 单SRF投影行扩展
 
 pg_projection_srf识别直接generate_series/unnest投影（含括号），路由共享关系查询。分析及描述复用pg_integer_series_field选择固定int4/int8身份，空输入和NULL重绑不依赖首行值。
+
+
+## 同层多SRF协调与位置门禁
+
+validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影、WHERE、HAVING、ORDER BY和GROUP BY中的SRF；仅允许直接调用（可带括号），CASE/COALESCE及嵌套调用以0A000分析拒绝，包括不可达分支。各直接调用独立绑定固定返回身份，描述不依赖是否有行。

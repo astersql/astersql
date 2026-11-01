@@ -173,8 +173,7 @@ pub(super) fn pg_union_common_type(
     Ok(result)
 }
 
-/// The supported direct target-list SRF. Nested/multiple SRFs have a separate
-/// coordination contract; keep this step local to a single direct call.
+/// Identify a direct target-list SRF; calls at the same level are expanded together.
 pub(super) fn pg_projection_srf(expression: &ast::ExprNode) -> Option<&ast::ExprNode> {
     match &expression.Kind {
         ast::ExprKind::Parentheses(inner) => pg_projection_srf(inner),
@@ -3862,6 +3861,67 @@ impl ConcreteSession {
             .filter_map(|field| field.Expr.as_ref())
             .chain(select.Where.as_ref())
             .collect::<Vec<_>>();
+        // Walk the parsed expression before folding or observing rows: even an
+        // unreachable CASE/COALESCE arm cannot contain an SRF. Only a direct
+        // target-list call (optionally parenthesized) is supported at this level.
+        struct SetCalls {
+            count: usize,
+            context: Option<&'static str>,
+        }
+        impl ast::ExprNodeVisitor for SetCalls {
+            fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if matches!(&input.Kind, ast::ExprKind::Function { FnName, Schema, .. }
+                    if matches!(FnName.L.as_str(), "generate_series" | "unnest")
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog"))
+                {
+                    self.count += 1;
+                }
+                if matches!(input.Kind, ast::ExprKind::Case { .. }) {
+                    self.context = Some("CASE");
+                }
+                if matches!(&input.Kind, ast::ExprKind::Function { FnName, Schema, .. }
+                    if FnName.L == "coalesce" && Schema.L.is_empty())
+                {
+                    self.context = Some("COALESCE");
+                }
+                (input.clone(), false)
+            }
+            fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                (input.clone(), true)
+            }
+        }
+        for (expression, target) in select
+            .Fields
+            .Fields
+            .iter()
+            .filter_map(|field| field.Expr.as_ref())
+            .map(|expr| (expr, true))
+            .chain(select.Where.iter().map(|expr| (expr, false)))
+            .chain(select.Having.iter().map(|expr| (expr, false)))
+            .chain(select.OrderBy.iter().map(|item| (&item.Expr, false)))
+            .chain(select.GroupBy.iter().map(|item| (&item.Expr, false)))
+        {
+            let mut calls = SetCalls {
+                count: 0,
+                context: None,
+            };
+            let _ = expression.Accept(&mut calls);
+            if calls.count > 0
+                && (!target || pg_projection_srf(expression).is_none() || calls.count > 1)
+            {
+                return Err(pg_union_error(
+                    &match calls.context {
+                        Some(context) => {
+                            format!("set-returning functions are not allowed in {context}")
+                        }
+                        None => {
+                            "set-returning functions are not supported in this expression".into()
+                        }
+                    },
+                    "0A000",
+                ));
+            }
+        }
         let sources = self.relational_select_source_fields(select)?;
         for expression in select
             .Fields

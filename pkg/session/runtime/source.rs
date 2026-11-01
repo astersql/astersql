@@ -1930,27 +1930,29 @@ impl ConcreteSession {
             Vec::new()
         };
         let mut expanded_fields = None;
-        let projection_source = if let [(index, call)] = calls.as_slice() {
-            let fields = self.relational_select_source_fields(select)?;
-            let source = ast::TableSource {
-                FunctionSource: Some((*call).clone()),
-                ColumnNames: vec![ast::NewCIStr("\0pg_projection_srf")],
-                ..Default::default()
-            };
-            self.pg_integer_series_field(&source, Some(&fields))?;
+        let mut projection_sources = Vec::new();
+        if !calls.is_empty() {
+            let source_fields = self.relational_select_source_fields(select)?;
             let mut fields = select.Fields.clone();
-            fields.Fields[*index].Expr = Some(ast::ExprNode {
-                Kind: ast::ExprKind::Column(ast::ColumnName {
-                    Name: ast::NewCIStr("\0pg_projection_srf"),
+            for (index, call) in calls {
+                let name = format!("\0pg_projection_srf_{index}");
+                let source = ast::TableSource {
+                    FunctionSource: Some(call.clone()),
+                    ColumnNames: vec![ast::NewCIStr(&name)],
                     ..Default::default()
-                }),
-                ..Default::default()
-            });
+                };
+                self.pg_integer_series_field(&source, Some(&source_fields))?;
+                fields.Fields[index].Expr = Some(ast::ExprNode {
+                    Kind: ast::ExprKind::Column(ast::ColumnName {
+                        Name: ast::NewCIStr(&name),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                projection_sources.push((name, source));
+            }
             expanded_fields = Some(fields);
-            Some(source)
-        } else {
-            None
-        };
+        }
         let projection_fields = expanded_fields.as_ref().unwrap_or(&select.Fields);
         let conditional_sources = if self.sql_dialect() == ast::SqlDialect::MySQL
             && select
@@ -2193,7 +2195,7 @@ impl ConcreteSession {
             && !subquery_projection
             && outer.is_none()
             && streamable_projection
-            && projection_source.is_none()
+            && projection_sources.is_empty()
             && from
                 .TableRefs
                 .Left
@@ -2347,22 +2349,35 @@ impl ConcreteSession {
                 .filter_map(|(row, keep)| keep.then_some(row))
                 .collect();
         }
-        if let Some(function) = &projection_source {
-            // LIMIT 0 never opens a target-list SRF, although its signature has
-            // already been bound above for the fixed result description.
+        if !projection_sources.is_empty() {
+            // LIMIT 0 binds the fixed description without opening any SRF.
             if relational_limit_window(select)?.is_some_and(|window| window.count == 0) {
                 source.rows.clear();
             }
             let mut expanded = Vec::new();
             for row in source.rows {
-                let values =
-                    self.execute_insert_select_table_source_with_outer(function, Some(&row))?;
-                for value in values.rows {
+                // All calls see the same outer row. Zip their nth values to the
+                // longest result, including NULL elements; never cross join them.
+                let values = projection_sources
+                    .iter()
+                    .map(|(_, function)| {
+                        self.execute_insert_select_table_source_with_outer(function, Some(&row))
+                            .map(|result| result.rows)
+                    })
+                    .collect::<SessionResult<Vec<_>>>()?;
+                let count = values.iter().map(Vec::len).max().unwrap_or(0);
+                for index in 0..count {
                     let mut output = row.clone();
-                    output.insert(
-                        "\0pg_projection_srf".into(),
-                        value.get("\0pg_projection_srf").cloned().flatten(),
-                    );
+                    for ((name, _), values) in projection_sources.iter().zip(&values) {
+                        output.insert(
+                            name.clone(),
+                            values
+                                .get(index)
+                                .and_then(|value| value.get(name))
+                                .cloned()
+                                .flatten(),
+                        );
+                    }
                     expanded.push(output);
                 }
             }

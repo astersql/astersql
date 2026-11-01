@@ -1258,3 +1258,40 @@ fn pg09_27_execution() {
     assert_eq!(rows, vec![vec!["1", "1"], vec!["1", "2"], vec!["4", "1"]]);
     sets[0].close().unwrap();
 }
+
+#[test]
+fn pg09_28_execution() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let mut sets = session.execute("SELECT t.id AS id,generate_series(1::int4,t.n) AS a,generate_series(10::int8,11::int8) AS b FROM (VALUES ROW(1::int4,1025::int4),ROW(2,0),ROW(3,1)) t(id,n)").unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = sets[0].next_row().unwrap() {
+        rows.push(
+            row.into_iter()
+                .map(|v| (v != "<nil>").then_some(v))
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(rows.len(), 1029);
+    for (i, r) in rows[..1025].iter().enumerate() {
+        assert_eq!(
+            r,
+            &vec![
+                Some("1".into()),
+                Some((i + 1).to_string()),
+                (i < 2).then(|| (i + 10).to_string())
+            ]
+        );
+    }
+    assert_eq!(rows[1025], vec![Some("2".into()), None, Some("10".into())]);
+    assert_eq!(rows[1026], vec![Some("2".into()), None, Some("11".into())]);
+    assert_eq!(
+        rows[1027],
+        vec![Some("3".into()), Some("1".into()), Some("10".into())]
+    );
+    assert_eq!(rows[1028], vec![Some("3".into()), None, Some("11".into())]);
+    sets[0].close().unwrap();
+}

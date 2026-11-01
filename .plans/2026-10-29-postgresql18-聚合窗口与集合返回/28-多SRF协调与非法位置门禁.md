@@ -2,7 +2,7 @@
 
 批次：【批次 28】；调度依赖：批次27（共享源码/注册与验证资源串行）；行为依赖：27。
 
-状态：未开始
+状态：已完成
 
 目的：同层多投影SRF同步取第n项、短者补NULL、行数取最长；CASE/COALESCE内SRF分析拒绝。尚未承诺的嵌套/多数组/复杂输出保持显式拒绝。
 
@@ -109,10 +109,10 @@
 ## Progress
 
 
-- [ ] 确认行为依赖与实际入口。
-- [ ] 记录运行期失败或已有正确行为的当前证据。
-- [ ] 完成最小实现及同夹具通过验证。
-- [ ] Ready检查、diff自审与提交交接。
+- [x] 确认行为依赖与实际入口。
+- [x] 记录运行期失败或已有正确行为的当前证据。
+- [x] 完成最小实现及同夹具通过验证。
+- [x] Ready检查、diff自审与提交交接（完整SHA由最终回复报告）。
 
 ## Surprises & Discoveries
 
@@ -127,9 +127,61 @@
 ## Outcomes & Retrospective
 
 
-尚未实施。完成时填写实际输出、有效测试数量、参考版本、清理结果、剩余范围外依赖及完整SHA。
+本任务同层多SRF协调与位置门禁已实现并取得红绿灯、Ready验证；精确证据见下方。完整SHA在最终交接报告，提交后按契约删除本文件。
 
 ## Artifacts and Notes
 
 
 此编号文件是依 `PLANS.md` 维护的活动ExecPlan。证据记录在本节，长期测试用例在独立测试文件；不修改只读整体指南。规划新增测试名不代表当前已注册或已通过。
+
+
+## 2026-11-01 实施记录
+
+HEAD为4d3b5a41d9d33a2377d6c9d2c7de02c6e7ac5ee9，批次27已提交且单投影SRF入口、固定描述和独立pg09_27测试存在；2号提供Function/Case及表达式访问器，局部合法性检查可复用，不缺语法载体。目标包无doc.go，server AGENTS只增加HTTP规则。本次仅在query.rs分析直接投影SRF的位置合法性，并在source.rs把已有逐外行单SRF展开改为同层最长补NULL；复用现有函数行源与类型绑定，无新增公共生产类型或解析器改动。独立executor/server pg09_28测试先加入，覆盖1025边界、混合重载、空/NULL/数组、非法位置Parse期拒绝、Q与扩展四格式和重绑清理。
+
+生产修改映射：query.rs::validate_pg_integer_select_inputs → 本任务CASE/COALESCE和嵌套SRF分析门禁；source.rs::execute_insert_select_query_body_with_outer → 本任务同层同步取第n项、最长行数与短者补NULL。query.rs::pg_projection_srf仅更新说明，同层多SRF使用同一识别器。拟同步对应既有.rs.md，避免文档仍宣称多SRF由后续负责。
+
+RustCodeGraph status/explore/node已运行；复杂泛名explore无精确门禁结果，用rg复核，既有直接SRF未见位置门禁。未触发Go/Bazel/依赖/解析器修改，不运行bazel_prepare/parser目标。verify-profile技能仍缺失，按根Ready要求验证。
+
+红灯阶段bash /tmp/pg0928-cargo.sh动态取得槽位1、PID13350、CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。cargo fmt --all退出0；executor/server pg09_28各1项实际运行并退出101，均因多个generate_series未展开而unsupported scalar function，非编译失败。日志/tmp/pg0928-{executor,server}-red.log。阶段结束包装器trap已释放锁。PG18.6独立参考bash /tmp/pg0928-reference.sh退出0，确认最长补NULL、全空、NULL元素及边界、CASE/COALESCE 0A000；参考进程与数据已清理，日志/tmp/pg0928-reference.log。
+
+首轮实现编译发现streaming快路径仍使用旧变量projection_source，已改为projection_sources.is_empty；两命令编译退出101不计行为证据。第二轮executor实际1失败，是测试把会话结果集NULL文本误记为NULL，实际为<nil>（left第三行b为<nil>、行数1029已通过）；修正仅测试解码，协议测试继续用真实NULL长度字段断言。新增GROUP/ORDER中的CASE/COALESCE门禁夹具和事务ROLLBACK恢复，以及扩展协议两参数四格式正常/空/全NULL/恢复，共20绑定。make lint当前退出0。
+
+第二轮server pg09_28退出0，有效2项（SQL、同Server双PG/MySQL隔离）通过。原始错误字段S/V=ERROR、C=0A000、CASE/COALESCE对应M已采集；嵌套调用0A000，本任务保留的多数组门禁由原数组分析以0A000拒绝；零步长Execute/Q运行期22023。D/H/P字段当前未发出，不能声称与PG18.6诊断字段完全等价。事务错误ReadyForQuery=E，ROLLBACK后I及SELECT1恢复通过。20次扩展绑定含text/binary参数×结果、正常→单NULL→全空→全NULL→恢复，statement/portal描述始终a=OID23/4/-1、b=OID20/8/-1，Execute未重发描述。
+
+最终Ready使用bash /tmp/pg0928-cargo.sh bash /tmp/pg0928-ready.sh动态取得槽位1，持有PID77387，绝对CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1；验证进行中，结束后包装器trap释放本人的owner与锁，保留缓存。所有Cargo默认features且--locked，未引入依赖。
+
+局部生产类型说明：query.rs::validate_pg_integer_select_inputs内SetCalls仅实现现有ExprNodeVisitor，计数本表达式的SRF并记录CASE/COALESCE上下文；它由同函数在绑定前直接调用，无新增公共载体、独立注册或执行子系统。source.rs保持非SRF路径不克隆FieldList，避免扩大MySQL开销。
+
+Ready executor pg09_28已退出0，有效1项，1029行跨1024边界、短序列补NULL以及下一外行重启均逐行核对；协议NULL断言由server测试独立验证。
+
+Ready同过滤器executor1/server2通过；相邻executor pg09_2共14通过、server pg_query_test::pg09_2共10通过。session的MySQL兼容性及array分析定向测试仍在运行。源码审查发现其他并行任务在query.rs及query.rs.md加入压缩函数接线，保持原样；提交按hunk隔离，仅选SRF说明/SetCalls两个Rust hunk和SRF文档hunk，不提交其他工作。
+
+
+## 最终Ready证据与交接
+
+bash /tmp/pg0928-cargo.sh bash /tmp/pg0928-ready.sh退出0；实际动态领取槽位1，PID77387，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1。阶段结束已移除本人的owner及slot-1.lock，保留缓存；参考临时数据与TCP listener已清理。
+
+| 完整验证命令 | 退出码 / 有效计数 |
+| --- | --- |
+| cargo fmt --all | 0 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor --lib pg09_28 -- --nocapture | 0 / 1通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg09_28 -- --nocapture | 0 / 2通过，含20次扩展绑定 |
+| env -u LDFLAGS cargo test --locked -p astersql-executor --lib pg09_2 -- --nocapture | 0 / 14通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test::pg09_2 -- --nocapture | 0 / 10通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-session --lib mysql_relational_query_compat_test -- --nocapture | 0 / 6通过 |
+| env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_array_test -- --nocapture | 0 / 45通过 |
+| make lint | 0，日志/tmp/pg0928-lint.log |
+| git diff --check | 0 |
+| git diff --quiet -- .plans/2026-10-29-postgresql18-聚合窗口与集合返回/plan.md | 0 |
+| bash /tmp/pg0928-reference.sh | 0 / 独立PG18.6同型夹具观测 |
+
+上述过滤器重叠，测试数不可相加为唯一数量；初始同过滤器红灯各1项实际失败（退出101），中间编译错误及会话NULL文本测试期待纠正均已单独记录，不作为行为通过证据。最终日志/tmp/pg0928-ready-{fmt,executor,server,executor-neighbors,server-neighbors,mysql-neighbors,array-neighbors,diff}.log。参考PG18.6 aarch64-apple-darwin25.1.0、Apple clang16、64位，SQL_ASCII、Asia/Shanghai、psql18.6；不是任务30完整客户端差分。
+
+Profile：WIP用于测试驱动红绿灯，Ready用于交付；verify-profile技能缺失，按根AGENTS和testing-flow完成适用检查，不声称该技能运行。无本任务Go/Bazel/依赖/解析器变更，故不触发bazel_prepare、parser Make目标或Go failpoints；不涉及真实存储，不运行RealTiKV。
+
+本任务修改query.rs的SRF识别说明与局部SetCalls分析门禁、source.rs的同层展开（含快路径排除），同步两份既有.rs.md，追加physical_plan_runtime_test.rs和pg_query_test.rs独立回归及本记录，共7文件。保留PingCAP版权，两生产Rust文件已有AsterSQL版权。query.rs及其说明中的并行压缩函数修改通过hunk排除；不提交其他计划/解析器/planner等既有工作。
+
+正确性限于已承诺直接投影整数序列/int4数组、最长补NULL与位置拒绝。D/H/P字段当前未发出，不声称原始诊断全部等价。兼容性证据为定向PG/MySQL回归；未做清洁checkout、全workspace、真实TiKV、吞吐/内存压力或任务29的portal暂停/取消资源验收。仍沿用既有物化关系入口，内存随结果量增长，无性能承诺。未新增上游依赖或本地覆盖。
+
+下一步推荐任务29：SRF暂停恢复与资源释放。plan.md完全只读；完成状态与证据随本任务提交，完整SHA由最终回复交接；提交后删除本编号文件，不改父计划或覆盖表。
