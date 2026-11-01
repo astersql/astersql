@@ -173,3 +173,8 @@ simple_typed_select_shape 排除 FunctionSource，防止将普通 FROM SRF 当�
 ## SRF暂停恢复与释放（任务29）
 
 SELECT结果的sql_select_limit经truncate_rows约束缓冲/活SRF两个形态；TestSession转换用into_test_record_set保留原Send缓冲契约，生产会话读取仍可按需推进。
+
+
+### 59bfe3daab 局部增量
+
+59bfe3daab 必要局部接线：在已有 MySQL runtime 分派中将 CompareMaterializedViewStmt 交给 execute_compare_sql；SEM 在分派前执行，PostgreSQL 方言路径保持隔离。

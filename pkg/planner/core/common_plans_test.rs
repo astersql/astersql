@@ -341,3 +341,55 @@ fn port_63ec01b244_zero_estimate_scan_is_not_empty_proof() {
         &scan
     )));
 }
+
+#[test]
+fn port_59bfe3daab_compare_plan_privileges_schema_and_preprocess() {
+    use crate::planbuilder::{BuiltPlan, NewPlanBuilder, Privilege, Statement};
+    let parsed = parser_dependency::New()
+        .ParseOneStmt(
+            "COMPARE MATERIALIZED VIEW db.mv AS OF TIMESTAMP NOW(6)",
+            "",
+            "",
+        )
+        .unwrap();
+    let mut statement = parsed
+        .as_any()
+        .downcast_ref::<parser_ast_dependency::CompareMaterializedViewStmt>()
+        .unwrap()
+        .clone();
+    let mut builder = NewPlanBuilder(&[]);
+    let plan = builder
+        .Build(&Statement::CompareMaterializedView {
+            statement: statement.clone(),
+            current_db: String::new(),
+        })
+        .unwrap();
+    assert!(
+        matches!(plan,BuiltPlan::CompareMaterializedView(p) if p.schema.columns==vec!["compare result"])
+    );
+    assert_eq!(builder.GetVisitInfo()[0].privilege, Privilege::OperateView);
+    statement.OutputTable = Some(parser_ast_dependency::TableName {
+        Name: parser_ast_dependency::NewCIStr("out"),
+        ..Default::default()
+    });
+    assert!(
+        builder
+            .buildCompareMaterializedView(&statement, "")
+            .is_err()
+    );
+    let plan = builder
+        .buildCompareMaterializedView(&statement, "outdb")
+        .unwrap();
+    assert!(plan.schema.columns.is_empty());
+    let visits = builder.GetVisitInfo();
+    assert_eq!(visits[visits.len() - 2].privilege, Privilege::Create);
+    assert_eq!(visits[visits.len() - 1].privilege, Privilege::Insert);
+    assert_eq!(visits[visits.len() - 1].db, "outdb");
+    let node = crate::preprocess::PreprocessNode::Statement(Statement::CompareMaterializedView {
+        statement,
+        current_db: "outdb".into(),
+    });
+    let mut preprocessor = crate::preprocess::preprocessor::default();
+    assert!(!preprocessor.Enter(&node));
+    assert!(preprocessor.Leave(&node));
+}

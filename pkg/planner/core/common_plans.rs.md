@@ -104,3 +104,8 @@ Go 能识别 `PhysicalIndexReader`、`PhysicalTableReader`、`PointGetPlan` 并�
 - 若新增大容量字段，应同步评估 `MemoryUsage`，明确计入长度还是容量；深树处理若进入不可信输入边界，需要评估递归深度和克隆成本。
 
 兼容风险主要在公开再导出的字段名和 Go 风格方法名，改变它们会影响 crate 外部调用者；正确性风险集中在点查资格、RU 结果复用和 JSON 契约；性能风险集中在深递归、计划深拷贝和不完整的内存估算。
+
+
+### 59bfe3daab 局部增量
+
+新增 CompareMaterializedView，保存原 AST 与摘要/输出两种结果 schema；对应来源 common_plans.go 的单个新增 hunk。

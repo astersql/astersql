@@ -53,3 +53,8 @@ a87bf8db6499ac38075781cef7357709f07ea002 的快照、数据变更与内部统计
 ## 扩展指南
 
 WHERE、nullable 分组、MIN/MAX 覆盖索引回查、有界 FAST 和隐藏行句柄均由真实 snapshot/事务回归验证。复用 canonical schema 与完整聚合描述符，不禁用优化器或放宽类型检查；新增源形态时先验证 canonical 输出顺序。
+
+
+### 59bfe3daab 局部增量
+
+59bfe3daab 必要局部接线：将已有 datum_literal 的可见性扩大到父模块，供 COMPARE 输出写入重用 typed SQL 字面量编码，编码语义不变；抽取 definition_with_schema，REFRESH 保持使用当前 schema，COMPARE 传入历史 schema 并复用 BuildCompleteDiffSource 的定义校验及布局，避免重新实现分组键/marker 推导。

@@ -367,6 +367,10 @@ pub enum Statement {
         job_ids: Vec<i64>,
         options: Vec<AlterDDLJobOpt>,
     },
+    CompareMaterializedView {
+        statement: parser_ast_dependency::CompareMaterializedViewStmt,
+        current_db: String,
+    },
     RefreshMaterializedView(crate::RefreshRequest),
     RefreshMaterializedViewImplement {
         mode: crate::RefreshImplementMode,
@@ -543,6 +547,7 @@ pub enum BuiltPlan {
         schema: Schema,
         arguments: Vec<String>,
     },
+    CompareMaterializedView(crate::CompareMaterializedView),
     RefreshMaterializedView(crate::RefreshPlan),
     MViewDeltaMerge(crate::MViewDeltaMerge),
     MViewCompleteDeltaApply(crate::MViewCompleteDeltaApply),
@@ -761,6 +766,12 @@ impl PlanBuilder {
             Statement::AlterDdlJob { job_ids, options } => {
                 self.buildAdminAlterDDLJob(job_ids, options)
             }
+            Statement::CompareMaterializedView {
+                statement,
+                current_db,
+            } => self
+                .buildCompareMaterializedView(statement, current_db)
+                .map(BuiltPlan::CompareMaterializedView),
             Statement::RefreshMaterializedView(request) => {
                 let plan = crate::BuildRefreshMaterializedView(request).map_err(BuilderError)?;
                 let (database, view) = match &plan {
@@ -3234,4 +3245,59 @@ fn parse_size(value: &str) -> Result<i64> {
         return Err(BuilderError("invalid or overflowing size".into()));
     }
     Ok(bytes as i64)
+}
+
+impl PlanBuilder {
+    pub fn buildCompareMaterializedView(
+        &mut self,
+        statement: &parser_ast_dependency::CompareMaterializedViewStmt,
+        current_db: &str,
+    ) -> Result<crate::CompareMaterializedView> {
+        let view = statement
+            .ViewName
+            .as_ref()
+            .ok_or_else(|| BuilderError("compare materialized view: missing view name".into()))?;
+        let database = |name: &parser_ast_dependency::TableName| -> Result<String> {
+            let db = if name.Schema.L.is_empty() {
+                current_db.to_owned()
+            } else {
+                name.Schema.L.clone()
+            };
+            if db.is_empty() {
+                Err(BuilderError("No database selected".into()))
+            } else {
+                Ok(db)
+            }
+        };
+        let mut required = vec![(Privilege::OperateView, database(view)?, view.Name.L.clone())];
+        if let Some(output) = &statement.OutputTable {
+            let db = database(output)?;
+            required.push((Privilege::Create, db.clone(), output.Name.L.clone()));
+            required.push((Privilege::Insert, db, output.Name.L.clone()));
+        }
+        self.visitInfo.extend(
+            required
+                .into_iter()
+                .map(|(privilege, db, table)| visitInfo {
+                    privilege,
+                    db,
+                    table,
+                    column: String::new(),
+                    error: String::new(),
+                    alterWritable: false,
+                    dynamicPrivs: Vec::new(),
+                    dynamicWithGrant: false,
+                }),
+        );
+        Ok(crate::CompareMaterializedView {
+            statement: statement.clone(),
+            schema: crate::SchemaProducer {
+                columns: if statement.OutputTable.is_none() {
+                    vec!["compare result".into()]
+                } else {
+                    Vec::new()
+                },
+            },
+        })
+    }
 }

@@ -97,3 +97,8 @@ Rust 使用自定义 `PreprocessNode`，没有 session/权限/真实 resolve con
 - 扩展 `TryAddExtraLimit` 时需补齐 Go 的 SHOW、set operation、SELECT INTO 和已有 Limit 分支，并验证克隆是否保持 AST/计划身份约束。当前参数 `restricted_sql` 与测试注释容易混淆，应以函数分支为准。
 - 引入真实 MDL、事务或过期读状态时，要把获取、释放、错误回滚和 schema 刷新作为一个生命周期设计；当前 `tryLockMDLAndUpdateSchemaIfNecessary` 只是纯数据辅助，不能直接扩写成隐式全局锁操作。
 - 兼容风险主要来自 Go 错误类型/优先级、标识符规则、临时表和权限隐藏；性能风险主要来自未来真实 AST 多次遍历、表查找和不必要克隆。任何生产接线应先建立针对调用主链的集成测试，再评估这些风险。
+
+
+### 59bfe3daab 局部增量
+
+59bfe3daab：COMPARE 的 Statement 节点 Enter/Leave 成对维护 inCreateOrDropTable，以分离名称解析和历史读；此 compatibility visitor 仅有独立测试覆盖，canonical SQL 入口由 session 的当前/历史目标检查执行相同意图。

@@ -26,7 +26,7 @@ use astersql_types::datum::Datum;
 fn identifier(value: &str) -> String {
     format!("`{}`", value.replace('`', "``"))
 }
-fn datum_literal(value: &Datum) -> Result<String, String> {
+pub(super) fn datum_literal(value: &Datum) -> Result<String, String> {
     use astersql_types::datum::*;
     Ok(match value.Kind() {
         KindNull => "NULL".into(),
@@ -86,6 +86,18 @@ pub(super) fn definition(
     Box<ast::SelectStmt>,
     astersql_meta_model::TableInfo,
 )> {
+    definition_with_schema(database, table, session.domain.info_schema().as_ref())
+}
+
+pub(super) fn definition_with_schema(
+    database: &str,
+    table: &astersql_meta_model::TableInfo,
+    schema: &dyn astersql_infoschema::infoschema::InfoSchema,
+) -> SessionResult<(
+    MViewDefinition,
+    Box<ast::SelectStmt>,
+    astersql_meta_model::TableInfo,
+)> {
     let info = table
         .MaterializedView
         .as_ref()
@@ -95,9 +107,7 @@ pub(super) fn definition(
             "materialized view refresh requires exactly one base table",
         ));
     }
-    let base = session
-        .domain
-        .info_schema()
+    let base = schema
         .TableByID(info.BaseTableIDs[0])
         .ok_or_else(|| SessionError::new("materialized view base table is missing"))?
         .ModelMeta()
@@ -106,9 +116,7 @@ pub(super) fn definition(
         .MaterializedViewBase
         .as_ref()
         .map_or(0, |base| base.MLogID);
-    let log = session
-        .domain
-        .info_schema()
+    let log = schema
         .TableByID(log_id)
         .map(|table| table.ModelMeta())
         .transpose()

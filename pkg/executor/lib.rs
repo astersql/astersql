@@ -153,6 +153,7 @@ pub mod metrics_reader;
 pub mod mpp_gather;
 #[cfg(test)]
 mod mpp_gather_test;
+pub mod mview_compare;
 pub mod mview_complete_delta_apply;
 pub mod mview_complete_delta_apply_builder;
 #[cfg(test)]

@@ -2188,6 +2188,12 @@ impl ConcreteSession {
             self.execute_create_materialized_view_log(create)?;
             return Ok(None);
         }
+        if let Some(compare) = statement
+            .as_any()
+            .downcast_ref::<ast::CompareMaterializedViewStmt>()
+        {
+            return self.execute_compare_sql(compare);
+        }
         if let Some(refresh) = statement
             .as_any()
             .downcast_ref::<ast::RefreshMaterializedViewStmt>()

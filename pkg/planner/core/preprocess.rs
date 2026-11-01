@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2015 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
 
 // SQL 预处理：语法与语义边界校验。
 //
@@ -491,6 +491,9 @@ impl preprocessor {
             | PreprocessNode::DropSequences(_)
             | PreprocessNode::RenameTables(_)
             | PreprocessNode::AlterTable { .. } => self.flag |= inCreateOrDropTable,
+            PreprocessNode::Statement(Statement::CompareMaterializedView { .. }) => {
+                self.flag |= inCreateOrDropTable
+            }
             PreprocessNode::RepairTable { .. } => self.flag |= inRepairTable,
             PreprocessNode::Statement(Statement::ImportInto { .. }) => self.flag |= inImportInto,
             PreprocessNode::Statement(Statement::Analyze(_)) => self.flag |= inAnalyze,
@@ -509,6 +512,10 @@ impl preprocessor {
             return false;
         }
         let result = match node {
+            PreprocessNode::Statement(Statement::CompareMaterializedView { .. }) => {
+                self.flag &= !inCreateOrDropTable;
+                Ok(())
+            }
             PreprocessNode::CreateTable {
                 table,
                 columns,

@@ -1089,3 +1089,10 @@ pub fn IsPointGetWithPKOrUniqueKeyByAutoCommit(vars: &SessionVars, plan: &PlanNo
         _ => false,
     }
 }
+
+/// COMPARE resolves names separately from its historical reads.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompareMaterializedView {
+    pub statement: parser_ast_dependency::CompareMaterializedViewStmt,
+    pub schema: SchemaProducer,
+}

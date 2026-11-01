@@ -133,3 +133,76 @@ fn mview_delta_merge_nullable_sum_resets_when_count_zero() {
     merge_rows(&mut rows, &[mapping], 1, None).unwrap();
     assert!(rows[0][2].IsNull());
 }
+
+#[test]
+fn port_59bfe3daab_decimal_value_comparison_preserves_null_and_padding() {
+    use crate::mview_compare::{CompareLayout, DIFFER};
+    use astersql_types::datum::NewDecimalDatum;
+    use astersql_types::decimal::mydecimal::{MyDecimal, NewDecFromStringForTest};
+    let compact = NewDecFromStringForTest("50");
+    let (encoded, status) = compact.ToBin(65, 0);
+    status.unwrap();
+    let mut padded = MyDecimal::default();
+    padded.FromBin(&encoded, 65, 0).1.unwrap();
+    assert_eq!(padded.Compare(&compact), 0);
+    assert_ne!(padded.GetDigitsInt(), compact.GetDigitsInt());
+    let compact = NewDecimalDatum(compact);
+    let padded = NewDecimalDatum(padded);
+    let changed = NewDecimalDatum(NewDecFromStringForTest("51"));
+    let null = Datum::default();
+    let layout = CompareLayout {
+        columns: 2,
+        marker: 0,
+        group_keys: vec![0],
+    };
+    let pairs = [
+        (&padded, &compact),
+        (&compact, &padded),
+        (&compact, &compact),
+        (&padded, &padded),
+        (&padded, &changed),
+        (&null, &null),
+        (&null, &compact),
+        (&compact, &null),
+    ];
+    let mut bitmap = Vec::new();
+    for (a, b) in pairs {
+        let row = vec![NewIntDatum(1), a.clone(), NewIntDatum(1), b.clone()];
+        let result = layout.classify(&row).unwrap();
+        bitmap.push(u8::from(result.is_some()));
+        if let Some((_, kind)) = result {
+            assert_eq!(kind, DIFFER);
+        }
+    }
+    assert_eq!(bitmap, [0, 0, 0, 0, 1, 0, 1, 1]);
+}
+#[test]
+fn port_59bfe3daab_output_names_batch_limits_and_classification() {
+    use crate::mview_compare::*;
+    assert_eq!(
+        differ_type_column_name(["_DIFFER_type_".into(), "_Differ_type_1".into()]),
+        "_Differ_type_2"
+    );
+    assert_eq!(output_batch_bytes(1024 * 1024), 256 * 1024);
+    assert_eq!(output_batch_bytes(0), 1);
+    assert_eq!(output_batch_bytes(u64::MAX), 16 * 1024 * 1024);
+    let l = CompareLayout {
+        columns: 1,
+        marker: 0,
+        group_keys: vec![],
+    };
+    assert_eq!(
+        l.classify(&[Datum::default(), NewIntDatum(1)])
+            .unwrap()
+            .unwrap()
+            .1,
+        VACUUM
+    );
+    assert_eq!(
+        l.classify(&[NewIntDatum(1), Datum::default()])
+            .unwrap()
+            .unwrap()
+            .1,
+        EXCESSIVE
+    );
+}

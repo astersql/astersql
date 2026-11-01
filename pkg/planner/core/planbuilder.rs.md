@@ -111,3 +111,8 @@ ANALYZE 新增 `NDVRate`，同 SampleRate 以 `f64::to_bits` 存入 `u64` map，
 - 调整 IMPORT URI 时同时考虑 `s3`/`oss`、下划线/连字符 key 别名、Starter 与非 Starter、认证二选一、重复 query key 的 first-value 语义，并使用 nextgen 条件测试隔离全局 deploy mode。
 - 访问路径扩展应维护 invisible、multi-valued、vector、global、temporary、prefix length、TiFlash 和 FORCE/USE/IGNORE 的组合含义；性能风险主要来自候选路径集合膨胀及不必要 clone。
 - 保持错误文本兼容时参考 Rust 的 `go_error_messages_and_table_plan` 及 Go 原测试。所有测试继续放在 `pkg/planner/core/planbuilder_test.rs`，遵守生产源码与测试分离要求。
+
+
+### 59bfe3daab 局部增量
+
+59bfe3daab：buildCompareMaterializedView 解析数据库，顺序收集 OPERATE VIEW 与可选 CREATE/INSERT，摘要模式有 compare result 列，输出模式无结果列；canonical session 实际调用本方法。

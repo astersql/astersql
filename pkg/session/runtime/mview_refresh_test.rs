@@ -19,7 +19,7 @@ use super::*;
 use astersql_executor::mview_refresh_steps::{ObserveStep, StepObserver};
 use std::time::{Duration, SystemTime};
 
-fn query(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
+pub(super) fn query(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
     let mut sets = session
         .execute(sql)
         .unwrap_or_else(|error| panic!("{sql}: {error}"));
@@ -33,7 +33,7 @@ fn query(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
     set.close().unwrap();
     rows
 }
-fn save_meta(f: &Fixture, mut table: astersql_meta_model::TableInfo) {
+pub(super) fn save_meta(f: &Fixture, mut table: astersql_meta_model::TableInfo) {
     let mut transaction = f
         .domain
         .storage()
@@ -55,7 +55,7 @@ fn save_meta(f: &Fixture, mut table: astersql_meta_model::TableInfo) {
     transaction.Commit(&kv::Context::default()).unwrap();
     f.domain.force_full_reload_for_test().unwrap();
 }
-fn fixture() -> (Fixture, ConcreteSession) {
+pub(super) fn fixture() -> (Fixture, ConcreteSession) {
     fixture_definition(
         "CREATE TABLE src_runtime (id int primary key,g int not null,v int not null)",
         "(1,1,10),(2,1,20),(3,2,30)",
@@ -63,7 +63,7 @@ fn fixture() -> (Fixture, ConcreteSession) {
         "SELECT g,SUM(v),COUNT(*) FROM test.src_runtime GROUP BY g",
     )
 }
-fn fixture_definition(
+pub(super) fn fixture_definition(
     base_ddl: &str,
     initial_rows: &str,
     mv_ddl: &str,
