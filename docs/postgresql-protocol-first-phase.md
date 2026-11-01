@@ -524,7 +524,7 @@ libpq 未暴露的 portal 原始字段沿用批次 9 的真实 TCP 回归证据�
 
 ## 2026-11-01 INSERT RETURNING
 
-普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT、UPDATE/DELETE RETURNING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
+普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT、DELETE RETURNING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
 
 为原验收输入增加了仅 PG 的括号整数 DEFAULT 加减乘规则，`DEFAULT (40 + 2)` 保留为表达式元数据，在 INSERT 时复用共享求值器得到 42。MySQL 仍拒绝算术默认值，原字面量和函数默认值路径保持。没有新增默认函数、任意列引用或完整默认表达式子系统。
 
@@ -547,3 +547,7 @@ git diff --check
 原独立 libpq 返回元数据夹具同步为 INSERT 成功及回滚目标，但本任务未运行其 PostgreSQL 18.6/独立 MySQL 参考端差分；后续客户端专项补齐该证据。未验证 RealTiKV、持久重启、大结果集性能或完整 PostgreSQL RETURNING；当前行集使用内存缓冲，不宣称流式内存或吞吐改进。
 
 本次19个不同聚焦/相邻测试有通过证据，另有未修改的 `pg_query_test::simple_query_roundtrip` 在未引导夹具上执行 `SELECT 1` 失败；同一断言也在本任务实现前保留的二进制复现（`/tmp/pg10-preimplementation-query-baseline.log`）。编号任务因此保留为“已完成，待回归”，不把该既有失败算作通过，也不在本任务扩写普通查询/引导基础设施。
+
+## UPDATE RETURNING
+
+普通表 UPDATE RETURNING 从共享 UPDATE 的新行镜像投影，支持目标别名、星号、列别名及受限 int4 算术，零匹配保留固定列描述。PostgreSQL 更新计数包含值未改变的匹配行；MySQL 仍按原客户端 capability 决定计数。简单与扩展查询复用同一执行链，投影在应用写入前求值。UPDATE FROM 保持独立拒绝门禁。覆盖入口为 `pg_dml_test::pg10_02_behavior` 与共享层 `pg10_02_update_rows_and_atomicity`。

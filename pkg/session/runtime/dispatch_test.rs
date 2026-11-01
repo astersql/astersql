@@ -544,3 +544,36 @@ fn pg10_01_execution_boundaries() {
     );
     pg.execute("DROP DATABASE pg10_01_boundaries").unwrap();
 }
+
+#[test]
+fn pg10_02_update_rows_and_atomicity() {
+    let (domain, setup) = CreateAnalyzeSession().unwrap();
+    setup.execute("CREATE DATABASE pg10_02_shared").unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("USE pg10_02_shared").unwrap();
+    pg.execute("CREATE TABLE t(id integer PRIMARY KEY,v integer,note text)")
+        .unwrap();
+    pg.execute("INSERT INTO t VALUES (1,10,NULL),(2,20,'b')")
+        .unwrap();
+    let mut rows = pg
+        .execute("UPDATE t AS a SET v=v+1 WHERE id=1 RETURNING a.id,v,note")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1", "11", "<nil>"]);
+    assert!(rows.next_row().unwrap().is_none());
+    for sql in [
+        "UPDATE t SET v=v+1 RETURNING 10/(v-12)",
+        "UPDATE t SET v=99 RETURNING missing",
+        "UPDATE t SET v=99 FROM t AS other RETURNING t.id",
+    ] {
+        assert!(pg.execute(sql).is_err(), "{sql}");
+    }
+    let mut rows = pg
+        .execute("SELECT id,v FROM t ORDER BY id")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1", "11"]);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["2", "20"]);
+    assert!(rows.next_row().unwrap().is_none());
+    pg.execute("DROP DATABASE pg10_02_shared").unwrap();
+}

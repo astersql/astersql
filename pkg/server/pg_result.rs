@@ -277,14 +277,6 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
                 "PostgreSQL UPDATE FROM is unsupported by the shared executor".into(),
             ));
         }
-        if !update.Returning.is_empty() {
-            if !prepare {
-                return Err((
-                    "0A000",
-                    "DML RETURNING is unsupported by the PostgreSQL listener".into(),
-                ));
-            }
-        }
         "UPDATE"
     } else if let Some(delete) = node.downcast_ref::<ast::DeleteStmt>() {
         if delete.Using.is_some() {

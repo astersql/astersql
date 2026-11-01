@@ -8028,6 +8028,31 @@ impl ConcreteSession {
         Ok((values_statement, select_columns))
     }
 
+    pub(super) fn execute_pg_update_returning(
+        &self,
+        statement: &ast::UpdateStmt,
+    ) -> SessionResult<ConcreteRecordSet> {
+        if statement.From.is_some() {
+            return Err(SessionError::new(
+                "PostgreSQL UPDATE FROM is unsupported by the shared executor",
+            ));
+        }
+        self.validate_pg_boolean_statement(statement)?;
+        self.update_returning_fields(statement)?;
+        let sources = self.relational_select_source_fields(&ast::SelectStmt {
+            From: statement.TableRefs.clone(),
+            ..Default::default()
+        })?;
+        for field in &statement.Returning {
+            if let Some(expression) = &field.Expr {
+                validate_pg_returning_execution(expression, &sources)?;
+            }
+        }
+        let plan = crate::dml_runtime::PlanUpdate(statement)?;
+        self.execute_relational_update_with_output(plan, Some(statement))?
+            .ok_or_else(|| SessionError::new("UPDATE RETURNING produced no result set"))
+    }
+
     /// RETURNING consumes the shared INSERT's stored row images, never a
     /// second SELECT against the target or a repeated write.
     pub(super) fn execute_pg_insert_returning(

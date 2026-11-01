@@ -3814,6 +3814,15 @@ impl ConcreteSession {
         &self,
         plan: crate::dml_runtime::UpdatePlan,
     ) -> SessionResult<()> {
+        self.execute_relational_update_with_output(plan, None)
+            .map(|_| ())
+    }
+
+    pub(super) fn execute_relational_update_with_output(
+        &self,
+        plan: crate::dml_runtime::UpdatePlan,
+        returning: Option<&ast::UpdateStmt>,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
         let flags = self.dml_type_flags();
         let current_database = self.current_database();
         let database = if plan.Schema.is_empty() {
@@ -4007,6 +4016,7 @@ impl ConcreteSession {
         let mut rebase_count = 0;
         let mut updated_rows = Vec::with_capacity(stats_before.len());
         let mut lock_rows = Vec::new();
+        let mut returning_rows = Vec::new();
         let bit_columns = table
             .Columns
             .iter()
@@ -4415,6 +4425,9 @@ impl ConcreteSession {
                 rebase_count += 1;
             }
             self.evaluate_generated_columns(&table, &mut row)?;
+            if returning.is_some() {
+                returning_rows.push((0, row.clone()));
+            }
             if row == original {
                 updated_rows.push(row);
                 continue;
@@ -4481,13 +4494,46 @@ impl ConcreteSession {
             lock_rows.push(row.clone());
             updated_rows.push(row);
         }
+        let output = if let Some(statement) = returning {
+            let fields = self.update_returning_fields(statement)?;
+            let alias = statement
+                .TableRefs
+                .as_ref()
+                .and_then(|refs| refs.TableRefs.Left.as_deref())
+                .and_then(|source| match source {
+                    ast::ResultSetNode::TableSource(source) if !source.AsName.L.is_empty() => {
+                        Some(source.AsName.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| table.Name.clone());
+            let (columns, rows, _) = project_relational_rows(
+                database,
+                &alias,
+                &table,
+                &returning_rows,
+                &ast::FieldList {
+                    Fields: statement.Returning.clone(),
+                },
+                &[],
+                |args, row| self.execute_embed_text(args, row),
+            )?;
+            Some(ConcreteRecordSet::new_with_fields(
+                columns,
+                rows,
+                fields.into_iter().map(Some).collect(),
+            ))
+        } else {
+            None
+        };
         Self::validate_unique_indexes(&table, updated_rows.iter(), flags)?;
         self.validate_and_lock_foreign_keys(&table, &updated_rows, &[])?;
         self.validate_restrict_foreign_key_updates(&table, &stats_before, &updated_rows)?;
         self.cascade_foreign_key_updates(&table, &stats_before, &updated_rows)?;
-        let reported_affected_rows = if self.state.borrow().client_capability
-            & astersql_parser_mysql::r#const::ClientFoundRows
-            != 0
+        let reported_affected_rows = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            || self.state.borrow().client_capability
+                & astersql_parser_mysql::r#const::ClientFoundRows
+                != 0
         {
             matched_rows
         } else {
@@ -4515,7 +4561,8 @@ impl ConcreteSession {
                 .map(|(_, row)| row)
                 .collect::<Vec<_>>()
         };
-        self.record_relational_stats(&plan.Table, &table, &stats_before, &stats_after)
+        self.record_relational_stats(&plan.Table, &table, &stats_before, &stats_after)?;
+        Ok(output)
     }
 
     fn relational_join_target_row(

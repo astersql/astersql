@@ -286,16 +286,10 @@ fn prepared_crud_roundtrip() {
     assert_eq!(pg10_rows(&returned), vec![text_row(&[Some("2")])]);
     assert_eq!(returned.last(), Some(&(b'C', b"INSERT 0 1\0".to_vec())));
     sync(&mut socket);
-    for (name, sql) in [
-        (
-            "update_returning",
-            "UPDATE public.prepared_crud SET label = $1 WHERE id = $2 RETURNING id",
-        ),
-        (
-            "delete_returning",
-            "DELETE FROM public.prepared_crud WHERE id = $1 RETURNING id",
-        ),
-    ] {
+    for (name, sql) in [(
+        "delete_returning",
+        "DELETE FROM public.prepared_crud WHERE id = $1 RETURNING id",
+    )] {
         let oids: &[u32] = if name == "update_returning" {
             &[1043, 23]
         } else {
@@ -751,5 +745,324 @@ fn pg10_01_behavior() {
     service_guard.0.close();
     assert_eq!(service_guard.0.resource_counts(), (0, 0, 0));
     drop(service_guard);
+    assert!(TcpStream::connect(addr).is_err());
+}
+
+#[test]
+fn pg10_02_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let guard = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    let scan = "SELECT id,v,note FROM public.pg10_02 ORDER BY id";
+    let initial = vec![
+        text_row(&[Some("1"), Some("10"), None]),
+        text_row(&[Some("2"), Some("20"), Some("b")]),
+    ];
+    for c in [&mut w, &mut o] {
+        eprintln!(
+            "pg10_02 isolation {:?}",
+            pg10_rows(&pg10_ok(
+                c,
+                "SELECT @@transaction_isolation AS isolation",
+                b'I'
+            ))
+        );
+    }
+    for extended in [false, true] {
+        for commit in [false, true] {
+            for (sql, values, stored, names, count) in [
+                (
+                    "UPDATE public.pg10_02 AS a SET v=v+1 WHERE id=1 RETURNING a.id,v,note",
+                    vec![text_row(&[Some("1"), Some("11"), None])],
+                    vec![text_row(&[Some("1"), Some("11"), None]), initial[1].clone()],
+                    vec!["id", "v", "note"],
+                    1,
+                ),
+                (
+                    "UPDATE public.pg10_02 SET v=v WHERE id=1 RETURNING *",
+                    vec![initial[0].clone()],
+                    initial.clone(),
+                    vec!["id", "v", "note"],
+                    1,
+                ),
+                (
+                    "UPDATE public.pg10_02 SET v=99 WHERE false RETURNING id,v,note",
+                    vec![],
+                    initial.clone(),
+                    vec!["id", "v", "note"],
+                    0,
+                ),
+                (
+                    "UPDATE public.pg10_02 SET v=99 WHERE id=9 RETURNING id,v,note",
+                    vec![],
+                    initial.clone(),
+                    vec!["id", "v", "note"],
+                    0,
+                ),
+                (
+                    "UPDATE public.pg10_02 SET v=v+1 RETURNING id,v,note",
+                    vec![
+                        text_row(&[Some("1"), Some("11"), None]),
+                        text_row(&[Some("2"), Some("21"), Some("b")]),
+                    ],
+                    vec![
+                        text_row(&[Some("1"), Some("11"), None]),
+                        text_row(&[Some("2"), Some("21"), Some("b")]),
+                    ],
+                    vec!["id", "v", "note"],
+                    2,
+                ),
+                (
+                    "UPDATE public.pg10_02 AS r SET v=v+1,note=NULL WHERE id=1 RETURNING r.id,r.v AS \"After\",r.note,r.v+100 AS projected",
+                    vec![text_row(&[Some("1"), Some("11"), None, Some("111")])],
+                    vec![text_row(&[Some("1"), Some("11"), None]), initial[1].clone()],
+                    vec!["id", "After", "note", "projected"],
+                    1,
+                ),
+            ] {
+                pg10_ok(
+                    &mut w,
+                    "CREATE TABLE public.pg10_02(id integer PRIMARY KEY DEFAULT (40 + 2),v integer,note text)",
+                    b'I',
+                );
+                pg10_ok(
+                    &mut w,
+                    "INSERT INTO public.pg10_02 VALUES (1,10,NULL),(2,20,'b')",
+                    b'I',
+                );
+                for c in [&mut w, &mut o] {
+                    assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                }
+                let mut description = None;
+                if extended {
+                    parse(&mut w, "u", sql, &[]);
+                    assert_eq!(read(&mut w), (b'1', vec![]));
+                    send(&mut w, b'D', b"Su\0");
+                    assert_eq!(read(&mut w).0, b't');
+                    let d = read(&mut w);
+                    assert_eq!(d.0, b'T');
+                    description = Some(d.1);
+                    sync(&mut w);
+                    for c in [&mut w, &mut o] {
+                        assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                    }
+                }
+                pg10_ok(&mut w, "BEGIN", b'T');
+                let messages = if extended {
+                    bind(&mut w, "p", "u", &[], &[], &[]);
+                    assert_eq!(read(&mut w), (b'2', vec![]));
+                    send(&mut w, b'D', b"Pp\0");
+                    assert_eq!(read(&mut w), (b'T', description.clone().unwrap()));
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+                    assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'T')), initial);
+                    execute(&mut w, "p");
+                    let mut ms = vec![];
+                    loop {
+                        let m = read(&mut w);
+                        let done = matches!(m.0, b'C' | b'E');
+                        ms.push(m);
+                        if done {
+                            break;
+                        }
+                    }
+                    assert!(!ms.iter().any(|m| m.0 == b'E'), "{sql}: {ms:?}");
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+                    send(&mut w, b'C', b"Pp\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    ms
+                } else {
+                    pg10_ok(&mut w, sql, b'T')
+                };
+                let fields =
+                    pg10_description(&description.unwrap_or_else(|| {
+                        messages.iter().find(|m| m.0 == b'T').unwrap().1.clone()
+                    }));
+                assert_eq!(
+                    fields.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
+                    names
+                );
+                for (i, f) in fields.iter().enumerate() {
+                    assert_eq!(
+                        (f.1, f.2, f.3),
+                        if i == 2 { (25, -1, -1) } else { (23, 4, -1) }
+                    );
+                    assert_eq!(f.5, if i == 3 { 0 } else { (i + 1) as i16 });
+                    if i == 3 {
+                        assert_eq!(f.4, 0);
+                    } else {
+                        assert_ne!(f.4, 0);
+                        assert_eq!(f.4, fields[0].4);
+                    }
+                }
+                let mut values = values;
+                values.sort();
+                assert_eq!(pg10_rows(&messages), values, "{sql}");
+                assert!(messages.contains(&(b'C', format!("UPDATE {count}\0").into_bytes())));
+                assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'T')), stored);
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                pg10_ok(&mut w, if commit { "COMMIT" } else { "ROLLBACK" }, b'I');
+                for c in [&mut w, &mut o] {
+                    assert_eq!(
+                        pg10_rows(&pg10_ok(c, scan, b'I')),
+                        if commit {
+                            stored.clone()
+                        } else {
+                            initial.clone()
+                        }
+                    );
+                }
+                if extended {
+                    send(&mut w, b'C', b"Su\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    sync(&mut w);
+                }
+                pg10_ok(&mut w, "DROP TABLE public.pg10_02", b'I');
+            }
+        }
+    }
+    for extended in [false, true] {
+        for transaction in [false, true] {
+            pg10_ok(
+                &mut w,
+                "CREATE TABLE public.pg10_02(id integer PRIMARY KEY,v integer,note text)",
+                b'I',
+            );
+            pg10_ok(
+                &mut w,
+                "INSERT INTO public.pg10_02 VALUES (1,10,'before')",
+                b'I',
+            );
+            if transaction {
+                pg10_ok(&mut w, "BEGIN", b'T');
+                pg10_ok(
+                    &mut w,
+                    "INSERT INTO public.pg10_02 VALUES (3,30,'pending')",
+                    b'T',
+                );
+            }
+            let sql = "UPDATE public.pg10_02 SET v=11 WHERE id=1 RETURNING 10/(v-11) AS boom";
+            if extended {
+                parse(&mut w, "err", sql, &[]);
+                assert_eq!(read(&mut w), (b'1', vec![]));
+                bind(&mut w, "ep", "err", &[], &[], &[]);
+                assert_eq!(read(&mut w), (b'2', vec![]));
+                execute(&mut w, "ep");
+                let error = read(&mut w);
+                assert_eq!(error.0, b'E');
+                assert_eq!(error_state(&error.1), Some("22012"));
+                send(&mut w, b'S', &[]);
+                assert_eq!(
+                    read(&mut w),
+                    (b'Z', vec![if transaction { b'E' } else { b'I' }])
+                );
+            } else {
+                let ms = simple_query(&mut w, sql);
+                assert_eq!(ms[0].0, b'E');
+                assert_eq!(error_state(&ms[0].1), Some("22012"));
+                assert_eq!(
+                    ms.last(),
+                    Some(&(b'Z', vec![if transaction { b'E' } else { b'I' }]))
+                );
+            }
+            assert_eq!(
+                pg10_rows(&pg10_ok(&mut o, scan, b'I')),
+                vec![text_row(&[Some("1"), Some("10"), Some("before")])]
+            );
+            if transaction {
+                let aborted = simple_query(&mut w, "SELECT 1 AS ok");
+                assert_eq!(error_state(&aborted[0].1), Some("25P02"));
+                pg10_ok(&mut w, "ROLLBACK", b'I');
+            }
+            for c in [&mut w, &mut o] {
+                assert_eq!(
+                    pg10_rows(&pg10_ok(c, scan, b'I')),
+                    vec![text_row(&[Some("1"), Some("10"), Some("before")])]
+                );
+                pg10_ok(c, "SELECT 1 AS ok", b'I');
+            }
+            if extended {
+                send(&mut w, b'C', b"Serr\0");
+                assert_eq!(read(&mut w), (b'3', vec![]));
+                sync(&mut w);
+            }
+            pg10_ok(&mut w, "DROP TABLE public.pg10_02", b'I');
+        }
+    }
+    pg10_ok(
+        &mut w,
+        "CREATE TABLE public.pg10_02(id integer PRIMARY KEY,v integer,note text)",
+        b'I',
+    );
+    pg10_ok(
+        &mut w,
+        "INSERT INTO public.pg10_02 VALUES (1,10,'before')",
+        b'I',
+    );
+    parse(
+        &mut w,
+        "typed",
+        "UPDATE public.pg10_02 SET v=$1,note=$2 WHERE id=1 RETURNING id,v,note",
+        &[23, 25],
+    );
+    assert_eq!(read(&mut w), (b'1', vec![]));
+    for (v, note) in [("11", None), ("12", Some("next"))] {
+        bind(
+            &mut w,
+            "tp",
+            "typed",
+            &[],
+            &[Some(v.as_bytes()), note.map(str::as_bytes)],
+            &[],
+        );
+        assert_eq!(read(&mut w), (b'2', vec![]));
+        execute(&mut w, "tp");
+        assert_eq!(read(&mut w), (b'D', text_row(&[Some("1"), Some(v), note])));
+        assert_eq!(read(&mut w), (b'C', b"UPDATE 1\0".to_vec()));
+        sync(&mut w);
+        assert_eq!(
+            pg10_rows(&pg10_ok(&mut o, scan, b'I')),
+            vec![text_row(&[Some("1"), Some(v), note])]
+        );
+        send(&mut w, b'C', b"Ptp\0");
+        assert_eq!(read(&mut w), (b'3', vec![]));
+    }
+    send(&mut w, b'C', b"Styped\0");
+    assert_eq!(read(&mut w), (b'3', vec![]));
+    sync(&mut w);
+    for sql in [
+        "UPDATE public.pg10_02 SET v=99 RETURNING missing",
+        "UPDATE public.pg10_02 SET v=99 FROM public.pg10_02 AS other RETURNING id",
+    ] {
+        let ms = simple_query(&mut w, sql);
+        assert_eq!(ms[0].0, b'E');
+        assert_eq!(
+            pg10_rows(&pg10_ok(&mut o, scan, b'I')),
+            vec![text_row(&[Some("1"), Some("12"), Some("next")])]
+        );
+    }
+    pg10_ok(&mut w, "DROP TABLE public.pg10_02", b'I');
+    send(&mut w, b'X', &[]);
+    send(&mut o, b'X', &[]);
+    drop(w);
+    drop(o);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
 }
