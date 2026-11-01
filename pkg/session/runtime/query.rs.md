@@ -114,6 +114,8 @@ RustCodeGraph 的节点证据显示，`execute_relational_select` 定义于本�
 
 ## 与 Go 版本的对应关系
 
+Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 的压缩 SQL 结果需要当前关系查询入口局部接线：常量 SELECT 包含 COMPRESS/UNCOMPRESS/MD5 时也路由到既有完整查询路径；MySQL 的 COMPRESS/UNCOMPRESS/MD5 递归读取参数，通过正式 builtin factory 求值，并将标准告警复制到当前语句；压缩结果复用 row_codec 的二进制 carrier，HEX 读取原始字节，最终压缩查询结果复用 display_runtime_value 呈现可解码文本。PostgreSQL 不进入该分支。该入口不重实现压缩算法。
+
 Go 同路径实现不存在；本文件顶部模块说明和 `pkg/session/Cargo.toml` 仅声明它属于 Go `pkg/session` 的迁移范围。
 
 - LIMIT 下推注释指向 Go `pkg/planner/core/task.go:611-627` 的 `attach2Task4PhysicalLimit`；Rust 仅在无窗口、连接、锁、分组、HAVING、DISTINCT 等安全条件下把窗口嵌入扫描。

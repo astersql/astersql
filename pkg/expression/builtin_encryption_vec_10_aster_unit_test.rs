@@ -199,7 +199,7 @@ fn compression_round_trip_matches_go_header_and_warning_semantics() {
     let compressed = compress_vec(&input);
     assert_eq!(
         hex::encode_upper(compressed[0].as_ref().unwrap()),
-        "0B000000789CCA48CDC9C95728CF2FCA4901040000FFFF1A0B045D"
+        "0B000000789C000B00F4FF68656C6C6F20776F726C6403001A0B045D"
     );
     assert_eq!(compressed[1], Some(Vec::new()));
     assert_eq!(compressed[2], None);

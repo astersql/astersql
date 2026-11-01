@@ -135,7 +135,7 @@ fn compression_round_trip_empty_and_corrupt_inputs_preserve_warnings() {
     let compressed = compress(b"hello world").unwrap();
     assert_eq!(
         hex::encode_upper(compressed.value.as_deref().unwrap()),
-        "0B000000789CCA48CDC9C95728CF2FCA4901040000FFFF1A0B045D"
+        "0B000000789C000B00F4FF68656C6C6F20776F726C6403001A0B045D"
     );
     assert_eq!(
         uncompress(compressed.value.as_deref().unwrap())
@@ -209,4 +209,91 @@ fn password_strength_covers_null_disabled_username_dictionary_and_full_score() {
             Some(expected)
         );
     }
+}
+
+#[test]
+fn port_7fa5afdeb8_go127_compression_vectors() {
+    for (plain, encoded) in [
+        (
+            b"hello world".as_slice(),
+            "0B000000789C000B00F4FF68656C6C6F20776F726C6403001A0B045D",
+        ),
+        (
+            "你好".as_bytes(),
+            "06000000789C000600F9FFE4BDA0E5A5BD030010450489",
+        ),
+        (
+            b"\xc4\xe3\xba\xc3".as_slice(),
+            "04000000789C000400FBFFC4E3BAC3030007F40325",
+        ),
+        (
+            b"12345".as_slice(),
+            "05000000789C000500FAFF3132333435030002F80100",
+        ),
+        (
+            b"23456".as_slice(),
+            "05000000789C000500FAFF3233343536030003070105",
+        ),
+    ] {
+        let expected = hex::decode(encoded).unwrap();
+        assert_eq!(
+            compress(plain).unwrap().value.as_deref(),
+            Some(expected.as_slice())
+        );
+        assert_eq!(uncompress(&expected).value.as_deref(), Some(plain));
+    }
+}
+
+#[test]
+fn port_7fa5afdeb8_uncompress_preserves_all_go_inputs() {
+    for encoded in [
+        "0B000000789CCB48CDC9C95728CF2FCA4901001A0B045D",
+        "0B000000789CCA48CDC9C95728CF2FCA4901040000FFFF1A0B045D",
+        "0B000000789C000B00F4FF68656C6C6F20776F726C6403001A0B045D",
+    ] {
+        assert_eq!(
+            uncompress(&hex::decode(encoded).unwrap()).value.as_deref(),
+            Some(b"hello world".as_slice())
+        );
+    }
+    for bad in [
+        b"1".as_slice(),
+        b"1234",
+        b"12345",
+        &[0x0b],
+        &[0x0b, 0, 0, 0],
+        &[0x0b, 0, 0, 0, 0x12, 0x34],
+    ] {
+        assert!(uncompress(bad).value.is_none());
+    }
+    assert_eq!(uncompress(b"").value, Some(Vec::new()));
+    let wrong = hex::decode("02000000789CCB48CDC9C95728CF2FCA4901001A0B045D").unwrap();
+    assert!(uncompress(&wrong).value.is_none());
+}
+
+#[test]
+fn port_7fa5afdeb8_scalar_vector_charset_sql_contracts() {
+    use crate::expression_encryption_vec::{EvalContext, compress_vec, uncompress_vec};
+    // The three source columns are UTF-8 text, GBK text, and BINARY(20).
+    let utf8 = "一二三".as_bytes().to_vec();
+    let gbk = encoding_rs::GBK.encode("一二三").0.into_owned();
+    let mut binary = utf8.clone();
+    binary.resize(20, 0);
+    let plain = vec![Some(utf8), Some(gbk), Some(binary), Some(Vec::new()), None];
+    let encoded = compress_vec(&plain);
+    for (i, expected) in [
+        "96c5c7c96444244ef50887504bec06fa",
+        "2fbe29f3c2841b4df33e8c5b04c0ffde",
+        "f5f4dcaa2c502e3294c85596ab76c981",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let scalar = compress(plain[i].as_ref().unwrap()).unwrap().value.unwrap();
+        assert_eq!(encoded[i].as_ref(), Some(&scalar));
+        assert_eq!(md5_hash(&scalar), expected);
+    }
+    assert_eq!(encoded[3], Some(Vec::new()));
+    assert_eq!(encoded[4], None);
+    assert_eq!(uncompress_vec(&mut EvalContext::default(), &encoded), plain);
 }

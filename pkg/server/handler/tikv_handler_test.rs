@@ -32,3 +32,15 @@ fn invalid_hex_key_is_traced_not_reclassified_as_bad_request() {
 
     assert!(!error.is_bad_request());
 }
+
+#[test]
+fn port_7fa5afdeb8_region_id_is_decimal() {
+    for id in [0, 65, 123, u64::MAX] {
+        let error = crate::tikv_handler::region_not_found(id);
+        assert_eq!(
+            error.message(),
+            format!("region not found for regionID {id}")
+        );
+        assert!(!error.is_bad_request());
+    }
+}

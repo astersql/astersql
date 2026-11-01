@@ -270,6 +270,9 @@ impl ScalarFunction {
     /// 依据静态 EvalType 分派到具体求值入口，并在 NULL/错误时保持 Go Datum 的空值处理。
     pub fn Eval(&self, ctx: &dyn EvalContext, row: chunk::Row) -> Result<types::Datum, Error> {
         intest::AssertNotNil(Some(ctx), &[]);
+        if let Some(value) = self.Function.evalBinaryDatum(ctx, row.clone()) {
+            return value;
+        }
         let tp = self.GetType(ctx);
         // PG numeric CAST and range bounds carry validated exact numeric payloads;
         // EvalDecimal is the MySQL-only fixed-capacity API.

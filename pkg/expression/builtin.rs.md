@@ -94,6 +94,8 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 
 ## 与 Go 版本的对应关系
 
+Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 的压缩向量通过最小局部接线进入现有 factory：`compress`/`uncompress` 使用二进制返回类型，`CoreBuiltinKind::Compression` 在 `evalBinaryDatum` 返回保留原字节的 Datum，NULL 直接传播，损坏流追加标准 ZlibData/ZlibBuffer 告警；向量入口逐行写入字节列。HEX/MD5 对二进制参数读取 Datum 的原字节，避免无效 UTF-8 经 String 转换损坏。其他签名与 PostgreSQL 方言可见性仍由既有注册规则处理。
+
 NOW 在通用 FixedTimeZone 存在时以真实当前时钟加固定偏移构造本地日期，保留声明 FSP 的截断；未设置时保持命名时区路径。
 
 - Rust `baseBuiltinFunc` 对应 Go `builtin.go` 的同名结构：参数、返回类型、PB code、collator、子节点向量化、clone、相等比较、内存估算和基础 `eval*` 保护路径均保留相同职责。

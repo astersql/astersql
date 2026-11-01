@@ -143,7 +143,7 @@ fn mysql_compress_headers_warnings_and_password_scores_match_go() {
     let compressed = compress(b"hello world").unwrap();
     assert_eq!(
         hex::encode_upper(compressed.value.as_deref().unwrap()),
-        "0B000000789CCA48CDC9C95728CF2FCA4901040000FFFF1A0B045D"
+        "0B000000789C000B00F4FF68656C6C6F20776F726C6403001A0B045D"
     );
     assert_eq!(
         uncompress(compressed.value.as_deref().unwrap())
@@ -161,7 +161,7 @@ fn mysql_compress_headers_warnings_and_password_scores_match_go() {
     assert_eq!(short_length.warnings, vec![EncryptionWarning::ZlibData]);
     assert_eq!(
         hex::encode_upper(compress("你好".as_bytes()).unwrap().value.unwrap()),
-        "06000000789C7AB277C1D3A57B01010000FFFF10450489"
+        "06000000789C000600F9FFE4BDA0E5A5BD030010450489"
     );
     assert_eq!(
         uncompress(&hex::decode("0B000000789CCB48CDC9C95728CF2FCA4901001A0B045D").unwrap())

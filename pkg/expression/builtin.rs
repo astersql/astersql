@@ -3222,6 +3222,14 @@ pub mod formal_registry {
     }
 
     impl builtinFunc for GeneratedPolicyBuiltin {
+        fn evalBinaryDatum(
+            &self,
+            ctx: &dyn EvalContext,
+            row: chunk::Row,
+        ) -> Option<Result<types::Datum, Error>> {
+            self.function.evalBinaryDatum(ctx, row)
+        }
+
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
@@ -4492,6 +4500,7 @@ pub mod formal_registry {
         Uuid,
         Rand,
         Md5,
+        Compression(bool),
         SetVar(types::EvalType),
         TimeToSec,
         Extract(ExtractMode),
@@ -6194,15 +6203,21 @@ pub mod formal_registry {
                 CoreBuiltinKind::Uuid => {
                     Ok((crate::builtin_miscellaneous_kernel::uuid_v1(), false))
                 }
+                CoreBuiltinKind::Compression(_) => {
+                    let value = self.evalBinaryDatum(ctx, row).unwrap()?;
+                    Ok((value.GetString(), value.IsNull()))
+                }
                 CoreBuiltinKind::Md5 => {
-                    let (value, null) = self.base.args[0].EvalString(ctx, row)?;
-                    if null {
+                    let value = self.base.args[0].Eval(ctx, row)?;
+                    if value.IsNull() {
                         return Ok((String::new(), true));
                     }
-                    Ok((
-                        crate::builtin_encryption_kernel::md5_hash(value.as_bytes()),
-                        false,
-                    ))
+                    let bytes = if matches!(value.Kind(), types::KindBytes | types::KindString) {
+                        value.GetBytes()
+                    } else {
+                        value.ToString()?.into_bytes()
+                    };
+                    Ok((crate::builtin_encryption_kernel::md5_hash(&bytes), false))
                 }
                 CoreBuiltinKind::SetVar(types::ETString) => {
                     let (value, null) = self.set_user_variable(ctx, row)?;
@@ -6237,6 +6252,14 @@ pub mod formal_registry {
                     }
                 }
                 CoreBuiltinKind::Hex(integer) => {
+                    if !integer && self.base.args[0].GetType(ctx).GetCharset() == "binary" {
+                        let value = self.base.args[0].Eval(ctx, row)?;
+                        return Ok((
+                            crate::builtin_string_kernel::hexString(&value.GetBytes()),
+                            value.IsNull(),
+                        ));
+                    }
+
                     if integer {
                         let (value, null) = self.base.args[0].EvalInt(ctx, row)?;
                         Ok((
@@ -6681,12 +6704,70 @@ pub mod formal_registry {
         fn MemoryUsage(&self) -> i64 {
             self.base.memory_usage()
         }
+        fn evalBinaryDatum(
+            &self,
+            ctx: &dyn EvalContext,
+            row: chunk::Row,
+        ) -> Option<Result<types::Datum, Error>> {
+            let CoreBuiltinKind::Compression(decode) = self.kind else {
+                return None;
+            };
+            Some((|| {
+                let value = self.base.args[0].Eval(ctx, row)?;
+                if value.IsNull() {
+                    return Ok(types::Datum::default());
+                }
+                let bytes = match value.Kind() {
+                    types::KindBytes | types::KindString => value.GetBytes(),
+                    _ => value.ToString()?.into_bytes(),
+                };
+                let result = if decode {
+                    crate::builtin_encryption_kernel::uncompress(&bytes)
+                } else {
+                    crate::builtin_encryption_kernel::compress(&bytes)
+                        .map_err(|e| errors::New(e.to_string()))?
+                };
+                for warning in result.warnings {
+                    let error = match warning {
+                        crate::builtin_encryption_kernel::EncryptionWarning::ZlibBuffer => {
+                            dbterror_dependency::ClassExpression
+                                .NewStd(errno_dependency::errcode::ErrZlibZBuf)
+                                .GenWithStackByArgs(&[])
+                        }
+                        _ => dbterror_dependency::ClassExpression
+                            .NewStd(errno_dependency::errcode::ErrZlibZData)
+                            .GenWithStackByArgs(&[]),
+                    };
+                    crate::typeCtx(ctx).AppendWarning(error.into());
+                }
+                Ok(match result.value {
+                    Some(bytes) => {
+                        let mut datum = types::Datum::default();
+                        datum.SetBytesAsString(bytes, "binary".into(), 0);
+                        datum
+                    }
+                    None => types::Datum::default(),
+                })
+            })())
+        }
         fn vecEvalString(
             &self,
             ctx: &dyn EvalContext,
             input: &chunk::Chunk,
             result: &mut chunk::Column,
         ) -> Result<(), Error> {
+            if matches!(self.kind, CoreBuiltinKind::Compression(_)) {
+                result.ReserveString(input.NumRows());
+                for i in 0..input.NumRows() {
+                    let datum = self.evalBinaryDatum(ctx, input.GetRow(i)).unwrap()?;
+                    if datum.IsNull() {
+                        result.AppendNull();
+                    } else {
+                        result.AppendBytes(&datum.GetBytes());
+                    }
+                }
+                return Ok(());
+            }
             if !matches!(self.kind, CoreBuiltinKind::DateFormat) {
                 return crate::builtin_vectorized_kernel::vecEvalStringByRows(
                     self, ctx, input, result,
@@ -6715,7 +6796,10 @@ pub mod formal_registry {
             Ok(())
         }
         fn vectorized(&self) -> bool {
-            matches!(self.kind, CoreBuiltinKind::DateFormat)
+            matches!(
+                self.kind,
+                CoreBuiltinKind::DateFormat | CoreBuiltinKind::Compression(_)
+            )
         }
     }
 
@@ -8003,8 +8087,32 @@ pub mod formal_registry {
                 field_type_for_eval_type(types::ETReal),
                 "builtinRandWithSeedFirstGenSig",
             ),
+            "compress" | "uncompress" => {
+                let mut tp = field_type_for_eval_type(types::ETString);
+                tp.SetCharset("binary".into());
+                tp.SetCollate("binary".into());
+                tp.SetFlag(mysql::BinaryFlag);
+                let src_len = args[0].GetType(ctx.GetEvalCtx()).GetFlen();
+                tp.SetFlen(if name == "compress" {
+                    (src_len + (src_len >> 12) + (src_len >> 14) + (src_len >> 25) + 13)
+                        .min(mysql::MaxBlobWidth as isize)
+                } else {
+                    mysql::MaxBlobWidth as isize
+                });
+                (
+                    CoreBuiltinKind::Compression(name == "uncompress"),
+                    tp,
+                    if name == "uncompress" {
+                        "builtinUncompressSig"
+                    } else {
+                        "builtinCompressSig"
+                    },
+                )
+            }
             "md5" => {
-                args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
+                if args[0].GetType(ctx.GetEvalCtx()).GetCharset() != "binary" {
+                    args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
+                }
                 let mut return_type = field_type_for_eval_type(types::ETString);
                 let (charset, collation) = ctx.GetCharsetInfo();
                 return_type.SetCharset(charset);
@@ -8443,7 +8551,9 @@ pub mod formal_registry {
                 } else {
                     mysql::TypeVarString
                 });
-                args[0] = BuildCastFunction(ctx, &args[0], &target_type);
+                if integer || argument_type.GetCharset() != "binary" {
+                    args[0] = BuildCastFunction(ctx, &args[0], &target_type);
+                }
                 let mut return_type = field_type_for_eval_type(types::ETString);
                 return_type.SetFlen(if original_flen == types::UnspecifiedLength as isize {
                     types::UnspecifiedLength as isize
@@ -8708,6 +8818,8 @@ pub mod formal_registry {
             CoreBuiltinKind::Atan => tipb::ScalarFuncSig::Atan2Args as i32,
             CoreBuiltinKind::Pow => tipb::ScalarFuncSig::Pow as i32,
             CoreBuiltinKind::Md5 => tipb::ScalarFuncSig::Md5 as i32,
+            CoreBuiltinKind::Compression(false) => tipb::ScalarFuncSig::Compress as i32,
+            CoreBuiltinKind::Compression(true) => tipb::ScalarFuncSig::Uncompress as i32,
             CoreBuiltinKind::Now if base.args.is_empty() => {
                 tipb::ScalarFuncSig::NowWithoutArg as i32
             }
@@ -8905,6 +9017,8 @@ pub mod formal_registry {
     core_factory!(uuid_factory, "uuid");
     core_factory!(rand_factory, "rand");
     core_factory!(md5_factory, "md5");
+    core_factory!(compress_factory, "compress");
+    core_factory!(uncompress_factory, "uncompress");
     core_factory!(set_var_factory, "setvar");
     core_factory!(time_to_sec_factory, "time_to_sec");
     core_factory!(extract_factory, "extract");
@@ -9014,6 +9128,8 @@ pub mod formal_registry {
         ("uuid", uuid_factory),
         ("rand", rand_factory),
         ("md5", md5_factory),
+        ("compress", compress_factory),
+        ("uncompress", uncompress_factory),
         ("setvar", set_var_factory),
         ("time_to_sec", time_to_sec_factory),
         ("extract", extract_factory),

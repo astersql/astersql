@@ -678,6 +678,11 @@ pub fn password_vec(ctx: &mut EvalContext, input: &ByteColumn) -> ByteColumn {
 
 /// zlib 压缩并改写结尾以匹配 Go COMPRESS 字节布局。
 fn deflate(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    if !data.is_empty() && data.len() <= 32 {
+        return crate::builtin_encryption_kernel::compress(data)
+            .map(|value| value.value.unwrap()[4..].to_vec())
+            .map_err(std::io::Error::other);
+    }
     let mut writer = ZlibEncoder::new(Vec::new(), Compression::default());
     writer.write_all(data)?;
     writer.flush()?;

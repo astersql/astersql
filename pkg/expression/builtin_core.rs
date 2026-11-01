@@ -70,6 +70,16 @@ pub trait builtinFunc: CollationInfo {
     /// 签名是否可跨会话安全共享（无会话可变状态）。
     fn SafeToShareAcrossSession(&self) -> bool;
 
+    /// Optional raw-byte result for binary SQL functions whose output is not UTF-8.
+    /// None preserves the existing typed dispatch for every other signature.
+    fn evalBinaryDatum(
+        &self,
+        _ctx: &dyn EvalContext,
+        _row: chunk::Row,
+    ) -> Option<Result<types::Datum, Error>> {
+        None
+    }
+
     /// 按行求值返回 Int；默认未实现。返回值中 bool 表示是否为 SQL NULL。
     fn evalInt(&self, _ctx: &dyn EvalContext, _row: chunk::Row) -> Result<(i64, bool), Error> {
         Err(errors::New("builtin does not implement evalInt"))

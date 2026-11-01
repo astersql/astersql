@@ -74,9 +74,11 @@ RustCodeGraph 的文件节点给出本文件被 5 个文件使用的概览；精
 
 ## 与 Go 版本的对应关系
 
+Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 升级至 Go 1.27.3：`compress` 对非空且至多 32 字节的输入按照 Go 默认等级最终短窗口的规则写 stored 块、空 fixed 最终块与 Adler-32；空串、四字节长度和尾空格保护保持原契约。大输入继续复用已有压缩路径，不将任意输入退化为 stored。解压同时接受 MySQL、旧 TiDB 和 Go 1.27 的压缩流。COMPRESS/UNCOMPRESS 现经 builtin factory 与 ScalarFunction 的原始二进制 Datum 入口接入真实表达式求值。
+
 - `compress` 特意用 `normalize_go_zlib_end` 保持 Go `compress/flate` 的字节级结果，而不仅保证可往返解压。Rust 测试断言 `hello world` 的完整十六进制输出；Go 测试 `TestCompress`/`TestUncompress` 是来源对照。
 
-相反，Rust 当前只有 MD5 已直接进入 `builtin.rs` 的生产标量分派；其余函数是已实现、已由独立测试验证的迁移内核，不应描述为已全部替代 Go builtin。
+MD5、COMPRESS、UNCOMPRESS 已接入生产表达式分派；其余加密函数仍为迁移内核，不应描述为已全部替代 Go builtin。
 
 ## 扩展指南
 

@@ -107,6 +107,8 @@ Go 对照：[`scalar_function.go`](./scalar_function.go)
 
 ## 与 Go 版本的对应关系
 
+Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 的压缩 SQL 接线：Eval 优先接收 builtin 的可选原始二进制 Datum；仅实现该入口的签名改变分派。其余内置函数继续原有 EvalType 路径，PostgreSQL numeric 与 range 特例保持原逻辑。
+
 语言层差异主要是所有权和错误表示：Go 的接口/指针切片映射为 `Box<dyn ...>` 与 `Vec`，可空 `*FieldType` 映射为 `Option<FieldType>`，三返回值求值映射为 `Result<(T, bool), Error>`。Go 回调可返回替换后的 `*ScalarFunction`，Rust `ScalarFunctionCallBack` 原地修改 `&mut ScalarFunction`；当前默认检查和初始化用途仍能表达，但若未来 Go 回调需要用完全不同节点替换对象，Rust 签名需要同步扩展。
 
 Go `typeInferForNull` 仅在原类型不已经满足特定条件时克隆；Rust 对所有匹配的 NULL 常量都克隆并设置推导类型。结果不变量相同：NULL 采用非 NULL 操作数类型且清除 `NotNullFlag`，但分配细节可能不同。

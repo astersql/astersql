@@ -1906,3 +1906,6 @@ mod modify_column_cloud_store_test;
 #[cfg(test)]
 #[path = "runtime/modify_column_cloud_meta_test.rs"]
 mod modify_column_cloud_meta_test;
+
+#[cfg(test)]
+mod compression_port_test;

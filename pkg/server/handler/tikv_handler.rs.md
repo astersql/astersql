@@ -108,6 +108,8 @@ Go 对照实现为 Region cache 定位创建带 500 ms 预算的 backoffer，并
 
 ## 与 Go 版本的对应关系
 
+Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 将缺失 Region 元数据错误中的 ID 改为十进制。`region_not_found` 为真实 get_regions_meta 的错误构造入口，使用 u64 Display 保留完整十进制范围；独立测试断言 0、65、123、u64::MAX 以及非 BadRequest 分类。PD 查询仍为既有外部依赖占位，不宣称已实现远程查询。
+
 关键差异如下：
 
 - Go 嵌入真实 `helper.Helper`，调用 TiKV client、PD client、Domain、InfoSchema、tablecodec、codec 和真实类型转换；Rust 在本文件内重定义同名占位类型，真实 Cargo 依赖尚未接线。

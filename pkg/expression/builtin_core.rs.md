@@ -72,6 +72,8 @@ trait 没有 `Send`/`Sync` 超约束；跨线程能力取决于具体实现及�
 
 ## 与 Go 版本的对应关系
 
+`evalBinaryDatum` 为返回原始二进制结果的可选入口，默认返回 None 并保留原 typed eval 分派；当前由 COMPRESS/UNCOMPRESS 实现。该局部接线对应 Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 的可观察压缩字节，避免 Rust String 不能表示任意 Go string 的限制。
+
 Rust 将这些接口合并为一个 trait，并增加 `as_any`、`getArgsMut`、扩展函数与 GROUPING 快照钩子，以及计划缓存快照的两个 crate 内函数。
 
 两版的重要实现差异必须保留：Go `baseBuiltinFunc` 的 `vecEval*` 和错误类型 `eval*` 均报告“should never be called”（`builtin.go:321-385`），真正的逐行向量回退在 Go 的其他辅助逻辑中；Rust trait 自身的 `vecEval*` 默认逐行适配。Go `isChildrenVectorized` 在 `builtin.go:389-403` 用 `sync.Once` 缓存并在全为真时初始化列池；Rust 每次遍历子表达式且不分配池。Rust 的 Decimal 行式返回拥有的 `MyDecimal`，Go 返回指针；Rust `metadata` 是已编码 `Vec<u8>`，Go 是 `proto.Message`；Rust pb code 暂以 `i32` 表示，Go 使用 `tipb.ScalarFuncSig`。

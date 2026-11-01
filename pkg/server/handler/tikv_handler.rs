@@ -222,9 +222,7 @@ pub fn get_regions_meta(t: &TikvHandlerTool, region_ids: &[u64]) -> Result<Vec<R
     let mut regions = Vec::with_capacity(region_ids.len());
     for id in region_ids {
         let region = t.helper.region_cache.pd_client.get_region_by_id(*id)?;
-        let meta = region
-            .meta
-            .ok_or_else(|| Error::new(format!("region not found for regionID {:?}", id)))?;
+        let meta = region.meta.ok_or_else(|| region_not_found(*id))?;
         regions.push(RegionMeta {
             id: *id,
             leader: region.leader,
@@ -233,6 +231,11 @@ pub fn get_regions_meta(t: &TikvHandlerTool, region_ids: &[u64]) -> Result<Vec<R
         });
     }
     Ok(regions)
+}
+
+/// Missing-PD-metadata diagnostic shared by the handler and its regression test.
+pub(crate) fn region_not_found(id: u64) -> Error {
+    Error::new(format!("region not found for regionID {id}"))
 }
 
 // get_mvcc_by_encoded_key 和 extract_table_and_partition_name 对应 Go 中跨文件提供的方法/函数。

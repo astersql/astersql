@@ -1663,6 +1663,87 @@ impl ConcreteSession {
         if let Some(value) = pg_numeric_literal_value(expression) {
             return value.map(Some);
         }
+        if self.sql_dialect() == ast::SqlDialect::MySQL
+            && let ast::ExprKind::Function {
+                FnName,
+                Args,
+                Schema,
+            } = &expression.Kind
+            && Schema.L.is_empty()
+            && matches!(FnName.L.as_str(), "compress" | "uncompress" | "md5")
+            && Args.len() == 1
+        {
+            use astersql_expression::{BuildContext, contextutil::WarnHandler};
+            let Some(value) = self.relational_query_expression_value(&Args[0], row, group_rows)?
+            else {
+                return Ok(None);
+            };
+            // Reuse the row codec's byte carrier across nested functions. Literal
+            // bytes must also bypass the relational evaluator's text conversion.
+            let bytes = match &Args[0].Kind {
+                ast::ExprKind::Value(literal) => match &literal.Datum {
+                    ast::ValueDatum::HexLiteral(bytes) | ast::ValueDatum::Bytes(bytes) => {
+                        bytes.clone()
+                    }
+                    _ => binary_runtime_bytes(&value).unwrap_or_else(|| value.into_bytes()),
+                },
+                _ => binary_runtime_bytes(&value).unwrap_or_else(|| value.into_bytes()),
+            };
+            let mut argument = astersql_expression::NewStrConst("");
+            argument
+                .Value
+                .SetBytesAsString(bytes.clone(), "binary".into(), 0);
+            let tp = argument.RetType.as_mut().expect("string constant type");
+            tp.SetCharset("binary".into());
+            tp.SetCollate("binary".into());
+            tp.SetFlen(bytes.len() as isize);
+            let warnings = Arc::new(astersql_expression::contextutil::NewStaticWarnHandler(0));
+            let eval = Arc::new(astersql_expression_exprstatic::NewEvalContext(vec![
+                astersql_expression_exprstatic::WithWarnHandler(warnings.clone()),
+            ]));
+            let context = astersql_expression_exprstatic::NewExprContext(vec![
+                astersql_expression_exprstatic::WithEvalCtx(eval.clone()),
+            ]);
+            let function = astersql_expression::NewFunctionBase(
+                &context,
+                &FnName.L,
+                *astersql_expression::types::NewFieldType(
+                    astersql_expression::mysql::TypeUnspecified,
+                ),
+                vec![Box::new(argument)],
+            )
+            .map_err(|error| session_error("build compression expression", error))?;
+            let result = function.Eval(
+                context.GetEvalCtx(),
+                astersql_expression::chunk::Row::default(),
+            );
+            self.state.borrow_mut().current_warnings.extend(
+                warnings
+                    .CopyWarnings(Vec::new())
+                    .into_iter()
+                    .filter_map(|warning| {
+                        warning.Err.map(|error| SessionWarning::from_error(&error))
+                    }),
+            );
+            let result =
+                result.map_err(|error| session_error("evaluate compression expression", error))?;
+            if result.IsNull() {
+                return Ok(None);
+            }
+            return Ok(Some(if FnName.L == "md5" {
+                result.GetString()
+            } else {
+                format!(
+                    "{}{}",
+                    super::row_codec::BINARY_RUNTIME_PREFIX,
+                    result
+                        .GetBytes()
+                        .iter()
+                        .map(|byte| format!("{byte:02X}"))
+                        .collect::<String>()
+                )
+            }));
+        }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && matches!(expression.Kind, ast::ExprKind::Like { .. })
         {
@@ -2941,6 +3022,11 @@ impl ConcreteSession {
                 else {
                     return Ok(None);
                 };
+                if let Some(bytes) = binary_runtime_bytes(&value) {
+                    return Ok(Some(
+                        bytes.iter().map(|byte| format!("{byte:02X}")).collect(),
+                    ));
+                }
                 Ok(Some(relational_hex_value(&Args[0], &value)))
             }
             ast::ExprKind::Function { FnName, Args, .. }
@@ -3399,6 +3485,27 @@ impl ConcreteSession {
         self.execute_insert_select_node_with_outer(node, None)
     }
 
+    fn is_compression_expression(expression: &ast::ExprNode) -> bool {
+        struct Compression(bool);
+        impl ast::ExprNodeVisitor for Compression {
+            fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                if let ast::ExprKind::Function { FnName, Schema, .. } = &input.Kind
+                    && Schema.L.is_empty()
+                    && matches!(FnName.L.as_str(), "compress" | "uncompress" | "md5")
+                {
+                    self.0 = true;
+                }
+                (input.clone(), self.0)
+            }
+            fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+                (input.clone(), true)
+            }
+        }
+        let mut visitor = Compression(false);
+        let _ = expression.Accept(&mut visitor);
+        visitor.0
+    }
+
     pub(crate) fn relational_select_requires_full_query(&self, select: &ast::SelectStmt) -> bool {
         fn has_pg_query_expression(expression: &ast::ExprNode) -> bool {
             struct Calls(bool);
@@ -3489,6 +3596,9 @@ impl ConcreteSession {
             || (self.sql_dialect() == ast::SqlDialect::MySQL
                 && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
                     .any(|expr| self.is_mysql_signed_integer_division(expr, &self.relational_select_source_fields(select).unwrap_or_default()) || self.is_mysql_function_projection(expr, &[]) || self.is_mysql_signed_abs(expr, &[]) || self.is_mysql_signed_nullif(expr, &[]) || self.is_mysql_conditional_projection(expr, &[]) || (select.Where.is_some() && ["concat", "greatest", "least"].iter().any(|name| expression_contains_function(expr, name))) || expression_contains_function(expr, "ifnull") || expression_contains_function(expr, "date_format") || expression_contains_function(expr, "json_extract") || expression_contains_function(expr, "tidb_version")))
+            || (self.sql_dialect() == ast::SqlDialect::MySQL
+                && select.Fields.Fields.iter().filter_map(|field| field.Expr.as_ref())
+                    .chain(select.Where.iter()).any(Self::is_compression_expression))
             || has_derived_source
             || select
                 .From
@@ -7709,6 +7819,20 @@ impl ConcreteSession {
         } else {
             selected.columns
         };
+        // Preserve binary carriers while nested expressions evaluate, then use
+        // the existing row presentation for compression query results.
+        let compression_result = self.sql_dialect() == ast::SqlDialect::MySQL
+            && node
+                .as_any()
+                .downcast_ref::<ast::SelectStmt>()
+                .is_some_and(|select| {
+                    select
+                        .Fields
+                        .Fields
+                        .iter()
+                        .filter_map(|field| field.Expr.as_ref())
+                        .any(Self::is_compression_expression)
+                });
         let rows = selected
             .rows
             .iter()
@@ -7716,10 +7840,16 @@ impl ConcreteSession {
                 lookup_columns
                     .iter()
                     .map(|column| {
-                        row.get(column)
+                        let value = row
+                            .get(column)
                             .cloned()
                             .unwrap_or(None)
-                            .unwrap_or_else(|| SHOW_NULL_CELL.to_owned())
+                            .unwrap_or_else(|| SHOW_NULL_CELL.to_owned());
+                        if compression_result {
+                            display_runtime_value(value)
+                        } else {
+                            value
+                        }
                     })
                     .collect::<Vec<_>>()
             })

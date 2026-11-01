@@ -72,6 +72,8 @@ RustCodeGraph 将 `aes_encrypt_vec` 定位在第 354 行，并确认其下游调
 
 ## 与 Go 版本的对应关系
 
+Go 来源 `7fa5afdeb8412ec26fd848054a9bc1f703a2eb90` 的至多 32 字节短窗口输出复用标量压缩内核，去掉公共四字节长度头后由原向量封装写回头部；保留 NULL、空串、尾部保护、解压告警与行顺序。较长输入继续原压缩实现。来源 UTF-8/GBK/BINARY 摘要通过独立测试核对标量与向量字节一致。
+
 Rust 测试固定了典型 Go/MySQL 向量，例如 AES-128-ECB 的密文、SQL crypt 的历史反向命名、摘要十六进制、COMPRESS 完整字节布局和各档密码评分。
 
 仍有必须如实保留的结构差异：Go 入口直接操作 `chunk.Chunk`/`chunk.Column`，复用表达式缓冲区，并可识别常量密钥；Rust 每行重新派生密钥并返回自有 `Vec`。Go 从会话与全局变量取得密码校验开关、用户和策略，Rust 要求调用者显式传入 `enabled` 与 `PasswordPolicy`。Go 解压接入查询内存 tracker，Rust 只有声明长度硬上限。Go `RANDOM_BYTES` 使用 `crypto/rand.Reader`，Rust 使用 `thread_rng`。这些差异意味着 Rust 文件虽有行为测试，不能据此宣称已完成生产替换。

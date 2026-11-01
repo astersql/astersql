@@ -264,13 +264,17 @@ fn test_packet_io_write_compressed() {
     let data = packet.written_data();
     let compressed_length = header_payload_length(&data[..3]);
     assert!(compressed_length > 0);
+    assert!(compressed_length < 1024 * 1024);
     assert!(data.len() >= 7 + compressed_length);
     assert_eq!(&data[3..4], &[0x00]);
     assert_eq!(&data[4..7], &[0x00, 0x00, 0x10]);
     let mut decoded = Vec::new();
-    flate2::read::ZlibDecoder::new(&data[7..7 + compressed_length])
-        .read_to_end(&mut decoded)
-        .unwrap();
+    let mut decoder = flate2::bufread::ZlibDecoder::new(&data[7..7 + compressed_length]);
+    decoder.read_to_end(&mut decoded).unwrap();
+    assert!(
+        decoder.into_inner().is_empty(),
+        "compressed frame must be a complete stream"
+    );
     assert_eq!(decoded.len(), 1024 * 1024);
     assert_eq!(&decoded[..4], &[0xff, 0xff, 0xff, 0x00]);
     assert!(decoded[4..].iter().all(|byte| *byte == b'A'));
