@@ -27,12 +27,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 #[derive(Default)]
-struct RecordingOrphanMonitor {
+struct RecordingOrphanCleaner {
     triggers: AtomicUsize,
     resets: AtomicUsize,
 }
 
-impl crate::scheduler_manager::OrphanDataMonitor for RecordingOrphanMonitor {
+impl crate::scheduler_manager::OrphanDataCleaner for RecordingOrphanCleaner {
     fn trigger(&self, _: &Context) {
         self.triggers.fetch_add(1, Ordering::SeqCst);
     }
@@ -43,11 +43,11 @@ impl crate::scheduler_manager::OrphanDataMonitor for RecordingOrphanMonitor {
 }
 
 #[test]
-fn orphan_monitor_runs_with_scheduler_cleanup_and_resets_on_stop() {
+fn port_a35c499c9b_orphan_cleaner_runs_with_scheduler_cleanup_and_resets_on_stop() {
     let task_manager = Arc::new(TestTaskManager::default());
-    let recorder = Arc::new(RecordingOrphanMonitor::default());
+    let recorder = Arc::new(RecordingOrphanCleaner::default());
     let mut manager = Manager::new(task_manager, "server", None);
-    manager.set_orphan_monitor_for_test(recorder.clone());
+    manager.set_orphan_cleaner_for_test(recorder.clone());
 
     manager.start().unwrap();
     manager.tick().unwrap();

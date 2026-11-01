@@ -30,21 +30,21 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-pub(crate) trait OrphanDataMonitor: Send + Sync {
+pub(crate) trait OrphanDataCleaner: Send + Sync {
     fn trigger(&self, context: &Context);
     fn reset(&self);
 }
 
-struct NoopOrphanDataMonitor;
+struct NoopOrphanDataCleaner;
 
-impl OrphanDataMonitor for NoopOrphanDataMonitor {
+impl OrphanDataCleaner for NoopOrphanDataCleaner {
     fn trigger(&self, _: &Context) {}
     fn reset(&self) {}
 }
 
-struct GlobalSortOrphanDataMonitor(astersql_ingestor_globalsort::orphandata::Monitor);
+struct GlobalSortOrphanDataCleaner(astersql_ingestor_globalsort::orphandata::Cleaner);
 
-impl OrphanDataMonitor for GlobalSortOrphanDataMonitor {
+impl OrphanDataCleaner for GlobalSortOrphanDataCleaner {
     fn trigger(&self, context: &Context) {
         let storage_context = astersql_objstore::storage::Context::from_cancellation_flag(
             context.cancellation_flag(),
@@ -115,8 +115,8 @@ pub struct Manager {
     node_resource: Option<NodeResource>,
     /// 是否已完成 start 初始化。
     initialized: AtomicBool,
-    /// Owner-only monitor. Classic kernels use the no-op implementation.
-    orphan_monitor: Arc<dyn OrphanDataMonitor>,
+    /// Owner-only cleaner. Classic kernels use the no-op implementation.
+    orphan_cleaner: Arc<dyn OrphanDataCleaner>,
 }
 
 impl Manager {
@@ -165,7 +165,7 @@ impl Manager {
             allocated_slots: false,
             node_resource: node_resource.clone(),
         };
-        let orphan_monitor = new_orphan_data_monitor(Arc::clone(&task_manager));
+        let orphan_cleaner = new_orphan_data_cleaner(Arc::clone(&task_manager));
         Self {
             task_manager,
             node_manager,
@@ -175,7 +175,7 @@ impl Manager {
             server_id: param.server_id,
             node_resource,
             initialized: AtomicBool::new(false),
-            orphan_monitor,
+            orphan_cleaner,
         }
     }
 
@@ -184,7 +184,7 @@ impl Manager {
         self.node_manager
             .refresh_nodes(self.task_manager.as_ref(), &self.slot_manager)?;
         self.drain_clean_task_batches();
-        self.orphan_monitor.trigger(&Context::new());
+        self.orphan_cleaner.trigger(&Context::new());
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
@@ -211,7 +211,7 @@ impl Manager {
                     .unreserve(&entry.reservation, &entry.reserved_exec_id);
             }
         }
-        self.orphan_monitor.reset();
+        self.orphan_cleaner.reset();
     }
 
     /// 是否已 start。
@@ -249,7 +249,7 @@ impl Manager {
         self.start_schedulers(schedulable)?;
         self.drive_schedulers();
         self.drain_clean_task_batches();
-        self.orphan_monitor.trigger(&Context::new());
+        self.orphan_cleaner.trigger(&Context::new());
         Ok(())
     }
 
@@ -505,18 +505,18 @@ impl Manager {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_orphan_monitor_for_test(&mut self, monitor: Arc<dyn OrphanDataMonitor>) {
-        self.orphan_monitor = monitor;
+    pub(crate) fn set_orphan_cleaner_for_test(&mut self, cleaner: Arc<dyn OrphanDataCleaner>) {
+        self.orphan_cleaner = cleaner;
     }
 }
 
-fn new_orphan_data_monitor(task_manager: Arc<dyn TaskManager>) -> Arc<dyn OrphanDataMonitor> {
+fn new_orphan_data_cleaner(task_manager: Arc<dyn TaskManager>) -> Arc<dyn OrphanDataCleaner> {
     if !astersql_config_kerneltype::IsNextGen() {
-        return Arc::new(NoopOrphanDataMonitor);
+        return Arc::new(NoopOrphanDataCleaner);
     }
     let checker = Arc::clone(&task_manager);
-    Arc::new(GlobalSortOrphanDataMonitor(
-        astersql_ingestor_globalsort::orphandata::Monitor::new(
+    Arc::new(GlobalSortOrphanDataCleaner(
+        astersql_ingestor_globalsort::orphandata::Cleaner::new(
             astersql_ingestor_globalsort::orphandata::Config {
                 active_producer_checker: Arc::new(move || {
                     checker

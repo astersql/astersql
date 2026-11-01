@@ -13,13 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Scan and publish global-sort data that has no active DXF producer.
+//! Scan, publish, and delete global-sort data that has no active DXF producer.
 
 use anyhow::{Context as _, Result};
 use astersql_objstore::storage::{Context, Storage, StorageRef};
 use std::sync::Arc;
 
 pub const SAMPLE_OBJECT_LIMIT: usize = 10;
+pub const CLEANUP_OBJECT_LIMIT: usize = 1000;
 
 pub trait ActiveProducerChecker: Send + Sync {
     fn has_active_producers(&self) -> Result<bool>;
@@ -49,14 +50,15 @@ pub struct ScanStats {
     pub object_count: i64,
     pub sample_objects: Vec<String>,
     pub truncated: bool,
+    pub deletion_candidates: Vec<String>,
 }
 
-pub struct Monitor {
+pub struct Cleaner {
     config: Config,
     store_factory: StorageFactory,
 }
 
-impl Monitor {
+impl Cleaner {
     pub fn new(config: Config) -> Self {
         let store_factory = config.store_factory.clone().unwrap_or_else(|| {
             Arc::new(|context, uri| {
@@ -70,8 +72,8 @@ impl Monitor {
         }
     }
 
-    /// Runs synchronously on the scheduler cleanup owner. Failures deliberately
-    /// preserve the previously published value; cancellation is equally silent.
+    /// Runs synchronously on the scheduler cleanup owner. The observation is
+    /// published before deletion, so a failed or bounded cleanup remains visible.
     pub fn trigger(&self, context: &Context) {
         let uri = (self.config.get_storage_uri)();
         if uri.is_empty() {
@@ -86,17 +88,25 @@ impl Monitor {
         let Ok(storage) = (self.store_factory)(context, &uri) else {
             return;
         };
-        let scanned = scan_orphan_data(context, storage.as_ref(), &self.config.retained_prefixes);
-        storage.Close();
-        let Ok(stats) = scanned else {
-            return;
-        };
+        let stats =
+            match scan_orphan_data(context, storage.as_ref(), &self.config.retained_prefixes) {
+                Ok(stats) => stats,
+                Err(_) => {
+                    storage.Close();
+                    return;
+                }
+            };
         let Ok(false) = self.config.active_producer_checker.has_active_producers() else {
+            storage.Close();
             return;
         };
         astersql_metrics::globalsort::GlobalSortOrphanDataSize
             .with_label_values(&[] as &[&str])
             .set(stats.size_bytes as f64);
+        if !stats.deletion_candidates.is_empty() {
+            let _ = storage.DeleteFiles(context, &stats.deletion_candidates);
+        }
+        storage.Close();
     }
 
     pub fn reset(&self) {
@@ -119,6 +129,9 @@ pub fn scan_orphan_data(
                 return Ok(());
             }
             stats.object_count += 1;
+            if stats.deletion_candidates.len() < CLEANUP_OBJECT_LIMIT {
+                stats.deletion_candidates.push(path.to_owned());
+            }
             if stats.sample_objects.len() < SAMPLE_OBJECT_LIMIT {
                 stats.sample_objects.push(path.to_owned());
             } else {

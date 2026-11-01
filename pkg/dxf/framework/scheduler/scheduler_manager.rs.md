@@ -28,9 +28,9 @@
 
 ## 执行流程
 
-`Manager` 新增 owner 侧 `OrphanDataMonitor`：构造时按 `IsNextGen()` 选择真实 globalsort monitor 或 Classic no-op。`start` 在刷新节点、排空终态清理批次后触发扫描，再发布 initialized；正常 `tick` 完成调度推进和清理后再次触发；`stop` 关闭调度器、释放预留后 reset 指标，Drop 复用 stop。
+`Manager` 持有 owner 侧 `OrphanDataCleaner`：构造时按 `IsNextGen()` 选择真实 globalsort cleaner 或 Classic no-op。`start` 在刷新节点、排空终态清理批次后触发扫描和有界删除，再发布 initialized；正常 `tick` 完成调度推进和清理后再次触发；`stop` 关闭调度器、释放预留后 reset 指标，Drop 复用 stop。
 
-真实监控通过 `active_task_count() > 0` 判断生产者，包含尚未清理的终态任务，避免提前将仍被清理链持有的文件统计为孤儿。云 URI 每轮调用 handle 查询，查询错误转为空字符串而跳过；保留前缀固定为 `conflicted-rows/`。扫描只发布大小，不删除对象，与 `run_expired_file_clean` 的过期文件清理能力独立。
+真实 cleaner 通过 `active_task_count() > 0` 判断生产者，包含尚未清理的终态任务，避免提前删除仍被清理链持有的文件。云 URI 每轮调用 handle 查询，查询错误转为空字符串而跳过；保留前缀固定为 `conflicted-rows/`。扫描发布完整大小并删除至多一千个精确候选键，与 `run_expired_file_clean` 的过期文件清理能力独立。
 
 1. 调用方先以任务存储边界、server ID 和可选 `NodeResource` 构造 `Manager`。`new` 同时创建空的 `NodeManager`、`SlotManager`、`Balancer` 和运行表。
 2. `start` 调用 `NodeManager::refresh_nodes`：通过 `TaskManager::all_nodes` 建立 managed 节点快照，并以第一个正 CPU 数刷新 slot capacity。随后 `drain_clean_task_batches` 处理 owner 接管前遗留的终态任务，触发孤儿监控，最后以 Release 写入 `initialized=true`。节点刷新错误会阻止初始化；清理 drain 和监控错误在各自内部处理。
@@ -80,7 +80,7 @@
 
 ## 并发与资源生命周期
 
-监控为同步扫描，会延长 start/tick 耗时；每次传入新建 `Context`，包装层将取消标志转成对象存储 Context，但 `cancel()` 仅清 initialized，没有保存并取消正在扫描的 Context。不能宣称 stop 会中断在途扫描；调用方仍需串行驱动 owner 生命周期。双门检查不能消除生产者在扫描期间出现又消失的 ABA 窗口。
+cleaner 为同步全量扫描和有界删除，会延长 start/tick 耗时；每次传入新建 `Context`，包装层将取消标志转成对象存储 Context，但 `cancel()` 仅清 initialized，没有保存并取消正在扫描的 Context。不能宣称 stop 会中断在途清理；调用方仍需串行驱动 owner 生命周期。双门检查还依赖任务行在普通清理结束前保持 active、任务 ID 不复用，并且删除只采用本轮扫描的精确键。
 
 - `Manager` 的共享依赖均通过 `Arc` 持有；运行表用 `RwLock`，balancer 用 `Mutex` 串行化每次 balance。锁获取顺序在本文件中短且固定，外部 trait 方法均在释放运行表锁后调用，降低重入死锁风险。
 - `MAX_CONCURRENT_TASKS` 和 `initialized` 使用 Release 写/Acquire 读，分别发布配置与初始化完成状态。`scheduler_count` 与后续插入之间不是单个原子临界区；如果多个线程并发调用 `tick`，它们可能都通过上限检查。本文件的设计对应单 owner 循环，调用方应串行驱动 `tick`。
@@ -91,7 +91,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 在 `cleanTaskLoop` 初次清理和定时清理后 Trigger，并在 owner 变化 Stop 时 Reset；Rust 已接入 start/tick/stop，但没有 Go ticker 清理 goroutine，也没有同等 logger。
+Go 在 `cleanTaskLoop` 初次清理和定时清理后 Trigger，并在 owner 变化 Stop 时 Reset；Rust 已接入 start/tick/stop，且同样通过 active producer 双门禁、保留前缀和有界精确键删除完成本提交行为，但没有 Go ticker 清理 goroutine或同等 logger。
 
 当前差异与迁移状态：
 
