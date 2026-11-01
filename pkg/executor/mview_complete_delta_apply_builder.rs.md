@@ -16,6 +16,8 @@ COMPLETE DELTA APPLY 的真实执行器构建与 Chunk 消费入口；由 builde
 
 build 先校验表与源字段，编译 current/recomputed/compare 映射。Open 打开 child；首次 Next 消费所有 child chunks，在 run_atomic 回调内逐行调用 insert/delete_from_source/update_from_source。仅变化的非分组列触发 update。成功 EOF 设置语句影响行数和消息；无论成功失败均向启用的 RuntimeStatsColl 注册当前统计快照。
 
+DIFF_UPDATE 直接将 current/recomputed 的物理 Chunk 列传入 MarkTouchedRowsByColumn。逻辑行通过 selection 映射到物理行；只比较 mapping.compare 中的非分组列。来源 fba22fa599b70bb8e688c8ca4fb6c287fd1a4d53 要求字符串、ENUM/SET 名称使用二进制比较，浮点数按数值比较，DECIMAL 按 Compare 比较。该规则只作用于 MV touched 检测，不改变 SQL collation 或 PostgreSQL 比较规则。
+
 ## 数据与状态
 
 opened/done 控制生命周期。每次实际执行创建零值统计，避免复用旧计数；非空 chunk 增加 chunks/row_ops，只有成功的表调用增加对应 insert/update/delete；计时只在统计开启且 chunk 写入成功后累计。失败时保留已观察的表调用计数，语句完成结果不发布。

@@ -160,6 +160,65 @@ pub fn getInitOffsetsCap(capacity: usize) -> i64 {
 }
 
 impl Column {
+    /// Append [begin, end); invalid ranges and absent sources leave the destination unchanged.
+    pub fn AppendCellRange(&mut self, src: Option<&Column>, begin: isize, end: isize) {
+        let Some(src) = src else {
+            return;
+        };
+        if begin < 0 || begin >= end || end as usize > src.Rows() {
+            return;
+        }
+        let (begin, end) = (begin as usize, end as usize);
+        let old_len = self.length;
+        self.nullBitmap.resize((old_len + end - begin + 7) >> 3, 0);
+        for (i, row) in (begin..end).enumerate() {
+            let dst = old_len + i;
+            let mask = 1 << (dst & 7);
+            if src.IsNull(row) {
+                self.nullBitmap[dst >> 3] &= !mask;
+            } else {
+                self.nullBitmap[dst >> 3] |= mask;
+            }
+        }
+        if self.IsFixed() {
+            let size = src.elemBuf.len();
+            self.data
+                .extend_from_slice(&src.data[begin * size..end * size]);
+        } else {
+            let start = src.offsets[begin];
+            let dst_start = self.data.len() as i64;
+            self.data
+                .extend_from_slice(&src.data[start as usize..src.offsets[end] as usize]);
+            self.offsets.extend(
+                src.offsets[begin + 1..=end]
+                    .iter()
+                    .map(|v| dst_start + v - start),
+            );
+        }
+        self.length += end - begin;
+    }
+
+    /// Safe Rust spelling of Go's AppendCellRange(c, begin, end): snapshot before mutation.
+    pub fn AppendCellRangeSelf(&mut self, begin: isize, end: isize) {
+        if begin < 0 || begin >= end || end as usize > self.Rows() {
+            return;
+        }
+        let src = self.clone();
+        self.AppendCellRange(Some(&src), begin, end);
+    }
+
+    /// Detect NULLs without inspecting unused tail bits in the bitmap.
+    pub fn HasNull(&self) -> bool {
+        let mut i = 0;
+        while i + 8 <= self.length {
+            if self.nullBitmap[i >> 3] != 0xff {
+                return true;
+            }
+            i += 8;
+        }
+        (i..self.length).any(|row| self.IsNull(row))
+    }
+
     // AppendDuration appends a duration value into this Column. Fsp is ignored.
     pub fn AppendDuration(&mut self, dur: types::Duration) {
         self.AppendInt64(dur.Duration as i64);

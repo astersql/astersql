@@ -351,3 +351,44 @@ fn port_59bfe3daab_recompute_uses_definition_timezone() {
         vec![vec!["+08:00"]]
     );
 }
+
+#[test]
+fn port_fba22fa599_compare_bit_after_null_and_complete_refresh() {
+    let (f, s) = fixture_definition(
+        "CREATE TABLE src_runtime (id int primary key,g int,v bit(8),index(g,v))",
+        "(1,1,NULL),(2,2,b'00000010')",
+        "CREATE TABLE mv_runtime (g int,m bit(8),cnt bigint NOT NULL)",
+        "SELECT g,MIN(v),COUNT(*) FROM test.src_runtime GROUP BY g",
+    );
+    let watermark = query(
+        &s,
+        "SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info",
+    )[0][0]
+        .clone();
+    query(&s, "UPDATE src_runtime SET v=b'00000011' WHERE id=2");
+    query(&s, "REFRESH MATERIALIZED VIEW mv_runtime complete in place");
+    let m = maintenance(&f);
+    query(
+        &m,
+        &format!("UPDATE mysql.tidb_mview_refresh_info SET LAST_SUCCESS_READ_TSO={watermark}"),
+    );
+    std::thread::park_timeout(Duration::from_millis(20));
+    let summary = compare_now(&s, "");
+    assert!(
+        summary[0][0].contains("differences result in 1 rows"),
+        "{summary:?}"
+    );
+    compare_now(&s, " OUTPUT INTO TABLE test.compare_bit");
+    // BIT is projected as an integer by the comparison SELECT, as in the Go result (HEX=3).
+    assert_eq!(
+        query(
+            &s,
+            "SELECT g,HEX(m),cnt,_Differ_type_ FROM compare_bit ORDER BY g"
+        ),
+        vec![vec!["2", "3", "1", "mview_differ"]]
+    );
+    query(&s, "DROP TABLE compare_bit");
+    query(&s, "DROP MATERIALIZED VIEW mv_runtime");
+    query(&s, "DROP MATERIALIZED VIEW LOG ON src_runtime");
+    query(&s, "DROP TABLE src_runtime");
+}

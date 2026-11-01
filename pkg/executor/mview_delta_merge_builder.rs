@@ -782,6 +782,53 @@ impl DeltaMergeExec {
                 let start = self.plan.delta_column_count;
                 let end = start + self.plan.mv_column_count;
                 let count_col = start + self.plan.count_star_mv_offset;
+                let target_fields = self.child.Schema()[start..end]
+                    .iter()
+                    .map(|c| c.field_type.clone())
+                    .collect::<Vec<_>>();
+                let mut old_columns =
+                    astersql_util_chunk::NewChunkWithCapacity(target_fields.clone(), rows.len());
+                let mut new_columns =
+                    astersql_util_chunk::NewChunkWithCapacity(target_fields.clone(), rows.len());
+                for (old, new) in before.iter().zip(&rows) {
+                    for (i, (a, b)) in old[start..end].iter().zip(&new[start..end]).enumerate() {
+                        for (columns, value) in [(&mut old_columns, a), (&mut new_columns, b)] {
+                            // SUM may return a wider Datum; comparison must retain the
+                            // target column's physical FLOAT/DOUBLE width.
+                            match target_fields[i].GetType() {
+                                astersql_parser_mysql::r#type::TypeFloat if !value.IsNull() => {
+                                    columns.AppendFloat32(i, value.GetFloat64() as f32)
+                                }
+                                astersql_parser_mysql::r#type::TypeDouble if !value.IsNull() => {
+                                    columns.AppendFloat64(i, value.GetFloat64())
+                                }
+                                _ => columns.AppendDatum(i, value),
+                            }
+                        }
+                    }
+                }
+                let mut update_rows = Vec::new();
+                for (i, (old, new)) in before.iter().zip(&rows).enumerate() {
+                    if !old[count_col].IsNull() && count(&new[count_col])? != 0 {
+                        update_rows.push(i);
+                    }
+                }
+                let stride = (target_fields.len() + 7) >> 3;
+                let mut bitmap = vec![0; update_rows.len() * stride];
+                for (i, field) in target_fields.iter().enumerate() {
+                    astersql_executor_internal_util::MarkTouchedRowsByColumn(
+                        &update_rows,
+                        &mut bitmap,
+                        stride,
+                        i,
+                        old_columns.Column(i),
+                        new_columns.Column(i),
+                        Some(field),
+                        field.GetFlag() & astersql_parser_mysql::r#type::NotNullFlag != 0,
+                        "aggregate change",
+                    )?;
+                }
+                let mut update_ordinal = 0;
                 let write_start = Instant::now();
                 stats.writer_detail.chunks += 1;
                 stats.writer_detail.row_ops += rows.len() as i64;
@@ -798,11 +845,12 @@ impl DeltaMergeExec {
                             batch.delete_from_source(old, old_target)?;
                             stats.writer_detail.delete_rows += 1;
                         } else if existed && remains {
-                            let touched: Vec<_> = old_target
-                                .iter()
-                                .zip(new_target)
-                                .map(|(a, b)| !a.Equals(b))
+                            let touched: Vec<_> = (0..target_fields.len())
+                                .map(|i| {
+                                    bitmap[update_ordinal * stride + (i >> 3)] & (1 << (i & 7)) != 0
+                                })
                                 .collect();
+                            update_ordinal += 1;
                             if touched.iter().any(|v| *v) {
                                 batch.update_from_source(old, old_target, new_target, &touched)?;
                                 stats.writer_detail.update_rows += 1;

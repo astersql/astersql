@@ -18,6 +18,8 @@ FAST MV 刷新聚合 sink、快照重算与表 API 适配；由 builder::buildMV
 
 build 校验 target 类型、COUNT(*) 与重算布局。Next 读取 chunk，保存旧行并合并聚合；必要的 MIN/MAX 重算通过 Resources 在 ReaderSnapshot 中执行。写入阶段比较存在性、最终 count 和 touched，分别 insert/delete/update/noop。成功 EOF 发布 affected rows 和语句消息；退出时登记已观察统计。
 
+来源 fba22fa599b70bb8e688c8ca4fb6c287fd1a4d53 的 touched 列比较通过 MarkTouchedRowsByColumn 接线：合并前后目标 Datum 批量写入现有 typed Chunk，再按实际 update candidate 顺序标记 bitmap。新插入和删除行不进入 update 比较；COUNT 错误继续传播。仅改变 touched 判断，不改变聚合、快照、表写入或事务生命周期。当前适配新增两份目标列缓冲，可能增加每 chunk 内存与复制成本；未作性能基准。
+
 ## 数据与状态
 
 局部 MergeRuntimeStats 记录 reader 时间、一个真实同步 worker 的处理时间、writer 时间和实际写入计数。chunks/row_ops 对应非空写入输入；noop 不计入影响行数。键以 Vec<Datum> 保存，各列 Kind、NULL、长度及内容独立保留；same 逐列匹配，无拼接或可复用序列化缓冲，不存在前缀被预分配覆盖的路径。

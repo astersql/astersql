@@ -287,15 +287,22 @@ impl CompleteDeltaApplyExec {
                                 for i in &self.mapping.compare {
                                     let candidate = &row[self.mapping.recomputed[*i]];
                                     let field = &self.compare_fields[*i];
-                                    let equal = old[*i]
-                                        .Compare(
-                                            astersql_types::DefaultStmtNoWarningContext.clone(),
-                                            candidate,
-                                            astersql_util_collate::GetCollator(field.GetCollate())
-                                                .as_ref(),
-                                        )
-                                        .map_err(|e| e.to_string())?
-                                        == 0;
+                                    let physical_row = input.Sel().map_or(idx, |sel| sel[idx]);
+                                    let mut changed = [0];
+                                    astersql_executor_internal_util::MarkTouchedRowsByColumn(
+                                        &[physical_row],
+                                        &mut changed,
+                                        1,
+                                        0,
+                                        input.Column(self.mapping.current[*i]),
+                                        input.Column(self.mapping.recomputed[*i]),
+                                        Some(field),
+                                        field.GetFlag()
+                                            & astersql_parser_mysql::r#type::NotNullFlag
+                                            != 0,
+                                        "complete refresh",
+                                    )?;
+                                    let equal = changed[0] == 0;
                                     if !equal {
                                         touched[*i] = true;
                                         new[*i] = candidate.clone();

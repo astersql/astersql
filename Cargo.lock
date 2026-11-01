@@ -3939,6 +3939,9 @@ dependencies = [
 name = "astersql-executor-internal-util"
 version = "0.1.0"
 dependencies = [
+ "astersql-parser-types",
+ "astersql-types-datum",
+ "astersql-util-chunk",
  "backtrace",
  "rand 0.8.8",
  "tempfile",

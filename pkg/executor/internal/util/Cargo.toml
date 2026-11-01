@@ -8,12 +8,15 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+astersql-parser-types = { path = "../../../parser/types" }
+astersql-util-chunk = { path = "../../../util/chunk" }
 backtrace = "0.3"
 rand = "0.8"
 thiserror = "2"
 walkdir = "2"
 
 [dev-dependencies]
+astersql-types-datum = { path = "../../../types/internal/datum" }
 tempfile = "3"
 
 [package.metadata.porting]

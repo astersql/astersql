@@ -1869,3 +1869,43 @@ fn port_63ec01b244_empty_mlog_skips_reader_writer_and_publishes_zero_result() {
         "{stats}"
     );
 }
+
+#[test]
+fn port_fba22fa599_delta_float_zero_preserves_noop() {
+    use astersql_parser_mysql::r#type::{TypeDouble, TypeFloat};
+    use astersql_types::datum::{NewFloat32Datum, NewFloat64Datum};
+    for tp in [TypeFloat, TypeDouble] {
+        let number = |v: f64| {
+            if tp == TypeFloat {
+                NewFloat32Datum(v as f32)
+            } else {
+                NewFloat64Datum(v)
+            }
+        };
+        let mut schema = fields(5);
+        schema[1] = NewFieldType(tp);
+        schema[4] = NewFieldType(tp);
+        let mut rt = Resource::new(
+            vec![vec![NewIntDatum(1), NewIntDatum(2), number(-0.)]],
+            RecomputeStrategy::Batch,
+        );
+        rt.target_fields[2] = NewFieldType(tp);
+        let rt = Arc::new(rt);
+        let child = Source::new(
+            vec![vec![
+                NewIntDatum(0),
+                number(0.),
+                NewIntDatum(1),
+                NewIntDatum(2),
+                number(-0.),
+            ]],
+            schema,
+        );
+        let mut exec = build(&plan(), Box::new(child), rt.clone(), reader()).unwrap();
+        exec.Open().unwrap();
+        let mut out = exec.NewChunk();
+        exec.Next(&mut out).unwrap();
+        exec.Close().unwrap();
+        assert!(rt.writes.lock().unwrap().touched.is_empty(), "type {tp}");
+    }
+}

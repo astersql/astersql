@@ -492,3 +492,169 @@ fn port_05fd982b2d_typed_stats_record_real_chunk_rows_and_lifecycle() {
     assert!(text.contains("open:"));
     assert!(text.contains("close:"));
 }
+
+#[test]
+fn port_fba22fa599_complete_binary_names() {
+    use astersql_types::datum::NewCollationStringDatum;
+    let mut fs = fields(7);
+    let mut string = NewFieldType(TypeVarchar);
+    string.SetCollate("utf8mb4_general_ci".into());
+    fs[3] = string.clone();
+    fs[6] = string.clone();
+    let old = vec![
+        NewIntDatum(1),
+        NewIntDatum(1),
+        NewCollationStringDatum("a".into(), "utf8mb4_general_ci".into()),
+    ];
+    let mut rt = Resource::new(vec![old.clone()], RecomputeStrategy::Batch);
+    rt.target_fields[2] = string;
+    let rt = Arc::new(rt);
+    let source = vec![
+        NewIntDatum(3),
+        old[0].clone(),
+        old[1].clone(),
+        old[2].clone(),
+        old[0].clone(),
+        old[1].clone(),
+        NewCollationStringDatum("A".into(), "utf8mb4_general_ci".into()),
+    ];
+    let mut exec = crate::mview_complete_delta_apply_builder::build(
+        &complete_plan(),
+        Box::new(Source::new(vec![source], fs)),
+        rt.clone(),
+    )
+    .unwrap();
+    exec.Open().unwrap();
+    let mut out = exec.NewChunk();
+    exec.Next(&mut out).unwrap();
+    exec.Close().unwrap();
+    let w = rt.writes.lock().unwrap();
+    assert_eq!(w.touched, vec![vec![false, false, true]]);
+    assert_eq!(w.rows[0][2].GetString(), "A");
+}
+
+#[test]
+fn port_fba22fa599_complete_names_and_float_values() {
+    use astersql_parser_mysql::r#type::*;
+    use astersql_parser_types::NewFieldType;
+    use astersql_types::datum::*;
+    let collation = "utf8mb4_general_ci".to_owned();
+    let cases = vec![
+        (
+            TypeEnum,
+            NewCollateMysqlEnumDatum(
+                Enum {
+                    Name: "x".into(),
+                    Value: 1,
+                },
+                collation.clone(),
+            ),
+            NewCollateMysqlEnumDatum(
+                Enum {
+                    Name: "x".into(),
+                    Value: 2,
+                },
+                collation.clone(),
+            ),
+            false,
+        ),
+        (
+            TypeSet,
+            NewMysqlSetDatum(
+                Set {
+                    Name: "a,b".into(),
+                    Value: 3,
+                },
+                collation.clone(),
+            ),
+            NewMysqlSetDatum(
+                Set {
+                    Name: "a,b".into(),
+                    Value: 7,
+                },
+                collation.clone(),
+            ),
+            false,
+        ),
+        (
+            TypeEnum,
+            NewCollateMysqlEnumDatum(
+                Enum {
+                    Name: "x".into(),
+                    Value: 1,
+                },
+                collation.clone(),
+            ),
+            NewCollateMysqlEnumDatum(
+                Enum {
+                    Name: "X".into(),
+                    Value: 1,
+                },
+                collation.clone(),
+            ),
+            true,
+        ),
+        (
+            TypeSet,
+            NewMysqlSetDatum(
+                Set {
+                    Name: "a".into(),
+                    Value: 1,
+                },
+                collation.clone(),
+            ),
+            NewMysqlSetDatum(
+                Set {
+                    Name: "A".into(),
+                    Value: 1,
+                },
+                collation.clone(),
+            ),
+            true,
+        ),
+        (TypeFloat, NewFloat32Datum(0.), NewFloat32Datum(-0.), false),
+        (TypeDouble, NewFloat64Datum(-0.), NewFloat64Datum(0.), false),
+        (TypeFloat, NewFloat32Datum(2.), NewFloat32Datum(3.), true),
+        (TypeDouble, NewFloat64Datum(2.), NewFloat64Datum(3.), true),
+    ];
+    for (tp, a, b, changed) in cases {
+        let mut field = NewFieldType(tp);
+        field.SetCollate(collation.clone());
+        let mut fs = fields(7);
+        fs[3] = field.clone();
+        fs[6] = field.clone();
+        let old = vec![NewIntDatum(1), NewIntDatum(1), a.clone()];
+        let mut rt = Resource::new(vec![old], RecomputeStrategy::Batch);
+        rt.target_fields[2] = field;
+        let rt = Arc::new(rt);
+        let source = vec![
+            NewIntDatum(3),
+            NewIntDatum(1),
+            NewIntDatum(1),
+            a,
+            NewIntDatum(1),
+            NewIntDatum(1),
+            b,
+        ];
+        let mut exec = crate::mview_complete_delta_apply_builder::build(
+            &complete_plan(),
+            Box::new(Source::new(vec![source], fs)),
+            rt.clone(),
+        )
+        .unwrap();
+        exec.Open().unwrap();
+        let mut out = exec.NewChunk();
+        exec.Next(&mut out).unwrap();
+        exec.Close().unwrap();
+        let writes = rt.writes.lock().unwrap();
+        assert_eq!(
+            writes.touched,
+            if changed {
+                vec![vec![false, false, true]]
+            } else {
+                vec![]
+            },
+            "type {tp}"
+        );
+    }
+}

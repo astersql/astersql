@@ -274,3 +274,147 @@ fn reset_changes_column_layout_for_the_requested_eval_type() {
     time.AppendDuration(types::Duration::default());
     assert_eq!(time.data.len(), sizeGoDuration);
 }
+
+#[test]
+fn port_fba22fa599_append_cell_range_fixed() {
+    use super::*;
+    let values = [
+        Some(11),
+        None,
+        Some(22),
+        Some(33),
+        None,
+        Some(44),
+        Some(55),
+        Some(66),
+        None,
+        Some(77),
+    ];
+    let mut src = newFixedLenColumn(8, 16);
+    for v in values {
+        if let Some(v) = v {
+            src.AppendInt64(v);
+        } else {
+            src.AppendNull();
+        }
+    }
+    for capacity in [0, 16] {
+        let mut dst = newFixedLenColumn(8, capacity);
+        dst.AppendInt64(100);
+        dst.AppendNull();
+        dst.AppendInt64(200);
+        for (begin, end) in [(0, 1), (-1, 3), (3, 3), (8, 11)] {
+            dst.AppendCellRange(if begin == 0 { None } else { Some(&src) }, begin, end);
+            assert_eq!(dst.Rows(), 3);
+        }
+        dst.AppendCellRange(Some(&src), 1, 9);
+        let expected = [Some(100), None, Some(200)]
+            .into_iter()
+            .chain(values[1..9].iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(dst.Rows(), expected.len());
+        for (i, v) in expected.iter().enumerate() {
+            assert_eq!(dst.IsNull(i), v.is_none());
+            if let Some(v) = v {
+                assert_eq!(dst.GetInt64(i), *v);
+            }
+        }
+    }
+    let mut col = newFixedLenColumn(8, 16);
+    let original = [Some(1), None, Some(2), Some(3), None, Some(4)];
+    for v in original {
+        if let Some(v) = v {
+            col.AppendInt64(v);
+        } else {
+            col.AppendNull();
+        }
+    }
+    col.AppendCellRangeSelf(1, 5);
+    assert_eq!(col.Rows(), 10);
+    for (i, v) in original
+        .into_iter()
+        .chain(original[1..5].iter().copied())
+        .enumerate()
+    {
+        assert_eq!(col.IsNull(i), v.is_none());
+        if let Some(v) = v {
+            assert_eq!(col.GetInt64(i), v);
+        }
+    }
+}
+
+#[test]
+fn port_fba22fa599_append_cell_range_varlen() {
+    use super::*;
+    let values = [
+        Some("a"),
+        Some("bb"),
+        None,
+        Some("ccc"),
+        Some(""),
+        None,
+        Some("dddd"),
+        Some("ee"),
+        Some("f"),
+        None,
+    ];
+    let mut src = newVarLenColumn(16);
+    for v in values {
+        if let Some(v) = v {
+            src.AppendString(v);
+        } else {
+            src.AppendNull();
+        }
+    }
+    for capacity in [0, 16] {
+        let mut dst = newVarLenColumn(capacity);
+        dst.AppendString("head");
+        dst.AppendNull();
+        dst.AppendCellRange(Some(&src), 2, 10);
+        let expected = [Some("head"), None]
+            .into_iter()
+            .chain(values[2..].iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(dst.Rows(), expected.len());
+        for (i, v) in expected.into_iter().enumerate() {
+            assert_eq!(dst.IsNull(i), v.is_none());
+            if let Some(v) = v {
+                assert_eq!(dst.GetString(i), v);
+            }
+        }
+    }
+    let mut col = newVarLenColumn(16);
+    let original = [Some("ab"), None, Some("c"), Some("def"), None, Some("gh")];
+    for v in original {
+        if let Some(v) = v {
+            col.AppendString(v);
+        } else {
+            col.AppendNull();
+        }
+    }
+    col.AppendCellRangeSelf(0, 6);
+    assert_eq!(col.Rows(), 12);
+    for (i, v) in original.into_iter().cycle().take(12).enumerate() {
+        assert_eq!(col.IsNull(i), v.is_none());
+        if let Some(v) = v {
+            assert_eq!(col.GetString(i), v);
+        }
+    }
+}
+
+#[test]
+fn port_fba22fa599_has_null() {
+    let mut col = super::newFixedLenColumn(8, 32);
+    for n in [0, 8, 9] {
+        col.ResizeFloat64(n, false);
+        assert!(!col.HasNull());
+    }
+    col.SetNull(8, true);
+    assert!(col.HasNull());
+    col.SetNull(8, false);
+    assert!(!col.HasNull());
+    col.SetNull(0, true);
+    assert!(col.HasNull());
+    col.ResizeFloat64(9, true);
+    assert!(col.HasNull());
+}

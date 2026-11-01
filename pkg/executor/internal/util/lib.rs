@@ -20,3 +20,6 @@ pub use util::*;
 #[cfg(test)]
 #[path = "migration_aster_unit_test.rs"]
 mod migration_aster_unit_test;
+
+mod touched_rows;
+pub use touched_rows::MarkTouchedRowsByColumn;

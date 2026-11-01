@@ -12,6 +12,8 @@
 - 为整数、浮点、时间、Duration、Decimal、字符串、字节、JSON、向量、Enum 和 Set 提供追加及读取 API，并维持物理字节布局与 Go 实现兼容。
 - 支持列复制、selection 物化、重复追加和容量复用，以便表达式执行和 Chunk 过滤路径避免逐 Datum 重建。
 
+`AppendCellRange` 批量追加源列半开区间，保留 bitmap 和负载；空源、负起点、空/逆序区间或越界终点保持目标不变。`AppendCellRangeSelf` 是安全 Rust 的自追加入口，先深拷贝源列再写入；代价为一次完整列复制。`HasNull` 先检查完整字节，再检查真实行范围内的尾位，不将未使用位计入 NULL。
+
 ## 主要符号
 
 - `Column`：核心容器。`length` 是逻辑行数；`nullBitmap` 保存有效位；`data` 保存连续负载；`offsets` 只服务变长列；`elemBuf` 同时保存定长追加的暂存值并充当定长/变长布局判别；`avoidReusing` 供分配器策略使用。
@@ -73,6 +75,8 @@ RustCodeGraph 的文件查询显示 `column.rs` 被 76 个文件使用；由于 
 Rust 用安全切片和 `to_ne_bytes`/`from_ne_bytes` 替代 Go 的 `unsafe.Pointer` 视图；因此 `Int64s`、`Float64s` 等返回复制出的 `Vec`，修改返回值不会像 Go 切片那样回写列。Rust 还增加 `reference_id` 来表达 Go 指针相等，并以 `Box<Column>`/`Option<Box<Column>>` 表达可选目标。Decimal 在 Rust 中显式编码字段，Time 当前只编码 `coreTime.0`；这些布局必须继续与 `types` 的尺寸常量一致。
 
 独立 Rust 测试 `pkg/util/chunk/column_test.rs` 聚焦 bitmap、resize/reserve、深拷贝、固定/变长重建、类型往返、NULL 合并和 Reset；`pkg/util/chunk/codec_2_aster_unit_test.rs` 额外覆盖 `AppendCellNTimes` 与编码往返。Go 的 `pkg/util/chunk/column_test.go` 覆盖面更宽，包括大 offset、各类型访问、原地 reconstruct、批量 NULL、预分配和 raw 访问，应作为继续移植边界用例的基准。
+
+来源 `fba22fa599b70bb8e688c8ca4fb6c287fd1a4d53` 的范围追加与 NULL 检查由这些真实 Column API 承载；独立 `port_fba22fa599_` 测试保留定长/变长、自追加、跨 bitmap 字节、NULL 和空串意图。常规 Rust 借用无法同时传入同列的可变/不可变引用，故自追加使用显式方法；没有引入 unsafe 别名。
 
 ## 扩展指南
 
