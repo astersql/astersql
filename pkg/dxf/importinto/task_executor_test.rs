@@ -119,22 +119,25 @@ fn import_step_dispatch_uses_bound_runtime_store_for_all_host_stages() {
     struct Backend;
     impl crate::task_executor::WriteIngestBackend for Backend {
         fn SetCollector(&self, _: Arc<dyn execute::Collector + Send + Sync>) {}
-        fn CloseExternalEngine(
+        fn CurrentVersion(&self) -> anyhow::Result<u64> {
+            Ok(99)
+        }
+        fn NewExternalEngine(
             &self,
             _: &crate::task_executor::WriteIngestRequest,
-        ) -> anyhow::Result<()> {
-            Ok(())
+            _: usize,
+        ) -> anyhow::Result<Box<dyn crate::task_executor::WriteIngestEngine>> {
+            Ok(Box::new(Port373679Engine {
+                events: Default::default(),
+                count: 0,
+            }))
         }
-        fn ImportEngine(&self, _: i64, _: i64, _: i64) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn GetExternalEngineConflictInfo(
+        fn IngestExternalEngine(
             &self,
+            _: &dyn crate::task_executor::WriteIngestEngine,
             _: i64,
-        ) -> astersql_ingestor_engineapi::ConflictInfo {
-            Default::default()
-        }
-        fn CleanupEngine(&self, _: i64) -> anyhow::Result<()> {
+            _: i64,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
         fn Close(&self) {}
@@ -427,7 +430,7 @@ fn merge_sort_step_persists_go_external_meta_even_without_input_files() {
 }
 
 #[test]
-fn write_ingest_step_orders_backend_calls_and_rewrites_meta_only_for_conflicts() {
+fn port_373679dd4d_write_ingest_step_orders_ownership_and_conflict_metadata() {
     use astersql_dxf_framework_proto::{step, subtask};
     use astersql_dxf_framework_taskexecutor_execute as execute;
     use astersql_objstore_storeapi::{Context as ObjectContext, Storage};
@@ -437,46 +440,54 @@ fn write_ingest_step_orders_backend_calls_and_rewrites_meta_only_for_conflicts()
     struct Backend {
         events: Arc<Mutex<Vec<&'static str>>>,
         count: AtomicU64,
+        fail_import: std::sync::atomic::AtomicBool,
+        fail_version: std::sync::atomic::AtomicBool,
     }
     impl crate::task_executor::WriteIngestBackend for Backend {
         fn SetCollector(&self, collector: Arc<dyn execute::Collector + Send + Sync>) {
             self.events.lock().unwrap().push("collector");
             collector.Processed(10, 2);
         }
-        fn CloseExternalEngine(
+        fn CurrentVersion(&self) -> anyhow::Result<u64> {
+            self.events.lock().unwrap().push("version");
+            if self.fail_version.load(Ordering::Relaxed) {
+                anyhow::bail!("version failed");
+            }
+            Ok(99)
+        }
+        fn NewExternalEngine(
             &self,
             request: &crate::task_executor::WriteIngestRequest,
-        ) -> anyhow::Result<()> {
-            assert_eq!(request.TS, 42);
+            concurrency: usize,
+        ) -> anyhow::Result<Box<dyn crate::task_executor::WriteIngestEngine>> {
+            assert!(request.TS == 42 || request.TS == 99);
+            assert_eq!(request.TotalKVCount, 0);
+            assert_eq!(concurrency, 1);
             assert_eq!(request.KVGroup, "data");
             assert_eq!(request.JobKeys, vec![vec![1]]);
             assert_eq!(
                 request.OnDup,
                 astersql_ingestor_engineapi::OnDuplicateKeyError
             );
-            self.events.lock().unwrap().push("close-engine");
-            Ok(())
+            self.events.lock().unwrap().push("new-engine");
+            Ok(Box::new(Port373679Engine {
+                events: self.events.clone(),
+                count: self.count.load(Ordering::Relaxed),
+            }))
         }
-        fn ImportEngine(&self, id: i64, size: i64, keys: i64) -> anyhow::Result<()> {
-            assert!(id > 0);
+        fn IngestExternalEngine(
+            &self,
+            _: &dyn crate::task_executor::WriteIngestEngine,
+            size: i64,
+            keys: i64,
+        ) -> anyhow::Result<()> {
             assert_eq!(size, 96 * 1024 * 1024);
             assert_eq!(keys, 960_000);
             self.events.lock().unwrap().push("import");
-            Ok(())
-        }
-        fn GetExternalEngineConflictInfo(
-            &self,
-            _: i64,
-        ) -> astersql_ingestor_engineapi::ConflictInfo {
-            self.events.lock().unwrap().push("conflict");
-            astersql_ingestor_engineapi::ConflictInfo {
-                Count: self.count.load(Ordering::Relaxed),
-                Files: vec![],
+            if self.fail_import.load(Ordering::Relaxed) {
+                anyhow::bail!("ingest failed");
             }
-        }
-        fn CleanupEngine(&self, _: i64) -> anyhow::Result<()> {
-            self.events.lock().unwrap().push("cleanup");
-            Err(anyhow::anyhow!("cleanup warning"))
+            Ok(())
         }
         fn Close(&self) {
             self.events.lock().unwrap().push("close-backend");
@@ -486,8 +497,10 @@ fn write_ingest_step_orders_backend_calls_and_rewrites_meta_only_for_conflicts()
     let backend = Arc::new(Backend {
         events: events.clone(),
         count: AtomicU64::new(0),
+        fail_import: Default::default(),
+        fail_version: Default::default(),
     });
-    let store = Arc::new(astersql_objstore::azblob::MemoryStorage::default());
+    let store = Arc::new(port373679_store::Store::default());
     let runtime = Arc::new(crate::ConfiguredEncodeSortRuntime {
         ControllerServices: Arc::new(|| unreachable!()),
         ImporterService: Arc::new(|| unreachable!()),
@@ -582,25 +595,99 @@ fn write_ingest_step_orders_backend_calls_and_rewrites_meta_only_for_conflicts()
             .is_err()
     );
     assert_eq!(events.lock().unwrap().len(), before);
-    execute::StepExecutor::Cleanup(&mut executor, execute::Context::new()).unwrap();
+
     assert_eq!(
         *events.lock().unwrap(),
         vec![
             "collector",
-            "close-engine",
+            "new-engine",
             "import",
             "conflict",
-            "cleanup",
+            "close-engine",
             "collector",
-            "close-engine",
+            "new-engine",
             "import",
             "conflict",
-            "cleanup",
-            "close-backend"
+            "close-engine",
         ]
     );
+    events.lock().unwrap().clear();
+    backend.count.store(0, Ordering::Relaxed);
+    let mut legacy = subtask::NewSubtask(
+        step::ImportStepWriteAndIngest,
+        7,
+        astersql_dxf_framework_proto::r#type::ImportInto,
+        "node".into(),
+        1,
+        vec![],
+        1,
+    );
+    legacy.SubtaskBase.ID = 4;
+    let mut legacy_meta = meta.clone();
+    legacy_meta.TS = 0;
+    let mut legacy_wire: serde_json::Value =
+        serde_json::from_slice(&legacy_meta.Marshal().unwrap()).unwrap();
+    legacy_wire["range-job-keys"] = serde_json::Value::Null;
+    legacy.Meta = serde_json::to_vec(&legacy_wire).unwrap();
+    execute::StepExecutor::RunSubtask(&mut executor, execute::Context::new(), &mut legacy).unwrap();
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "version",
+            "collector",
+            "new-engine",
+            "import",
+            "conflict",
+            "close-engine"
+        ]
+    );
+    events.lock().unwrap().clear();
+    backend.fail_version.store(true, Ordering::Relaxed);
+    let error =
+        execute::StepExecutor::RunSubtask(&mut executor, execute::Context::new(), &mut legacy)
+            .unwrap_err();
+    assert!(error.to_string().contains("version failed"));
+    assert_eq!(*events.lock().unwrap(), vec!["version"]);
+    backend.fail_version.store(false, Ordering::Relaxed);
+    backend.fail_import.store(true, Ordering::Relaxed);
+    events.lock().unwrap().clear();
+    let error =
+        execute::StepExecutor::RunSubtask(&mut executor, execute::Context::new(), &mut legacy)
+            .unwrap_err();
+    assert!(error.to_string().contains("ingest failed"));
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "version",
+            "collector",
+            "new-engine",
+            "import",
+            "close-engine"
+        ]
+    );
+    backend.fail_import.store(false, Ordering::Relaxed);
+    backend.count.store(2, Ordering::Relaxed);
+    store.fail.store(true, Ordering::Relaxed);
+    events.lock().unwrap().clear();
+    let before = legacy.Meta.clone();
+    let error =
+        execute::StepExecutor::RunSubtask(&mut executor, execute::Context::new(), &mut legacy)
+            .unwrap_err();
+    assert!(error.to_string().contains("metadata write failed"));
+    assert_eq!(legacy.Meta, before);
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "version",
+            "collector",
+            "new-engine",
+            "import",
+            "conflict",
+            "close-engine"
+        ]
+    );
+    execute::StepExecutor::Cleanup(&mut executor, execute::Context::new()).unwrap();
 }
-
 #[test]
 fn encode_sort_step_dispatch_runs_and_persists_external_subtask_meta() {
     use astersql_dxf_framework_proto::{step, subtask, task::Task};
@@ -1006,4 +1093,102 @@ fn planner_external_meta_preserves_inline_group_and_timestamp() {
     assert_eq!(ingest.TS, 42);
     assert_eq!(ingest.RangeJobKeys, vec![vec![1], vec![4]]);
     assert_eq!(ingest.SortedKVMeta.TotalKVCnt, 3);
+}
+
+struct Port373679Engine {
+    events: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    count: u64,
+}
+impl crate::task_executor::WriteIngestEngine for Port373679Engine {
+    fn Source(&self) -> std::sync::Arc<dyn astersql_ingestor_engineapi::Engine> {
+        panic!("RPC boundary test does not load data; native backend tests cover the real source")
+    }
+    fn GetTotalLoadedKVsCount(&self) -> i64 {
+        0
+    }
+    fn WorkerConcurrency(&self) -> usize {
+        1
+    }
+    fn ConflictInfo(&self) -> astersql_ingestor_engineapi::ConflictInfo {
+        self.events.lock().unwrap().push("conflict");
+        astersql_ingestor_engineapi::ConflictInfo {
+            Count: self.count,
+            Files: vec![],
+        }
+    }
+    fn Close(&self) -> anyhow::Result<()> {
+        self.events.lock().unwrap().push("close-engine");
+        Err(anyhow::anyhow!("close warning"))
+    }
+}
+
+mod port373679_store {
+    use astersql_objstore_storeapi::{Context, ReaderOption, Storage, WalkOption, WriterOption};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[derive(Default)]
+    pub struct Store {
+        inner: astersql_objstore::azblob::MemoryStorage,
+        pub fail: AtomicBool,
+    }
+    impl Storage for Store {
+        fn WriteFile(&self, c: &Context, n: &str, b: &[u8]) -> anyhow::Result<()> {
+            if self.fail.load(Ordering::Relaxed) {
+                anyhow::bail!("metadata write failed");
+            }
+            self.inner.WriteFile(c, n, b)
+        }
+        fn ReadFile(&self, c: &Context, n: &str) -> anyhow::Result<Vec<u8>> {
+            self.inner.ReadFile(c, n)
+        }
+        fn FileExists(&self, c: &Context, n: &str) -> anyhow::Result<bool> {
+            self.inner.FileExists(c, n)
+        }
+        fn DeleteFile(&self, c: &Context, n: &str) -> anyhow::Result<()> {
+            self.inner.DeleteFile(c, n)
+        }
+        fn Open(
+            &self,
+            c: &Context,
+            n: &str,
+            o: Option<&ReaderOption>,
+        ) -> anyhow::Result<Box<dyn astersql_objstore::objectio::Reader>> {
+            self.inner.Open(c, n, o)
+        }
+        fn DeleteFiles(&self, c: &Context, n: &[String]) -> anyhow::Result<()> {
+            self.inner.DeleteFiles(c, n)
+        }
+        fn WalkDir(
+            &self,
+            c: &Context,
+            o: Option<&WalkOption>,
+            f: &mut dyn FnMut(&str, i64) -> anyhow::Result<()>,
+        ) -> anyhow::Result<()> {
+            self.inner.WalkDir(c, o, f)
+        }
+        fn URI(&self) -> String {
+            self.inner.URI()
+        }
+        fn Create(
+            &self,
+            c: &Context,
+            n: &str,
+            o: Option<&WriterOption>,
+        ) -> anyhow::Result<Box<dyn astersql_objstore::objectio::Writer>> {
+            self.inner.Create(c, n, o)
+        }
+        fn Rename(&self, c: &Context, a: &str, b: &str) -> anyhow::Result<()> {
+            self.inner.Rename(c, a, b)
+        }
+        fn PresignFile(
+            &self,
+            c: &Context,
+            n: &str,
+            d: std::time::Duration,
+        ) -> anyhow::Result<String> {
+            self.inner.PresignFile(c, n, d)
+        }
+        fn Close(&self) {
+            self.inner.Close()
+        }
+    }
 }

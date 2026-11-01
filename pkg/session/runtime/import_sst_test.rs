@@ -180,29 +180,32 @@ fn cloud_external_backend_imports_native_keyspace_files_at_subtask_timestamp() {
     .unwrap();
     let new_engine = || {
         sort::engine::NewExternalEngine(
-            store.clone(),
-            vec!["data".into()],
-            vec!["stat".into()],
-            boundaries[0].clone(),
-            end.clone(),
-            boundaries.clone(),
-            vec![],
+            sort::engine::EngineConfig {
+                ExtStore: store.clone(),
+                DataFiles: vec!["data".into()],
+                StatFiles: vec!["stat".into()],
+                StartKey: boundaries[0].clone(),
+                EndKey: end.clone(),
+                JobKeys: boundaries.clone(),
+                SplitKeys: vec![],
+                TotalFileSize: size as i64,
+                TotalKVCount: 0,
+                CheckHotspot: false,
+                MemCapacity: 1024 * 1024,
+                OnDup: sort::OnDuplicateKey::Error,
+                FilePrefix: "cloud-test".into(),
+            },
             2,
             ts,
-            size as i64,
-            0,
-            false,
-            1024 * 1024,
-            sort::OnDuplicateKey::Error,
-            "cloud-test".into(),
         )
         .unwrap()
     };
     let id = uuid::Uuid::new_v4();
-    let source = backend
-        .register_external(id, new_engine(), Default::default())
-        .unwrap();
-    let imported = backend.import_external(&Default::default(), id);
+    let source = Arc::new(sort::engine::ExternalEngineAdapter::new(
+        new_engine(),
+        Default::default(),
+    ));
+    let imported = backend.import_external(&Default::default(), source.clone());
     imported.unwrap();
     assert_eq!(
         astersql_ingestor_ingestctrl::local::engineapi::Engine::ImportedStatistics(source.as_ref()),
@@ -231,22 +234,25 @@ fn cloud_external_backend_imports_native_keyspace_files_at_subtask_timestamp() {
             "cloud keyspace prefix must not be imported twice"
         );
     }
-    backend.cleanup_external(id).unwrap();
+    source.CloseShared().unwrap();
     // A step owns one backend while subtask contexts have shorter lifetimes.
     // Completing the first subtask cancels its controls; the next registration
     // must use fresh options without retaining that cancelled context.
     first_context.cancel();
     backend.set_import_options(Default::default()).unwrap();
-    let source = backend
-        .register_external(id, new_engine(), Default::default())
+    let source = Arc::new(sort::engine::ExternalEngineAdapter::new(
+        new_engine(),
+        Default::default(),
+    ));
+    backend
+        .import_external(&Default::default(), source.clone())
         .unwrap();
-    backend.import_external(&Default::default(), id).unwrap();
     assert_eq!(source.GetTotalLoadedKVsCount(), 3);
     assert_eq!(
         astersql_ingestor_ingestctrl::local::engineapi::Engine::ImportedStatistics(source.as_ref()),
         (size as i64, 3)
     );
-    backend.cleanup_external(id).unwrap();
+    source.CloseShared().unwrap();
     drop(backend);
     domain.close();
 }
@@ -267,30 +273,33 @@ fn cloud_external_backend_preserves_duplicate_key_and_value_error() {
     store.write("data", bytes).unwrap();
     store.write("stat", Vec::new()).unwrap();
     let engine = sort::engine::NewExternalEngine(
-        store,
-        vec!["data".into()],
-        vec!["stat".into()],
-        b"a".to_vec(),
-        b"b".to_vec(),
-        vec![b"a".to_vec(), b"b".to_vec()],
-        vec![],
+        sort::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: vec!["data".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: b"a".to_vec(),
+            EndKey: b"b".to_vec(),
+            JobKeys: vec![b"a".to_vec(), b"b".to_vec()],
+            SplitKeys: vec![],
+            TotalFileSize: 4,
+            TotalKVCount: 0,
+            CheckHotspot: true,
+            MemCapacity: 1024,
+            OnDup: sort::OnDuplicateKey::Error,
+            FilePrefix: "duplicate-test".into(),
+        },
         1,
         100,
-        4,
-        0,
-        true,
-        1024,
-        sort::OnDuplicateKey::Error,
-        "duplicate-test".into(),
     )
     .unwrap();
     let backend = import_sst::Backend::new(domain.clone(), 960611).unwrap();
     let id = uuid::Uuid::new_v4();
-    backend
-        .register_external(id, engine, Default::default())
-        .unwrap();
-    let result = backend.import_external_native(&Default::default(), id);
-    backend.cleanup_external(id).unwrap();
+    let source = Arc::new(sort::engine::ExternalEngineAdapter::new(
+        engine,
+        Default::default(),
+    ));
+    let result = backend.import_external_native(&Default::default(), source.clone());
+    source.CloseShared().unwrap();
     drop(backend);
     domain.close();
     assert!(

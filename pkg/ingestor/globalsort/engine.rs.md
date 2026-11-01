@@ -47,8 +47,6 @@
 
 ## 依赖与调用关系
 
-上游主链为 `GlobalSortWriteIngestBackend::CloseExternalEngine` → `NewExternalEngine` → `ExternalEngineAdapter::new`，见 `pkg/dxf/importinto/write_ingest_backend.rs`。通用导入框架调用适配器的 `Engine::LoadIngestData`，适配器再调本文件的 `LoadIngestDataWith`；其输出经 `DataAdapter` 对齐 `astersql-ingestor-engineapi::IngestData`。`write_ingest_backend.rs::ImportEngine` 根据 `sorted_ranges` 扫描 Region，生成 `RegionJob`，并将 `GetTS` 的时间戳传给 job。
-
 主要下游依赖是 `reader::get_read_ranges_from_props` 和 `reader::read_all_data`（stat 偏移计算与 data 加载）、`merge::write_stream_pair`（按 `Storage::record_format` 流式写重复键），以及 `Storage`/`ObjectWriter`、`KvPair`、`KeyRange`、`OnDuplicateKey`、`Error` 等 crate 公共抽象。`Cargo.toml` 还声明 engine API、ingestor error definition、Lightning membuf、simplesst 和 workerpool 的路径依赖；需要注意，本文件自身以 crate 内抽象为主，具体对象存储与通用 engine trait 适配分别位于生产调用者和 `engine_api.rs`。
 
 RustCodeGraph 将 `engine.rs` 标记为被 18 个文件使用，其中直接证据包括 `pkg/dxf/importinto/write_ingest_backend.rs`、`pkg/ingestor/globalsort/engine_api.rs`、`pkg/ingestor/globalsort/merge.rs` 及对应测试。本文档仅将上述已读取的直接生产路径作为主链结论，不把索引中的测试或同名符号推测为运行时调用。
@@ -66,6 +64,8 @@ RustCodeGraph 将 `engine.rs` 标记为被 18 个文件使用，其中直接证�
 
 ## 并发与资源生命周期
 
+`ExternalEngineGuard` 在作用域退出（包括提前错误与展开）时执行 CloseShared，后端只借用 Arc；关闭错误不覆盖原业务结果。
+
 `Engine` 的 loader 需要独占 `&mut self`，但 `EngineResource` 由 `Arc` 共享，允许框架在另一线程调用 `UpdateResourceWith`。更新时先发布新内存上限和并发度，loader 在批次边界观察到变化后等旧批次释放、`Reset`、写入 `applied`；更新线程等待该确认后才调 `WorkerPoolTuner::Tune`。若加载已结束，只更新共享参数，不再调工作池。
 
 `release_signal` 用 `Mutex<bool> + Condvar` 模拟 Go 容量为 1 的 channel：多次释放可合并为一个 pending 信号，而未来的 waiter 仍能观察。回调的顺序是先扣字节、置 pending 并唤醒，再扣批次数；waiter 因此先检查 pending，再以 in-flight count 判断是否可能等到进展。
@@ -75,6 +75,8 @@ RustCodeGraph 将 `engine.rs` 标记为被 18 个文件使用，其中直接证�
 `MemoryDataIter` 的多个实例共享不可变 `Arc<Vec<KvPair>>`，各自只保存下标游标。关闭某个迭代器只会丢弃它自己的 `Arc`，不会使其他迭代器失效。原子计数器对生命周期协调使用 Acquire/Release 或 AcqRel，纯统计量使用 Relaxed。
 
 ## 与 Go 版本的对应关系
+
+373679dd4df08d656e3a95ff0cc0cd245152a9ff 将构造参数聚合为 EngineConfig，完整保留 ExtStore、DataFiles、StatFiles、StartKey、EndKey、JobKeys、SplitKeys、TotalFileSize、TotalKVCount、CheckHotspot、MemCapacity、OnDup、FilePrefix；CPU 和 TS 单独传入。NewExternalEngine 返回调用者持有的 Engine，摄取结束必须关闭；不改变去重、多批次、reader 提前释放或共享 buffer 的既有算法。
 
 Go 对照文件为 `pkg/ingestor/globalsort/engine.go`，Rust 沿用了 `Engine`、`NewExternalEngine`、`LoadIngestData`、`loadRangeBatchData`、`handleConcurrencyChange`、`waitIngestDataReleased`、`MemoryIngestData` 及其范围/引用/统计 API 的语义结构。
 

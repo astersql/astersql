@@ -7,31 +7,13 @@
 ## 核心职责
 
 - `BackfillStepMergeSort`：读取外置 `ExternalFields`，使用全局排序组件归并 `data_files`，累计真实 writer summary，成功后把单个 `meta_groups` 写回对象存储并更新 `subtask.Meta`。
-- `BackfillStepWriteAndIngest`：从持久元数据恢复文件、范围、时间戳和索引信息，建立外部引擎，应用导入限速/并发配置，将排序结果导入 TiKV，记录已导入行数并清理已注册引擎。
+- `BackfillStepWriteAndIngest`：从持久元数据恢复文件、范围、时间戳和索引信息，建立外部引擎，应用导入限速/并发配置，将排序结果导入 TiKV，记录已导入行数并关闭调用者持有的引擎。
 - 实现 DXF `StepExecutor` 生命周期，包括导入后端初始化与释放、取消检查、实时进度、任务元数据热更新和 CPU/内存资源热更新。
 - 在运行中的归并算子或外部引擎周围维护短生命的 `Active` 状态，使框架的资源修改回调只能调节当前真实执行对象，子任务结束后不会留下过期句柄。
 
 ## 主要符号
 
-- `enum Active` 表示当前可调节的执行对象。`Merge(Arc<sort::merge::MergeOperator>)` 保存归并算子；`Import(Arc<sort::engine::ExternalEngineAdapter>, CancellationToken)` 同时保存外部引擎适配器和其资源更新所需的取消令牌。
-- `CloudStep` 是包内步骤执行器。`base: ReadIndex` 复用 Domain、DDL job、索引 ID、云存储 URI、资源和写入限速器；`step` 决定归并或导入路径；`backend` 只为 WriteAndIngest 保存本地导入后端；`active` 保存正在运行的对象；`rows: AtomicU64` 保存最近一次已完成/中止导入采集到的行数。
-- `CloudStep::new(base, step)` 拒绝空 `cloud_storage_uri`，初始化空后端、空活动对象和零行数。步骤合法性由上游 `Extension::GetStepExecutor` 保证，因此 `RunSubtask` 中“非 MergeSort 即导入”的分支不能脱离该工厂约束理解。
-- `CloudStep::backend()` 在互斥锁下克隆后端 `Arc`；未执行导入步骤的 `Init` 或已 `Cleanup` 时返回 `local backend not found`。
-- `run_merge` 创建 `NewMergeOperator`，以 `Memory / max(CPU, 1)` 计算每核内存、以 `max(CPU, 1)` 设置并发、以 `OnDuplicateKey::Error` 拒绝重复键；writer close 回调通过 `SortedMeta::from_merge` 汇总输出元数据。
-- `run_import` 合并 `meta_groups`（为空时兼容旧任务内联的 `legacy` 字段），解码 job/split keys，读取当前表和索引元数据，创建并注册外部引擎，调用 `import_external_native`，采集统计并执行 `cleanup_external`。
-- `ActiveGuard<'a>(&'a CloudStep)` 的 `Drop` 将 `active` 清空；它覆盖 `RunSubtask` 的成功和所有 `?`/错误返回路径。
-- `StepExecutor::{Init, RunSubtask, Cleanup, RealtimeSummary, ResetSummary, TaskMetaModified, ResourceModified}` 把上述业务接入 DXF 生命周期。
-
 ## 执行流程
-
-1. `modify_column_dist_backfill.rs` 的调度器在云存储 URI 非空时按 `ReadIndex -> MergeSort -> WriteAndIngest` 推进；执行器工厂为后两个步骤构造 `CloudStep`。
-2. `Init` 对 MergeSort 不做额外工作；对 WriteAndIngest 读取当前 CPU 和存储 keyspace，选择 v1 或带 keyspace 的 v2 `KeyCodec`，再以编码后的空 key 前缀创建 `import_sst::Backend`。
-3. `RunSubtask` 先检查 `ctx.Done()`，再由 `ReadIndex::import_control`取得共享取消标记和导入选项，打开 `CloudStore`，并从同一取消标记创建 globalsort `CancellationToken`。随后建立 `ActiveGuard`，保证离开函数时清空运行句柄。
-4. MergeSort 路径调用 `wire::read` 合并 SQL 行内元数据与对象存储外置元数据，反序列化 `ExternalFields`，创建 `MergeOperator` 并发布为 `Active::Merge`。`MergeOverlappingFiles` 成功后将 callback 累积的 `SortedMeta` 设为唯一 `meta_groups`，把外置元数据写到 `<TaskID>/<SubtaskID>/meta.json`，最后替换 `subtask.Meta`。归并失败时替换动作不会发生。
-5. WriteAndIngest 路径读取并解析元数据，合并所有排序组；旧任务没有 `meta_groups` 时改用扁平 `legacy`。它强制取得 `ts`，优先使用 `range_job_keys`、为空则兼容 `range_split_keys`，并分别解码 job keys、split keys 和总范围起止 key。
-6. 导入路径从 Domain 存储的最新快照读取目标表，按 `base.index_ids` 找到索引；`ele_ids` 为一个元素时选对应索引 ID，为空时兼容旧任务并使用第一个索引，超过一个元素则报错。表名和索引 ID 经 `MakeUUID` 生成稳定 engine ID。
-7. `NewExternalEngine` 使用文件列表、范围、分片 key、CPU/内存、TS、总文件大小及重复键报错策略创建 engine。后端应用当前 import options，注册 engine 后发布 `Active::Import`，执行 native import；无论导入成败都读取 `ImportedStatistics` 到 `rows` 并尝试 `cleanup_external`。
-8. 框架可在运行中调用 `TaskMetaModified` 更新 WriteAndIngest 的最大写速率，或调用 `ResourceModified` 调节归并 worker 数/导入 engine CPU 和内存。步骤完成后调用 `Cleanup` 释放 `CloudStep` 持有的后端。
 
 ## 数据与状态
 
@@ -61,13 +43,15 @@
 
 ## 并发与资源生命周期
 
+`ExternalEngineGuard` 在作用域退出（包括提前错误与展开）时执行 CloseShared，后端只借用 Arc；关闭错误不覆盖原业务结果。
+
 `CloudStep` 实现的 `StepExecutor: Send + Sync` 可能同时接收运行、进度和资源回调。`backend`、`active` 和 `base.resource` 分别由互斥锁保护；行数用 Acquire/Release 原子序保证跨线程可见。`Active` 中的 `Arc` 允许资源回调短暂克隆运行对象而不依赖锁的整个调用期。
 
 归并 writer close callback 可由 worker 并发调用，因此通过 `Arc<Mutex<SortedMeta>>` 串行合并 summary。归并算子和外部引擎使用从 `ImportControl.cloud_cancelled` 派生的同一取消信号，`CloudStore` 的 reader/writer 也检查该信号；此外 `RunSubtask` 在启动工作前检查 DXF context 是否已取消。
 
-`ActiveGuard` 在子任务任何退出路径清空 `active`，防止完成后继续 Tune；Rust 测试验证成功、重复键失败和取消失败后三种情况下均为空。WriteAndIngest 后端从 `Init` 存活到 `Cleanup`，每个外部 engine 则从 `register_external` 存活到 `cleanup_external`。调用方必须保持 DXF 的 Init -> RunSubtask -> Cleanup 顺序，并避免对同一个 `CloudStep` 并发运行多个子任务，因为单一 `active` 槽和单一 engine 生命周期没有表达多子任务并行所有权。
-
 ## 与 Go 版本的对应关系
+
+作为 373679dd4df08d656e3a95ff0cc0cd245152a9ff DDL 显式所有权的真实 session 局部接线，run_import 创建 ExternalEngineAdapter 并将句柄存入 active，直接传给 import_external_native，摄取后关闭并保留原错误。不再创建外部注册 UUID。旧元信息缺少或为零 TS 时，通过存储 TimestampFuture 请求新时间戳；显式 TS 原样保留。其余表/索引元信息、资源、计量、DDL 调度和取消逻辑保持。
 
 可见差异也必须保留：Go `cloudImportExecutor` 持有物理表和指标/对象存储计量，能尝试把重复键错误转换成带索引/表信息的 `ErrKeyExists`；Rust 当前从最新 snapshot 重取表，仅统一传播 backend/globalsort 错误，本文件没有 Go 的 metric collector、对象存储请求摘要或重复键错误再包装。Go 对旧 Meta 的 `EleIDs` 为空处理默认依赖索引列表，Rust 显式拒绝空索引列表；Rust 还显式支持 `legacy` 扁平排序元数据。
 

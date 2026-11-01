@@ -28,10 +28,10 @@
 
 1. 构造：`NewBackend` 先调用 `BackendConfig::adjust`，再通过 `local_unix::VerifyRLimit` 检查进程打开文件上限，随后以配置和 `StoreHelper` 创建 `EngineManager`。任何一步失败都直接返回错误，不产生半初始化的 `Backend`。
 2. 写入准备：调用者用 `OpenEngine` 创建/恢复 Engine，以 `LocalWriter` 获得批量 Writer，必要时调用 `FlushEngine` 或 `FlushAllEngines`，最后 `CloseEngine` 结束写入但保留本地数据。
-3. 本地导入：`ImportEngine` 首先检查取消令牌；若不是外部 Engine，则以 `IMPORT_MUTEX_STATE_IMPORT` 锁定 Engine，调用 `finishWrite`，取得 Region split keys，按需调用 `SplitKeysAndScatter`，并把相邻 split key 组成半开 `KeyRange`。没有可组成的窗口时回退到 Engine 的完整键范围。
+3. 本地导入：`ImportEngine` 首先检查取消令牌；仅对本地 Engine 以 `IMPORT_MUTEX_STATE_IMPORT` 锁定 Engine，调用 `finishWrite`，取得 Region split keys，按需调用 `SplitKeysAndScatter`，并把相邻 split key 组成半开 `KeyRange`。没有可组成的窗口时回退到 Engine 的完整键范围。
 4. 本地任务流水线：有 `import_factory` 时，方法创建 `LocalEngineSource`、把每个范围映射成 `RegionJob`，并为 worker 创建指定 Store 的 `ClientWorker`，最后调用 `import_pipeline::do_import`；没有工厂时仅采用 `Engine::KVStatistics`，用于本地/测试型统计路径。
 5. 提交成功状态：流水线返回后再次 `token.check()`，避免父任务取消后仍登记成功；然后执行 `FinishImport`、`verifyImportedStatistics`，最后写入 `imported_counts`。无论成功失败都会在闭包之后 `engine.unlock()`。
-6. 外部导入：已注册的 `ExternalEngine` 由 `import_external_engine` 处理。空数据直接成功；非空数据先 split/scatter，且必须存在 `import_factory`。它使用 `ExternalEngineSource` 和 `ExternalClientWorker`，在 worker pool 启动时把 pool 交给 Engine，并在完成后要求流水线 count、`GetTotalLoadedKVsCount` 与 `ImportedStatistics().1` 三者一致。
+6. 外部导入：调用者传入的 `ExternalEngine` 由 `IngestExternalEngine` 处理。空数据直接成功；非空数据先 split/scatter，且必须存在 `import_factory`。它使用 `ExternalEngineSource` 和 `ExternalClientWorker`，在 worker pool 启动时把 pool 交给 Engine，并在完成后要求流水线 count、`GetTotalLoadedKVsCount` 与 `ImportedStatistics().1` 三者一致。
 7. 重置与复用：`UnsafeImportAndReset` 先导入再以 `alloc_ts=true` 重置；`ResetEngineSkipAllocTS` 以 `false` 重置，调用者随后必须用 `SetTSBeforeImportEngine` 写入有效 TS。该 Rust 方法只原子更新内存元数据，不像 Go 版本那样在 `ts == 0` 时向 PD 取 TS 并持久化元数据。
 8. 清理：显式调用 `CleanupEngine`/`CleanupAllLocalEngines` 回收 Engine 数据；`Close` 只关闭工厂和管理器且幂等。生产适配器 [`pkg/session/runtime/import_sst.rs`](../../session/runtime/import_sst.rs) 的 `Drop` 还会清理所有 Engine 并删除任务临时目录。
 
@@ -46,13 +46,6 @@
 - `GetRegionSplitSizeKeys` 分别收集所有正 size/key。只有各维度恰有一个唯一值时采用 Store 值；缺失或不一致时该维度单独回退默认值。
 
 ## 依赖与调用关系
-
-- 上游生产调用：[`pkg/session/runtime/import_sst.rs`](../../session/runtime/import_sst.rs) 的 `Backend::new_with_key_prefix` 调用 `local::NewBackend`；其 `backend::Backend` 适配方法把 `OpenEngine`、`CloseEngine`、`ImportEngine`、`CleanupEngine`、`FlushEngine` 和 `LocalWriter` 转发给本文件。`register_external` / `import_external_native` 构成全局排序 Engine 的注册与导入入口。
-- Engine 下游：`NewBackend`、打开/关闭/清理/重置、Writer、文件大小、重复数据和外部 Engine 注册均委托 [`engine_mgr.rs`](engine_mgr.rs)；本地 Engine 的范围、统计和导入完成状态来自 [`engine.rs`](engine.rs)。
-- 导入下游：`ImportEngine` 构造 [`import_pipeline.rs`](import_pipeline.rs) 的 Source、WorkerFactory 和 `ImportOptions`；任务载体是 [`job_worker.rs`](job_worker.rs) 的 `RegionJob`，实际 I/O 通过注入的 `ImportClient` 完成。
-- 通用接口：外部数据依赖 `astersql-ingestor-engineapi`，worker 缓冲池依赖 `astersql-lightning-membuf`；两者由本模块 `pub use` 暴露。重复键路径依赖 [`duplicate.rs`](duplicate.rs)，磁盘占用接口来自 [`disk_quota.rs`](disk_quota.rs)。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 声明 `astersql-ingestor-engineapi`、`astersql-lightning-membuf`、workerpool、metrics、compress 等直接依赖；大量尚在迁移中的 TiDB 子 crate 被列在 `cfg(windows)` 依赖块。本文件本身只直接使用上述核心 crate 和同 crate 模块。
-- RustCodeGraph 索引将该文件标为被 10 个文件使用，并列出 `pkg/session/runtime/import_sst.rs`、`pkg/ingestor/globalsort/engine.rs`、`engine_api.rs` 及相关测试等引用者；精确 `callers/callees` 命令未返回边，因此具体生产调用关系以上述源码引用核验为准。
 
 ## 错误处理与边界
 
@@ -73,6 +66,8 @@
 - 取消与 worker 收尾不能只看函数返回：`context_cancellation_waits_for_running_workers`、`worker_error_cancels_other_running_workers`、`import_pipeline_marks_success_after_worker_cleanup` 等测试验证了等待运行中 worker、错误扇出取消和清理后才标记成功的约束；这些实现位于相邻流水线模块，但由本文件的 `do_import` 调用继承。
 
 ## 与 Go 版本的对应关系
+
+373679dd4df08d656e3a95ff0cc0cd245152a9ff 后 ImportEngine 仅导入本地引擎，新增 IngestExternalEngine 接受调用者持有的 Arc<dyn ExternalEngine>。后者沿既有加载、分裂、worker pool、取消和实际导入统计路径执行，不按 ID 查找、不注册、不关闭外部引擎；统计由引擎句柄读取。本地 imported_counts 继续只为本地 ID 保存结果。Go 的 split-size 调整提取保持其原行为；Rust 既有 store_id/RPC 边界保持，不借本次所有权迁移扩建 PD HTTP 配置子系统。
 
 独立 Rust 测试 [`local_test.rs`](local_test.rs) 与 [`local_check_test.rs`](local_check_test.rs) 对应同目录 Go 测试，而非内嵌在生产源文件中。
 

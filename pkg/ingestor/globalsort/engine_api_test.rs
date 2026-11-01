@@ -27,21 +27,23 @@ fn source() -> ExternalEngineAdapter {
     store.write("data", crate::encode_kvs(&pairs)).unwrap();
     store.write("stat", Vec::new()).unwrap();
     let engine = NewExternalEngine(
-        store,
-        vec!["data".into()],
-        vec!["stat".into()],
-        vec![1],
-        vec![4],
-        (1u8..=4).map(|key| vec![key]).collect(),
-        vec![vec![1], vec![4]],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: vec!["data".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: vec![1],
+            EndKey: vec![4],
+            JobKeys: (1u8..=4).map(|key| vec![key]).collect(),
+            SplitKeys: vec![vec![1], vec![4]],
+            TotalFileSize: 6,
+            TotalKVCount: 3,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "adapter".into(),
+        },
         1,
         123,
-        6,
-        3,
-        false,
-        1024,
-        OnDuplicateKey::Error,
-        "adapter".into(),
     )
     .unwrap();
     ExternalEngineAdapter::new(engine, Default::default())

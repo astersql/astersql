@@ -75,3 +75,6 @@ log = "0.4"
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
 "astersql-types" = { package = "astersql-types", path = "../../types" }
 "astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }
+
+[dev-dependencies]
+astersql-ingestor-globalsort = { path = "../globalsort" }

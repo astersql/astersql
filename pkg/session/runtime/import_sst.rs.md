@@ -34,8 +34,6 @@
 
 本地 engine 导入时，`StoreBridge::WriteAndIngest` 先检查取消，再从 engine snapshot 中筛选半开区间 `[start, end)`（空 `end` 表示无上界）的 KV。写入前对 `MaxVersion` snapshot 执行批量查重，只要任一目标键已经存在就返回错误；随后以 engine 元数据中的时间戳调用 `ImportSSTWithOptions`，并把返回统计合并到共享 `stats`。
 
-云端外部 engine 路径由 `modify_column_cloud_executor.rs` 在 write-and-ingest 阶段以 `new_with_key_prefix` 初始化。`register_external` 将 globalsort engine 包装为 `CloudEngine` 并注册到 ingestctrl；`import_external_native` 调用 `ImportEngine`。ingestctrl 再进入 `StoreBridge::WriteAndIngestData`，逐 range 读取外部数据，剥离 session 提供的 keyspace 前缀，检查已有键：已有且值相同允许幂等继续，已有但值不同返回带实际 key/value 的 `Conflict`；之后按外部数据时间戳写入。完成后由 `cleanup_external` 清理注册 engine。
-
 Lightning writer 路径中，`OpenEngine` 先打开底层 engine 并建立 UUID 对应的空 `BTreeSet`；`LocalWriter` 创建底层 writer；`AppendRows` 检查取消和 rows 具体类型，并在持锁期间逐 KV 去重、追加；`Close` 刷闭 writer 并把 `closed` 置为真。`CleanupEngine` 同时删除底层 engine 和 `seen` 条目。
 
 ## 数据与状态
@@ -51,12 +49,6 @@ Lightning writer 路径中，`OpenEngine` 先打开底层 engine 并建立 UUID 
 ## 依赖与调用关系
 
 上游主链可概括为：
-
-- `import_file.rs` → `Backend::new` / `Runtime` / `Progress` → importer `ProcessChunk` → Lightning `EngineManager` → 本文件 `Writer` / `Backend`。
-- `import_query.rs` → `Backend::new` → Lightning engine；查询行提供者是该文件自己的 `QueryRuntime`。
-- `modify_column_backfill.rs::ingest_with_options` → `Backend::new_with_options` → `Writer::AppendRows` → 本地 engine 导入。
-- `modify_column_cloud_executor.rs::CloudStep::Init` → `Backend::new_with_key_prefix`；后续调用 `set_import_options`、`register_external`、`import_external` 和 `cleanup_external` 管理各 subtask。
-- `runtime.rs` → 再导出 `NewImportLocalBackend`，供需要 `dyn backend::Backend` 的宿主/测试接线使用。
 
 主要下游是 `astersql_executor_importer`（chunk 与 encoder）、`astersql_lightning_mydump`（CSV parser/storage）、`astersql_lightning_backend*`（engine 门面与编码 KV）、`astersql_ingestor_ingestctrl`（本地 engine、region job、外部导入管线）、`astersql_ingestor_globalsort`（云端外部 engine），以及 `Domain` 暴露的 KV store（snapshot、版本、`ImportSSTWithOptions`）。
 
@@ -78,11 +70,11 @@ RustCodeGraph 对 `NewImportLocalBackend` 的节点定位为 `import_sst.rs::New
 
 `WriteAndIngestData` 用 scoped thread 每 1 ms 观察 ingestctrl token。一旦取消，它同时取消 engineapi context 与 `SSTImportOptions.context`，用于唤醒正在读外部文件或等待 store 限速器的操作。`ImportMonitorStop` 和显式 `done.store` 覆盖正常返回与 `?` 早退，随后 join，确保方法返回时监控线程已经结束。`WriteAndIngest` 没有额外线程，依赖入口、读取循环和结束前的 token 检查。
 
-`Backend` drop 时依次清理所有本地 engine、关闭 ingestctrl backend 并尽力删除专属临时目录；删除失败被忽略。显式 `Backend::Close` 只关闭底层 backend，不删除目录，最终仍由 drop 收尾。外部 engine 需要按 `register_external` → `import_external` → `cleanup_external` 配对；测试还证明跨 subtask 重用 backend 前必须用 `set_import_options` 替换已取消 context。
-
 `Writer::IsSynced` 实际报告本 writer 是否已经 `Close`，而非独立查询磁盘同步状态。`Close` 返回 `flushed: true`。调用者仍应遵循 engine writer、engine close、import、cleanup 的完整顺序。
 
 ## 与 Go 版本的对应关系
+
+作为 373679dd4df08d656e3a95ff0cc0cd245152a9ff 删除 ingestctrl 注册表后的必要局部接线，import_external/import_external_native 直接接收 Arc<ExternalEngineAdapter> 并调用 IngestExternalEngine。不再提供 register_external/cleanup_external 或后端接管关闭。CloudEngine 仍负责错误、统计、资源与数据适配；keyspace 编码、SST 选项、事务/目标冲突检查和 StoreBridge 数据写入契约保持。
 
 仓库中没有 `pkg/session/runtime/import_sst.go` 的一对一 Go 文件；该 Rust 文件是把原本分散在 Go 子系统中的接口语义接入 Rust session，而不是同路径机械翻译。
 

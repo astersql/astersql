@@ -4002,7 +4002,7 @@ fn external_import_pipeline_tunes_and_closes_actual_region_workers() {
 }
 
 #[test]
-fn backend_imports_registered_external_data_and_verifies_loaded_statistics() {
+fn port_373679dd4d_caller_owns_external_data_and_verifies_loaded_statistics() {
     use astersql_ingestor_engineapi as api;
     use std::sync::{
         Arc,
@@ -4162,8 +4162,7 @@ fn backend_imports_registered_external_data_and_verifies_loaded_statistics() {
     )
     .unwrap();
     let id = crate::EngineId::new();
-    backend.RegisterExternalEngine(id, source.clone()).unwrap();
-    let result = backend.ImportEngine(&Default::default(), id, 1);
+    let result = backend.IngestExternalEngine(&Default::default(), source.clone(), 1);
     backend.Close();
     let _ = std::fs::remove_dir_all(dir);
     assert_eq!(result, Ok(()));
@@ -4171,8 +4170,265 @@ fn backend_imports_registered_external_data_and_verifies_loaded_statistics() {
         crate::engine_mgr::ExternalEngine::ImportedStatistics(source.as_ref()),
         (2, 1)
     );
-    assert_eq!(backend.GetImportedKVCount(id), 1);
+    assert_eq!(backend.GetImportedKVCount(id), 0);
+    assert!(
+        !source.closed.load(Ordering::Acquire),
+        "backend must not close caller-owned external engines"
+    );
+    crate::engine_mgr::ExternalEngine::Close(source.as_ref()).unwrap();
     assert!(source.closed.load(Ordering::Acquire));
     assert!(cleanup.done.load(Ordering::Acquire));
     assert_eq!(cleanup.refs.load(Ordering::Acquire), 0);
+}
+
+// Go TestExternalEngine and TestSplitRangeAgain4BigRegionExternalEngine use
+// real global-sort loading and region-job generation; only region RPCs are external.
+fn port_373679dd4d_run_external_ranges(big_region: bool) {
+    use api::Engine as _;
+    use astersql_ingestor_engineapi as api;
+    use astersql_ingestor_globalsort as global;
+    use global::Storage as _;
+    use std::sync::{Arc, Mutex};
+    let count = if big_region { 10 } else { 100 };
+    let pairs = (0..count)
+        .map(|i| global::KvPair {
+            key: if big_region {
+                vec![(i + 1) as u8]
+            } else {
+                format!("key{i:06}").into_bytes()
+            },
+            value: if big_region {
+                vec![(i + 1) as u8]
+            } else {
+                format!("value{i:06}").into_bytes()
+            },
+        })
+        .collect::<Vec<_>>();
+    let end = if big_region {
+        vec![10]
+    } else {
+        [pairs[99].key.as_slice(), &[0]].concat()
+    };
+    let job_keys = if big_region {
+        pairs.iter().map(|p| p.key.clone()).collect()
+    } else {
+        [0, 20, 30, 50, 60, 80, 90]
+            .into_iter()
+            .map(|i| pairs[i].key.clone())
+            .chain([end.clone()])
+            .collect()
+    };
+    let store = Arc::new(global::MemoryStorage::default());
+    store.write("data", global::encode_kvs(&pairs)).unwrap();
+    store.write("stat", vec![]).unwrap();
+    let engine = global::engine::NewExternalEngine(
+        global::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: vec!["data".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: pairs[0].key.clone(),
+            EndKey: end.clone(),
+            JobKeys: job_keys,
+            SplitKeys: if big_region {
+                vec![vec![1], vec![11]]
+            } else {
+                vec![pairs[0].key.clone(), pairs[50].key.clone(), end.clone()]
+            },
+            TotalFileSize: 456,
+            TotalKVCount: 789,
+            CheckHotspot: true,
+            MemCapacity: 16 * 1024 * 1024 * 1024,
+            OnDup: global::OnDuplicateKey::Ignore,
+            FilePrefix: String::new(),
+        },
+        if big_region { 10 } else { 2 },
+        123,
+    )
+    .unwrap();
+    let source = Arc::new(global::engine::ExternalEngineAdapter::new(
+        engine,
+        Default::default(),
+    ));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let scans = Arc::new(Mutex::new(Vec::new()));
+    let seen = observed.clone();
+    let scanned = scans.clone();
+    let end_key = end.clone();
+    let split = if big_region {
+        vec![vec![1], vec![11]]
+    } else {
+        vec![pairs[0].key.clone(), pairs[50].key.clone(), end.clone()]
+    };
+    let generator: crate::import_pipeline::JobGenerator = Arc::new(move |_, data, ranges| {
+        let ranges = ranges
+            .iter()
+            .map(|r| crate::KeyRange {
+                start: r.Start.clone(),
+                end: r.End.clone(),
+            })
+            .collect::<Vec<_>>();
+        let (first, _) = data
+            .GetFirstAndLastKey(&ranges.first().unwrap().start, &ranges.last().unwrap().end)
+            .unwrap();
+        let (_, last) = data
+            .GetFirstAndLastKey(&ranges.first().unwrap().start, &ranges.last().unwrap().end)
+            .unwrap();
+        scanned
+            .lock()
+            .unwrap()
+            .push((first.unwrap(), [last.unwrap().as_slice(), &[0]].concat()));
+        let regions = split
+            .windows(2)
+            .enumerate()
+            .map(|(i, keys)| crate::region_job::LocatedRegion {
+                region: crate::job_worker::RegionInfo {
+                    id: i as u64 + 1,
+                    leader_store_id: 1,
+                    peer_store_ids: vec![1],
+                },
+                key_range: crate::KeyRange {
+                    start: keys[0].clone(),
+                    end: keys[1].clone(),
+                },
+            })
+            .collect::<Vec<_>>();
+        let jobs = crate::region_job::newRegionJobs(
+            &regions,
+            &[],
+            &ranges,
+            10 * 1024 * 1024 * 1024,
+            1 << 30,
+        );
+        assert!(jobs.iter().all(|job| job.key_range.end <= end_key));
+        Ok(jobs)
+    });
+    let workers: crate::import_pipeline::WorkerFactory = Arc::new(move |token| {
+        let seen = seen.clone();
+        Ok(Box::new(crate::job_worker::NewRegionJobBaseWorker(
+            token,
+            Arc::new(move |_, job| {
+                let data = job.ingest_data()?;
+                assert_eq!(data.GetTS(), 123);
+                let mut pool = astersql_lightning_membuf::NewPool(Vec::new());
+                let mut iter = data.NewIter(
+                    &Default::default(),
+                    &job.key_range.start,
+                    &job.key_range.end,
+                    Arc::get_mut(&mut pool).unwrap(),
+                );
+                let mut rows = Vec::new();
+                let mut valid = iter.First();
+                let mut bytes = 0;
+                while valid {
+                    bytes += (iter.Key().len() + iter.Value().len()) as i64;
+                    rows.push((iter.Key().to_vec(), iter.Value().to_vec()));
+                    valid = iter.Next();
+                }
+                assert!(iter.Error().is_none());
+                iter.Close().unwrap();
+                let n = rows.len() as i64;
+                let (first, last) = data
+                    .GetFirstAndLastKey(&job.key_range.start, &job.key_range.end)
+                    .unwrap();
+                assert_eq!(first, rows.first().map(|p| p.0.clone()));
+                assert_eq!(last, rows.last().map(|p| p.0.clone()));
+                seen.lock().unwrap().push((job.key_range.clone(), rows));
+                Ok(crate::job_worker::TikvWriteResult {
+                    total_bytes: bytes,
+                    count: n,
+                    ..Default::default()
+                })
+            }),
+            Arc::new(|_, _| Ok(())),
+            Arc::new(|_, _| Ok(())),
+            Arc::new(|_, _| panic!("no region split or rescan is expected")),
+        )))
+    });
+    let (_, n) = crate::import_pipeline::do_import(
+        &Default::default(),
+        source.clone(),
+        1,
+        generator,
+        workers,
+        Default::default(),
+    )
+    .unwrap();
+    let mut observed = observed.lock().unwrap();
+    observed.sort_by(|a, b| a.0.start.cmp(&b.0.start));
+    assert_eq!(observed.len(), if big_region { 9 } else { 7 });
+    let rows = observed
+        .iter()
+        .flat_map(|(_, rows)| rows.clone())
+        .collect::<Vec<_>>();
+    let expected = pairs
+        .iter()
+        .take(if big_region { 9 } else { 100 })
+        .map(|p| (p.key.clone(), p.value.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(rows, expected);
+    assert_eq!(n, expected.len() as i64);
+    for (range, rows) in observed.iter() {
+        assert_eq!(range.start, rows[0].0);
+    }
+    if !big_region {
+        let expected_ranges = [0, 20, 30, 50, 60, 80, 90]
+            .into_iter()
+            .zip([20, 30, 50, 60, 80, 90, 100])
+            .map(|(a, b)| {
+                (
+                    pairs[a].key.clone(),
+                    if b == 100 {
+                        end.clone()
+                    } else {
+                        pairs[b].key.clone()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed
+                .iter()
+                .map(|(r, _)| (r.start.clone(), r.end.clone()))
+                .collect::<Vec<_>>(),
+            expected_ranges
+        );
+        assert_eq!(
+            *scans.lock().unwrap(),
+            [0, 30, 60, 90]
+                .into_iter()
+                .zip([29, 59, 89, 99])
+                .map(|(a, b)| (
+                    pairs[a].key.clone(),
+                    [pairs[b].key.as_slice(), &[0]].concat()
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+    source.CloseShared().unwrap();
+    source.CloseShared().unwrap();
+}
+#[test]
+fn port_373679dd4d_external_engine_preserves_seven_job_ranges_and_all_rows() {
+    port_373679dd4d_run_external_ranges(false)
+}
+#[test]
+fn port_373679dd4d_big_region_preserves_nine_job_ranges_without_resplitting() {
+    port_373679dd4d_run_external_ranges(true)
+}
+#[test]
+fn port_373679dd4d_backend_close_without_tikv_client_is_idempotent() {
+    let dir = std::env::temp_dir().join(format!("close-no-tikv-{}", crate::EngineId::new()));
+    let backend = crate::local::NewBackend(
+        crate::local::BackendConfig {
+            local_store_dir: dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        std::sync::Arc::new(GoCommit955fd6550bStoreHelper),
+        None,
+        None,
+    )
+    .unwrap();
+    backend.Close();
+    backend.Close();
+    assert!(!dir.exists());
 }

@@ -18,7 +18,7 @@
 // 背景：在分布式执行框架下添加索引时，回填分为多个阶段——先由"读取索引"子任务
 // 扫描表数据并把生成的索引键值对（KV）排序后写入云存储（如 S3），再由本模块的
 // `CloudImportExecutor` 把这些已排序的 KV 文件作为"外部引擎"（external engine）
-// 注册到本地导入后端（lightning local backend），最终批量摄取（ingest）到存储层
+// 直接传给本地导入后端（lightning local backend），最终批量摄取（ingest）到存储层
 // 各个 Region（TiKV 中的数据分片单元）。这种"先排序后导入"的方式绕过常规事务
 // 写入路径，大幅提升建索引速度。
 //
@@ -66,16 +66,14 @@ pub enum ImportError {
 /// 云端导入后端抽象：封装 lightning 本地后端在导入阶段用到的能力，
 /// 便于在测试中用桩实现替换真实后端。
 pub trait CloudImportBackend {
-    /// 依据配置注册并关闭（封口）一个外部引擎，使其进入可导入状态。
-    fn close_external_engine(
+    /// Open the subtask's object-storage handle; ownership stays with the caller.
+    fn external_storage(&self) -> std::sync::Arc<dyn astersql_ingestor_globalsort::Storage>;
+    /// Allocate a fresh timestamp for metadata written by older TiDB versions.
+    fn alloc_new_ts(&mut self) -> Result<u64, String>;
+    fn ingest_external_engine(
         &mut self,
-        config: &ExternalEngineConfig,
-        engine_id: &str,
-    ) -> Result<(), String>;
-    /// 判断指定 ID 的外部引擎是否存在。
-    fn has_external_engine(&self, engine_id: &str) -> bool;
-    /// 执行导入：把引擎中的 KV 数据摄取到存储层。
-    fn import_engine(&mut self, engine_id: &str) -> Result<(), BackendImportError>;
+        engine: std::sync::Arc<astersql_ingestor_globalsort::engine::ExternalEngineAdapter>,
+    ) -> Result<(), BackendImportError>;
     /// 动态调整引擎可用的并发与内存资源。
     fn update_engine_resource(&mut self, concurrency: usize, memory: u64) -> Result<(), String>;
     /// 设置写入工作线程并发度。
@@ -176,9 +174,9 @@ impl<B: CloudImportBackend> CloudImportExecutor<B> {
     }
 
     /// 执行一个导入子任务：
-    /// 1. 根据子任务元信息定位目标索引，构造引擎 ID；
+    /// 1. 根据子任务元信息定位目标索引；
     /// 2. 合并各元信息组得到整体键区间与数据量；
-    /// 3. 注册并关闭外部引擎，然后触发导入（ingest）；
+    /// 3. 创建调用者持有的外部引擎，导入后在成功/失败时关闭；
     /// 4. 将后端错误映射为带上下文的 `ImportError`。
     pub fn run_subtask(
         &mut self,
@@ -188,9 +186,7 @@ impl<B: CloudImportBackend> CloudImportExecutor<B> {
         if !self.initialized {
             return Err(ImportError::NotInitialized);
         }
-        let (current_index, index_id) = get_index_info_and_id(&meta.element_ids, &self.indexes)?;
-        // 引擎 ID 由表名与索引 ID 组成，保证同表不同索引互不冲突。
-        let engine_id = format!("{}-{index_id}", self.table_name);
+        let (current_index, _) = get_index_info_and_id(&meta.element_ids, &self.indexes)?;
         // 合并所有元信息组，得到覆盖全部数据的键区间与总 KV 大小。
         let mut all = SortedKvMeta::default();
         for group in &meta.meta_groups {
@@ -210,22 +206,44 @@ impl<B: CloudImportBackend> CloudImportExecutor<B> {
             job_keys,
             split_keys: meta.range_split_keys.clone(),
             total_file_size: all.total_kv_size,
-            timestamp: meta.ts,
+            timestamp: if meta.ts == 0 {
+                self.backend.alloc_new_ts().map_err(ImportError::Backend)?
+            } else {
+                meta.ts
+            },
             memory_capacity,
             check_hotspot: true,
             duplicate_key_is_error: true,
         };
-        // 先注册并封口外部引擎，使数据文件对后端可见。
-        self.backend
-            .close_external_engine(&config, &engine_id)
-            .map_err(ImportError::Backend)?;
-        if !self.backend.has_external_engine(&engine_id) {
-            return Err(ImportError::ExternalEngineNotFound(engine_id));
-        }
+        use astersql_ingestor_globalsort::{OnDuplicateKey, engine};
+        let engine = engine::NewExternalEngine(
+            engine::EngineConfig {
+                ExtStore: self.backend.external_storage(),
+                DataFiles: config.data_files,
+                StatFiles: config.stat_files,
+                StartKey: config.start_key,
+                EndKey: config.end_key,
+                JobKeys: config.job_keys,
+                SplitKeys: config.split_keys,
+                TotalFileSize: config.total_file_size as i64,
+                TotalKVCount: 0,
+                CheckHotspot: true,
+                MemCapacity: config.memory_capacity as i64,
+                OnDup: OnDuplicateKey::Error,
+                FilePrefix: String::new(),
+            },
+            self.backend.worker_concurrency() as i32,
+            config.timestamp,
+        )
+        .map_err(|error| ImportError::Backend(error.to_string()))?;
+        let engine = engine::ExternalEngineGuard(std::sync::Arc::new(
+            engine::ExternalEngineAdapter::new(engine, Default::default()),
+        ));
         // 导入期间置位 engine_running，允许期间的资源动态调整。
         self.engine_running = true;
-        let result = self.backend.import_engine(&engine_id);
+        let result = self.backend.ingest_external_engine(engine.0.clone());
         self.engine_running = false;
+        drop(engine);
         match result {
             Ok(()) => Ok(()),
             // 重复键错误补充索引名，方便向用户报告哪个唯一索引冲突。

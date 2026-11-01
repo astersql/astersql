@@ -15,26 +15,7 @@
 
 ## 主要符号
 
-- `RegionImportTransport: Send + Sync`：宿主 RPC 边界。`Scan(token, range)` 必须返回覆盖 key range 的 Region；`Write(token, job, data)` 返回实际完成的物理写入字节数和 KV 数；`Ingest` 完成 SST ingest；`Close` 关闭传输层资源。注释特别要求，即使后续 Ingest 失败，`Write` 统计也要表示已经完成的写入。
-- `ClosingObjectReader`：包装 object-store reader，转发 `std::io::Read::read`，在 `Drop` 中尽力调用 `Close`。
-- `open_object_stream(store, path, offset)`：打开对象、seek 到指定偏移并返回自动关闭的 `Read`。它还被 `task_executor.rs::MergeStoreAdapter` 复用，因而同时服务 merge-sort 的有界流式读取。
-- `ObjectStore(StorageRef)`：实现 `global::Storage`。`open`/`open_at`、`file_size`、`read`、`write`、`delete_files`、`list_prefix` 分别映射到 `Open`/`Seek`、`ReadFile`、`WriteFile`、`DeleteFiles`、`WalkDir`；`record_format()` 固定返回 `GoBigEndian64`，用于读取 Go 生成的排序记录。
-- `GlobalSortWriteIngestBackend`：核心后端。它持有可重绑定的 object store、RPC transport、按 subtask ID 索引的 engine map、进度 collector、共享 cancellation token 和至少为 1 的并发度。
-- `GlobalSortWriteIngestBackend::new`：初始化后端，并用 `concurrency.max(1)` 消除零 worker 配置。
-- `WriteIngestBackend` 实现：`BindObjectStore`、`SetCollector`、`CloseExternalEngine`、`ImportEngine`、`GetExternalEngineConflictInfo`、`CleanupEngine`、`Close` 构成 executor 可见的完整生命周期。
-- `GlobalSortImportHost`：包装原 `ImportStepHost`，保留原 store 和其他 step 构造器，仅在 WriteAndIngest 阶段创建 native global-sort 后端。
-- `RegisterGlobalSortImportExecutor`：公开注册入口，将 runtime 的 object store、host 和 transport 组合后，调用 `task_executor::RegisterImportExecutor`。
-
 ## 执行流程
-
-1. 应用宿主先调用 `RegisterGlobalSortImportExecutor`。真实 TiKV 回归 harness `tests/realtikvtest/importintotest4/recorded_summary_harness.rs` 展示了这个接线：它创建 runtime 和 `RegionRpc`，注册后驱动 MergeSort/WriteAndIngest 等阶段。
-2. `task_executor.rs::GetImportStepExecutor` 在 `ImportStepWriteAndIngest` 分支调用 `host.NewWriteIngestBackend`，再把后端传给 `NewWriteAndIngestStepExecutor`。`GlobalSortImportHost` 以 task runtime slots 作为后端并发度。
-3. `WriteAndIngestStepExecutor::RunSubtask` 读取 meta 和资源配额，确定 duplicate-key 策略，组装 `WriteIngestRequest`，设置 `ingestCollector`，然后依次调用 `CloseExternalEngine` 和 `ImportEngine`。
-4. `CloseExternalEngine` 将 engineapi 的四种 duplicate-key 模式映射为 global-sort 模式，再把 data/stat 文件、key 边界、job/split keys、TS、总量、内存容量和前缀传入 `global::engine::NewExternalEngine`。只有在构造成功且 ID 未存在时才将 adapter 插入 map。
-5. `ImportEngine` 取出 engine 的 `Arc` 副本，创建 job generator。对每个 sorted range，generator 先 `Scan`，再用 `newRegionJobs` 按 Region 和 split 配额切分 job，把 engine data 的 TS 写入每个 job。
-6. worker factory 为每个 worker 创建 `NewRegionJobBaseWorker`。write callback 获取 job 的 ingest data，调用 transport `Write`，非 empty job 才将实际 write 字节数和 KV 数传给 collector；ingest callback 调用 transport `Ingest`；pre-run 仅检查取消；regenerate callback 重新 `Scan` 并保留原 job 的 TS。
-7. `local::import_pipeline::do_import` 加载 external-engine batches，生成 jobs，在有界 worker pool 中执行，并调度重试和取消。返回后，`ImportEngine` 必须同时满足 `(bytes, count) == engine.ImportedStatistics()` 且 `count == engine.GetTotalLoadedKVsCount()`。
-8. executor 将 collector 进度合并到 subtask summary，读取冲突信息，尽力清理 engine；只有存在记录冲突时才重写外部 subtask meta。整个 step cleanup 最终调用 backend `Close`。
 
 ## 数据与状态
 
@@ -48,8 +29,6 @@
 ## 依赖与调用关系
 
 上游主链为：
-
-`RegisterGlobalSortImportExecutor` → `task_executor::RegisterImportExecutor` → `GetImportStepExecutor` → `GlobalSortImportHost::NewWriteIngestBackend` → `NewWriteAndIngestStepExecutor` → `WriteAndIngestStepExecutor::RunSubtask` → `CloseExternalEngine`/`ImportEngine`。
 
 RustCodeGraph 对目标文件的文件节点报告直接使用者包含 `pkg/dxf/importinto/task_executor.rs`、`pkg/dxf/importinto/task_executor_test.rs`、`pkg/dxf/importinto/clean_up_test.rs` 和 `tests/realtikvtest/importintotest4/recorded_summary_harness.rs`。其中生产调用的关键证据是 `task_executor.rs` 对 `open_object_stream` 的复用，以及 WriteAndIngest executor 对 `WriteIngestBackend` trait 方法的调用；回归 harness 则提供注册入口的真实接线。
 
@@ -83,19 +62,8 @@ object reader 有两个显式关闭保障：打开后 seek 失败立即关闭，
 
 ## 与 Go 版本的对应关系
 
-- Go 把 `sm.RangeJobKeys == nil` 回退到 `RangeSplitKeys`；Rust `readWriteIngestMeta` 额外保留 JSON 字段是否存在的 `has_job_keys`，组装 request 时做同样回退，重写 meta 时也保留旧格式的 null 语义。
-- Go `CloseEngine` 的 `ExternalEngineConfig` 传递 storage/files/ranges/split config/TS/memory/on-duplicate/prefix。Rust `CloseExternalEngine` 对应这些字段并构造 Rust global-sort engine。一个明确差异是 Go 版此处把 `TotalKVCount` 设为 `0`，Rust request 传入 `SortedKVMeta.TotalKVCnt`，且 Rust 导入后会用它相关的 loaded count 做一致性检查。
-- Go executor `Init` 通过 CPU resource 设置 backend worker concurrency；Rust native host 在构造 backend 时使用 `task.GetRuntimeSlots()`，并以 1 为下限。扩展动态资源更新时需特别检查这个差异。
-- Go storage 记录格式由 global-sort 原实现产生；Rust adapter 显式返回 `RecordFormat::GoBigEndian64`，表明它要兼容 Go 大端 64 位长度前缀。
+373679dd4df08d656e3a95ff0cc0cd245152a9ff 移除 engines 注册表。NewExternalEngine 用完整 globalsort 配置创建调用者持有的 NativeWriteIngestEngine，Source 返回相同底层 adapter。IngestExternalEngine 复用真实 region-job 管线；导入统计与真实已加载条数校验仍保留。CurrentVersion 使用 GlobalSortImportHost 传入的任务 KV store，只有旧 TS 元信息调用。Close 取消管线并关闭 transport，不关闭调用者引擎；句柄的 CloseShared 支持重复关闭。
 
 ## 扩展指南
-
-- 增加或修改 TiKV RPC 行为：优先扩展 `RegionImportTransport` 及宿主实现，保持本文件不耦合具体 client。必须明确 write 成功、ingest 失败时的统计语义，并在独立的 `pkg/dxf/importinto/write_ingest_backend_test.rs` 增加对应重试回归。
-- 增加 duplicate-key 模式：同步修改 `CloseExternalEngine` 的穷举映射、engineapi/global-sort 定义及测试，不要让未知值静默降级。
-- 修改 Region 分割或重试：主接入点是 `ImportEngine` 中的 generator/regenerate callbacks。必须保留 range 覆盖检查、TS 传递、job resource 引用和 cancellation token；同时核对 `pkg/ingestor/ingestctrl` 的独立 pipeline/region-job 测试。
-- 修改进度统计：只在 `!result.empty_job` 时记录 transport 报告的实际物理 write。不得把该统计与 engine 的逻辑 imported statistics 混合，应同步更新 `physical_region_rewrite_increments_progress_without_recounting_logical_import` 测试。
-- 修改 engine 生命周期：保持“先停止并发使用，再 cleanup”。若需允许 cleanup 与 import 并发，必须重新设计 `Arc::try_unwrap` 和 map 移除失败后的可恢复性。
-- 修改并发度：当前值在 backend 创建时固定。要支持 runtime resource modification，需同时评估 task runtime slots、external engine worker resource 和 `do_import` pool 大小，不能只改其中一处。
-- 修改 object-store 读取：优先复用 `open_object_stream`，保持 seek 失败和 Drop 两条关闭路径，并注意它同时被 merge-sort adapter 使用。
 
 性能风险主要在 Region scan 数量、worker concurrency、memory capacity 和重试导致的物理重写；兼容风险主要在 Go 记录格式、旧 meta 的 job-key fallback、duplicate-key 语义和 external meta 写回。

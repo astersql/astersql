@@ -144,6 +144,17 @@ impl EngineResource {
         Ok(())
     }
 }
+/// Scope ownership for a shared external engine. Consumers may borrow a clone,
+/// but the caller closes the engine on every exit, including unwinding.
+pub struct ExternalEngineGuard(pub Arc<ExternalEngineAdapter>);
+impl Drop for ExternalEngineGuard {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.CloseShared() {
+            eprintln!("close external engine failed: {error}");
+        }
+    }
+}
+
 pub struct Engine {
     storage: Arc<dyn Storage>,
     data_files: Vec<String>,
@@ -175,25 +186,44 @@ pub struct Engine {
     closed: bool,
 }
 
-/// 构造外部引擎；校验 data/stat 数量一致、并发度 >0、job_keys 有序。
-#[allow(clippy::too_many_arguments)]
+/// Configuration of globally sorted files. The caller owns the created engine.
+pub struct EngineConfig {
+    pub ExtStore: Arc<dyn Storage>,
+    pub DataFiles: Vec<String>,
+    pub StatFiles: Vec<String>,
+    pub StartKey: Vec<u8>,
+    pub EndKey: Vec<u8>,
+    pub JobKeys: Vec<Vec<u8>>,
+    pub SplitKeys: Vec<Vec<u8>>,
+    pub TotalFileSize: i64,
+    pub TotalKVCount: i64,
+    pub CheckHotspot: bool,
+    pub MemCapacity: i64,
+    pub OnDup: OnDuplicateKey,
+    pub FilePrefix: String,
+}
+
+/// Create a caller-owned engine; it must be closed after ingestion, including errors.
 pub fn NewExternalEngine(
-    storage: Arc<dyn Storage>,
-    data_files: Vec<String>,
-    stats_files: Vec<String>,
-    start_key: Vec<u8>,
-    end_key: Vec<u8>,
-    job_keys: Vec<Vec<u8>>,
-    split_keys: Vec<Vec<u8>>,
+    cfg: EngineConfig,
     worker_concurrency: i32,
     timestamp: u64,
-    total_kv_size: i64,
-    total_kv_count: i64,
-    check_hotspot: bool,
-    memory_capacity: i64,
-    on_duplicate: OnDuplicateKey,
-    file_prefix: String,
 ) -> Result<Engine> {
+    let EngineConfig {
+        ExtStore: storage,
+        DataFiles: data_files,
+        StatFiles: stats_files,
+        StartKey: start_key,
+        EndKey: end_key,
+        JobKeys: job_keys,
+        SplitKeys: split_keys,
+        TotalFileSize: total_kv_size,
+        TotalKVCount: total_kv_count,
+        CheckHotspot: check_hotspot,
+        MemCapacity: memory_capacity,
+        OnDup: on_duplicate,
+        FilePrefix: file_prefix,
+    } = cfg;
     if data_files.len() != stats_files.len() {
         return Err(Error::InvalidArgument(
             "data and stat file counts differ".into(),

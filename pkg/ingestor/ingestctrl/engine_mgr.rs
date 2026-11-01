@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 本地/外部 Engine 生命周期管理。
+// 本地 Engine 生命周期管理。
 //
 // `EngineManager` 负责在本地排序目录中打开、加锁、关闭、重置与清理 Engine，
-// 分配 TSO（时间戳预言机）写入引擎元数据，并维护外部引擎注册表与重复检测
+// 分配 TSO（时间戳预言机）写入引擎元数据，并维护重复检测
 // 共享缓冲；配合 `DiskUsage`/`Writer` 完成导入控制面调度。
 
 use std::collections::HashMap;
@@ -70,12 +70,11 @@ pub trait ExternalEngine: Send + Sync {
     fn Close(&self) -> Result<()>;
 }
 
-/// 管理本地与外部 Engine 的注册表、目录与共享重复缓冲。
+/// 管理本地 Engine 的注册表、目录与共享重复缓冲。
 pub struct EngineManager {
     pub config: BackendConfig,
     store_helper: Arc<dyn StoreHelper>,
     engines: Mutex<HashMap<EngineId, Arc<Engine>>>,
-    external_engines: Mutex<HashMap<EngineId, Arc<dyn ExternalEngine>>>,
     duplicate_data: Arc<Mutex<Vec<crate::KvPair>>>,
     key_adapter: Arc<dyn KeyAdapter>,
     closed: AtomicBool,
@@ -96,7 +95,6 @@ pub fn newEngineManager(
         config,
         store_helper: helper,
         engines: Mutex::new(HashMap::new()),
-        external_engines: Mutex::new(HashMap::new()),
         duplicate_data: Arc::new(Mutex::new(Vec::new())),
         key_adapter,
         closed: AtomicBool::new(false),
@@ -192,19 +190,6 @@ impl EngineManager {
         Ok(engine)
     }
 
-    /// 注册外部引擎到管理器。
-    pub fn registerExternalEngine(
-        &self,
-        id: EngineId,
-        engine: Arc<dyn ExternalEngine>,
-    ) -> Result<()> {
-        self.external_engines
-            .lock()
-            .map_err(|_| Error::Poisoned)?
-            .insert(id, engine);
-        Ok(())
-    }
-
     /// 关闭引擎；`clean` 为真时清理目录并从注册表移除。
     pub fn closeEngine(&self, engine_id: EngineId, clean: bool) -> Result<()> {
         let engine = self
@@ -270,7 +255,7 @@ impl EngineManager {
         Ok(())
     }
 
-    /// 关闭并清理本地与同 ID 外部引擎。
+    /// 关闭并清理本地引擎。
     pub fn cleanupEngine(&self, engine_id: EngineId) -> Result<()> {
         if let Some(engine) = self
             .engines
@@ -280,14 +265,6 @@ impl EngineManager {
         {
             engine.Close()?;
             engine.Cleanup(Path::new(&self.config.local_store_dir))?;
-        }
-        if let Some(engine) = self
-            .external_engines
-            .lock()
-            .map_err(|_| Error::Poisoned)?
-            .remove(&engine_id)
-        {
-            engine.Close()?;
         }
         Ok(())
     }
@@ -338,29 +315,6 @@ impl EngineManager {
             .unwrap_or(0)
     }
 
-    /// 外部引擎 KV 统计；不存在返回 None。
-    pub fn getExternalEngineKVStatistics(&self, id: EngineId) -> Option<(i64, i64)> {
-        self.external_engines
-            .lock()
-            .ok()?
-            .get(&id)
-            .map(|engine| engine.KVStatistics())
-    }
-
-    /// 外部引擎冲突信息；不存在返回默认空。
-    pub fn getExternalEngineConflictInfo(&self, id: EngineId) -> ConflictInfo {
-        self.external_engines
-            .lock()
-            .ok()
-            .and_then(|engines| engines.get(&id).map(|engine| engine.ConflictInfo()))
-            .unwrap_or_default()
-    }
-
-    /// 按 ID 取外部引擎句柄。
-    pub fn getExternalEngine(&self, id: EngineId) -> Option<Arc<dyn ExternalEngine>> {
-        self.external_engines.lock().ok()?.get(&id).cloned()
-    }
-
     /// 所有本地引擎内存占用之和。
     pub fn totalMemoryConsume(&self) -> i64 {
         self.engines
@@ -387,18 +341,12 @@ impl EngineManager {
         self.store_helper.GetTiKVCodec()
     }
 
-    /// 关闭管理器：清理本地引擎并关闭全部外部引擎。
+    /// 关闭管理器：仅清理本地引擎，外部引擎由调用者负责。
     pub fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
         self.cleanupAllLocalEngines();
-        if let Ok(mut external) = self.external_engines.lock() {
-            for engine in external.values() {
-                let _ = engine.Close();
-            }
-            external.clear();
-        }
         // BackendConfig currently has no checkpoint flag. This corresponds to
         // Go's checkpoint-disabled branch, which removes the local sort root.
         let _ = fs::remove_dir_all(&self.config.local_store_dir);

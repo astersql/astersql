@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2019 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
 
 // Lightning 导入后端抽象：引擎生命周期、本地写入与导入重试。
 //
@@ -113,8 +113,6 @@ pub struct EngineConfig {
     pub TableInfo: Option<TableInfo>,
     /// Local 引擎压缩与块大小等。
     pub Local: LocalEngineConfig,
-    /// 外部存储引擎配置（若使用）。
-    pub External: Option<ExternalEngineConfig>,
     /// 是否保留排序临时目录。
     pub KeepSortDir: bool,
     /// 写入使用的时间戳（TS）。
@@ -157,37 +155,6 @@ pub struct LocalEngineConfig {
     pub CompactConcurrency: usize,
     /// 数据块大小。
     pub BlockSize: usize,
-}
-
-/// 外部引擎：数据/统计文件、键范围、热点检测与重复键策略等。
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ExternalEngineConfig {
-    /// 外部对象存储标识。
-    pub ExtStore: Option<String>,
-    /// 数据文件路径列表。
-    pub DataFiles: Vec<String>,
-    /// 统计文件路径列表。
-    pub StatFiles: Vec<String>,
-    /// 扫描起始键。
-    pub StartKey: Vec<u8>,
-    /// 扫描结束键。
-    pub EndKey: Vec<u8>,
-    /// 作业切分键。
-    pub JobKeys: Vec<Vec<u8>>,
-    /// Region 拆分键。
-    pub SplitKeys: Vec<Vec<u8>>,
-    /// 文件总大小。
-    pub TotalFileSize: i64,
-    /// KV 总条数。
-    pub TotalKVCount: i64,
-    /// 是否检测热点。
-    pub CheckHotspot: bool,
-    /// 内存容量上限。
-    pub MemCapacity: i64,
-    /// 遇到重复主键时的处理策略。
-    pub OnDup: OnDuplicateKey,
-    /// 文件名前缀。
-    pub FilePrefix: String,
 }
 
 /// 重复主键处理策略：报错、替换或忽略。

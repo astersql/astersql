@@ -6,25 +6,7 @@
 
 ## 核心职责
 
-1. 用 `Backend` 和 `EngineWriter` 定义后端必须提供的线程安全生命周期及写入能力，并用 `TargetInfoGetter` 定义导入前远端元数据/要求检查能力。
-2. 用 `EngineManager`、私有 `engine`、`OpenedEngine`、`ClosedEngine` 将正常生命周期表达为 `Open -> LocalWriter/Flush -> Close -> Import -> Cleanup`，减少上层直接传 UUID 的重复代码。
-3. 用 `MakeUUID` 根据 `tableName:engineID` 生成稳定 UUID v5，使断点恢复时能重新定位相同引擎；索引引擎等特殊引擎仍由数值 ID 区分。
-4. 集中承载跨后端配置与结果类型，包括 `EngineConfig`、`LocalWriterConfig`、`ExternalEngineConfig`、`EngineFileSize`、`ChunkFlushStatus` 和 `BackendError`。
-5. 在 `ClosedEngine::Import` 中统一执行最多三次的可重试导入；具体何种错误可重试由后端构造 `BackendError.retryable` 时决定。
-
 ## 主要符号
-
-- `importMaxRetryTimes = 3`：`ClosedEngine::Import` 的总尝试次数，不是“首次调用后再重试三次”。
-- `ENGINE_NAMESPACE`、`makeTag`、`MakeUUID`：将表名和引擎 ID 拼成标签，再以固定命名空间生成确定性 UUID v5。测试 `backend_test.rs::TestOpenCloseImportCleanUpEngine` 固定校验 `` `db`.`table`:1 `` 对应 `902efee3-a3f9-53d4-8c82-f12fb1900cd1`。
-- `Logger`、`makeLogger`：轻量键值字段容器；管理器为引擎附加 `engineTag` 和 `engineUUID`。它不是 Go 版完整的 zap 日志器，仅保留可随 `ClosedEngine` 传递的上下文字段。
-- `Backend: Send + Sync`：定义后端关闭、重试延迟、后处理判断、引擎打开/关闭/导入/清理/刷写以及 writer 创建。`Send + Sync` 约束允许 `Arc<dyn Backend>` 跨线程共享。
-- `TargetInfoGetter: Send + Sync`：读取远端库表模型并执行导入要求检查；其 `TableInfo`/`ColumnInfo` 是 Rust 侧简化但显式的远端模型。
-- `EngineManager`：无额外可变状态，仅持有 `Arc<dyn Backend>`；`MakeEngineManager` 构造它，`OpenEngine` 和两种 `UnsafeCloseEngine*` 创建带类型状态的句柄。
-- `OpenedEngine`：保存引擎公共句柄、表名和打开配置；提供 `LocalWriter`、`Flush`、`Close`、UUID/ID 读取。
-- `ClosedEngine`：只暴露导入、清理、日志器和标识读取；`NewClosedEngine` 支持恢复或已有组件直接组装。
-- `EngineWriter: Send`：按列名和 `encode::Rows` 追加批次，报告同步状态，关闭时可返回 `ChunkFlushStatus`。
-- `BackendError`：保存消息、`retryable` 和 `duplicate` 三项语义；`new` 创建普通错误，`retryable` 创建可重试错误，并实现 `Display`/`Error`。
-- 配置/状态 DTO：`LocalWriterLocalConfig` 控制有序 KV 与缓存，`LocalWriterTiDBConfig` 提供目标表名；`LocalEngineConfig` 控制 compact/块大小；`ExternalEngineConfig` 描述外部文件、键范围、切分键、容量与重复键策略；`OnDuplicateKey` 为 `Error`/`Replace`/`Ignore`。
 
 ## 执行流程
 
@@ -44,8 +26,6 @@
 `EngineManager` 与私有 `engine` 都克隆 `Arc<dyn Backend>`，因此各句柄共享同一后端实例。`engine` 同时保存不可变的 `Logger`、UUID 和 `i32` ID。`OpenedEngine` 额外保存表名和一份克隆的 `EngineConfig`，以便关闭时把与打开相同的配置交回后端；`ClosedEngine` 则只保留导入/清理所需公共句柄。
 
 状态迁移主要由 Rust 所有权表达：正常的 `OpenedEngine::Close` 接收 `self`，成功后产生 `ClosedEngine`。但这不是全局状态机证明：`EngineManager::UnsafeCloseEngine*` 和 `NewClosedEngine` 能绕过正常迁移，且实际后端仍需检查 UUID 对应资源是否存在。
-
-配置结构均拥有数据而非借用数据，便于跨生命周期保存和克隆。`ExternalEngineConfig` 的 `StartKey`/`EndKey` 定义扫描范围，`JobKeys`/`SplitKeys` 定义任务和 Region 边界；`TotalFileSize`/`TotalKVCount` 是总量信息，`MemCapacity` 是子任务容量预算。`BackendError.duplicate` 只携带分类，本文件的重试控制只读取 `retryable`。
 
 ## 依赖与调用关系
 
@@ -84,6 +64,8 @@ RustCodeGraph 对目标文件识别出 64 个符号，并确认 `MakeEngineManag
 资源顺序由调用者负责完成：`Backend::Close` 没有 RAII 保证，writer 也必须显式 `Close`；`OpenedEngine`/`ClosedEngine` 没有 `Drop` 清理。具体 SST 后端在 `pkg/session/runtime/import_sst.rs::Drop` 中额外执行全部引擎清理、关闭本地后端和删除临时目录，但其他实现不一定具备该兜底。安全路径应始终显式关闭 writer、关闭引擎、导入、清理，最后关闭 backend。
 
 ## 与 Go 版本的对应关系
+
+373679dd4df08d656e3a95ff0cc0cd245152a9ff 删除 EngineConfig.External 和后端 ExternalEngineConfig。后端 EngineConfig 仅描述表信息、本地配置、KeepSortDir、TS；外部配置归 globalsort::engine::EngineConfig，调用者创建引擎直接摄取。TS 属于本地 open 元信息；现有 Lightning 本地打开/关闭/导入/清理入口继续复用。
 
 当前可见差异必须在扩展时考虑：
 

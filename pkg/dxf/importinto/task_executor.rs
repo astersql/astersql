@@ -960,12 +960,36 @@ pub trait WriteIngestBackend: Send + Sync {
     fn BindObjectStore(&self, _: StorageRef) {}
 
     fn SetCollector(&self, collector: Arc<dyn execute::Collector + Send + Sync>);
-    fn CloseExternalEngine(&self, request: &WriteIngestRequest) -> anyhow::Result<()>;
-    fn ImportEngine(&self, subtask_id: i64, split_size: i64, split_keys: i64)
-    -> anyhow::Result<()>;
-    fn GetExternalEngineConflictInfo(&self, subtask_id: i64) -> engineapi::ConflictInfo;
-    fn CleanupEngine(&self, subtask_id: i64) -> anyhow::Result<()>;
+    fn CurrentVersion(&self) -> anyhow::Result<u64>;
+    fn NewExternalEngine(
+        &self,
+        request: &WriteIngestRequest,
+        concurrency: usize,
+    ) -> anyhow::Result<Box<dyn WriteIngestEngine>>;
+    fn IngestExternalEngine(
+        &self,
+        engine: &dyn WriteIngestEngine,
+        split_size: i64,
+        split_keys: i64,
+    ) -> anyhow::Result<()>;
     fn Close(&self);
+}
+
+/// A subtask owns this handle, including error and metadata-write paths.
+pub trait WriteIngestEngine: Send + Sync {
+    fn Source(&self) -> Arc<dyn engineapi::Engine>;
+    fn GetTotalLoadedKVsCount(&self) -> i64;
+    fn WorkerConcurrency(&self) -> usize;
+    fn ConflictInfo(&self) -> engineapi::ConflictInfo;
+    fn Close(&self) -> anyhow::Result<()>;
+}
+struct WriteIngestEngineGuard(Box<dyn WriteIngestEngine>);
+impl Drop for WriteIngestEngineGuard {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.Close() {
+            eprintln!("failed to close external engine: {error}");
+        }
+    }
 }
 
 pub(crate) fn readWriteIngestMeta(
@@ -1158,7 +1182,11 @@ impl execute::StepExecutor for WriteAndIngestStepExecutor {
             let request = WriteIngestRequest {
                 SubtaskID: subtask.ID,
                 KVGroup: meta.KVGroup.clone(),
-                TS: meta.TS,
+                TS: if meta.TS == 0 {
+                    self.backend.CurrentVersion()?
+                } else {
+                    meta.TS
+                },
                 DataFiles: meta.DataFiles.clone(),
                 StatFiles: meta.StatFiles.clone(),
                 StartKey: meta.SortedKVMeta.StartKey.clone(),
@@ -1170,7 +1198,7 @@ impl execute::StepExecutor for WriteAndIngestStepExecutor {
                 },
                 SplitKeys: meta.RangeSplitKeys.clone(),
                 TotalFileSize: meta.SortedKVMeta.TotalKVSize as i64,
-                TotalKVCount: meta.SortedKVMeta.TotalKVCnt as i64,
+                TotalKVCount: 0,
                 MemCapacity: resource.Mem.Capacity(),
                 OnDup: on_dup,
                 FilePrefix: crate::encode_and_sort_operator::subtaskPrefix(
@@ -1185,11 +1213,13 @@ impl execute::StepExecutor for WriteAndIngestStepExecutor {
                 meterRec: execute::StepExecFrameworkInfo::GetMeterRecorder(self)
                     .unwrap_or_else(|| Arc::new(metering::Recorder::default())),
             }));
+            let engine = WriteIngestEngineGuard(
+                self.backend
+                    .NewExternalEngine(&request, resource.CPU.Capacity() as usize)
+                    .map_err(normalizeSubtaskErr)?,
+            );
             self.backend
-                .CloseExternalEngine(&request)
-                .map_err(normalizeSubtaskErr)?;
-            self.backend
-                .ImportEngine(subtask.ID, 96 * 1024 * 1024, 960_000)
+                .IngestExternalEngine(engine.0.as_ref(), 96 * 1024 * 1024, 960_000)
                 .map_err(normalizeSubtaskErr)?;
             self.summary.Processed.fetch_add(
                 collector_summary.Processed.load(Ordering::Relaxed),
@@ -1199,8 +1229,7 @@ impl execute::StepExecutor for WriteAndIngestStepExecutor {
                 collector_summary.RowCnt.load(Ordering::Relaxed),
                 Ordering::Relaxed,
             );
-            let conflict = self.backend.GetExternalEngineConflictInfo(subtask.ID);
-            let _ = self.backend.CleanupEngine(subtask.ID);
+            let conflict = engine.0.ConflictInfo();
             if conflict.Count == 0 {
                 return Ok(());
             }

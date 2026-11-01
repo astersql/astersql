@@ -413,38 +413,21 @@ impl Backend {
     ) -> astersql_ingestor_ingestctrl::disk_quota::DiskQuotaResult {
         astersql_ingestor_ingestctrl::disk_quota::CheckDiskQuota(&self.local, quota)
     }
-    pub(super) fn register_external(
-        &self,
-        id: Uuid,
-        engine: astersql_ingestor_globalsort::engine::Engine,
-        token: astersql_ingestor_globalsort::reader::CancellationToken,
-    ) -> SessionResult<Arc<astersql_ingestor_globalsort::engine::ExternalEngineAdapter>> {
-        let adapter = Arc::new(
-            astersql_ingestor_globalsort::engine::ExternalEngineAdapter::new(engine, token),
-        );
-        self.local
-            .RegisterExternalEngine(
-                local::EngineId(id.as_u128()),
-                Arc::new(CloudEngine(adapter.clone())),
-            )
-            .map_err(|error| SessionError::new(error.to_string()))?;
-        Ok(adapter)
-    }
     pub(super) fn import_external(
         &self,
         token: &local::CancellationToken,
-        id: Uuid,
+        engine: Arc<astersql_ingestor_globalsort::engine::ExternalEngineAdapter>,
     ) -> SessionResult<()> {
-        self.import_external_native(token, id)
+        self.import_external_native(token, engine)
             .map_err(|error| SessionError::new(error.to_string()))
     }
     pub(super) fn import_external_native(
         &self,
         token: &local::CancellationToken,
-        id: Uuid,
+        engine: Arc<astersql_ingestor_globalsort::engine::ExternalEngineAdapter>,
     ) -> local::Result<()> {
         self.local
-            .ImportEngine(token, local::EngineId(id.as_u128()), 0)
+            .IngestExternalEngine(token, Arc::new(CloudEngine(engine)), 0)
     }
     pub(super) fn set_import_options(&self, options: kv::SSTImportOptions) -> SessionResult<()> {
         *self
@@ -455,11 +438,6 @@ impl Backend {
     }
     pub(super) fn set_worker_concurrency(&self, concurrency: usize) {
         self.local.SetWorkerConcurrency(concurrency);
-    }
-    pub(super) fn cleanup_external(&self, id: Uuid) -> SessionResult<()> {
-        self.local
-            .CleanupEngine(local::EngineId(id.as_u128()))
-            .map_err(|error| SessionError::new(error.to_string()))
     }
     pub fn new(domain: Arc<Domain>, task_id: i64) -> SessionResult<Arc<Self>> {
         Self::new_with_options(domain, task_id, kv::SSTImportOptions::default())

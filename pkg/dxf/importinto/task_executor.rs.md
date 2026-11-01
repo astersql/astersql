@@ -57,11 +57,6 @@
 
 写入摄取分支：
 
-1. `readWriteIngestMeta` 解码文件、range keys、timestamp 与冲突计数；兼容 base64 字符串和字节数组形式的 keys。
-2. 由步骤内存、KV 范围、文件统计、duplicate policy 和 subtask prefix 组装 `WriteIngestRequest`；若 planner 没有显式生成 job keys，则以 split keys 作为 backend 请求的 job keys。
-3. 调用顺序固定为 `SetCollector`、`CloseExternalEngine`、`ImportEngine`、`GetExternalEngineConflictInfo`、`CleanupEngine`。cleanup 错误被有意忽略；close/import 错误会规范化后返回。
-4. 无冲突时保持 subtask meta 不变；有冲突时更新统计并外置 meta，同时保持原先 `range-job-keys` 缺失/空值的 wire 语义。
-
 ## 数据与状态
 
 - `TaskMeta` 是各 executor 的任务级快照；`TaskMetaModified` 可替换它。`FrameworkInfo` 持有动态步骤资源、meter 与 checkpoint 回调，`ResourceModified` 复制最新 CPU/memory capacity。
@@ -106,6 +101,8 @@
 - 动态资源修改只影响后续读取的 framework resource；encode 的 Parquet 并发一旦由首个子任务估算，不会因后续 subtask 或资源变化重新估算，这是明确的 one-shot 语义。
 
 ## 与 Go 版本的对应关系
+
+373679dd4df08d656e3a95ff0cc0cd245152a9ff 的 WriteAndIngest 入口不再按 subtask ID 注册和清理外部引擎。TS=0 时才调用后端 CurrentVersion；配置的 TotalKVCount 保持 Go 未知值 0，CPU 来自当前资源。NewExternalEngine 返回 WriteIngestEngine，IngestExternalEngine 接收该句柄，ConflictInfo 直接从句柄读取后写元信息。WriteIngestEngineGuard 在成功、摄取失败和元信息写入失败后关闭，关闭错误不遮盖原结果。真实实现为 write_ingest_backend.rs，独立测试同时覆盖 native 数据路径与服务边界的错误顺序。
 
 - Go `importExecutor.GetStepExecutor` 解码 meta 后按七个步骤分派，并使用 `TaskRuntime.Store()`；Rust `GetImportStepExecutor` 用 `ImportStepHost::TaskStore` 明确保持“任务已绑定 store，不额外按 keyspace 查询”。Go/Rust 测试都覆盖未知步骤和非法 meta。
 - Go 的 `importStepExecutor` 同时承担 import/encode-sort；Rust 的生产 node 路径拆成 `EncodeSortStepExecutor` 并把其他阶段交给 host。拆分没有改变 writer 预算、Parquet 最大文件估算、local engine 清理或 summary 语义。

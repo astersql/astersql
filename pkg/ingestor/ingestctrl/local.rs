@@ -473,9 +473,6 @@ impl Backend {
         store_id: u64,
     ) -> Result<()> {
         token.check()?;
-        if let Some(engine) = self.engine_manager.getExternalEngine(id) {
-            return self.import_external_engine(token, id, store_id, engine);
-        }
         let engine = self
             .engine_manager
             .lockEngine(id, crate::engine::IMPORT_MUTEX_STATE_IMPORT)
@@ -557,13 +554,14 @@ impl Backend {
         result
     }
 
-    fn import_external_engine(
+    /// Ingest a caller-owned external engine. This never registers or closes it.
+    pub fn IngestExternalEngine(
         &self,
         token: &CancellationToken,
-        id: EngineId,
-        store_id: u64,
         engine: Arc<dyn ExternalEngine>,
+        store_id: u64,
     ) -> Result<()> {
+        token.check()?;
         if engine.KVStatistics().0 == 0 {
             return Ok(());
         }
@@ -614,10 +612,6 @@ impl Backend {
                 engine.ImportedStatistics().1
             )));
         }
-        self.imported_counts
-            .lock()
-            .map_err(|_| Error::Poisoned)?
-            .insert(id, count);
         Ok(())
     }
 
@@ -636,26 +630,6 @@ impl Backend {
             .unwrap_or_else(|| self.engine_manager.getImportedKVCount(id))
     }
 
-    /// 获取外部 Engine 句柄（若有）。
-    pub fn RegisterExternalEngine(
-        &self,
-        id: EngineId,
-        engine: Arc<dyn ExternalEngine>,
-    ) -> Result<()> {
-        self.engine_manager.registerExternalEngine(id, engine)
-    }
-
-    pub fn GetExternalEngine(&self, id: EngineId) -> Option<Arc<dyn ExternalEngine>> {
-        self.engine_manager.getExternalEngine(id)
-    }
-    /// 外部 Engine 的 KV 统计。
-    pub fn GetExternalEngineKVStatistics(&self, id: EngineId) -> Option<(i64, i64)> {
-        self.engine_manager.getExternalEngineKVStatistics(id)
-    }
-    /// 外部 Engine 的冲突信息。
-    pub fn GetExternalEngineConflictInfo(&self, id: EngineId) -> ConflictInfo {
-        self.engine_manager.getExternalEngineConflictInfo(id)
-    }
     /// 重置 Engine 但不分配新 TS。
     pub fn ResetEngineSkipAllocTS(&self, token: &CancellationToken, id: EngineId) -> Result<()> {
         self.engine_manager.resetEngine(token, id, false)

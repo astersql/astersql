@@ -73,7 +73,7 @@ impl RegionImportTransport for Rpc {
 }
 
 #[test]
-fn physical_region_rewrite_increments_progress_without_recounting_logical_import() {
+fn port_373679dd4d_physical_rewrite_preserves_caller_ownership_and_progress() {
     for (failure, expected_writes) in [("", 1), ("KVIngestFailed", 2), ("ServerIsBusy", 1)] {
         let store = Arc::new(astersql_objstore::azblob::MemoryStorage::default());
         use astersql_objstore_storeapi::Storage;
@@ -131,11 +131,13 @@ fn physical_region_rewrite_increments_progress_without_recounting_logical_import
             OnDup: api::OnDuplicateKeyError,
             FilePrefix: "test".into(),
         };
-        backend.CloseExternalEngine(&request).unwrap();
-        backend.ImportEngine(1, 96 * 1024 * 1024, 960_000).unwrap();
+        let engine = backend.NewExternalEngine(&request, 1).unwrap();
+        backend
+            .IngestExternalEngine(engine.as_ref(), 96 * 1024 * 1024, 960_000)
+            .unwrap();
         assert_eq!(rpc.rows.lock().unwrap().len(), 3);
         assert_eq!(rpc.writes.load(Ordering::SeqCst), expected_writes);
-        let logical = backend.engines.lock().unwrap()[&1].ImportedStatistics();
+        let logical = engine.Source().ImportedStatistics();
         assert_eq!(logical, (6, 3));
         assert_eq!(
             summary.Processed.load(Ordering::SeqCst),
@@ -145,8 +147,45 @@ fn physical_region_rewrite_increments_progress_without_recounting_logical_import
             summary.RowCnt.load(Ordering::SeqCst),
             3 * expected_writes as i64
         );
-        backend.CleanupEngine(1).unwrap();
-        assert!(backend.engines.lock().unwrap().is_empty());
         backend.Close();
+        assert_eq!(engine.Source().ImportedStatistics(), (6, 3));
+        engine.Close().unwrap();
+        engine.Close().unwrap();
     }
+}
+
+#[test]
+fn port_373679dd4d_legacy_timestamp_uses_the_bound_task_store() {
+    let rpc = Arc::new(Rpc {
+        ingests: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        rows: Default::default(),
+        failure: "",
+    });
+    let mut backend = GlobalSortWriteIngestBackend::new(
+        Arc::new(astersql_objstore::azblob::MemoryStorage::default()),
+        rpc,
+        1,
+    );
+    assert!(
+        backend
+            .CurrentVersion()
+            .unwrap_err()
+            .to_string()
+            .contains("timestamp store is unavailable")
+    );
+    let store = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemory(),
+        None,
+    )
+    .unwrap();
+    backend.version_store = Some(store);
+    let first = backend.CurrentVersion().unwrap();
+    let second = backend.CurrentVersion().unwrap();
+    assert!(first > 0);
+    assert!(
+        second > first,
+        "legacy subtasks must allocate a fresh store version"
+    );
+    backend.Close();
 }

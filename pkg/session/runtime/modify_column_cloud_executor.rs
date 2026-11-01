@@ -126,10 +126,23 @@ impl CloudStep {
         if fields.meta_groups.is_empty() {
             all.merge(&fields.legacy).map_err(error)?;
         }
-        let ts = internal
+        let ts = match internal
             .get("ts")
             .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| error("cloud subtask timestamp missing"))?;
+            .unwrap_or(0)
+        {
+            0 => self
+                .base
+                .domain
+                .storage_handle()
+                .with_storage(|store| {
+                    store
+                        .TimestampFuture(astersql_kv::GlobalTxnScope, false)
+                        .Wait()
+                })
+                .map_err(error)?,
+            ts => ts,
+        };
         let keys = if fields.range_job_keys.is_empty() {
             &fields.range_split_keys
         } else {
@@ -178,41 +191,45 @@ impl CloudStep {
             }
             ids => return Err(error(format!("unexpected EleIDs count {}", ids.len()))),
         };
-        let (_, id) = astersql_lightning_backend::MakeUUID(&table.Name.L, index_id);
         let resource = self.base.resource.lock().map_err(error)?.clone();
         let engine = sort::engine::NewExternalEngine(
-            store,
-            fields.data_files,
-            fields.stat_files,
-            wire::decode(all.start.as_deref().unwrap_or("")).map_err(error)?,
-            wire::decode(all.end.as_deref().unwrap_or("")).map_err(error)?,
-            job_keys,
-            split_keys,
+            sort::engine::EngineConfig {
+                ExtStore: store,
+                DataFiles: fields.data_files,
+                StatFiles: fields.stat_files,
+                StartKey: wire::decode(all.start.as_deref().unwrap_or("")).map_err(error)?,
+                EndKey: wire::decode(all.end.as_deref().unwrap_or("")).map_err(error)?,
+                JobKeys: job_keys,
+                SplitKeys: split_keys,
+                TotalFileSize: all.size as i64,
+                TotalKVCount: 0,
+                CheckHotspot: true,
+                MemCapacity: resource.Memory,
+                OnDup: sort::OnDuplicateKey::Error,
+                FilePrefix: format!("{}/{}", subtask.SubtaskBase.TaskID, subtask.SubtaskBase.ID),
+            },
             resource.CPU.max(1),
             ts,
-            all.size as i64,
-            0,
-            true,
-            resource.Memory,
-            sort::OnDuplicateKey::Error,
-            format!("{}/{}", subtask.SubtaskBase.TaskID, subtask.SubtaskBase.ID),
         )
         .map_err(error)?;
         let backend = self.backend()?;
         backend
             .set_import_options(control.options.clone())
             .map_err(error)?;
-        let source = backend
-            .register_external(id, engine, token.clone())
-            .map_err(error)?;
-        *self.active.lock().map_err(error)? = Some(Active::Import(source.clone(), token));
+        let source = sort::engine::ExternalEngineGuard(Arc::new(
+            sort::engine::ExternalEngineAdapter::new(engine, token.clone()),
+        ));
+        *self.active.lock().map_err(error)? = Some(Active::Import(source.0.clone(), token));
         let result = backend
-            .import_external_native(&control.local, id)
+            .import_external_native(&control.local, source.0.clone())
             .map_err(executor::ExecutorError::with_source);
         self.rows
-            .store(source.ImportedStatistics().1 as u64, Ordering::Release);
-        let cleanup = backend.cleanup_external(id).map_err(error);
-        result.and(cleanup)
+            .store(source.0.ImportedStatistics().1 as u64, Ordering::Release);
+        // Stop exposing the active handle before closing it, as Go's deferred
+        // engine.Store(nil) runs before the caller-owned engine's Close.
+        self.active.lock().map_err(error)?.take();
+        drop(source);
+        result
     }
 }
 struct ActiveGuard<'a>(&'a CloudStep);

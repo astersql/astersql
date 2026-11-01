@@ -137,18 +137,6 @@ pub fn reset_missing_engine_is_a_noop() {
     assert!(!std::path::Path::new(&path).exists());
 }
 
-// TestGetExternalEngineKVStatistics 对应 Go 的同名测试：未知外部引擎返回零统计。
-/// 未注册外部引擎时 getExternalEngineKVStatistics 返回 None。
-#[test]
-pub fn TestGetExternalEngineKVStatistics() {
-    let (config, _directory) = getBackendConfig();
-    let path = config.local_store_dir.clone();
-    let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
-    assert_eq!(None, manager.getExternalEngineKVStatistics(EngineId::new()));
-    manager.close();
-    assert!(!std::path::Path::new(&path).exists());
-}
-
 // TestCleanupAllLocalEnginesLogsErrorOnly 对应 Go 测试：cleanupAllLocalEngines 记录错误但清空 file size 视图。
 /// 打开多个引擎后 cleanupAllLocalEngines 应清空 engineFileSizes。
 #[test]

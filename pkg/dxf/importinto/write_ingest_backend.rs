@@ -3,14 +3,15 @@
 //! Native global-sort ingestion. Only Region discovery and TiKV RPCs are supplied
 //! by the host; loading, retry stages, progress, and engine lifetimes are owned here.
 
-use crate::task_executor::{ImportStepHost, WriteIngestBackend, WriteIngestRequest};
+use crate::task_executor::{
+    ImportStepHost, WriteIngestBackend, WriteIngestEngine, WriteIngestRequest,
+};
 use api::Engine as _;
 use astersql_dxf_framework_taskexecutor_execute as execute;
 use astersql_ingestor_engineapi as api;
 use astersql_ingestor_globalsort as global;
 use astersql_ingestor_ingestctrl as local;
 use local::job_worker::{RegionJob, RegionJobWorker, TikvWriteResult};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// RPC boundary. Write statistics describe the actual completed write, including
@@ -112,7 +113,7 @@ impl global::Storage for ObjectStore {
 pub struct GlobalSortWriteIngestBackend {
     store: Mutex<astersql_objstore_storeapi::StorageRef>,
     transport: Arc<dyn RegionImportTransport>,
-    engines: Mutex<HashMap<i64, Arc<global::engine::ExternalEngineAdapter>>>,
+    version_store: Option<Arc<dyn astersql_kv::Storage + Send + Sync>>,
     collector: Mutex<Option<Arc<dyn execute::Collector + Send + Sync>>>,
     token: local::CancellationToken,
     concurrency: usize,
@@ -127,7 +128,7 @@ impl GlobalSortWriteIngestBackend {
         Self {
             store: Mutex::new(store),
             transport,
-            engines: Default::default(),
+            version_store: None,
             collector: Default::default(),
             token: Default::default(),
             concurrency: concurrency.max(1),
@@ -143,6 +144,25 @@ impl GlobalSortWriteIngestBackend {
         self
     }
 }
+struct NativeWriteIngestEngine(Arc<global::engine::ExternalEngineAdapter>);
+impl WriteIngestEngine for NativeWriteIngestEngine {
+    fn Source(&self) -> Arc<dyn api::Engine> {
+        self.0.clone()
+    }
+    fn GetTotalLoadedKVsCount(&self) -> i64 {
+        self.0.GetTotalLoadedKVsCount()
+    }
+    fn WorkerConcurrency(&self) -> usize {
+        self.0.ResourceHandle().WorkerConcurrency() as usize
+    }
+    fn ConflictInfo(&self) -> api::ConflictInfo {
+        self.0.ConflictInfo()
+    }
+    fn Close(&self) -> anyhow::Result<()> {
+        Ok(self.0.CloseShared()?)
+    }
+}
+
 impl WriteIngestBackend for GlobalSortWriteIngestBackend {
     fn BindObjectStore(&self, store: astersql_objstore_storeapi::StorageRef) {
         *self.store.lock().unwrap() = store;
@@ -151,7 +171,19 @@ impl WriteIngestBackend for GlobalSortWriteIngestBackend {
     fn SetCollector(&self, collector: Arc<dyn execute::Collector + Send + Sync>) {
         *self.collector.lock().unwrap() = Some(collector);
     }
-    fn CloseExternalEngine(&self, request: &WriteIngestRequest) -> anyhow::Result<()> {
+    fn CurrentVersion(&self) -> anyhow::Result<u64> {
+        self.version_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("timestamp store is unavailable"))?
+            .CurrentVersion(astersql_kv::GlobalTxnScope)
+            .map(|v| v.Ver)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    }
+    fn NewExternalEngine(
+        &self,
+        request: &WriteIngestRequest,
+        concurrency: usize,
+    ) -> anyhow::Result<Box<dyn WriteIngestEngine>> {
         let on_dup = match request.OnDup {
             api::OnDuplicateKeyIgnore => global::OnDuplicateKey::Ignore,
             api::OnDuplicateKeyRecord => global::OnDuplicateKey::Record,
@@ -160,43 +192,35 @@ impl WriteIngestBackend for GlobalSortWriteIngestBackend {
             _ => anyhow::bail!("unknown duplicate-key mode"),
         };
         let engine = global::engine::NewExternalEngine(
-            Arc::new(ObjectStore(self.store.lock().unwrap().clone())),
-            request.DataFiles.clone(),
-            request.StatFiles.clone(),
-            request.StartKey.clone(),
-            request.EndKey.clone(),
-            request.JobKeys.clone(),
-            request.SplitKeys.clone(),
-            self.concurrency as i32,
+            global::engine::EngineConfig {
+                ExtStore: Arc::new(ObjectStore(self.store.lock().unwrap().clone())),
+                DataFiles: request.DataFiles.clone(),
+                StatFiles: request.StatFiles.clone(),
+                StartKey: request.StartKey.clone(),
+                EndKey: request.EndKey.clone(),
+                JobKeys: request.JobKeys.clone(),
+                SplitKeys: request.SplitKeys.clone(),
+                TotalFileSize: request.TotalFileSize,
+                TotalKVCount: request.TotalKVCount,
+                CheckHotspot: false,
+                MemCapacity: request.MemCapacity,
+                OnDup: on_dup,
+                FilePrefix: request.FilePrefix.clone(),
+            },
+            concurrency as i32,
             request.TS,
-            request.TotalFileSize,
-            request.TotalKVCount,
-            false,
-            request.MemCapacity,
-            on_dup,
-            request.FilePrefix.clone(),
         )?;
-        let mut engines = self.engines.lock().unwrap();
-        if engines.contains_key(&request.SubtaskID) {
-            anyhow::bail!("external engine {} already exists", request.SubtaskID);
-        }
-        engines.insert(
-            request.SubtaskID,
-            Arc::new(global::engine::ExternalEngineAdapter::new(
-                engine,
-                Default::default(),
-            )),
-        );
-        Ok(())
+        Ok(Box::new(NativeWriteIngestEngine(Arc::new(
+            global::engine::ExternalEngineAdapter::new(engine, Default::default()),
+        ))))
     }
-    fn ImportEngine(&self, id: i64, split_size: i64, split_keys: i64) -> anyhow::Result<()> {
-        let engine = self
-            .engines
-            .lock()
-            .unwrap()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("external engine {id} is missing"))?;
+    fn IngestExternalEngine(
+        &self,
+        owned: &dyn WriteIngestEngine,
+        split_size: i64,
+        split_keys: i64,
+    ) -> anyhow::Result<()> {
+        let engine = owned.Source();
         let transport = self.transport.clone();
         let generate: local::import_pipeline::JobGenerator =
             Arc::new(move |token, data, ranges| {
@@ -271,41 +295,19 @@ impl WriteIngestBackend for GlobalSortWriteIngestBackend {
         let (bytes, count) = local::import_pipeline::do_import(
             &self.token,
             engine.clone(),
-            self.concurrency,
+            owned.WorkerConcurrency(),
             generate,
             workers,
             self.import_options.clone(),
         )?;
-        if (bytes, count) != engine.ImportedStatistics() || count != engine.GetTotalLoadedKVsCount()
+        if (bytes, count) != engine.ImportedStatistics() || count != owned.GetTotalLoadedKVsCount()
         {
             anyhow::bail!("external ingest statistics differ from loaded data");
         }
         Ok(())
     }
-    fn GetExternalEngineConflictInfo(&self, id: i64) -> api::ConflictInfo {
-        self.engines
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|engine| engine.ConflictInfo())
-            .unwrap_or_default()
-    }
-    fn CleanupEngine(&self, id: i64) -> anyhow::Result<()> {
-        if let Some(engine) = self.engines.lock().unwrap().remove(&id) {
-            let mut engine = Arc::try_unwrap(engine)
-                .map_err(|_| anyhow::anyhow!("external engine {id} is still in use"))?;
-            engine
-                .Close()
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        }
-        Ok(())
-    }
     fn Close(&self) {
         self.token.cancel();
-        let ids: Vec<_> = self.engines.lock().unwrap().keys().copied().collect();
-        for id in ids {
-            let _ = self.CleanupEngine(id);
-        }
         self.transport.Close();
     }
 }
@@ -326,16 +328,16 @@ impl ImportStepHost for GlobalSortImportHost {
         &self,
         task: &astersql_dxf_framework_proto::Task,
         _: &crate::TaskMeta,
-        _: Arc<dyn astersql_kv::Storage + Send + Sync>,
+        store: Arc<dyn astersql_kv::Storage + Send + Sync>,
     ) -> Result<Arc<dyn WriteIngestBackend>, astersql_errors::SharedError> {
-        Ok(Arc::new(
-            GlobalSortWriteIngestBackend::new(
-                self.store.clone(),
-                self.transport.clone(),
-                task.GetRuntimeSlots() as usize,
-            )
-            .with_import_options(self.import_options.clone()),
-        ))
+        let mut backend = GlobalSortWriteIngestBackend::new(
+            self.store.clone(),
+            self.transport.clone(),
+            task.GetRuntimeSlots() as usize,
+        )
+        .with_import_options(self.import_options.clone());
+        backend.version_store = Some(store);
+        Ok(Arc::new(backend))
     }
     fn NewStepExecutor(
         &self,

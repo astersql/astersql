@@ -39,21 +39,23 @@ fn kv(key: &[u8], value: &[u8]) -> KvPair {
 fn loaded_batch_dedup_transfers_payload_without_a_second_allocation() {
     let store = Arc::new(MemoryStorage::default());
     let mut engine = NewExternalEngine(
-        store,
-        vec![],
-        vec![],
-        b"a".to_vec(),
-        b"z".to_vec(),
-        vec![b"a".to_vec(), b"z".to_vec()],
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: vec![],
+            StatFiles: vec![],
+            StartKey: b"a".to_vec(),
+            EndKey: b"z".to_vec(),
+            JobKeys: vec![b"a".to_vec(), b"z".to_vec()],
+            SplitKeys: vec![],
+            TotalFileSize: 0,
+            TotalKVCount: 0,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Record,
+            FilePrefix: "dedup-ownership".into(),
+        },
         1,
         10,
-        0,
-        0,
-        false,
-        1024,
-        OnDuplicateKey::Record,
-        "dedup-ownership".into(),
     )
     .unwrap();
     engine.loaded.kvs = vec![kv(b"a", b"first"), kv(b"a", b"second"), kv(b"b", b"unique")];
@@ -248,21 +250,23 @@ fn dup_engine(
     on_dup: OnDuplicateKey,
 ) -> crate::engine::Engine {
     NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![5],
-        vec![vec![1], vec![2], vec![3], vec![4], vec![5]],
-        vec![vec![1], vec![3], vec![5]],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![5],
+            JobKeys: vec![vec![1], vec![2], vec![3], vec![4], vec![5]],
+            SplitKeys: vec![vec![1], vec![3], vec![5]],
+            TotalFileSize: 456,
+            TotalKVCount: 789,
+            CheckHotspot: true,
+            MemCapacity: 16 * 1024 * 1024 * 1024,
+            OnDup: on_dup,
+            FilePrefix: "/".to_owned(),
+        },
         10,
         123,
-        456,
-        789,
-        true,
-        16 * 1024 * 1024 * 1024,
-        on_dup,
-        "/".to_owned(),
     )
     .expect("NewExternalEngine should succeed")
 }
@@ -443,21 +447,23 @@ fn test_load_ingest_data_multi_batch() {
     let (data_files, stat_files) = write_contents(store.as_ref(), &contents);
 
     let mut engine = NewExternalEngine(
-        Arc::clone(&store),
-        data_files,
-        stat_files,
-        vec![1],
-        vec![9],
-        vec![vec![1], vec![3], vec![5], vec![7], vec![9]],
-        vec![vec![1], vec![5], vec![9]],
+        crate::engine::EngineConfig {
+            ExtStore: Arc::clone(&store),
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![9],
+            JobKeys: vec![vec![1], vec![3], vec![5], vec![7], vec![9]],
+            SplitKeys: vec![vec![1], vec![5], vec![9]],
+            TotalFileSize: 456,
+            TotalKVCount: 8,
+            CheckHotspot: true,
+            MemCapacity: 16 * 1024 * 1024 * 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "/".to_owned(),
+        },
         2,
         123,
-        456,
-        8,
-        true,
-        16 * 1024 * 1024 * 1024,
-        OnDuplicateKey::Error,
-        "/".to_owned(),
     )
     .expect("NewExternalEngine should succeed");
 
@@ -506,21 +512,23 @@ impl WorkerPoolTuner for DummyWorker {
 fn test_update_resource_and_worker_pool() {
     let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
     let mut engine = NewExternalEngine(
-        store,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: Vec::new(),
+            StatFiles: Vec::new(),
+            StartKey: Vec::new(),
+            EndKey: Vec::new(),
+            JobKeys: Vec::new(),
+            SplitKeys: Vec::new(),
+            TotalFileSize: 0,
+            TotalKVCount: 0,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: String::new(),
+        },
         4,
         0,
-        0,
-        0,
-        false,
-        1024,
-        OnDuplicateKey::Error,
-        String::new(),
     )
     .expect("NewExternalEngine should succeed");
     assert_eq!("external", engine.ID());
@@ -564,21 +572,23 @@ fn test_wait_ingest_data_released() {
     let contents = vec![vec![kv(&[1], b"first"), kv(&[2], b"second")]];
     let (data_files, stat_files) = write_contents(store.as_ref(), &contents);
     let mut engine = NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![3],
-        vec![vec![1], vec![3]],
-        vec![vec![1], vec![3]],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![3],
+            JobKeys: vec![vec![1], vec![3]],
+            SplitKeys: vec![vec![1], vec![3]],
+            TotalFileSize: 2,
+            TotalKVCount: 2,
+            CheckHotspot: true,
+            MemCapacity: 4 * 1024 * 1024,
+            OnDup: OnDuplicateKey::Ignore,
+            FilePrefix: "/".to_owned(),
+        },
         1,
         123,
-        2,
-        2,
-        true,
-        4 * 1024 * 1024,
-        OnDuplicateKey::Ignore,
-        "/".to_owned(),
     )
     .expect("NewExternalEngine should succeed");
 
@@ -600,21 +610,23 @@ fn test_wait_ingest_data_released() {
     let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
     let (data_files, stat_files) = write_contents(store.as_ref(), &contents);
     let mut engine = NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![3],
-        vec![vec![1], vec![3]],
-        vec![vec![1], vec![3]],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![3],
+            JobKeys: vec![vec![1], vec![3]],
+            SplitKeys: vec![vec![1], vec![3]],
+            TotalFileSize: 2,
+            TotalKVCount: 2,
+            CheckHotspot: true,
+            MemCapacity: 4 * 1024 * 1024,
+            OnDup: OnDuplicateKey::Ignore,
+            FilePrefix: "/".to_owned(),
+        },
         1,
         123,
-        2,
-        2,
-        true,
-        4 * 1024 * 1024,
-        OnDuplicateKey::Ignore,
-        "/".to_owned(),
     )
     .expect("NewExternalEngine should succeed");
     let batches = engine
@@ -669,21 +681,23 @@ fn external_engine_reads_bounded_streams_without_whole_objects() {
     let pairs = (1u8..=4).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
     store.write("data", crate::encode_kvs(&pairs)).unwrap();
     let mut engine = NewExternalEngine(
-        store,
-        vec!["data".into()],
-        vec!["stat".into()],
-        vec![0],
-        vec![5],
-        (0u8..=5).map(|key| vec![key]).collect(),
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: vec!["data".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: vec![0],
+            EndKey: vec![5],
+            JobKeys: (0u8..=5).map(|key| vec![key]).collect(),
+            SplitKeys: vec![],
+            TotalFileSize: 8,
+            TotalKVCount: 4,
+            CheckHotspot: false,
+            MemCapacity: 100,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "out".into(),
+        },
         1,
         123,
-        8,
-        4,
-        false,
-        100,
-        OnDuplicateKey::Error,
-        "out".into(),
     )
     .unwrap();
     let mut result = Vec::new();
@@ -704,21 +718,23 @@ fn external_engine_live_resource_handle_changes_later_loaded_ranges() {
     let pairs = (1u8..=6).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
     store.write("live", encode_kvs(&pairs)).unwrap();
     let mut engine = NewExternalEngine(
-        store,
-        vec!["live".into()],
-        vec!["stat".into()],
-        vec![1],
-        vec![7],
-        (1u8..=7).map(|key| vec![key]).collect(),
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: vec!["live".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: vec![1],
+            EndKey: vec![7],
+            JobKeys: (1u8..=7).map(|key| vec![key]).collect(),
+            SplitKeys: vec![],
+            TotalFileSize: 12,
+            TotalKVCount: 6,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "live-out".into(),
+        },
         1,
         123,
-        12,
-        6,
-        false,
-        1024,
-        OnDuplicateKey::Error,
-        "live-out".into(),
     )
     .unwrap();
     let worker = Arc::new(DummyWorker {
@@ -768,21 +784,23 @@ fn external_engine_resource_change_waits_for_previous_ingest_release() {
     let pairs = (1u8..=4).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
     let (data_files, stat_files) = write_contents(store.as_ref(), &[pairs]);
     let mut engine = NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![5],
-        (1u8..=5).map(|key| vec![key]).collect(),
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![5],
+            JobKeys: (1u8..=5).map(|key| vec![key]).collect(),
+            SplitKeys: vec![],
+            TotalFileSize: 8,
+            TotalKVCount: 4,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "wait".into(),
+        },
         1,
         123,
-        8,
-        4,
-        false,
-        1024,
-        OnDuplicateKey::Error,
-        "wait".into(),
     )
     .unwrap();
     struct ReleaseAwareWorker {
@@ -856,21 +874,23 @@ fn external_engine_cancels_resource_wait_without_releasing_active_data() {
     let (data_files, stat_files) =
         write_contents(store.as_ref(), &[vec![kv(&[1], b"v"), kv(&[2], b"v")]]);
     let mut engine = NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![3],
-        vec![vec![1], vec![2], vec![3]],
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![3],
+            JobKeys: vec![vec![1], vec![2], vec![3]],
+            SplitKeys: vec![],
+            TotalFileSize: 4,
+            TotalKVCount: 2,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "cancel".into(),
+        },
         1,
         123,
-        4,
-        2,
-        false,
-        1024,
-        OnDuplicateKey::Error,
-        "cancel".into(),
     )
     .unwrap();
     engine.SetWorkerPool(Arc::new(DummyWorker {
@@ -948,21 +968,23 @@ fn external_engine_budget_includes_batches_held_by_downstream() {
     let pairs = (1u8..=3).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
     let (data_files, stat_files) = write_contents(store.as_ref(), &[pairs]);
     let mut engine = NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![4],
-        (1u8..=4).map(|key| vec![key]).collect(),
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![4],
+            JobKeys: (1u8..=4).map(|key| vec![key]).collect(),
+            SplitKeys: vec![],
+            TotalFileSize: 6,
+            TotalKVCount: 3,
+            CheckHotspot: false,
+            MemCapacity: 7,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "budget".into(),
+        },
         1,
         123,
-        6,
-        3,
-        false,
-        7,
-        OnDuplicateKey::Error,
-        "budget".into(),
     )
     .unwrap();
     assert_eq!(crate::engine::getEngineMemoryLimit(7), 3);
@@ -1001,21 +1023,23 @@ fn collecting_external_engine_reports_exhausted_budget_without_waiting_on_its_ow
     let (data_files, stat_files) =
         write_contents(store.as_ref(), &[vec![kv(&[1], &[1]), kv(&[2], &[2])]]);
     let mut engine = NewExternalEngine(
-        store,
-        data_files,
-        stat_files,
-        vec![1],
-        vec![3],
-        vec![vec![1], vec![2], vec![3]],
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store,
+            DataFiles: data_files,
+            StatFiles: stat_files,
+            StartKey: vec![1],
+            EndKey: vec![3],
+            JobKeys: vec![vec![1], vec![2], vec![3]],
+            SplitKeys: vec![],
+            TotalFileSize: 4,
+            TotalKVCount: 2,
+            CheckHotspot: false,
+            MemCapacity: 7,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "collect-budget".into(),
+        },
         1,
         123,
-        4,
-        2,
-        false,
-        7,
-        OnDuplicateKey::Error,
-        "collect-budget".into(),
     )
     .unwrap();
     assert!(matches!(
@@ -1092,21 +1116,23 @@ fn record_duplicate_uploads_stream_before_each_batch_is_handed_off() {
     ];
     store.write("data", encode_kvs(&pairs)).unwrap();
     let mut engine = NewExternalEngine(
-        store.clone(),
-        vec!["data".into()],
-        vec!["stat".into()],
-        vec![1],
-        vec![5],
-        vec![vec![1], vec![3], vec![5]],
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: store.clone(),
+            DataFiles: vec!["data".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: vec![1],
+            EndKey: vec![5],
+            JobKeys: vec![vec![1], vec![3], vec![5]],
+            SplitKeys: vec![],
+            TotalFileSize: 12,
+            TotalKVCount: 6,
+            CheckHotspot: false,
+            MemCapacity: 10_000,
+            OnDup: OnDuplicateKey::Record,
+            FilePrefix: "record".into(),
+        },
         1,
         123,
-        12,
-        6,
-        false,
-        10_000,
-        OnDuplicateKey::Record,
-        "record".into(),
     )
     .unwrap();
     let mut batches = 0;
@@ -1149,21 +1175,23 @@ fn record_duplicate_uploads_stream_before_each_batch_is_handed_off() {
 fn release_completion_waits_for_buffer_cleanup_and_callback() {
     use std::sync::mpsc;
     let mut engine = NewExternalEngine(
-        Arc::new(MemoryStorage::default()),
-        vec![],
-        vec![],
-        vec![1],
-        vec![3],
-        vec![vec![1], vec![3]],
-        vec![],
+        crate::engine::EngineConfig {
+            ExtStore: Arc::new(MemoryStorage::default()),
+            DataFiles: vec![],
+            StatFiles: vec![],
+            StartKey: vec![1],
+            EndKey: vec![3],
+            JobKeys: vec![vec![1], vec![3]],
+            SplitKeys: vec![],
+            TotalFileSize: 2,
+            TotalKVCount: 1,
+            CheckHotspot: false,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "release-order".into(),
+        },
         1,
         123,
-        2,
-        1,
-        false,
-        1024,
-        OnDuplicateKey::Error,
-        "release-order".into(),
     )
     .unwrap();
     let (callback_started, started) = mpsc::channel();
@@ -1267,21 +1295,23 @@ fn external_engine_resizes_down_and_up_and_updates_after_loading_finishes() {
         let pairs = (1u8..=6).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
         store.write("resize", encode_kvs(&pairs)).unwrap();
         let mut engine = NewExternalEngine(
-            store,
-            vec!["resize".into()],
-            vec!["stat".into()],
-            vec![1],
-            vec![7],
-            (1u8..=7).map(|key| vec![key]).collect(),
-            vec![],
+            crate::engine::EngineConfig {
+                ExtStore: store,
+                DataFiles: vec!["resize".into()],
+                StatFiles: vec!["stat".into()],
+                StartKey: vec![1],
+                EndKey: vec![7],
+                JobKeys: (1u8..=7).map(|key| vec![key]).collect(),
+                SplitKeys: vec![],
+                TotalFileSize: 12,
+                TotalKVCount: 6,
+                CheckHotspot: false,
+                MemCapacity: 1024,
+                OnDup: OnDuplicateKey::Error,
+                FilePrefix: "resize-out".into(),
+            },
             4,
             123,
-            12,
-            6,
-            false,
-            1024,
-            OnDuplicateKey::Error,
-            "resize-out".into(),
         )
         .unwrap();
         let worker = Arc::new(DummyWorker {
@@ -1327,4 +1357,166 @@ fn external_engine_resizes_down_and_up_and_updates_after_loading_finishes() {
         assert_eq!(controls.WorkerConcurrency(), 16);
         assert_eq!(worker.tuned.load(Ordering::SeqCst), new_concurrency);
     }
+}
+
+#[test]
+fn port_373679dd4d_config_transfers_every_field_and_close_is_idempotent() {
+    let store = Arc::new(MemoryStorage::default());
+    let mut engine = NewExternalEngine(
+        crate::engine::EngineConfig {
+            ExtStore: store.clone(),
+            DataFiles: vec!["data".into()],
+            StatFiles: vec!["stat".into()],
+            StartKey: vec![1],
+            EndKey: vec![9],
+            JobKeys: vec![vec![1], vec![5], vec![9]],
+            SplitKeys: vec![vec![1], vec![9]],
+            TotalFileSize: 456,
+            TotalKVCount: 789,
+            CheckHotspot: true,
+            MemCapacity: 1024,
+            OnDup: OnDuplicateKey::Record,
+            FilePrefix: "task/subtask".into(),
+        },
+        2,
+        123,
+    )
+    .unwrap();
+    assert_eq!(engine.data_files, ["data"]);
+    assert_eq!(engine.stats_files, ["stat"]);
+    assert_eq!(engine.GetKeyRange(), (vec![1], vec![9]));
+    assert_eq!(engine.job_keys, [vec![1], vec![5], vec![9]]);
+    assert_eq!(engine.GetRegionSplitKeys(), [vec![1], vec![9]]);
+    assert_eq!(engine.KVStatistics(), (456, 789));
+    assert!(engine.check_hotspot);
+    assert_eq!(engine.resource.WorkerConcurrency(), 2);
+    assert_eq!(engine.timestamp, 123);
+    assert_eq!(engine.GetOnDup(), OnDuplicateKey::Record);
+    assert_eq!(engine.file_prefix, "task/subtask");
+    assert_eq!(
+        engine.resource.memory_limit.load(Ordering::Acquire),
+        crate::engine::getEngineMemoryLimit(1024)
+    );
+    engine.Close().unwrap();
+    engine.Close().unwrap();
+    assert!(matches!(
+        engine.LoadIngestData(&Default::default()),
+        Err(Error::Closed)
+    ));
+}
+
+#[test]
+fn port_373679dd4d_readers_close_before_waiting_for_downstream_release() {
+    use std::sync::atomic::AtomicUsize;
+    struct TrackingStore {
+        inner: MemoryStorage,
+        active: Arc<AtomicUsize>,
+        opened: Arc<AtomicUsize>,
+    }
+    struct Reader {
+        inner: std::io::Cursor<Vec<u8>>,
+        active: Arc<AtomicUsize>,
+    }
+    impl std::io::Read for Reader {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            std::io::Read::read(&mut self.inner, out)
+        }
+    }
+    impl Drop for Reader {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    impl Storage for TrackingStore {
+        fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+            self.inner.read(path)
+        }
+        fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+            self.inner.write(path, bytes)
+        }
+        fn list_prefix(&self, path: &str) -> crate::Result<Vec<String>> {
+            self.inner.list_prefix(path)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.inner.delete_files(paths)
+        }
+        fn file_size(&self, path: &str) -> crate::Result<u64> {
+            Ok(self.inner.read(path)?.len() as u64)
+        }
+        fn open(&self, path: &str) -> crate::Result<Box<dyn std::io::Read>> {
+            let bytes = self.inner.read(path)?;
+            self.active.fetch_add(1, Ordering::SeqCst);
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(Reader {
+                inner: std::io::Cursor::new(bytes),
+                active: self.active.clone(),
+            }))
+        }
+    }
+    let store = Arc::new(TrackingStore {
+        inner: Default::default(),
+        active: Default::default(),
+        opened: Default::default(),
+    });
+    let (files, stats) = write_contents(store.as_ref(), &[vec![kv(&[1], &[11]), kv(&[2], &[12])]]);
+    let mut engine = NewExternalEngine(
+        crate::engine::EngineConfig {
+            ExtStore: store.clone(),
+            DataFiles: files,
+            StatFiles: stats,
+            StartKey: vec![1],
+            EndKey: vec![3],
+            JobKeys: vec![vec![1], vec![2], vec![3]],
+            SplitKeys: vec![],
+            TotalFileSize: 4,
+            TotalKVCount: 2,
+            CheckHotspot: true,
+            MemCapacity: 7,
+            OnDup: OnDuplicateKey::Error,
+            FilePrefix: "/".into(),
+        },
+        1,
+        123,
+    )
+    .unwrap();
+    let mut release = None;
+    let mut seen = Vec::new();
+    let mut batch_count = 0;
+    engine
+        .LoadIngestDataWith(&Default::default(), |batch| {
+            batch_count += 1;
+            seen.extend(get_all_data(&batch.data));
+            if batch_count == 1 {
+                batch.data.IncRef();
+                let store = store.clone();
+                let before = store.opened.load(Ordering::SeqCst);
+                release = Some(std::thread::spawn(move || {
+                    let end = std::time::Instant::now() + Duration::from_secs(3);
+                    while store.opened.load(Ordering::SeqCst) <= before {
+                        assert!(
+                            std::time::Instant::now() < end,
+                            "loader did not retry its next range"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    while store.active.load(Ordering::SeqCst) != 0 {
+                        assert!(
+                            std::time::Instant::now() < end,
+                            "readers retained while waiting for downstream"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    batch.data.DecRef();
+                }));
+            } else {
+                batch.data.release();
+            }
+            Ok(())
+        })
+        .unwrap();
+    release.unwrap().join().unwrap();
+    assert_eq!(seen, vec![kv(&[1], &[11]), kv(&[2], &[12])]);
+    assert_eq!(batch_count, 2);
+    assert_eq!(store.active.load(Ordering::SeqCst), 0);
+    engine.Close().unwrap();
 }
