@@ -26,7 +26,7 @@
 - `SubtaskSummary { RowCount }`：供实时检查点使用的最小摘要；`StepExecutor::RealtimeSummaryJSON` 另可返回包含更多计数器的序列化摘要。
 - `TaskTable: Send + Sync`：持久化边界。唯一无默认实现的必需方法是 `GetTaskByID`；多数方法提供空集合、`None`、空字符串或成功 no-op，`UpdateSubtaskSummaryJSON` 则默认返回“不支持完整摘要”错误，`GetTaskBaseByID` 默认从完整任务投影，`WithNewSession` 默认直接执行回调。
 - `TaskExecutor: Send + Sync`：要求实现 `Init`、`Run`、`GetTaskBase`、两级取消、`Close` 和 `IsRetryableError`。所有方法均无默认实现。
-- `StepExecutor: Send + Sync`：`Init`、`RunSubtask`、摘要、重置和 `Cleanup` 默认无行为；动态 `TaskMetaModified` 与 `ResourceModified` 默认返回 `"not implemented"`，防止静默接受运行时修改。
+- `StepExecutor: Send + Sync`：`Init`、`RunSubtask`、摘要、重置和 `Cleanup` 默认无行为；动态 `TaskMetaModified` 与 `ResourceModified` 默认返回 `"not implemented"`，防止静默接受运行时修改；`SetResource` 是上述回调与 slot 交换均成功后的资源快照发布钩子，默认为 no-op。
 - `Extension: Send + Sync`：要求具体任务实现 `IsIdempotent`、`GetStepExecutor`、`IsRetryableError`，均无默认行为。
 - `BaseStepExecutor`：零字段类型，只继承 `StepExecutor` 默认实现。
 
@@ -40,7 +40,7 @@
 4. `BaseTaskExecutor::runSubtask` 对恢复出的 `Running` 子任务先询问 `Extension::IsIdempotent`；非幂等任务直接失败。`Pending` 子任务先经 `TaskTable::StartSubtask` 取得所有权，再把继承步骤上下文的子上下文传给 `StepExecutor::RunSubtask`。
 5. 执行期间会并行监测负载均衡、任务 Meta/资源变更和实时摘要。成功后先取消子上下文、等待监测线程退出，再写完整摘要并调用 `FinishSubtask`；错误则由可重试判断、取消状态和持久化方法决定回到待执行、标记 `Canceled` 或 `Failed`。
 6. 步骤变化或退出时，`cleanStepExecutor` 先取消步骤上下文，再调用 `StepExecutor::Cleanup` 并释放 trait object。`CancelRunningSubtask` 只取消步骤上下文且附带取消原因；`Cancel` 取消整个任务上下文；`Close` 在任务取消后再清理步骤执行器。
-7. `RequiredSlots` 变化时，`NodeResource::GetStepResource` 生成新配额并传给 `ResourceModified`。缩容是先通知业务、再交换 slot；扩容是先取得 slot、再通知业务，通知失败则回滚 slot。
+7. `RequiredSlots` 变化时，`NodeResource::GetStepResource` 生成新配额并传给 `ResourceModified`。缩容是先通知业务、再交换 slot；扩容是先取得 slot、再通知业务，通知失败则回滚 slot。两个成功路径最后调用 `SetResource`，失败路径不发布新快照。
 
 ## 数据与状态
 
@@ -84,7 +84,7 @@ RustCodeGraph 将目标文件识别为 96 个符号，并报告被 `manager.rs`�
 
 资源生命周期顺序是重要契约：步骤执行器通过 `Extension` 懒创建并 `Init`，subtask 的监测线程在 `RunSubtask` 前启动，结束时先取消其上下文并 join，步骤结束再 `Cleanup`。`TaskExecutor::Cancel` 与 `Close` 被刻意拆开：前者只发停止信号，后者负责清理；实现者应保持 `Close` 可重复且不能让长期工作绑定到传给 `Init` 的 manager 上下文。
 
-slot 和内存配额只是逻辑预算，不在本文件中申请线程、内存或磁盘。`GetStepResource` 的结果由 `task_executor.rs::tryModifyTaskRequiredSlots` 传给业务执行器；真正释放/扩张资源仍是具体 `StepExecutor::ResourceModified` 的责任。
+slot 和内存配额只是逻辑预算，不在本文件中申请线程、内存或磁盘。`GetStepResource` 的结果由 `task_executor.rs::tryModifyTaskRequiredSlots` 传给业务执行器；真正释放/扩张资源仍是具体 `StepExecutor::ResourceModified` 的责任。成功后的 `SetResource` 只发布已提交快照，不会在回调失败或 slot 回滚时越过边界。
 
 ## 与 Go 版本的对应关系
 

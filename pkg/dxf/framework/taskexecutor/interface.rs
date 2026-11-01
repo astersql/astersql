@@ -451,6 +451,8 @@ pub trait StepExecutor: Send + Sync {
     fn ResourceModified(&self, _: &Context, _: &StepResource) -> Result<()> {
         Err(ExecutorError("not implemented".into()))
     }
+    /// 在资源变更回调和 slot 交换都成功后，发布框架持有的最新资源快照。
+    fn SetResource(&self, _: &StepResource) {}
 }
 /// 任务类型扩展：幂等性、步骤执行器工厂、可重试错误判断。
 pub trait Extension: Send + Sync {

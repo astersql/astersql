@@ -194,6 +194,7 @@ struct FakeStepExecutor {
     cleanup_calls: AtomicUsize,
     resource_modified_calls: Mutex<Vec<StepResource>>,
     resource_modified_result: Mutex<VecDeque<Result<()>>>,
+    resource: Mutex<StepResource>,
     task_meta_modified_calls: Mutex<Vec<Vec<u8>>>,
     task_meta_modified_result: Mutex<VecDeque<Result<()>>>,
 }
@@ -231,6 +232,9 @@ impl StepExecutor for FakeStepExecutor {
             .unwrap()
             .pop_front()
             .unwrap_or(Ok(()))
+    }
+    fn SetResource(&self, resource: &StepResource) {
+        *self.resource.lock().unwrap() = resource.clone();
     }
     fn TaskMetaModified(&self, _: &Context, meta: &[u8]) -> Result<()> {
         self.task_meta_modified_calls
@@ -315,6 +319,8 @@ fn new_env() -> Env {
     let table = Arc::new(FakeTaskTable::default());
     let ext = Arc::new(FakeExtension::default());
     let step = Arc::new(FakeStepExecutor::default());
+    *step.resource.lock().unwrap() =
+        crate::NodeResource::default().GetStepResource(&task1().TaskBase);
     *ext.step_executor.lock().unwrap() = Some(Ok(step.clone() as Arc<dyn StepExecutor>));
     let param = NewParamForTest(
         table.clone(),
@@ -971,6 +977,70 @@ fn test_required_slots_become_larger_notify_fails_reverts_exchange() {
         .unwrap();
     assert_eq!(10, e.executor.GetTaskBase().RequiredSlots);
     assert_eq!(2, e.executor.Param.slotMgr.availableSlots());
+}
+
+#[test]
+fn port_27a119499c_successful_slot_changes_publish_step_resource() {
+    for required_slots in [4, 12] {
+        let e = new_env();
+        e.executor.SetStepExecutorForTest(e.step.clone());
+        e.executor.Param.slotMgr.alloc(&e.executor.GetTaskBase());
+        if required_slots > 10 {
+            e.executor.Param.slotMgr.alloc(&TaskBase {
+                ID: 2,
+                RequiredSlots: 4,
+                ..Default::default()
+            });
+        }
+        let mut latest = task1();
+        latest.TaskBase.RequiredSlots = required_slots;
+        e.table.push_task(latest.clone());
+
+        e.executor
+            .detectAndHandleParamModify(&Context::Background())
+            .unwrap();
+
+        assert_eq!(
+            e.executor.Param.nodeRc.GetStepResource(&latest.TaskBase),
+            *e.step.resource.lock().unwrap()
+        );
+    }
+}
+
+#[test]
+fn port_27a119499c_failed_slot_changes_do_not_publish_step_resource() {
+    let scenarios = [(4, true), (14, false), (12, true)];
+    for (required_slots, notify_fails) in scenarios {
+        let e = new_env();
+        e.executor.SetStepExecutorForTest(e.step.clone());
+        e.executor.Param.slotMgr.alloc(&e.executor.GetTaskBase());
+        if required_slots > 10 {
+            e.executor.Param.slotMgr.alloc(&TaskBase {
+                ID: 2,
+                RequiredSlots: 4,
+                ..Default::default()
+            });
+        }
+        if notify_fails {
+            e.step
+                .resource_modified_result
+                .lock()
+                .unwrap()
+                .push_back(Err(ExecutorError("some error".into())));
+        }
+        let mut latest = task1();
+        latest.TaskBase.RequiredSlots = required_slots;
+        e.table.push_task(latest);
+
+        e.executor
+            .detectAndHandleParamModify(&Context::Background())
+            .unwrap();
+
+        assert_eq!(
+            e.executor.Param.nodeRc.GetStepResource(&task1().TaskBase),
+            *e.step.resource.lock().unwrap()
+        );
+    }
 }
 
 #[test]

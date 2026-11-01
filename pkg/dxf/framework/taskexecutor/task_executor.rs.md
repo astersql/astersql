@@ -29,7 +29,7 @@
 - `Run`/`runLoop`：公开 panic/清理边界与内部主循环。`Run` 捕获 Rust panic，调用 `failOneSubtask` 后统一 `cleanStepExecutor`。
 - `createStepExecutor`/`cleanStepExecutor`：按当前 step 管理 `StepExecutor` 生命周期。创建失败或不可重试的 `Init` 失败会失败一个 subtask；清理先取消 step context，再调用 `Cleanup`，其错误不传播。
 - `runSubtask`：单个 subtask 的状态机和监控线程编排入口。
-- `detectAndHandleParamModify`/`tryModifyTaskRequiredSlots`：把持久化任务参数变化应用到正在运行的步骤，并只在成功后更新本地快照。
+- `detectAndHandleParamModify`/`tryModifyTaskRequiredSlots`：把持久化任务参数变化应用到正在运行的步骤，并只在成功后更新本地快照。`requiredSlotsModifyApplied` 在同一成功收尾点先向 `StepExecutor::SetResource` 发布新资源，再写入 `RequiredSlots`。
 - `checkBalanceSubtask`：检查当前节点上的 `Running` subtask 集合；当前 subtask 被调度走时取消本地执行，多余的幂等 subtask 回退到 `Pending`，非幂等者标记 `Failed`。
 - `updateSubtaskStateAndErrorImpl`、`startSubtask`、`finishSubtask`、`failOneSubtask`：所有持久化状态转换的集中封装，并通过 `retry` 最多尝试三次。
 - `impl TaskExecutor for BaseTaskExecutor`：把固有方法适配为 manager 使用的 trait object API。
@@ -63,7 +63,7 @@
 
 `stepExec`、`stepExecStep` 和 `stepCtx` 是一个逻辑整体：步骤执行器成功 `Init` 后才写入三者；步骤变化、通知失败或 `Run` 退出时统一清理。`stepCtx` 是取消正在运行步骤的控制点，`CancelRunningSubtask` 在其上写入 `ErrCancelSubtask` cause；`Cancel` 则取消根 `ctx`。
 
-slot 修改有方向相关的不变量。缩容时先通知 `StepExecutor::ResourceModified`，成功后才交换 slot；扩容时必须先抢到 slot，再通知步骤执行器，通知失败会交换回旧 `TaskBase`。只有整个路径成功才更新本地 `RequiredSlots`。
+slot 修改有方向相关的不变量。缩容时先通知 `StepExecutor::ResourceModified`，成功后才交换 slot；扩容时必须先抢到 slot，再通知步骤执行器，通知失败会交换回旧 `TaskBase`。只有整个路径成功，才通过 `SetResource` 发布新 `StepResource` 并更新本地 `RequiredSlots`；回调失败、slot 不足和扩容回滚都保留旧资源快照。
 
 `currSubtaskID: AtomicI64` 使用 Acquire/Release 供执行线程和均衡线程共享。轮询间隔使用进程级原子值，测试修改会影响同一进程中的所有执行器，因此测试文件用互斥夹具串行保护并在结束时恢复旧值。
 
@@ -113,7 +113,7 @@ Cargo 中目前唯一正常启用的外部依赖是 `astersql-lightning-log`；�
 - Go 的 SQL 状态更新使用 scheduler 级长退避（可达分钟级），Rust `retry` 只有三次短退避。
 - Go 的实时摘要只对具体 `storage.TaskManager` 启用，并在监控退出前做一次长重试的最终更新；Rust 只以 `StepExecutor::RealtimeSummary().is_some()` 判断，约 100ms best effort 更新，没有退出前最终重试。
 - Go `Close` 主要取消执行并清理任务指标；Rust `Close` 还直接调用 `cleanStepExecutor`。Rust runtime 的释放仍由 manager lease 而非 `TaskRuntime::Release` 直接触发。
-- Go `createStepExecutor` 注入 framework info/resource 并建立带 cause 的 runtime cancel；Rust 通过 `Context::Child` 和 `stepCtx` 表达取消，未实现同等的 metrics/checkpoint 注入层。
+- Go `createStepExecutor` 注入完整 framework info 并建立带 cause 的 runtime cancel；Rust 已提供成功 slot 变更后的资源发布钩子，但 `Context::Child`/`stepCtx` 与现有执行链仍未实现 Go 完整的 metrics/checkpoint 注入层。
 - Go 成功执行一个 subtask 后会跳过一次轮询等待；Rust 下一轮直接从任务表刷新，但没有单独的 `skipBackoff` 状态，因为其等待只发生在“没有 subtask”的分支。
 
 ## 扩展指南

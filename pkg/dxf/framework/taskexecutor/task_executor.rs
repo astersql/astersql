@@ -524,35 +524,35 @@ impl BaseTaskExecutor {
         }
         // 缩容路径。
         if latest.TaskBase.RequiredSlots < old.TaskBase.RequiredSlots {
+            let new_resource = self.Param.nodeRc.GetStepResource(&latest.TaskBase);
             if let Some(step) = self.stepExec.lock().expect("step lock poisoned").as_ref() {
-                if step
-                    .ResourceModified(ctx, &self.Param.nodeRc.GetStepResource(&latest.TaskBase))
-                    .is_err()
-                {
+                if step.ResourceModified(ctx, &new_resource).is_err() {
                     return;
                 }
             }
             if self.Param.slotMgr.exchange(&latest.TaskBase) {
-                self.requiredSlotsModifyApplied(latest.TaskBase.RequiredSlots)
+                self.requiredSlotsModifyApplied(latest.TaskBase.RequiredSlots, &new_resource)
             }
         } else if self.Param.slotMgr.exchange(&latest.TaskBase) {
+            let new_resource = self.Param.nodeRc.GetStepResource(&latest.TaskBase);
             let result = self
                 .stepExec
                 .lock()
                 .expect("step lock poisoned")
                 .as_ref()
-                .map(|s| {
-                    s.ResourceModified(ctx, &self.Param.nodeRc.GetStepResource(&latest.TaskBase))
-                });
+                .map(|s| s.ResourceModified(ctx, &new_resource));
             if result.is_some_and(|r| r.is_err()) {
                 let _ = self.Param.slotMgr.exchange(&old.TaskBase);
             } else {
-                self.requiredSlotsModifyApplied(latest.TaskBase.RequiredSlots)
+                self.requiredSlotsModifyApplied(latest.TaskBase.RequiredSlots, &new_resource)
             }
         }
     }
-    /// 将新的 RequiredSlots 写回本地任务快照。
-    pub fn requiredSlotsModifyApplied(&self, new_slots: i32) {
+    /// 将新的步骤资源与 RequiredSlots 一起发布。
+    pub fn requiredSlotsModifyApplied(&self, new_slots: i32, new_resource: &StepResource) {
+        if let Some(step) = self.stepExec.lock().expect("step lock poisoned").as_ref() {
+            step.SetResource(new_resource);
+        }
         self.task
             .write()
             .expect("task lock poisoned")
