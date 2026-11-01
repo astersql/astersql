@@ -1442,7 +1442,16 @@ impl Extended {
         } else if let Some(catalog) = &catalog {
             catalog.metadata()
         } else {
-            let analysis_sql = analysis_sql.as_deref().unwrap_or(&sql);
+            // Supported conflict statements must retain their action in the
+            // engine prepared handle; stripped SQL is description-only.
+            let analysis_sql = if postgresql_conflict
+                .as_ref()
+                .is_some_and(crate::pg_result::column_conflict_do_nothing)
+            {
+                sql.as_ref()
+            } else {
+                analysis_sql.as_deref().unwrap_or(&sql)
+            };
             context
                 .prepare_statement_with_parameter_types(
                     analysis_sql,
@@ -1984,7 +1993,11 @@ impl Extended {
                 if portal.stream.is_some() || portal.stream_failed {
                     return portal.stream_page(limit, context);
                 }
-                if portal.postgresql_conflict.is_some() {
+                if portal
+                    .postgresql_conflict
+                    .as_ref()
+                    .is_some_and(|clause| !crate::pg_result::column_conflict_do_nothing(clause))
+                {
                     return Err(error(
                         "0A000",
                         "PostgreSQL ON CONFLICT DO NOTHING is unsupported by the shared executor",

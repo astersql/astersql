@@ -2233,6 +2233,63 @@ impl ConcreteSession {
         let mut table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        // Infer only the supported column target from this table's real public
+        // unique indexes. Keep every other uniqueness check on the normal path.
+        let pg_arbiter = if let Some(clause) = &statement.PostgreSQLConflict {
+            if self.sql_dialect() != ast::SqlDialect::PostgreSQL
+                || clause.Action != ast::PostgreSQLConflictAction::DoNothing
+                || clause.Target != ast::PostgreSQLConflictTarget::Inference
+                || clause.Predicate.is_some()
+                || clause.Columns.is_empty()
+            {
+                return Err(SessionError::new(
+                    "unsupported PostgreSQL conflict target or action",
+                ));
+            }
+            let mut columns = clause
+                .Columns
+                .iter()
+                .map(|column| column.Name.L.clone())
+                .collect::<Vec<_>>();
+            columns.sort();
+            columns.dedup();
+            let mut primary = table
+                .Columns
+                .iter()
+                .filter(|column| astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag()))
+                .map(|column| column.Name.L.clone())
+                .collect::<Vec<_>>();
+            primary.sort();
+            let primary_matches = (table.PKIsHandle || table.IsCommonHandle)
+                && !primary.is_empty()
+                && primary == columns;
+            let mut arbiters = table.clone();
+            arbiters.Indices.retain(|index| {
+                let mut indexed = index
+                    .Columns
+                    .iter()
+                    .map(|column| column.Name.L.clone())
+                    .collect::<Vec<_>>();
+                indexed.sort();
+                index.Unique
+                    && index.State == astersql_meta_model::StatePublic
+                    && index.ConditionExprString.is_empty()
+                    && !index.MVIndex
+                    && index
+                        .Columns
+                        .iter()
+                        .all(|column| column.Length == astersql_parser_types::UnspecifiedLength)
+                    && indexed == columns
+            });
+            if !primary_matches && arbiters.Indices.is_empty() {
+                return Err(SessionError::new(
+                    "no unique index matching PostgreSQL ON CONFLICT target",
+                ));
+            }
+            Some((primary_matches, arbiters))
+        } else {
+            None
+        };
         let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             Some(PgCastTable::enter_table(&table))
         } else {
@@ -2319,12 +2376,13 @@ impl ConcreteSession {
                     || (!table.PKIsHandle && !table.IsCommonHandle))
                 && index.State == astersql_meta_model::StatePublic
         });
-        let requires_existing_rows = Self::relational_insert_requires_existing_rows(
-            plan.Replace,
-            plan.Ignore,
-            !plan.OnDuplicate.is_empty(),
-            has_secondary_unique_index,
-        );
+        let requires_existing_rows = pg_arbiter.is_some()
+            || Self::relational_insert_requires_existing_rows(
+                plan.Replace,
+                plan.Ignore,
+                !plan.OnDuplicate.is_empty(),
+                has_secondary_unique_index,
+            );
         let skip_committed_primary_key_check = Self::bulk_load_skips_committed_primary_key_check(
             std::env::var("ASTERSQL_BULK_LOAD_ASSUME_ABSENT_TABLE")
                 .ok()
@@ -3418,6 +3476,14 @@ impl ConcreteSession {
             };
             let existing = working_rows.contains_key(&key.0)
                 || (committed_exists && !replaced_unique_keys.contains(&key.0));
+            if let Some((primary, arbiters)) = &pg_arbiter {
+                if (*primary && existing)
+                    || Self::relational_unique_conflict(arbiters, &working_rows, &row, flags, None)?
+                        .is_some()
+                {
+                    continue;
+                }
+            }
             let conflict = if existing {
                 Some((
                     key.0.clone(),

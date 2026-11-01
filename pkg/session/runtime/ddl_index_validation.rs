@@ -40,6 +40,14 @@ fn index_column_length(
         return Ok(1);
     }
 
+    // PG text is unbounded: its MySQL Blob storage width is not an index
+    // declaration limit. The shared encoder checks the actual full key.
+    if column.FieldType.PostgreSQLTextOid() == Some(25)
+        && index_length == astersql_parser_types::UnspecifiedLength
+    {
+        return Ok(0);
+    }
+
     let length = if index_length != astersql_parser_types::UnspecifiedLength {
         index_length
     } else {

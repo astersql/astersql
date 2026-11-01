@@ -524,7 +524,7 @@ libpq 未暴露的 portal 原始字段沿用批次 9 的真实 TCP 回归证据�
 
 ## 2026-11-01 INSERT RETURNING
 
-普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT、DELETE USING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
+普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT 的无目标、命名约束、谓词目标及 DO UPDATE、DELETE USING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
 
 为原验收输入增加了仅 PG 的括号整数 DEFAULT 加减乘规则，`DEFAULT (40 + 2)` 保留为表达式元数据，在 INSERT 时复用共享求值器得到 42。MySQL 仍拒绝算术默认值，原字面量和函数默认值路径保持。没有新增默认函数、任意列引用或完整默认表达式子系统。
 
@@ -555,3 +555,7 @@ git diff --check
 ## DELETE RETURNING
 
 普通表 DELETE RETURNING 从共享删除路径实际选中的删除前行投影，不在删除后回查。支持列、星号、目标别名、输出别名与受限 int4 算术；零行保留固定描述及 DELETE 0 标签。投影在目标和级联写入前求值，错误不应用删除。DELETE USING 保留独立门禁。覆盖入口为 `pg_dml_test::pg10_03_behavior` 和共享层 `pg10_03_delete_rows_and_atomicity`；测试声明不替代实际运行结果。
+
+列目标 `ON CONFLICT (id) DO NOTHING` 已经由真实共享会话和 TCP 双连接验证：目标绑定真实公开唯一索引，跳过行不覆盖旧值，混合批次只计入实际插入行；有 RETURNING 时只返回新行，零行仍保留固定描述，无 RETURNING 时没有结果集。简单及扩展协议覆盖提交、回滚、非目标唯一冲突、非法目标和混合批次失败原子性，扩展执行保留原始冲突子句，支持已提供 OID 的参数和新 Bind 的 typed NULL。非目标唯一冲突仍返回 23505，显式失败事务须 ROLLBACK 后恢复。
+
+PG `text UNIQUE` 复用完整字符串索引，不截为前缀；建表不按 MySQL TEXT 声明最大宽度拒绝，写入时按配置的 `max-index-length` 检查完整实际编码键长度。该限制沿用 AsterSQL 配置，未宣称与 PostgreSQL B-tree 页内大小上限一致。MySQL TEXT 唯一索引的既有建表校验保持原行为。未验证真实 TiKV 并发竞争、持久重启或独立 PostgreSQL 客户端差分；这些由后续任务取证。

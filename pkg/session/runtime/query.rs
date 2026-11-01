@@ -8089,11 +8089,6 @@ impl ConcreteSession {
                 "PostgreSQL RETURNING requires an ordinary INSERT",
             ));
         }
-        if statement.PostgreSQLConflict.is_some() {
-            return Err(SessionError::new(
-                "PostgreSQL ON CONFLICT is unsupported by the shared executor",
-            ));
-        }
         self.validate_pg_boolean_insert(statement)?;
         let fields = self.insert_returning_fields(statement)?;
         let sources = self.relational_select_source_fields(&ast::SelectStmt {

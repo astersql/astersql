@@ -995,6 +995,22 @@ pub(super) fn encode_relational_index_value_row(
         None,
     )
     .map_err(|error| session_error("encode relational index key", error))?;
+    if index.Columns.iter().any(|part| {
+        table.Columns[part.Offset as usize]
+            .FieldType
+            .PostgreSQLTextOid()
+            == Some(25)
+    }) {
+        let maximum = usize::try_from(astersql_config::get_global_config().max_index_length)
+            .map_err(|_| SessionError::new("max-index-length must not be negative"))?;
+        // Include the complete encoded key; never truncate a unique text key.
+        if key.len() > maximum {
+            return Err(SessionError::new(format!(
+                "[ddl:1071]Specified key was too long ({} bytes); max key length is {maximum} bytes",
+                key.len()
+            )));
+        }
+    }
     let value = astersql_tablecodec::GenIndexValuePortalBorrowed(
         astersql_tablecodec::collate::NewCollationEnabled(),
         Some(astersql_tablecodec::time::UTC),

@@ -504,7 +504,7 @@ fn pg10_01_returning_rows_and_atomicity() {
         "INSERT INTO t VALUES (1,10,NULL),(42,20,'duplicate') RETURNING id",
         "INSERT INTO t VALUES (2,11,NULL) RETURNING 10 / (v - 11) AS boom",
         "INSERT INTO t VALUES (3,12,NULL) RETURNING missing",
-        "INSERT INTO t VALUES (4,13,NULL) ON CONFLICT (id) DO NOTHING RETURNING id",
+        "INSERT INTO t VALUES (4,13,NULL) ON CONFLICT (v) DO NOTHING RETURNING id",
     ] {
         assert!(pg.execute(sql).is_err(), "{sql}");
     }
@@ -615,4 +615,65 @@ fn pg10_03_delete_rows_and_atomicity() {
     assert_eq!(rows.next_row().unwrap().unwrap(), ["2", "20", "b"]);
     assert!(rows.next_row().unwrap().is_none());
     pg.execute("DROP DATABASE pg10_03_shared").unwrap();
+}
+
+#[test]
+fn pg10_06_text_unique_prerequisite() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    assert!(
+        mysql
+            .execute("CREATE TABLE mysql_text_unique(v text UNIQUE)")
+            .is_err()
+    );
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE conflict_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL CHECK(v>0))").unwrap();
+    pg.execute("INSERT INTO conflict_doc VALUES (1,'a',10),(2,'b',20)")
+        .unwrap();
+    assert!(
+        pg.execute("INSERT INTO conflict_doc VALUES (3,'b',30)")
+            .is_err()
+    );
+
+    pg.execute("INSERT INTO conflict_doc VALUES (3,'b',30) ON CONFLICT(email) DO NOTHING")
+        .unwrap();
+    // Preserve complete values even when they share a long prefix.
+    let prefix = "x".repeat(800);
+    pg.execute(&format!(
+        "INSERT INTO conflict_doc VALUES (3,'{prefix}a',30),(4,'{prefix}b',40)"
+    ))
+    .unwrap();
+    assert!(
+        pg.execute(&format!(
+            "INSERT INTO conflict_doc VALUES (5,'{prefix}a',50)"
+        ))
+        .is_err()
+    );
+    assert!(
+        pg.execute(&format!(
+            "INSERT INTO conflict_doc VALUES (6,'{}',60)",
+            "x".repeat(4000)
+        ))
+        .is_err()
+    );
+    pg.execute(
+        "INSERT INTO conflict_doc VALUES (1,'changed',99),(7,'c',70) ON CONFLICT(id) DO NOTHING",
+    )
+    .unwrap();
+    assert!(
+        pg.execute("INSERT INTO conflict_doc VALUES (8,'b',80) ON CONFLICT(id) DO NOTHING")
+            .is_err()
+    );
+    assert!(
+        pg.execute("INSERT INTO conflict_doc VALUES (8,'d',80) ON CONFLICT(v) DO NOTHING")
+            .is_err()
+    );
+    let rows = pg
+        .execute("SELECT email,v FROM conflict_doc WHERE id=1")
+        .unwrap()[0]
+        .next_row()
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows, ["a", "10"]);
+    pg.execute("DROP TABLE conflict_doc").unwrap();
 }

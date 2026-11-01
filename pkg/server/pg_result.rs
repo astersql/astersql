@@ -236,6 +236,13 @@ pub(crate) fn prepare_command(sql: &str) -> Result<PrepareCommand, (&'static str
     command_for_phase(sql, true)
 }
 
+pub(crate) fn column_conflict_do_nothing(clause: &ast::PostgreSQLConflictClause) -> bool {
+    clause.Action == ast::PostgreSQLConflictAction::DoNothing
+        && clause.Target == ast::PostgreSQLConflictTarget::Inference
+        && !clause.Columns.is_empty()
+        && clause.Predicate.is_none()
+}
+
 fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'static str, String)> {
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
@@ -263,7 +270,11 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
             return Err(("0A000", "REPLACE is not a PostgreSQL command".into()));
         }
         postgresql_conflict = insert.PostgreSQLConflict.clone();
-        if postgresql_conflict.is_some() && !prepare {
+        if postgresql_conflict
+            .as_ref()
+            .is_some_and(|clause| !column_conflict_do_nothing(clause))
+            && !prepare
+        {
             return Err((
                 "0A000",
                 "PostgreSQL ON CONFLICT is unsupported by the shared executor".into(),
