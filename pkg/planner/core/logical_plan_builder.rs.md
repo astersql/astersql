@@ -11,6 +11,7 @@
 - 在构建时维护 `PlanBuilder` 状态：通过七个 `Flag*` 位累加优化需求，通过 `visitInfo` 记录表级 SELECT 权限，通过 `outerCTEs` 维护 CTE 可见性/递归状态，通过 `warnings` 和 `unusedViewHints` 保存提示相关信息。
 - 维护 schema、输出名、粗略基数与算子属性，包括 JOIN schema 合并、UNION 类型归并、窗口输出追加、LIMIT 行数上界、存储偏好和 UPDATE/DELETE 的列/handle 位置信息。
 - 提供与 Go 同名的解析/校验辅助函数，例如 `extractLimitCountOffset`、`buildWindowSpecs`、`mergeWindowSpec`、`CheckUpdateList`、`appendVisitInfo` 和 `resetCTECheckForSubQuery`。
+- `materializedViewMemTableExtractorKind` 为三张物化视图 INFORMATION_SCHEMA 表提供大小写不敏感的抽取器路由，未知表返回 `None` 并沿用既有内存表路径。
 
 ## 主要符号
 

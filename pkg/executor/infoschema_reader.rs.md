@@ -7,7 +7,7 @@
 ## 核心职责
 
 1. 用 `Datum`、`Row`、`ColumnInfo`、`TableInfo` 表达虚拟表的完整行和输出投影，用 `InfoSchemaError`/`InfoResult` 统一错误边界。
-2. 用 `DataRequest` 描述所有后端读取意图，用 `InfoSchemaDataSource` 隔离会话、快照、权限、统计、DDL、PD/TiFlash 与死锁数据的具体实现。文件自身主要决定“何时、以什么参数读取”，数据生产由 trait 实现者负责。
+2. 用 `DataRequest` 描述所有后端读取意图，用 `InfoSchemaDataSource` 隔离会话、快照、权限、统计、DDL、PD/TiFlash 与死锁数据的具体实现。`TiDBMViews`、`TiDBMLogs`、`TiDBTableMViewDependencies` 将三张物化视图元数据表接入同一权限、NULL 与谓词处理边界。文件自身主要决定“何时、以什么参数读取”，数据生产由 trait 实现者负责。
 3. `memtableRetriever::retrieve` 选择事务快照或最新快照，经 `dispatch_table` 按表名加载数据，按 1024 行分批输出，并通过 `adjustColumns` 完成列裁剪。
 4. 对大表和外部资源使用独立状态机：`hugeMemTableRetriever`、`tableStorageStatsRetriever`、`tidbTrxTableRetriever`、`dataLockWaitsTableRetriever`、`deadlocksTableRetriever`、`TiFlashSystemTableRetriever` 各自维护游标和终止状态。
 5. 提供与系统表语义相关的纯函数：数值精度、字符八位组长度、ANALYZE 剩余时间、权限缺省、标签规则解析、table ID 解码和列投影。

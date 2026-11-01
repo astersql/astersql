@@ -7,6 +7,7 @@
 ## 核心职责
 
 - `InfoSchemaBaseExtractor` 统一保存等值/`IN` 条件、`LIKE` 条件和不可命中标志，并实现状态重置、条件求交、匹配和 Explain 摘要（`64-225`）。
+- `InfoSchemaTiDBMViewsExtractor`、`InfoSchemaTiDBMLogsExtractor`、`InfoSchemaTiDBTableMViewDependenciesExtractor` 分别抽取物化视图、日志与依赖表谓词；后两者沿真实 `TableInfo` 的 `MaterializedView*` 关系反查、去重并排序基表候选。
 - `base_extractor!` 为 14 类信息模式视图生成“基类字段 + 构造器 + 抽取入口”，各类型只暴露自己允许下推的列白名单（`304-320`、`323-325`、`379-520`、`559-563`）。
 - 专用方法把抽取状态应用到元数据：表/库配对（`InfoSchemaTablesExtractor::ListSchemasAndTables`）、可见列及序号（`InfoSchemaColumnsExtractor::ListColumns`）和索引使用信息（`InfoSchemaTiDBIndexUsageExtractor::ListIndexes`）。
 - `SchemaTableSorter` 为并行的 schema/table 切片提供同步排序，防止二者错位（`227-302`）。

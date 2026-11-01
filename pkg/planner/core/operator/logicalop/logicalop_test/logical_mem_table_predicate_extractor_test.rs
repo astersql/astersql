@@ -8,6 +8,8 @@
 // 将 WHERE 条件解析为对集群配置、日志、指标与 information_schema 等内存表的过滤参数。
 
 use memtable_extractors::*;
+use model::{MaterializedViewBaseInfo, MaterializedViewInfo, MaterializedViewLogInfo, TableInfo};
+use parser_ast::NewCIStr;
 
 /// 构造字符串谓词值。
 fn text(value: &str) -> PredicateValue {
@@ -424,4 +426,86 @@ fn TestInfoSchemaTableExtract() {
         Predicate::Eq("constraint_name".into(), text("foreign")),
     ]);
     assert!(extractor.Base.SkipRequest);
+}
+
+fn mv_table(id: i64, name: &str) -> TableInfo {
+    TableInfo {
+        ID: id,
+        Name: NewCIStr(name),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn port_bb23c55235_tidb_mlogs_filters_base_and_deduplicates_logs() {
+    let mut base = mv_table(1, "base");
+    base.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: 2,
+        MViewIDs: vec![3],
+    });
+    let mut duplicate = mv_table(4, "duplicate");
+    duplicate.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: 2,
+        MViewIDs: vec![3],
+    });
+    let mut log = mv_table(2, "$mlog$base");
+    log.MaterializedViewLog = Some(MaterializedViewLogInfo {
+        BaseTableID: 1,
+        ..Default::default()
+    });
+    let candidates = vec![
+        (NewCIStr("z"), log),
+        (NewCIStr("test"), base),
+        (NewCIStr("other"), duplicate),
+    ];
+    let mut extractor = InfoSchemaTiDBMLogsExtractor::NewInfoSchemaTiDBMLogsExtractor();
+    extractor.ExtractPredicates(&[Predicate::Eq("base_table_schema".into(), text("test"))]);
+    assert!(extractor.HasBaseTablePredicates());
+    assert!(!extractor.HasMLogPredicates());
+    let (log_schemas, logs, base_schemas, bases) =
+        extractor.ListSchemasAndTablesByBase(&candidates);
+    assert_eq!(log_schemas[0].L, "z");
+    assert_eq!(logs[0].ID, 2);
+    assert_eq!(base_schemas[0].L, "test");
+    assert_eq!(bases[0].ID, 1);
+    assert_eq!(logs.len(), 1);
+}
+
+#[test]
+fn port_bb23c55235_dependency_extractor_maps_mlog_and_mview_to_base() {
+    let mut base = mv_table(1, "base");
+    base.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: 2,
+        MViewIDs: vec![3],
+    });
+    let mut log = mv_table(2, "$mlog$base");
+    log.MaterializedViewLog = Some(MaterializedViewLogInfo {
+        BaseTableID: 1,
+        ..Default::default()
+    });
+    let mut view = mv_table(3, "mv");
+    view.MaterializedView = Some(MaterializedViewInfo {
+        BaseTableIDs: vec![1],
+        ..Default::default()
+    });
+    let candidates = vec![
+        (NewCIStr("test"), base),
+        (NewCIStr("test"), log),
+        (NewCIStr("analytics"), view),
+    ];
+    let mut extractor = InfoSchemaTiDBTableMViewDependenciesExtractor::NewInfoSchemaTiDBTableMViewDependenciesExtractor();
+    extractor.ExtractPredicates(&[
+        Predicate::Eq("mlog_id".into(), PredicateValue::I64(2)),
+        Predicate::Eq("mview_schema".into(), text("analytics")),
+        Predicate::Eq("mview_name".into(), text("mv")),
+    ]);
+    assert!(extractor.HasMLogPredicates());
+    assert!(extractor.HasMViewPredicates());
+    assert!(!extractor.HasTablePredicates());
+    assert_eq!(extractor.ListSchemasAndTablesByMLog(&candidates).1[0].ID, 1);
+    assert_eq!(
+        extractor.ListSchemasAndTablesByMView(&candidates).1[0].ID,
+        1
+    );
+    assert!(extractor.Filter("mview_name", "other"));
 }

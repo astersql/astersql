@@ -33,10 +33,44 @@ use crate::infoschema::{
     maskingPolicyStatusFromString, maskingPolicyTypeFromString,
 };
 use crate::infoschema_v2::{IsV2, NewData, NewInfoSchemaV2};
+use crate::tables::{
+    TableTiDBMLogs, TableTiDBMViews, TableTiDBTableMViewDependencies, table_registry,
+};
 
 /// 构造大小写不敏感标识符（CIStr）的测试辅助。
 fn ci(name: &str) -> CiString {
     CiString::new(name)
+}
+
+#[test]
+fn port_bb23c55235_materialized_view_tables_have_stable_ids_and_columns() {
+    let registry = table_registry();
+    let cases = [
+        (TableTiDBMViews, 103, 10, "MVIEW_COMMENT"),
+        (TableTiDBMLogs, 104, 12, "PURGE_NEXT"),
+        (TableTiDBTableMViewDependencies, 105, 10, "MVIEW_NAME"),
+    ];
+    for (name, offset, column_count, nullable_column) in cases {
+        let table = registry.get(name).unwrap();
+        assert_eq!(
+            table.id,
+            astersql_meta_autoid::INFORMATION_SCHEMA_DB_ID + offset
+        );
+        assert_eq!(table.columns.len(), column_count);
+        assert!(
+            table
+                .columns
+                .iter()
+                .any(|column| column.name == nullable_column)
+        );
+    }
+    assert!(
+        registry[TableTiDBMViews]
+            .columns
+            .iter()
+            .find(|column| column.name == "MVIEW_COMMENT")
+            .is_some_and(|column| !column.not_null)
+    );
 }
 
 /// 基础查库/查表：按名、按 ID、SchemaByTable、视图/序列判定与 TableItem。

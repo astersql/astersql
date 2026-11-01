@@ -119,6 +119,22 @@ impl InfoSchemaDataSource for InternalTestSource {
                 Datum::Int(2),
             ]],
             DataRequest::Keywords => vec![vec![text("ADD"), Datum::Int(1)]],
+            DataRequest::TiDBMViews => vec![vec![
+                text("def"),
+                text("test"),
+                Datum::Int(11),
+                text("mv"),
+                text("select * from t"),
+                Datum::Null,
+                text("2026-10-28 00:00:00"),
+                Datum::Null,
+                Datum::Null,
+                Datum::Null,
+            ]],
+            DataRequest::TiDBMLogs => vec![vec![text("def"), text("test"), Datum::Int(12)]],
+            DataRequest::TiDBTableMViewDependencies => {
+                vec![vec![text("def"), text("test"), Datum::Int(10)]]
+            }
             DataRequest::Tables { .. } | DataRequest::Partitions { .. } => Vec::new(),
             other => panic!("unexpected information-schema request: {other:?}"),
         })
@@ -183,6 +199,28 @@ impl InfoSchemaDataSource for InternalTestSource {
     fn table_matches_id(&self, _: &str, _: &str, _: &str, _: i64) -> InfoResult<bool> {
         Ok(false)
     }
+}
+
+#[test]
+fn port_bb23c55235_materialized_view_metadata_dispatch_preserves_nulls() {
+    let source = Arc::new(InternalTestSource::new());
+    let mut reader = retriever(Arc::clone(&source));
+
+    reader.setDataFromTiDBMViews().unwrap();
+    assert_eq!(reader.rows.len(), 1);
+    assert_eq!(reader.rows[0][5], Datum::Null);
+    assert_eq!(reader.rows[0][7], Datum::Null);
+
+    reader.setDataFromTiDBMLogs().unwrap();
+    reader.setDataFromTiDBTableMViewDependencies().unwrap();
+    assert_eq!(
+        source.requests(),
+        vec![
+            DataRequest::TiDBMViews,
+            DataRequest::TiDBMLogs,
+            DataRequest::TiDBTableMViewDependencies,
+        ]
+    );
 }
 
 fn text(value: &str) -> Datum {

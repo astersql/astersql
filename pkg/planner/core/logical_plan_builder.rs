@@ -24,6 +24,38 @@ use crate::planbuilder::{
 use crate::task::{Expression, FieldType, JoinType, PlanKind, PlanNode, StatsInfo, TypeCode};
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// INFORMATION_SCHEMA 内存表需要挂载的物化视图谓词抽取器类别。
+pub enum MaterializedViewMemTableExtractorKind {
+    MViews,
+    MLogs,
+    Dependencies,
+}
+
+impl MaterializedViewMemTableExtractorKind {
+    fn plan_label(self) -> &'static str {
+        match self {
+            Self::MViews => "memtable-extractor:tidb_mviews",
+            Self::MLogs => "memtable-extractor:tidb_mlogs",
+            Self::Dependencies => "memtable-extractor:tidb_table_mview_dependencies",
+        }
+    }
+}
+
+/// 按表名选择物化视图元数据抽取器；其它内存表沿用既有构建路径。
+pub fn materializedViewMemTableExtractorKind(
+    table_name: &str,
+) -> Option<MaterializedViewMemTableExtractorKind> {
+    match table_name.to_ascii_uppercase().as_str() {
+        "TIDB_MVIEWS" => Some(MaterializedViewMemTableExtractorKind::MViews),
+        "TIDB_MLOGS" => Some(MaterializedViewMemTableExtractorKind::MLogs),
+        "TIDB_TABLE_MVIEW_DEPENDENCIES" => {
+            Some(MaterializedViewMemTableExtractorKind::Dependencies)
+        }
+        _ => None,
+    }
+}
+
 /// 谓词下推优化标志位。
 pub const FlagPredicatePushDown: u64 = 1;
 /// 构建唯一键信息优化标志位。
@@ -1263,6 +1295,9 @@ impl PlanBuilder {
             prefer_tikv: false,
         })?;
         plan.kind = PlanKind::Other("MemTable".into());
+        if let Some(extractor) = materializedViewMemTableExtractorKind(&table.name) {
+            plan.labels.insert(extractor.plan_label().to_owned(), 1.0);
+        }
         Ok(plan)
     }
     /// `timeRangeForSummaryTable`：逻辑计划构建辅助。

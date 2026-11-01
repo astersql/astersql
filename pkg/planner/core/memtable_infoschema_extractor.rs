@@ -21,6 +21,14 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const TableSchema: &str = "table_schema";
 pub const TableName: &str = "table_name";
 pub const TidbTableID: &str = "tidb_table_id";
+pub const MViewSchema: &str = "mview_schema";
+pub const MViewName: &str = "mview_name";
+pub const MViewID: &str = "mview_id";
+pub const MLogName: &str = "mlog_name";
+pub const MLogID: &str = "mlog_id";
+pub const BaseTableSchema: &str = "base_table_schema";
+pub const BaseTableName: &str = "base_table_name";
+pub const BaseTableID: &str = "base_table_id";
 pub const PartitionName: &str = "partition_name";
 pub const TidbPartitionID: &str = "tidb_partition_id";
 pub const IndexName: &str = "index_name";
@@ -582,5 +590,235 @@ impl InfoSchemaTiDBIndexUsageExtractor {
                 }),
         );
         indexes
+    }
+}
+
+base_extractor!(
+    InfoSchemaTiDBMViewsExtractor,
+    NewInfoSchemaTiDBMViewsExtractor,
+    [TableSchema, MViewName, MViewID]
+);
+
+base_extractor!(
+    InfoSchemaTiDBMLogsExtractor,
+    NewInfoSchemaTiDBMLogsExtractor,
+    [
+        TableSchema,
+        MLogName,
+        MLogID,
+        BaseTableSchema,
+        BaseTableName,
+        BaseTableID
+    ]
+);
+
+impl InfoSchemaTiDBMLogsExtractor {
+    pub fn HasMLogPredicates(&self) -> bool {
+        self.has_predicates(&[TableSchema, MLogName, MLogID])
+    }
+
+    pub fn HasBaseTablePredicates(&self) -> bool {
+        self.has_predicates(&[BaseTableSchema, BaseTableName, BaseTableID])
+    }
+
+    fn has_predicates(&self, columns: &[&str]) -> bool {
+        columns.iter().any(|column| {
+            self.Base
+                .ColPredicates
+                .get(*column)
+                .is_some_and(|values| !values.is_empty())
+                || self
+                    .Base
+                    .LikePatterns
+                    .get(*column)
+                    .is_some_and(|patterns| !patterns.is_empty())
+        })
+    }
+
+    pub fn Filter(&self, column: &str, value: &str) -> bool {
+        !self.Base.Has(column, value)
+    }
+
+    /// 由基表谓词反查日志表；返回值中的四个向量始终按位置对齐。
+    pub fn ListSchemasAndTablesByBase(
+        &self,
+        candidates: &[(CIStr, TableInfo)],
+    ) -> (Vec<CIStr>, Vec<TableInfo>, Vec<CIStr>, Vec<TableInfo>) {
+        let by_id = candidates
+            .iter()
+            .map(|(schema, table)| (table.ID, (schema, table)))
+            .collect::<BTreeMap<_, _>>();
+        let mut rows = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (base_schema, base) in candidates {
+            if !self.Base.Has(BaseTableSchema, &base_schema.O)
+                || !self.Base.Has(BaseTableName, &base.Name.O)
+                || !self.Base.Has(BaseTableID, &base.ID.to_string())
+            {
+                continue;
+            }
+            let Some(base_info) = &base.MaterializedViewBase else {
+                continue;
+            };
+            if base_info.MLogID == 0 || !seen.insert(base_info.MLogID) {
+                continue;
+            }
+            let Some((mlog_schema, mlog)) = by_id.get(&base_info.MLogID) else {
+                continue;
+            };
+            if mlog.MaterializedViewLog.is_none() {
+                continue;
+            }
+            rows.push((
+                (*mlog_schema).clone(),
+                (*mlog).clone(),
+                base_schema.clone(),
+                base.clone(),
+            ));
+        }
+        rows.sort_by(|left, right| {
+            left.0
+                .L
+                .cmp(&right.0.L)
+                .then_with(|| left.1.Name.L.cmp(&right.1.Name.L))
+        });
+        let mut mlog_schemas = Vec::with_capacity(rows.len());
+        let mut mlogs = Vec::with_capacity(rows.len());
+        let mut base_schemas = Vec::with_capacity(rows.len());
+        let mut bases = Vec::with_capacity(rows.len());
+        for (mlog_schema, mlog, base_schema, base) in rows {
+            mlog_schemas.push(mlog_schema);
+            mlogs.push(mlog);
+            base_schemas.push(base_schema);
+            bases.push(base);
+        }
+        (mlog_schemas, mlogs, base_schemas, bases)
+    }
+}
+
+base_extractor!(
+    InfoSchemaTiDBTableMViewDependenciesExtractor,
+    NewInfoSchemaTiDBTableMViewDependenciesExtractor,
+    [
+        TableSchema,
+        TableName,
+        TableID,
+        MLogName,
+        MLogID,
+        MViewSchema,
+        MViewName,
+        MViewID
+    ]
+);
+
+impl InfoSchemaTiDBTableMViewDependenciesExtractor {
+    fn has_predicates(&self, columns: &[&str]) -> bool {
+        columns.iter().any(|column| {
+            self.Base
+                .ColPredicates
+                .get(*column)
+                .is_some_and(|values| !values.is_empty())
+                || self
+                    .Base
+                    .LikePatterns
+                    .get(*column)
+                    .is_some_and(|patterns| !patterns.is_empty())
+        })
+    }
+
+    pub fn HasTablePredicates(&self) -> bool {
+        self.has_predicates(&[TableSchema, TableName, TableID])
+    }
+    pub fn HasMLogPredicates(&self) -> bool {
+        self.has_predicates(&[MLogName, MLogID])
+    }
+    pub fn HasMViewPredicates(&self) -> bool {
+        self.has_predicates(&[MViewSchema, MViewName, MViewID])
+    }
+    pub fn Filter(&self, column: &str, value: &str) -> bool {
+        !self.Base.Has(column, value)
+    }
+
+    pub fn ListSchemasAndTablesByMLog(
+        &self,
+        candidates: &[(CIStr, TableInfo)],
+    ) -> (Vec<CIStr>, Vec<TableInfo>) {
+        let by_id = candidates
+            .iter()
+            .map(|(schema, table)| (table.ID, (schema, table)))
+            .collect::<BTreeMap<_, _>>();
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        for (_, mlog) in candidates {
+            if !self.Base.Has(MLogName, &mlog.Name.O)
+                || !self.Base.Has(MLogID, &mlog.ID.to_string())
+            {
+                continue;
+            }
+            let Some(log_info) = &mlog.MaterializedViewLog else {
+                continue;
+            };
+            let Some((schema, base)) = by_id.get(&log_info.BaseTableID) else {
+                continue;
+            };
+            if base
+                .MaterializedViewBase
+                .as_ref()
+                .is_some_and(|info| !info.MViewIDs.is_empty())
+                && seen.insert(base.ID)
+            {
+                result.push(((*schema).clone(), (*base).clone()));
+            }
+        }
+        result.sort_by(|left, right| {
+            left.0
+                .L
+                .cmp(&right.0.L)
+                .then_with(|| left.1.Name.L.cmp(&right.1.Name.L))
+        });
+        result.into_iter().unzip()
+    }
+
+    pub fn ListSchemasAndTablesByMView(
+        &self,
+        candidates: &[(CIStr, TableInfo)],
+    ) -> (Vec<CIStr>, Vec<TableInfo>) {
+        let by_id = candidates
+            .iter()
+            .map(|(schema, table)| (table.ID, (schema, table)))
+            .collect::<BTreeMap<_, _>>();
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        for (mview_schema, mview) in candidates {
+            if !self.Base.Has(MViewSchema, &mview_schema.O)
+                || !self.Base.Has(MViewName, &mview.Name.O)
+                || !self.Base.Has(MViewID, &mview.ID.to_string())
+            {
+                continue;
+            }
+            let Some(mview_info) = &mview.MaterializedView else {
+                continue;
+            };
+            for base_id in &mview_info.BaseTableIDs {
+                let Some((schema, base)) = by_id.get(base_id) else {
+                    continue;
+                };
+                if base
+                    .MaterializedViewBase
+                    .as_ref()
+                    .is_some_and(|info| !info.MViewIDs.is_empty())
+                    && seen.insert(base.ID)
+                {
+                    result.push(((*schema).clone(), (*base).clone()));
+                }
+            }
+        }
+        result.sort_by(|left, right| {
+            left.0
+                .L
+                .cmp(&right.0.L)
+                .then_with(|| left.1.Name.L.cmp(&right.1.Name.L))
+        });
+        result.into_iter().unzip()
     }
 }

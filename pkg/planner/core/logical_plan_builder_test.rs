@@ -103,3 +103,23 @@ fn window_item_comparison_and_frames_match_go_restore_semantics() {
         funcs: Vec::new(),
     };
 }
+#[test]
+fn port_bb23c55235_materialized_view_memtable_extractor_routing() {
+    use crate::logical_plan_builder::{
+        MaterializedViewMemTableExtractorKind, materializedViewMemTableExtractorKind,
+    };
+
+    assert_eq!(
+        materializedViewMemTableExtractorKind("tidb_mviews"),
+        Some(MaterializedViewMemTableExtractorKind::MViews)
+    );
+    assert_eq!(
+        materializedViewMemTableExtractorKind("TIDB_MLOGS"),
+        Some(MaterializedViewMemTableExtractorKind::MLogs)
+    );
+    assert_eq!(
+        materializedViewMemTableExtractorKind("tidb_table_mview_dependencies"),
+        Some(MaterializedViewMemTableExtractorKind::Dependencies)
+    );
+    assert_eq!(materializedViewMemTableExtractorKind("tables"), None);
+}

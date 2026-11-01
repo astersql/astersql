@@ -310,6 +310,9 @@ pub enum DataRequest {
     RunawayWatches,
     ResourceGroups,
     Keywords,
+    TiDBMViews,
+    TiDBMLogs,
+    TiDBTableMViewDependencies,
     IndexUsage {
         cluster: bool,
     },
@@ -500,6 +503,9 @@ impl memtableRetriever {
             "CHECK_CONSTRAINTS" => self.setDataFromCheckConstraints(),
             "TIDB_CHECK_CONSTRAINTS" => self.setDataFromTiDBCheckConstraints(),
             "KEYWORDS" => self.setDataFromKeywords(),
+            "TIDB_MVIEWS" => self.setDataFromTiDBMViews(),
+            "TIDB_MLOGS" => self.setDataFromTiDBMLogs(),
+            "TIDB_TABLE_MVIEW_DEPENDENCIES" => self.setDataFromTiDBTableMViewDependencies(),
             "TIDB_INDEX_USAGE" => self.setDataFromIndexUsage(),
             "CLUSTER_TIDB_INDEX_USAGE" => self.setDataFromClusterIndexUsage(),
             "TIDB_PLAN_CACHE" => self.setDataFromPlanCache(false),
@@ -863,6 +869,18 @@ impl memtableRetriever {
     /// 加载 KEYWORDS 行。
     pub fn setDataFromKeywords(&mut self) -> InfoResult {
         self.replace_rows(DataRequest::Keywords)
+    }
+    /// 加载当前用户可见的物化视图元数据；具体权限与 NULL 生成由数据源统一执行。
+    pub fn setDataFromTiDBMViews(&mut self) -> InfoResult {
+        self.replace_rows(DataRequest::TiDBMViews)
+    }
+    /// 加载当前用户可见的物化视图日志元数据。
+    pub fn setDataFromTiDBMLogs(&mut self) -> InfoResult {
+        self.replace_rows(DataRequest::TiDBMLogs)
+    }
+    /// 加载基表、日志表和物化视图之间的依赖关系。
+    pub fn setDataFromTiDBTableMViewDependencies(&mut self) -> InfoResult {
+        self.replace_rows(DataRequest::TiDBTableMViewDependencies)
     }
     /// 加载本节点 TIDB_INDEX_USAGE。
     pub fn setDataFromIndexUsage(&mut self) -> InfoResult {

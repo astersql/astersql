@@ -8,7 +8,7 @@
 
 ## 核心职责
 
-1. **定义表名与稳定身份。** `table_constants!` 声明 78 个本地表名常量，`TABLE_NAMES` 再加入来自 `cluster.rs` 的 `ClusterTableTiDBIndexUsage`，形成 79 个注册项。`table_id_offset` 显式复刻 Go `tableIDMap` 的非连续偏移，`table_registry` 将偏移加到 `INFORMATION_SCHEMA_DB_ID` 上。偏移可能进入已缓存计划，不能按数组下标重新编号。
+1. **定义表名与稳定身份。** `table_constants!` 声明本地表名常量，`TABLE_NAMES` 再加入来自 `cluster.rs` 的 `ClusterTableTiDBIndexUsage`。`table_id_offset` 显式复刻 Go `tableIDMap` 的非连续偏移，`table_registry` 将偏移加到 `INFORMATION_SCHEMA_DB_ID` 上。偏移可能进入已缓存计划，不能按数组下标重新编号。`TIDB_MVIEWS`、`TIDB_MLOGS`、`TIDB_TABLE_MVIEW_DEPENDENCIES` 分别固定使用 103、104、105。
 2. **描述并转换列元数据。** `columnInfo` 是静态、可常量构造的简化描述；`default_columns` 为一部分关键表给出逐列定义，并把 `SLOW_QUERY`、语句摘要委托给 `catalog_columns_go45`；未单独移植的注册表项由 `fallback_columns` 暂时得到 `INSTANCE/NAME/VALUE` 三列。`buildTableMeta` 把这些描述转换成 parser/meta-model 使用的字段类型、字符集、排序规则、长度、精度、标志、默认值和公开状态。
 3. **构造 INFORMATION_SCHEMA 快照。** `information_schema_db_with_storage_class` 一次性缓存完整 `DBInfo`，每次返回克隆，并按实例配置选择是否从克隆中移除 `TIKV_STORAGE_CLASS_TRANSITIONS`；`information_schema_db` 从全局配置取得该开关。
 4. **提供集群辅助纯逻辑。** `ServerDiscovery` 把实际发现机制抽象为八类组件方法；`GetClusterServerInfo` 顺序汇总并规范化回环地址。版本格式化、精确标签匹配和节点过滤均为无外部 I/O 的函数。
@@ -20,7 +20,7 @@
 - `columnInfo`：列名、类型、显示长度、可选小数位、四类布尔标志、字符串默认值和注释。`typed`、`varchar`、`integer` 提供基础构造器，`unsigned`、`not_null`、`with_default` 用 builder 风格设置属性。
 - `VirtualTableMeta`：注册表中的稳定 `id`、静态 `name` 与 `columns`。
 - `TABLE_NAMES`、`table_id_offset`、`TABLE_REGISTRY`、`table_registry`：79 项注册表的输入、稳定 ID 映射与 `OnceLock` 懒初始化入口。未知名称传给 `table_id_offset` 会 panic；正常路径只遍历 `TABLE_NAMES`。
-- `default_columns`、`fallback_columns`：列定义分派。前者只对代码中的显式 match 分支提供真实列集；默认分支是迁移期三列占位，不应视为已与 Go `tableNameToColumns` 对齐。
+- `default_columns`、`fallback_columns`：列定义分派。前者为显式 match 分支提供真实列集；其中三张物化视图元数据表逐列保留 Go 的次序、类型和 NULL 标志。默认分支是迁移期三列占位，不应视为已与 Go `tableNameToColumns` 对齐。
 - `buildColumnInfo`：构造轻量 `infoschema::ColumnInfo`，只保留 ID、名称和 `auto_increment=false`。
 - `buildTableMeta`：构造完整 `meta_model::TableInfo` 并嵌入轻量 `infoschema::TableInfo.model_meta`。注册表外名称的轻量/模型 ID 都为 0。
 - `GetStorageClassTransitionsTableColumns`：从注册项重新构造并返回新列向量，避免调用者修改全局定义。
