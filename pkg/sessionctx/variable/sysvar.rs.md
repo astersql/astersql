@@ -32,7 +32,7 @@
 
 ## 执行流程
 
-`GlobalSystemVariableInitialValueWithRuntime` 对 `TiDBAnalyzeSampledNDVThreshold` 返回字符串 `500000000`，用于新集群初始化，而注册定义与原子初始值仍为 0。该 match 分支不依赖 next-gen 环境，也不直接写原子状态或持久化；升级集群保持关闭的迁移策略属于外部 upgrade 链，不能宣称每次读取都会自动启用 sampled NDV。
+`GlobalSystemVariableInitialValueWithRuntime` 对 `TiDBAnalyzeSampledNDVThreshold` 返回字符串 `100000000`，用于新集群初始化，而注册定义与原子初始值仍为 0。该 match 分支不依赖 next-gen 环境，也不直接写原子状态或持久化；升级集群保持关闭的迁移策略属于外部 upgrade 链，不能宣称每次读取都会自动启用 sampled NDV。
 
 执行器并发构造与写入流程如下：
 

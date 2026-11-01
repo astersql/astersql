@@ -1760,7 +1760,7 @@ fn TestGlobalSystemVariableInitialValue() {
         ),
         (vardef::TiDBEnableMutationChecker, "OFF", vardef::On),
         (vardef::TiDBEnableAdaptiveLimitScan, vardef::Off, vardef::On),
-        (vardef::TiDBAnalyzeSampledNDVThreshold, "0", "500000000"),
+        (vardef::TiDBAnalyzeSampledNDVThreshold, "0", "100000000"),
         (
             vardef::TiDBPessimisticTransactionFairLocking,
             "OFF",
@@ -1817,6 +1817,25 @@ fn TestGlobalSystemVariableInitialValue() {
             &next_gen_runtime,
         ),
         vardef::Off
+    );
+}
+
+#[test]
+fn port_42abf54ebb_new_cluster_sampled_ndv_threshold_is_100_million() {
+    let runtime = sysvar::RuntimeEnvironment {
+        store_is_tikv: false,
+        in_test: false,
+        next_gen: false,
+        default_txn_assertion_level: vardef::AssertionStrictStr.to_owned(),
+    };
+
+    assert_eq!(
+        sysvar::GlobalSystemVariableInitialValueWithRuntime(
+            vardef::TiDBAnalyzeSampledNDVThreshold,
+            "0",
+            &runtime,
+        ),
+        "100000000"
     );
 }
 

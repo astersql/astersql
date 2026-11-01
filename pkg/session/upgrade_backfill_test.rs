@@ -368,3 +368,25 @@ fn sampled_ndv_upgrade_adds_column_and_defaults_upgraded_clusters_to_disabled() 
     assert!(!current.1);
     assert!(!current.0.contains_key("tidb_analyze_sampled_ndv_threshold"));
 }
+
+#[test]
+fn port_42abf54ebb_new_cluster_default_does_not_change_upgrade_values() {
+    assert_eq!(
+        astersql_sessionctx_variable::sysvar::GlobalSystemVariableInitialValue(
+            astersql_sessionctx_variable::vardef::TiDBAnalyzeSampledNDVThreshold,
+            "0",
+        ),
+        "100000000"
+    );
+
+    for (persisted, expected) in [(None, "0"), (Some("12"), "12")] {
+        let mut store = VariableStore::default();
+        if let Some(value) = persisted {
+            store
+                .0
+                .insert("tidb_analyze_sampled_ndv_threshold".into(), value.into());
+        }
+        upgrade_bootstrap_variables(&mut store, 318).unwrap();
+        assert_eq!(store.0["tidb_analyze_sampled_ndv_threshold"], expected);
+    }
+}
