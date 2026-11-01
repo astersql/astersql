@@ -88,6 +88,8 @@ RustCodeGraph 的文件节点报告本文件被 `pkg/ddl/lib.rs`、`pkg/ddl/pers
 
 ## 与 Go 版本的对应关系
 
+- 来源 `4150cef7a280246667f8bf0b97c6cd53bcd09f56` 的 `add_column.go::setDefaultValueWithBinaryPadding` 在本文件的 `pad_binary_default_value` 对齐：`DefaultIsExpr` 保存未补零的 SQL 文本，字面量 BINARY 默认值继续补零，NULL/VARBINARY 不变。该入口由建表与 ALTER 列元数据构建复用，求值后的 padding 由运行时负责。
+
 Rust `BuildTableInfoFromAST` 对应 Go 同名函数；二者均以默认 utf8mb4 进入 `buildTableInfoWithCheck`，并按 `BuildTableInfoWithStmt` → 语句相关校验 → 通用校验的顺序返回未分配最终 ID 的 `TableInfo`。Rust 的 `build_column` 对应 Go 建表/加列共用的 `columnDefToCol` 思路，`set_no_default_value_flag`、`set_table_auto_random_bits`、约束命名和 clustered-index 判定也按 Go 规则移植。
 
 目前可确认的差异与迁移边界如下：

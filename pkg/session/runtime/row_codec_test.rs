@@ -567,3 +567,65 @@ fn pg06_task_081_json_row_formats() {
         }
     }
 }
+
+#[test]
+fn port_4150cef7a2_binary_expression_defaults_sql() {
+    use super::mview_refresh_test::query;
+    let f = super::normal_ddl_fixture::Fixture::new();
+    super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+    super::EnableMockDDLForTest(&f.domain).unwrap();
+    let session = super::ConcreteSession::new(f.domain.clone());
+    query(&session, "use test");
+    query(
+        &session,
+        "create table binary_defaults (id int primary key, u binary(50) default (uuid()), b binary(50) default (uuid_to_bin(uuid())), v varbinary(50) default (uuid()), literal binary(4) default 'a', nullable binary(4) default null)",
+    );
+    query(&session, "insert into binary_defaults(id) values (1), (2)");
+    assert_eq!(
+        query(
+            &session,
+            "select length(u), length(b), length(v), hex(literal), nullable is null, hex(substr(u,37)) = repeat('00',14), hex(substr(b,17)) = repeat('00',34) from binary_defaults order by id"
+        ),
+        vec![vec!["50", "50", "36", "61000000", "1", "1", "1"]; 2]
+    );
+    assert_eq!(
+        query(
+            &session,
+            "select count(distinct u), count(distinct b) from binary_defaults"
+        ),
+        vec![vec!["2", "2"]]
+    );
+    let before = f.domain.table_by_name("test", "binary_defaults").unwrap();
+    query(
+        &session,
+        "alter table binary_defaults alter column u set default (uuid())",
+    );
+    let after = f.domain.table_by_name("test", "binary_defaults").unwrap();
+    // SET DEFAULT must preserve all existing column attributes and row defaults.
+    assert_eq!(
+        serde_json::to_value(&before.Columns[1]).unwrap(),
+        serde_json::to_value(&after.Columns[1]).unwrap()
+    );
+
+    query(&session, "insert into binary_defaults(id) values (3)");
+    assert_eq!(
+        query(
+            &session,
+            "select length(u), hex(substr(u,37)) = repeat('00',14) from binary_defaults where id = 3"
+        ),
+        vec![vec!["50", "1"]]
+    );
+    query(
+        &session,
+        "alter table binary_defaults modify column u binary(60) default (uuid())",
+    );
+    query(&session, "insert into binary_defaults(id) values (4)");
+    assert_eq!(
+        query(
+            &session,
+            "select length(u), hex(substr(u,37)) = repeat('00',24) from binary_defaults where id = 4"
+        ),
+        vec![vec!["60", "1"]]
+    );
+    query(&session, "drop table binary_defaults");
+}

@@ -93,6 +93,8 @@ RustCodeGraph 的精确 `query` 为 `encode_relational_row`、`encode_relational
 
 ## 与 Go 版本的对应关系
 
+- `4150cef7a280246667f8bf0b97c6cd53bcd09f56` 的原回归需要 `uuid_to_bin(uuid())` 默认值：`insert_default_runtime_value` 为每行生成独立 UUID 的16字节，BINARY 目标在求值后补零，再使用已有 binary marker 保存，避免非 UTF-8 字节损失。这是来源测试不可缺少的局部接线；不扩展成通用默认表达式求值器。
+
 仓库没有同路径 `pkg/session/runtime/row_codec.go`；Rust 文件把 Go 中分散在 table、tablecodec、tables/index 与 DML 层的职责收束到 session runtime 适配层。
 
 - `origin_default_runtime_value` / `insert_default_runtime_value` 对应 `pkg/table/column.go` 的 `GetColOriginDefaultValue` / `GetColDefaultValue`。Go 版本通过 expression context 完整处理默认值；Rust 当前显式覆盖持久化默认值及常见表达式，并保留旧 Rust catalog 的 timestamp 拼写兼容。

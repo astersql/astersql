@@ -2577,6 +2577,51 @@ impl ConcreteSession {
                     handled_additive_spec = true;
                     continue;
                 }
+                ast::AlterTableType::AlterColumn
+                    if self.sql_dialect() != ast::SqlDialect::PostgreSQL
+                        && spec
+                            .NewColumns
+                            .first()
+                            .is_some_and(|column| !column.Options.is_empty()) =>
+                {
+                    let definition = &spec.NewColumns[0];
+                    let (_, info) = self
+                        .domain
+                        .stats_table(database, &statement.Table.Name.L)
+                        .ok_or_else(|| SessionError::new("ALTER COLUMN table does not exist"))?;
+                    let mut column = info
+                        .Columns
+                        .iter()
+                        .find(|column| column.Name.L == definition.Name.Name.L)
+                        .cloned()
+                        .ok_or_else(|| {
+                            SessionError::new(format!("unknown column {}", definition.Name.Name.O))
+                        })?;
+                    // Reuse column-default validation and binary SQL preservation;
+                    // retain every other attribute, including the origin default.
+                    let mut default_definition = definition.clone();
+                    default_definition.Tp = column.FieldType.clone();
+                    for option in &mut default_definition.Options {
+                        option.Tp = ast::ColumnOptionType::DefaultValue;
+                    }
+                    let updated = astersql_ddl::BuildColumnInfoFromAST(
+                        &default_definition,
+                        column.Offset as usize,
+                        &info.Charset,
+                        &info.Collate,
+                    )
+                    .map_err(|error| session_error("build ALTER COLUMN default", error))?;
+                    column.DefaultIsExpr = updated.DefaultIsExpr;
+                    column
+                        .SetDefaultValue(updated.GetDefaultValue())
+                        .map_err(|error| session_error("set ALTER COLUMN default", error))?;
+                    column.DelFlag(astersql_parser_mysql::r#type::NoDefaultValueFlag);
+                    self.domain
+                        .ddl_modify_column(database, &statement.Table.Name.L, column, None)
+                        .map_err(|error| session_error("ALTER COLUMN SET DEFAULT", error))?;
+                    handled_additive_spec = true;
+                    continue;
+                }
                 ast::AlterTableType::ModifyColumn => {
                     let definition = spec.NewColumns.first().ok_or_else(|| {
                         SessionError::new("ALTER TABLE MODIFY COLUMN has no definition")

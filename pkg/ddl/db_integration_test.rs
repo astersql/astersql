@@ -1376,3 +1376,23 @@ fn test_create_index_with_change_max_index_length() {
     table.indices.push(index);
     assert!(remove_index_info(&mut table, "a").is_ok());
 }
+
+#[test]
+fn port_4150cef7a2_binary_expression_default_metadata() {
+    let table = build(
+        "create table binary_defaults (id int primary key, u binary(50) default (uuid()), b binary(50) default (uuid_to_bin(uuid())), v varbinary(50) default (uuid()), literal binary(4) default 'a', nullable binary(4) default null)",
+    );
+    for (index, expected) in [(1, "uuid()"), (2, "uuid_to_bin(uuid())"), (3, "uuid()")] {
+        let column = &table.Columns[index];
+        assert!(column.DefaultIsExpr);
+        let model::DefaultValue::String(value) = column.GetDefaultValue().unwrap() else {
+            panic!("SQL default text expected")
+        };
+        assert_eq!(String::from_utf8_lossy(&value), expected);
+    }
+    assert_eq!(
+        table.Columns[4].GetDefaultValue(),
+        Some(model::DefaultValue::String(b"a\0\0\0".to_vec()))
+    );
+    assert!(table.Columns[5].GetDefaultValue().is_none());
+}

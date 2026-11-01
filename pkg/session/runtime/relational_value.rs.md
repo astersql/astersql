@@ -133,6 +133,8 @@ RustCodeGraph 的 `query` 能定位上述核心符号与 `runtime.rs:82` 的再�
 
 ## 与 Go 版本的对应关系
 
+- `4150cef7a280246667f8bf0b97c6cd53bcd09f56` 原 SQL 回归的 LENGTH/HEX/SUBSTR 通过既有 `binary_runtime_bytes` 读取真实二进制字节。LENGTH 计字节，HEX 编码真实字节，SUBSTR 按字节偏移并返回可逆 marker；普通文本仍按原字符路径处理，NULL 沿用原传播。此接线仅覆盖该提交测试必需的函数，不改变协议、会话或事务状态机。
+
 - 排序规则比较对应 Go 中 datum/type 比较时传入 `collate.GetCollator(...)` 的模式；Rust 的表感知入口显式从 `ColumnInfo.GetCollate()` 取 collator。
 - Rust 使用相同的 parser AST、MySQL type、decimal、JSON、time 和 vector 移植 crate，以复用语义实现；但本文件仅支持源码枚举的 AST 与函数子集。不能由“名称相同”推断完整 Go 功能等价。
 

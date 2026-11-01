@@ -875,6 +875,9 @@ pub(super) fn relational_expression_is_vector(expression: &ast::ExprNode) -> boo
 /// bytes survive row-codec round trips. MySQL treats BIT as a numeric argument
 /// to `HEX()`, therefore that private padding must not leak into query results.
 pub(super) fn relational_hex_value(argument: &ast::ExprNode, value: &str) -> String {
+    if let Some(bytes) = super::row_codec::binary_runtime_bytes(value) {
+        return bytes.iter().map(|byte| format!("{byte:02X}")).collect();
+    }
     if let Some(hex) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
@@ -2302,8 +2305,11 @@ pub(super) fn relational_expression_value(
                     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
                 }
                 "length" | "octet_length" if Args.len() == 1 => {
-                    Ok(relational_expression_value(&Args[0], row)?
-                        .map(|value| value.len().to_string()))
+                    Ok(relational_expression_value(&Args[0], row)?.map(|value| {
+                        super::row_codec::binary_runtime_bytes(&value)
+                            .map_or(value.len(), |bytes| bytes.len())
+                            .to_string()
+                    }))
                 }
                 "hex" if Args.len() == 1 => {
                     let Some(value) = relational_expression_value(&Args[0], row)? else {
@@ -3031,7 +3037,11 @@ pub(super) fn relational_expression_value(
                     let start = start
                         .parse::<i64>()
                         .map_err(|_| SessionError::new("substring start must be an integer"))?;
-                    let chars = value.chars().collect::<Vec<_>>();
+                    let binary = super::row_codec::binary_runtime_bytes(&value);
+                    let chars = binary.as_ref().map_or_else(
+                        || value.chars().collect::<Vec<_>>(),
+                        |bytes| bytes.iter().map(|byte| char::from(*byte)).collect(),
+                    );
                     let offset = if start > 0 {
                         usize::try_from(start - 1).unwrap_or(usize::MAX)
                     } else if start < 0 {
@@ -3056,6 +3066,18 @@ pub(super) fn relational_expression_value(
                     } else {
                         chars.len().saturating_sub(offset)
                     };
+                    if binary.is_some() {
+                        return Ok(Some(format!(
+                            "{}{}",
+                            super::row_codec::BINARY_RUNTIME_PREFIX,
+                            chars
+                                .into_iter()
+                                .skip(offset)
+                                .take(length)
+                                .map(|byte| format!("{:02X}", byte as u8))
+                                .collect::<String>()
+                        )));
+                    }
                     Ok(Some(
                         chars
                             .into_iter()

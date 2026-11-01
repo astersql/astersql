@@ -286,6 +286,25 @@ pub(super) fn insert_default_runtime_value(
         {
             return Some(expression[start..=end].to_owned());
         }
+        // Keep UUID_TO_BIN's evaluated bytes in the existing reversible carrier.
+        // BINARY padding belongs here, never in the stored expression SQL.
+        if lower == "uuid_to_bin(uuid())" {
+            let mut bytes = uuid::Uuid::new_v4().as_bytes().to_vec();
+            if is_binary_string_column(column)
+                && column.GetType() == astersql_parser_mysql::r#type::TypeString
+                && column.GetFlen() > 0
+                && column.GetFlen() as usize > bytes.len()
+            {
+                bytes.resize(column.GetFlen() as usize, 0);
+            }
+            return Some(format!(
+                "{BINARY_RUNTIME_PREFIX}{}",
+                bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect::<String>()
+            ));
+        }
         if lower.starts_with("uuid") {
             return Some(uuid::Uuid::new_v4().to_string());
         }

@@ -79,6 +79,8 @@ RustCodeGraph 的精确 `callees` 为 `execute_alter_table` 找到 `stats_table`
 
 ## 与 Go 版本的对应关系
 
+- 来源 `4150cef7a280246667f8bf0b97c6cd53bcd09f56` 原测试的 ALTER COLUMN SET DEFAULT 使用既有 `BuildColumnInfoFromAST` 验证默认值，再经 `Domain::ddl_modify_column` 发布持久化元数据。只替换当前默认值及表达式标记，保留原始默认值、类型、ID、索引及其他列属性；DROP DEFAULT 仍由既有入口决定。本提交未新增DDL状态机。
+
 两者的架构边界不同：Go `pkg/ddl/executor.go` 直接处于完整 DDL executor/owner 体系；Rust 文件还承担 mock/runtime catalog、局部临时表和运行时作业快照的兼容接线，并在 `persistent_actions_enabled()` 下把 Go action type 参数序列化后交给 normal DDL owner。
 
 已确认的限制包括：部分 ALTER 类型明确要求 full DDL session ABI，CACHE/NOCACHE 无完整异步实现，schema version retry 是同步模拟。

@@ -591,6 +591,7 @@ fn pad_binary_default_value(column: &mut model::ColumnInfo) {
     if column.GetType() != model::mysql::TypeString
         || column.GetCharset() != "binary"
         || column.GetFlen() <= 0
+        || column.DefaultIsExpr
     {
         return;
     }
