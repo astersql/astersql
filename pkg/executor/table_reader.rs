@@ -512,7 +512,20 @@ impl<B: TableReaderBackend> TableReaderExecutor<B> {
                 .open(None, first_result);
             return Ok(());
         }
+        // buildRespForGroupedRanges replaces kvRanges on every call. Preserve
+        // the first half so UnionScan can see transaction-local rows on both
+        // sides of the unsigned clustered-primary-key boundary.
+        let first_kv_ranges = std::mem::take(&mut self.kvRanges);
         let second_result = self.buildRespForGroupedRanges(&context, &second_part)?;
+        // The split follows scan order, while UnionScan reverses ranges for a
+        // descending scan. Keep its input in ascending handle order.
+        if self.desc {
+            self.kvRanges.extend(first_kv_ranges);
+        } else {
+            let mut all_kv_ranges = first_kv_ranges;
+            all_kv_ranges.append(&mut self.kvRanges);
+            self.kvRanges = all_kv_ranges;
+        }
         self.resultHandler
             .as_mut()
             .expect("table result handler must be initialized")

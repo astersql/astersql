@@ -46,7 +46,7 @@
 4. `corColInAccess` 为真时从 `plans[0]` 重新解析访问范围；若设置 `groupByColIdxs`，同步重建 `groupedRanges`。
 5. 范围被统一为组，然后由 `split_ranges_across_int64_boundary` 拆为两段。该步骤只在后端判定有序、方向和 common handle 等条件需要时产生双段，目的是修正无符号主键的物理键序与 SQL 数值序差异。
 6. dummy 分支按扫描方向必要时交换两段，只调用 `buildKVReq` 收集键范围并立即返回，不创建结果流。
-7. 正常分支分别调用 `buildRespForGroupedRanges`。只有一段时直接设为主结果；存在两段时第一段成为 `optionalResult`，第二段成为主结果。
+7. 正常分支分别调用 `buildRespForGroupedRanges`。只有一段时直接设为主结果；存在两段时第一段成为 `optionalResult`，第二段成为主结果。由于每次构建结果都会替换 `kvRanges`，第二次调用前会暂存第一段，成功后按 UnionScan 期望的升序 handle 顺序合并两段：ASC 为第一段后接第二段，DESC 为第二段后接第一段；第二段构建错误仍立即传播，不发布不完整结果。
 
 ### 请求与结果构建
 
@@ -66,7 +66,7 @@
 
 - 配置态：`startTS`、`txnScope`、`readReplicaScope`、`isStaleness`、`storeType`、`keepOrder`、`desc`、`paging`、`batchCop` 和 `netDataSize` 在请求创建时被复制到 `TableReaderRequestOptions`。
 - 计划态：`dagPB` 可能在每次 `Open` 因相关列或分区 ID 原地更新；`plans[0]` 被用于解析相关访问范围、根计划信息及关闭时上报，因此构造方必须保证 `plans` 非空。
-- 范围态：`ranges` 是普通逻辑范围，`groupedRanges` 是按访问列分组后的范围，`kvRanges` 是已经编码并排序的实际键范围。`Open` 会填充后者，`Close` 会清空它。
+- 范围态：`ranges` 是普通逻辑范围，`groupedRanges` 是按访问列分组后的范围，`kvRanges` 是已经编码并排序的实际键范围。跨无符号 int64 边界的正常扫描会保留并合并两次请求构建产生的范围，使 UnionScan 能读取事务内边界两侧的数据；`Close` 会清空它。
 - 结果态：`resultHandler: Option<_>` 在 `Open` 初始化。正常 `Next` 假定它存在；生命周期调用顺序必须是 `Open -> Next* -> Close`。
 - 虚拟列态：`virtualColumnIndex` 与 `virtualColumnRetFieldTypes` 由 `buildVirtualColumnInfo` 成对刷新，二者的顺序必须一致。
 - 内存态：`memUsage` 估算执行器本体、`ranges` 指针容量、每个 range、`kvRanges` 与 DAG；注释和实现均未声称覆盖所有间接分配。
@@ -111,9 +111,10 @@ Rust 的结构性差异主要来自移植边界：
 - Go 直接依赖 `sessionctx.Context`、`distsql.RequestBuilder`、`kv.Request`、`chunk.Chunk` 等具体类型；Rust 通过 `TableReaderBackend` 关联类型和方法表达同一操作。
 - Go 的可空接口/指针映射为 Rust `Option`，结果和错误映射为 `Result`，共享注入对象使用 `Arc<dyn Trait>`。
 - Go `getDDLOwner` 保存可选闭包；Rust context 保存布尔能力标志并在需要时回调 backend。
+- Go 提交 `96f2b0da322a799cff26ff9e057c1849a8bb61d7` 在两段 `buildRespForGroupedRanges` 调用之间保存首段 `kvRanges`，并按扫描方向合并。Rust 在 `TableReaderExecutor::Open` 保留同一状态转换和第二段错误传播；独立回归覆盖 `9`、`i64::MAX`、`i64::MAX + 1`、`u64::MAX` 的 ASC/DESC 两段范围。
 - Rust 文件目前没有具体 backend 和生产调用点，因此尚不能把 Go 已运行的 executor 行为等同为 Rust 已上线行为。
 
-测试证据也存在迁移差异。Rust [`table_readers_required_rows_test.rs`](table_readers_required_rows_test.rs) 虽沿用同名文件，但当前只构造 `distsql::IndexReaderExecutor`；它不能作为本文件 TableReader 的直接回归测试。
+测试证据也存在迁移差异。Rust [`table_readers_required_rows_test.rs`](table_readers_required_rows_test.rs) 既保留 `distsql::IndexReaderExecutor` 的 required-rows 夹具，也通过 `Port96Backend` 直接构造本文件的 `TableReaderExecutor`，覆盖跨边界范围保留和第二段错误传播；该后端仅用于测试，不代表生产接线。
 
 ## 扩展指南
 
