@@ -926,3 +926,45 @@ fn pg10_08_real_constraint_identity() {
     pg.execute("DROP TABLE conflict_other").unwrap();
     pg.execute("DROP TABLE conflict_doc").unwrap();
 }
+
+#[test]
+fn pg10_09_storage_failure_is_not_a_conflict() {
+    let (domain, observer) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE conflict_storage(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL)")
+        .unwrap();
+    pg.execute("INSERT INTO conflict_storage VALUES (1,'a',10),(2,'b',20)")
+        .unwrap();
+    for returning in [false, true] {
+        pg.InjectNextDmlCommitError("pg10_09 storage commit failure");
+        let sql = format!(
+            "INSERT INTO conflict_storage VALUES (3,'c',30),(4,'d',40) ON CONFLICT DO NOTHING{}",
+            if returning {
+                " RETURNING id,email,v"
+            } else {
+                ""
+            }
+        );
+        let error = match pg.execute(&sql) {
+            Err(error) => error,
+            Ok(_) => panic!("storage failure must not become DO NOTHING success"),
+        };
+        assert!(
+            error.to_string().contains("pg10_09 storage commit failure"),
+            "{error}"
+        );
+        for session in [&pg, &observer] {
+            let mut results = session
+                .execute("SELECT id,email,v FROM conflict_storage ORDER BY id")
+                .unwrap();
+            assert_eq!(results[0].next_row().unwrap().unwrap(), ["1", "a", "10"]);
+            assert_eq!(results[0].next_row().unwrap().unwrap(), ["2", "b", "20"]);
+            assert!(results[0].next_row().unwrap().is_none());
+        }
+        pg.execute("INSERT INTO conflict_storage VALUES (3,'c',30) ON CONFLICT DO NOTHING")
+            .unwrap();
+        pg.execute("DELETE FROM conflict_storage WHERE id=3")
+            .unwrap();
+    }
+    pg.execute("DROP TABLE conflict_storage").unwrap();
+}
