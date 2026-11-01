@@ -459,6 +459,7 @@ impl Default for SystemSessionCallbacks {
 /// A single common system pool, wrapped by the existing DDL pool.
 /// Go's five-session capacity limits idle resources, not concurrent borrowers.
 pub struct SystemSessionPool {
+    global_vars: Arc<Mutex<Option<astersql_domain_crossks::global_vars::GlobalVarCache>>>,
     pool: Arc<ddl::Pool>,
     builds: Arc<Mutex<MViewBuildContexts>>,
     storage_class_transitions:
@@ -476,6 +477,8 @@ impl SystemSessionPool {
         callbacks: SystemSessionCallbacks,
         validator: Option<Arc<astersql_infoschema_isvalidator::Validator>>,
     ) -> Arc<Self> {
+        let global_vars = Arc::new(Mutex::new(None));
+        let session_globals = global_vars.clone();
         let resources = Arc::new(SystemResources {
             mview_builds: Arc::new(Mutex::new(MViewBuildContexts::default())),
             storage_class_transitions: Arc::new(
@@ -485,11 +488,17 @@ impl SystemSessionPool {
             pool: sys::NewAdvancedSessionPool(5, move || {
                 let domain = Arc::clone(&domain);
                 let validator = validator.clone();
+                let global_vars = session_globals.clone();
                 Ok(Box::new(ConcreteSystemContext {
                     id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
                     worker: sys::ThreadBoundSession::new(
                         move || {
-                            let session = ConcreteSession::new(domain);
+                            let accessor = global_vars.lock().unwrap().clone();
+                            let session = ConcreteSession::new_with_global_accessor(
+                                domain,
+                                astersql_parser::ast::SqlDialect::MySQL,
+                                accessor,
+                            );
                             *session.schema_validator.borrow_mut() = validator;
                             Ok(session)
                         },
@@ -503,10 +512,17 @@ impl SystemSessionPool {
             }),
         });
         Arc::new(Self {
+            global_vars,
             builds: resources.mview_builds.clone(),
             storage_class_transitions: resources.storage_class_transitions.clone(),
             pool: Arc::new(ddl::Pool::new(resources)),
         })
+    }
+    pub(super) fn install_global_vars(
+        &self,
+        cache: astersql_domain_crossks::global_vars::GlobalVarCache,
+    ) {
+        *self.global_vars.lock().unwrap() = Some(cache);
     }
     pub(crate) fn storage_class_transition_manager(
         &self,
@@ -562,6 +578,12 @@ impl SystemSessionPool {
         }
     }
     pub fn close(&self) {
+        // A refreshing query may be creating a pool resource and reading this
+        // slot. Drop the slot lock before joining that query's worker.
+        let cache = self.global_vars.lock().unwrap().clone();
+        if let Some(cache) = cache {
+            cache.close();
+        }
         self.stop_dxf_worker();
         self.pool.close();
     }
@@ -578,6 +600,33 @@ pub struct SystemSessionLease {
     context: Arc<dyn ddl::SessionContext>,
 }
 impl SystemSessionLease {
+    #[cfg(test)]
+    pub(super) fn target_global_var_for_test(&self, name: &str) -> Result<String, String> {
+        let name = name.to_owned();
+        self.concrete()
+            .call(move |session| {
+                session
+                    .session_vars
+                    .GlobalVarsAccessor
+                    .get_global_sys_var(&name)
+                    .map_err(sys_error)
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    pub(super) fn target_global_hook_for_test(&self, name: &str) -> Result<String, String> {
+        let name = name.to_owned();
+        self.concrete()
+            .call(move |session| {
+                session
+                    .session_vars
+                    .GetGlobalSystemVar((), &name)
+                    .map_err(sys_error)
+            })
+            .map_err(|e| e.to_string())
+    }
+
     pub(super) fn persistent_history(
         &self,
         id: i64,

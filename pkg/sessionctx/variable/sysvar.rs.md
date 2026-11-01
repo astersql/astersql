@@ -108,3 +108,9 @@ Rust 的 `sysvar_test.rs::TestGlobalSystemVariableInitialValue` 增加了显式 
 - 接入 `newExecConcurrencySysVar` 到正式注册表前，必须处理精简 `SysVar` 与 `variable.rs::SysVar` 的类型差异，并补齐 Go `Validation` 弃用告警；不要用当前测试模型替换完整注册链。
 - 接入 TiFlash/流水线 setter 到正式会话时，应在 `sysvar_builtins.rs` 的正式 `SetSessionHook` 中完成适配，并验证正式 `SessionVars` 字段映射。相关测试继续放在独立 `*_test.rs` 文件。
 - 性能上，默认值匹配为常数规模；流水线自定义解析会分配小写字符串和每项 `Vec`。若该路径变成高频路径再考虑消除分配，优化不得改变 Go 兼容的分隔行为和失败原子性。
+
+### 来源 f95ec32c8c 的局部增量
+
+SysVarCacheValues 依据真实 GetSysVars 注册表生成 session/global 两份缓存，保留配置初始化值、默认值、SkipInit 和 HasGlobalScope 规则；Starter 只覆盖表中已存在的 max_allowed_packet。该函数不调用 SetGlobal，供跨 keyspace 缓存安全复用。对应 Go 新增 SysVarCacheValues 与 overrideSysVarWithConfig。
+
+Starter 判定复用进程部署模式 deploymode::IsStarter（包含 NextGen 条件），不能只看 Config.deploy_mode；Classic 与依赖 nextgen feature 的两次聚焦验证分别证明不覆盖/覆盖已有 packet 行。

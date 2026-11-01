@@ -816,3 +816,187 @@ fn crossks_align_submit_only_reads_go_structured_history_error() {
 
     domain.close();
 }
+
+#[test]
+fn port_f95ec32c8c_target_global_variables_real_sql() {
+    use astersql_domain_crossks::global_vars::GlobalVarCache;
+    use astersql_sessionctx_variable::GlobalVarAccessor;
+    let (domain, session) = CreateAnalyzeSession().unwrap();
+    session
+        .execute("CREATE DATABASE IF NOT EXISTS mysql")
+        .unwrap();
+    session.execute("CREATE TABLE IF NOT EXISTS mysql.global_variables (variable_name VARCHAR(64) PRIMARY KEY, variable_value VARCHAR(1024))").unwrap();
+    session.execute("CREATE TABLE IF NOT EXISTS mysql.tidb (variable_name VARCHAR(64) PRIMARY KEY, variable_value VARCHAR(1024), comment VARCHAR(1024))").unwrap();
+    session
+        .execute("REPLACE INTO mysql.global_variables VALUES ('cte_max_recursion_depth', '7')")
+        .unwrap();
+    session
+        .execute("INSERT INTO mysql.tidb (VARIABLE_NAME,VARIABLE_VALUE,COMMENT) VALUES ('tikv_gc_life_time','10m0s','') ON DUPLICATE KEY UPDATE VARIABLE_VALUE='10m0s'")
+        .unwrap();
+    session
+        .execute("REPLACE INTO mysql.global_variables VALUES ('sql_mode', 'ANSI_QUOTES')")
+        .unwrap();
+    // Preserve the existing pool-local initialization contract independently
+    // of the newly introduced target GLOBAL accessor.
+    let ordinary_pool = super::system_session::SystemSessionPool::new(domain.clone());
+    // The cache loader checks out and returns a resource before the caller's
+    // checkout; mirror that existing reset lifecycle in the ordinary pool.
+    drop(ordinary_pool.acquire().unwrap());
+    let ordinary_mode = ordinary_pool
+        .acquire()
+        .unwrap()
+        .ddl_session_variables()
+        .unwrap()
+        .sql_mode;
+    ordinary_pool.close();
+    let pool = super::system_session::SystemSessionPool::new(domain.clone());
+    let weak = Arc::downgrade(&pool);
+    let etcd = Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default());
+    let mut cache = GlobalVarCache::new(
+        "target".into(),
+        Arc::new(move |sql| {
+            weak.upgrade()
+                .ok_or("closed pool")?
+                .acquire()?
+                .query(sql.to_owned())
+        }),
+        Some(etcd.clone()),
+    );
+    pool.install_global_vars(cache.clone());
+    assert!(!cache.refresh_started());
+    assert_eq!(
+        cache.get_global_sys_var("cte_max_recursion_depth").unwrap(),
+        "7"
+    );
+    assert!(cache.refresh_started());
+    assert_eq!(cache.get_global_sys_var("sql_mode").unwrap(), "ANSI_QUOTES");
+    assert_eq!(
+        cache.get_tidb_table_value("tikv_gc_life_time").unwrap(),
+        "10m0s"
+    );
+    assert!(
+        cache
+            .get_tidb_table_value("missing")
+            .unwrap_err()
+            .to_string()
+            .contains("not found")
+    );
+    let context = astersql_sessionctx_variable::Context::default();
+    assert!(
+        cache
+            .set_global_sys_var(&context, "cte_max_recursion_depth", "8")
+            .unwrap_err()
+            .to_string()
+            .contains("cannot set")
+    );
+    assert!(cache.set_instance_sys_var(&context, "x", "8").is_err());
+    assert!(
+        cache
+            .set_global_sys_var_only(&context, "x", "8", false)
+            .is_err()
+    );
+    assert!(cache.set_tidb_table_value("x", "8", "").is_err());
+    assert!(cache.get_global_sys_var("unregistered_f95ec32c8c").is_err());
+    // The actual pooled session carries the same accessor, including for an
+    // existing pool resource returned and acquired again.
+    let lease = pool.acquire().unwrap();
+    assert_eq!(
+        lease
+            .target_global_var_for_test("cte_max_recursion_depth")
+            .unwrap(),
+        "7"
+    );
+    assert_eq!(
+        lease.ddl_session_variables().unwrap().sql_mode,
+        ordinary_mode
+    );
+    drop(lease);
+    session.execute("UPDATE mysql.global_variables SET variable_value='abc' WHERE variable_name='cte_max_recursion_depth'").unwrap();
+    cache.reload().unwrap();
+    assert_eq!(
+        cache.get_global_sys_var("cte_max_recursion_depth").unwrap(),
+        "1000"
+    );
+    // Registering a variable after first load returns its default immediately.
+    astersql_sessionctx_variable::RegisterSysVar(astersql_sessionctx_variable::SysVar {
+        Name: "port_f95ec32c8c_late".into(),
+        Value: "late".into(),
+        Scope: astersql_sessionctx_vardef::ScopeGlobal,
+        ..Default::default()
+    });
+    assert_eq!(
+        cache.get_global_sys_var("port_f95ec32c8c_late").unwrap(),
+        "late"
+    );
+    astersql_sessionctx_variable::UnregisterSysVar("port_f95ec32c8c_late");
+    // The cache returns persisted data without invoking an instance getter.
+    // Model the Go test's already-registered check-constraint variable at the
+    // existing registry boundary; do not implement an unrelated feature here.
+    let hook_name = "port_f95ec32c8c_instance_hook";
+    let instance_value = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let getter = instance_value.clone();
+    let setter = instance_value.clone();
+    astersql_sessionctx_variable::RegisterSysVar(astersql_sessionctx_variable::SysVar {
+        Name: hook_name.into(),
+        Value: "OFF".into(),
+        Scope: astersql_sessionctx_vardef::ScopeGlobal,
+        Type: astersql_sessionctx_vardef::TypeBool,
+        GetGlobal: Some(Arc::new(move |_, _| {
+            Ok(astersql_sessionctx_variable::BoolToOnOff(
+                getter.load(std::sync::atomic::Ordering::SeqCst),
+            ))
+        })),
+        SetGlobal: Some(Arc::new(move |_, _, value| {
+            setter.store(
+                astersql_sessionctx_variable::TiDBOptOn(value),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Ok(())
+        })),
+        ..Default::default()
+    });
+    let mut vars = astersql_sessionctx_variable::SessionVars::new(Box::new(cache.clone()));
+    let definition = astersql_sessionctx_variable::GetSysVar(hook_name).unwrap();
+    definition.SetGlobal.as_ref().unwrap()(&context, &mut vars, "ON").unwrap();
+    assert!(instance_value.load(std::sync::atomic::Ordering::SeqCst));
+    session
+        .execute(&format!(
+            "REPLACE INTO mysql.global_variables VALUES ('{hook_name}', 'ON')"
+        ))
+        .unwrap();
+    instance_value.store(false, std::sync::atomic::Ordering::SeqCst);
+    cache.reload().unwrap();
+    assert_eq!(cache.get_global_sys_var(hook_name).unwrap(), "ON");
+    assert_eq!(
+        pool.acquire()
+            .unwrap()
+            .target_global_hook_for_test(hook_name)
+            .unwrap(),
+        "OFF"
+    );
+    assert_eq!(
+        astersql_sessionctx_variable::GetSysVar(hook_name)
+            .unwrap()
+            .GetGlobalFromHook(&context, &mut vars)
+            .unwrap(),
+        "OFF"
+    );
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(&context, astersql_sessionctx_vardef::TiDBGCLifetime)
+            .unwrap(),
+        "10m0s"
+    );
+    astersql_sessionctx_variable::UnregisterSysVar(hook_name);
+    // A real SQL failure leaves the last complete cache usable.
+    session
+        .execute("DROP TABLE mysql.global_variables")
+        .unwrap();
+    assert!(cache.reload().is_err());
+    assert_eq!(
+        cache.get_global_sys_var("cte_max_recursion_depth").unwrap(),
+        "1000"
+    );
+    cache.close();
+    pool.close();
+    domain.close();
+}

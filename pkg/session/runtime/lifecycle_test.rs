@@ -746,3 +746,77 @@ fn port_ff54393a0c_restores_actual_statement_tracker_to_explicit_baseline() {
     );
     assert_eq!(session.LastStatementHintsForTest().1, 0);
 }
+
+#[test]
+fn port_f95ec32c8c_runtime_global_cache_lifecycle_and_system_keyspace() {
+    use astersql_ddl_schemaver::EtcdClient as _;
+    use astersql_sessionctx_variable::GlobalVarAccessor;
+    for target in ["tenant-globals", "SYSTEM"] {
+        let origin = Fixture::new();
+        let origin_session = super::ConcreteSession::new(origin.domain.clone());
+        origin_session.execute("UPDATE mysql.global_variables SET variable_value='13' WHERE variable_name='cte_max_recursion_depth'").unwrap();
+        let mut origin_rows = origin_session.execute("SELECT variable_value FROM mysql.global_variables WHERE variable_name='cte_max_recursion_depth'").unwrap();
+        assert_eq!(
+            origin_rows[0].next_row().unwrap().unwrap(),
+            vec!["13".to_owned()]
+        );
+        origin_rows[0].close().unwrap();
+        let fixture = Fixture::new();
+        let session = super::ConcreteSession::new(fixture.domain.clone());
+        session.execute("REPLACE INTO mysql.global_variables (variable_name, variable_value) VALUES ('cte_max_recursion_depth', '7')").unwrap();
+        fixture
+            .factory(false)
+            .install_on_domain(&origin.domain, "origin".into())
+            .unwrap();
+        let manager = origin.domain.cross_ks_manager().unwrap();
+        let handle = manager.acquire(target, "port-f95ec32c8c").unwrap();
+        let runtime = manager.get(target).unwrap();
+        let cache = origin.domain.get_ks_global_var_accessor(target).unwrap();
+        assert!(!runtime.global_var_refresh_started());
+        assert_eq!(
+            cache.get_global_sys_var("cte_max_recursion_depth").unwrap(),
+            "7"
+        );
+        assert!(runtime.global_var_refresh_started());
+        session.execute("UPDATE mysql.global_variables SET variable_value='abc' WHERE variable_name='cte_max_recursion_depth'").unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            fixture
+                .protocol
+                .Put(
+                    &astersql_ddl_schemaver::Context::Background(),
+                    astersql_domain_crossks::global_vars::SYS_VAR_CACHE_KEY,
+                    "",
+                    None,
+                )
+                .unwrap();
+            if cache.get_global_sys_var("cte_max_recursion_depth").unwrap() == "1000" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "target cache did not observe notification"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(manager.active_holder_len(target), Some(1));
+        handle.release();
+        assert_eq!(manager.active_holder_len(target), Some(0));
+        manager.close_ks(target);
+        assert!(runtime.is_closed());
+        assert!(runtime.global_var_refresh_started());
+        assert_eq!(
+            runtime
+                .global_var_accessor()
+                .unwrap()
+                .get_global_sys_var("cte_max_recursion_depth")
+                .unwrap(),
+            "1000"
+        );
+        fixture
+            .domain
+            .storage_handle()
+            .with_storage(|store| store.CurrentVersion("global"))
+            .unwrap();
+    }
+}

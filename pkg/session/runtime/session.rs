@@ -1677,6 +1677,15 @@ impl ConcreteSession {
 
     /// Fix the identity before any connection SQL is parsed.
     pub fn new_with_dialect(domain: Arc<Domain>, sql_dialect: ast::SqlDialect) -> Self {
+        Self::new_with_global_accessor(domain, sql_dialect, None)
+    }
+
+    pub(super) fn new_with_global_accessor(
+        domain: Arc<Domain>,
+        sql_dialect: ast::SqlDialect,
+        accessor: Option<astersql_domain_crossks::global_vars::GlobalVarCache>,
+    ) -> Self {
+        let cross_keyspace = accessor.is_some();
         astersql_planner_core_operator_logicalop::InstallPredicateSimplificationPassthrough();
         let mut session_vars = astersql_sessionctx_variable::session::SessionVars::default();
         session_vars.SetCurrentDB("test");
@@ -1698,7 +1707,7 @@ impl ConcreteSession {
         let mut mem_tracker = NewTracker(LabelForSession, -1);
         mem_tracker.IsRootTrackerOfSess = true;
         let instance_plan_cache = runtime_instance_plan_cache(&domain);
-        let session = Self {
+        let mut session = Self {
             inner: Rc::new(ConcreteSessionInner {
                 sql_dialect,
                 statement_ru_scope_depth: Cell::new(0),
@@ -1739,15 +1748,25 @@ impl ConcreteSession {
                 trace_statement_count: AtomicU64::new(0),
             }),
         };
+        // Match Go createCrossKSSession: finish ordinary session-local
+        // initialization before installing the target accessor. Validation
+        // during construction must not recursively enter a cold cache load.
         session.load_persisted_global_variables();
-        astersql_util_memory::global_arbitrator::InitializeGlobalMemArbitratorMode(
-            session
-                .session_vars
-                .GetSystemVar(astersql_sessionctx_vardef::TiDBMemArbitratorMode)
-                .unwrap_or_else(|| {
-                    astersql_sessionctx_vardef::DefTiDBMemArbitratorModeText.to_owned()
-                }),
-        );
+        if let Some(accessor) = accessor {
+            Arc::get_mut(&mut session.session_vars)
+                .expect("session variables are uniquely owned during construction")
+                .GlobalVarsAccessor = Box::new(accessor);
+        }
+        if !cross_keyspace {
+            astersql_util_memory::global_arbitrator::InitializeGlobalMemArbitratorMode(
+                session
+                    .session_vars
+                    .GetSystemVar(astersql_sessionctx_vardef::TiDBMemArbitratorMode)
+                    .unwrap_or_else(|| {
+                        astersql_sessionctx_vardef::DefTiDBMemArbitratorModeText.to_owned()
+                    }),
+            );
+        }
         session
     }
 

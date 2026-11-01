@@ -356,6 +356,18 @@ impl RuntimeFactory for KeyspaceSessionFactory {
             Some(t) => t,
             None => (self.transport)(keyspace)?,
         };
+        let pool = Arc::downgrade(&target.pool);
+        let global_vars = crossks::global_vars::GlobalVarCache::new(
+            keyspace.to_owned(),
+            Arc::new(move |sql| {
+                pool.upgrade()
+                    .ok_or("target session pool is closed")?
+                    .acquire()?
+                    .query(sql.to_owned())
+            }),
+            Some(transport.schema.clone()),
+        );
+        target.pool.install_global_vars(global_vars.clone());
         let protocol = version::NewEtcdSyncer(transport.schema.clone(), id);
         let context = version::Context::Background();
         let lifetime = Arc::new(RuntimeLifetime {
@@ -481,6 +493,7 @@ impl RuntimeFactory for KeyspaceSessionFactory {
             Arc::new(crossks::DdlClient::new(Arc::new(backend))),
             vec![lifetime],
         ));
+        runtime.install_global_vars(global_vars);
         let runtime_store: Arc<dyn crossks::Store> = target.store.clone();
         super::modify_column_dist_backfill::register_target_runtime(&runtime_store, &target.domain);
         target.transferred = true;

@@ -140,3 +140,7 @@ Rust 对 Go 的主要替代和差异如下：
 扩展索引冲突解码时，优先复用或建立真正的 Rust index datum codec；当前 `GenKeyExistsErr` 的字节偏移和分隔符策略只适合已建模输入。应为 keyspace 前缀、多列、前缀索引、binary、非法 UTF-8、短键和空列分别补独立测试，并与 `pkg/ddl/ingest/util.rs` 的错误映射保持一致。
 
 全局状态修改需考虑测试隔离：修改 `KEYSPACE_NAME` 或模拟器 GC 开关的测试应保存并恢复原值。watch 并发扩展则需先处理持锁阻塞发送问题；若需要广播、前缀监听或取消，应改变数据结构并加入多线程生命周期测试。
+
+### 来源 f95ec32c8c 的局部增量
+
+SysVarCacheKey 统一导出 /tidb/sysvars，供 crossks 的通知 watch 复用；对应 Go util.go 新增常量。

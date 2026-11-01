@@ -2664,3 +2664,70 @@ fn query_cop_store_limit_matches_go_defaults_bounds_and_session_hook() {
     assert_eq!(vars.system(vardef::TiDBQueryCopStoreLimit), Some("17"));
     assert_eq!(vars.QueryCopStoreLimit, 17);
 }
+
+#[test]
+#[serial]
+fn port_f95ec32c8c_sysvar_cache_values() {
+    for (name, scope, value, config) in [
+        (
+            "test_cache_session_var",
+            vardef::ScopeGlobal | vardef::ScopeSession,
+            "a",
+            false,
+        ),
+        ("test_cache_global_var", vardef::ScopeGlobal, "b", false),
+        ("test_cache_config_var", vardef::ScopeGlobal, "c", true),
+    ] {
+        RegisterSysVar(SysVar {
+            Name: name.into(),
+            Scope: scope,
+            Value: value.into(),
+            IsInitedFromConfig: config,
+            ..Default::default()
+        });
+    }
+    let mut rows = HashMap::from([
+        ("test_cache_session_var".into(), "x".into()),
+        ("test_cache_global_var".into(), "y".into()),
+        ("test_cache_config_var".into(), "z".into()),
+    ]);
+    let (session, global) = sysvar::SysVarCacheValues(&mut rows);
+    assert_eq!(session["test_cache_session_var"], "x");
+    assert_eq!(global["test_cache_session_var"], "x");
+    assert!(!session.contains_key("test_cache_global_var"));
+    assert_eq!(global["test_cache_global_var"], "y");
+    assert_eq!(global["test_cache_config_var"], "c");
+    let saved = config::get_global_config();
+    let mut starter = (*saved).clone();
+    starter.deploy_mode = config::DeployMode::Starter;
+    starter.max_allowed_packet = 123456;
+    config::store_global_config(starter);
+    let saved_mode = deploymode::Get();
+    if kerneltype::IsNextGen() {
+        deploymode::Set(deploymode::Starter).unwrap();
+    }
+    let mut packet = HashMap::from([(vardef::MaxAllowedPacket.to_owned(), "9".to_owned())]);
+    let _ = sysvar::SysVarCacheValues(&mut packet);
+    assert_eq!(
+        packet[vardef::MaxAllowedPacket],
+        if kerneltype::IsNextGen() {
+            "123456"
+        } else {
+            "9"
+        }
+    );
+    let mut absent = HashMap::new();
+    let _ = sysvar::SysVarCacheValues(&mut absent);
+    assert!(!absent.contains_key(vardef::MaxAllowedPacket));
+    config::store_global_config((*saved).clone());
+    if kerneltype::IsNextGen() {
+        deploymode::Set(saved_mode).unwrap();
+    }
+    for name in [
+        "test_cache_session_var",
+        "test_cache_global_var",
+        "test_cache_config_var",
+    ] {
+        UnregisterSysVar(name);
+    }
+}

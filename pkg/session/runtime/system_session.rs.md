@@ -127,3 +127,13 @@ RustCodeGraph 对 `acquire_with_cancellation` 确认其构造 `SystemSessionLeas
 - 新增 pool 共享缓存必须明确 owner epoch 是否使其失效、由谁关闭、是否允许跨 session 复用，并放入 `MViewBuildContexts` 或独立受控资源，而不是静态可变状态。
 - 测试应放在独立文件。池/事务/回调行为优先扩展 `pkg/session/tests/system_session.rs`；普通 DDL 作业扩展同目录 `normal_ddl_*_test.rs`、`lifecycle_test.rs` 或 `durable_scheduler_test.rs`；回填还应同步 `pkg/ddl/tests/partition/reorg_partition_test.rs` 等最接近行为的测试。不要把测试内嵌进本生产文件；现有末尾 `#[cfg(test)]` 仅通过 `#[path]` 引用独立测试文件。
 - 兼容风险主要是 Go 池生命周期、job retry 分类和 DDL transaction ownership；正确性风险集中在脏事务复用、MDL 注册泄漏、唯一索引冲突与物化视图状态恢复；性能风险集中在 pool lock 范围、每行编码/表达式求值、批次内存和不必要的新 session/线程。
+
+### 来源 f95ec32c8c 的局部增量
+
+SystemSessionPool 持有可安装的共享目标缓存槽位；创建 ConcreteSession 时克隆访问器，调用 new_with_global_accessor，完成会话局部初始化后才替换访问器。普通池槽位为空，行为不变。SystemSessionLease 的 target_global_var_for_test 仅测试可见，用实际线程绑定会话读取 GlobalVarsAccessor；查询仍经真实 SQL、MVCC 与池资源归还路径。对应 createCrossKSSession 的最小局部接线。
+
+池 close 也幂等取消并 join 已安装的缓存，以覆盖工厂初始化失败时 PreparedTarget 的回滚路径；成功 runtime 的 SessionManager 会先关闭同一缓存。
+
+关闭时先克隆缓存再释放槽位 Mutex，随后取消并 join，避免刷新 SQL 创建池资源时等待同一槽位锁。
+
+关闭保留缓存槽位，避免并发创建的目标资源误用普通访问器/实例初始化路径；缓存查询弱引用池，不形成引用环。

@@ -97,3 +97,7 @@ Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、ch
 ## 验证依据
 
 `canonical_domain_test::port_d0665b0713_drop_schema_external_ttl_failure_restores_registrations_and_metadata` 使用真实内存 KV 事务和生产 Domain，外部 Manager 是边界替身。覆盖启用/禁用/无 TTL，原删除错误及补偿失败，逆序恢复、错误时元数据保留，以及随后成功删除与统计目录清理。修复前原同名无前缀用例通过，摘要改造后保持原断言并扩展成功分支；命令和数量保存在独立提交正文。
+
+### 来源 f95ec32c8c 的局部增量
+
+get_ks_global_var_accessor 通过已安装的跨 keyspace Manager 获取或创建目标 runtime，并返回其只读缓存；Manager 不存在、创建失败或访问器未安装时传播错误。对应 Go GetKSGlobalVarAccessor；不读取当前 Domain 的全局变量。

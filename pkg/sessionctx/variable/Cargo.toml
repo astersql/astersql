@@ -15,6 +15,7 @@ url = "2"
 chrono = "0.4"
 chrono-tz = "0.10"
 config = { package = "astersql-config", path = "../../config" }
+deploymode = { package = "astersql-config-deploymode", path = "../../config/deploymode" }
 astersql-config-configtypes = { path = "../../config/configtypes" }
 crc = "3"
 execdetails = { package = "astersql-util-execdetails", path = "../../util/execdetails" }

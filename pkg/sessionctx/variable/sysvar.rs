@@ -406,3 +406,37 @@ fn parse_pipelined_concurrency(raw_value: &str, original_value: &str) -> Result<
     }
     Ok(concurrency as i32)
 }
+
+/// Build cache snapshots without applying instance-level global hooks.
+/// Starter's configured packet limit only replaces an existing persisted row.
+pub fn SysVarCacheValues(
+    table: &mut std::collections::HashMap<String, String>,
+) -> (
+    std::collections::HashMap<String, String>,
+    std::collections::HashMap<String, String>,
+) {
+    if deploymode::IsStarter() {
+        if let Some(value) = table.get_mut(vardef::MaxAllowedPacket) {
+            *value = config::get_global_config().max_allowed_packet.to_string();
+        }
+    }
+    let mut session = std::collections::HashMap::new();
+    let mut global = std::collections::HashMap::new();
+    for (_, sv) in crate::GetSysVars() {
+        let value = if sv.IsInitedFromConfig {
+            sv.Value.clone()
+        } else {
+            table
+                .get(&sv.Name)
+                .cloned()
+                .unwrap_or_else(|| sv.Value.clone())
+        };
+        if !sv.SkipInit() {
+            session.insert(sv.Name.clone(), value.clone());
+        }
+        if sv.HasGlobalScope() {
+            global.insert(sv.Name.clone(), value);
+        }
+    }
+    (session, global)
+}

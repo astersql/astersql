@@ -39,3 +39,5 @@ mod ddl_submit_test;
 /// 对应 Go export_test 的 Get/CloseKS 辅助测试。
 #[path = "export_test.rs"]
 mod export_test;
+
+pub mod global_vars;

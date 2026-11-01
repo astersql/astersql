@@ -120,3 +120,7 @@ Rust 相比当前 Go 实现把创建拆成 `prepare`、虚拟 server registratio
 - 修改 schema lease、cache 或 validator 时，同时检查 `SystemSchemaLoader`、cross-KS `NewCrossKSSyncer` 和普通 `schema::New` 的语义，并同步 `normal_ddl_test.rs` 中构造失败、刷新和 lifecycle 测试。
 - 对运行期 loop 错误增加可观测性时，应设计明确的 channel/status API；当前仅 `eprintln!`，直接改成 panic 或提前 drop 会改变清理与服务可用性语义。
 - 兼容性风险主要在 keyspace 隔离、SYSTEM store 所有权、etcd namespace、DDL 只提交/消费分工；性能风险主要在每个 target 的线程、连接、完整 schema load 和系统会话池数量。
+
+### 来源 f95ec32c8c 的局部增量
+
+create_with_server_info 使用目标 keyspace 的 schema EtcdClient 命名空间创建 GlobalVarCache，查询闭包弱引用目标 SystemSessionPool；在首次 acquire 前安装到会话池，并将生命周期交给 SessionManager。对应 Go cross_ks.go 的缓存构造与刷新启动。弱引用避免 pool→cache→pool 引用环；首次读取前不查询或 watch。

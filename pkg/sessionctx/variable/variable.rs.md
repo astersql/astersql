@@ -129,3 +129,7 @@ Rust 保留了 Go 的 `SysVar` 元数据布局、hook 调用次序、作用域�
 ### f137844d4f 读时间戳迁移增量
 
 来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db 的最小接线：规范变量 SessionVars::GetSessionStatesSystemVar 返回 Result<(String,bool),VariableError>，优先调用 SysVar::GetStateValue 并传播错误，否则读取已加载系统变量字符串；避免复用旧 session::SessionVars 的无错误缓存接口吞掉 DST 迁移拒绝。
+
+### 来源 f95ec32c8c 的必要局部接线
+
+GlobalVarAccessor 新增 get_global_sys_var_from_hook 默认方法，普通访问器仍委托原 get_global_sys_var；只读 runtime 缓存覆盖此方法，区分原 Go 测试的原始访问器表值与实例 GetGlobal 钩子。

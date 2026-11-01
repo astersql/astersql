@@ -22,6 +22,10 @@
 // - DDL 作业暂停、系统库判定、时区与 Raft 引擎探测；
 // - 唯一索引冲突时的 `KeyExists` 错误构造。
 
+/// Etcd notification key shared by Domain and target runtime sysvar caches.
+#[allow(non_upper_case_globals)]
+pub const SysVarCacheKey: &str = "/tidb/sysvars";
+
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

@@ -2700,12 +2700,15 @@ name = "astersql-domain-crossks"
 version = "0.1.0"
 dependencies = [
  "astersql-ddl-jobsubmit",
+ "astersql-ddl-schemaver",
+ "astersql-ddl-util",
  "astersql-domain-serverinfo",
  "astersql-infoschema-issyncer",
  "astersql-kv",
  "astersql-meta",
  "astersql-meta-model",
  "astersql-session-sessmgr",
+ "astersql-sessionctx-variable",
  "uuid",
 ]
 
@@ -9230,6 +9233,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-config",
  "astersql-config-configtypes",
+ "astersql-config-deploymode",
  "astersql-config-kerneltype",
  "astersql-kv",
  "astersql-parser-ast",

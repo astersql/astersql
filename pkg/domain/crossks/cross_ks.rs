@@ -691,6 +691,7 @@ pub struct SessionManager {
     lifecycles: Vec<Arc<dyn Lifecycle>>,
     server_info_syncer: Mutex<Option<Arc<dyn ServerInfoSyncer>>>,
     closed: AtomicBool,
+    global_vars: Mutex<Option<crate::global_vars::GlobalVarCache>>,
 }
 impl SessionManager {
     /// 组装 SessionManager 各依赖。
@@ -710,6 +711,7 @@ impl SessionManager {
             ddl_client,
             lifecycles,
             server_info_syncer: Mutex::new(None),
+            global_vars: Mutex::new(None),
             closed: AtomicBool::new(false),
         }
     }
@@ -742,6 +744,22 @@ impl SessionManager {
             cleanup.revoke_session();
         }
     }
+    /// Install the target accessor before publishing this runtime.
+    pub fn install_global_vars(&self, cache: crate::global_vars::GlobalVarCache) {
+        *self.global_vars.lock().unwrap() = Some(cache);
+    }
+    /// Share the read-only accessor used by the target pool.
+    pub fn global_var_accessor(&self) -> Option<crate::global_vars::GlobalVarCache> {
+        self.global_vars.lock().unwrap().clone()
+    }
+    /// Test observation corresponding to Go GlobalVarRefreshStarted.
+    pub fn global_var_refresh_started(&self) -> bool {
+        self.global_vars
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|cache| cache.refresh_started())
+    }
     /// 返回 InfoSchema 缓存。
     pub fn info_cache(&self) -> Arc<dyn InfoCache> {
         Arc::clone(&self.info_cache)
@@ -766,6 +784,10 @@ impl SessionManager {
     pub fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
+        }
+        let cache = self.global_vars.lock().unwrap().clone();
+        if let Some(cache) = cache {
+            cache.close();
         }
         self.session_pool.close();
         for lifecycle in self.lifecycles.iter().rev() {

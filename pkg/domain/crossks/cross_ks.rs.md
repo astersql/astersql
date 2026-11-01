@@ -101,3 +101,9 @@ Go `validateTargetKS` 未显式拒绝空 Keyspace或 closed Manager，而 Rust �
 - 修改 `SessionManager::close` 时维持幂等和当前资源顺序；特别评估 SYSTEM Store 是否共享、后台组件是否仍依赖 pool/etcd、错误是否需要从目前的 best-effort 策略升级为可观察结果。
 - 修改公开类型或依赖时同步检查 `lib.rs` 再导出、`Cargo.toml`、`pkg/session/runtime/session_factory.rs`、`crossks_runtime.rs` 和 `modify_column_dist_backfill.rs`。锁粒度变化需评估首次建 runtime 的串行成本、关闭回调重入和高并发 holder 性能。
 - 测试继续放在同目录的独立 `*_test.rs` 文件；本仓库约定不把 Rust 测试模块内嵌到生产源文件。
+
+### 来源 f95ec32c8c 的局部增量
+
+SessionManager 新增共享的只读全局变量访问器与 refresh_started 查询；close 在关闭 pool 前取消并 join 缓存刷新线程。runtime handle 不改变所有权或空闲回收规则。对应 Go cross_ks.go 的 globalVarCache 字段、构造和 GlobalVarAccessor；安装由真实 KeyspaceSessionFactory 执行。
+
+关闭仅取消并 join 缓存线程，保留缓存句柄与首次成功加载的历史状态，匹配 Go firstLoaded 通道在 Close 后仍关闭的语义；已持有的访问器仍可读最后快照。

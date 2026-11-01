@@ -5499,6 +5499,19 @@ impl Domain {
             .clone()
     }
 
+    /// Read-only globals belonging to the target runtime, not this Domain.
+    pub fn get_ks_global_var_accessor(
+        &self,
+        keyspace: &str,
+    ) -> Result<astersql_domain_crossks::global_vars::GlobalVarCache, String> {
+        self.cross_ks_manager()
+            .ok_or("cross keyspace manager is not installed")?
+            .get_or_create(keyspace)
+            .map_err(|e| e.0)?
+            .global_var_accessor()
+            .ok_or_else(|| "target global variable accessor is not installed".into())
+    }
+
     /// Install the controller used by background workloads.
     pub fn set_external_workload_manager(
         &self,

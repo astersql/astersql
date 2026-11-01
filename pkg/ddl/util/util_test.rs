@@ -227,3 +227,8 @@ fn test_pause_running_job() {
         assert_eq!(tt.want_admin_op, tt.job.admin_operator, "{}", tt.name);
     }
 }
+
+#[test]
+fn port_f95ec32c8c_shared_sysvar_notification_key() {
+    assert_eq!(crate::SysVarCacheKey, "/tidb/sysvars");
+}

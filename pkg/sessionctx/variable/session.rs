@@ -1427,7 +1427,7 @@ impl SessionVars {
     /// 通过全局变量访问器读取全局系统变量。
     pub fn GetGlobalSystemVar<C>(&self, _ctx: C, name: &str) -> Result<String, String> {
         self.GlobalVarsAccessor
-            .get_global_sys_var(name)
+            .get_global_sys_var_from_hook(name)
             .map_err(|error| error.to_string())
     }
     /// 优先会话、否则全局地读取系统变量。

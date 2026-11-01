@@ -134,3 +134,7 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并点名 `p
 ### f137844d4f 读时间戳迁移增量
 
 来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db：GetEffectiveSessionStateSystemVars 复用 hint_system_vars 中的规范变量对象；调用者传入实际 snapshot 与尚未消费的一次性读 TSO，以及当前时区。该桥只在导出时同步权威有效状态，随后通过规范状态 hook 导出变量；缓存 SET 字符串不能复活已消费时间戳。旧双元组 API 保留给既有调用者，真实 runtime 迁移使用可传播错误的新桥。
+
+### 来源 f95ec32c8c 的必要局部接线
+
+GetGlobalSystemVar 委托访问器的 get_global_sys_var_from_hook；普通访问器保持原路径。runtime 缓存经既有 SysVar::GetGlobalFromHook 调度真实实例钩子，使用只读缓存作为钩子的全局读取器；当前注册表 GetGlobal 钩子只读取实例状态或全局访问器，不依赖会话局部字段。此为 Go createCrossKSSession 新访问器所需局部接线，不重构两套 SessionVars。

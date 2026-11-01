@@ -166,6 +166,12 @@ impl StatementContext {
 pub trait GlobalVarAccessor: Send + Sync {
     fn get_global_sys_var(&self, name: &str) -> Result<String, VariableError>;
 
+    /// Read through a registered global hook when the accessor requires it.
+    /// Ordinary accessors retain their existing getter behavior.
+    fn get_global_sys_var_from_hook(&self, name: &str) -> Result<String, VariableError> {
+        self.get_global_sys_var(name)
+    }
+
     fn set_global_sys_var(
         &mut self,
         ctx: &Context,

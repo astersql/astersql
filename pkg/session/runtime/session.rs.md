@@ -148,3 +148,7 @@ ConcretePreparedArgument补Float8Bits(u64)/Float8Array(Vec<u8>)；私有载体�
 ### 来源 964af3fa46 的局部接线
 
 SessionState.import_query_schema 仅由独立 IMPORT worker 安装；runtime_stats_table 优先从该最小 schema 获取已校验的来源定义，同时数据读取固定捕获的 MVCC ReadTS。普通会话字段默认 None，继续使用既有 snapshot/Domain schema。对应 query_source.go 的 BuildMinimalInfoSchema 消费所需接线。
+
+### 来源 f95ec32c8c 的局部增量
+
+new_with_global_accessor 保留普通会话局部初始化顺序，完成构造后才安装目标 runtime 的 GlobalVarsAccessor，顺序与 Go createCrossKSSession 一致。该入口保留 MySQL 方言，跳过实例内存仲裁器的重复初始化，避免目标租户配置污染当前实例。构造期继续使用原访问器，避免变量校验递归进入正在冷加载的目标缓存。普通 new_with_dialect 与 PostgreSQL 入口传 None，保留既有路径。对应 Go createCrossKSSession 的访问器赋值；缓存查询用池会话，但构造不递归读取缓存。
