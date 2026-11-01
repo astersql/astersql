@@ -1990,7 +1990,9 @@ impl Extended {
                         "PostgreSQL ON CONFLICT DO NOTHING is unsupported by the shared executor",
                     ));
                 }
-                if portal.returning && !matches!(portal.command, Some("INSERT" | "UPDATE")) {
+                if portal.returning
+                    && !matches!(portal.command, Some("INSERT" | "UPDATE" | "DELETE"))
+                {
                     return Err(error(
                         "0A000",
                         "DML RETURNING is unsupported by the PostgreSQL listener",

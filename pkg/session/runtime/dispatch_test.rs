@@ -577,3 +577,42 @@ fn pg10_02_update_rows_and_atomicity() {
     assert!(rows.next_row().unwrap().is_none());
     pg.execute("DROP DATABASE pg10_02_shared").unwrap();
 }
+
+#[test]
+fn pg10_03_delete_rows_and_atomicity() {
+    let (domain, setup) = CreateAnalyzeSession().unwrap();
+    setup.execute("CREATE DATABASE pg10_03_shared").unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("USE pg10_03_shared").unwrap();
+    pg.execute("CREATE TABLE t(id integer PRIMARY KEY,v integer,note text)")
+        .unwrap();
+    pg.execute("INSERT INTO t VALUES (1,10,NULL),(2,20,'b')")
+        .unwrap();
+    for sql in [
+        "DELETE FROM t RETURNING 10/(v-20)",
+        "DELETE FROM t RETURNING missing",
+        "DELETE FROM t USING t AS other WHERE t.id=other.id RETURNING t.id",
+    ] {
+        assert!(pg.execute(sql).is_err(), "{sql}");
+    }
+    let mut rows = pg
+        .execute("SELECT id,v,note FROM t ORDER BY id")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1", "10", "<nil>"]);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["2", "20", "b"]);
+    assert!(rows.next_row().unwrap().is_none());
+    let mut rows = pg
+        .execute("DELETE FROM t AS a WHERE id=1 RETURNING a.id,v,note")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1", "10", "<nil>"]);
+    assert!(rows.next_row().unwrap().is_none());
+    let mut rows = pg
+        .execute("SELECT id,v,note FROM t ORDER BY id")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["2", "20", "b"]);
+    assert!(rows.next_row().unwrap().is_none());
+    pg.execute("DROP DATABASE pg10_03_shared").unwrap();
+}

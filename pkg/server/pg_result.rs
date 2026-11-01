@@ -285,12 +285,6 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
                 "PostgreSQL DELETE USING is unsupported by the shared executor".into(),
             ));
         }
-        if !delete.Returning.is_empty() && !prepare {
-            return Err((
-                "0A000",
-                "DML RETURNING is unsupported by the PostgreSQL listener".into(),
-            ));
-        }
         "DELETE"
     } else if node.is::<ast::CreateTableStmt>() {
         "CREATE TABLE"

@@ -524,7 +524,7 @@ libpq 未暴露的 portal 原始字段沿用批次 9 的真实 TCP 回归证据�
 
 ## 2026-11-01 INSERT RETURNING
 
-普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT、DELETE RETURNING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
+普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT、DELETE USING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
 
 为原验收输入增加了仅 PG 的括号整数 DEFAULT 加减乘规则，`DEFAULT (40 + 2)` 保留为表达式元数据，在 INSERT 时复用共享求值器得到 42。MySQL 仍拒绝算术默认值，原字面量和函数默认值路径保持。没有新增默认函数、任意列引用或完整默认表达式子系统。
 
@@ -551,3 +551,7 @@ git diff --check
 ## UPDATE RETURNING
 
 普通表 UPDATE RETURNING 从共享 UPDATE 的新行镜像投影，支持目标别名、星号、列别名及受限 int4 算术，零匹配保留固定列描述。PostgreSQL 更新计数包含值未改变的匹配行；MySQL 仍按原客户端 capability 决定计数。简单与扩展查询复用同一执行链，投影在应用写入前求值。UPDATE FROM 保持独立拒绝门禁。覆盖入口为 `pg_dml_test::pg10_02_behavior` 与共享层 `pg10_02_update_rows_and_atomicity`。
+
+## DELETE RETURNING
+
+普通表 DELETE RETURNING 从共享删除路径实际选中的删除前行投影，不在删除后回查。支持列、星号、目标别名、输出别名与受限 int4 算术；零行保留固定描述及 DELETE 0 标签。投影在目标和级联写入前求值，错误不应用删除。DELETE USING 保留独立门禁。覆盖入口为 `pg_dml_test::pg10_03_behavior` 和共享层 `pg10_03_delete_rows_and_atomicity`；测试声明不替代实际运行结果。

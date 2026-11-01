@@ -4749,6 +4749,15 @@ impl ConcreteSession {
         &self,
         plan: crate::dml_runtime::DeletePlan,
     ) -> SessionResult<()> {
+        self.execute_relational_delete_with_output(plan, None)
+            .map(|_| ())
+    }
+
+    pub(super) fn execute_relational_delete_with_output(
+        &self,
+        plan: crate::dml_runtime::DeletePlan,
+        returning: Option<&ast::DeleteStmt>,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
         let flags = self.dml_type_flags();
         let current_database = self.current_database();
         let database = if plan.Schema.is_empty() {
@@ -4759,6 +4768,11 @@ impl ConcreteSession {
         let table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            Some(PgCastTable::enter_table(&table))
+        } else {
+            None
+        };
         let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
         self.record_transaction_table_write(&table);
         let matches_plan = |row: &HashMap<String, Option<String>>| -> SessionResult<bool> {
@@ -4846,6 +4860,45 @@ impl ConcreteSession {
                 affected_rows += 1;
             }
         }
+        // Evaluate from the rows selected for this deletion before any mutation,
+        // including cascading writes. A projection failure must not delete rows.
+        let output = if let Some(statement) = returning {
+            let fields = self.delete_returning_fields(statement)?;
+            let alias = statement
+                .TableRefs
+                .as_ref()
+                .and_then(|refs| refs.TableRefs.Left.as_deref())
+                .and_then(|source| match source {
+                    ast::ResultSetNode::TableSource(source) if !source.AsName.L.is_empty() => {
+                        Some(source.AsName.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| table.Name.clone());
+            let row_images = deleted_rows
+                .iter()
+                .cloned()
+                .map(|row| (0, row))
+                .collect::<Vec<_>>();
+            let (columns, rows, _) = project_relational_rows(
+                database,
+                &alias,
+                &table,
+                &row_images,
+                &ast::FieldList {
+                    Fields: statement.Returning.clone(),
+                },
+                &[],
+                |args, row| self.execute_embed_text(args, row),
+            )?;
+            Some(ConcreteRecordSet::new_with_fields(
+                columns,
+                rows,
+                fields.into_iter().map(Some).collect(),
+            ))
+        } else {
+            None
+        };
         self.cascade_foreign_key_deletes(&table, &deleted_rows)?;
         self.apply_relational_mutations(
             &plan.Table,
@@ -4862,7 +4915,8 @@ impl ConcreteSession {
             .into_iter()
             .map(|(_, row)| row)
             .collect::<Vec<_>>();
-        self.record_relational_stats(&plan.Table, &table, &stats_before, &stats_after)
+        self.record_relational_stats(&plan.Table, &table, &stats_before, &stats_after)?;
+        Ok(output)
     }
 
     pub(super) fn execute_relational_join_delete(

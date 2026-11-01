@@ -3114,6 +3114,9 @@ impl ConcreteSession {
             }
             self.ensure_implicit_transaction()?;
             self.register_statement_mdl(statement)?;
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !delete.Returning.is_empty() {
+                return self.execute_pg_delete_returning(delete).map(Some);
+            }
             if self.execute_mysql_tidb_delete(delete, statement_sql.unwrap_or_default())? {
                 return Ok(None);
             }
