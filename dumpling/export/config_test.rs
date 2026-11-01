@@ -646,3 +646,147 @@ fn generated_columns_flags_parse_modes_and_reject_reserved_values() {
         "invalid --include-generated-columns value 'true', supported values: none, stored"
     );
 }
+
+#[test]
+fn port_02dffa3bcf_cipher_policy() {
+    for configured in [false, true] {
+        let mut conf = DefaultConfig();
+        if configured {
+            conf.Security.TLS = Some(MysqlTLSConfig {
+                ServerName: "mysql.example".into(),
+                ..Default::default()
+            });
+        }
+        let driver = conf.GetDriverConfig("");
+        assert_eq!(driver.AllowFallbackToPlaintext, !configured);
+        let tls = driver.TLS.unwrap();
+        assert_eq!(tls.InsecureSkipVerify, !configured);
+        assert_eq!(tls.MinVersion, 0x0303);
+        for id in [0x009c, 0x009d, 0x002f, 0x0035, 0xc02f, 0xc02b] {
+            assert!(tls.CipherSuites.as_ref().unwrap().contains(&id));
+        }
+        if configured {
+            assert!(conf.Security.TLS.as_ref().unwrap().CipherSuites.is_none());
+            assert_eq!(tls.ServerName, "mysql.example");
+        }
+    }
+    for suites in [vec![0xc02f], vec![]] {
+        let mut conf = DefaultConfig();
+        conf.Security.TLS = Some(MysqlTLSConfig {
+            CipherSuites: Some(suites.clone()),
+            ..Default::default()
+        });
+        assert_eq!(
+            conf.GetDriverConfig("").TLS.unwrap().CipherSuites,
+            Some(suites)
+        );
+    }
+}
+
+#[test]
+fn port_02dffa3bcf_real_handshakes() {
+    use openssl::{
+        asn1::Asn1Time,
+        bn::BigNum,
+        hash::MessageDigest,
+        pkey::PKey,
+        rsa::Rsa,
+        ssl::{SslAcceptor, SslMethod, SslVersion},
+        x509::{X509, X509NameBuilder, extension::SubjectAlternativeName},
+    };
+    use std::net::{TcpListener, TcpStream};
+    let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "localhost").unwrap();
+    let name = name.build();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    cert.set_subject_name(&name).unwrap();
+    cert.set_issuer_name(&name).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    let san = SubjectAlternativeName::new()
+        .dns("localhost")
+        .build(&cert.x509v3_context(None, None))
+        .unwrap();
+    cert.append_extension(san).unwrap();
+    cert.sign(&key, MessageDigest::sha256()).unwrap();
+    let cert = cert.build();
+    // Original 2 x 5 successful handshakes, plus explicit-policy and CA failures.
+    for with_ca in [false, true] {
+        for cipher in [
+            "AES128-GCM-SHA256",
+            "AES256-GCM-SHA384",
+            "AES128-SHA",
+            "AES256-SHA",
+            "ECDHE-RSA-AES128-GCM-SHA256",
+        ] {
+            for failure in [0, 1, 2] {
+                if failure == 2 && with_ca {
+                    continue;
+                }
+                let mut server =
+                    SslAcceptor::mozilla_intermediate(SslMethod::tls_server()).unwrap();
+                server
+                    .set_min_proto_version(Some(SslVersion::TLS1_2))
+                    .unwrap();
+                server
+                    .set_max_proto_version(Some(SslVersion::TLS1_2))
+                    .unwrap();
+                server.set_cipher_list(cipher).unwrap();
+                server.set_certificate(&cert).unwrap();
+                server.set_private_key(&key).unwrap();
+                let server = server.build();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = listener.local_addr().unwrap();
+                let handle = std::thread::spawn(move || {
+                    let (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    server.accept(stream).is_ok()
+                });
+                let mut conf = DefaultConfig();
+                if with_ca {
+                    conf.Security.SSLCABytes = cert.to_pem().unwrap();
+                    buildTLSConfig(&mut conf).unwrap();
+                }
+                if failure == 2 {
+                    conf.Security.TLS = Some(MysqlTLSConfig::default());
+                }
+                if failure == 1 {
+                    conf.Security
+                        .TLS
+                        .get_or_insert_with(MysqlTLSConfig::default)
+                        .CipherSuites = Some(vec![]);
+                }
+                let driver = conf.GetDriverConfig("");
+                let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let result = driver.TLS.unwrap().connect("localhost", stream);
+                let server_ok = handle.join().unwrap();
+                if failure == 0 {
+                    let stream = result.unwrap();
+                    assert_eq!(stream.ssl().current_cipher().unwrap().name(), cipher);
+                    assert!(server_ok);
+                } else {
+                    assert!(result.is_err(), "failure={failure}, cipher={cipher}");
+                    assert!(!server_ok);
+                }
+            }
+        }
+    }
+}

@@ -46,8 +46,9 @@ pub fn DialectBinaryFormatMap(d: CSVDialect) -> BinaryFormat {
 }
 
 // Security 聚合 CLI 传入的 TLS 文件路径和已经读入内存的证书内容。
-// 当前简化实现没有直接保存 TLS 配置对象，而是把原始材料留给后续构造阶段消费。
+// 保存证书材料与 MySQL 专用 TLS 策略，不修改 PostgreSQL 的 TLS 配置。
 pub struct Security {
+    pub TLS: Option<MysqlTLSConfig>,
     // CAPath / CertPath / KeyPath 对应命令行 `--ca/--cert/--key` 三件套。
     pub CAPath: String,
     pub CertPath: String,
@@ -61,6 +62,7 @@ pub struct Security {
 impl Default for Security {
     fn default() -> Self {
         Self {
+            TLS: None,
             CAPath: String::new(),
             CertPath: String::new(),
             KeyPath: String::new(),
@@ -298,6 +300,25 @@ impl Config {
         cfg.DBName = db.to_string();
         cfg.AllowCleartextPasswords = self.AllowCleartextPasswords;
         cfg.ReadTimeout = self.ReadTimeout;
+        cfg.AllowFallbackToPlaintext = self.Security.TLS.is_none();
+        let mut tls = self.Security.TLS.clone().unwrap_or_else(|| MysqlTLSConfig {
+            InsecureSkipVerify: true,
+            MinVersion: if self.MinTLSVersion == 0 {
+                0x0303
+            } else {
+                self.MinTLSVersion
+            },
+            NextProtos: vec!["h2".into(), "http/1.1".into()],
+            ..Default::default()
+        });
+        // Only the absent policy is widened; an explicit empty policy stays empty.
+        if tls.CipherSuites.is_none() {
+            tls.CipherSuites = Some(vec![
+                0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc009, 0xc013, 0xc00a, 0xc014,
+                0x009c, 0x009d, 0x002f, 0x0035,
+            ]);
+        }
+        cfg.TLS = Some(tls);
         cfg
     }
 
@@ -340,6 +361,7 @@ impl Config {
             User: self.User.clone(),
             Password: self.Password.clone(),
             Security: Security {
+                TLS: self.Security.TLS.clone(),
                 CAPath: self.Security.CAPath.clone(),
                 CertPath: self.Security.CertPath.clone(),
                 KeyPath: self.Security.KeyPath.clone(),
@@ -509,9 +531,36 @@ pub fn adjustConfig(conf: &mut Config, fns: &[fn(&mut Config) -> Result<()>]) ->
     Ok(())
 }
 
-pub fn buildTLSConfig(_conf: &mut Config) -> Result<()> {
-    // 当前最小实现不真正构造 TLS 对象，但保留扩展挂点以贴近 Go 结构。
-    // 这也让上层调整链可以继续保持和 Go 相似的调用顺序。
+pub fn buildTLSConfig(conf: &mut Config) -> Result<()> {
+    let security = &mut conf.Security;
+    for (path, bytes) in [
+        (&security.CAPath, &mut security.SSLCABytes),
+        (&security.CertPath, &mut security.SSLCertBytes),
+        (&security.KeyPath, &mut security.SSLKeyBytes),
+    ] {
+        if !path.is_empty() {
+            *bytes = std::fs::read(path).map_err(|e| errors_new(e.to_string()))?;
+        }
+    }
+    if security.SSLCABytes.is_empty()
+        && security.SSLCertBytes.is_empty()
+        && security.SSLKeyBytes.is_empty()
+    {
+        return Ok(());
+    }
+    let tls = MysqlTLSConfig {
+        MinVersion: if conf.MinTLSVersion == 0 {
+            0x0303
+        } else {
+            conf.MinTLSVersion
+        },
+        RootCAPEM: security.SSLCABytes.clone(),
+        CertPEM: security.SSLCertBytes.clone(),
+        KeyPEM: security.SSLKeyBytes.clone(),
+        ..Default::default()
+    };
+    tls.connector().map_err(|e| errors_new(e.to_string()))?;
+    security.TLS = Some(tls);
     Ok(())
 }
 
@@ -999,5 +1048,113 @@ pub fn validateIncludeGeneratedColumns(conf: &mut Config) -> Result<()> {
 impl Config {
     pub fn includeStoredGeneratedColumns(&self) -> bool {
         self.IncludeGeneratedColumns == GeneratedColumnsStored
+    }
+}
+
+/// MySQL-only TLS policy. None and an explicitly empty cipher list are distinct.
+#[derive(Clone, Debug)]
+pub struct MysqlTLSConfig {
+    pub CipherSuites: Option<Vec<u16>>,
+    pub InsecureSkipVerify: bool,
+    pub MinVersion: u16,
+    pub ServerName: String,
+    pub NextProtos: Vec<String>,
+    pub RootCAPEM: Vec<u8>,
+    pub CertPEM: Vec<u8>,
+    pub KeyPEM: Vec<u8>,
+}
+impl Default for MysqlTLSConfig {
+    fn default() -> Self {
+        Self {
+            CipherSuites: None,
+            InsecureSkipVerify: false,
+            MinVersion: 0x0303,
+            ServerName: String::new(),
+            NextProtos: vec![],
+            RootCAPEM: vec![],
+            CertPEM: vec![],
+            KeyPEM: vec![],
+        }
+    }
+}
+impl MysqlTLSConfig {
+    /// Build an executable TLS client without changing shared or PostgreSQL policy.
+    pub fn connector(
+        &self,
+    ) -> std::result::Result<openssl::ssl::SslConnector, Box<dyn std::error::Error>> {
+        use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
+        let mut builder = SslConnector::builder(SslMethod::tls_client())?;
+        let version = match self.MinVersion {
+            0x0301 => SslVersion::TLS1,
+            0x0302 => SslVersion::TLS1_1,
+            0x0303 => SslVersion::TLS1_2,
+            0x0304 => SslVersion::TLS1_3,
+            _ => return Err("unsupported minimum TLS version".into()),
+        };
+        builder.set_min_proto_version(Some(version))?;
+        if self.InsecureSkipVerify {
+            builder.set_verify(SslVerifyMode::NONE);
+        }
+        for cert in openssl::x509::X509::stack_from_pem(&self.RootCAPEM)? {
+            builder.cert_store_mut().add_cert(cert)?;
+        }
+        if !self.CertPEM.is_empty() || !self.KeyPEM.is_empty() {
+            let cert = openssl::x509::X509::from_pem(&self.CertPEM)?;
+            builder.set_certificate(&cert)?;
+            let key = openssl::pkey::PKey::private_key_from_pem(&self.KeyPEM)?;
+            builder.set_private_key(&key)?;
+            builder.check_private_key()?;
+        }
+        if let Some(suites) = &self.CipherSuites {
+            let names: Vec<&str> = suites
+                .iter()
+                .filter_map(|id| match id {
+                    0xc02b => Some("ECDHE-ECDSA-AES128-GCM-SHA256"),
+                    0xc02f => Some("ECDHE-RSA-AES128-GCM-SHA256"),
+                    0xc02c => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
+                    0xc030 => Some("ECDHE-RSA-AES256-GCM-SHA384"),
+                    0xcca9 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
+                    0xcca8 => Some("ECDHE-RSA-CHACHA20-POLY1305"),
+                    0xc009 => Some("ECDHE-ECDSA-AES128-SHA"),
+                    0xc013 => Some("ECDHE-RSA-AES128-SHA"),
+                    0xc00a => Some("ECDHE-ECDSA-AES256-SHA"),
+                    0xc014 => Some("ECDHE-RSA-AES256-SHA"),
+                    0x009c => Some("AES128-GCM-SHA256"),
+                    0x009d => Some("AES256-GCM-SHA384"),
+                    0x002f => Some("AES128-SHA"),
+                    0x0035 => Some("AES256-SHA"),
+                    _ => None,
+                })
+                .collect();
+            // OpenSSL returns an error for an empty legacy list, after clearing it.
+            // TLS 1.3 suites remain independently available, matching Go's policy.
+            let result = builder.set_cipher_list(&names.join(":"));
+            if !names.is_empty() {
+                result?;
+            }
+        }
+        if !self.NextProtos.is_empty() {
+            let mut wire = vec![];
+            for protocol in &self.NextProtos {
+                wire.push(u8::try_from(protocol.len())?);
+                wire.extend_from_slice(protocol.as_bytes());
+            }
+            builder.set_alpn_protos(&wire)?;
+        }
+        Ok(builder.build())
+    }
+    /// Upgrade an established MySQL transport after its SSLRequest exchange.
+    pub fn connect(
+        &self,
+        host: &str,
+        stream: std::net::TcpStream,
+    ) -> std::result::Result<openssl::ssl::SslStream<std::net::TcpStream>, Box<dyn std::error::Error>>
+    {
+        let name = if self.ServerName.is_empty() {
+            host
+        } else {
+            &self.ServerName
+        };
+        Ok(self.connector()?.connect(name, stream)?)
     }
 }

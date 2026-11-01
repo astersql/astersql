@@ -2875,6 +2875,7 @@ dependencies = [
  "astersql-parser-format",
  "astersql-parser-mysql",
  "astersql-util-table-filter",
+ "openssl",
  "parquet",
  "regex",
  "serde_json",

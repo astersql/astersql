@@ -285,6 +285,8 @@ impl std::error::Error for MySQLError {}
 // database/sql 打开参数的子集，FormatDSN 隐藏密码。
 // database/sql 打开参数的子集，FormatDSN 隐藏密码。
 pub struct MysqlConfig {
+    pub TLS: Option<crate::MysqlTLSConfig>,
+    pub AllowFallbackToPlaintext: bool,
     pub User: String,
     pub Passwd: String,
     pub Net: String,

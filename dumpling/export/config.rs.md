@@ -20,7 +20,7 @@
 `ServerInfoUnknown` 现在显式令 `NextGen = false`。`PDAddr` 与 `--pd` 的帮助文案明确 premium keyspace 集群可省略 PD 地址；省略时禁用自动 GC pause，实际分支由 `dump.rs` 初始化步骤处理。
 
 - `CSVDialect` / `BinaryFormat` / `DialectBinaryFormatMap`：公开枚举与映射函数。默认方言对应 UTF-8，Snowflake/Redshift 对应 HEX，BigQuery 对应 Base64；枚举使用 `#[repr(i32)]` 保持稳定的整数判别值。
-- `Security`：公开 TLS 材料容器；`Default` 把路径和字节全部置空。与 Go 不同，它没有保存已构造的 `tls.Config`。
+- `Security`：公开 TLS 材料容器；`Default` 把路径和字节全部置空。`TLS` 保存可执行的 `MysqlTLSConfig`，克隆配置时深拷贝策略与证书材料。
 - `Config`：核心公开结构体。重要字段组包括连接认证（`Host`、`Port`、`User`、`Password`、`Security`）、范围选择（`Databases`、`Tables`、`TableFilter`、`Where`、`SQL`、`Partitions`、`columnFilter`）、输出（`FileType`、CSV 参数、`OutputFileTemplate`、`Rows`、`FileSize`、压缩和 Parquet 参数）以及运行时共享对象（`Logger`、Prometheus factory/registry、`ExtStorage`、`IOTotalBytes`）。`columnFilter`、`columnProjection` 保持 crate 内可见语义，由同一 crate 的配置/导出流程消费。
 - `DefaultConfig() -> Config`：以 `127.0.0.1:3306`、`root`、4 线程、自动一致性、SQL 文本默认推导、默认 CSV 字符、1 MiB Parquet 页和默认 row-group 限制等值建立基线；同时创建全表过滤器、默认输出模板和 Prometheus 对象。
 - `Config::String`：输出 Host、Port、User、Consistency、FileType、脱敏后的 OutputDirPath 与 BackendOptions 的 JSON 形摘要，不是完整序列化；密码等字段不会进入结果。
@@ -29,7 +29,7 @@
 - `Config::clone_for_mutate`：手工复制绝大多数字段，共享 `Arc` 型依赖和原子计数器；刻意把 `BackendOptions`、`StatusAddr`、`Labels` 恢复为默认/空状态。
 - `ParseFileSize`、`ParseTableFilter`、`GetConfTables`、`ParseOutputDialect`、`parseParquetCompressType`：将 CLI 文本转换为内部尺寸、过滤器、按库聚合的表集合、CSV 方言和压缩枚举。
 - `adjustConfig`：按切片顺序执行 `fn(&mut Config) -> Result<()>`；首个错误立即终止后续修正。
-- `buildTLSConfig`：保留给构造 TLS 状态的扩展挂点，当前直接返回成功，不读取路径、不验证证书，也不产生 TLS 对象。
+- `buildTLSConfig`：读取已指定路径或内存证书，校验证书/私钥并保存 MySQL TLS 配置；无材料时保留已有程序化策略。
 - `validateSpecifiedSQL` / `adjustFileFormat`：前者拒绝 `--sql` 与 `--where`/`--partitions` 并用；后者小写化文件类型、推导默认格式，并约束 SQL/Parquet/通用压缩组合。
 - `matchMysqlBugversion`：仅对 MySQL 且有版本号时判断开区间 `(8.0.2, 8.0.23)`；TiDB、未知服务或边界版本不命中。
 - `normalizePartitions`：对分区名 trim、小写化、去空并去重，同时保留首次出现顺序。
@@ -105,7 +105,7 @@
 
 已确认的差异/未完成迁移点：
 
-- Go `buildTLSConfig` 用路径、内存证书和最低 TLS 版本构造 `tls.Config` 并保存到 `Security.TLS`；Rust `Security` 无 TLS 对象字段，`buildTLSConfig` 当前无条件成功。
+- Go `buildTLSConfig` 的证书装配由 Rust OpenSSL connector 对应。来源 `02dffa3bcf3fe6663f5d66fd9914588b3102c73a` 的增量在 `GetDriverConfig` 中实现：只对未指定的 CipherSuites 填充现代 TLS1.2 与四个 RSA AES 套件；显式空列表保持不变，输入 TLS 策略不变。
 - Go `createExternalStorage` 解析本地/对象存储 backend 并调用 objstore；Rust 总是构造 `MemStorage(OutputDirPath)`，虽测试 URI 为 `file:`，但不能据此宣称已支持 Go 的远端 backend。
 - Go 使用完整 `pflag.FlagSet`；Rust `FlagSet` 是测试子集。Rust 源码明确未在 `ParseFromFlags` 展开 `read-timeout`、`params`、TLS bytes 和 backend options；Go 会解析 duration、把 session param key 小写化，并调用 `BackendOptions.ParseFromFlags`。
 - Go 在非 case-sensitive 模式下给 table filter 包 `filter.CaseInsensitive`；Rust 当前把 case-sensitive 传给列过滤解析，但没有在本函数中为 `TableFilter` 增加等价包装。
@@ -124,3 +124,10 @@
 - 修改 split 模板规则时，从“是否可能覆盖已有 chunk”出发，更新 `outputTemplateUsesIndex` 和 rows/filesize 两组测试；复杂 Go template 语法可能需要替换当前字符串启发式实现，而非继续叠加脆弱替换。
 - 扩展生成列能力时，依次检查 `parseGeneratedColumnsMode`、`validateIncludeGeneratedColumns`、`includeStoredGeneratedColumns`、`dump.rs::buildColumnProjection` 及 schema/data 一致性。`config_test.rs` 负责 flag/模式，`prepare_test.rs` 负责校验次序，`dump_test.rs` 负责最终数据列变化；三类证据不可互相替代。
 - 性能风险集中在配置派生时的大 map/vector/证书字节克隆和模板/过滤器重复解析；兼容风险集中在默认值、错误优先级、大小写、flag 显式性及 Go/Rust 差异。修改前应先复用同路径 Go 测试意图，不要删减边界来让 Rust 测试通过。
+
+
+### MySQL TLS 局部接线
+
+`MysqlTLSConfig::connector` 将协议下限、证书信任、客户端证书、ALPN 与密码套件映射到仓库既有 OpenSSL 依赖。`connect` 在调用方完成 MySQL SSLRequest 后升级已有 TCP stream；ServerName 优先于调用方主机名。独立测试通过 GetDriverConfig 返回的对象执行真实 TLS1.2 握手。现有 openDB 仍是历史 SQL 替身，尚未接入 MySQL 网络协议；本改动不声称完整导出连接已可用。PostgreSQL TLS 不使用本配置。
+
+连接由返回的 SslStream 所有，调用方负责 socket 超时，丢弃时释放资源。错误传播 OpenSSL 证书与握手错误；不记录密码或私钥。TLS1.3 套件独立于 CipherSuites，空 TLS1.2 策略不关闭 TLS1.3。显式未知套件不扩大为默认套件。
