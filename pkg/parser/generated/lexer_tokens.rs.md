@@ -6,9 +6,9 @@
 
 ## 核心职责
 
-该文件为词法扫描器、Hint 词法适配器和主解析器提供同一套 `名称 -> i32 编号` 契约。当前文件仅包含一个 `#[allow(non_upper_case_globals)] mod token`，模块内有 945 个 `pub const`，没有函数、trait、类型、条件编译或可变静态数据。
+该文件为词法扫描器、Hint 词法适配器和主解析器提供同一套 `名称 -> i32 编号` 契约。当前文件仅包含一个 `#[allow(non_upper_case_globals)] mod token`，模块内有 959 个 `pub const`，没有函数、trait、类型、条件编译或可变静态数据。
 
-常量分为两类：21 个单字节标点 token 直接使用 ASCII 数值，例如 `literal_21 = 33`（`!`）、`literal_28 = 40`（`(`）和 `literal_7e = 126`（`~`）；其余 924 个命名 token 连续占用 `57346..=58269`，从 `identifier` 到 `returnKwd`。这张表只定义身份，不负责扫描、关键字判定、语法移进/归约或 AST 构造；这些行为分别位于 `lexer.rs`、`keywords.rs`、`hintparserimpl.rs`、`yy_parser.rs`、`parser.rs` 和生成的 `main_tables.rs`。
+常量分为两类：23 个单字节标点 token 直接使用 ASCII 数值，例如 `literal_21 = 33`（`!`）、`literal_28 = 40`（`(`）和 `literal_7e = 126`（`~`）；其余 936 个命名 token 连续占用 `57346..=58281`，从 `identifier` 到 `views`。这张表只定义身份，不负责扫描、关键字判定、语法移进/归约或 AST 构造；这些行为分别位于 `lexer.rs`、`keywords.rs`、`hintparserimpl.rs`、`yy_parser.rs`、`parser.rs` 和生成的 `main_tables.rs`。
 
 ## 主要符号
 
@@ -34,7 +34,7 @@
 
 本文件的数据全部是编译期 `i32` 常量，不持有输入文本、当前位置、错误列表、解析栈或全局可变状态，也没有初始化顺序问题。标点 token 与 lexer 直接返回的字节值共享数值域；命名 token 使用高值区间，`0` 则由扫描/解析约定作为 EOF，未在这里重复声明。
 
-编号是跨生成产物的不变量，而不是可独立重排的枚举序号。当前 `lexer_tokens.rs` 与 `generated/main_tables.rs` 各含 945 个 token 常量；前者用 `i32` 服务 lexer，后者用 `isize` 服务解析表。名称和值必须同步，否则 lexer 返回的 token 会被解析表解释为另一个终结符。生成顺序由 `GeneratedParser::tokens` 决定，文件自身没有查重或范围检查逻辑；语法解析和 parsergen 构建阶段承担输入验证，提交产物则由防漂移测试校验。
+编号是跨生成产物的不变量，而不是可独立重排的枚举序号。当前 `lexer_tokens.rs` 与 `generated/main_tables.rs` 各含 959 个 token 常量；前者用 `i32` 服务 lexer，后者用 `isize` 服务解析表。名称和值必须同步，否则 lexer 返回的 token 会被解析表解释为另一个终结符。生成顺序由 `GeneratedParser::tokens` 决定，文件自身没有查重或范围检查逻辑；语法解析和 parsergen 构建阶段承担输入验证，提交产物则由防漂移测试校验。
 
 ## 依赖与调用关系
 
@@ -83,3 +83,7 @@
 ## 2026-10-31 percentile_disc
 
 Adds contextual PG pgWithin and pgPercentileDisc tokens, preserving existing token numbers and MySQL token selection.
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05：独立 main.astergram 追加 compare=58279、output=58280、views=58281，保留全部既有 token（含 PostgreSQL 58270–58278）数值。通过 parsergen generate 生成，不直接编辑 token 表。

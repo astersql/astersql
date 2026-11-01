@@ -28,6 +28,10 @@ pub(super) fn owns(rule_id: RuleId) -> bool {
         || name.starts_with("dropmaterializedview")
         || name.starts_with("purgematerializedviewlog")
         || name.starts_with("cancelmaterializedviewjob")
+        || name.starts_with("comparematerializedview")
+        || name.starts_with("showtargetfilterable_materialized")
+        || name.starts_with("showstmt_show_materialized")
+        || name.starts_with("showstmt_show_create_materialized")
         || name.starts_with("refreshmaterializedview")
         || name.starts_with("refreshwithasyncmodeopt")
         || name.starts_with("refreshcompletemode")
@@ -54,7 +58,62 @@ pub(super) fn apply(
         rhs.borrow(position)
             .and_then(|symbol| symbol.item.as_deref())
     };
-    if name.starts_with("dropmaterializedviewstmt_") {
+    if name.starts_with("comparematerializedviewoutputopt") {
+        context.output.item = table(rhs.len()).map(|table| Box::new(table) as Box<dyn Any>);
+    } else if name.starts_with("comparematerializedviewstmt_") {
+        context.output.statement = Some(Box::new(ast::CompareMaterializedViewStmt {
+            ViewName: table(4),
+            AsOf: item::<ast::AsOfClause>(&rhs, 5),
+            OutputTable: table(6),
+            ..Default::default()
+        }));
+    } else if name.starts_with("showtargetfilterable_materialized") {
+        context.output.item = Some(Box::new(ast::ShowStmt {
+            Tp: if rhs.len() == 3 {
+                ast::ShowStmtType::MaterializedViews
+            } else {
+                ast::ShowStmtType::MaterializedViewLogs
+            },
+            DBName: rhs
+                .borrow(rhs.len())
+                .map(|symbol| symbol.ident.clone())
+                .unwrap_or_default(),
+            ..Default::default()
+        }));
+    } else if name.starts_with("showstmt_show_create_materialized") {
+        context.output.statement = Some(Box::new(ast::ShowStmt {
+            Tp: if rhs.len() == 5 {
+                ast::ShowStmtType::CreateMaterializedView
+            } else {
+                ast::ShowStmtType::CreateMaterializedViewLog
+            },
+            Table: table(rhs.len()),
+            ..Default::default()
+        }));
+    } else if name.starts_with("showstmt_show_materialized") {
+        let log = rhs.len() == 7;
+        let expected = if log { "WAIT_PURGE" } else { "REMAIN_LOGS" };
+        if !rhs
+            .borrow(rhs.len())
+            .is_some_and(|symbol| symbol.ident.eq_ignore_ascii_case(expected))
+        {
+            context.lexer.AppendError(
+                context
+                    .lexer
+                    .Errorf(&format!("syntax error: expected {expected}"), &[]),
+            );
+            return Err(1);
+        }
+        context.output.statement = Some(Box::new(ast::ShowStmt {
+            Tp: if log {
+                ast::ShowStmtType::MaterializedViewLogWaitPurge
+            } else {
+                ast::ShowStmtType::MaterializedViewRemainLogs
+            },
+            Table: table(rhs.len() - 1),
+            ..Default::default()
+        }));
+    } else if name.starts_with("dropmaterializedviewstmt_") {
         context.output.statement = Some(Box::new(ast::DropMaterializedViewStmt {
             IfExists: rhs.len() == 6,
             ViewName: table(rhs.len()),

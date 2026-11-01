@@ -11,7 +11,7 @@
 3. 以 `OptBinary` 和 `VectorElementType` 携带语法动作需要的简单值。
 4. 以 `StatementKind` 将 Go 的具体语句类型和少量字段条件压缩成可穷举的 Rust 枚举，再由 `GetStmtLabel` 生成监控、日志等使用的稳定标签。
 
-本文件当前更接近“移植契约和分类门面”，不是完整运行时 AST 主模型。仓库搜索没有发现这些分类 trait 的具体 `impl`；`GetStmtLabel` 的直接 Rust 使用证据位于独立测试 `pkg/parser/ast/ast_1_aster_unit_test.rs`。实际解析器大量操作的是 crate 根部 `parser_ast::ExprNode`、`parser_ast::ResultSetNode` 等具体类型。
+本文件当前更接近“移植契约和分类门面”，不是完整运行时 AST 主模型。当前 `CompareMaterializedViewStmt` 已在 `sem.rs` 实现 `StmtNode`，其余分类 trait 仍是移植契约；`GetStmtLabel` 的直接 Rust 使用证据位于独立测试 `pkg/parser/ast/ast_1_aster_unit_test.rs`。实际解析器大量操作的是 crate 根部 `parser_ast::ExprNode`、`parser_ast::ResultSetNode` 等具体类型。
 
 ## 主要符号
 
@@ -90,3 +90,7 @@ RustCodeGraph 能索引 `ast.rs` 并识别 `ExprNode`、`StmtNode`、`GetStmtLab
 - 为分类 trait 增加方法会影响所有实现者；当前没有搜索到实现时也应先用 RustCodeGraph/`rg` 复核，因为后续迁移可能已增加实现。测试逻辑继续放在独立 `*_test.rs`，不要内嵌进生产源文件。
 - 扩展 `VectorElementType` 时应决定校验发生在解析动作还是构造 API，避免让任意 `u8` 静默进入下游。修改 `SensitiveStmtNode` 时应以不可泄露凭据为兼容底线。
 - 性能上，频繁调用 `GetStmtLabel` 会分配 `String`；若生产接线需要消除分配，必须同步评估调用接口和 Go 兼容语义，而不能只局部改返回类型。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 新增 `StatementKind::CompareMaterializedView`，`GetStmtLabel` 返回 `CompareMaterializedView`。仍由调用者显式传入分类枚举，未扩建通用 AST 分类器。

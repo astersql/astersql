@@ -104,3 +104,7 @@ Rust 测试逻辑保持在独立文件，没有内嵌到 `walk.rs`。
 ## 2026-11-01 INT4 FROM 序列行源
 
 TableSource.FunctionSource 通过原 Visitor/InPlaceVisitor 遍历函数参数，支持既有参数定位、重绑和查询分析；函数源不访问占位 TableName。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05：注册 COMPARE 并依次遍历 `ViewName → AsOf → OutputTable`。复用 children 宏实现只读、原地替换遍历；Enter 跳过、子节点 false 短路和缺失 Option 行为继承真实 visitor 契约。独立 misc_test.rs 验证顺序、跳过、停止和三个字段写回，不沿用 Go receiver 总数。

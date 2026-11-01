@@ -426,3 +426,75 @@ impl DropMaterializedViewLogStmt {
         ))
     }
 }
+
+impl crate::CompareMaterializedViewStmt {
+    pub fn restore(&self) -> Result<String, String> {
+        let mut sql = format!(
+            "COMPARE MATERIALIZED VIEW {}",
+            required_name(&self.ViewName, "CompareMaterializedViewStmt.ViewName")?
+        );
+        if let Some(as_of) = &self.AsOf {
+            sql.push_str(" AS OF TIMESTAMP ");
+            sql.push_str(
+                &expression(&as_of.TsExpr)
+                    .map_err(|e| format!("CompareMaterializedViewStmt.AsOf: {e}"))?,
+            );
+        }
+        if self.OutputTable.is_some() {
+            sql.push_str(" OUTPUT INTO TABLE ");
+            sql.push_str(&required_name(
+                &self.OutputTable,
+                "CompareMaterializedViewStmt.OutputTable",
+            )?);
+        }
+        Ok(sql)
+    }
+}
+
+impl crate::ShowStmt {
+    /// Restore the materialized-view SHOW forms introduced by af11710fe4.
+    pub fn restore_materialized(&self) -> Result<String, String> {
+        use crate::ShowStmtType::*;
+        let mut sql = match self.Tp {
+            CreateMaterializedView => format!(
+                "SHOW CREATE MATERIALIZED VIEW {}",
+                required_name(&self.Table, "ShowStmt.MATERIALIZED VIEW")?
+            ),
+            CreateMaterializedViewLog => format!(
+                "SHOW CREATE MATERIALIZED VIEW LOG ON {}",
+                required_name(&self.Table, "ShowStmt.MATERIALIZED VIEW LOG")?
+            ),
+            MaterializedViewRemainLogs => format!(
+                "SHOW MATERIALIZED VIEW {} REMAIN_LOGS",
+                required_name(&self.Table, "ShowStmt.MATERIALIZED VIEW")?
+            ),
+            MaterializedViewLogWaitPurge => format!(
+                "SHOW MATERIALIZED VIEW LOG ON {} WAIT_PURGE",
+                required_name(&self.Table, "ShowStmt.MATERIALIZED VIEW LOG")?
+            ),
+            MaterializedViews | MaterializedViewLogs => {
+                let mut sql = if self.Tp == MaterializedViews {
+                    "SHOW MATERIALIZED VIEWS"
+                } else {
+                    "SHOW MATERIALIZED VIEW LOGS"
+                }
+                .to_owned();
+                if !self.DBName.is_empty() {
+                    sql.push_str(" IN ");
+                    sql.push_str(&quote_name(&self.DBName));
+                }
+                sql
+            }
+            _ => return Err("ShowStmt: not a materialized-view SHOW".into()),
+        };
+        if let Some(pattern) = &self.Pattern {
+            sql.push_str(" LIKE ");
+            sql.push_str(&expression(pattern)?);
+        }
+        if let Some(predicate) = &self.Where {
+            sql.push_str(" WHERE ");
+            sql.push_str(&expression(predicate)?);
+        }
+        Ok(sql)
+    }
+}

@@ -55,7 +55,10 @@ fn all_action_rules_have_one_owner() {
     assert_eq!(security_count, 182, "security RuleId inventory changed");
     assert_eq!(admin_count, 551, "admin RuleId inventory changed");
     assert_eq!(misc_count, 153, "misc RuleId inventory changed");
-    assert_eq!(mview_count, 53, "materialized view RuleId inventory changed");
+    assert_eq!(
+        mview_count, 62,
+        "materialized view RuleId inventory changed"
+    );
 }
 
 #[test]
@@ -78,12 +81,64 @@ fn remaining_modules_have_no_numeric_fallback() {
 
 #[test]
 fn pg_scalar_05_int2_rules_have_one_owner() {
-    for name in ["pgcasttype_smallint--6be73d74a71dda92", "pgcasttype_int2--726db66dacb613ed"] {
-        let rule = RULE_IDS_BY_REDUCTION.iter().copied().find(|rule|rule.as_str()==name).expect("generated int2 target");
+    for name in [
+        "pgcasttype_smallint--6be73d74a71dda92",
+        "pgcasttype_int2--726db66dacb613ed",
+    ] {
+        let rule = RULE_IDS_BY_REDUCTION
+            .iter()
+            .copied()
+            .find(|rule| rule.as_str() == name)
+            .expect("generated int2 target");
         assert!(expression::owns(rule));
         assert!(super::has_semantic_action(rule));
-        assert!(!admin::owns(rule) && !ddl::owns(rule) && !dml::owns(rule) && !query::owns(rule)
-            && !security::owns(rule) && !misc::owns(rule) && !mview::owns(rule));
-        assert_eq!(super::owner(rule),super::identify_owner(rule));
+        assert!(
+            !admin::owns(rule)
+                && !ddl::owns(rule)
+                && !dml::owns(rule)
+                && !query::owns(rule)
+                && !security::owns(rule)
+                && !misc::owns(rule)
+                && !mview::owns(rule)
+        );
+        assert_eq!(super::owner(rule), super::identify_owner(rule));
+    }
+}
+
+#[test]
+fn port_af11710fe4_materialized_action_inventory() {
+    let introduced = RULE_IDS_BY_REDUCTION
+        .iter()
+        .copied()
+        .filter(|rule| {
+            let name = rule.as_str();
+            name.starts_with("comparematerializedview")
+                || name.starts_with("showtargetfilterable_materialized")
+                || name.starts_with("showstmt_show_materialized")
+                || name.starts_with("showstmt_show_create_materialized")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(introduced.len(), 9);
+    assert_eq!(
+        RULE_IDS_BY_REDUCTION
+            .iter()
+            .filter(|&&rule| mview::owns(rule))
+            .count(),
+        62
+    );
+    for rule in introduced {
+        assert!(mview::owns(rule), "{}", rule.as_str());
+        assert_eq!(super::owner(rule), Some(super::Owner::Mview));
+        assert_eq!(super::owner(rule), super::identify_owner(rule));
+        assert!(super::has_semantic_action(rule));
+        assert!(
+            !admin::owns(rule)
+                && !ddl::owns(rule)
+                && !dml::owns(rule)
+                && !expression::owns(rule)
+                && !query::owns(rule)
+                && !security::owns(rule)
+                && !misc::owns(rule)
+        );
     }
 }

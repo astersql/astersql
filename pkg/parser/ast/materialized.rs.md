@@ -76,3 +76,7 @@ Rust 基本保持 Go 的子句顺序、逗号连接、`PURGE IMMEDIATE` 短路�
 - 扩展 `TableOption::restore` 前先核对共享类型的所有使用者和 Go `TableOption.Restore`，因为这是对全 crate 类型增加的公共方法；需要明确区分“物化视图允许的 option”与“通用 TableOption 能恢复的 option”。
 - 保持 Rust 源码与测试分文件：生产修改放在 `materialized.rs`/`lib.rs`，回归测试放在同目录 `materialized_test.rs`。重点补充缺失名称、空 action、无 Purge 节点、引号/反斜杠转义、schema 限定名和下游恢复错误。
 - 兼容风险主要是输出空格、关键字、引号及错误文本改变；性能风险主要来自大型列/action 列表与深层查询的字符串分配。若优化为直接写 formatter，应先用现有精确字符串测试锁定行为。
+
+## 本次提交对齐
+
+`CompareMaterializedViewStmt::restore` 按 ViewName、可选 AsOf、可选 OutputTable 顺序还原；解析器要求 AsOf，但程序构造的 AST 可省略，与 Go Restore 一致。`ShowStmt::restore_materialized` 还原六个新类型、列表数据库名及 LIKE/WHERE。真实调用由 `sql_restore::restore_node` 分派；缺必需名称返回字段上下文错误。对应 Go af11710fe4550179e8d096cf517462ecf4c7be05 的 misc.go/dml.go Restore 增量，不实现 SHOW 执行器。

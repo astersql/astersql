@@ -103,3 +103,7 @@ Rust 保留了 Go 的字符规则、运算符/扫描函数注册内容、关键�
 ### 本次来源增量
 
 来源 e2f259adf7ddb775cdc02e1514712b534498d05f：Hint 关键字映射新增 `TIFLASH_LM_FILTER`，映射到 Rust 自有 hint.astergram 声明的 token；普通 SQL 与 PostgreSQL 关键字规则不变。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 为 COMPARE、OUTPUT、VIEWS 增加 scanner token 映射；token 常量来自 Rust 自有 main.astergram 的生成表，不移用 Go 的重编号结果。原有 PostgreSQL token 身份保持不变。

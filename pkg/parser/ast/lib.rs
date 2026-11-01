@@ -233,6 +233,10 @@ pub enum ShowStmtType {
     Engines,
     Databases,
     Tables,
+    MaterializedViews,
+    MaterializedViewLogs,
+    MaterializedViewRemainLogs,
+    MaterializedViewLogWaitPurge,
     TableStatus,
     Columns,
     Warnings,
@@ -242,6 +246,8 @@ pub enum ShowStmtType {
     Collation,
     CreateTable,
     CreateView,
+    CreateMaterializedView,
+    CreateMaterializedViewLog,
     CreateUser,
     CreateSequence,
     CreatePlacementPolicy,
@@ -2253,6 +2259,15 @@ pub enum RefreshMaterializedViewObserveType {
     None,
     DryRun,
     Profile,
+}
+
+/// Compare a materialized view against its source query snapshot.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CompareMaterializedViewStmt {
+    pub node_text: base::AstNode,
+    pub ViewName: Option<TableName>,
+    pub AsOf: Option<AsOfClause>,
+    pub OutputTable: Option<TableName>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -5004,6 +5019,7 @@ simple_node!(
     DropMaterializedViewLogStmt,
     PurgeMaterializedViewLogStmt,
     CancelMaterializedViewJobStmt,
+    CompareMaterializedViewStmt,
     RefreshMaterializedViewStmt,
     RefreshMaterializedViewImplementStmt,
     ExprNode,

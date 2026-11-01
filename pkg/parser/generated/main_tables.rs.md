@@ -20,14 +20,14 @@
 
 - `mod token`：crate 内私有模块，其中的 token 常量是 `pub`，以便同一父模块中的 lexer/解析器代码通过 `token::<name>` 使用。当前从字符字面量到关键字、运算符及优先级伪 token 均编码为 `isize`；例如 `identifier` 与 Go `parser.go` 都是 `57346`。Rust 关键字用原始标识符（如 `r#as`、`r#in`）或生成器规定的兼容名字表示。
 - `GENERATED_MAIN_ACCEPT: i32 = i32::MIN`：接受动作哨兵。`yyParse` 在解释正负动作之前优先判断它。
-- `GENERATED_MAIN_XLAT: &[(isize, usize)]`：946 个按外部 token 编号排序的 `(token, symbol_column)` 对，含 `(0, 0)` 的 EOF 映射。`generated_main_symbol` 用二分查找访问，因此排序是运行时不变量。
-- `GENERATED_MAIN_SYMBOL_NAMES: &[&str]`：1705 个符号名，索引就是解析表列号；既用于诊断名称，也用于从规约左部列反查文法符号。`parser_runtime.rs` 的错误恢复还在其中查找名为 `error` 的合成符号。
+- `GENERATED_MAIN_XLAT: &[(isize, usize)]`：960 个按外部 token 编号排序的 `(token, symbol_column)` 对，含 `(0, 0)` 的 EOF 映射。`generated_main_symbol` 用二分查找访问，因此排序是运行时不变量。
+- `GENERATED_MAIN_SYMBOL_NAMES: &[&str]`：1749 个符号名，索引就是解析表列号；既用于诊断名称，也用于从规约左部列反查文法符号。`parser_runtime.rs` 的错误恢复还在其中查找名为 `error` 的合成符号。
 - `RuleId(&'static str)` 与 `RuleId::as_str`：crate 内可见、可复制且可哈希的稳定规约标识。标识由规约签名和摘要组成，避免语法重排后仅靠数组位置定位语义动作。
-- `RULE_IDS_BY_REDUCTION`：3234 个 `RuleId`，下标与生成规约编号一致；`yyParse` 用它调用 `parser_actions::apply` 和 `parser_actions::has_semantic_action`。
-- `GENERATED_MAIN_REDUCTIONS: &[(usize, usize)]`：3234 个 `(lhs_symbol, rhs_component_count)`。语义动作本身不占栈位，生成逻辑 `component_count` 只统计真正语法符号。
-- `GENERATED_MAIN_LEGACY_RULES: &[usize]`：3234 个一基的原文法 production 序号。`yyParse` 把该值传给 `yyLexerEx::Reduced`，维持 Go 解析器回调契约。
-- `GENERATED_MAIN_ACTION_REQUIRED: &[bool]`：3234 个语义动作要求标记。运行时据此并结合 `parser_actions::has_semantic_action` 判断默认值传播是否完整；`parser_3_marks_every_generated_semantic_action_as_implemented` 验证所有要求动作的规则已有实现。
-- `GENERATED_MAIN_PARSE_TABLE: &[&[(usize, i32)]]`：5683 个状态行。每行按列号排序且只保存非零单元；值为 `i32::MIN` 时接受，大于零时是“下一状态加一”，小于零时是“负的规约编号加一”，缺项等价于零/错误。
+- `RULE_IDS_BY_REDUCTION`：3392 个 `RuleId`，下标与生成规约编号一致；`yyParse` 用它调用 `parser_actions::apply` 和 `parser_actions::has_semantic_action`。
+- `GENERATED_MAIN_REDUCTIONS: &[(usize, usize)]`：3392 个 `(lhs_symbol, rhs_component_count)`。语义动作本身不占栈位，生成逻辑 `component_count` 只统计真正语法符号。
+- `GENERATED_MAIN_LEGACY_RULES: &[usize]`：3392 个一基的原文法 production 序号。`yyParse` 把该值传给 `yyLexerEx::Reduced`，维持 Go 解析器回调契约。
+- `GENERATED_MAIN_ACTION_REQUIRED: &[bool]`：3392 个语义动作要求标记。运行时据此并结合 `parser_actions::has_semantic_action` 判断默认值传播是否完整；`parser_3_marks_every_generated_semantic_action_as_implemented` 验证所有要求动作的规则已有实现。
+- `GENERATED_MAIN_PARSE_TABLE: &[&[(usize, i32)]]`：6005 个状态行。每行按列号排序且只保存非零单元；值为 `i32::MIN` 时接受，大于零时是“下一状态加一”，小于零时是“负的规约编号加一”，缺项等价于零/错误。
 
 文件中没有函数级解析流程、trait、条件编译项或可变全局状态；除 `RuleId::as_str` 外均为生成的常量/静态只读数据。
 
@@ -205,3 +205,7 @@ Regenerated from main.astergram for the bounded ordered-set DISTINCT and missing
 ## 关联函数表源
 
 从 main.astergram 的 LATERAL FunctionCallGeneric 产生式重新生成；规约复用普通函数表源动作并保留 Lateral 标志，供现有连接循环消费。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 的 SHOW/COMPARE 产生式由 main.astergram 经 astersql-parsergen generate 生成；保留 PostgreSQL 扩展规则，不手改表。对应 Go parser.go 重编号和状态表变化仅是 parser.y 增量的生成结果，Rust 的 RuleId/状态编号独立生成。

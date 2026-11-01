@@ -557,3 +557,27 @@ pub fn NewCrossJoin(left: ResultSet, mut right: ResultSet) -> Join {
         _ => unreachable!(),
     }
 }
+
+impl crate::ShowStmt {
+    /// Match Go's MySQL-compatible result row limit policy.
+    pub fn NeedLimitRSRow(&self) -> bool {
+        use crate::ShowStmtType::*;
+        matches!(
+            self.Tp,
+            Engines
+                | Databases
+                | Tables
+                | MaterializedViews
+                | MaterializedViewLogs
+                | Columns
+                | TableStatus
+                | Warnings
+                | Charset
+                | Variables
+                | Status
+                | Collation
+                | Index
+                | Plugins
+        )
+    }
+}

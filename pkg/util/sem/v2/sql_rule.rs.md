@@ -94,3 +94,7 @@ AST 与 `CommandStatement` 都通过共享引用传入，规则执行期间不�
 修改本地导入判断时，应复用 `objstore` 的 URL 解析和本地性定义，不在本文件复制 scheme 列表；测试至少覆盖裸路径、`file://`、远端 scheme、无效 URL、IMPORT FROM SELECT、LOAD DATA LOCAL 与服务端 LOAD DATA。规则的失败默认是 `false`，改变这一点会有兼容和安全语义风险。
 
 性能上，`semCommand` 每次返回新 `String`，并多次执行 `Any` 类型检查；当前路径是每条受检查 SQL 一次，修改时应避免增加 I/O、锁或重复解析。若要重构为 AST trait 分派，必须证明与 Go 的动态命令分类、`CommandStatement` 适配和所有现有映射完全等价，而不能只以编译通过作为证据。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 新增六类 SHOW 与 COMPARE 的 SEM 命令。Rust 的运行时 `semCommand(&dyn Node)` 另有类型适配，故需要最小局部接线：六个 showCommand 穷举分支与一个 COMPARE fixed_command 分支，返回 ast::sem 的相同命令。否则六类枚举导致非穷举编译错误，COMPARE 会落入 UNKNOWN。独立 sql_rule_test.rs 使用真实 Parser 逐项验证七种命令，不扩大其它物化视图语句的历史映射缺口。

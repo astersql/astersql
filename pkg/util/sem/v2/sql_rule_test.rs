@@ -118,3 +118,38 @@ fn test_sql_rules() {
         );
     }
 }
+
+#[test]
+fn port_af11710fe4_materialized_real_parser_sem_commands() {
+    for (sql, expected) in [
+        (
+            "COMPARE MATERIALIZED VIEW mv AS OF TIMESTAMP '2026-01-01'",
+            "COMPARE MATERIALIZED VIEW",
+        ),
+        ("SHOW MATERIALIZED VIEWS", "SHOW MATERIALIZED VIEWS"),
+        ("SHOW MATERIALIZED VIEW LOGS", "SHOW MATERIALIZED VIEW LOGS"),
+        (
+            "SHOW MATERIALIZED VIEW mv REMAIN_LOGS",
+            "SHOW MATERIALIZED VIEW REMAIN_LOGS",
+        ),
+        (
+            "SHOW MATERIALIZED VIEW LOG ON t WAIT_PURGE",
+            "SHOW MATERIALIZED VIEW LOG WAIT_PURGE",
+        ),
+        (
+            "SHOW CREATE MATERIALIZED VIEW mv",
+            "SHOW CREATE MATERIALIZED VIEW",
+        ),
+        (
+            "SHOW CREATE MATERIALIZED VIEW LOG ON t",
+            "SHOW CREATE MATERIALIZED VIEW LOG",
+        ),
+    ] {
+        let stmt = parser::New().ParseOneStmt(sql, "", "").unwrap();
+        assert_eq!(
+            crate::sql_rule::semCommand(stmt.as_ref()),
+            expected,
+            "{sql}"
+        );
+    }
+}

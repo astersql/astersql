@@ -670,3 +670,231 @@ fn port_cb395494e6_storage_context_redaction() {
         "https://host/a?visible=x#fragment"
     );
 }
+
+fn port_af11710fe4_compare() -> crate::CompareMaterializedViewStmt {
+    crate::CompareMaterializedViewStmt {
+        ViewName: Some(crate::TableName {
+            Schema: crate::NewCIStr("test"),
+            Name: crate::NewCIStr("mv"),
+            ..Default::default()
+        }),
+        AsOf: Some(crate::AsOfClause {
+            TsExpr: crate::ExprNode::Value("2026-05-21 10:00:00".into()),
+        }),
+        OutputTable: Some(crate::TableName {
+            Schema: crate::NewCIStr("test"),
+            Name: crate::NewCIStr("mv_diff"),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn port_af11710fe4_compare_restore_and_stmt_contract() {
+    use crate::ast::StmtNode;
+    let mut stmt = port_af11710fe4_compare();
+    let contract: &dyn StmtNode = &stmt;
+    assert_eq!(contract.SEMCommand(), "COMPARE MATERIALIZED VIEW");
+    assert_eq!(
+        stmt.restore().unwrap(),
+        "COMPARE MATERIALIZED VIEW `test`.`mv` AS OF TIMESTAMP _UTF8MB4'2026-05-21 10:00:00' OUTPUT INTO TABLE `test`.`mv_diff`"
+    );
+    assert_eq!(
+        crate::sql_restore::restore_node(&stmt).unwrap(),
+        stmt.restore().unwrap()
+    );
+    assert_eq!(
+        crate::ast::GetStmtLabel(&crate::ast::StatementKind::CompareMaterializedView),
+        "CompareMaterializedView"
+    );
+    stmt.OutputTable = None;
+    assert!(!stmt.restore().unwrap().contains("OUTPUT"));
+    stmt.AsOf = None;
+    assert_eq!(
+        stmt.restore().unwrap(),
+        "COMPARE MATERIALIZED VIEW `test`.`mv`"
+    );
+    stmt.ViewName = None;
+    assert!(
+        stmt.restore()
+            .unwrap_err()
+            .contains("CompareMaterializedViewStmt.ViewName")
+    );
+}
+
+#[test]
+fn port_af11710fe4_show_sem_limits_and_restore() {
+    use crate::ShowStmtType::*;
+    use crate::sem::SEMCommand;
+    for (tp, command, expected, limit) in [
+        (
+            CreateMaterializedView,
+            "SHOW CREATE MATERIALIZED VIEW",
+            "SHOW CREATE MATERIALIZED VIEW `mv`",
+            false,
+        ),
+        (
+            CreateMaterializedViewLog,
+            "SHOW CREATE MATERIALIZED VIEW LOG",
+            "SHOW CREATE MATERIALIZED VIEW LOG ON `mv`",
+            false,
+        ),
+        (
+            MaterializedViews,
+            "SHOW MATERIALIZED VIEWS",
+            "SHOW MATERIALIZED VIEWS",
+            true,
+        ),
+        (
+            MaterializedViewLogs,
+            "SHOW MATERIALIZED VIEW LOGS",
+            "SHOW MATERIALIZED VIEW LOGS",
+            true,
+        ),
+        (
+            MaterializedViewRemainLogs,
+            "SHOW MATERIALIZED VIEW REMAIN_LOGS",
+            "SHOW MATERIALIZED VIEW `mv` REMAIN_LOGS",
+            false,
+        ),
+        (
+            MaterializedViewLogWaitPurge,
+            "SHOW MATERIALIZED VIEW LOG WAIT_PURGE",
+            "SHOW MATERIALIZED VIEW LOG ON `mv` WAIT_PURGE",
+            false,
+        ),
+    ] {
+        let stmt = crate::ShowStmt {
+            Tp: tp,
+            Table: Some(crate::TableName {
+                Name: crate::NewCIStr("mv"),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(stmt.sem_command(), command);
+        assert_eq!(stmt.NeedLimitRSRow(), limit);
+        assert_eq!(crate::sql_restore::restore_node(&stmt).unwrap(), expected);
+        if !limit {
+            let missing = crate::ShowStmt {
+                Tp: tp,
+                ..Default::default()
+            };
+            assert!(
+                missing
+                    .restore_materialized()
+                    .unwrap_err()
+                    .contains("ShowStmt.MATERIALIZED VIEW")
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct PortAf11710fe4Visitor {
+    events: Vec<String>,
+    skip: bool,
+    stop: bool,
+}
+impl Visitor for PortAf11710fe4Visitor {
+    fn enter_embedded(&mut self, value: &dyn std::any::Any) -> bool {
+        if value.is::<crate::AsOfClause>() {
+            self.events.push("asof".into());
+        }
+        false
+    }
+    fn enter(&mut self, node: &dyn Node) -> bool {
+        self.events.push(
+            if node.as_any().is::<crate::CompareMaterializedViewStmt>() {
+                "compare"
+            } else {
+                "expr"
+            }
+            .into(),
+        );
+        self.skip
+    }
+    fn leave(&mut self, _: &dyn Node) -> bool {
+        !self.stop
+    }
+    fn enter_table_name(&mut self, table: &crate::TableName) -> bool {
+        self.events.push(table.Name.O.clone());
+        false
+    }
+    fn leave_table_name(&mut self, _: &crate::TableName) -> bool {
+        !self.stop
+    }
+}
+impl crate::InPlaceVisitor for PortAf11710fe4Visitor {
+    fn enter(&mut self, node: &mut dyn Node) -> bool {
+        self.events.push(
+            if node.as_any().is::<crate::CompareMaterializedViewStmt>() {
+                "compare"
+            } else {
+                "expr"
+            }
+            .into(),
+        );
+        self.skip
+    }
+    fn leave(&mut self, _: &mut dyn Node) -> bool {
+        !self.stop
+    }
+    fn enter_table_name(&mut self, table: &mut crate::TableName) -> bool {
+        self.events.push(table.Name.O.clone());
+        table.Name = crate::NewCIStr(&format!("{}_visited", table.Name.O));
+        false
+    }
+    fn leave_table_name(&mut self, _: &mut crate::TableName) -> bool {
+        !self.stop
+    }
+    fn enter_embedded(&mut self, value: &mut dyn std::any::Any) -> bool {
+        if let Some(as_of) = value.downcast_mut::<crate::AsOfClause>() {
+            self.events.push("asof".into());
+            as_of.TsExpr = crate::ExprNode::Value("2026-06-01".into());
+        }
+        false
+    }
+}
+
+#[test]
+fn port_af11710fe4_compare_visitors_order_skip_stop_and_writeback() {
+    for (skip, stop, expected, ok) in [
+        (
+            false,
+            false,
+            vec!["compare", "mv", "asof", "expr", "mv_diff"],
+            true,
+        ),
+        (true, false, vec!["compare"], true),
+        (false, true, vec!["compare", "mv"], false),
+    ] {
+        let mut stmt = port_af11710fe4_compare();
+        let mut immutable = PortAf11710fe4Visitor {
+            skip,
+            stop,
+            ..Default::default()
+        };
+        assert_eq!(stmt.accept(&mut immutable), ok);
+        assert_eq!(immutable.events, expected);
+        let mut mutable = PortAf11710fe4Visitor {
+            skip,
+            stop,
+            ..Default::default()
+        };
+        assert_eq!(stmt.accept_in_place(&mut mutable), ok);
+        assert_eq!(mutable.events, expected);
+        if !skip && !stop {
+            assert_eq!(stmt.ViewName.unwrap().Name.O, "mv_visited");
+            assert_eq!(stmt.OutputTable.unwrap().Name.O, "mv_diff_visited");
+            assert_eq!(
+                stmt.AsOf.unwrap().TsExpr,
+                crate::ExprNode::Value("2026-06-01".into())
+            );
+        }
+    }
+    let mut empty = crate::CompareMaterializedViewStmt::default();
+    assert!(empty.accept(&mut Counter::default()));
+    assert!(empty.accept_in_place(&mut PortAf11710fe4Visitor::default()));
+}

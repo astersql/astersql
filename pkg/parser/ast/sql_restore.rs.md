@@ -155,3 +155,7 @@ TableSource.FunctionSource 还原原函数表达式、表别名和列别名，�
 ## 关联函数表源
 
 函数表源恢复时保留 TableSource.Lateral 修饰词，支持关联函数AST的恢复和重新解析。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 的必要局部接线：对 COMPARE 与六类 SHOW MATERIALIZED 使用结构化 restore，避免回落到原 SQL 文本而掩盖 AST 修改。其它 SHOW、SELECT 与 PostgreSQL 表达式分支保留。

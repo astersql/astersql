@@ -19,7 +19,7 @@
 
 - `item<T: Any + Clone>(rhs, position) -> Option<T>`：从指定的一基 RHS 位置取得 `yySymType.item`，按目标类型 downcast 并克隆。它用于数值、列名列表、刷新 clause、action 列表及其他可克隆中间值。
 - `expression(rhs, position) -> Option<ast::ExprNode>`：读取 RHS 槽的 `expr`，用于 `START WITH`、`NEXT` 等表达式。
-- `owns(rule_id) -> bool`：识别 `mview*`、`mlog*`、`create/alter/drop/refresh...materializedview*` 等前缀，并通过生成表确认该规约确实需要主 action。`pkg/parser/parser_actions/remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 固定验证本模块拥有 53 条规则。
+- `owns(rule_id) -> bool`：识别 `mview*`、`mlog*`、`create/alter/drop/refresh...materializedview*` 等前缀，并通过生成表确认该规约确实需要主 action。`pkg/parser/parser_actions/remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 固定验证本模块拥有 62 条规则。
 - `apply(rule_id, rhs, context) -> Result<bool, isize>`：唯一语义动作入口。它按稳定规则名分支，向 `context.output.statement`、`item`、`expr` 或 `ident` 写入规约结果；正常完成返回 `Ok(true)`，两类 option-list 合并遇到动态值缺失或类型不符时返回 `Ok(false)`。
 - 局部闭包 `table(position)` 与 `value(position)`：分别读取克隆后的 `ast::TableName` 和只借用的动态 `Any` 值，减少各 statement 分支的重复 downcast。
 
@@ -44,7 +44,7 @@ RHS 语义值由 `yySymType` 分字段承载：完整 statement 在 `statement`�
 
 ## 依赖与调用关系
 
-上游主链是 `pkg/parser/parser_runtime.rs` 的 reduction → `pkg/parser/parser_actions/mod.rs::apply` → `mview::owns` → `mview::apply`。`parser_actions/mod.rs::has_semantic_action` 也调用 `owns`；`remaining_aster_unit_test.rs` 遍历全部生成规则，验证每条需要 action 的规则只有一个 owner，并确认 `mview_count == 53`。
+上游主链是 `pkg/parser/parser_runtime.rs` 的 reduction → `pkg/parser/parser_actions/mod.rs::apply` → `mview::owns` → `mview::apply`。`parser_actions/mod.rs::has_semantic_action` 也调用 `owns`；`remaining_aster_unit_test.rs` 遍历全部生成规则，验证每条需要 action 的规则只有一个 owner，并确认 `mview_count == 62`。
 
 下游依赖主要是：
 
@@ -54,7 +54,7 @@ RHS 语义值由 `yySymType` 分字段承载：完整 statement 在 `statement`�
 - `RULE_IDS_BY_REDUCTION` 与 `GENERATED_MAIN_ACTION_REQUIRED`：限定稳定命名规则的真实 action 所有权，避免仅凭字符串前缀接管无动作规约。
 - `mviewCreateOptions`、`mlogCreateOptions`：定义于 `pkg/parser/mview_stmt_options.rs`，是 CREATE 产生式内部使用的私有聚合状态。
 
-RustCodeGraph 的文件节点确认目标共 470 行，并给出了 `item`、`expression`、`owns`、`apply` 的完整源码；精确调用入口由模块分派器和运行时源码交叉核验。
+RustCodeGraph 的文件节点在新增 SHOW/COMPARE 前给出了 `item`、`expression`、`owns`、`apply` 的完整源码；精确调用入口由模块分派器和运行时源码交叉核验。
 
 ## 错误处理与边界
 
@@ -84,10 +84,14 @@ RustCodeGraph 的文件节点确认目标共 470 行，并给出了 `item`、`ex
 
 ## 扩展指南
 
-新增或修改物化视图语法时，先在 `pkg/parser/parser.y` 明确产生式与 Go action，再同步生成的稳定规则元数据和本文件分支。若新增规则名前缀不在 `owns` 列表中，应扩展前缀判定；若属于已有前缀，也必须确认 `GENERATED_MAIN_ACTION_REQUIRED` 命中且 `apply` 有实际输出分支。任何 owner 数量变化都要同步审视 `remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 的 53 条断言。
+新增或修改物化视图语法时，先在 `pkg/parser/parser.y` 明确产生式与 Go action，再同步生成的稳定规则元数据和本文件分支。若新增规则名前缀不在 `owns` 列表中，应扩展前缀判定；若属于已有前缀，也必须确认 `GENERATED_MAIN_ACTION_REQUIRED` 命中且 `apply` 有实际输出分支。任何 owner 数量变化都要同步审视 `remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 的 62 条断言。
 
 调整 RHS 时必须逐字段核对一基位置，尤其是 CREATE 的 8/9/10/12、CREATE LOG 的 10/11/12、REFRESH 的 5/7/8，以及变长 DROP/CANCEL 规则。新增必需字段不应无条件 `unwrap_or_default()`；应根据 grammar 不变量选择显式失败或安全的可选值。新增 option 时应扩展相应 accumulator、重复标志、合并逻辑及 AST option，并保持输入顺序。
 
 测试必须放在独立文件，不能嵌入 `mview.rs`：端到端解析和 AST 字段优先扩展 `pkg/parser/go_merge_33_test.rs` 或 `pkg/parser/go_merge_35_test.rs`；owner/数字回退约束扩展 `pkg/parser/parser_actions/remaining_aster_unit_test.rs`；Go 对照同步 `pkg/parser/parser_test.go`；AST restore、visitor 或语义命令行为应放入 `pkg/parser/ast/*_test.rs` 的相应独立测试。
 
 主要兼容风险是 Rust/Go 的 nil/default 语义漂移、规则后缀或 RHS 位置变化导致字段错填、漏接规则被兜底为“已处理”，以及重复选项错误文本变化。当前动作只在规约时线性合并短 option/action 列表；若未来支持大列表，应注意反复取出与追加的分配成本，但本文件目前没有执行期性能或并发热点。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 新增九个动作，owner inventory 53→62。COMPARE 的必需 AsOf 与可选输出表构成真实 AST；两类列表目标返回 ShowStmt 中间值，继续复用 admin 的 ShowLikeOrWhereOpt 与通用 SHOW 动作；四类直接 SHOW 构造目标表并校验 REMAIN_LOGS/WAIT_PURGE（大小写不敏感）。不匹配时 AppendError 并停止规约。保持稳定 RuleId 前缀，不使用数字规则回退。

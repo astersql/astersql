@@ -60,10 +60,10 @@ fn test_keywords() {
 }
 
 // test_keywords_length 对应 Go 的 TestKeywordsLength：固定总关键字数和保留关键字数量。
-/// 校验总关键字数 697、保留字数 233（与 Go 生成器快照一致）。
+/// 校验总关键字数 700、保留字数 233（与 Go 生成器快照一致）。
 #[test]
 fn test_keywords_length() {
-    require::Equal(697, parser::Keywords.len());
+    require::Equal(700, parser::Keywords.len());
 
     let mut reserved_nr = 0;
     for kw in parser::Keywords.iter() {
@@ -96,5 +96,211 @@ fn test_keywords_sorting() {
                 kw.Word,
             );
         }
+    }
+}
+
+#[test]
+fn port_af11710fe4_materialized_parser_restore() {
+    for (sql, valid, expected) in [
+        (
+            "show create materialized view test.t",
+            true,
+            "SHOW CREATE MATERIALIZED VIEW `test`.`t`",
+        ),
+        (
+            "show create materialized view t",
+            true,
+            "SHOW CREATE MATERIALIZED VIEW `t`",
+        ),
+        (
+            "show create materialized view log on test.t",
+            true,
+            "SHOW CREATE MATERIALIZED VIEW LOG ON `test`.`t`",
+        ),
+        (
+            "show create materialized view log on t",
+            true,
+            "SHOW CREATE MATERIALIZED VIEW LOG ON `t`",
+        ),
+        ("show materialized views", true, "SHOW MATERIALIZED VIEWS"),
+        (
+            "show materialized views from test",
+            true,
+            "SHOW MATERIALIZED VIEWS IN `test`",
+        ),
+        ("show materialized views from 'test'", false, ""),
+        (
+            "show materialized views in test like 'mv%'",
+            true,
+            "SHOW MATERIALIZED VIEWS IN `test` LIKE _UTF8MB4'mv%'",
+        ),
+        (
+            "show materialized views where mview_id = 1",
+            true,
+            "SHOW MATERIALIZED VIEWS WHERE `mview_id`=1",
+        ),
+        (
+            "show materialized view mv remain_logs",
+            true,
+            "SHOW MATERIALIZED VIEW `mv` REMAIN_LOGS",
+        ),
+        (
+            "show materialized view test.mv remain_logs",
+            true,
+            "SHOW MATERIALIZED VIEW `test`.`mv` REMAIN_LOGS",
+        ),
+        ("show materialized view mv", false, ""),
+        ("show materialized view mv like 'mv%'", false, ""),
+        ("show materialized view mv where mview_id = 1", false, ""),
+        (
+            "show materialized view logs",
+            true,
+            "SHOW MATERIALIZED VIEW LOGS",
+        ),
+        (
+            "show materialized view logs from test",
+            true,
+            "SHOW MATERIALIZED VIEW LOGS IN `test`",
+        ),
+        ("show materialized view logs from 'test'", false, ""),
+        (
+            "show materialized view logs in test like '$mlog$%'",
+            true,
+            "SHOW MATERIALIZED VIEW LOGS IN `test` LIKE _UTF8MB4'$mlog$%'",
+        ),
+        (
+            "show materialized view logs where mlog_id = 1",
+            true,
+            "SHOW MATERIALIZED VIEW LOGS WHERE `mlog_id`=1",
+        ),
+        (
+            "show materialized view log on t wait_purge",
+            true,
+            "SHOW MATERIALIZED VIEW LOG ON `t` WAIT_PURGE",
+        ),
+        (
+            "show materialized view log on test.t wait_purge",
+            true,
+            "SHOW MATERIALIZED VIEW LOG ON `test`.`t` WAIT_PURGE",
+        ),
+        ("show materialized view log on t", false, ""),
+        ("show materialized view log on t like '$mlog$%'", false, ""),
+        (
+            "show materialized view log on t where mlog_id = 1",
+            false,
+            "",
+        ),
+        (
+            "COMPARE MATERIALIZED VIEW mv AS OF TIMESTAMP '2026-01-01 00:00:00'",
+            true,
+            "COMPARE MATERIALIZED VIEW `mv` AS OF TIMESTAMP _UTF8MB4'2026-01-01 00:00:00'",
+        ),
+        (
+            "COMPARE MATERIALIZED VIEW test.mv AS OF TIMESTAMP '2026-01-01 00:00:00' OUTPUT INTO TABLE test.diff",
+            true,
+            "COMPARE MATERIALIZED VIEW `test`.`mv` AS OF TIMESTAMP _UTF8MB4'2026-01-01 00:00:00' OUTPUT INTO TABLE `test`.`diff`",
+        ),
+        ("COMPARE MATERIALIZED VIEW mv", false, ""),
+        (
+            "COMPARE MATERIALIZED VIEW mv OUTPUT INTO TABLE diff",
+            false,
+            "",
+        ),
+        (
+            "SELECT * FROM `t` AS /* comment */ a;",
+            true,
+            "SELECT * FROM `t` AS `a`",
+        ),
+    ] {
+        let result = crate::New().ParseOneStmt(sql, "", "");
+        if valid {
+            let stmt = result.unwrap_or_else(|err| panic!("{sql}: {err}"));
+            assert_eq!(
+                crate::ast::sql_restore::restore_node(stmt.as_ref()).unwrap(),
+                expected,
+                "{sql}"
+            );
+        } else {
+            assert!(result.is_err(), "must reject {sql}");
+        }
+    }
+}
+
+#[test]
+fn port_af11710fe4_unreserved_keywords() {
+    for word in ["COMPARE", "OUTPUT", "VIEWS"] {
+        let keyword = parser::Keywords
+            .iter()
+            .find(|kw| kw.Word == word)
+            .expect(word);
+        assert!(!keyword.Reserved);
+        assert_eq!(keyword.Section, "unreserved");
+        let sql = format!("SELECT {word} FROM {word}");
+        assert!(crate::New().ParseOneStmt(&sql, "", "").is_ok(), "{sql}");
+    }
+}
+
+#[test]
+fn port_af11710fe4_ast_fields_and_diagnostics() {
+    use crate::ast::{CompareMaterializedViewStmt, ExprKind, ShowStmt, ShowStmtType};
+    for (suffix, output) in [("", None), (" OUTPUT INTO TABLE test.diff", Some("diff"))] {
+        let sql = format!(
+            "COMPARE MATERIALIZED VIEW test.mv AS OF TIMESTAMP '2026-01-01 00:00:00'{suffix}"
+        );
+        let node = crate::New().ParseOneStmt(&sql, "", "").unwrap();
+        let stmt = node
+            .as_any()
+            .downcast_ref::<CompareMaterializedViewStmt>()
+            .unwrap();
+        assert_eq!(stmt.ViewName.as_ref().unwrap().Schema.O, "test");
+        assert_eq!(stmt.ViewName.as_ref().unwrap().Name.O, "mv");
+        assert!(stmt.AsOf.is_some());
+        assert_eq!(
+            stmt.OutputTable.as_ref().map(|name| name.Name.O.as_str()),
+            output
+        );
+    }
+    for (sql, tp, pattern, predicate) in [
+        (
+            "SHOW MATERIALIZED VIEWS FROM test LIKE 'mv%'",
+            ShowStmtType::MaterializedViews,
+            true,
+            false,
+        ),
+        (
+            "SHOW MATERIALIZED VIEW LOGS IN test WHERE mlog_id=1",
+            ShowStmtType::MaterializedViewLogs,
+            false,
+            true,
+        ),
+    ] {
+        let node = crate::New().ParseOneStmt(sql, "", "").unwrap();
+        let stmt = node.as_any().downcast_ref::<ShowStmt>().unwrap();
+        assert_eq!(stmt.Tp, tp);
+        assert_eq!(stmt.DBName, "test");
+        assert_eq!(stmt.Pattern.is_some(), pattern);
+        assert_eq!(stmt.Where.is_some(), predicate);
+        if let Some(expr) = &stmt.Where {
+            assert!(matches!(expr.Kind, ExprKind::Binary { .. }));
+        }
+    }
+    for (sql, message) in [
+        ("SHOW MATERIALIZED VIEW mv wrong", "expected REMAIN_LOGS"),
+        (
+            "SHOW MATERIALIZED VIEW LOG ON t wrong",
+            "expected WAIT_PURGE",
+        ),
+    ] {
+        let err = crate::New()
+            .ParseOneStmt(sql, "", "")
+            .err()
+            .expect("reject invalid suffix");
+        assert!(err.to_string().contains(message), "{err}");
+    }
+    for sql in [
+        "show materialized view mv ReMaIn_LoGs",
+        "show materialized view log on t WaIt_PuRgE",
+    ] {
+        assert!(crate::New().ParseOneStmt(sql, "", "").is_ok());
     }
 }

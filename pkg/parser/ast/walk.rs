@@ -68,6 +68,7 @@ node_visit!(
     DropMaterializedViewLogStmt,
     PurgeMaterializedViewLogStmt,
     CancelMaterializedViewJobStmt,
+    CompareMaterializedViewStmt,
     RefreshMaterializedViewStmt,
     RefreshMaterializedViewImplementStmt,
     DeallocateStmt,
@@ -407,6 +408,7 @@ children!(DropMaterializedViewStmt => ViewName);
 children!(DropMaterializedViewLogStmt => Table);
 children!(PurgeMaterializedViewLogStmt => Table);
 children!(CancelMaterializedViewJobStmt => );
+children!(CompareMaterializedViewStmt => ViewName, AsOf, OutputTable);
 children!(RefreshMaterializedViewStmt => ViewName, AsOf);
 children!(RefreshMaterializedViewImplementStmt => RefreshStmt);
 children!(AlterTableSpec => Constraint, NewTable, SplitIndex, NewColumns, OldColumnName, Position, MaskingPolicyColumn, MaskingPolicyExpr, Partition, Options, PartDefinitions);

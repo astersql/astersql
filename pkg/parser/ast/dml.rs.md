@@ -135,3 +135,7 @@ Go 权威对照是 `pkg/parser/ast/dml.go`，相关回归是 `pkg/parser/ast/dml
 6. 修改 Join 树时保持 `right == None`、显式括号、嵌套 Join、Right-to-Left 改写和最左叶插入不变量；回归测试应放在独立文件 `pkg/parser/ast/dml_3_aster_unit_test.rs` 或 `pkg/parser/ast/dml_test.rs`，不要内嵌进 `dml.rs`。
 7. 性能敏感扩展应关注各 `restore` 中 `collect::<Vec<_>>().join(...)` 与递归字符串拼接带来的分配；优化时必须保持输出字节级兼容。
 8. 本任务仅分析文档，不改变 Rust 行为；若后续修改 Rust 源码，按仓库规则同步独立测试、运行 `cargo fmt --all`，并使用适用验证流程。
+
+## 本次提交对齐
+
+来源 af11710fe4550179e8d096cf517462ecf4c7be05 的限行增量接在真实 crate 根 `ShowStmt::NeedLimitRSRow`：两类物化视图列表与原 MySQL 列表一样限行，CREATE、REMAIN_LOGS、WAIT_PURGE 不限行；不改变 PostgreSQL SELECT 的 LIMIT 或排序语义。

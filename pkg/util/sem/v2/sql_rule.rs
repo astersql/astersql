@@ -275,6 +275,7 @@ pub(crate) fn semCommand(stmt: &dyn ast::Node) -> String {
         ast::CancelDistributionJobStmt => ast_sem::CancelDistributionJobCommand,
         ast::CommitStmt => ast_sem::CommitCommand,
         ast::CompactTableStmt => ast_sem::AlterTableCompactCommand,
+        ast::CompareMaterializedViewStmt => ast_sem::CompareMaterializedViewCommand,
         ast::CreateBindingStmt => ast_sem::CreateBindingCommand,
         ast::CreateStatisticsStmt => ast_sem::CreateStatisticsCommand,
         ast::DeallocateStmt => ast_sem::DeallocateCommand,
@@ -348,6 +349,12 @@ pub(crate) fn semCommand(stmt: &dyn ast::Node) -> String {
 fn showCommand(statement_type: ast::ShowStmtType) -> &'static str {
     use ast::ShowStmtType::*;
     match statement_type {
+        CreateMaterializedView => ast_sem::ShowCreateMaterializedViewCommand,
+        CreateMaterializedViewLog => ast_sem::ShowCreateMaterializedViewLogCommand,
+        MaterializedViews => ast_sem::ShowMaterializedViewsCommand,
+        MaterializedViewLogs => ast_sem::ShowMaterializedViewLogsCommand,
+        MaterializedViewRemainLogs => ast_sem::ShowMaterializedViewRemainLogsCommand,
+        MaterializedViewLogWaitPurge => ast_sem::ShowMaterializedViewLogWaitPurgeCommand,
         CreateTable => ast_sem::ShowCreateTableCommand,
         CreateView => ast_sem::ShowCreateViewCommand,
         CreateDatabase => ast_sem::ShowCreateDatabaseCommand,

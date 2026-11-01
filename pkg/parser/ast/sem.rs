@@ -270,6 +270,12 @@ use crate::{AdminStmt, AdminStmtType, BRIEKind, BRIEStmt, ShowStmt, ShowStmtType
 impl SEMCommand for ShowStmt {
     fn sem_command(&self) -> &'static str {
         match self.Tp {
+            ShowStmtType::CreateMaterializedView => ShowCreateMaterializedViewCommand,
+            ShowStmtType::CreateMaterializedViewLog => ShowCreateMaterializedViewLogCommand,
+            ShowStmtType::MaterializedViews => ShowMaterializedViewsCommand,
+            ShowStmtType::MaterializedViewLogs => ShowMaterializedViewLogsCommand,
+            ShowStmtType::MaterializedViewRemainLogs => ShowMaterializedViewRemainLogsCommand,
+            ShowStmtType::MaterializedViewLogWaitPurge => ShowMaterializedViewLogWaitPurgeCommand,
             ShowStmtType::None => UnknownCommand,
             ShowStmtType::Engines => ShowEnginesCommand,
             ShowStmtType::Databases => ShowDatabasesCommand,
@@ -443,6 +449,7 @@ mod typed_sem_impls {
         DropMaterializedViewStmt => DropMaterializedViewCommand,
         DropMaterializedViewLogStmt => DropMaterializedViewLogCommand,
         PurgeMaterializedViewLogStmt => PurgeMaterializedViewLogCommand,
+        CompareMaterializedViewStmt => CompareMaterializedViewCommand,
         RefreshMaterializedViewStmt => RefreshMaterializedViewCommand,
         RefreshMaterializedViewImplementStmt => RefreshMaterializedViewCommand,
         DropPlacementPolicyStmt => DropPlacementPolicyCommand,
@@ -607,5 +614,20 @@ impl SEMCommand for SemStatement {
             SemStatement::Explain { analyze: true } => ExplainAnalyzeCommand,
             SemStatement::Explain { analyze: false } => ExplainCommand,
         }
+    }
+}
+
+pub const CompareMaterializedViewCommand: &str = "COMPARE MATERIALIZED VIEW";
+pub const ShowCreateMaterializedViewCommand: &str = "SHOW CREATE MATERIALIZED VIEW";
+pub const ShowCreateMaterializedViewLogCommand: &str = "SHOW CREATE MATERIALIZED VIEW LOG";
+pub const ShowMaterializedViewsCommand: &str = "SHOW MATERIALIZED VIEWS";
+pub const ShowMaterializedViewLogsCommand: &str = "SHOW MATERIALIZED VIEW LOGS";
+pub const ShowMaterializedViewRemainLogsCommand: &str = "SHOW MATERIALIZED VIEW REMAIN_LOGS";
+pub const ShowMaterializedViewLogWaitPurgeCommand: &str = "SHOW MATERIALIZED VIEW LOG WAIT_PURGE";
+
+impl crate::ast::StmtNode for crate::CompareMaterializedViewStmt {
+    fn statement(&self) {}
+    fn SEMCommand(&self) -> String {
+        self.sem_command().into()
     }
 }

@@ -766,10 +766,27 @@ pub fn restore_node(node: &dyn parser_ast::Node) -> Result<String, String> {
     {
         return stmt.restore();
     }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::CompareMaterializedViewStmt>()
+    {
+        return stmt.restore();
+    }
     if let Some(stmt) = node.as_any().downcast_ref::<parser_ast::AnalyzeTableStmt>() {
         return stmt.restore();
     }
     if let Some(show) = node.as_any().downcast_ref::<parser_ast::ShowStmt>() {
+        if matches!(
+            show.Tp,
+            ShowStmtType::CreateMaterializedView
+                | ShowStmtType::CreateMaterializedViewLog
+                | ShowStmtType::MaterializedViews
+                | ShowStmtType::MaterializedViewLogs
+                | ShowStmtType::MaterializedViewRemainLogs
+                | ShowStmtType::MaterializedViewLogWaitPurge
+        ) {
+            return show.restore_materialized();
+        }
         if show.Tp == parser_ast::ShowStmtType::StorageClassTransitions {
             let mut sql = "SHOW STORAGE_CLASS TRANSITIONS".to_owned();
             if let Some(pattern) = &show.Pattern {

@@ -959,4 +959,7 @@ mod token {
     pub const pgOthers: i32 = 58276;
     pub const pgWithin: i32 = 58277;
     pub const pgPercentileDisc: i32 = 58278;
+    pub const compare: i32 = 58279;
+    pub const output: i32 = 58280;
+    pub const views: i32 = 58281;
 }
