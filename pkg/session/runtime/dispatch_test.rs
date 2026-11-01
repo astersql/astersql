@@ -677,3 +677,99 @@ fn pg10_06_text_unique_prerequisite() {
     assert_eq!(rows, ["a", "10"]);
     pg.execute("DROP TABLE conflict_doc").unwrap();
 }
+
+#[test]
+fn pg10_07_all_unique_arbiters() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE conflict_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL CHECK(v>0))").unwrap();
+    pg.execute("INSERT INTO conflict_doc VALUES (1,'a',10),(2,'b',20)")
+        .unwrap();
+    for values in ["(3,'b',30)", "(1,'changed',99)"] {
+        pg.execute(&format!(
+            "INSERT INTO conflict_doc VALUES {values} ON CONFLICT DO NOTHING"
+        ))
+        .unwrap();
+    }
+    pg.execute("INSERT INTO conflict_doc VALUES (1,'changed',99),(3,'c',30),(3,'changed',99),(4,'c',40) ON CONFLICT DO NOTHING").unwrap();
+    pg.execute("INSERT INTO conflict_doc VALUES (4,NULL,40),(5,NULL,50) ON CONFLICT DO NOTHING")
+        .unwrap();
+    for values in ["(6,'d',NULL)", "(6,'d',0)", "(6,'d',1/0)"] {
+        assert!(
+            pg.execute(&format!(
+                "INSERT INTO conflict_doc VALUES {values} ON CONFLICT DO NOTHING"
+            ))
+            .is_err()
+        );
+    }
+    let mut results = pg
+        .execute("SELECT id,email,v FROM conflict_doc ORDER BY id")
+        .unwrap();
+    let rows = &mut results[0];
+    for expected in [
+        vec!["1", "a", "10"],
+        vec!["2", "b", "20"],
+        vec!["3", "c", "30"],
+        vec!["4", "<nil>", "40"],
+        vec!["5", "<nil>", "50"],
+    ] {
+        assert_eq!(rows.next_row().unwrap().unwrap(), expected);
+    }
+    assert!(rows.next_row().unwrap().is_none());
+    pg.execute("DROP TABLE conflict_doc").unwrap();
+}
+
+#[test]
+fn pg10_07_check_prerequisite() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE conflict_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL CHECK(v>0))").unwrap();
+    let result = pg.execute("INSERT INTO conflict_doc VALUES (3,'c',0)");
+    pg.execute("DROP TABLE conflict_doc").unwrap();
+    assert!(
+        result.is_err(),
+        "plain INSERT must enforce CHECK(v>0), without any conflict clause"
+    );
+}
+
+#[test]
+fn pg10_07_check_candidate_semantics() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    pg.execute("CREATE TABLE pg_check_local(id integer PRIMARY KEY,v integer, CHECK(v>0))")
+        .unwrap();
+    let table = domain.table_by_name("test", "pg_check_local").unwrap();
+    assert_eq!(table.Constraints.len(), 1);
+    assert!(table.Constraints[0].Enforced);
+    assert_eq!(table.Constraints[0].State, astersql_meta_model::StatePublic);
+    assert!(!table.Constraints[0].ExprString.is_empty());
+    pg.execute("INSERT INTO pg_check_local VALUES (1,NULL),(2,1) ON CONFLICT DO NOTHING")
+        .unwrap();
+    for sql in [
+        "INSERT INTO pg_check_local VALUES (1,0) ON CONFLICT DO NOTHING",
+        "INSERT INTO pg_check_local VALUES (3,3),(4,0) ON CONFLICT DO NOTHING",
+    ] {
+        assert!(pg.execute(sql).is_err(), "{sql}");
+    }
+    let mut results = pg
+        .execute("SELECT id,v FROM pg_check_local ORDER BY id")
+        .unwrap();
+    assert_eq!(results[0].next_row().unwrap().unwrap(), ["1", "<nil>"]);
+    assert_eq!(results[0].next_row().unwrap().unwrap(), ["2", "1"]);
+    assert!(results[0].next_row().unwrap().is_none());
+    pg.execute("DROP TABLE pg_check_local").unwrap();
+    // The local PG wiring must not enable a new MySQL constraint policy.
+    mysql
+        .execute("CREATE TABLE mysql_check_local(id int PRIMARY KEY,v int CHECK(v>0))")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO mysql_check_local VALUES (1,0)")
+        .unwrap();
+    mysql.execute("DROP TABLE mysql_check_local").unwrap();
+}

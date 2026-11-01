@@ -2233,19 +2233,24 @@ impl ConcreteSession {
         let mut table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
-        // Infer only the supported column target from this table's real public
-        // unique indexes. Keep every other uniqueness check on the normal path.
+        // Select real public unique indexes: no target uses every supported
+        // arbiter, while column inference keeps non-target checks on the normal path.
         let pg_arbiter = if let Some(clause) = &statement.PostgreSQLConflict {
             if self.sql_dialect() != ast::SqlDialect::PostgreSQL
                 || clause.Action != ast::PostgreSQLConflictAction::DoNothing
-                || clause.Target != ast::PostgreSQLConflictTarget::Inference
+                || !matches!(
+                    clause.Target,
+                    ast::PostgreSQLConflictTarget::Any | ast::PostgreSQLConflictTarget::Inference
+                )
                 || clause.Predicate.is_some()
-                || clause.Columns.is_empty()
+                || (clause.Target == ast::PostgreSQLConflictTarget::Inference
+                    && clause.Columns.is_empty())
             {
                 return Err(SessionError::new(
                     "unsupported PostgreSQL conflict target or action",
                 ));
             }
+            let all_keys = clause.Target == ast::PostgreSQLConflictTarget::Any;
             let mut columns = clause
                 .Columns
                 .iter()
@@ -2262,7 +2267,7 @@ impl ConcreteSession {
             primary.sort();
             let primary_matches = (table.PKIsHandle || table.IsCommonHandle)
                 && !primary.is_empty()
-                && primary == columns;
+                && (all_keys || primary == columns);
             let mut arbiters = table.clone();
             arbiters.Indices.retain(|index| {
                 let mut indexed = index
@@ -2279,9 +2284,9 @@ impl ConcreteSession {
                         .Columns
                         .iter()
                         .all(|column| column.Length == astersql_parser_types::UnspecifiedLength)
-                    && indexed == columns
+                    && (all_keys || indexed == columns)
             });
-            if !primary_matches && arbiters.Indices.is_empty() {
+            if !all_keys && !primary_matches && arbiters.Indices.is_empty() {
                 return Err(SessionError::new(
                     "no unique index matching PostgreSQL ON CONFLICT target",
                 ));
@@ -3221,6 +3226,31 @@ impl ConcreteSession {
                 row.insert("_tidb_rowid".to_owned(), Some(handle.to_string()));
             }
             self.evaluate_ordinary_generated_columns(&table, &mut row)?;
+            // PG CHECK validates each candidate before conflict arbitration and
+            // before any statement writes. UNKNOWN satisfies CHECK; FALSE does not.
+            // Reuse the same expression evaluator as generated columns.
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                for constraint in table.Constraints.iter().filter(|constraint| {
+                    constraint.Enforced && constraint.State == astersql_meta_model::StatePublic
+                }) {
+                    let expression =
+                        crate::dml_runtime::ParseGeneratedExpr(&constraint.ExprString)?;
+                    match crate::dml_runtime::EvalExpr(&expression, &row, None)?.as_deref() {
+                        None | Some("1") => {}
+                        Some("0") => {
+                            return Err(SessionError::new(format!(
+                                "Check constraint '{}' is violated.",
+                                constraint.Name.O
+                            )));
+                        }
+                        Some(_) => {
+                            return Err(SessionError::new(
+                                "PostgreSQL CHECK expression did not evaluate to a boolean",
+                            ));
+                        }
+                    }
+                }
+            }
             prepared_rows.push((row, candidate_insert_id, row_columns.to_vec()));
         }
         let (mut rows, prepared_metadata): (Vec<_>, Vec<_>) = prepared_rows

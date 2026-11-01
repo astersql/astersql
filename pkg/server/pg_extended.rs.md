@@ -257,3 +257,7 @@ Parse/Describe/Execute preserve optional function detail and position through th
 ## SRF暂停恢复与释放（任务29）
 
 Portal对活SRF结果持有既有ProtocolResultSet句柄，每个Execute按行数消费并复用PG编码器；暂停不重发RowDescription，CommandComplete累计已返回行数。Close/Sync释放、错误、耗尽及Drop关闭真实worker结果和响应生命周期。目录与会话命令保留原路径。
+
+### 无目标 DO NOTHING 扩展执行
+
+prepare/process 复用 pg_result::supported_conflict_do_nothing 判断 Any/列目标支持范围；无目标语句的引擎 prepared handle 保留原始冲突动作，analysis_sql 仍仅供未开放形态的描述。验证覆盖 Parse/Bind/Describe/Execute/Sync、新 Bind、typed NULL、零行返回及事务错误恢复。

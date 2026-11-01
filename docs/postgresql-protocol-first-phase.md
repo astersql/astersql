@@ -524,7 +524,7 @@ libpq 未暴露的 portal 原始字段沿用批次 9 的真实 TCP 回归证据�
 
 ## 2026-11-01 INSERT RETURNING
 
-普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT 的无目标、命名约束、谓词目标及 DO UPDATE、DELETE USING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
+普通表 INSERT 的 RETURNING 通过共享会话/存储执行：返回本次实际插入的行镜像，投影在应用写入前求值；不追加目标表 SELECT，不重复写入。支持列、星号、别名和已验证的 int4 算术投影，零行 INSERT SELECT 保留固定列描述和 `INSERT 0 0`。ON CONFLICT 的命名约束、谓词目标及 DO UPDATE、DELETE USING、余数及其他宽度的算术执行仍有独立门禁；Prepare 的类型分析不等于这些形态已开放。
 
 为原验收输入增加了仅 PG 的括号整数 DEFAULT 加减乘规则，`DEFAULT (40 + 2)` 保留为表达式元数据，在 INSERT 时复用共享求值器得到 42。MySQL 仍拒绝算术默认值，原字面量和函数默认值路径保持。没有新增默认函数、任意列引用或完整默认表达式子系统。
 
@@ -559,3 +559,7 @@ git diff --check
 列目标 `ON CONFLICT (id) DO NOTHING` 已经由真实共享会话和 TCP 双连接验证：目标绑定真实公开唯一索引，跳过行不覆盖旧值，混合批次只计入实际插入行；有 RETURNING 时只返回新行，零行仍保留固定描述，无 RETURNING 时没有结果集。简单及扩展协议覆盖提交、回滚、非目标唯一冲突、非法目标和混合批次失败原子性，扩展执行保留原始冲突子句，支持已提供 OID 的参数和新 Bind 的 typed NULL。非目标唯一冲突仍返回 23505，显式失败事务须 ROLLBACK 后恢复。
 
 PG `text UNIQUE` 复用完整字符串索引，不截为前缀；建表不按 MySQL TEXT 声明最大宽度拒绝，写入时按配置的 `max-index-length` 检查完整实际编码键长度。该限制沿用 AsterSQL 配置，未宣称与 PostgreSQL B-tree 页内大小上限一致。MySQL TEXT 唯一索引的既有建表校验保持原行为。未验证真实 TiKV 并发竞争、持久重启或独立 PostgreSQL 客户端差分；这些由后续任务取证。
+
+## 无目标冲突忽略
+
+无目标 `ON CONFLICT DO NOTHING` 已由真实 TCP 双连接验证：非主键唯一和主键冲突均跳过，混合及重复候选只返回/计数实际插入行，旧行不覆盖，简单和扩展查询均覆盖提交与回滚。PG INSERT 对既有公开且 Enforced 的 CHECK 元数据复用共享表达式求值，在写入和冲突仲裁前拒绝 FALSE，UNKNOWN 通过；NOT NULL、CHECK 和表达式错误仍进入事务恢复路径。此局部支持不代表 UPDATE/ALTER/回填、完整 CHECK 表达式或 PostgreSQL SQLSTATE 23514 已验收；尚未开放的表达式求值错误不会被忽略。MySQL 约束策略保持既有行为。

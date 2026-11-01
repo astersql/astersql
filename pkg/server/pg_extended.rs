@@ -1446,7 +1446,7 @@ impl Extended {
             // engine prepared handle; stripped SQL is description-only.
             let analysis_sql = if postgresql_conflict
                 .as_ref()
-                .is_some_and(crate::pg_result::column_conflict_do_nothing)
+                .is_some_and(crate::pg_result::supported_conflict_do_nothing)
             {
                 sql.as_ref()
             } else {
@@ -1996,7 +1996,7 @@ impl Extended {
                 if portal
                     .postgresql_conflict
                     .as_ref()
-                    .is_some_and(|clause| !crate::pg_result::column_conflict_do_nothing(clause))
+                    .is_some_and(|clause| !crate::pg_result::supported_conflict_do_nothing(clause))
                 {
                     return Err(error(
                         "0A000",

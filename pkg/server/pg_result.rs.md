@@ -250,3 +250,7 @@ Interval数组Describe为1187/-1并使用标量同规则编码fields/p；binary�
 ## PostgreSQL jsonb 数组（任务42）
 
 JSONB[]结果允许3807，text/binary沿规范PgArray，binary头元素3802及每元素01前缀。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+### 无目标 DO NOTHING 门禁
+
+supported_conflict_do_nothing 同时接受无目标 Any 和无谓词的非空列推断 DO NOTHING。命名约束、谓词目标及 DO UPDATE 保留门禁；无目标返回行与计数继续来自共享执行结果。
