@@ -50,6 +50,8 @@
 
 典型操作还包含各自不变量：重命名先整体检查重复源/目标并沿 rename 链修正子表外键；截断重置表与分区物理 ID 和 auto-ID；删列重排 column offset、删除依赖索引并重算 index column offset；分区更新调用 `astersql-ddl::storage_class` 的规范化、校验和重建；物化视图日志在同一事务里同时写 purge-info 记录、基表反向链接和日志表。
 
+`exchange_partition` 在现有元数据写事务中交换分区/普通表物理 ID，随后调用 `astersql_ddl::partition::exchange_partition_max_ids`，再发布两张候选表。分区表 MaxColumnID/MaxIndexID 取两表最大值；普通表继承分区表原值；MaxForeignKeyID、MaxConstraintID 与保留的约束元数据不变。这是 Go `fef9c4a64ea969314dc3df03afde487489e3c2cd` 的必要局部接线，错误/提交/回滚边界沿用原事务，不新增分布式状态机。
+
 ## 数据与状态
 
 持久化有两套表示但只有一个事务真相。公开 TiDB ABI 保存 schema version、全局 ID、数据库/表哈希和 diff；私有 `ASTERDDL2` 快照保存同一时点的完整 `MetadataCatalog`。`read_catalog` 的优先规则确保公开元数据一旦存在就是权威来源，私有快照主要覆盖空公开目录/兼容启动场景。表读取时会根据所属 `DBInfo.ID` 重写 `TableInfo.DBID`。

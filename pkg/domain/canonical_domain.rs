@@ -1540,6 +1540,10 @@ impl DdlMetadataService {
             let old_partition_id = definition.ID;
             definition.ID = old_exchange.ID;
             new_exchange.ID = old_partition_id;
+            astersql_ddl::partition::exchange_partition_max_ids(
+                &mut new_partitioned,
+                &mut new_exchange,
+            );
             catalog
                 .tables
                 .insert(partitioned_key, new_partitioned.clone());

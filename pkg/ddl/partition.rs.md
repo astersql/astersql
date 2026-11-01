@@ -13,6 +13,8 @@
 - 输出 SQL 与运维标识：`append_partition_info`/`append_partition_definitions` 生成 `PARTITION BY` 片段，`partition_ids` 和 `partition_rule_ids` 提取物理 ID/placement 路径。
 - 执行真实重组尾段：`backfill_non_touched_partition_indexes` 在现有 owner 事务中调用 `JobExecutionContext::backfill_prepared_indexes`，推进并持久化回填游标；它不负责提交 job、复制分区数据或切换分区定义。
 
+EXCHANGE 的真实元数据增量由 `exchange_partition_max_ids` 处理：分区表列/索引高水位取两表最大值，普通表继承分区表原值。外键与 CHECK 约束的元数据及其计数均保持逻辑表归属。
+
 ## 主要符号
 
 - 常量：`PARTITION_MAX_VALUE = "MAXVALUE"`；`PARTITION_COUNT_LIMIT = 8192`。
@@ -37,6 +39,8 @@
 3. 先在克隆的 `next` 游标上保存 `result.next_key`；当前物理分区完成时，通过 `index::next_recreated_index_partition_id` 选下一个未触碰分区，并用 `tablecodec::GenTableRecordPrefix` 初始化完整记录 key range。
 4. 使用同一执行上下文更新 `mysql.tidb_ddl_reorg`；只有 backfill 和 checkpoint 都成功后才以 `*reorg = next` 发布内存游标。最终 `physical_table_id == 0` 时返回完成。
 
+`DdlMetadataService::exchange_partition` 在交换物理 ID 后、两表目录写回前调用 `exchange_partition_max_ids`。该函数使用真实 `astersql_meta_model::TableInfo`，已接入 SQL → Domain 的现有 KV 元数据事务；不走轻量 `PartitionedTableInfo`。
+
 ## 数据与状态
 
 轻量模型的核心不变量是 `PartitionInfo.number == definitions.len()`；建表及 ADD/DROP/REORGANIZE 成功路径都会重算它。`adding_definitions`/`dropping_definitions` 模拟 DDL 中间态，但轻量 ADD 和 REORGANIZE 在函数返回前会清空这些字段，DROP 则保留 `dropping_definitions`，因此不能把它们等同于 Go 状态机的完整持久化生命周期。
@@ -53,7 +57,7 @@ TiFlash 状态由 `tiflash_available_partition_ids` 表示；DROP/TRUNCATE 会�
 
 回填入口向下调用 `JobExecutionContext::backfill_prepared_indexes`、`JobExecutionContext::query`、`ReorgInfo::element_ids`、`index::next_recreated_index_partition_id` 和 `astersql_tablecodec::GenTableRecordPrefix`，并依赖 `astersql-meta-model` 的真实 `Job`/`TableInfo`。上游直接证据包括 `pkg/ddl/ddl_test.rs:375` 的失败原子性回归，以及 `pkg/ddl/tests/partition/reorg_partition_test.rs:482` 的真实重组场景循环调用。
 
-RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开辅助函数的精确 `callers` 未返回边；仓库文本检索显示，除测试之外，当前明确的跨文件直接调用集中在 `backfill_non_touched_partition_indexes`。因此不能据轻量 API 的 `pub` 可见性推断它们已进入生产 owner/job 主链。
+RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开辅助函数的精确 `callers` 未返回边；仓库文本检索显示，除测试之外，当前明确的跨文件直接调用包括 `backfill_non_touched_partition_indexes` 和 Domain 的 `exchange_partition_max_ids`。因此不能据轻量 API 的 `pub` 可见性推断它们已进入生产 owner/job 主链。
 
 ## 错误处理与边界
 
@@ -74,6 +78,8 @@ RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开�
 - Rust `build_table_partition_info` 对应 Go `buildTablePartitionInfo` 的一部分，但 Go 使用 AST restore、表达式上下文、类型系统和错误码；Rust 使用独立轻量结构与字符串表达式，因此是行为子集。
 - Rust RANGE/LIST、分区键、TiFlash、interval 和 exchange 辅助函数分别对应 Go `checkRangePartitionValue`、`checkListPartitionValue`、`checkPartitionKeysConstraint`、`checkPartitionReplica`、`generatePartitionDefinitionsFromInterval` 及 exchange validation 逻辑；Go 版本还包含 PD region 扫描、常量折叠、collation/type 语义和 failpoint，Rust 不应被描述为完整替代。
 - Go ADD/DROP/TRUNCATE/REORGANIZE/EXCHANGE 由 job handler 推进 `SchemaState`，处理 schema diff、global index、placement、通知和 delete-range；Rust 同名轻量函数主要变更内存模型，没有完整状态机。
+
+Go `fef9c4a64ea969314dc3df03afde487489e3c2cd` 的 `onExchangeTablePartition` 新增 hunk 对应此真实高水位函数：丢弃的列值和异步删除的索引键仍按物理 ID 编码，所以分区表必须覆盖两表历史 ID，普通表继承收到分区的历史 ID。该增量不涉及 auto increment、auto random 或 row ID。SQL ADD CHECK 仍是既有未接线能力；独立测试复用现有 CHECK 状态机验证后续分配，不能据此声称 SQL ADD CHECK 可用。
 
 ## 扩展指南
 

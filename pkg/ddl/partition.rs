@@ -584,6 +584,21 @@ pub fn reorganize_partitions(
     Ok((dropped, adding))
 }
 
+/// Preserve historical IDs carried by the exchanged physical data. Constraint
+/// and foreign-key metadata stays with its logical table and is left unchanged.
+/// Go fef9c4a64e: onExchangeTablePartition, before both metadata writes.
+pub fn exchange_partition_max_ids(
+    partitioned: &mut astersql_meta_model::TableInfo,
+    standalone: &mut astersql_meta_model::TableInfo,
+) {
+    let original_column_id = partitioned.MaxColumnID;
+    let original_index_id = partitioned.MaxIndexID;
+    partitioned.MaxColumnID = original_column_id.max(standalone.MaxColumnID);
+    partitioned.MaxIndexID = original_index_id.max(standalone.MaxIndexID);
+    standalone.MaxColumnID = original_column_id;
+    standalone.MaxIndexID = original_index_id;
+}
+
 /// 交换分区与普通表的物理 ID；需 schema 一致且行数据通过分区边界校验。
 pub fn exchange_table_partition(
     partitioned: &mut PartitionedTableInfo,

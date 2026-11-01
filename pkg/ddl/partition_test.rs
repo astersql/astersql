@@ -247,3 +247,49 @@ fn port_9453792437_retired_indexes_keep_cleanup_ids_and_adjust_hidden_offsets() 
     assert_eq!(args.OldGlobalIndexes[0].TableID, 42);
     assert_eq!(args.OldGlobalIndexes[0].IndexID, 1);
 }
+
+#[test]
+fn port_fef9c4a64e_max_ids_preserve_physical_history_and_logical_metadata() {
+    use astersql_meta_model::{ConstraintInfo, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    for (pt_column, nt_column, pt_index, nt_index) in
+        [(1, 2, 1, 2), (2, 1, 2, 1), (7, 3, 2, 9), (0, 0, 0, 0)]
+    {
+        let mut pt = TableInfo {
+            ID: 10,
+            MaxColumnID: pt_column,
+            MaxIndexID: pt_index,
+            MaxForeignKeyID: 0,
+            MaxConstraintID: 1,
+            ..Default::default()
+        };
+        let mut nt = TableInfo {
+            ID: 20,
+            MaxColumnID: nt_column,
+            MaxIndexID: nt_index,
+            MaxForeignKeyID: 1,
+            MaxConstraintID: 2,
+            Constraints: vec![ConstraintInfo {
+                ID: 2,
+                Name: NewCIStr("c_live"),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut expected_pt = pt.clone();
+        let mut expected_nt = nt.clone();
+        expected_pt.MaxColumnID = pt_column.max(nt_column);
+        expected_pt.MaxIndexID = pt_index.max(nt_index);
+        expected_nt.MaxColumnID = pt_column;
+        expected_nt.MaxIndexID = pt_index;
+        crate::partition::exchange_partition_max_ids(&mut pt, &mut nt);
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(&pt).unwrap(),
+            astersql_meta_model::EncodeTableInfo(&expected_pt).unwrap()
+        );
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(&nt).unwrap(),
+            astersql_meta_model::EncodeTableInfo(&expected_nt).unwrap()
+        );
+    }
+}
