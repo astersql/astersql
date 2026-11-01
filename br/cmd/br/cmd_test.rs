@@ -39,3 +39,24 @@ fn registering_status_preparer_again_replaces_the_previous_value() {
     prepareStatusServer(&mut cmd).unwrap();
     assert_eq!(observed.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn port_e0faf3fea2_default_and_explicit_redaction_flags() {
+    use crate::cmd::{DefineCommonFlags, FlagRedactInfoLog, FlagRedactLog};
+    use crate::stubs::effective_task_flags;
+    use astersql_br_pkg_task::stubs::FlagValue;
+
+    let mut cmd = Command::default();
+    DefineCommonFlags(&mut cmd);
+    let defaults = effective_task_flags(&cmd);
+    assert!(defaults.GetBool(FlagRedactInfoLog).unwrap());
+    assert!(!defaults.GetBool(FlagRedactLog).unwrap());
+
+    for explicit in [false, true] {
+        cmd.PersistentFlags()
+            .Set(FlagRedactInfoLog, FlagValue::Bool(explicit));
+        let flags = effective_task_flags(&cmd);
+        assert_eq!(flags.GetBool(FlagRedactInfoLog).unwrap(), explicit);
+        assert!(!flags.GetBool(FlagRedactLog).unwrap());
+    }
+}

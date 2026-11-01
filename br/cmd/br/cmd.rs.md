@@ -82,6 +82,8 @@ status preparer 注册表的锁只保护查找/替换，不覆盖 preparer 本�
 
 ## 与 Go 版本的对应关系
 
+来源 `e0faf3fea24546265b5a850224fce82180a1a3b3` 的唯一增量是 `DefineCommonFlags` 将 `redact-info-log` 默认值设为 `true`；显式 `false`/`true` 仍由 flag 值覆盖，旧 `redact-log` 默认保持 `false`，初始化继续按两者 OR 合并。独立 `cmd_test.rs` 回归调用真实参数注册和有效参数读取入口。现有 `stubs::redact` 仅存储开关，任务层 `LogArguments` 仍为占位；本次没有扩展这些既有日志基础设施，也不据此宣称实际日志输出已经获得端到端脱敏保证。
+
 存在以下实现层差异，扩展时应明确保留或补齐而不是假设完全等价：
 
 - Go 使用包级 `tidbGlue` 与 `sync.Map`，Rust 使用 `OnceLock<Mutex<TidbGlue>>` 和 `Mutex<Vec<(id, preparer)>>`，从而显式串行化访问并按 `Command.id` 关联。

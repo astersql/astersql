@@ -174,7 +174,7 @@ pub fn DefineCommonFlags(cmd: &mut Command) {
         .DefineString(FlagLogFile, &timestampLogFileName());
     cmd.PersistentFlags().DefineString(FlagLogFormat, "text");
     cmd.PersistentFlags().DefineBool(FlagRedactLog, false);
-    cmd.PersistentFlags().DefineBool(FlagRedactInfoLog, false);
+    cmd.PersistentFlags().DefineBool(FlagRedactInfoLog, true);
     cmd.PersistentFlags().DefineString(FlagStatusAddr, "");
 
     TaskDefineCommonFlags(cmd.PersistentFlags());
