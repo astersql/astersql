@@ -432,6 +432,8 @@ pub struct ServerConfig {
     /// None disables PostgreSQL; Some(0) requests an OS-assigned TCP port.
     pub postgres_port: Option<u16>,
     pub socket: Option<String>,
+    /// Diagnostic skip-grant mode must never expose the MySQL TCP listener.
+    pub skip_grant_table: bool,
     pub max_connections: usize,
     pub proxy_protocol_enabled: bool,
     pub proxy_protocol_networks: String,
@@ -455,6 +457,7 @@ impl Default for ServerConfig {
             advertise_address: String::new(),
             postgres_port: None,
             socket: None,
+            skip_grant_table: false,
             max_connections: 0,
             proxy_protocol_enabled: false,
             proxy_protocol_networks: String::new(),
@@ -788,8 +791,10 @@ impl Server {
         } else {
             None
         };
-        // 空 host 无法绑定监听，直接拒绝。
-        if config.host.is_empty() {
+        // 诊断 socket-only 模式无需 TCP host；其他模式保留现有校验。
+        if config.host.is_empty()
+            && !(astersql_config::diagnosticmode::Enabled() && config.skip_grant_table)
+        {
             return Err("server host cannot be empty".into());
         }
         let server = Arc::new(Self {
@@ -1189,18 +1194,20 @@ impl Server {
             .lock()
             .expect("listener lock poisoned")
             .as_ref()
-            .ok_or_else(|| "MySQL listener is not initialized".to_owned())?
-            .try_clone()
+            .map(TcpListener::try_clone)
+            .transpose()
             .map_err(|error| format!("clone MySQL listener: {error}"))?;
-        let server = Arc::clone(self);
-        let worker = thread::Builder::new()
-            .name("astersql-mysql-accept".into())
-            .spawn(move || server.serve_mysql_loop(listener))
-            .map_err(|error| format!("start MySQL accept worker: {error}"))?;
-        *self
-            .accept_worker
-            .lock()
-            .expect("accept worker lock poisoned") = Some(worker);
+        if let Some(listener) = listener {
+            let server = Arc::clone(self);
+            let worker = thread::Builder::new()
+                .name("astersql-mysql-accept".into())
+                .spawn(move || server.serve_mysql_loop(listener))
+                .map_err(|error| format!("start MySQL accept worker: {error}"))?;
+            *self
+                .accept_worker
+                .lock()
+                .expect("accept worker lock poisoned") = Some(worker);
+        }
         #[cfg(unix)]
         if let Some(listener) = self
             .unix_listener
@@ -1406,31 +1413,56 @@ impl Server {
         Ok(())
     }
 
-    /// 绑定 MySQL TCP 监听（非阻塞）；已存在则跳过。
+    /// 幂等绑定 MySQL TCP/Unix 监听；诊断 skip-grant 模式只允许 Unix socket。
     pub fn init_tidb_listener(&self) -> Result<(), String> {
-        if self
-            .listener
+        let socket_only =
+            astersql_config::diagnosticmode::Enabled() && self.config.skip_grant_table;
+        // Port 0 retains ephemeral TCP binding in ordinary Rust tests, but must
+        // disable TCP in diagnostic skip-grant mode (Go RunInGoTest exception).
+        let need_tcp = !self.config.host.is_empty() && (!socket_only || self.config.port != 0);
+        let need_unix = self
+            .config
+            .socket
+            .as_ref()
+            .is_some_and(|path| !path.is_empty());
+        let mut tcp_slot = self.listener.lock().expect("listener lock poisoned");
+        if socket_only && (need_tcp || tcp_slot.is_some() || !need_unix) {
+            return Err("diagnostic mode with skip-grant-table requires a Unix socket and no MySQL TCP listener".into());
+        }
+        #[cfg(unix)]
+        let mut unix_slot = self
+            .unix_listener
             .lock()
-            .expect("listener lock poisoned")
-            .is_some()
+            .expect("Unix listener lock poisoned");
+        #[cfg(unix)]
+        if (!need_tcp || tcp_slot.is_some())
+            && (!need_unix || unix_slot.is_some())
+            && (tcp_slot.is_some() || unix_slot.is_some())
         {
             return Ok(());
         }
-        let listener =
-            TcpListener::bind((self.config.host.as_str(), self.config.port)).map_err(|error| {
-                format!("listen {}:{}: {error}", self.config.host, self.config.port)
-            })?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("set listener nonblocking: {error}"))?;
-        let address = listener
-            .local_addr()
-            .map_err(|error| format!("read listener address: {error}"))?;
+        #[cfg(not(unix))]
+        if !need_unix && tcp_slot.is_some() {
+            return Ok(());
+        }
+        let listener = if need_tcp && tcp_slot.is_none() {
+            let listener = TcpListener::bind((self.config.host.as_str(), self.config.port))
+                .map_err(|error| {
+                    format!("listen {}:{}: {error}", self.config.host, self.config.port)
+                })?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|error| format!("set listener nonblocking: {error}"))?;
+            Some(listener)
+        } else {
+            None
+        };
         #[cfg(unix)]
         let unix_listener = self
             .config
             .socket
             .as_deref()
+            .filter(|path| !path.is_empty() && unix_slot.is_none())
             .map(|path| {
                 match std::fs::symlink_metadata(path) {
                     Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(path)
@@ -1452,17 +1484,19 @@ impl Server {
         if self.config.socket.is_some() {
             return Err("Unix socket listener is unsupported on this platform".into());
         }
-        *self
-            .listen_addr
-            .write()
-            .expect("listen address lock poisoned") = Some(address);
-        *self.listener.lock().expect("listener lock poisoned") = Some(listener);
-        #[cfg(unix)]
-        {
+        if let Some(listener) = listener {
+            let address = listener
+                .local_addr()
+                .map_err(|error| format!("read listener address: {error}"))?;
             *self
-                .unix_listener
-                .lock()
-                .expect("Unix listener lock poisoned") = unix_listener;
+                .listen_addr
+                .write()
+                .expect("listen address lock poisoned") = Some(address);
+            *tcp_slot = Some(listener);
+        }
+        #[cfg(unix)]
+        if let Some(listener) = unix_listener {
+            *unix_slot = Some(listener);
         }
         Ok(())
     }

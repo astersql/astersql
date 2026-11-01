@@ -1362,10 +1362,18 @@ impl Config {
         {
             self.log.disable_timestamp = NullableBool::UNSET;
         }
-        if self.security.skip_grant_table && users::get_effective_uid() != 0 {
-            return Err(message(
-                "TiDB run with skip-grant-table need root privilege",
-            ));
+        if self.security.skip_grant_table {
+            if crate::diagnosticmode::Enabled() {
+                if self.socket.is_empty() || (!self.host.is_empty() && self.port != 0) {
+                    return Err(message(
+                        "diagnostic mode with skip-grant-table requires a Unix socket and no MySQL TCP listener",
+                    ));
+                }
+            } else if users::get_effective_uid() != 0 {
+                return Err(message(
+                    "TiDB run with skip-grant-table need root privilege",
+                ));
+            }
         }
         // 以下配置项仅 starter 部署模式可用。
         if !self.error_msg_extension.is_empty() && !self.deploy_mode.is_starter() {

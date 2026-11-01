@@ -648,6 +648,10 @@ pub fn run_main_inner(argv: &[String], exit_process: bool) -> i32 {
 
     // 配置初始化会读取文件、执行校验，并通过 `overrideConfig` 叠加显式 CLI 参数。
     let fv = flags();
+    stubs::must_nil_result(
+        astersql_config::diagnosticmode::Initialize(fv.diagnosticMode)
+            .map_err(|error| Error::new(error.to_string())),
+    );
     config::InitializeConfig(
         &fv.configPath,
         fv.configCheck,
@@ -656,10 +660,6 @@ pub fn run_main_inner(argv: &[String], exit_process: bool) -> i32 {
         &fset,
     );
     stubs::must_nil_result(initializeShutdownConfig(&fv.configPath));
-    stubs::must_nil_result(
-        astersql_config::diagnosticmode::Initialize(fv.diagnosticMode)
-            .map_err(|error| Error::new(error.to_string())),
-    );
     if kerneltype::IsNextGen() {
         // deploy mode 一旦写入，全局 helper 就会按 nextgen/starter/classic 语义分支。
         stubs::must_nil_result(initDeployMode(&config::GetGlobalConfig()));
@@ -2011,6 +2011,7 @@ pub fn canonicalServerConfig(cfg: &config::Config) -> Result<CanonicalServerConf
         port,
         postgres_port: cfg.PostgresPort,
         socket: (!cfg.Socket.is_empty()).then(|| cfg.Socket.clone()),
+        skip_grant_table: cfg.Security.SkipGrantTable,
         max_connections: cfg.MaxServerConnections as usize,
         proxy_protocol_enabled: !cfg.ProxyProtocol.Networks.trim().is_empty(),
         proxy_protocol_networks: cfg.ProxyProtocol.Networks.clone(),

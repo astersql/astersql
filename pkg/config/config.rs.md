@@ -103,3 +103,7 @@ Rust 独立测试把“保持 Go 语义”作为显式合同：`pkg/config/confi
 若扩展启动加载链，必须先决定该逻辑属于完整 `Config::load`/`valid`，还是像 `load_postgres_port` 一样属于入口适配投影；后者不应悄悄承担完整验证。需要同步检查 `cmd/tidb-server/main.rs` 入口、`pkg/config/lib.rs` 导出、`pkg/config/Cargo.toml` 依赖，以及 Go `InitializeConfig` 尚未迁移的职责。任何修改 Rust 生产代码时应按仓库规则同步独立测试、运行 `cargo fmt --all`，并在真正可用后保留/添加 AsterSQL 2026 版权行。
 
 兼容风险主要来自公开 TOML/JSON 键名和默认值变化；正确性风险集中在“load 不自动 valid”“store 不自动 valid”和跨字段模式约束；性能风险集中在高频 `update_global` 的整份深克隆与错误正则重编译。读取只克隆 `Arc`，不应改成每次深拷贝。
+
+## 来源 79dd44070093868c2d7c9daf192e098c158bd6a8 的局部对齐
+
+Config::valid 对 skip_grant_table 分支先检查 diagnosticmode::Enabled：诊断模式必须配置非空 Unix socket 且不得同时设置非空 host 和非零 port；普通模式仍以有效 UID 判断 root。错误文本与 Go 79dd44070093868c2d7c9daf192e098c158bd6a8 一致；六组原配置测试意图在 config_test.rs 独立执行。

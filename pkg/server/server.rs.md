@@ -99,3 +99,7 @@ listener worker 和每连接 worker 都是命名 OS 线程。listener 被设为�
 ## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
 
 `serve_mysql_connection` 在成功握手后读取全局限额与 context 的认证账号/用户级限额，调用服务器共享的 UserConnectionRegistry::acquire。失败关闭连接、移除 pending，不构造 guard；成功才持有 UserConnectionGuard，运行结束或 unwind 释放捕获账户。COM_CHANGE_USER 不重新领取。PostgreSQL 的独立监听器不进入该 MySQL 配额分支。
+
+## 来源 79dd44070093868c2d7c9daf192e098c158bd6a8 的局部对齐
+
+ServerConfig.skip_grant_table 来自启动入口的安全配置；init_tidb_listener 在幂等返回之前检查诊断 socket-only 条件，拒绝已存在 TCP listener、配置 TCP 与缺少 socket。诊断模式 port=0 不启用普通 Rust 测试的临时 TCP 端口；空 host 可用于诊断 Unix socket。Unix listener 独立幂等，accept worker 可仅启动 Unix 分支，关闭仍由既有 close 回收。正常模式保留原端口 0 临时 TCP 行为；Go RunInGoTest 对应此 Rust 测试行为，不新建全局开关。PostgreSQL listener 和协议保持独立。

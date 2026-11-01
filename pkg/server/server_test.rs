@@ -651,3 +651,113 @@ fn port_592082dee7_listener_rejects_quota_without_releasing_another_connection()
     // Client removal precedes quota guard destruction; allow the worker to exit.
     server.close();
 }
+
+#[cfg(unix)]
+#[test]
+fn port_79dd440700_listener_socket_only_and_rejections() {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::net::UnixStream;
+    let previous = astersql_util_intest::InTest.swap(true, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("as47-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("normal.sock");
+    let cfg = ServerConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        socket: Some(path.to_str().unwrap().into()),
+        status: StatusConfig {
+            report_status: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let server = Server::new_test(cfg.clone(), Arc::new(Driver));
+    server.init_tidb_listener().unwrap();
+    let addr = server.listener_addr().unwrap();
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    server.init_tidb_listener().unwrap();
+    assert_eq!(server.listener_addr(), Some(addr));
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    server.close();
+    let (domain, _) = astersql_session::runtime::CreateUnbootstrappedRootSessionForTest().unwrap();
+    let restore = astersql_config::diagnosticmode::SetForTest(true);
+    let path = dir.join("diagnostic.sock");
+    let cfg = ServerConfig {
+        skip_grant_table: true,
+        socket: Some(path.to_str().unwrap().into()),
+        ..cfg
+    };
+    let server = Server::new_test(cfg.clone(), Arc::new(Driver));
+    server.init_tidb_listener().unwrap();
+    assert!(server.listener_addr().is_none());
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    server.init_tidb_listener().unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    assert_eq!(server.config().port, 0);
+    server
+        .set_connection_runtime(
+            Arc::new(ConcreteSessionDriver::new_for_test(
+                Arc::clone(&domain),
+                BootstrapAuthMode::InsecureRootOnly,
+            )),
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+        )
+        .unwrap();
+    server.run(Arc::new(TestDomain)).unwrap();
+    let mut stream = UnixStream::connect(&path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut header = [0; 4];
+    stream.read_exact(&mut header).unwrap();
+    let size = usize::from(header[0]) | usize::from(header[1]) << 8 | usize::from(header[2]) << 16;
+    let mut handshake = vec![0; size];
+    stream.read_exact(&mut handshake).unwrap();
+    assert_eq!(handshake[0], 10);
+    drop(stream);
+    server.close();
+    let empty_host = Server::new_test(
+        ServerConfig {
+            host: String::new(),
+            port: 4000,
+            ..cfg.clone()
+        },
+        Arc::new(Driver),
+    );
+    empty_host.init_tidb_listener().unwrap();
+    assert!(empty_host.listener_addr().is_none());
+    drop(UnixStream::connect(&path).unwrap());
+    empty_host.close();
+    for (port, socket) in [(4000, cfg.socket.clone()), (0, None)] {
+        let server = Server::new_test(
+            ServerConfig {
+                port,
+                socket,
+                ..cfg.clone()
+            },
+            Arc::new(Driver),
+        );
+        assert!(
+            server
+                .init_tidb_listener()
+                .unwrap_err()
+                .contains("requires a Unix socket and no MySQL TCP listener")
+        );
+        assert!(!path.exists());
+        server.close();
+    }
+    restore();
+    let server = Server::new_test(cfg, Arc::new(Driver));
+    server.init_tidb_listener().unwrap();
+    let restore = astersql_config::diagnosticmode::SetForTest(true);
+    assert!(
+        server
+            .init_tidb_listener()
+            .unwrap_err()
+            .contains("requires a Unix socket and no MySQL TCP listener")
+    );
+    server.close();
+    restore();
+    astersql_util_intest::InTest.store(previous, Ordering::SeqCst);
+    std::fs::remove_dir_all(dir).unwrap();
+}

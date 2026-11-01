@@ -102,3 +102,7 @@
 - 新常驻后台组件必须明确启动点、失败策略和 `cleanup`/提前返回路径的关闭点，并在 `parity_test.rs::contract_resource_cleanup` 验证顺序，尤其覆盖 server 创建失败与 keyspace activate。
 - 新 Starter 控制面字段应扩展 `starterParams` 和严格解析器，拒绝未知/重复/空值，并同步 Go `main.go`/`main_test.go` 的语义；观测字段合并应继续保持显式配置覆盖默认 `keyspace_name`。
 - 将 stubs 能力迁移到 canonical crate 时，优先在真实 crate 实现并仅在本文件替换接线；保留 Go 行为与错误边界，不因文档或测试方便而简化生产逻辑。
+
+## 来源 79dd44070093868c2d7c9daf192e098c158bd6a8 的局部对齐
+
+诊断状态在 InitializeConfig 之前固定（来源 main.go 的两个移动 hunk）；canonicalServerConfig 把 Security.SkipGrantTable 投影为 ServerConfig.skip_grant_table，使真实 listener 执行 socket-only 安全约束。CLI 与 canonical listener 已接线；本轮不扩写 stubs.rs 的既有配置加载缺口。

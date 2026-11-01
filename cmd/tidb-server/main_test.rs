@@ -1381,3 +1381,51 @@ fn port_b173173724_canonical_sql_shutdown_reaches_process_cleanup() {
     assert!(events.contains(&"server.DrainClients drain_ms=120000 cancel_ms=1000".to_owned()));
     assert!(events.contains(&"canonical.server.closed".to_owned()));
 }
+
+#[test]
+fn port_79dd440700_skip_grant_listener_projection() {
+    let mut cfg = config::NewConfig();
+    cfg.Security.SkipGrantTable = true;
+    assert!(
+        crate::entry::canonicalServerConfig(&cfg)
+            .unwrap()
+            .skip_grant_table
+    );
+}
+
+#[test]
+fn port_79dd440700_diagnostic_initializes_before_configuration() {
+    const CHILD: &str = "ASTERSQL_PORT47_ORDER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "main_test::port_79dd440700_diagnostic_initializes_before_configuration",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    stubs::reset_all_for_test();
+    astersql_config::diagnosticmode::Initialize(false).unwrap();
+    assert!(
+        std::panic::catch_unwind(|| crate::entry::run_main_inner(
+            &["tidb-server".into(), "--diagnostic-mode=true".into()],
+            false
+        ))
+        .is_err()
+    );
+    assert!(
+        !stubs::take_events()
+            .iter()
+            .any(|event| event.starts_with("config.InitializeConfig"))
+    );
+}

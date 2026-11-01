@@ -1130,3 +1130,41 @@ fn port_b173173724_shutdown_load_and_serialize() {
         120
     );
 }
+
+#[test]
+fn port_79dd440700_diagnostic_skip_grant_table_config() {
+    for (diagnostic, skip, host, port, socket, invalid) in [
+        (true, true, "127.0.0.1", 0, "/tmp/tidb.sock", false),
+        (true, true, "", 4000, "/tmp/tidb.sock", false),
+        (true, true, "127.0.0.1", 4000, "/tmp/tidb.sock", true),
+        (true, true, "127.0.0.1", 0, "", true),
+        (true, false, "127.0.0.1", 4000, "", false),
+        (false, true, "127.0.0.1", 4000, "", false),
+    ] {
+        let restore = diagnosticmode::SetForTest(diagnostic);
+        let mut cfg = new_config();
+        cfg.security.skip_grant_table = skip;
+        cfg.host = host.into();
+        cfg.port = port;
+        cfg.socket = socket.into();
+        let result = cfg.valid();
+        restore();
+        if invalid {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires a Unix socket and no MySQL TCP listener")
+            );
+        } else if !diagnostic && skip && users::get_effective_uid() != 0 {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("skip-grant-table need root privilege")
+            );
+        } else {
+            result.unwrap();
+        }
+    }
+}
