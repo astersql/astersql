@@ -374,3 +374,8 @@ pg_projection_srf识别直接generate_series/unnest投影（含括号），路�
 ## 同层多SRF协调与位置门禁
 
 validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影、WHERE、HAVING、ORDER BY和GROUP BY中的SRF；仅允许直接调用（可带括号），CASE/COALESCE及嵌套调用以0A000分析拒绝，包括不可达分支。各直接调用独立绑定固定返回身份，描述不依赖是否有行。
+
+
+## SRF暂停恢复与释放（任务29）
+
+`execute_relational_query_record_set`在既有类型绑定链选择非阻塞SRF结果所有者，返回原ConcreteRecordSet和固定字段；不从首行推断描述。需要阻塞操作的查询保留既有执行路径。

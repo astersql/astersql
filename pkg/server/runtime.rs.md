@@ -153,3 +153,8 @@ prepared_argument只对内部标签0xf0/0xf1生成Float4Bits/Float4Array，不�
 ## 来源 592082dee7299afe8f838cd3d45c7fe0a88c6aca 的局部对齐
 
 `SessionRequest::UserConnectionQuota` 由 ConcreteTiDBContext::user_connection_quota 同步发送，在同一会话 worker 中调用 ConcreteSession::user_connection_quota，返回认证账号键和已有权限资源限额，错误通过 ConnError 原样承载。请求只在 MySQL 建连配额接线使用，不改变 PostgreSQL 会话/事务请求。
+
+
+## SRF暂停恢复与释放（任务29）
+
+现有worker注册活SRF时使用1行传输块，防止Execute只请求一行却提前执行后续外行。非SRF的PG结果继续原物化路径；MySQL结果保留原流式块设置。session_protocol_error作为crate内共享转换供延迟结果读取保留PG错误身份。

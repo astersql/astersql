@@ -4035,9 +4035,7 @@ impl ConcreteSession {
                 .GetSystemVar(astersql_sessionctx_vardef::SQLSelectLimit)
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(self.session_vars.SelectLimit);
-            record_set
-                .rows
-                .truncate(usize::try_from(select_limit).unwrap_or(usize::MAX));
+            record_set.truncate_rows(usize::try_from(select_limit).unwrap_or(usize::MAX));
         }
         Ok(record_set)
     }
@@ -4636,8 +4634,7 @@ impl ConcreteSession {
                             .and_then(|value| value.parse::<u64>().ok())
                             .unwrap_or(self.session_vars.SelectLimit);
                         record_set
-                            .rows
-                            .truncate(usize::try_from(select_limit).unwrap_or(usize::MAX));
+                            .truncate_rows(usize::try_from(select_limit).unwrap_or(usize::MAX));
                     }
                     let result_row_count = record_set.as_ref().map(|set| set.rows.len());
                     let dml_report = self.state.borrow().last_dml_report.clone();
@@ -4823,11 +4820,10 @@ impl TestSession for ConcreteSession {
     }
 
     fn Execute(&self, sql: &str) -> SessionResult<Vec<Box<dyn TestRecordSet>>> {
-        self.execute(sql).map(|sets| {
-            sets.into_iter()
-                .map(|set| Box::new(set) as Box<dyn TestRecordSet>)
-                .collect()
-        })
+        self.execute(sql)?
+            .into_iter()
+            .map(ConcreteRecordSet::into_test_record_set)
+            .collect()
     }
 
     fn PrepareStmt(&self, sql: &str) -> SessionResult<u64> {
@@ -4869,9 +4865,10 @@ impl TestSession for ConcreteSession {
                 "prepared SQL returned multiple record sets",
             ));
         }
-        Ok(record_sets
+        record_sets
             .pop()
-            .map(|set| Box::new(set) as Box<dyn TestRecordSet>))
+            .map(ConcreteRecordSet::into_test_record_set)
+            .transpose()
     }
 }
 

@@ -437,6 +437,77 @@ impl ConcreteSession {
         Ok(Some(InsertSelectRows { columns, rows }))
     }
 
+    fn open_pg_srf_executor(
+        &self,
+        source: &ast::TableSource,
+        outer: Option<&HashMap<String, Option<String>>>,
+        maximum: usize,
+    ) -> SessionResult<(
+        ConcreteResultField,
+        Box<dyn astersql_executor::adapter::ExecExecutor>,
+    )> {
+        let call = source.FunctionSource.as_ref().expect("SRF source");
+        let empty = HashMap::new();
+        let arguments = outer.unwrap_or(&empty);
+        let field = self.pg_integer_series_field(source, None)?;
+        let ast::ExprKind::Function { Args, FnName, .. } = &call.Kind else {
+            unreachable!()
+        };
+        let mut executor = if FnName.L == "unnest" {
+            use astersql_types::pg_array::{PgArray, PgArrayElement};
+            let value = self.relational_query_expression_value(&Args[0], arguments, None)?;
+            let array = value
+                .map(|text| {
+                    PgArray::from_text_with(text.as_bytes(), 23, -1, b',', |v, _| {
+                        v.parse::<i32>().map(PgArrayElement::Int4)
+                    })
+                })
+                .transpose()
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            let elements = array
+                .map(|a| {
+                    a.elements()
+                        .iter()
+                        .map(|v| match v {
+                            Some(PgArrayElement::Int4(n)) => Some(*n),
+                            None => None,
+                            _ => unreachable!(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            astersql_executor::builder::BuildInt4Unnest(elements, maximum)
+        } else {
+            let mut values = [None, None, Some(1)];
+            for (index, arg) in Args.iter().enumerate() {
+                values[index] = self
+                    .relational_query_expression_value(arg, arguments, None)?
+                    .map(|value| {
+                        value.parse::<i64>().map_err(|_| {
+                            super::query::pg_union_error("integer out of range", "22003")
+                        })
+                    })
+                    .transpose()?;
+            }
+            if field.column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeLonglong {
+                astersql_executor::builder::BuildInt8Series(values, maximum)
+            } else {
+                let mut int4_values = [None; 3];
+                for (index, value) in values.into_iter().enumerate() {
+                    int4_values[index] = value.map(i32::try_from).transpose().map_err(|_| {
+                        super::query::pg_union_error("integer out of range", "22003")
+                    })?;
+                }
+                astersql_executor::builder::BuildInt4Series(int4_values, maximum)
+            }
+        };
+        if let Err(error) = executor.Open() {
+            let _ = executor.Close();
+            return Err(super::query::pg_union_error(&error.to_string(), "22023"));
+        }
+        Ok((field, executor))
+    }
+
     /// 执行 INSERT SELECT 的表源或派生表，对齐 Go TableReader/Projection 子树。
     pub(super) fn execute_insert_select_table_source_with_outer(
         &self,
@@ -452,75 +523,16 @@ impl ConcreteSession {
         outer: Option<&HashMap<String, Option<String>>>,
         predicate: Option<&ast::ExprNode>,
     ) -> SessionResult<InsertSelectRows> {
-        if let Some(call) = &source.FunctionSource {
-            let empty = HashMap::new();
-            let arguments = outer.unwrap_or(&empty);
-            let field = self.pg_integer_series_field(source, None)?;
-            let ast::ExprKind::Function { Args, FnName, .. } = &call.Kind else {
-                unreachable!()
-            };
-            let mut executor = if FnName.L == "unnest" {
-                use astersql_types::pg_array::{PgArray, PgArrayElement};
-                let value = self.relational_query_expression_value(&Args[0], arguments, None)?;
-                let array = value
-                    .map(|text| {
-                        PgArray::from_text_with(text.as_bytes(), 23, -1, b',', |v, _| {
-                            v.parse::<i32>().map(PgArrayElement::Int4)
-                        })
-                    })
-                    .transpose()
-                    .map_err(|e| SessionError::new(e.to_string()))?;
-                let elements = array
-                    .map(|a| {
-                        a.elements()
-                            .iter()
-                            .map(|v| match v {
-                                Some(PgArrayElement::Int4(n)) => Some(*n),
-                                None => None,
-                                _ => unreachable!(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                astersql_executor::builder::BuildInt4Unnest(elements, 1024)
-            } else {
-                let mut values = [None, None, Some(1)];
-                for (index, arg) in Args.iter().enumerate() {
-                    values[index] = self
-                        .relational_query_expression_value(arg, arguments, None)?
-                        .map(|value| {
-                            value.parse::<i64>().map_err(|_| {
-                                super::query::pg_union_error("integer out of range", "22003")
-                            })
-                        })
-                        .transpose()?;
-                }
-                if field.column.FieldType.GetType() == astersql_parser_mysql::r#type::TypeLonglong {
-                    astersql_executor::builder::BuildInt8Series(values, 1024)
-                } else {
-                    let mut int4_values = [None; 3];
-                    for (index, value) in values.into_iter().enumerate() {
-                        int4_values[index] =
-                            value.map(i32::try_from).transpose().map_err(|_| {
-                                super::query::pg_union_error("integer out of range", "22003")
-                            })?;
-                    }
-                    astersql_executor::builder::BuildInt4Series(int4_values, 1024)
-                }
-            };
-            // Construction/Describe never evaluates the step. Open is the same
-            // execution-time error boundary as the existing executor leaves.
-            if let Err(error) = executor.Open() {
-                executor
-                    .Close()
-                    .map_err(|close| SessionError::new(close.to_string()))?;
-                return Err(super::query::pg_union_error(&error.to_string(), "22023"));
-            }
+        if source.FunctionSource.is_some() {
+            let (field, mut executor) = self.open_pg_srf_executor(source, outer, 1024)?;
             let name = field.column_as_name.L;
             let mut chunk = executor.NewChunk();
             let mut rows = Vec::new();
             let result: SessionResult<()> = (|| {
                 loop {
+                    self.sql_killer
+                        .HandleSignal()
+                        .map_err(|e| super::query::pg_union_error(&e.to_string(), "57014"))?;
                     executor
                         .Next(&mut chunk)
                         .map_err(|error| SessionError::new(error.to_string()))?;
@@ -2356,6 +2368,9 @@ impl ConcreteSession {
             }
             let mut expanded = Vec::new();
             for row in source.rows {
+                self.sql_killer
+                    .HandleSignal()
+                    .map_err(|e| super::query::pg_union_error(&e.to_string(), "57014"))?;
                 // All calls see the same outer row. Zip their nth values to the
                 // longest result, including NULL elements; never cross join them.
                 let values = projection_sources
@@ -2367,6 +2382,9 @@ impl ConcreteSession {
                     .collect::<SessionResult<Vec<_>>>()?;
                 let count = values.iter().map(Vec::len).max().unwrap_or(0);
                 for index in 0..count {
+                    self.sql_killer
+                        .HandleSignal()
+                        .map_err(|e| super::query::pg_union_error(&e.to_string(), "57014"))?;
                     let mut output = row.clone();
                     for ((name, _), values) in projection_sources.iter().zip(&values) {
                         output.insert(
@@ -2829,5 +2847,402 @@ impl ConcreteSession {
         Err(SessionError::new(
             "INSERT SELECT source is not a SELECT or set operation",
         ))
+    }
+}
+
+// The existing SRF leaves remain the only producers. This owner extends their
+// lifetime to the record-set boundary; it does not interpret SQL in the server.
+struct PgSrfLeaf {
+    executor: Box<dyn astersql_executor::adapter::ExecExecutor>,
+    chunk: astersql_util_chunk::Chunk,
+    name: String,
+    qualifier: String,
+    exhausted: bool,
+}
+impl PgSrfLeaf {
+    fn open(
+        session: &ConcreteSession,
+        source: &ast::TableSource,
+        row: &HashMap<String, Option<String>>,
+    ) -> SessionResult<Self> {
+        let (field, executor) = session.open_pg_srf_executor(source, Some(row), 1)?;
+        let chunk = executor.NewChunk();
+        Ok(Self {
+            executor,
+            chunk,
+            name: field.column_as_name.L,
+            qualifier: field.table_as_name.L,
+            exhausted: false,
+        })
+    }
+    fn next(&mut self) -> SessionResult<Option<Option<String>>> {
+        if self.exhausted {
+            return Ok(None);
+        }
+        self.executor
+            .Next(&mut self.chunk)
+            .map_err(|e| SessionError::new(e.to_string()))?;
+        if self.chunk.NumRows() == 0 {
+            self.exhausted = true;
+            self.executor
+                .Close()
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            return Ok(None);
+        }
+        let row = self.chunk.GetRow(0);
+        Ok(Some((!row.IsNull(0)).then(|| row.GetInt64(0).to_string())))
+    }
+    fn row(&self, value: Option<String>) -> HashMap<String, Option<String>> {
+        let mut row = HashMap::from([(self.name.clone(), value.clone())]);
+        if !self.qualifier.is_empty() {
+            row.insert(format!("{}.{}", self.qualifier, self.name), value);
+        }
+        row
+    }
+}
+impl Drop for PgSrfLeaf {
+    fn drop(&mut self) {
+        if !self.exhausted {
+            let _ = self.executor.Close();
+        }
+    }
+}
+
+pub(super) struct PgSrfRows {
+    session: ConcreteSession,
+    projection: ast::FieldList,
+    predicate: Option<ast::ExprNode>,
+    fields: Vec<ConcreteResultField>,
+    outer: VecDeque<HashMap<String, Option<String>>>,
+    from: Option<ast::TableSource>,
+    join: Option<ast::Join>,
+    from_leaf: Option<PgSrfLeaf>,
+    outer_row: Option<HashMap<String, Option<String>>>,
+    matched: bool,
+    calls: Vec<(usize, ast::TableSource)>,
+    leaves: Vec<PgSrfLeaf>,
+    input_row: Option<HashMap<String, Option<String>>>,
+    offset: usize,
+    remaining: usize,
+}
+impl PgSrfRows {
+    pub(super) fn finished(&self) -> bool {
+        self.remaining == 0
+    }
+    pub(super) fn truncate(&mut self, count: usize) {
+        self.remaining = self.remaining.min(count);
+    }
+    fn clear(&mut self) {
+        self.outer.clear();
+        self.outer_row = None;
+        self.input_row = None;
+        self.from_leaf = None;
+        self.leaves.clear();
+    }
+    fn next_input(&mut self) -> SessionResult<Option<HashMap<String, Option<String>>>> {
+        loop {
+            self.session
+                .sql_killer
+                .HandleSignal()
+                .map_err(|e| super::query::pg_union_error(&e.to_string(), "57014"))?;
+            let Some(source) = self.from.as_ref() else {
+                return Ok(self.outer.pop_front());
+            };
+            if self.outer_row.is_none() {
+                let Some(row) = self.outer.pop_front() else {
+                    return Ok(None);
+                };
+                self.from_leaf = Some(PgSrfLeaf::open(&self.session, source, &row)?);
+                self.outer_row = Some(row);
+                self.matched = false;
+            }
+            let leaf = self.from_leaf.as_mut().expect("open source");
+            let value = leaf.next()?;
+            let null_extension = value.is_none()
+                && !self.matched
+                && self
+                    .join
+                    .as_ref()
+                    .is_some_and(|join| join.Tp == ast::JoinType::LeftJoin);
+            if value.is_none() && !null_extension {
+                self.from_leaf = None;
+                self.outer_row = None;
+                continue;
+            }
+            let right = leaf.row(value.flatten());
+            let left = self.outer_row.as_ref().expect("outer row");
+            let joined = self
+                .session
+                .merge_insert_select_rows(left.clone(), &right, &[]);
+            let keep = null_extension
+                || self
+                    .join
+                    .as_ref()
+                    .map(|join| {
+                        self.session.insert_select_join_matches(
+                            join,
+                            left,
+                            &right,
+                            &joined,
+                            &[],
+                            None,
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or(true);
+            if keep {
+                self.matched = true;
+            }
+            if null_extension {
+                self.from_leaf = None;
+                self.outer_row = None;
+            }
+            if keep {
+                return Ok(Some(joined));
+            }
+        }
+    }
+    pub(super) fn next_row(&mut self) -> SessionResult<Option<Vec<String>>> {
+        if self.remaining == 0 {
+            self.clear();
+            return Ok(None);
+        }
+        let _types = PgCastTable::enter(&self.fields);
+        loop {
+            self.session
+                .sql_killer
+                .HandleSignal()
+                .map_err(|e| super::query::pg_union_error(&e.to_string(), "57014"))?;
+            if self.input_row.is_none() {
+                let Some(row) = self.next_input()? else {
+                    self.clear();
+                    return Ok(None);
+                };
+                if self
+                    .predicate
+                    .as_ref()
+                    .map(|p| self.session.insert_select_predicate(p, &row))
+                    .transpose()?
+                    == Some(false)
+                {
+                    continue;
+                }
+                self.leaves = self
+                    .calls
+                    .iter()
+                    .map(|(_, source)| PgSrfLeaf::open(&self.session, source, &row))
+                    .collect::<SessionResult<Vec<_>>>()?;
+                self.input_row = Some(row);
+            }
+            let mut row = self.input_row.as_ref().expect("input row").clone();
+            if !self.calls.is_empty() {
+                let values = self
+                    .leaves
+                    .iter_mut()
+                    .map(PgSrfLeaf::next)
+                    .collect::<SessionResult<Vec<_>>>()?;
+                if values.iter().all(Option::is_none) {
+                    self.leaves.clear();
+                    self.input_row = None;
+                    continue;
+                }
+                for ((index, _), value) in self.calls.iter().zip(values) {
+                    row.insert(format!("\0pg_projection_srf_{index}"), value.flatten());
+                }
+            } else {
+                self.input_row = None;
+            }
+            if self.offset != 0 {
+                self.offset -= 1;
+                continue;
+            }
+            let output = self
+                .projection
+                .Fields
+                .iter()
+                .map(|field| {
+                    self.session
+                        .relational_query_expression_value(
+                            field.Expr.as_ref().expect("bound projection"),
+                            &row,
+                            None,
+                        )
+                        .map(|value| value.unwrap_or_else(|| SHOW_NULL_CELL.to_owned()))
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.clear();
+            }
+            return Ok(Some(output));
+        }
+    }
+}
+impl ConcreteSession {
+    pub(super) fn pg_srf_record_set(
+        &self,
+        select: &ast::SelectStmt,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL
+            || select.With.is_some()
+            || select.Distinct
+            || !select.OrderBy.is_empty()
+            || !select.GroupBy.is_empty()
+            || select.Having.is_some()
+            || select
+                .Where
+                .as_ref()
+                .is_some_and(relational_expression_has_subquery)
+            || select.lock_info.is_some()
+            || select.Fields.Fields.iter().any(|field| {
+                field.WildCard.is_some()
+                    || field.Expr.as_ref().is_some_and(|e| {
+                        relational_expression_has_aggregate(e)
+                            || relational_expression_has_window(e)
+                            || relational_expression_has_subquery(e)
+                    })
+            })
+        {
+            return Ok(None);
+        }
+        fn table(node: &ast::ResultSetNode) -> Option<&ast::TableSource> {
+            match node {
+                ast::ResultSetNode::TableSource(t) => Some(t),
+                ast::ResultSetNode::Join(j) if j.Right.is_none() => table(j.Left.as_deref()?),
+                _ => None,
+            }
+        }
+        let window = relational_limit_window(select)?;
+        let empty = window.is_some_and(|w| w.count == 0);
+        let mut from = None;
+        let mut join = None;
+        let mut outer = None;
+        if let Some(clause) = &select.From {
+            let j = &clause.TableRefs;
+            if let Some(right) = j.Right.as_deref() {
+                if let Some(t) = table(right).filter(|t| t.FunctionSource.is_some()) {
+                    if !matches!(j.Tp, ast::JoinType::CrossJoin | ast::JoinType::LeftJoin)
+                        || j.NaturalJoin
+                        || !j.Using.is_empty()
+                    {
+                        return Ok(None);
+                    }
+                    from = Some(t.clone());
+                    join = Some(j.clone());
+                    outer = Some(if empty {
+                        Vec::new()
+                    } else {
+                        self.execute_insert_select_source_with_outer(
+                            j.Left.as_deref().expect("left source"),
+                            None,
+                        )?
+                        .rows
+                    });
+                }
+            } else if let Some(t) = j
+                .Left
+                .as_deref()
+                .and_then(table)
+                .filter(|t| t.FunctionSource.is_some())
+            {
+                from = Some(t.clone());
+            }
+        }
+        let mut projected = select.Fields.clone();
+        let mut calls = Vec::new();
+        for (index, field) in projected.Fields.iter_mut().enumerate() {
+            if let Some(call) = field
+                .Expr
+                .as_ref()
+                .and_then(super::query::pg_projection_srf)
+            {
+                let name = format!("\0pg_projection_srf_{index}");
+                calls.push((
+                    index,
+                    ast::TableSource {
+                        FunctionSource: Some(call.clone()),
+                        ColumnNames: vec![ast::NewCIStr(&name)],
+                        ..Default::default()
+                    },
+                ));
+                field.Expr = Some(ast::ExprNode {
+                    Kind: ast::ExprKind::Column(ast::ColumnName {
+                        Name: ast::NewCIStr(&name),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+        }
+        if calls.is_empty() && from.is_none() {
+            return Ok(None);
+        }
+        // An unhandled FROM SRF shape retains the established relational path.
+        // No result is fabricated when the source requires a blocking operator.
+        if from.is_none()
+            && let Some(clause) = &select.From
+        {
+            fn functions(node: &ast::ResultSetNode) -> bool {
+                match node {
+                    ast::ResultSetNode::TableSource(t) => t.FunctionSource.is_some(),
+                    ast::ResultSetNode::Join(j) => {
+                        j.Left.as_deref().is_some_and(functions)
+                            || j.Right.as_deref().is_some_and(functions)
+                    }
+                }
+            }
+            if clause.TableRefs.Left.as_deref().is_some_and(functions)
+                || clause.TableRefs.Right.as_deref().is_some_and(functions)
+            {
+                return Ok(None);
+            }
+        }
+        let fields = self.relational_select_source_fields(select)?;
+        let result_fields = self.relational_query_node_result_fields(select, &[])?;
+        let columns = result_fields
+            .iter()
+            .map(|field| field.column_as_name.O.clone())
+            .collect();
+        let outer = if empty {
+            Vec::new()
+        } else {
+            match outer {
+                Some(rows) => rows,
+                None if from.is_some() || select.From.is_none() => vec![HashMap::new()],
+                None => {
+                    self.execute_insert_select_join_with_outer(
+                        &select.From.as_ref().expect("FROM").TableRefs,
+                        None,
+                    )?
+                    .rows
+                }
+            }
+        };
+        let mut result = ConcreteRecordSet::new_with_fields(
+            columns,
+            Vec::new(),
+            result_fields.into_iter().map(Some).collect(),
+        );
+        if empty {
+            return Ok(Some(result));
+        }
+        result.srf = Some(Box::new(PgSrfRows {
+            session: self.clone(),
+            projection: projected,
+            predicate: select.Where.clone(),
+            fields,
+            outer: outer.into(),
+            from,
+            join,
+            from_leaf: None,
+            outer_row: None,
+            matched: false,
+            calls,
+            leaves: Vec::new(),
+            input_row: None,
+            offset: window.map_or(0, |w| w.offset),
+            remaining: window.map_or(usize::MAX, |w| w.count),
+        }));
+        Ok(Some(result))
     }
 }

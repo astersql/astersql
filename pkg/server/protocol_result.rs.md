@@ -92,3 +92,8 @@
 - 若实现 `TryDetach`、prepared statement 归属或 RU v2 tracker，不能只填充空方法；需要对照 Go 的所有权转移、失败后结果集是否仍可用、tracker attach/report 时点，并增加独立 Rust 回归测试。
 - 任何会阻塞的逻辑都不应放入 `ResultHandle::drop`。调整通道或关闭协议时须验证连接关闭、结果提前丢弃、工作线程先退出以及多个 `Arc` 同时释放的路径，避免死锁和资源滞留。
 - 性能敏感点是每个协议操作一次通道往返、每个单元一次字符串复制/转换，以及 cursor 的逐行 `Current`/`Advance` 请求。批处理优化必须保留 Go 可观察的 fetch 边界、错误出现位置和事件次序。
+
+
+## SRF暂停恢复与释放（任务29）
+
+工作线程结果读取/Finish若返回SessionError，复用runtime::session_protocol_error保留SQLSTATE；ResultHandle/WorkerResults的真实所有权和Close机制继续复用，不新增句柄系统。

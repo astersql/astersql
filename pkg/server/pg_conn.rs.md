@@ -139,3 +139,8 @@ GROUPS 缺少 ORDER BY 的结构错误映射 SQLSTATE 42601，移除已实现的
 ## Ordered-set client diagnostics
 
 Reuse the existing PostgreSQL error encoder to send detail, hint and position together for structured function errors, including simple-query ordered-set diagnostics.
+
+
+## SRF暂停恢复与释放（任务29）
+
+活动取消保护覆盖整个Execute，包括恢复portal时的句柄消费，而非仅首次创建结果。引擎首次执行复用execute_prepared_streaming；测试观察器只读取现有active状态与结果边界事件。

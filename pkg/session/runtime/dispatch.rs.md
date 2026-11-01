@@ -168,3 +168,8 @@ EXECUTE 的 hint/binding 分析复用该记录的原始 AST，避免重新用默
 ## 2026-11-01 INT4 FROM 序列行源
 
 simple_typed_select_shape 排除 FunctionSource，防止将普通 FROM SRF 当作持久表交给扫描构建器；函数输出复用既有完整关系查询分派。
+
+
+## SRF暂停恢复与释放（任务29）
+
+SELECT结果的sql_select_limit经truncate_rows约束缓冲/活SRF两个形态；TestSession转换用into_test_record_set保留原Send缓冲契约，生产会话读取仍可按需推进。

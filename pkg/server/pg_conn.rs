@@ -61,6 +61,27 @@ impl PgService {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn executing_for_test(&self, pid: u32) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .get(&pid)
+            .is_some_and(|entry| entry.executing)
+    }
+    #[cfg(test)]
+    pub(crate) fn result_events_for_test(&self, pid: u32) -> Vec<String> {
+        let context = self
+            .active
+            .lock()
+            .unwrap()
+            .get(&pid)
+            .unwrap()
+            .context
+            .clone();
+        context.result_events_for_test()
+    }
+
     pub fn start(
         listener: TcpListener,
         driver: Arc<dyn SessionDriver>,
@@ -403,18 +424,26 @@ impl PgService {
                 if tag == b'X' && body.is_empty() {
                     return Ok(true);
                 }
-                if extended.handle(tag, &body, socket, &context, |statement, args, catalog| {
-                    self.with_query(pid, |context| {
+                // Every Execute, including a resumed portal, participates in
+                // the existing active-command cancellation generation.
+                let mut handle = || {
+                    extended.handle(tag, &body, socket, &context, |statement, args, catalog| {
                         if let Some(catalog) = catalog {
-                            return catalog.execute(context.as_ref(), &self.catalog_cancel(pid));
+                            return Ok(catalog.execute(context.as_ref(), &self.catalog_cancel(pid)));
                         }
-                        context.execute_prepared_statement(
+                        Ok(context.execute_prepared_streaming(
                             statement,
                             args,
                             &CancellationToken::new(),
-                        )
+                        ))
                     })
-                })? {
+                };
+                let handled = if tag == b'E' {
+                    self.with_query(pid, |_| handle())??
+                } else {
+                    handle()?
+                };
+                if handled {
                     continue;
                 }
                 if tag == b'Q' {

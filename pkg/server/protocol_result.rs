@@ -347,8 +347,11 @@ impl WorkerResults {
         }
     }
 }
-fn session_error(error: impl fmt::Display) -> ConnError {
-    ConnError::Session(error.to_string())
+fn session_error(error: sqlexec::GoError) -> ConnError {
+    match error.downcast::<astersql_session::SessionError>() {
+        Ok(error) => crate::runtime::session_protocol_error(*error),
+        Err(error) => ConnError::Session(error.to_string()),
+    }
 }
 fn owned_row(row: chunk::Row) -> Vec<Value> {
     (0..row.Len())

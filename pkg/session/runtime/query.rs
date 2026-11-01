@@ -7803,6 +7803,11 @@ impl ConcreteSession {
                 fields.into_iter().map(Some).collect(),
             ));
         }
+        if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>()
+            && let Some(result) = self.pg_srf_record_set(select)?
+        {
+            return Ok(result);
+        }
         let selected = self.execute_insert_select_node(node)?;
         let mut fields = self.relational_query_node_result_fields(node, &selected.columns)?;
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {

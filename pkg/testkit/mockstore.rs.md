@@ -91,3 +91,8 @@ Rust canonical 路径保留 Go 的核心测试意图：创建 mock KV、bootstra
 修改参数协议或结果转换时必须同步检查 `protocol_arguments`、`execute_concrete_session`、`drain_record_set` 和 `pkg/testkit/db_driver.rs` 的扫描语义，特别关注 SQL NULL、bytes/数值类型、多个结果集、statement 清理和错误优先级。修改生命周期时必须保持 `shutdown` 幂等、锁外 join、弱引用用户会话及 auto-analyze 不计入用户计数这些不变量。
 
 测试逻辑应继续放在独立文件，而非目标源文件。至少同步 `pkg/testkit/mockstore_test.rs`（prepared statement 生命周期）、`pkg/testkit/mockstore_domain_stats_test.rs`（共享统计状态和 worker 生命周期）、`pkg/testkit/mockstore_domain_ddl_test.rs`（DDL/跨 keyspace）及 `pkg/testkit/mockstore_domain_infoschema_v2_test.rs`（v2 loader）；涉及 Go 对齐时同时核对 `pkg/testkit/mockstore.go`。兼容风险集中于 TestKit 公共 API、Go 行为差异和全局 Domain 状态；性能风险主要是每会话一线程、同步请求等待及惰性长期系统会话。
+
+
+## SRF暂停恢复与释放（任务29）
+
+ConcreteRecordSet变为可能持有线程绑定SRF后，三处原Send测试结果转换改用into_test_record_set。仍在原测试worker求值/清理并返回可移动缓冲，不改变测试数据或模拟SQL结果。

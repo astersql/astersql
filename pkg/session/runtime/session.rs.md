@@ -138,3 +138,8 @@ ConcretePreparedArgument新增Float4Bits(u32)/Float4Array(Vec<u8>)，普通sql_l
 ConcretePreparedArgument补Float8Bits(u64)/Float8Array(Vec<u8>)；私有载体必须经typed binder，不生成可伪造的公开SQL文本。
 
 行为证据与本机验证限制见 `docs/postgresql-pg05-array-float8-evidence.md`；测试保持在同目录独立测试文件。
+
+
+## SRF暂停恢复与释放（任务29）
+
+`ConcreteRecordSet`可选择持有线程绑定的PgSrfRows，next_row按需消费并在LIMIT、错误、耗尽或close释放。`has_live_srf`区分活状态与物化结果，truncate_rows同时约束活结果。TestRecordSet保留Send约束，`into_test_record_set`在原会话线程物化活结果后返回BufferedRecordSet；没有unsafe Send或新worker。

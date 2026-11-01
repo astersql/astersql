@@ -1295,3 +1295,97 @@ fn pg09_28_execution() {
     assert_eq!(rows[1028], vec![Some("3".into()), None, Some("11".into())]);
     sets[0].close().unwrap();
 }
+
+#[test]
+fn pg09_29_execution() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let session = astersql_session::runtime::ConcreteSession::new_with_dialect(
+        domain,
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let late = "SELECT t.id AS id,generate_series(1::int4,1::int4,t.step) AS v FROM (VALUES ROW(1::int4,1::int4),ROW(2,0)) t(id,step)";
+    let mut sets = session
+        .execute(late)
+        .expect("future outer row must not execute during open");
+    assert!(sets[0].has_live_srf());
+    assert_eq!(
+        sets[0].next_row().unwrap(),
+        Some(vec!["1".into(), "1".into()])
+    );
+    assert!(
+        sets[0]
+            .next_row()
+            .unwrap_err()
+            .to_string()
+            .contains("step size cannot equal zero")
+    );
+    assert!(!sets[0].has_live_srf());
+    sets[0].close().unwrap();
+    let mut limited = session.execute(&format!("{late} LIMIT 1")).unwrap();
+    assert_eq!(
+        limited[0].next_row().unwrap(),
+        Some(vec!["1".into(), "1".into()])
+    );
+    assert!(!limited[0].has_live_srf());
+    assert_eq!(limited[0].next_row().unwrap(), None);
+    // Reopen/rebind must construct fresh leaves, even after a partial Close.
+    let sql = "SELECT t.id AS id,generate_series(1::int4,t.n) AS a,unnest(ARRAY[8,NULL]::int4[]) AS b FROM (VALUES ROW(1::int4,1025::int4),ROW(2,0),ROW(3,1)) t(id,n)";
+    for _ in 0..2 {
+        let mut sets = session.execute(sql).unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        assert_eq!(rows.len(), 1029);
+        assert_eq!(rows[0], vec!["1", "1", "8"]);
+        assert_eq!(rows[1024], vec!["1", "1025", "<nil>"]);
+        assert_eq!(rows[1025], vec!["2", "<nil>", "8"]);
+        assert_eq!(rows[1028], vec!["3", "<nil>", "<nil>"]);
+        assert!(!sets[0].has_live_srf());
+        sets[0].close().unwrap();
+    }
+    for sql in [
+        "SELECT g.v AS v FROM generate_series(1::int4,7::int4) g(v)",
+        "SELECT unnest(ARRAY[NULL,NULL]::int4[]) AS v",
+    ] {
+        let mut sets = session.execute(sql).unwrap();
+        assert!(sets[0].next_row().unwrap().is_some());
+        sets[0].close().unwrap();
+        assert!(!sets[0].has_live_srf());
+        assert!(sets[0].next_row().is_err());
+    }
+    let mut sets = session
+        .execute(
+            "SELECT g.v AS v FROM generate_series(1::int4,2147483647::int4) g(v) WHERE g.v < 0",
+        )
+        .unwrap();
+    session
+        .SQLKiller()
+        .SendKillSignal(astersql_util_sqlkiller::sqlkiller::QueryInterrupted);
+    assert!(sets[0].next_row().is_err());
+    assert!(!sets[0].has_live_srf());
+    session.SQLKiller().Reset();
+    let lateral = "SELECT t.id AS id,g.v AS v FROM (VALUES ROW(1::int4,3::int4),ROW(2,0),ROW(3,NULL::int4)) t(id,n) LEFT JOIN LATERAL generate_series(1::int4,t.n) g(v) ON g.v > 1::int4";
+    let mut sets = session.execute(lateral).unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = sets[0].next_row().unwrap() {
+        rows.push(row);
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec!["1", "2"],
+            vec!["1", "3"],
+            vec!["2", "<nil>"],
+            vec!["3", "<nil>"]
+        ]
+    );
+    assert!(!sets[0].has_live_srf());
+    let mut zero = session
+        .execute("SELECT generate_series(1::int4,7::int4,0::int4) AS v LIMIT 0")
+        .unwrap();
+    assert!(!zero[0].has_live_srf());
+    assert_eq!(zero[0].next_row().unwrap(), None);
+    let mut probe = session.execute("SELECT 1::int4 AS c").unwrap();
+    assert_eq!(probe[0].next_row().unwrap(), Some(vec!["1".into()]));
+}

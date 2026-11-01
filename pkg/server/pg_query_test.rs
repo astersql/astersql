@@ -26986,3 +26986,470 @@ fn pg09_28_dual_listener_isolation() {
     assert!(TcpStream::connect(pg).is_err());
     assert!(TcpStream::connect(mysql).is_err());
 }
+
+#[test]
+fn pg09_29_sql() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    fn connect(addr: std::net::SocketAddr) -> (TcpStream, Vec<u8>) {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = [
+            196610u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        let mut key = Vec::new();
+        loop {
+            let (tag, body) = read(&mut s);
+            if tag == b'K' {
+                key = body;
+            }
+            if tag == b'Z' {
+                break;
+            }
+        }
+        (s, key)
+    }
+    fn prepare(s: &mut TcpStream, name: &str, sql: &str, fmt: i16) {
+        send(
+            s,
+            b'P',
+            &[
+                name.as_bytes(),
+                b"\0",
+                sql.as_bytes(),
+                b"\0",
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        assert_eq!(read(s).0, b'1');
+        bind(s, name, name, fmt);
+    }
+    fn bind(s: &mut TcpStream, portal: &str, statement: &str, fmt: i16) {
+        send(
+            s,
+            b'B',
+            &[
+                portal.as_bytes(),
+                b"\0",
+                statement.as_bytes(),
+                b"\0",
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &fmt.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        assert_eq!(read(s).0, b'2');
+        send(
+            s,
+            b'D',
+            &[b"P".as_slice(), portal.as_bytes(), b"\0"].concat(),
+        );
+        let d = read(s);
+        assert_eq!(d.0, b'T');
+        // All fixtures here use int4 outputs; fixed identities survive paging.
+        let n = i16::from_be_bytes(d.1[..2].try_into().unwrap()) as usize;
+        let mut p = 2;
+        for _ in 0..n {
+            p += d.1[p..].iter().position(|b| *b == 0).unwrap() + 1;
+            assert_eq!(&d.1[p + 6..p + 10], &23u32.to_be_bytes());
+            assert_eq!(&d.1[p + 10..p + 12], &4i16.to_be_bytes());
+            assert_eq!(&d.1[p + 12..p + 16], &(-1i32).to_be_bytes());
+            assert_eq!(&d.1[p + 16..p + 18], &fmt.to_be_bytes());
+            p += 18;
+        }
+    }
+    fn execute(
+        s: &mut TcpStream,
+        portal: &str,
+        count: u32,
+        fmt: i16,
+    ) -> (Vec<Vec<Option<String>>>, u8, Vec<u8>) {
+        send(
+            s,
+            b'E',
+            &[portal.as_bytes(), b"\0", &count.to_be_bytes()].concat(),
+        );
+        send(s, b'H', &[]);
+        let mut rows = Vec::new();
+        loop {
+            let (tag, body) = read(s);
+            if matches!(tag, b's' | b'C' | b'E') {
+                return (rows, tag, body);
+            }
+            assert_eq!(tag, b'D', "Execute must not resend a description");
+            if fmt == 0 {
+                rows.push(text_row(&body));
+            } else {
+                let n = i16::from_be_bytes(body[..2].try_into().unwrap()) as usize;
+                let mut p = 2;
+                let mut row = Vec::new();
+                for _ in 0..n {
+                    let len = i32::from_be_bytes(body[p..p + 4].try_into().unwrap());
+                    p += 4;
+                    row.push(if len == -1 {
+                        None
+                    } else {
+                        assert_eq!(len, 4);
+                        let v = i32::from_be_bytes(body[p..p + 4].try_into().unwrap());
+                        p += 4;
+                        Some(v.to_string())
+                    });
+                }
+                rows.push(row);
+            }
+        }
+    }
+    fn sync(s: &mut TcpStream, status: u8) {
+        send(s, b'S', &[]);
+        assert_eq!(read(s), (b'Z', vec![status]));
+    }
+    fn close(s: &mut TcpStream, portal: &str) {
+        send(
+            s,
+            b'C',
+            &[b"P".as_slice(), portal.as_bytes(), b"\0"].concat(),
+        );
+        assert_eq!(read(s).0, b'3');
+    }
+    fn error(body: &[u8], state: &str) {
+        let fields = body
+            .split(|b| *b == 0)
+            .filter(|v| !v.is_empty())
+            .map(|v| (v[0], String::from_utf8_lossy(&v[1..]).into_owned()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(fields.get(&b'C').map(String::as_str), Some(state));
+        assert_eq!(fields.get(&b'S').map(String::as_str), Some("ERROR"));
+        println!("pg09_29 error fields={fields:?}");
+    }
+    let (mut a, key) = connect(addr);
+    let (mut b, _) = connect(addr);
+    let pid = u32::from_be_bytes(key[..4].try_into().unwrap());
+    let series = "SELECT generate_series(1::int4,7::int4) AS v";
+    for fmt in [0, 1] {
+        prepare(&mut a, &format!("a{fmt}"), series, fmt);
+        bind(&mut a, &format!("b{fmt}"), &format!("a{fmt}"), fmt);
+        let mut ar = Vec::new();
+        let mut br = Vec::new();
+        for page in 0..4 {
+            for (portal, out) in [(format!("a{fmt}"), &mut ar), (format!("b{fmt}"), &mut br)] {
+                let (rows, tag, body) = execute(&mut a, &portal, 2, fmt);
+                assert_eq!(rows.len(), if page == 3 { 1 } else { 2 });
+                assert_eq!(tag, if page == 3 { b'C' } else { b's' });
+                if tag == b'C' {
+                    assert_eq!(body, b"SELECT 7\0");
+                }
+                out.extend(rows);
+                let probe = query(&mut b, "SELECT 1::int4 AS c");
+                assert_eq!(
+                    probe
+                        .iter()
+                        .filter(|m| m.0 == b'D')
+                        .map(|m| text_row(&m.1))
+                        .collect::<Vec<_>>(),
+                    vec![vec![Some("1".into())]]
+                );
+            }
+        }
+        let expected = (1..=7)
+            .map(|v| vec![Some(v.to_string())])
+            .collect::<Vec<_>>();
+        assert_eq!(ar, expected);
+        assert_eq!(br, expected);
+        close(&mut a, &format!("a{fmt}"));
+        close(&mut a, &format!("b{fmt}"));
+        sync(&mut a, b'I');
+    }
+    for infmt in [0i16, 1] {
+        for outfmt in [0i16, 1] {
+            let statement = format!("params29_{infmt}_{outfmt}");
+            send(
+                &mut a,
+                b'P',
+                &[
+                    statement.as_bytes(),
+                    b"\0",
+                    b"SELECT generate_series($1::int4,$2::int4,$3::int4) AS v\0",
+                    &0i16.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            assert_eq!(read(&mut a).0, b'1');
+            send(
+                &mut a,
+                b'D',
+                &[b"S".as_slice(), statement.as_bytes(), b"\0"].concat(),
+            );
+            assert_eq!(
+                read(&mut a),
+                (
+                    b't',
+                    [
+                        3i16.to_be_bytes().as_slice(),
+                        23u32.to_be_bytes().as_slice(),
+                        23u32.to_be_bytes().as_slice(),
+                        23u32.to_be_bytes().as_slice()
+                    ]
+                    .concat()
+                )
+            );
+            let fixed = read(&mut a);
+            assert_eq!(fixed.0, b'T');
+            assert_eq!(&fixed.1[10..14], &23u32.to_be_bytes());
+            assert_eq!(&fixed.1[14..16], &4i16.to_be_bytes());
+            assert_eq!(&fixed.1[16..20], &(-1i32).to_be_bytes());
+            for args in [
+                [Some(1i32), Some(7), Some(1)],
+                [None, Some(7), Some(1)],
+                [None, None, None],
+                [Some(2), Some(1), Some(1)],
+                [Some(1), Some(7), Some(1)],
+            ] {
+                let portal = format!("rebind29_{infmt}_{outfmt}");
+                let mut body = [
+                    portal.as_bytes(),
+                    b"\0",
+                    statement.as_bytes(),
+                    b"\0",
+                    &1i16.to_be_bytes(),
+                    &infmt.to_be_bytes(),
+                    &3i16.to_be_bytes(),
+                ]
+                .concat();
+                for arg in args {
+                    if let Some(v) = arg {
+                        let value = if infmt == 0 {
+                            v.to_string().into_bytes()
+                        } else {
+                            v.to_be_bytes().to_vec()
+                        };
+                        body.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                        body.extend_from_slice(&value);
+                    } else {
+                        body.extend_from_slice(&(-1i32).to_be_bytes());
+                    }
+                }
+                body.extend_from_slice(&1i16.to_be_bytes());
+                body.extend_from_slice(&outfmt.to_be_bytes());
+                send(&mut a, b'B', &body);
+                assert_eq!(read(&mut a).0, b'2');
+                send(
+                    &mut a,
+                    b'D',
+                    &[b"P".as_slice(), portal.as_bytes(), b"\0"].concat(),
+                );
+                let desc = read(&mut a);
+                assert_eq!(desc.0, b'T');
+                let mut expected = fixed.1.clone();
+                let len = expected.len();
+                expected[len - 2..].copy_from_slice(&outfmt.to_be_bytes());
+                assert_eq!(desc.1, expected);
+                let mut rows = Vec::new();
+                loop {
+                    let (r, tag, _) = execute(&mut a, &portal, 2, outfmt);
+                    rows.extend(r);
+                    if tag == b'C' {
+                        break;
+                    }
+                    assert_eq!(tag, b's');
+                }
+                let expected = if args == [Some(1), Some(7), Some(1)] {
+                    (1..=7)
+                        .map(|v| vec![Some(v.to_string())])
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(rows, expected);
+                close(&mut a, &portal);
+                sync(&mut a, b'I');
+            }
+        }
+    }
+    let late = "SELECT t.id AS id,generate_series(1::int4,1::int4,t.step) AS v FROM (VALUES ROW(1::int4,1::int4),ROW(2,0)) t(id,step)";
+    assert_eq!(query(&mut a, "BEGIN").last().unwrap().1, b"T");
+    prepare(&mut a, "late29", late, 0);
+    let first = execute(&mut a, "late29", 1, 0);
+    assert_eq!(first.0, vec![vec![Some("1".into()), Some("1".into())]]);
+    assert_eq!(first.1, b's');
+    let failed = execute(&mut a, "late29", 1, 0);
+    assert_eq!(failed.1, b'E');
+    error(&failed.2, "22023");
+    sync(&mut a, b'E');
+    assert_eq!(query(&mut a, "ROLLBACK").last().unwrap().1, b"I");
+    let limited = query(&mut a, &format!("{late} LIMIT 1"));
+    assert!(!limited.iter().any(|m| m.0 == b'E'));
+    assert_eq!(limited.iter().filter(|m| m.0 == b'D').count(), 1);
+    // Partial Close must close the real worker result, and rebind starts afresh.
+    prepare(&mut a, "restart29", series, 0);
+    assert_eq!(execute(&mut a, "restart29", 2, 0).0.len(), 2);
+    let before = service
+        .result_events_for_test(pid)
+        .iter()
+        .filter(|e| e.as_str() == "Close")
+        .count();
+    close(&mut a, "restart29");
+    assert_eq!(
+        service
+            .result_events_for_test(pid)
+            .iter()
+            .filter(|e| e.as_str() == "Close")
+            .count(),
+        before + 1
+    );
+    bind(&mut a, "restart29", "restart29", 0);
+    assert_eq!(
+        execute(&mut a, "restart29", 1, 0).0,
+        vec![vec![Some("1".into())]]
+    );
+    close(&mut a, "restart29");
+    sync(&mut a, b'I');
+    for (i, sql, expected) in [
+        (0, "SELECT generate_series(2::int4,1::int4) AS v", vec![]),
+        (1, "SELECT generate_series(NULL::int4,3::int4) AS v", vec![]),
+        (
+            2,
+            "SELECT unnest(ARRAY[NULL,NULL]::int4[]) AS v",
+            vec![vec![None], vec![None]],
+        ),
+        (
+            3,
+            "SELECT generate_series(2147483646::int4,2147483647::int4) AS v",
+            vec![
+                vec![Some("2147483646".into())],
+                vec![Some("2147483647".into())],
+            ],
+        ),
+    ] {
+        let ms = query(&mut a, sql);
+        assert!(!ms.iter().any(|m| m.0 == b'E'), "{ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| text_row(&m.1))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let name = format!("edge29_{i}");
+        prepare(&mut a, &name, sql, 0);
+        let (rows, tag, _) = execute(&mut a, &name, 0, 0);
+        assert_eq!(tag, b'C');
+        assert_eq!(rows, expected);
+        close(&mut a, &name);
+        sync(&mut a, b'I');
+    }
+    let mixed = "SELECT t.id AS id,generate_series(1::int4,t.n) AS a,unnest(ARRAY[8,NULL]::int4[]) AS b FROM (VALUES ROW(1::int4,3::int4),ROW(2,0)) t(id,n)";
+    prepare(&mut a, "mixed29", mixed, 0);
+    let mut all = Vec::new();
+    loop {
+        let (rows, tag, _) = execute(&mut a, "mixed29", 1, 0);
+        all.extend(rows);
+        if tag == b'C' {
+            break;
+        }
+        assert_eq!(tag, b's');
+    }
+    assert_eq!(
+        all,
+        vec![
+            vec![Some("1".into()), Some("1".into()), Some("8".into())],
+            vec![Some("1".into()), Some("2".into()), None],
+            vec![Some("1".into()), Some("3".into()), None],
+            vec![Some("2".into()), None, Some("8".into())],
+            vec![Some("2".into()), None, None]
+        ]
+    );
+    close(&mut a, "mixed29");
+    sync(&mut a, b'I');
+    // Cancel only after the actual Execute has entered its SRF consumption phase.
+    prepare(
+        &mut a,
+        "cancel29",
+        "SELECT g.v AS v FROM generate_series(1::int4,2147483647::int4) g(v) WHERE g.v = 1 OR g.v < 0",
+        0,
+    );
+    let first = execute(&mut a, "cancel29", 1, 0);
+    assert_eq!(first.0, vec![vec![Some("1".into())]]);
+    assert_eq!(first.1, b's');
+    let closes_before_cancel = service
+        .result_events_for_test(pid)
+        .iter()
+        .filter(|e| e.as_str() == "Close")
+        .count();
+    send(
+        &mut a,
+        b'E',
+        &[b"cancel29\0".as_slice(), &2u32.to_be_bytes()].concat(),
+    );
+    send(&mut a, b'H', &[]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !service.executing_for_test(pid) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let mut cancel = TcpStream::connect(addr).unwrap();
+    let body = [80877102u32.to_be_bytes().as_slice(), key.as_slice()].concat();
+    cancel
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    cancel.write_all(&body).unwrap();
+    drop(cancel);
+    let canceled = read(&mut a);
+    assert_eq!(canceled.0, b'E');
+    error(&canceled.1, "57014");
+    sync(&mut a, b'I');
+    assert_eq!(
+        service
+            .result_events_for_test(pid)
+            .iter()
+            .filter(|e| e.as_str() == "Close")
+            .count(),
+        closes_before_cancel + 1
+    );
+    assert!(
+        !query(&mut b, "SELECT 1::int4 AS c")
+            .iter()
+            .any(|m| m.0 == b'E')
+    );
+    let probe = query(&mut a, "SELECT 1::int4 AS c");
+    assert_eq!(
+        probe
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| text_row(&m.1))
+            .collect::<Vec<_>>(),
+        vec![vec![Some("1".into())]]
+    );
+    send(&mut a, b'X', &[]);
+    send(&mut b, b'X', &[]);
+    drop(a);
+    drop(b);
+    service.close();
+    assert_eq!(service.resource_counts(), (0, 0, 0));
+}

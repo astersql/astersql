@@ -252,3 +252,8 @@ Parse支持3807；text/binary数组输入复用3802标量codec与通用容器校
 ## Ordered-set client diagnostics
 
 Parse/Describe/Execute preserve optional function detail and position through the existing failed-until-Sync lifecycle and error encoder.
+
+
+## SRF暂停恢复与释放（任务29）
+
+Portal对活SRF结果持有既有ProtocolResultSet句柄，每个Execute按行数消费并复用PG编码器；暂停不重发RowDescription，CommandComplete累计已返回行数。Close/Sync释放、错误、耗尽及Drop关闭真实worker结果和响应生命周期。目录与会话命令保留原路径。

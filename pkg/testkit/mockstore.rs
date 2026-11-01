@@ -619,10 +619,10 @@ fn execute_concrete_session(
             .map_err(|error| TestError::new(error.to_string()))?;
         let record_sets = session
             .execute_protocol_statement(statement_id, &protocol_arguments(arguments))
-            .map(|record_sets| {
+            .and_then(|record_sets| {
                 record_sets
                     .into_iter()
-                    .map(|record_set| Box::new(record_set) as Box<dyn TestRecordSet>)
+                    .map(|record_set| record_set.into_test_record_set())
                     .collect()
             })
             .map_err(|error| TestError::new(error.to_string()))?;
@@ -1054,7 +1054,12 @@ impl AnalyzeSessionDatabase {
                                         record_sets.len()
                                     )));
                                 }
-                                drain_record_set(Box::new(record_sets.remove(0)))
+                                drain_record_set(
+                                    record_sets
+                                        .remove(0)
+                                        .into_test_record_set()
+                                        .map_err(|error| TestError::new(error.to_string()))?,
+                                )
                             });
                         let _ = response.send(result);
                     }
@@ -1079,7 +1084,11 @@ impl AnalyzeSessionDatabase {
                                                 record_sets.len()
                                             )));
                                         }
-                                        drain_record_set(Box::new(record_sets.remove(0)))
+                                        drain_record_set(
+                                            record_sets.remove(0).into_test_record_set().map_err(
+                                                |error| TestError::new(error.to_string()),
+                                            )?,
+                                        )
                                     })
                             })
                             .collect();

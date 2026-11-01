@@ -1936,8 +1936,138 @@ impl ConcreteSession {
     }
 }
 
-/// 具体结果集：列名与行缓冲。
+/// Concrete result metadata and buffered rows, or an owned session-thread SRF iterator.
 pub struct ConcreteRecordSet {
+    pub(super) columns: Vec<String>,
+    pub(super) result_fields: Vec<Option<ConcreteResultField>>,
+    pub(super) rows: VecDeque<Vec<String>>,
+    pub(super) closed: bool,
+    store_read: Option<Arc<SQLKiller>>,
+    pub(super) srf: Option<Box<super::source::PgSrfRows>>,
+}
+impl ConcreteRecordSet {
+    /// Compatibility entrypoint for the original record-set column contract.
+    pub fn Columns(&self) -> &[String] {
+        self.columns()
+    }
+    /// Compatibility entrypoint that consumes the original source exactly once.
+    pub fn Next(&mut self) -> SessionResult<Option<Vec<String>>> {
+        self.next_row()
+    }
+    /// Compatibility entrypoint that releases either buffered or live state.
+    pub fn Close(&mut self) -> SessionResult {
+        self.close()
+    }
+    pub(super) fn new(columns: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+        Self::from_buffered(BufferedRecordSet::new(columns, rows))
+    }
+    pub(super) fn new_with_fields(
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+        fields: Vec<Option<ConcreteResultField>>,
+    ) -> Self {
+        Self::from_buffered(BufferedRecordSet::new_with_fields(columns, rows, fields))
+    }
+    pub(super) fn with_store_read(mut self, killer: Arc<SQLKiller>) -> Self {
+        self.store_read = Some(killer);
+        self
+    }
+    /// A live SRF stays on its session thread, behind the existing worker handle.
+    pub fn has_live_srf(&self) -> bool {
+        self.srf.is_some()
+    }
+    pub(super) fn truncate_rows(&mut self, count: usize) {
+        self.rows.truncate(count);
+        if count == 0 {
+            self.srf = None;
+        }
+        if let Some(srf) = self.srf.as_mut() {
+            srf.truncate(count);
+        }
+    }
+    /// Consume one row, closing live execution on failure or exhaustion.
+    pub fn next_row(&mut self) -> SessionResult<Option<Vec<String>>> {
+        if self.closed {
+            return Err(SessionError::new("record set is closed"));
+        }
+        if let Some(srf) = self.srf.as_mut() {
+            match srf.next_row() {
+                Ok(Some(row)) => {
+                    if srf.finished() {
+                        self.srf = None;
+                    }
+                    return Ok(Some(row));
+                }
+                Ok(None) => {
+                    self.srf = None;
+                    return Ok(None);
+                }
+                Err(error) => {
+                    self.close()?;
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(killer) = self.store_read.take() {
+            let mut buffered =
+                BufferedRecordSet::new(Vec::new(), Vec::new()).with_store_read(killer);
+            if let Err(error) = buffered.finish_store_read() {
+                self.close()?;
+                return Err(error);
+            }
+        }
+        Ok(self.rows.pop_front())
+    }
+    /// Release all owned rows and iterators; subsequent reads fail.
+    pub fn close(&mut self) -> SessionResult {
+        self.srf = None;
+        self.store_read = None;
+        self.rows.clear();
+        self.closed = true;
+        Ok(())
+    }
+    fn from_buffered(buffered: BufferedRecordSet) -> Self {
+        Self {
+            columns: buffered.columns,
+            result_fields: buffered.result_fields,
+            rows: buffered.rows,
+            closed: buffered.closed,
+            store_read: buffered.store_read,
+            srf: None,
+        }
+    }
+    /// Read-only text-protocol column names.
+    pub fn columns(&self) -> &[String] {
+        &self.columns
+    }
+    /// Canonical planner identities, independent of result availability.
+    pub fn result_fields(&self) -> &[Option<ConcreteResultField>] {
+        &self.result_fields
+    }
+    /// Preserve the portable TestRecordSet contract by evaluating a live source
+    /// on its owning thread before returning Send row storage.
+    pub fn into_test_record_set(mut self) -> SessionResult<Box<dyn TestRecordSet>> {
+        // TestSession historically returns evaluated, Send buffers. Preserve that
+        // contract without marking session-bound AST/executor state as Send.
+        if self.has_live_srf() {
+            let mut rows = VecDeque::new();
+            while let Some(row) = self.next_row()? {
+                rows.push_back(row);
+            }
+            self.rows = rows;
+        }
+        Ok(Box::new(BufferedRecordSet {
+            columns: self.columns,
+            result_fields: self.result_fields,
+            rows: self.rows,
+            closed: self.closed,
+            store_read: self.store_read,
+        }))
+    }
+}
+
+/// Portable, already evaluated rows for the Send testutil boundary.
+struct BufferedRecordSet {
     pub(super) columns: Vec<String>,
     pub(super) result_fields: Vec<Option<ConcreteResultField>>,
     pub(super) rows: VecDeque<Vec<String>>,
@@ -1945,7 +2075,7 @@ pub struct ConcreteRecordSet {
     store_read: Option<Arc<SQLKiller>>,
 }
 
-impl ConcreteRecordSet {
+impl BufferedRecordSet {
     pub(super) fn new(columns: Vec<String>, rows: Vec<Vec<String>>) -> Self {
         Self {
             result_fields: std::iter::repeat_with(|| None)
@@ -2039,7 +2169,7 @@ impl ConcreteRecordSet {
     }
 }
 
-impl TestRecordSet for ConcreteRecordSet {
+impl TestRecordSet for BufferedRecordSet {
     fn Columns(&self) -> &[String] {
         self.columns()
     }

@@ -1367,7 +1367,7 @@ fn field_list_on_session(
 pub(crate) static DIALECT_EXECUTIONS: Mutex<Vec<(String, astersql_parser_ast::SqlDialect)>> =
     Mutex::new(Vec::new());
 
-fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
+pub(crate) fn session_protocol_error(error: astersql_session::SessionError) -> ConnError {
     if let Some(cause) = astersql_parser_terror::errors::Cause(Some(&error.clone().into_shared()))
         && let Some(normalized) = cause.downcast_ref::<astersql_parser_terror::errors::Error>()
         && matches!(normalized.Code(), 3140 | 3143)
@@ -1652,11 +1652,20 @@ fn execute_prepared_on_session(
     let state = map_protocol_state(session.protocol_state());
     match record_sets.pop() {
         Some(record_set) => match streaming {
-            Some(streaming) => {
-                let (initial, maximum) = protocol_chunk_sizes(session);
+            Some(streaming)
+                if session.sql_dialect() != astersql_parser_ast::SqlDialect::PostgreSQL
+                    || record_set.has_live_srf() =>
+            {
+                // A PG SRF must not evaluate a future outer row merely to fill
+                // a transport chunk beyond this Execute's demand.
+                let (initial, maximum) = if record_set.has_live_srf() {
+                    (1, 1)
+                } else {
+                    protocol_chunk_sizes(session)
+                };
                 streaming.register(record_set, state, collation, initial, maximum)
             }
-            None => result_from_record_set(record_set, state, collation),
+            _ => result_from_record_set(record_set, state, collation),
         },
         None => Ok(QueryResult {
             state,

@@ -3,7 +3,7 @@
 use crate::conn::{CancellationToken, PreparedMetadata, QueryResult, TiDBContext};
 use crate::conn_stmt::BinaryParam;
 use crate::pg_conn::{sqlstate, write_error, write_message};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -980,9 +980,109 @@ struct Portal {
     command: Option<&'static str>,
     returning: bool,
     postgresql_conflict: Option<astersql_parser_ast::PostgreSQLConflictClause>,
+    stream: Option<QueryResult>,
+    pending: VecDeque<Vec<crate::conn::Value>>,
+    returned: usize,
+    stream_failed: bool,
     messages: Option<Vec<(u8, Vec<u8>)>>,
     offset: usize,
 }
+impl Portal {
+    fn close_stream(&mut self) {
+        self.pending.clear();
+        if let Some(result) = self.stream.take() {
+            if let Some(source) = &result.result_set {
+                let _ = source.close();
+            }
+            if let Some(lifecycle) = &result.response_lifecycle {
+                lifecycle.finish();
+            }
+        }
+    }
+    fn stream_page(
+        &mut self,
+        limit: u32,
+        context: &Arc<dyn TiDBContext>,
+    ) -> Result<Vec<(u8, Vec<u8>)>> {
+        if self.stream_failed {
+            return Err(error("34000", "portal execution has failed"));
+        }
+        let outcome = (|| {
+            let result = self.stream.as_ref().expect("live result");
+            let source = result.result_set.as_ref().expect("worker result");
+            let mut page = result.clone();
+            page.rows.clear();
+            page.result_set = None;
+            page.response_lifecycle = None;
+            let mut exhausted = false;
+            while limit == 0 || page.rows.len() < limit as usize {
+                if self.pending.is_empty() {
+                    let rows = source.next_chunk().map_err(engine)?;
+                    if rows.is_empty() {
+                        exhausted = true;
+                        break;
+                    }
+                    self.pending.extend(rows);
+                }
+                page.rows
+                    .push(self.pending.pop_front().expect("fetched row"));
+            }
+            let style =
+                crate::pg_result::interval_style(&page, context.as_ref()).map_err(engine)?;
+            let encoded = crate::pg_result::encode_formats_interval(
+                &page,
+                self.command.unwrap_or("SELECT"),
+                &self.formats,
+                style,
+            )
+            .map_err(|e| error(crate::pg_result::encoding_sqlstate(&e), &e.to_string()))?;
+            if encoded.first().is_some_and(|m| m.0 == b'T')
+                && self.description.as_ref() != Some(&encoded[0].1)
+            {
+                return Err(error(
+                    "0A000",
+                    "engine prepared and executed result metadata disagree",
+                ));
+            }
+            let mut messages = encoded
+                .into_iter()
+                .filter(|m| m.0 != b'T' && m.0 != b'C')
+                .collect::<Vec<_>>();
+            self.returned += page.rows.len();
+            if exhausted {
+                source.finish().map_err(engine)?;
+                source.close().map_err(engine)?;
+                let completion = (
+                    b'C',
+                    if self.command == Some("SELECT") {
+                        format!("SELECT {}\0", self.returned).into_bytes()
+                    } else {
+                        format!("{}\0", self.command.unwrap_or("SELECT")).into_bytes()
+                    },
+                );
+                messages.push(completion.clone());
+                self.close_stream();
+                self.messages = Some(vec![completion]);
+                self.offset = 1;
+            } else {
+                source.on_fetch_returned().map_err(engine)?;
+                messages.push((b's', Vec::new()));
+            }
+            Ok(messages)
+        })();
+        if outcome.is_err() {
+            self.stream_failed = true;
+            self.close_stream();
+        }
+        outcome
+    }
+}
+impl Drop for Portal {
+    fn drop(&mut self) {
+        self.close_stream();
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Extended {
     startup_epoch_micros: u128,
@@ -1824,6 +1924,10 @@ impl Extended {
                         command: statement.command,
                         returning: statement.returning,
                         postgresql_conflict: statement.postgresql_conflict.clone(),
+                        stream: None,
+                        pending: VecDeque::new(),
+                        returned: 0,
+                        stream_failed: false,
                         messages: None,
                         offset: 0,
                     },
@@ -1877,6 +1981,9 @@ impl Extended {
                     .portals
                     .get_mut(&name)
                     .ok_or_else(|| error("34000", "unknown portal"))?;
+                if portal.stream.is_some() || portal.stream_failed {
+                    return portal.stream_page(limit, context);
+                }
                 if portal.postgresql_conflict.is_some() {
                     return Err(error(
                         "0A000",
@@ -1939,6 +2046,10 @@ impl Extended {
                         for (column, prepared) in result.columns.iter_mut().zip(&portal.columns) {
                             column.name.clone_from(&prepared.name);
                         }
+                    }
+                    if result.result_set.is_some() {
+                        portal.stream = Some(result);
+                        return portal.stream_page(limit, context);
                     }
                     let encoded = crate::pg_result::encode_formats_interval(
                         &result,
