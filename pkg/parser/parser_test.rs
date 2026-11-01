@@ -6870,3 +6870,31 @@ fn pg10_01_default_arithmetic_syntax() {
             .is_err()
     );
 }
+
+#[test]
+fn pg10_08_constraint_names() {
+    use parser_ast::{CreateTableStmt, SqlDialect};
+    let sql = "CREATE TABLE t(id integer CONSTRAINT doc_pkey PRIMARY KEY,email text CONSTRAINT \"EmailKey\" UNIQUE)";
+    let statement = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let table = statement
+        .as_any()
+        .downcast_ref::<CreateTableStmt>()
+        .unwrap();
+    assert_eq!(table.Cols[0].Options[0].ConstraintName, "doc_pkey");
+    assert_eq!(table.Cols[1].Options[0].ConstraintName, "EmailKey");
+    assert!(crate::New().ParseOneStmt(sql, "", "").is_err());
+    let statement = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseOneStmt(
+            "CREATE TABLE t(email text,CONSTRAINT EMAIL_KEY UNIQUE(email))",
+            "",
+            "",
+        )
+        .unwrap();
+    let table = statement
+        .as_any()
+        .downcast_ref::<CreateTableStmt>()
+        .unwrap();
+    assert_eq!(table.Constraints[0].Name, "email_key");
+}

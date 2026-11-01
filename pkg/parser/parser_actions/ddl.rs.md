@@ -76,3 +76,8 @@ Rust [`grammar/main.astergram`](../grammar/main.astergram) 保留产生式形状
 PG显式BOOL/BOOLEAN声明在NumericTypeAlt02保留IsBooleanFlag；MySQL仍为原始TINYINT(1)，不按值猜类型。
 
 批次15真实libpq红灯证明声明NUMERIC(2,-3)被拒；新增PG限定负scale声明动作，保留MySQL拒绝及原有正scale路径。
+
+
+## 2026-11-02 命名约束仲裁
+
+PG 列级 CONSTRAINT name UNIQUE/PRIMARY KEY 将标识符 Lookup 保存到既有 ColumnOption.ConstraintName；MySQL 入口拒绝该新增语法。

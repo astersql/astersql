@@ -144,3 +144,8 @@ Reuse the existing PostgreSQL error encoder to send detail, hint and position to
 ## SRF暂停恢复与释放（任务29）
 
 活动取消保护覆盖整个Execute，包括恢复portal时的句柄消费，而非仅首次创建结果。引擎首次执行复用execute_prepared_streaming；测试观察器只读取现有active状态与结果边界事件。
+
+
+## 2026-11-02 命名约束诊断
+
+共享执行端在写入前无法绑定本表真实唯一约束时，以精确内部诊断映射 SQLSTATE 42704；不将普通唯一索引或他表约束名称当作有效身份。此规则不使用任意子串匹配，也不改变非目标唯一错误的23505映射。

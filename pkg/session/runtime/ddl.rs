@@ -621,6 +621,12 @@ impl ConcreteSession {
             copied.AutoIncIDExtra = 0;
             copied.AutoRandID = 0;
             copied.ForeignKeys.clear();
+            // LIKE does not introduce the source table's explicit declarations.
+            // Keep copied indexes from impersonating those constraint objects.
+            copied.PostgreSQLPrimaryConstraint = None;
+            for index in &mut copied.Indices {
+                index.PostgreSQLConstraintName = None;
+            }
             copied.TempTableType = match statement.TemporaryKeyword {
                 ast::TemporaryKeyword::None => astersql_meta_model::TempTableNone,
                 ast::TemporaryKeyword::Global => astersql_meta_model::TempTableGlobal,
@@ -710,6 +716,66 @@ impl ConcreteSession {
         table.Name = ast::NewCIStr(relation_name(&statement.Table));
         table.ExactName = self.sql_dialect() == ast::SqlDialect::PostgreSQL;
         if table.ExactName && statement.ReferTable.is_none() {
+            // Capture declaration provenance while the original CREATE TABLE AST
+            // is available. Standalone CREATE INDEX never enters this path.
+            let mut names = std::collections::HashSet::new();
+            for definition in &statement.Cols {
+                for option in &definition.Options {
+                    if option.ConstraintName.is_empty() {
+                        continue;
+                    }
+                    if !names.insert(option.ConstraintName.clone()) {
+                        return Err(SessionError::new("duplicate PostgreSQL constraint name"));
+                    }
+                    match option.Tp {
+                        ast::ColumnOptionType::PrimaryKey => {
+                            table.PostgreSQLPrimaryConstraint = Some(option.ConstraintName.clone());
+                            for index in table.Indices.iter_mut().filter(|index| index.Primary) {
+                                index.PostgreSQLConstraintName =
+                                    Some(option.ConstraintName.clone());
+                            }
+                        }
+                        ast::ColumnOptionType::UniqueKey => {
+                            let index = table.Indices.iter_mut().find(|index| {
+                                index.Unique && !index.Primary && index.Columns.len() == 1
+                                    && index.Name.O == option.ConstraintName
+                                    && index.Columns[0].Name.L == definition.Name.Name.L
+                            }).ok_or_else(|| SessionError::new("missing supporting index for PostgreSQL UNIQUE declaration"))?;
+                            index.PostgreSQLConstraintName = Some(option.ConstraintName.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for constraint in &statement.Constraints {
+                if constraint.Name.is_empty() {
+                    continue;
+                }
+                if !names.insert(constraint.Name.clone()) {
+                    return Err(SessionError::new("duplicate PostgreSQL constraint name"));
+                }
+                match constraint.Tp {
+                    ast::ConstraintType::PrimaryKey => {
+                        table.PostgreSQLPrimaryConstraint = Some(constraint.Name.clone());
+                        for index in table.Indices.iter_mut().filter(|index| index.Primary) {
+                            index.PostgreSQLConstraintName = Some(constraint.Name.clone());
+                        }
+                    }
+                    ast::ConstraintType::Unique => {
+                        let index = table
+                            .Indices
+                            .iter_mut()
+                            .find(|index| index.Unique && index.Name.O == constraint.Name)
+                            .ok_or_else(|| {
+                                SessionError::new(
+                                    "missing supporting index for PostgreSQL UNIQUE declaration",
+                                )
+                            })?;
+                        index.PostgreSQLConstraintName = Some(constraint.Name.clone());
+                    }
+                    _ => {}
+                }
+            }
             table.PostgreSQLNumericText = true;
             table.PostgreSQLFloatText = true;
             table.PostgreSQLDateText = true;

@@ -133,3 +133,8 @@ The preflight reuses pg_sql::values_parameter_source and reverses its four-byte 
 ## 关联函数行源
 
 `Resolver::relation` 将未加引号的 LATERAL 作为关系修饰词跳过，后续函数签名交普通 session FROM 绑定。PG VALUES 继续复用既有 ROW 插入适配，不新增查询执行路径。
+
+
+## 2026-11-02 命名约束验收所需索引目标
+
+CREATE [UNIQUE] INDEX 的 ON 目标复用既有关系名解析边界，将 public 映射到当前数据库；不把索引名称当关系名或约束身份。用于真实创建不能冒充约束的普通唯一索引夹具。

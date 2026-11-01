@@ -120,3 +120,8 @@ Rust `BuildTableInfoFromAST` 对应 Go 同名函数；二者均以默认 utf8mb4
 边界：依赖已安装的表达式构造工厂，错误通过BuildResult返回。生成限制使用既有8192分区限制；对应原提交的重复请求、整数/日期、NULL/MAXVALUE、自定义名称、不支持选项、非法端点及FIRST/LAST真实SQL回归见独立测试。此增量不补建完整Go DDL worker子系统。
 
 数值表达式与列按既有类型推断保留unsigned标志；不以signed截断代替无符号端点。生成期间只使用局部Vec，用户定义与请求的嵌套AST通过Clone隔离。已有表的FIRST/LAST推断与重新生成均在写事务前执行，非法端点不会发布部分定义。
+
+
+## 2026-11-02 显式列级 UNIQUE 名称
+
+列级 UniqueKey 在 AST 中具有 ConstraintName 时，建表器用该声明名称创建真实支撑索引，索引列仍取原列身份；名字在后续现有冲突校验前确定，避免运行层改名绕过重名检查。没有名称的既有 MySQL/PG 路径保持列名生成方式。

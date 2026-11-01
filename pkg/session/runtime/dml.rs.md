@@ -140,3 +140,8 @@ INSERT/UPDATE 文本列赋值覆盖 bpchar，利用源 AST/绑定类型去尾后
 PostgreSQL `ON CONFLICT DO NOTHING` 的 Any 目标复用列目标仲裁路径，选择真实公开、完整且非部分/MV 的唯一索引及物理主键；候选与本语句先前插入行同样参与冲突检查，跳过候选不覆盖旧行、不增加返回行或影响计数。无唯一索引时不要求目标推断成功。MySQL IGNORE 行为不用于实现此语义。
 
 PG INSERT 在普通生成列求值后、仲裁与发布写入前，读取既有 ConstraintInfo 的 Enforced/StatePublic/ExprString，复用 ParseGeneratedExpr/EvalExpr 检查 CHECK。布尔 FALSE 拒绝，UNKNOWN 通过，求值错误传播；非布尔结果显式报错。此接线限 PG INSERT，不代表 UPDATE/ALTER/回填或完整 CHECK 表达式已验收，也不改变 MySQL 策略。测试见 pg10_07_behavior、pg10_07_all_unique_arbiters、pg10_07_check_prerequisite、pg10_07_check_candidate_semantics。
+
+
+## 2026-11-02 命名约束仲裁
+
+ON CONFLICT ON CONSTRAINT 从当前目标表的真实声明元数据绑定支撑索引/主键，在候选写入之前验证。不存在名、他表名称和普通唯一索引不能作为约束；仍复用 DO NOTHING 的现有冲突过滤、计数及原子性路径。

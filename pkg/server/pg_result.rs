@@ -239,6 +239,8 @@ pub(crate) fn prepare_command(sql: &str) -> Result<PrepareCommand, (&'static str
 pub(crate) fn supported_conflict_do_nothing(clause: &ast::PostgreSQLConflictClause) -> bool {
     clause.Action == ast::PostgreSQLConflictAction::DoNothing
         && (clause.Target == ast::PostgreSQLConflictTarget::Any
+            || (clause.Target == ast::PostgreSQLConflictTarget::Constraint
+                && clause.Constraint.is_some())
             || (clause.Target == ast::PostgreSQLConflictTarget::Inference
                 && !clause.Columns.is_empty()))
         && clause.Predicate.is_none()
@@ -298,6 +300,8 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
             ));
         }
         "DELETE"
+    } else if node.is::<ast::CreateIndexStmt>() {
+        "CREATE INDEX"
     } else if node.is::<ast::CreateTableStmt>() {
         "CREATE TABLE"
     } else if let Some(drop) = node.downcast_ref::<ast::DropTableStmt>() {

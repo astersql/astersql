@@ -1160,3 +1160,25 @@ fn pg08_38_relation_boundaries() {
         "SELECT 1 AS distinct FROM `db`.t"
     );
 }
+
+#[test]
+fn pg10_08_create_index_relation() {
+    assert_eq!(
+        rewrite(
+            "CREATE UNIQUE INDEX ordinary_email_idx ON public.conflict_doc(email)",
+            "db",
+            true
+        )
+        .unwrap(),
+        "CREATE UNIQUE INDEX ordinary_email_idx ON `db`.conflict_doc(email)"
+    );
+    assert_eq!(
+        rewrite(
+            "CREATE INDEX ordinary_email_idx ON conflict_doc(email)",
+            "db",
+            true
+        )
+        .unwrap(),
+        "CREATE INDEX ordinary_email_idx ON `db`.conflict_doc(email)"
+    );
+}

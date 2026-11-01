@@ -19,6 +19,8 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum DdlRule {
+    PgNamedUnique,
+    PgNamedPrimary,
     AlterTableStmtAlt01,
     AlterTableStmtAlt02,
     AlterTableStmtAlt03,
@@ -625,6 +627,12 @@ enum DdlRule {
 
 fn identify(rule_id: RuleId) -> Option<DdlRule> {
     match rule_id.as_str() {
+        "columnoption_constraint_identifier_unique--9497742b621fa832" => {
+            Some(DdlRule::PgNamedUnique)
+        }
+        "columnoption_constraint_identifier_primary_key--02e2f57b44812042" => {
+            Some(DdlRule::PgNamedPrimary)
+        }
         "altertablestmt_alter_ignoreoptional_table_tablen--3c9d9af3e9fc0b6b" => {
             Some(DdlRule::AlterTableStmtAlt01)
         }
@@ -1948,6 +1956,24 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         lexer: yylex,
     } = context;
     match rule {
+        DdlRule::PgNamedUnique | DdlRule::PgNamedPrimary => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(
+                    yylex.Errorf("named column key constraints require PostgreSQL", &[]),
+                );
+                return Err(1);
+            }
+            let (_, name) = super::identifier(parser_state, &rhs[2]);
+            out.item = Some(Box::new(parser_ast::ColumnOption {
+                Tp: if rule == DdlRule::PgNamedUnique {
+                    parser_ast::ColumnOptionType::UniqueKey
+                } else {
+                    parser_ast::ColumnOptionType::PrimaryKey
+                },
+                ConstraintName: name.expect("PostgreSQL constraint identifier").Lookup,
+                ..Default::default()
+            }));
+        }
         DdlRule::SplitIndexListOptAlt02 => {
             out.item = rhs
                 .borrow_mut(rhs_len - (0))
@@ -3642,12 +3668,11 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         }
         DdlRule::ConstraintKeywordOptAlt01 | DdlRule::ConstraintKeywordOptAlt02 => out.item = None,
         DdlRule::ConstraintKeywordOptAlt03 => {
+            let symbol = rhs.borrow(rhs_len).expect("DDL RHS position");
+            let (_, name) = super::identifier(parser_state, symbol);
             out.item = Some(Box::new(
-                rhs.borrow(rhs_len - (0))
-                    .expect("DDL RHS position")
-                    .ident
-                    .clone(),
-            ))
+                name.map_or_else(|| symbol.ident.clone(), |name| name.Lookup),
+            ));
         }
         DdlRule::RenameTableStmtAlt01 => {
             let mappings = rhs

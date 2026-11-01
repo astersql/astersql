@@ -101,3 +101,8 @@ RustCodeGraph 的文件节点报告本文件被 22 个文件使用，并点名 `
 - 新增 `IndexInfo` 持久化字段时，应给出 serde 名称和旧元数据默认值，核对 Clone、Go JSON tag、模型身份是否受影响，并评估 infoschema/domain/DDL 消费者的兼容性。
 - 修改全局索引版本时，本文件只适合承载常量与能力边界；选择策略在 `pkg/ddl/index.rs:set_global_index_version`。需同步评估滚动升级兼容、键格式读写路径和共享原子测试隔离。
 - Region split 字段变化需保持旧 JSON 可读，并确认 `TimeZone` 缺省时的历史行为；范围上下界是字符串表示，解释逻辑不在本文件。
+
+
+## 2026-11-02 命名约束仲裁
+
+PostgreSQLConstraintName 是可选的真实声明来源，存于同一支撑索引记录并关联其 ID/Columns；独立 CREATE UNIQUE INDEX 和旧目录缺省为空，仲裁不得从索引名称推断身份。

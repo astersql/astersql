@@ -484,6 +484,9 @@ impl Resolver<'_> {
             || self.word(i, "drop")
             || self.word(i, "truncate");
         let alter = self.word(i, "alter");
+        let create_index = self.word(i, "create")
+            && (self.word(i + 1, "index")
+                || self.word(i + 1, "unique") && self.word(i + 2, "index"));
         let mut list = false;
         let mut table_ddl = false;
         let mut expect = false;
@@ -525,6 +528,10 @@ impl Resolver<'_> {
             } else if insert && self.word(i, "into") || update && self.word(i, "update") {
                 expect = true;
                 list = update;
+            } else if create_index && self.word(i, "on") {
+                // The index target is a relation reference, using the same
+                // public/current-database boundary as other PG DDL targets.
+                expect = true;
             } else if ddl
                 && (self.word(i, "table") || self.word(i, "view"))
                 && (!table_ddl || alter)

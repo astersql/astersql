@@ -1354,6 +1354,8 @@ EnforcedOrNotOpt : ε %prec lowerThanNot @action;
 EnforcedOrNotOpt : EnforcedOrNot;
 EnforcedOrNotOrNotNullOpt : NotSym "NULL" @action;
 EnforcedOrNotOrNotNullOpt : EnforcedOrNotOpt @action;
+ColumnOption : "CONSTRAINT" Identifier "UNIQUE" @action;
+ColumnOption : "CONSTRAINT" Identifier "PRIMARY" "KEY" @action;
 ColumnOption : NotSym "NULL" @action;
 ColumnOption : "NULL" @action;
 ColumnOption : "AUTO_INCREMENT" @action;

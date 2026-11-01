@@ -2240,7 +2240,9 @@ impl ConcreteSession {
                 || clause.Action != ast::PostgreSQLConflictAction::DoNothing
                 || !matches!(
                     clause.Target,
-                    ast::PostgreSQLConflictTarget::Any | ast::PostgreSQLConflictTarget::Inference
+                    ast::PostgreSQLConflictTarget::Any
+                        | ast::PostgreSQLConflictTarget::Inference
+                        | ast::PostgreSQLConflictTarget::Constraint
                 )
                 || clause.Predicate.is_some()
                 || (clause.Target == ast::PostgreSQLConflictTarget::Inference
@@ -2251,6 +2253,18 @@ impl ConcreteSession {
                 ));
             }
             let all_keys = clause.Target == ast::PostgreSQLConflictTarget::Any;
+            let named = if clause.Target == ast::PostgreSQLConflictTarget::Constraint {
+                Some(
+                    clause
+                        .Constraint
+                        .as_ref()
+                        .ok_or_else(|| SessionError::new("missing PostgreSQL constraint name"))?
+                        .Lookup
+                        .as_str(),
+                )
+            } else {
+                None
+            };
             let mut columns = clause
                 .Columns
                 .iter()
@@ -2267,7 +2281,12 @@ impl ConcreteSession {
             primary.sort();
             let primary_matches = (table.PKIsHandle || table.IsCommonHandle)
                 && !primary.is_empty()
-                && (all_keys || primary == columns);
+                && (all_keys
+                    || if let Some(name) = named {
+                        table.PostgreSQLPrimaryConstraint.as_deref() == Some(name)
+                    } else {
+                        primary == columns
+                    });
             let mut arbiters = table.clone();
             arbiters.Indices.retain(|index| {
                 let mut indexed = index
@@ -2284,12 +2303,19 @@ impl ConcreteSession {
                         .Columns
                         .iter()
                         .all(|column| column.Length == astersql_parser_types::UnspecifiedLength)
-                    && (all_keys || indexed == columns)
+                    && (all_keys
+                        || if let Some(name) = named {
+                            index.PostgreSQLConstraintName.as_deref() == Some(name)
+                        } else {
+                            indexed == columns
+                        })
             });
             if !all_keys && !primary_matches && arbiters.Indices.is_empty() {
-                return Err(SessionError::new(
-                    "no unique index matching PostgreSQL ON CONFLICT target",
-                ));
+                return Err(SessionError::new(if named.is_some() {
+                    "no unique constraint matching PostgreSQL ON CONFLICT target"
+                } else {
+                    "no unique index matching PostgreSQL ON CONFLICT target"
+                }));
             }
             Some((primary_matches, arbiters))
         } else {

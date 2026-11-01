@@ -773,3 +773,156 @@ fn pg10_07_check_candidate_semantics() {
         .unwrap();
     mysql.execute("DROP TABLE mysql_check_local").unwrap();
 }
+
+#[test]
+fn pg10_08_real_constraint_identity() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    use astersql_meta_model::{DecodeTableInfo, EncodeTableInfo};
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    mysql.execute("CREATE TABLE mysql_named(id INT PRIMARY KEY,email VARCHAR(30),CONSTRAINT mysql_email UNIQUE(email))").unwrap();
+    mysql
+        .execute("INSERT INTO mysql_named VALUES(1,'before')")
+        .unwrap();
+    let (statement, count, _) = mysql
+        .prepare_protocol_statement("SELECT email FROM mysql_named WHERE id=?")
+        .unwrap();
+    assert_eq!(count, 1);
+    mysql.execute("BEGIN").unwrap();
+    mysql
+        .execute("UPDATE mysql_named SET email='pending' WHERE id=1")
+        .unwrap();
+    pg.execute("CREATE TABLE conflict_doc(id integer CONSTRAINT conflict_doc_pkey PRIMARY KEY,email text CONSTRAINT conflict_doc_email_key UNIQUE,v integer NOT NULL CHECK(v>0))").unwrap();
+    pg.execute("CREATE UNIQUE INDEX ordinary_email_idx ON conflict_doc(email)")
+        .unwrap();
+    pg.execute("CREATE TABLE conflict_other(email text CONSTRAINT other_email_key UNIQUE)")
+        .unwrap();
+    domain.force_full_reload_for_test().unwrap();
+    let table = domain.table_by_name("test", "conflict_doc").unwrap();
+    let decoded = DecodeTableInfo(&EncodeTableInfo(&table).unwrap()).unwrap();
+    assert_eq!(
+        decoded.PostgreSQLPrimaryConstraint.as_deref(),
+        Some("conflict_doc_pkey")
+    );
+    let support = decoded
+        .Indices
+        .iter()
+        .find(|index| index.PostgreSQLConstraintName.as_deref() == Some("conflict_doc_email_key"))
+        .unwrap();
+    assert!(support.ID > 0);
+    assert!(support.Unique);
+    assert_eq!(support.Columns[0].Name.L, "email");
+    let ordinary = decoded
+        .Indices
+        .iter()
+        .find(|index| index.Name.L == "ordinary_email_idx")
+        .unwrap();
+    assert!(ordinary.Unique);
+    assert!(ordinary.PostgreSQLConstraintName.is_none());
+    // Old metadata never acquires declaration provenance by name guessing.
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&EncodeTableInfo(&table).unwrap()).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("postgresql_primary_constraint");
+    for index in legacy["index_info"].as_array_mut().unwrap() {
+        index
+            .as_object_mut()
+            .unwrap()
+            .remove("postgresql_constraint_name");
+    }
+    let legacy = DecodeTableInfo(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert!(legacy.PostgreSQLPrimaryConstraint.is_none());
+    assert!(
+        legacy
+            .Indices
+            .iter()
+            .all(|index| index.PostgreSQLConstraintName.is_none())
+    );
+    pg.execute("INSERT INTO conflict_doc VALUES(1,'a',10),(2,'b',20)")
+        .unwrap();
+    pg.execute("INSERT INTO conflict_doc VALUES(3,'b',30) ON CONFLICT ON CONSTRAINT conflict_doc_email_key DO NOTHING").unwrap();
+    for name in [
+        "missing_constraint",
+        "other_email_key",
+        "ordinary_email_idx",
+    ] {
+        assert!(pg.execute(&format!("INSERT INTO conflict_doc VALUES(3,'c',30) ON CONFLICT ON CONSTRAINT {name} DO NOTHING")).is_err(), "{name}");
+    }
+    pg.execute("INSERT INTO conflict_doc VALUES(1,'c',30) ON CONFLICT ON CONSTRAINT conflict_doc_pkey DO NOTHING").unwrap();
+    let mut result = pg
+        .execute("SELECT id,email,v FROM conflict_doc ORDER BY id")
+        .unwrap();
+    assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1", "a", "10"]);
+    assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["2", "b", "20"]);
+    assert!(result[0].next_row().unwrap().is_none());
+    // The association travels with the real supporting index, not its name.
+    pg.execute("ALTER TABLE conflict_doc RENAME INDEX conflict_doc_email_key TO renamed_support")
+        .unwrap();
+    pg.execute("INSERT INTO conflict_doc VALUES(3,'b',30) ON CONFLICT ON CONSTRAINT conflict_doc_email_key DO NOTHING").unwrap();
+    pg.execute("ALTER TABLE conflict_doc DROP INDEX renamed_support")
+        .unwrap();
+    assert!(pg.execute("INSERT INTO conflict_doc VALUES(3,'c',30) ON CONFLICT ON CONSTRAINT conflict_doc_email_key DO NOTHING").is_err());
+    for ddl in [
+        "CREATE TABLE bad_names(a integer CONSTRAINT duplicate UNIQUE,b integer CONSTRAINT duplicate UNIQUE)",
+        "CREATE TABLE bad_names(a integer CONSTRAINT duplicate UNIQUE,b integer,CONSTRAINT duplicate UNIQUE(b))",
+    ] {
+        assert!(pg.execute(ddl).is_err(), "{ddl}");
+        assert!(domain.table_by_name("test", "bad_names").is_err());
+    }
+    pg.execute("CREATE TABLE quoted_constraint(email text CONSTRAINT \"EmailKey\" UNIQUE)")
+        .unwrap();
+    pg.execute("INSERT INTO quoted_constraint VALUES('a')")
+        .unwrap();
+    pg.execute("INSERT INTO quoted_constraint VALUES('a') ON CONFLICT ON CONSTRAINT \"EmailKey\" DO NOTHING").unwrap();
+    assert!(pg.execute("INSERT INTO quoted_constraint VALUES('b') ON CONFLICT ON CONSTRAINT emailkey DO NOTHING").is_err());
+    pg.execute("DROP TABLE quoted_constraint").unwrap();
+    let mut rows = mysql
+        .execute_protocol_statement(
+            statement,
+            &[crate::runtime::ConcretePreparedArgument::Signed(1)],
+        )
+        .unwrap();
+    assert_eq!(rows[0].next_row().unwrap().unwrap(), vec!["pending"]);
+    let mut observer = pg
+        .execute("SELECT email FROM mysql_named WHERE id=1")
+        .unwrap();
+    assert_eq!(observer[0].next_row().unwrap().unwrap(), vec!["before"]);
+    mysql.execute("ROLLBACK").unwrap();
+    let mut rows = mysql
+        .execute_protocol_statement(
+            statement,
+            &[crate::runtime::ConcretePreparedArgument::Signed(1)],
+        )
+        .unwrap();
+    assert_eq!(rows[0].next_row().unwrap().unwrap(), vec!["before"]);
+    mysql.close_protocol_statement(statement).unwrap();
+    assert!(
+        domain
+            .table_by_name("test", "mysql_named")
+            .unwrap()
+            .Indices
+            .iter()
+            .all(|index| index.PostgreSQLConstraintName.is_none())
+    );
+    mysql.execute("DROP TABLE mysql_named").unwrap();
+    mysql
+        .execute("CREATE TABLE copied_named LIKE conflict_other")
+        .unwrap();
+    let copied = domain.table_by_name("test", "copied_named").unwrap();
+    assert!(copied.PostgreSQLPrimaryConstraint.is_none());
+    assert!(
+        copied
+            .Indices
+            .iter()
+            .all(|index| index.PostgreSQLConstraintName.is_none())
+    );
+    assert!(pg.execute("INSERT INTO copied_named VALUES('new') ON CONFLICT ON CONSTRAINT other_email_key DO NOTHING").is_err());
+    mysql.execute("DROP TABLE copied_named").unwrap();
+    pg.execute("DROP TABLE conflict_other").unwrap();
+    pg.execute("DROP TABLE conflict_doc").unwrap();
+}

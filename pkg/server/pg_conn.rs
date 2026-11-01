@@ -1137,6 +1137,8 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
                 "0A000"
             } else if message == "invalid window frame bounds" {
                 "42601"
+            } else if message == "no unique constraint matching PostgreSQL ON CONFLICT target" {
+                "42704"
             } else if message.starts_with("[kv:1062]") || message.starts_with("Duplicate entry ") {
                 "23505"
             } else if message == "PostgreSQL int2not requires a smallint argument"

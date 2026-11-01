@@ -308,6 +308,13 @@ impl IndexColumn {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct IndexInfo {
+    /// Actual PG declaration owning this supporting index. Absent for standalone
+    /// CREATE UNIQUE INDEX and legacy metadata; never inferred from idx_name.
+    #[serde(
+        rename = "postgresql_constraint_name",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLConstraintName: Option<String>,
     #[serde(rename = "id")]
     pub ID: i64,
     #[serde(rename = "idx_name", alias = "name")]

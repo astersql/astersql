@@ -86,3 +86,8 @@ PostgreSQLNumericText持久标记PG声明numeric列使用现有字符串Datum编
 ### 2026-10-26 浮点文本持久化（任务20）
 
 PostgreSQLFloatText是默认false且false不输出JSON的独立持久标记，仅新建PG表开启；旧PG及MySQL表继续读原float编码。
+
+
+## 2026-11-02 命名约束仲裁
+
+PostgreSQLPrimaryConstraint 保存 PG 显式主键约束名称，覆盖 PKIsHandle 没有独立索引元数据的情形；使用既有表元数据 serde 持久化，旧元数据不自动补造名称。

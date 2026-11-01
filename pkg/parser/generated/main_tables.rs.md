@@ -209,3 +209,8 @@ Regenerated from main.astergram for the bounded ordered-set DISTINCT and missing
 ## 本次提交对齐
 
 来源 af11710fe4550179e8d096cf517462ecf4c7be05 的 SHOW/COMPARE 产生式由 main.astergram 经 astersql-parsergen generate 生成；保留 PostgreSQL 扩展规则，不手改表。对应 Go parser.go 重编号和状态表变化仅是 parser.y 增量的生成结果，Rust 的 RuleId/状态编号独立生成。
+
+
+## 2026-11-02 命名约束仲裁
+
+解析表随 grammar/main.astergram 的 PG 列级命名 UNIQUE/PRIMARY KEY 规则重新生成；语义动作保存真实约束名称，不在生成文件手工编辑。

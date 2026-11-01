@@ -254,3 +254,10 @@ JSONB[]结果允许3807，text/binary沿规范PgArray，binary头元素3802及�
 ### 无目标 DO NOTHING 门禁
 
 supported_conflict_do_nothing 同时接受无目标 Any 和无谓词的非空列推断 DO NOTHING。命名约束、谓词目标及 DO UPDATE 保留门禁；无目标返回行与计数继续来自共享执行结果。
+
+
+## 2026-11-02 命名约束仲裁
+
+命名约束 DO NOTHING 通过相同协议执行能力检查，保留原冲突 AST 给共享会话验证身份；DO UPDATE 和谓词目标继续使用既有门禁。
+
+普通 CREATE INDEX 的协议命令分类复用现有共享 DDL 执行并返回 CREATE INDEX 标签，用于原验收中创建不能冒充约束的独立唯一索引；不新增索引存储算法。

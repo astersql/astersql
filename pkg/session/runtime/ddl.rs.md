@@ -122,3 +122,10 @@ NextGen、MySQL、dist task、已有persistent service、普通非唯一非列�
 ### FIRST/LAST interval 的局部执行接线
 
 ALTER的AddLastPartition/DropFirstPartition调用DDL的alter_interval_partition_definitions得到独立定义，FIRST保留NULL前缀及端点分区，LAST新增定义走现有Domain::ddl_replace_partitions真实元数据事务。整个过程中不改AST、PartitionNames或query字符串，因此成功/失败均保留请求；不依赖query文本重写。该接线对应Go d1f1bd2b2a14cdd7bee196fb51c019e7784683a7 DropTablePartition和BuildAddedPartitionInfo的请求所有权增量。原SQL数据可见性由既有分区物理路由维护。完整原测试意图仍须以任务记录中的回归验收，不把该说明当作完成证据。
+
+
+## 2026-11-02 命名约束仲裁
+
+PG CREATE TABLE 在原始声明 AST 尚可用时，将显式约束名称写入真实支撑索引或主键表元数据；复用既有建表持久化。独立 CREATE UNIQUE INDEX 路径不写声明来源，未给旧目录按名称回填。
+
+CREATE TABLE LIKE 的现有复制路径清除源表声明身份，复制的索引不能凭源表约束名参与命名仲裁；不改其既有索引复制算法。

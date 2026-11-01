@@ -563,3 +563,12 @@ PG `text UNIQUE` 复用完整字符串索引，不截为前缀；建表不按 My
 ## 无目标冲突忽略
 
 无目标 `ON CONFLICT DO NOTHING` 已由真实 TCP 双连接验证：非主键唯一和主键冲突均跳过，混合及重复候选只返回/计数实际插入行，旧行不覆盖，简单和扩展查询均覆盖提交与回滚。PG INSERT 对既有公开且 Enforced 的 CHECK 元数据复用共享表达式求值，在写入和冲突仲裁前拒绝 FALSE，UNKNOWN 通过；NOT NULL、CHECK 和表达式错误仍进入事务恢复路径。此局部支持不代表 UPDATE/ALTER/回填、完整 CHECK 表达式或 PostgreSQL SQLSTATE 23514 已验收；尚未开放的表达式求值错误不会被忽略。MySQL 约束策略保持既有行为。
+
+
+## 命名约束仲裁
+
+PG 列级显式 `CONSTRAINT name UNIQUE` 和命名主键保留声明名称。建表把真实声明身份持久化到所属表/支撑索引元数据，`ON CONFLICT ON CONSTRAINT name DO NOTHING` 从目标表绑定真实支撑索引；普通 `CREATE UNIQUE INDEX` 不获得约束身份。旧目录不按索引名补造约束。命名目标在写入前验证，不存在名称、他表约束及普通唯一索引名称均以42704拒绝；非目标唯一错误仍失败并按共享语句原子性回滚。
+
+验证入口为 `pg_dml_test::pg10_08_behavior`、共享层 `pg10_08_real_constraint_identity` 和解析器 `pg10_08_constraint_names`。本段描述实现范围，不替代实际运行证据；独立 PostgreSQL 参考端差分、RealTiKV、持久重启及性能仍需专项验证。
+
+本轮四个新增聚焦测试及十一个相邻测试通过。真实TCP的67个正常、NULL、错误和事务变体覆盖简单/扩展、有/无RETURNING、COMMIT/ROLLBACK、W/O完整回读、固定元数据/标签、42704及E→25P02→ROLLBACK→I恢复；关闭后的服务资源计数为零。共享层另验证目录强制重载、旧元数据缺省、支撑索引改名/删除、LIKE不复制声明身份及MySQL预处理事务。

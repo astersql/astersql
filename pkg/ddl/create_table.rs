@@ -1871,18 +1871,22 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
 
     // 为每个带列级 UNIQUE 选项的列生成一条单列唯一索引。
     for (offset, definition) in statement.Cols.iter().enumerate() {
-        if definition
+        if let Some(option) = definition
             .Options
             .iter()
-            .any(|option| option.Tp == ast::ColumnOptionType::UniqueKey)
+            .find(|option| option.Tp == ast::ColumnOptionType::UniqueKey)
         {
-            let name = definition.Name.Name.clone();
+            let name = if option.ConstraintName.is_empty() {
+                definition.Name.Name.clone()
+            } else {
+                ast::NewCIStr(&option.ConstraintName)
+            };
             table.Indices.push(make_index(
                 next_index_id,
                 &table.Name,
-                name.clone(),
+                name,
                 vec![model::IndexColumn {
-                    Name: name,
+                    Name: definition.Name.Name.clone(),
                     Offset: offset as isize,
                     Length: model::types::UnspecifiedLength,
                     UseChangingType: false,
