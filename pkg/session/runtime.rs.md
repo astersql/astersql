@@ -144,3 +144,8 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ### f137844d4f 局部迁移接线
 
 新增 migration 模块装配，以既有 RuntimeTimeZone、SessionState 历史读状态、SessionStates JSON 和 execute_set 实现本来源系统变量与读时间戳迁移片段；未改变其他 runtime 模块装配、PostgreSQL 分派或事务生命周期。
+
+
+### 来源 964af3fa46 的局部接线
+
+来源 964af3fa4679579548ffdfee4fb995cf1fcf037b 新增 import_query_source 模块和独立测试挂载；复用既有 SQL/MDL/事务运行时，不改变方言分派。

@@ -78,3 +78,8 @@ Go 类型直接实现 `sessionctx.Context`、`planctx.PlanContext` 和 SQL execu
 扩展事务行为应围绕 `TransactionState`、`wrapTxn`、`Context::newTxn`、`PrepareTSFuture`、`CommitTxn` 和 `RollbackTxn` 保持状态不变量：pending 必须是 `Empty + Some(future)`，成功等待后必须是 `Real + None`，无 Store 的兼容路径才使用 `Fake`。需要真实存储语义的测试应使用 `mockstorage_crate`，不要增强 `fakeTxn::Get` 去伪造业务数据；新增回归放在独立的 `*_test.rs`（优先扩展 `migration_aster_unit_test.rs` 或创建同目录独立测试文件），不要把测试嵌入本源文件。
 
 扩展 InfoSchema 钩子时要处理全局工厂的测试隔离：测试应保存/清理工厂，避免并行测试互相污染。若为现有桩接口增加真实行为，应同步 Go 对照与 trait/调用方需求，明确原固定返回值是否被测试依赖，并评估额外锁、分配和 Store 调用的性能风险。新生产代码不应依赖 `NewContextDeprecated`。
+
+
+### 来源 964af3fa46 的局部接线
+
+来源 964af3fa4679579548ffdfee4fb995cf1fcf037b 增加 CheckCanMigrateStates，和来源 Go mock 一样返回成功；状态编解码仍返回 NotSupported；EncodeStates/DecodeStates 的既有不支持行为保持。

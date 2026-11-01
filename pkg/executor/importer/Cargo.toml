@@ -12,6 +12,10 @@ go-package = "pkg/executor/importer"
 legacy-tasks = ["task-1190", "task-1191", "task-1192", "task-1193", "task-1196", "task-1594", "task-1595"]
 
 [dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+astersql-meta = { path = "../../meta" }
+astersql-sessionctx-sessionstates = { path = "../../sessionctx/sessionstates" }
+serde = { version = "1", features = ["derive"] }
 astersql-metaservice = { path = "../../metaservice" }
 chrono = "0.4"
 flate2 = "1"
@@ -93,7 +97,6 @@ zstd = "0.13"
 "astersql-dumpformat-testutils" = { package = "astersql-dumpformat-testutils", path = "../../dumpformat/testutils" }
 "astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../../dxf/framework/storage" }
 "astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../../dxf/framework/testutil" }
-"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
 "astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../planner/core/base" }
 "astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../planner/core/operator/physicalop" }
 "astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }

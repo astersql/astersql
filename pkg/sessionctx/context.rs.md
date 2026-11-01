@@ -92,3 +92,8 @@ Rust 额外拆出了 `ValueStoreContext`、`PlanContextCommon`、`TableLockConte
 - **接入生产调用链：** 在真正需要提前校验 read TS 的会话/事务入口调用 `ValidateSnapshotReadTS`；新增独立回归测试覆盖成功、未来时间戳失败、stale-read 标志与取消状态。当前仅迁移测试直接调用，接线前不能删除这些测试。
 - **实现缓存或 Context：** 保持实例缓存 `All` 的只读约定、`StmtCommit`/`CommitTxn` 顺序、咨询锁的会话归属以及 `GetCommitWaitGroup` 的后台任务回收语义。性能风险主要来自 `SharedAny` 的动态 downcast、`Arc` 引用计数、全量 `All` 复制和过宽锁粒度。
 - **依赖边界：** 尽量继续使用关联类型和小 trait，避免把 planner/executor/storage 的具体 crate 引回 `astersql-sessionctx`，否则容易形成循环依赖并扩大基础 crate 的编译面。
+
+
+### 来源 964af3fa46 的局部接线
+
+来源 964af3fa4679579548ffdfee4fb995cf1fcf037b 增加必需的 CheckCanMigrateStates 方法，EncodeStates 注释明确不检查迁移资格；caller 迁移前需独立检查，查询捕获不受此限制。真实 ConcreteSession 接线在 session/runtime/import_query_source.rs，而非将该关联类型接口当已有具体实现。

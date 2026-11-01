@@ -203,6 +203,8 @@ pub struct ImportParameters {
 #[derive(Clone)]
 /// 一次导入任务的完整执行计划与选项。
 pub struct Plan {
+    /// Captured query snapshot and submitter session state.
+    pub QuerySource: Option<Arc<crate::QuerySource>>,
     /// 目标库名。
     pub DBName: String,
     /// 目标库 ID。
@@ -291,6 +293,7 @@ pub struct Plan {
 impl Default for Plan {
     fn default() -> Self {
         Self {
+            QuerySource: None,
             DBName: String::new(),
             DBID: 0,
             TableInfo: None,

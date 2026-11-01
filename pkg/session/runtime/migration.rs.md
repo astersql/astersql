@@ -10,7 +10,7 @@ ConcreteSession 的读时间戳及依赖系统变量迁移片段，对应来源 
 
 ## 主要符号
 
-parse_session_read_datetime 解析当前会话墙钟时间；show_migration_system_vars 导出本增量涉及的系统变量；restore_migration_system_vars 解码并复用 execute_set。
+parse_session_read_datetime 解析当前会话墙钟时间；encode_import_session_states 捕获系统变量、用户变量/类型、当前库、状态和警告；show_migration_system_vars 先校验迁移资格再导出；restore_migration_system_vars 解码并复用 execute_set。
 
 ## 执行流程
 
@@ -34,8 +34,13 @@ ConcreteSession 在线程内使用 RefCell 状态；读取有效时间戳后释�
 
 ## 与 Go 版本的对应关系
 
-本模块是 TestSessionStatesReadTimestamps 和 testSystemVars 新增分支所需的局部真实入口，涵盖有效时间戳、依赖恢复和连续读取。本文件不是完整会话迁移框架；用户变量、预编译、绑定与认证迁移不在本来源增量内，原有相应模块保留。没有用 JSON 形状测试替代真实读取。
+本模块是 TestSessionStatesReadTimestamps 和 testSystemVars 新增分支所需的局部真实入口，涵盖有效时间戳、依赖恢复和连续读取。本文件不是完整会话迁移框架；用户变量在后续 964af3fa46 的 IMPORT 专用 decoder 中恢复；预编译、绑定与认证完整迁移仍不在当前局部实现内，原有相应模块保留。没有用 JSON 形状测试替代真实读取。
 
 ## 扩展指南
 
 其他迁移能力应在其独立来源任务中复用此边界；不得让导出从缓存字符串推断已消费时间戳。新增系统变量必须在注册表中声明依赖并用真实 SET/读取验证副作用。PostgreSQL保护回归与原调用路径保持一致。
+
+
+### 来源 964af3fa46 的局部接线
+
+来源 964af3fa4679579548ffdfee4fb995cf1fcf037b 分离 encode_import_session_states 和迁移资格检查：IMPORT 在事务内可捕获，SHOW SESSION_STATES 先调用 CheckCanMigrateStates。捕获规范系统变量、当前库、用户 Datum/类型（包括无符号 64 位数）及警告；worker 经现有 setter 恢复系统变量再恢复当前库和用户变量。完整 prepared/binding/auth 迁移仍非本来源增量，本模块不宣称补齐其框架。

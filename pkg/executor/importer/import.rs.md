@@ -92,3 +92,8 @@ Rust 符号总体沿用 `pkg/executor/importer/import.go` 的职责与 Go 风格
 - 改动对象存储路径时，同时检查 `parse_data_source_path`、`check_data_source_glob`、`InitDataStore`、`CheckDataSourceAccess`、`InitDataFiles` 与 `storage_path`；特别保护带凭证 URI 的 storage root、对象 key、服务器本地 basename 和关闭语义。
 - 改动并发/资源估算时，从 `Plan::initDefaultOptions`、`adjustOptions`、`CalResourceParams`、`getLocalBackendCfg` 接入；评估 query/file、global/local sort、零 CPU、无索引、采样失败和 nextgen 情况，并同步 scheduler 对结果的使用。
 - 改动 reader 生命周期时要评估 `SharedStorage` 锁粒度和整文件缓冲的内存/吞吐风险；Parquet 改动还需保持取消检查、范围边界、文件大小探测与 reader close。公共行为的回归测试继续放在同目录 `import_test.rs` 或相关独立测试文件中。
+
+
+### 来源 964af3fa46 的局部接线
+
+来源 964af3fa4679579548ffdfee4fb995cf1fcf037b 的 Plan.QuerySource 保存可复用的查询快照和会话状态，默认 None；文件导入保持 None，查询导入由具体 SQL 运行时捕获并传给计划。

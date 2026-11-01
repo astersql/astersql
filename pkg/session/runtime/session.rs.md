@@ -143,3 +143,8 @@ ConcretePreparedArgument补Float8Bits(u64)/Float8Array(Vec<u8>)；私有载体�
 ## SRF暂停恢复与释放（任务29）
 
 `ConcreteRecordSet`可选择持有线程绑定的PgSrfRows，next_row按需消费并在LIMIT、错误、耗尽或close释放。`has_live_srf`区分活状态与物化结果，truncate_rows同时约束活结果。TestRecordSet保留Send约束，`into_test_record_set`在原会话线程物化活结果后返回BufferedRecordSet；没有unsafe Send或新worker。
+
+
+### 来源 964af3fa46 的局部接线
+
+SessionState.import_query_schema 仅由独立 IMPORT worker 安装；runtime_stats_table 优先从该最小 schema 获取已校验的来源定义，同时数据读取固定捕获的 MVCC ReadTS。普通会话字段默认 None，继续使用既有 snapshot/Domain schema。对应 query_source.go 的 BuildMinimalInfoSchema 消费所需接线。

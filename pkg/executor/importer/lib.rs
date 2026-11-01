@@ -8,6 +8,8 @@
 #![allow(dead_code, non_snake_case, non_upper_case_globals)]
 
 /// 导入计划、控制器与数据源类型等核心定义。
+mod query_source;
+pub use query_source::*;
 mod import;
 pub use import::*;
 /// 行数据到 TiKV 键值对的编码逻辑。

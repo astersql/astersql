@@ -144,6 +144,8 @@ pub(super) struct SessionState {
     pub(super) transaction: Option<Box<dyn kv::Transaction>>,
     /// Immutable InfoSchema captured when the active transaction starts.
     pub(super) transaction_info_schema: Option<SchemaRef>,
+    /// An IMPORT worker sees only its snapshot-validated source definitions.
+    pub(super) import_query_schema: Option<SchemaRef>,
     /// Non-temporary physical tables written or locked by the transaction.
     pub(super) transaction_related_table_ids: HashSet<i64>,
     pub(super) transaction_locking_table_ids: HashSet<i64>,
@@ -446,6 +448,7 @@ impl Default for SessionState {
             prepared_database_override: None,
             transaction: None,
             transaction_info_schema: None,
+            import_query_schema: None,
             transaction_related_table_ids: HashSet::new(),
             transaction_locking_table_ids: HashSet::new(),
             transaction_pessimistic: false,
@@ -1440,9 +1443,13 @@ impl ConcreteSession {
         astersql_statistics_handle::StatsTableKey,
         astersql_meta_model::TableInfo,
     )> {
-        let schema = match self.state.borrow().snapshot_read_ts {
-            Some(ts) => self.domain.snapshot_info_schema(ts).ok()?,
-            None => self.domain.info_schema(),
+        let schema = if let Some(schema) = self.state.borrow().import_query_schema.clone() {
+            schema
+        } else {
+            match self.state.borrow().snapshot_read_ts {
+                Some(ts) => self.domain.snapshot_info_schema(ts).ok()?,
+                None => self.domain.info_schema(),
+            }
         };
         let table = self.snapshot_table(&schema, database, name)?;
         Some((

@@ -195,7 +195,10 @@ pub trait Context: PlanContextCommon + TableLockContext {
     type CursorTracker: ?Sized;
     type CommitWaitGroup: ?Sized;
 
-    /// 编码会话状态。
+    /// Migration callers must check eligibility separately from state encoding.
+    fn CheckCanMigrateStates(&self) -> Result<(), GoError>;
+
+    /// 编码会话状态；此接口不检查会话是否可迁移。
     fn EncodeStates(
         &self,
         ctx: &ExecutionContext,

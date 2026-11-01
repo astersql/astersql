@@ -1,6 +1,6 @@
 # Rust 文件说明文档新增清单
 
-计划为 2606 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
+计划为 2608 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
 
 维护规则：修改含实际业务逻辑的合格生产 `.rs` 文件时，必须同步更新同目录的同名 `.rs.md`；新增合格生产 `.rs` 文件时，必须新建同目录说明并加入本清单。
 
@@ -816,6 +816,7 @@
 - [ ] [`pkg/executor/importer/production_resource.rs.md`](../pkg/executor/importer/production_resource.rs.md)
 - [ ] [`pkg/executor/importer/production_size.rs.md`](../pkg/executor/importer/production_size.rs.md)
 - [ ] [`pkg/executor/importer/production_storage.rs.md`](../pkg/executor/importer/production_storage.rs.md)
+- [ ] [`pkg/executor/importer/query_source.rs.md`](../pkg/executor/importer/query_source.rs.md)
 - [ ] [`pkg/executor/importer/sampler.rs.md`](../pkg/executor/importer/sampler.rs.md)
 - [ ] [`pkg/executor/importer/table_import.rs.md`](../pkg/executor/importer/table_import.rs.md)
 - [ ] [`pkg/executor/index_merge_reader.rs.md`](../pkg/executor/index_merge_reader.rs.md)
@@ -2019,6 +2020,7 @@
 - [ ] [`pkg/session/runtime/import_compression.rs.md`](../pkg/session/runtime/import_compression.rs.md)
 - [ ] [`pkg/session/runtime/import_file.rs.md`](../pkg/session/runtime/import_file.rs.md)
 - [ ] [`pkg/session/runtime/import_query.rs.md`](../pkg/session/runtime/import_query.rs.md)
+- [ ] [`pkg/session/runtime/import_query_source.rs.md`](../pkg/session/runtime/import_query_source.rs.md)
 - [ ] [`pkg/session/runtime/import_sst.rs.md`](../pkg/session/runtime/import_sst.rs.md)
 - [ ] [`pkg/session/runtime/load_data.rs.md`](../pkg/session/runtime/load_data.rs.md)
 - [ ] [`pkg/session/runtime/mlog.rs.md`](../pkg/session/runtime/mlog.rs.md)

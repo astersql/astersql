@@ -24,7 +24,9 @@ impl ConcreteSession {
             .ok_or_else(|| SessionError::new("invalid timestamp in session time zone"))
     }
 
-    pub(super) fn show_migration_system_vars(&self) -> SessionResult<ConcreteRecordSet> {
+    pub(super) fn encode_import_session_states(
+        &self,
+    ) -> SessionResult<astersql_sessionctx_sessionstates::SessionStates> {
         let (snapshot, pending) = {
             let state = self.state.borrow();
             (
@@ -58,10 +60,51 @@ impl ConcreteSession {
         ] {
             values.insert(name.into(), self.select_variable(name, true)?);
         }
-        let states = astersql_sessionctx_sessionstates::SessionStates {
+        let mut states = astersql_sessionctx_sessionstates::SessionStates {
             SystemVars: values,
             ..Default::default()
         };
+        let state = self.state.borrow();
+        states.CurrentDB = state.current_database.clone();
+        states.Status = astersql_executor_importer::QuerySessionStates::Status(self);
+        for (name, value) in &state.user_variables {
+            let datum = if state.string_user_variables.contains(name) {
+                astersql_types::datum::NewStringDatum(value.clone())
+            } else if let Ok(value) = value.parse::<i64>() {
+                astersql_types::datum::NewIntDatum(value)
+            } else if let Ok(value) = value.parse::<u64>() {
+                astersql_types::datum::NewUintDatum(value)
+            } else if let Ok(value) = value.parse::<f64>() {
+                astersql_types::datum::NewFloat64Datum(value)
+            } else {
+                astersql_types::datum::NewStringDatum(value.clone())
+            };
+            let tp = match datum.Kind() {
+                astersql_types::datum::KindInt64 | astersql_types::datum::KindUint64 => 8,
+                astersql_types::datum::KindFloat64 => 5,
+                _ => 253,
+            };
+            let mut field_type = astersql_parser_types::NewFieldType(tp);
+            if datum.Kind() == astersql_types::datum::KindUint64 {
+                field_type.AddFlag(astersql_parser_mysql::r#type::UnsignedFlag);
+            }
+            states
+                .UserVarTypes
+                .insert(name.clone(), Box::new(field_type));
+            states.UserVars.insert(name.clone(), Box::new(datum));
+        }
+        for warning in &state.last_warnings {
+            states.Warnings.push(astersql_util_context::SQLWarn {
+                Level: warning.level.to_owned(),
+                Err: Some(astersql_errors::New(warning.message.clone())),
+            });
+        }
+        Ok(states)
+    }
+
+    pub(super) fn show_migration_system_vars(&self) -> SessionResult<ConcreteRecordSet> {
+        self.CheckCanMigrateStates()?;
+        let states = self.encode_import_session_states()?;
         let json = serde_json::to_string(&states)
             .map_err(|error| session_error("encode session states", error))?;
         Ok(ConcreteRecordSet::new(

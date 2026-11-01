@@ -66,7 +66,7 @@ impl ConcreteSession {
         &self,
         statement: &ast::ImportIntoStmt,
     ) -> SessionResult<ConcreteRecordSet> {
-        let source = statement
+        let _source = statement
             .Select
             .as_ref()
             .ok_or_else(|| error("query import requires SELECT"))?;
@@ -186,9 +186,26 @@ impl ConcreteSession {
         } else {
             None
         };
-        // The SELECT runs through the relational executor against the current
-        // transaction's snapshot. Its result is converted to canonical Datums.
-        let selected = self.execute_insert_select_node(source.as_ref())?;
+        // Capture before another statement can replace the submitter's context.
+        // A separate worker retains its own memory budget/transaction and reads
+        // exactly the captured MVCC version, including view metadata.
+        let (captured, planned_query) =
+            self.prepare_import_query_source(&ast::Node::Text(statement))?;
+        let captured = Arc::new(captured);
+        let schema = self
+            .domain
+            .storage()
+            .with_storage(|store| {
+                captured.BuildMinimalInfoSchema(store, self.domain.info_schema().as_ref())
+            })
+            .map_err(error)?;
+        let worker = ConcreteSession::new(self.domain.clone());
+        captured.RestoreStates(&worker).map_err(error)?;
+        worker.state.borrow_mut().snapshot_read_ts = Some(captured.ReadTS);
+        worker.state.borrow_mut().import_query_schema = Some(schema);
+        let selected = planned_query
+            .with_node(|node| worker.execute_insert_select_node(node))
+            .ok_or_else(|| error("import query AST was consumed"))??;
         let visible = table.Columns.iter().filter(|c| !c.Hidden).count();
         if selected.columns.len() != visible {
             return Err(error("query import target/source column counts differ"));
@@ -251,7 +268,10 @@ impl ConcreteSession {
         ));
         importer::ProcessChunk(
             &context,
-            &importer::Chunk::default(),
+            &importer::Chunk {
+                Timestamp: captured.Timestamp,
+                ..Default::default()
+            },
             &runtime,
             &data,
             &index,
@@ -298,6 +318,7 @@ impl ConcreteSession {
         let local = checksum.lock().unwrap().MergedChecksum();
         importer::VerifyChecksum(
             &importer::Plan {
+                QuerySource: Some(captured),
                 Checksum: checksum_level,
                 ..Default::default()
             },

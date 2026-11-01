@@ -890,6 +890,12 @@ impl Context {
         0
     }
 
+    /// Eligibility checking is a no-op in Go mock.Context; the codec below
+    /// remains unsupported independently of this check.
+    pub fn CheckCanMigrateStates(&self) -> MockResult<()> {
+        Ok(())
+    }
+
     /// 编码会话状态（未实现）。
     pub fn EncodeStates<T>(&self, _states: &mut T) -> MockResult<()> {
         Err(MockError::NotSupported)

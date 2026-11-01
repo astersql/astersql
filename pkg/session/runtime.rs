@@ -59,6 +59,10 @@ mod explain_select;
 mod import_compression;
 mod import_file;
 mod import_query;
+mod import_query_source;
+#[cfg(test)]
+#[path = "runtime/import_query_source_test.rs"]
+mod import_query_source_test;
 mod import_sst;
 mod table_cache;
 pub use import_sst::NewImportLocalBackend;

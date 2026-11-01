@@ -63,3 +63,11 @@ pub fn benchmark_new_context(iterations: u64) {
         black_box(NewContext());
     }
 }
+
+#[test]
+fn port_964af3fa46_mock_migration_check_is_noop() {
+    let context = NewContext();
+    assert!(context.CheckCanMigrateStates().is_ok());
+    assert!(context.EncodeStates(&mut ()).is_err());
+    assert!(context.DecodeStates(&mut ()).is_err());
+}

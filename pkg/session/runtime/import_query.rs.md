@@ -105,3 +105,8 @@ MV 影子表 IMPORT 在自身 autocommit 事务中读取，并将实际源事务
 - 若改变 engine 生命周期，应为“data 已导入/index 失败”“ProcessChunk 中途失败”“checksum 失败”和 cleanup 失败分别定义可恢复策略，避免留下部分物理结果。
 - Rust 测试不要内嵌到本文件。会话端到端回归应扩展同目录独立文件 [`normal_ddl_create_materialized_view_test.rs`](normal_ddl_create_materialized_view_test.rs)，或新增同目录 `*_test.rs` 并在 `runtime.rs` 的 `#[cfg(test)] mod` 中装配；通用 query processor/option 行为则应扩展 [`pkg/executor/importer`](../../executor/importer/) 下的独立测试。
 - 性能变更要重点量化 SELECT 全量物化、1024 固定批次、无界 channel、单 worker 编码、全表 checksum 扫描和固定 region split 参数。
+
+
+### 来源 964af3fa46 的局部接线
+
+来源 964af3fa4679579548ffdfee4fb995cf1fcf037b：查询源在提交会话解析/规划并捕获，经真实 MVCC 元数据检查后，在独立 ConcreteSession worker 恢复允许的状态并固定 ReadTS；worker 执行已展开的源 AST，编码 chunk 使用捕获 Timestamp，校验计划保留 QuerySource。内存预算和事务状态由 worker 决定，既有 SST/校验/清理路径继续复用。
