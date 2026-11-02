@@ -140,3 +140,11 @@ The preflight reuses pg_sql::values_parameter_source and reverses its four-byte 
 CREATE [UNIQUE] INDEX 的 ON 目标复用既有关系名解析边界，将 public 映射到当前数据库；不把索引名称当关系名或约束身份。用于真实创建不能冒充约束的普通唯一索引夹具。
 
 PG10-10：关系适配入口保留解析器类型化能力拒绝为0A000，复杂索引/约束 setup 在写入前失败。
+
+## 只读 CTE 作用域（PG10-17）
+
+`alias_scope` 在原有查询块范围栈旁维护局部 CTE 输出列栈。SELECT 按定义顺序访问 WITH 查询体，在其分析后登记直接列投影和显式别名；定义体因此可见先前同级及外层 CTE，自身尚未登记时仍按外层/真实表规则解析。退出 SELECT 同时清理列作用域。已显式处理的 WITH 不重复遍历，其他语句的既有访问路径保持。
+
+单段关系名先查可见 CTE 列绑定，显式 public 限定仍从真实表取列；未知投影继续交共享 binder，不执行样本查询。此局部检查让已知 CTE 的缺列（包括零行输入）在执行前返回 42703。裸 ORDER BY 输出别名按原始表达式跨度登记，不使 WHERE 或复合表达式获得输出别名可见性。
+
+`pg_query_test::pg10_17_behavior` 验证真实表/真实TCP两协议、顺序依赖、NULL/零行固定描述、嵌套遮蔽、显式表绕过、前向/缺列/重名/递归门禁、失败事务恢复和MySQL共享会话共存；`pg_name_test::pg10_17_cte_column_scopes` 覆盖局部列身份和WHERE边界。部分列别名、重复消费者、物化/volatile、写入CTE仍由各自任务验收。

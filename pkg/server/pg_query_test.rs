@@ -67,6 +67,433 @@ fn text_row(body: &[u8]) -> Vec<Option<String>> {
 }
 
 #[test]
+fn pg10_17_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    fn connect(addr: std::net::SocketAddr) -> TcpStream {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let startup = [
+            196610u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        socket
+            .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&startup).unwrap();
+        let mut settings = std::collections::BTreeMap::new();
+        loop {
+            let message = read(&mut socket);
+            if message.0 == b'S' {
+                let fields = message.1.split(|b| *b == 0).collect::<Vec<_>>();
+                settings.insert(fields[0].to_vec(), fields[1].to_vec());
+            }
+            assert_ne!(message.0, b'E', "{message:?}");
+            if message.0 == b'Z' {
+                break;
+            }
+        }
+        assert_eq!(
+            settings.get(b"client_encoding".as_slice()),
+            Some(&b"UTF8".to_vec())
+        );
+        assert_eq!(settings.get(b"TimeZone".as_slice()), Some(&b"UTC".to_vec()));
+        socket
+    }
+    let mut socket = connect(addr);
+    let mut observer = connect(addr);
+    for sql in [
+        "CREATE TABLE public.cte_read_doc (id integer PRIMARY KEY,v integer)",
+        "INSERT INTO public.cte_read_doc VALUES (1,10),(2,NULL)",
+    ] {
+        let messages = query(&mut socket, sql);
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+    }
+    fn description(body: &[u8], names: &[&str]) {
+        assert_eq!(
+            i16::from_be_bytes(body[..2].try_into().unwrap()) as usize,
+            names.len()
+        );
+        let mut p = 2;
+        for name in names {
+            let n = body[p..].iter().position(|b| *b == 0).unwrap();
+            assert_eq!(&body[p..p + n], name.as_bytes());
+            p += n + 1;
+            assert_eq!(&body[p + 6..p + 10], &23u32.to_be_bytes());
+            assert_eq!(&body[p + 10..p + 12], &4i16.to_be_bytes());
+            assert_eq!(&body[p + 12..p + 16], &(-1i32).to_be_bytes());
+            assert_eq!(&body[p + 16..p + 18], &0i16.to_be_bytes());
+            p += 18;
+        }
+        assert_eq!(p, body.len());
+    }
+    fn result(m: &[(u8, Vec<u8>)], names: &[&str], expected: &[Vec<Option<String>>]) {
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{m:?}");
+        if let Some(d) = m.iter().find(|m| m.0 == b'T') {
+            description(&d.1, names);
+        }
+        assert_eq!(
+            m.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| text_row(&m.1))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            m.contains(&(b'C', format!("SELECT {}\0", expected.len()).into_bytes())),
+            "{m:?}"
+        );
+    }
+    fn parse(s: &mut TcpStream, sql: &str, parameter: bool, names: &[&str]) {
+        let mut body = [b"scope17\0".as_slice(), sql.as_bytes(), b"\0"].concat();
+        body.extend_from_slice(&(if parameter { 1i16 } else { 0 }).to_be_bytes());
+        if parameter {
+            body.extend_from_slice(&23u32.to_be_bytes());
+        }
+        send(s, b'P', &body);
+        assert_eq!(read(s), (b'1', vec![]));
+        send(s, b'D', b"Sscope17\0");
+        let params = read(s);
+        assert_eq!(params.0, b't');
+        assert_eq!(
+            params.1,
+            if parameter {
+                [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+            } else {
+                0i16.to_be_bytes().to_vec()
+            }
+        );
+        let d = read(s);
+        assert_eq!(d.0, b'T');
+        description(&d.1, names);
+    }
+    fn bound(
+        s: &mut TcpStream,
+        value: Option<Option<i32>>,
+        names: &[&str],
+        expected: &[Vec<Option<String>>],
+        status: u8,
+    ) {
+        let mut body = b"portal17\0scope17\0".to_vec();
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&(if value.is_some() { 1i16 } else { 0 }).to_be_bytes());
+        if let Some(value) = value {
+            if let Some(value) = value {
+                let value = value.to_string();
+                body.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                body.extend_from_slice(value.as_bytes());
+            } else {
+                body.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+        }
+        body.extend_from_slice(&0i16.to_be_bytes());
+        send(s, b'B', &body);
+        assert_eq!(read(s), (b'2', vec![]));
+        send(s, b'D', b"Pportal17\0");
+        let d = read(s);
+        assert_eq!(d.0, b'T');
+        description(&d.1, names);
+        send(
+            s,
+            b'E',
+            &[b"portal17\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(s, b'S', &[]);
+        let mut m = Vec::new();
+        loop {
+            let v = read(s);
+            let done = v.0 == b'Z';
+            m.push(v);
+            if done {
+                break;
+            }
+        }
+        result(&m, names, expected);
+        assert_eq!(m.last(), Some(&(b'Z', vec![status])));
+        send(s, b'C', b"Pportal17\0");
+        assert_eq!(read(s).0, b'3');
+    }
+    let chain = "WITH a(k,val) AS (SELECT id,v FROM public.cte_read_doc),b AS (SELECT k,val FROM a WHERE k=2) SELECT k,val FROM b ORDER BY k";
+    let cases=vec![
+        (chain.to_owned(),vec!["k","val"],vec![vec![Some("2".into()),None]]),
+        (chain.replace("k=2","k=3"),vec!["k","val"],vec![]),
+        ("WITH cte_read_doc AS (SELECT 7 AS id) SELECT c.id AS local_id,t.id AS table_id FROM cte_read_doc AS c CROSS JOIN public.cte_read_doc AS t ORDER BY table_id".into(),vec!["local_id","table_id"],vec![vec![Some("7".into()),Some("1".into())],vec![Some("7".into()),Some("2".into())]]),
+        ("WITH a AS (SELECT 1 AS v) SELECT a.v AS outer_v,x.v AS inner_v FROM a CROSS JOIN (WITH a AS (SELECT 2 AS v) SELECT v FROM a) AS x".into(),vec!["outer_v","inner_v"],vec![vec![Some("1".into()),Some("2".into())]]),
+        ("WITH a AS (SELECT id FROM public.cte_read_doc WHERE id=1),b AS (WITH a AS (SELECT id FROM a) SELECT id FROM a) SELECT id FROM b".into(),vec!["id"],vec![vec![Some("1".into())]]),
+        ("WITH cte_read_doc AS (SELECT id FROM cte_read_doc) SELECT id FROM cte_read_doc ORDER BY id".into(),vec!["id"],vec![vec![Some("1".into())],vec![Some("2".into())]]),
+        ("WITH cte_read_doc AS (SELECT 7 AS fresh) SELECT fresh FROM cte_read_doc".into(),vec!["fresh"],vec![vec![Some("7".into())]]),
+    ];
+    use astersql_session::runtime::{ConcretePreparedArgument, ConcreteSession};
+    let mysql = ConcreteSession::new(domain.clone());
+    let mysql_observer = ConcreteSession::new(domain.clone());
+    for session in [&mysql, &mysql_observer] {
+        session.execute("USE test").unwrap();
+        session.execute("SET autocommit=1").unwrap();
+    }
+    mysql
+        .execute("CREATE TABLE cte_mysql_doc (id INT PRIMARY KEY,v INT)")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO cte_mysql_doc VALUES (1,10),(2,NULL)")
+        .unwrap();
+    let mysql_sql =
+        "WITH a AS (SELECT id,v FROM cte_mysql_doc) SELECT id,v FROM a WHERE id=2 ORDER BY id";
+    let (mysql_stmt, count, mysql_fields) = mysql
+        .prepare_protocol_statement(&mysql_sql.replace("id=2", "id=?"))
+        .unwrap();
+    assert_eq!(count, 1);
+    let mysql_types = mysql_fields
+        .iter()
+        .map(|field| format!("{:?}", field.column.FieldType))
+        .collect::<Vec<_>>();
+    fn mysql_probe(mysql: &ConcreteSession, stmt: u64, types: &[String], third: bool) {
+        let sql =
+            "WITH a AS (SELECT id,v FROM cte_mysql_doc) SELECT id,v FROM a WHERE id=2 ORDER BY id";
+        let mut query = mysql.execute(sql).unwrap();
+        assert_eq!(query[0].next_row().unwrap().unwrap(), vec!["2", "<nil>"]);
+        assert!(query[0].next_row().unwrap().is_none());
+        assert_eq!(
+            mysql
+                .execute("SELECT v IS NULL AS is_null FROM cte_mysql_doc WHERE id=2")
+                .unwrap()[0]
+                .next_row()
+                .unwrap()
+                .unwrap(),
+            vec!["1"]
+        );
+        for value in [2, 3] {
+            let mut rows = mysql
+                .execute_protocol_statement(stmt, &[ConcretePreparedArgument::Signed(value)])
+                .unwrap();
+            assert_eq!(
+                rows[0]
+                    .result_fields()
+                    .iter()
+                    .map(|f| format!("{:?}", f.as_ref().unwrap().column.FieldType))
+                    .collect::<Vec<_>>(),
+                types
+            );
+            if value == 2 {
+                assert_eq!(rows[0].next_row().unwrap().unwrap(), vec!["2", "<nil>"]);
+            }
+            if value == 3 && third {
+                assert_eq!(rows[0].next_row().unwrap().unwrap(), vec!["3", "30"]);
+            }
+            assert!(rows[0].next_row().unwrap().is_none());
+        }
+    }
+    mysql_probe(&mysql, mysql_stmt, &mysql_types, false);
+    mysql.execute("BEGIN").unwrap();
+    mysql
+        .execute("INSERT INTO cte_mysql_doc VALUES (3,30)")
+        .unwrap();
+    fn mysql_contents(session: &ConcreteSession, third: bool) {
+        let mut all = session
+            .execute("SELECT id,v FROM cte_mysql_doc ORDER BY id")
+            .unwrap();
+        assert_eq!(all[0].next_row().unwrap().unwrap(), vec!["1", "10"]);
+        assert_eq!(all[0].next_row().unwrap().unwrap(), vec!["2", "<nil>"]);
+        if third {
+            assert_eq!(all[0].next_row().unwrap().unwrap(), vec!["3", "30"]);
+        }
+        assert!(all[0].next_row().unwrap().is_none());
+    }
+    mysql_contents(&mysql_observer, false);
+    eprintln!(
+        "pg10_17 MySQL sql_mode/isolation={:?}",
+        mysql
+            .execute("SELECT @@sql_mode,@@transaction_isolation")
+            .unwrap()[0]
+            .next_row()
+            .unwrap()
+    );
+    for end in ["COMMIT", "ROLLBACK"] {
+        for (sql, names, expected) in &cases {
+            for extended in [false, true] {
+                baseline(&mut socket);
+                baseline(&mut observer);
+                successful(&mut socket, "BEGIN");
+                if extended {
+                    parse(&mut socket, sql, false, names);
+                    baseline(&mut observer);
+                    bound(&mut socket, None, names, expected, b'T');
+                    send(&mut socket, b'C', b"Sscope17\0");
+                    assert_eq!(read(&mut socket).0, b'3');
+                } else {
+                    result(&query(&mut socket, sql), names, expected);
+                }
+                successful(&mut socket, end);
+                baseline(&mut socket);
+                baseline(&mut observer);
+                mysql_probe(&mysql, mysql_stmt, &mysql_types, true);
+                mysql_contents(&mysql_observer, false);
+            }
+        }
+    }
+    parse(
+        &mut socket,
+        &chain.replace("k=2", "k=$1"),
+        true,
+        &["k", "val"],
+    );
+    for (value, expected) in [
+        (Some(2), vec![vec![Some("2".into()), None]]),
+        (Some(3), vec![]),
+        (None, vec![]),
+    ] {
+        bound(&mut socket, Some(value), &["k", "val"], &expected, b'I');
+        baseline(&mut socket);
+        baseline(&mut observer);
+    }
+    send(&mut socket, b'C', b"Sscope17\0");
+    assert_eq!(read(&mut socket).0, b'3');
+    eprintln!(
+        "pg10_17 isolation={:?}",
+        successful(&mut socket, "SELECT @@transaction_isolation AS isolation")
+    );
+    fn successful(s: &mut TcpStream, sql: &str) -> Vec<(u8, Vec<u8>)> {
+        let m = query(s, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        m
+    }
+    fn baseline(s: &mut TcpStream) {
+        let m = successful(s, "SELECT id,v FROM public.cte_read_doc ORDER BY id");
+        assert_eq!(
+            m.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| text_row(&m.1))
+                .collect::<Vec<_>>(),
+            vec![
+                vec![Some("1".into()), Some("10".into())],
+                vec![Some("2".into()), None]
+            ]
+        );
+    }
+    fn error(m: &[(u8, Vec<u8>)], state: &str, status: u8) {
+        let e = m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("expected {state}: {m:?}"));
+        assert!(
+            e.1.split(|b| *b == 0)
+                .any(|f| f == [b"C", state.as_bytes()].concat()),
+            "{m:?}"
+        );
+        assert!(!m.iter().any(|m| matches!(m.0, b'D' | b'C')));
+        assert_eq!(m.last(), Some(&(b'Z', vec![status])));
+    }
+    // Each ordinary/extended error gets an independent transaction and recovery.
+    for (sql, state) in [
+        ("SELECT k FROM a", "42P01"),
+        (
+            "WITH a AS (SELECT v FROM b),b AS (SELECT 2 AS v) SELECT v FROM a",
+            "42P01",
+        ),
+        ("WITH a AS (SELECT 1 AS v) SELECT missing FROM a", "42703"),
+        (
+            "WITH a AS (SELECT 1 AS v WHERE false) SELECT missing FROM a",
+            "42703",
+        ),
+        (
+            "WITH a AS (SELECT 1),a AS (SELECT 2) SELECT * FROM a",
+            "42712",
+        ),
+        (
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<3) SELECT n FROM r ORDER BY n",
+            "0A000",
+        ),
+    ] {
+        for transaction in [false, true] {
+            for extended in [false, true] {
+                baseline(&mut socket);
+                baseline(&mut observer);
+                if transaction {
+                    successful(&mut socket, "BEGIN");
+                    successful(&mut socket, "INSERT INTO public.cte_read_doc VALUES (3,30)");
+                }
+                let status = if transaction { b'E' } else { b'I' };
+                let m = if extended {
+                    send(
+                        &mut socket,
+                        b'P',
+                        &[
+                            b"bad\0".as_slice(),
+                            sql.as_bytes(),
+                            b"\0",
+                            &0i16.to_be_bytes(),
+                        ]
+                        .concat(),
+                    );
+                    send(&mut socket, b'S', &[]);
+                    let mut m = Vec::new();
+                    loop {
+                        let v = read(&mut socket);
+                        let done = v.0 == b'Z';
+                        m.push(v);
+                        if done {
+                            break;
+                        }
+                    }
+                    m
+                } else {
+                    query(&mut socket, sql)
+                };
+                error(&m, state, status);
+                if transaction {
+                    error(&query(&mut socket, "SELECT 1 AS ok"), "25P02", b'E');
+                    baseline(&mut observer);
+                    successful(&mut socket, "ROLLBACK");
+                }
+                successful(&mut socket, "SELECT 1 AS ok");
+                baseline(&mut socket);
+                baseline(&mut observer);
+                mysql_probe(&mysql, mysql_stmt, &mysql_types, true);
+                mysql_contents(&mysql_observer, false);
+            }
+        }
+    }
+    mysql_probe(&mysql, mysql_stmt, &mysql_types, true);
+    mysql.execute("COMMIT").unwrap();
+    mysql_contents(&mysql_observer, true);
+    mysql.close_protocol_statement(mysql_stmt).unwrap();
+    mysql.execute("DROP TABLE cte_mysql_doc").unwrap();
+    successful(&mut socket, "ROLLBACK");
+    send(&mut observer, b'X', &[]);
+    successful(&mut socket, "DROP TABLE public.cte_read_doc");
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    drop(observer);
+    _cleanup.0.close();
+    assert_eq!(_cleanup.0.resource_counts(), (0, 0, 0));
+    assert!(TcpStream::connect(addr).is_err());
+    eprintln!(
+        "pg10_17: 28 success protocol/transaction variants, 3 fresh parameter binds, 24 errors with recovery and W/O readback; MySQL query/prepared coexistence"
+    );
+}
+
+#[test]
 fn postgres_create_table_simple_query() {
     let (domain, _) = astersql_session::runtime::CreateUnbootstrappedRootSessionForTest().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(

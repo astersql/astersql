@@ -1182,3 +1182,25 @@ fn pg10_08_create_index_relation() {
         "CREATE INDEX ordinary_email_idx ON `db`.conflict_doc(email)"
     );
 }
+
+#[test]
+fn pg10_17_cte_column_scopes() {
+    for sql in [
+        "WITH a AS (SELECT 1 AS v) SELECT v AS result FROM a ORDER BY result",
+        "WITH a AS (SELECT 1 AS v),b(k) AS (SELECT v FROM a) SELECT k FROM b",
+        "WITH a AS (SELECT 1 AS v) SELECT v FROM a WHERE v=1",
+        "WITH a AS (SELECT 1 AS v) SELECT a.v FROM a CROSS JOIN (WITH a AS (SELECT 2 AS v) SELECT v FROM a) AS inner_a",
+        "WITH a AS (SELECT 1 AS v),b AS (WITH a AS (SELECT v FROM a) SELECT v FROM a) SELECT v FROM b",
+    ] {
+        rewrite(sql, "test", true).unwrap_or_else(|e| panic!("{sql}: {e:?}"));
+    }
+    for sql in [
+        "WITH a AS (SELECT 1 AS v) SELECT missing FROM a",
+        "WITH a AS (SELECT 1 AS v WHERE false) SELECT missing FROM a",
+        "WITH a AS (SELECT 1 AS v) SELECT a.missing FROM a",
+        "WITH a AS (SELECT 1 AS v) SELECT v AS result FROM a WHERE result=1 ORDER BY result",
+        "WITH a AS (SELECT 1 AS v),b AS (SELECT 2 AS hidden) SELECT hidden FROM a",
+    ] {
+        assert_eq!(rewrite(sql, "test", true).unwrap_err().0, "42703", "{sql}");
+    }
+}

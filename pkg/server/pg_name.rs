@@ -773,10 +773,38 @@ fn alias_scope(
         snapshot: Option<astersql_infoschema::SchemaRef>,
         database: &'a str,
         scopes: Vec<Vec<Binding>>,
+        ctes: Vec<BTreeMap<String, Option<HashSet<String>>>>,
+        owned_with: HashSet<usize>,
         allowed: HashSet<(usize, usize)>,
         failure: Option<(&'static str, &'static str, usize)>,
     }
     impl Scope<'_> {
+        fn output_names(node: &dyn ast::Node) -> Option<Vec<String>> {
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                return select
+                    .Fields
+                    .Fields
+                    .iter()
+                    .map(|field| {
+                        if !field.AsName.O.is_empty() {
+                            Some(field.AsName.O.clone())
+                        } else if let Some(ast::ExprNode {
+                            Kind: ast::ExprKind::Column(column),
+                            ..
+                        }) = &field.Expr
+                        {
+                            Some(column.Name.O.clone())
+                        } else {
+                            // Unknown projections stay with the shared binder; do
+                            // not infer column names from a sample execution.
+                            None
+                        }
+                    })
+                    .collect();
+            }
+            None
+        }
+
         fn sources(&mut self, node: &ast::ResultSetNode, bindings: &mut Vec<Binding>) {
             match node {
                 ast::ResultSetNode::Join(join) => {
@@ -817,7 +845,17 @@ fn alias_scope(
                             .and_then(|t| t.name.clone())
                             .unwrap_or_else(|| source.AsName.L.clone())
                     };
-                    let columns = if source.QuerySource.is_none()
+                    let cte = (parts.len() == 1)
+                        .then(|| {
+                            self.ctes
+                                .iter()
+                                .rev()
+                                .find_map(|scope| scope.get(&parts[0].Lookup))
+                        })
+                        .flatten();
+                    let columns = if let Some(columns) = cte {
+                        columns.clone()
+                    } else if source.QuerySource.is_none()
                         && (parts.len() == 1
                             || parts
                                 .get(parts.len().saturating_sub(2))
@@ -871,6 +909,15 @@ fn alias_scope(
     }
     impl ast::Visitor for Scope<'_> {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            // SELECT owns WITH traversal below, so each definition is checked
+            // before becoming visible to later definitions and the body.
+            if let Some(with) = node.as_any().downcast_ref::<ast::WithClause>()
+                && self
+                    .owned_with
+                    .contains(&(with as *const ast::WithClause as usize))
+            {
+                return true;
+            }
             if let Some(insert) = node.as_any().downcast_ref::<ast::InsertStmt>() {
                 // INSERT values cannot see either row. RETURNING sees only the
                 // target. The proposed row exists exclusively in DO UPDATE's
@@ -927,6 +974,36 @@ fn alias_scope(
                 return true;
             }
             if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                self.ctes.push(BTreeMap::new());
+                if let Some(with) = &select.With {
+                    self.owned_with
+                        .insert(&*with.borrow() as *const ast::WithClause as usize);
+                    for cte in &with.borrow().CTEs {
+                        cte.Query.accept(self);
+                        let columns = Self::output_names(cte.Query.as_ref()).map(|mut names| {
+                            for (name, alias) in names.iter_mut().zip(&cte.ColNameList) {
+                                *name = alias.O.clone();
+                            }
+                            names.into_iter().collect()
+                        });
+                        self.ctes
+                            .last_mut()
+                            .unwrap()
+                            .insert(cte.Name.O.clone(), columns);
+                    }
+                }
+                // Only bare ORDER BY output references can bypass input-column
+                // lookup. The source span cannot authorize WHERE references.
+                for item in &select.OrderBy {
+                    if let ast::ExprKind::Column(column) = &item.Expr.Kind
+                        && let [part] = column.PostgreSQLParts.as_slice()
+                        && select.Fields.Fields.iter().any(|field| {
+                            !field.AsName.O.is_empty() && field.AsName.O == part.Lookup
+                        })
+                    {
+                        self.allowed.insert(part.Span);
+                    }
+                }
                 let mut bindings = Vec::new();
                 if let Some(from) = &select.From {
                     for source in [
@@ -945,6 +1022,7 @@ fn alias_scope(
                 && let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>()
                 && let ast::ExprKind::Column(column) = &expr.Kind
                 && column.PostgreSQLParts.len() == 1
+                && !self.allowed.contains(&column.PostgreSQLParts[0].Span)
                 && let Some(bindings) = self.scopes.last()
                 && (!bindings.is_empty()
                     || (self.scopes.len() == 1 && column.PostgreSQLParts[0].Quoted))
@@ -1031,6 +1109,7 @@ fn alias_scope(
         fn leave(&mut self, node: &dyn ast::Node) -> bool {
             if node.as_any().is::<ast::SelectStmt>() {
                 self.scopes.pop();
+                self.ctes.pop();
             }
             true
         }
@@ -1040,6 +1119,8 @@ fn alias_scope(
         snapshot,
         database,
         scopes: Vec::new(),
+        ctes: Vec::new(),
+        owned_with: HashSet::new(),
         allowed: HashSet::new(),
         failure: None,
     };
