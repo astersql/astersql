@@ -269,11 +269,22 @@ impl std::fmt::Display for PostgreSQLWindowError {
 }
 impl std::error::Error for PostgreSQLWindowError {}
 
+/// A syntactically valid PostgreSQL feature which has no execution support.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgreSQLCapabilityError(pub &'static str);
+impl std::fmt::Display for PostgreSQLCapabilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for PostgreSQLCapabilityError {}
+
 /// 一次 SQL 解析会话的状态：字符集、词法器、AST 结果与 yacc 符号缓存。
 // Parser 保存一次解析所需的连接字符集、词法器、结果以及 yacc 临时值。
 // Go 的切片复用和指针字段在这里保留为 Vec/Option 形状，以表达生命周期和可空语义。
 pub struct Parser {
     dialect: parser_ast::SqlDialect,
+    unsupported_pg_constraint: bool,
     charset: String,
     collation: String,
     result: Vec<Box<dyn parser_ast::Node>>,
@@ -315,6 +326,7 @@ pub fn New() -> Box<Parser> {
 
     let mut parser_state = Box::new(Parser {
         dialect: parser_ast::SqlDialect::MySQL,
+        unsupported_pg_constraint: false,
         charset: String::new(),
         collation: String::new(),
         result: Vec::new(),
@@ -426,6 +438,7 @@ impl Parser {
         }
         self.src = sql.to_owned();
         self.result.clear();
+        self.unsupported_pg_constraint = false;
         self.reducedStatementCount = 0;
         self.allStatementsSemanticallyComplete = true;
 
@@ -446,6 +459,22 @@ impl Parser {
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| ErrSyntax.GenWithStackByArgs(&[])));
+        }
+        // Capability rejection follows full syntax acceptance: malformed tails
+        // must retain syntax diagnostics even after an unsupported reduction.
+        if self.dialect == parser_ast::SqlDialect::PostgreSQL {
+            let partial = self.result.iter().any(|node| {
+                node.as_any()
+                    .downcast_ref::<parser_ast::CreateIndexStmt>()
+                    .is_some_and(|index| {
+                        index.Option.as_ref().is_some_and(|option| option.Condition.is_some())
+                    })
+            });
+            if self.unsupported_pg_constraint || partial {
+                return Err(errors::SharedError::new(PostgreSQLCapabilityError(
+                    "PostgreSQL partial indexes and deferred/exclusion constraints are not supported",
+                )));
+            }
         }
         if self.allStatementsSemanticallyComplete && self.result.len() == self.reducedStatementCount
         {

@@ -1078,6 +1078,13 @@ pub(crate) fn adapt(
     let parsed = astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
         .ParseSQL(&parse_sql, &[]);
     if let Err(error) = &parsed
+        && error
+            .downcast_ref::<astersql_parser::PostgreSQLCapabilityError>()
+            .is_some()
+    {
+        return Err(("0A000", error.to_string()));
+    }
+    if let Err(error) = &parsed
         && let Some(window) = error.downcast_ref::<astersql_parser::PostgreSQLWindowError>()
     {
         session.relation_error_position = sql

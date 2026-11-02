@@ -151,7 +151,16 @@ pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'sta
     }
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
-        .map_err(|error| parser_error(error.to_string()))?;
+        .map_err(|error| {
+            if error
+                .downcast_ref::<astersql_parser::PostgreSQLCapabilityError>()
+                .is_some()
+            {
+                ("0A000", error.to_string())
+            } else {
+                parser_error(error.to_string())
+            }
+        })?;
     struct CatalogProjection<'a> {
         sql: &'a str,
         replacements: std::collections::BTreeMap<usize, &'static str>,
@@ -255,7 +264,16 @@ pub(crate) fn supported_conflict_do_nothing(clause: &ast::PostgreSQLConflictClau
 fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'static str, String)> {
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
-        .map_err(|error| parser_error(error.to_string()))?;
+        .map_err(|error| {
+            if error
+                .downcast_ref::<astersql_parser::PostgreSQLCapabilityError>()
+                .is_some()
+            {
+                ("0A000", error.to_string())
+            } else {
+                parser_error(error.to_string())
+            }
+        })?;
     if statements.is_empty() {
         return Ok(PrepareCommand {
             command: None,

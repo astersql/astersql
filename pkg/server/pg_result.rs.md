@@ -263,3 +263,5 @@ supported_conflict_do_nothing 同时接受无目标 Any 和无谓词的非空列
 普通 CREATE INDEX 的协议命令分类复用现有共享 DDL 执行并返回 CREATE INDEX 标签，用于原验收中创建不能冒充约束的独立唯一索引；不新增索引存储算法。
 
 supported_conflict_do_nothing 验证全部 Elements 均为无表达式、无长度/排序的基本列；表达式与混合推断保持0A000写前门禁。准备阶段保留冲突AST和原SQL，描述用analysis_sql不成为执行SQL。
+
+PG10-10：结构化 PostgreSQLCapabilityError 映射为0A000；普通解析错误维持42601，不通过错误文本猜测合法性。

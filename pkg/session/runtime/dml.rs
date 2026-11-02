@@ -2318,11 +2318,14 @@ impl ConcreteSession {
                         })
             });
             if !all_keys && !primary_matches && arbiters.Indices.is_empty() {
-                return Err(SessionError::new(if named.is_some() {
-                    "no unique constraint matching PostgreSQL ON CONFLICT target"
+                return Err(if named.is_some() {
+                    SessionError::new("no unique constraint matching PostgreSQL ON CONFLICT target")
                 } else {
-                    "no unique index matching PostgreSQL ON CONFLICT target"
-                }));
+                    super::query::pg_union_error(
+                        "no unique index matching PostgreSQL ON CONFLICT target",
+                        "42P10",
+                    )
+                });
             }
             Some((primary_matches, arbiters))
         } else {

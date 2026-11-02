@@ -138,3 +138,5 @@ The preflight reuses pg_sql::values_parameter_source and reverses its four-byte 
 ## 2026-11-02 命名约束验收所需索引目标
 
 CREATE [UNIQUE] INDEX 的 ON 目标复用既有关系名解析边界，将 public 映射到当前数据库；不把索引名称当关系名或约束身份。用于真实创建不能冒充约束的普通唯一索引夹具。
+
+PG10-10：关系适配入口保留解析器类型化能力拒绝为0A000，复杂索引/约束 setup 在写入前失败。

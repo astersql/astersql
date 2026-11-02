@@ -7014,3 +7014,62 @@ fn pg10_10_expression_target_ast() {
         );
     }
 }
+
+#[test]
+fn pg10_10_unsupported_setup_requires_complete_syntax() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let mut mysql = parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL);
+    assert!(
+        mysql
+            .ParseSQL(
+                "CREATE UNIQUE INDEX ordinary_partial ON t(k) WHERE active",
+                &[]
+            )
+            .is_ok()
+    );
+    assert!(
+        mysql
+            .ParseSQL("CREATE TABLE ordinary(id integer UNIQUE)", &[])
+            .is_ok()
+    );
+
+    for sql in [
+        "CREATE UNIQUE INDEX conflict_partial_active ON public.conflict_partial(k) WHERE active",
+        "CREATE TABLE public.conflict_deferred(id integer,CONSTRAINT conflict_deferred_u UNIQUE(id) DEFERRABLE INITIALLY DEFERRED)",
+        "CREATE TABLE public.conflict_exclusion(id integer,CONSTRAINT conflict_exclusion_e EXCLUDE USING btree(id WITH =))",
+    ] {
+        let error = pg.ParseSQL(sql, &[]).err().expect(sql);
+        assert!(
+            error
+                .downcast_ref::<crate::PostgreSQLCapabilityError>()
+                .is_some(),
+            "{sql}: {error}"
+        );
+        let malformed = format!("{sql} garbage");
+        let error = pg.ParseSQL(&malformed, &[]).err().expect(&malformed);
+        assert!(
+            error
+                .downcast_ref::<crate::PostgreSQLCapabilityError>()
+                .is_none(),
+            "{malformed}: {error}"
+        );
+        // Reusing the parser cannot poison a later ordinary statement.
+        assert!(
+            pg.ParseSQL("CREATE TABLE ordinary(id integer UNIQUE)", &[])
+                .is_ok()
+        );
+    }
+    for sql in [
+        "CREATE TABLE bad(id integer,CONSTRAINT bad_u UNIQUE(id) DEFERRABLE INITIALLY)",
+        "CREATE TABLE bad(id integer,CONSTRAINT bad_e EXCLUDE USING btree(id WITH))",
+        "CREATE TABLE bad(id integer,CONSTRAINT bad_e EXCLUDE USING btree(id WITH =,))",
+    ] {
+        let error = pg.ParseSQL(sql, &[]).err().expect(sql);
+        assert!(
+            error
+                .downcast_ref::<crate::PostgreSQLCapabilityError>()
+                .is_none(),
+            "{sql}: {error}"
+        );
+    }
+}

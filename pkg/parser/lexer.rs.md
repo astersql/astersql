@@ -133,3 +133,5 @@ PG contextual percentile_disc/within tokens feed the existing aggregate grammar;
 ## 2026-10-31 continuous percentile
 
 PostgreSQL percentile_cont shares the ordered-set token with percentile_disc; the semantic action retains the actual function identifier. MySQL and quoted identifiers preserve existing tokenization.
+
+PG10-10：仅 PostgreSQL 模式识别 DEFERRABLE/INITIALLY/DEFERRED；EXCLUDE USING 用独立上下文 token 消除与非保留标识符的文法歧义，不改变窗口 EXCLUDE。

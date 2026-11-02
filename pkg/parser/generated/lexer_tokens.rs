@@ -962,4 +962,8 @@ mod token {
     pub const compare: i32 = 58279;
     pub const output: i32 = 58280;
     pub const views: i32 = 58281;
+    pub const pgDeferrable: i32 = 58282;
+    pub const pgInitially: i32 = 58283;
+    pub const pgDeferred: i32 = 58284;
+    pub const pgConstraintExclude: i32 = 58285;
 }

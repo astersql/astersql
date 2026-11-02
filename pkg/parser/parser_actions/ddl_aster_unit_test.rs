@@ -8,6 +8,11 @@ use std::fs;
 use std::path::PathBuf;
 
 const DDL_NONTERMINALS: &[&str] = &[
+    "PgDefaultSum",
+    "PgDefaultTerm",
+    "PgDefaultFactor",
+    "PgUnsupportedConstraint",
+    "PgExclusionElements",
     "AlgorithmClause",
     "AllOrPartitionNameList",
     "AlterDatabaseStmt",
@@ -205,7 +210,7 @@ fn ddl_rule_coverage() {
         .map(|production| production.rule_id.as_str())
         .collect::<HashSet<_>>();
 
-    assert_eq!(expected.len(), 596, "DDL RuleId inventory changed");
+    assert_eq!(expected.len(), 609, "DDL RuleId inventory changed");
 
     let owned = RULE_IDS_BY_REDUCTION
         .iter()

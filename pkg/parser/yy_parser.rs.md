@@ -120,3 +120,5 @@ ParseSQL 在 reset 后把连接所属 SqlDialect 注入本轮 Scanner；默认 M
 ## 2026-10-31 窗口客户端差分
 
 PostgreSQLWindowError保存窗口规约诊断的SQLSTATE、消息和原始字节位置，复用共享错误载体，由协议适配边界转字符位置。
+
+PG10-10：完整文法接受后才返回类型化 PostgreSQLCapabilityError，拒绝部分索引与已识别的延迟/排斥约束 setup；非法尾部仍保留语法诊断。每次 ParseSQL 清空约束标记，拒绝时不向执行器返回占位 AST。

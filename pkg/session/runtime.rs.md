@@ -149,3 +149,5 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 ### 来源 964af3fa46 的局部接线
 
 来源 964af3fa4679579548ffdfee4fb995cf1fcf037b 新增 import_query_source 模块和独立测试挂载；复用既有 SQL/MDL/事务运行时，不改变方言分派。
+
+PG10-10：保留解析器 PostgreSQLCapabilityError 的来源及能力诊断，不将合法未开放 setup 包装成1064语法错误；MySQL普通解析路径不变。

@@ -53,7 +53,7 @@ fn all_action_rules_have_one_owner() {
     }
 
     assert_eq!(security_count, 182, "security RuleId inventory changed");
-    assert_eq!(admin_count, 551, "admin RuleId inventory changed");
+    assert_eq!(admin_count, 553, "admin RuleId inventory changed");
     assert_eq!(misc_count, 153, "misc RuleId inventory changed");
     assert_eq!(
         mview_count, 62,

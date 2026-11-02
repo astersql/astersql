@@ -1033,3 +1033,209 @@ fn pg10_10_expression_gate() {
     assert_eq!(rows(&pg), initial);
     pg.execute("DROP TABLE expression_gate").unwrap();
 }
+
+#[test]
+fn pg10_10_mysql_query_prepared_coexistence() {
+    use crate::runtime::{ConcretePreparedArgument as Arg, ConcreteSession, CreateAnalyzeSession};
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let observer = ConcreteSession::new(domain.clone());
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    fn rows(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
+        let mut sets = session.execute(sql).unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    }
+    mysql.execute("SET autocommit=1").unwrap();
+    for session in [&mysql, &observer] {
+        eprintln!(
+            "mysql settings: {:?}",
+            rows(session, "SELECT @@sql_mode,@@transaction_isolation")
+        );
+    }
+    pg.execute(
+        "CREATE TABLE conflict_gate_coexist(id integer PRIMARY KEY,email text UNIQUE,v integer)",
+    )
+    .unwrap();
+    pg.execute("INSERT INTO conflict_gate_coexist VALUES(1,'a',10),(2,'b',20)")
+        .unwrap();
+    for prepared in [false, true] {
+        for commit in [false, true] {
+            mysql.execute("CREATE TABLE conflict_mysql_doc(id INT PRIMARY KEY,email VARCHAR(30) UNIQUE,v INT NOT NULL)").unwrap();
+            mysql
+                .execute("INSERT INTO conflict_mysql_doc VALUES(1,'a',10),(2,'b',20)")
+                .unwrap();
+            let scan = "SELECT id,email,v FROM conflict_mysql_doc ORDER BY id";
+            let initial = rows(&mysql, scan);
+            let (select, count, fields) = mysql
+                .prepare_protocol_statement("SELECT v FROM conflict_mysql_doc WHERE id=?")
+                .unwrap();
+            assert_eq!(count, 1);
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].column_as_name.O, "v");
+            assert_eq!(
+                fields[0].column.FieldType.GetType(),
+                astersql_parser_mysql::r#type::TypeLong
+            );
+
+            let (insert, count, _) = mysql
+                .prepare_protocol_statement(
+                    "INSERT IGNORE INTO conflict_mysql_doc VALUES(?,?,?),(?,?,?)",
+                )
+                .unwrap();
+            assert_eq!(count, 6);
+            mysql.execute("BEGIN").unwrap();
+            if prepared {
+                mysql
+                    .execute_protocol_statement(
+                        insert,
+                        &[
+                            Arg::Signed(1),
+                            Arg::Text("changed".into()),
+                            Arg::Signed(99),
+                            Arg::Signed(3),
+                            Arg::Text("c".into()),
+                            Arg::Signed(30),
+                        ],
+                    )
+                    .unwrap();
+            } else {
+                mysql
+                    .execute(
+                        "INSERT IGNORE INTO conflict_mysql_doc VALUES(1,'changed',99),(3,'c',30)",
+                    )
+                    .unwrap();
+            }
+            let state = mysql.protocol_state();
+            assert_eq!(state.affected_rows, 1);
+            assert_eq!(state.warning_count, 1);
+            eprintln!(
+                "mysql prepared={prepared} commit={commit}: affected={} warnings={:?}",
+                state.affected_rows,
+                rows(&mysql, "SHOW WARNINGS")
+            );
+            let stored = rows(&mysql, scan);
+            assert_eq!(
+                stored,
+                vec![
+                    vec!["1", "a", "10"],
+                    vec!["2", "b", "20"],
+                    vec!["3", "c", "30"]
+                ]
+            );
+            for target in ["(id) WHERE NULL", "(lower(email))", "(id,(v+1))"] {
+                let mut sets = mysql
+                    .execute_protocol_statement(select, &[Arg::Signed(1)])
+                    .unwrap();
+                assert_eq!(sets[0].next_row().unwrap().unwrap(), vec!["10"]);
+                assert_eq!(rows(&observer, scan), initial);
+                assert!(pg.execute(&format!("INSERT INTO conflict_gate_coexist VALUES(3,'c',30) ON CONFLICT {target} DO NOTHING")).is_err());
+                assert_eq!(rows(&mysql, scan), stored);
+                let mut sets = mysql
+                    .execute_protocol_statement(select, &[Arg::Signed(1)])
+                    .unwrap();
+                assert_eq!(sets[0].next_row().unwrap().unwrap(), vec!["10"]);
+                assert_eq!(
+                    rows(
+                        &pg,
+                        "SELECT id,email,v FROM conflict_gate_coexist ORDER BY id"
+                    ),
+                    initial
+                );
+            }
+            mysql
+                .execute(if commit { "COMMIT" } else { "ROLLBACK" })
+                .unwrap();
+            for session in [&mysql, &observer] {
+                assert_eq!(
+                    rows(session, scan),
+                    if commit {
+                        stored.clone()
+                    } else {
+                        initial.clone()
+                    }
+                );
+            }
+            mysql.close_protocol_statement(select).unwrap();
+            mysql.close_protocol_statement(insert).unwrap();
+            mysql.execute("DROP TABLE conflict_mysql_doc").unwrap();
+        }
+    }
+    pg.execute("DROP TABLE conflict_gate_coexist").unwrap();
+}
+
+#[test]
+fn pg10_10_complex_setup_has_no_catalog_residue() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    for sql in [
+        "CREATE TABLE conflict_deferred(id integer,CONSTRAINT conflict_deferred_u UNIQUE(id) DEFERRABLE INITIALLY DEFERRED)",
+        "CREATE TABLE conflict_exclusion(id integer,CONSTRAINT conflict_exclusion_e EXCLUDE USING btree(id WITH =))",
+    ] {
+        let error = pg.execute(sql).err().expect(sql);
+        assert!(error.to_string().contains("not supported"), "{error}");
+        assert!(!error.to_string().contains("syntax"), "{error}");
+    }
+    assert!(domain.table_by_name("test", "conflict_deferred").is_err());
+    assert!(domain.table_by_name("test", "conflict_exclusion").is_err());
+    pg.execute("CREATE TABLE conflict_partial(id integer PRIMARY KEY,k integer,active boolean)")
+        .unwrap();
+    let error = pg
+        .execute("CREATE UNIQUE INDEX conflict_partial_active ON conflict_partial(k) WHERE active")
+        .err()
+        .expect("unsupported setup");
+    assert!(error.to_string().contains("not supported"), "{error}");
+    assert!(
+        domain
+            .table_by_name("test", "conflict_partial")
+            .unwrap()
+            .Indices
+            .iter()
+            .all(|index| index.Name.L != "conflict_partial_active")
+    );
+    pg.execute("DROP TABLE conflict_partial").unwrap();
+}
+
+#[test]
+fn pg10_10_missing_index_is_a_binding_error() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let observer =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE missing_arbiter(id integer PRIMARY KEY,email text UNIQUE,v integer)")
+        .unwrap();
+    pg.execute("INSERT INTO missing_arbiter VALUES(1,'a',10),(2,'b',20)")
+        .unwrap();
+    for transaction in [false, true] {
+        if transaction {
+            pg.execute("BEGIN").unwrap();
+            pg.execute("INSERT INTO missing_arbiter VALUES(9,'pending',90)")
+                .unwrap();
+        }
+        let error=pg.execute("INSERT INTO missing_arbiter VALUES(3,'c',30) ON CONFLICT(v) DO NOTHING RETURNING id,email,v").err().expect("missing arbiter");
+        assert_eq!(error.pg_array_error().unwrap().state, "42P10");
+        if transaction {
+            pg.execute("ROLLBACK").unwrap();
+        }
+        for session in [&pg, &observer] {
+            let mut sets = session
+                .execute("SELECT id,email,v FROM missing_arbiter ORDER BY id")
+                .unwrap();
+            assert_eq!(sets[0].next_row().unwrap().unwrap(), vec!["1", "a", "10"]);
+            assert_eq!(sets[0].next_row().unwrap().unwrap(), vec!["2", "b", "20"]);
+            assert_eq!(sets[0].next_row().unwrap(), None);
+        }
+    }
+    pg.execute("DROP TABLE missing_arbiter").unwrap();
+}

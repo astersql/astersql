@@ -81,3 +81,5 @@ PG显式BOOL/BOOLEAN声明在NumericTypeAlt02保留IsBooleanFlag；MySQL仍为�
 ## 2026-11-02 命名约束仲裁
 
 PG 列级 CONSTRAINT name UNIQUE/PRIMARY KEY 将标识符 Lookup 保存到既有 ColumnOption.ConstraintName；MySQL 入口拒绝该新增语法。
+
+PG10-10：复用现有唯一索引元素/列/索引类型文法识别冻结的延迟与排斥约束 setup；规约仅标记解析器能力限制，完整语法检查成功后由 ParseSQL 拒绝，不创建或执行普通约束。

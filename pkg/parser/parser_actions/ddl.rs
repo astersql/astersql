@@ -19,6 +19,8 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum DdlRule {
+    PgUnsupportedConstraint,
+    PgUnsupportedConstraintElement,
     PgNamedUnique,
     PgNamedPrimary,
     AlterTableStmtAlt01,
@@ -627,6 +629,11 @@ enum DdlRule {
 
 fn identify(rule_id: RuleId) -> Option<DdlRule> {
     match rule_id.as_str() {
+        "pgunsupportedconstraint_pgconstraintexclude_usin--76304ede8c3d89cb"
+        | "pgunsupportedconstraint_unique_keyorindexopt_ind--465cc2e4c8cf10ac" => Some(DdlRule::PgUnsupportedConstraint),
+        "constraintelem_pgunsupportedconstraint--4eafa643ad45e397"
+        | "pgexclusionelements_columnname_with--d9330cd39915f942"
+        | "pgexclusionelements_pgexclusionelements_columnna--6c09f89bed2ccbe4" => Some(DdlRule::PgUnsupportedConstraintElement),
         "columnoption_constraint_identifier_unique--9497742b621fa832" => {
             Some(DdlRule::PgNamedUnique)
         }
@@ -1956,6 +1963,18 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         lexer: yylex,
     } = context;
     match rule {
+        DdlRule::PgUnsupportedConstraint | DdlRule::PgUnsupportedConstraintElement => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("PostgreSQL constraint syntax", &[]));
+                return Err(1);
+            }
+            if rule == DdlRule::PgUnsupportedConstraint {
+                parser_state.unsupported_pg_constraint = true;
+            }
+            // This placeholder only completes syntax validation. ParseSQL rejects
+            // the entire statement before exposing any executable AST.
+            out.item = Some(Box::new(parser_ast::Constraint::default()));
+        }
         DdlRule::PgNamedUnique | DdlRule::PgNamedPrimary => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
                 yylex.AppendError(

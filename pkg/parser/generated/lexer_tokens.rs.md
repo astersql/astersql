@@ -87,3 +87,5 @@ Adds contextual PG pgWithin and pgPercentileDisc tokens, preserving existing tok
 ## 本次提交对齐
 
 来源 af11710fe4550179e8d096cf517462ecf4c7be05：独立 main.astergram 追加 compare=58279、output=58280、views=58281，保留全部既有 token（含 PostgreSQL 58270–58278）数值。通过 parsergen generate 生成，不直接编辑 token 表。
+
+PG10-10：文法生成 PostgreSQL 延迟约束及 EXCLUDE USING 上下文 token；MySQL 词法不激活这些 token。

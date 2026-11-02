@@ -1364,6 +1364,12 @@ fn parse_with_dialect_and_warnings(
     parser
         .ParseSQL(sql, &[])
         .map_err(|error| {
+            if error
+                .downcast_ref::<astersql_parser::PostgreSQLCapabilityError>()
+                .is_some()
+            {
+                return SessionError::with_source(error.to_string(), error);
+            }
             if dialect == ast::SqlDialect::PostgreSQL
                 && error.to_string() == "PostgreSQL float precision must be between 1 and 53"
             {

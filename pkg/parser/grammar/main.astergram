@@ -960,6 +960,10 @@
 %token compare 58279 "COMPARE";
 %token output 58280 "OUTPUT";
 %token views 58281 "VIEWS";
+%token pgDeferrable 58282 "DEFERRABLE";
+%token pgInitially 58283 "INITIALLY";
+%token pgDeferred 58284 "DEFERRED";
+%token pgConstraintExclude 58285;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -1403,6 +1407,11 @@ ConstraintElem : KeyOrIndex IfNotExists IndexNameAndTypeOpt "(" IndexPartSpecifi
 ConstraintElem : "UNIQUE" KeyOrIndexOpt IndexNameAndTypeOpt "(" IndexPartSpecificationList ")" IndexOptionList @action;
 ConstraintElem : "FOREIGN" "KEY" IfNotExists IndexName "(" IndexPartSpecificationList ")" ReferDef @action;
 ConstraintElem : "CHECK" "(" Expression ")" EnforcedOrNotOpt @action;
+ConstraintElem : PgUnsupportedConstraint @action;
+PgUnsupportedConstraint : "UNIQUE" KeyOrIndexOpt IndexNameAndTypeOpt "(" IndexPartSpecificationList ")" IndexOptionList "DEFERRABLE" "INITIALLY" "DEFERRED" @action;
+PgUnsupportedConstraint : pgConstraintExclude "USING" IndexTypeName "(" PgExclusionElements ")" @action;
+PgExclusionElements : ColumnName "WITH" "=" @action;
+PgExclusionElements : PgExclusionElements "," ColumnName "WITH" "=" @action;
 Match : "MATCH" "FULL" @action;
 Match : "MATCH" "PARTIAL" @action;
 Match : "MATCH" "SIMPLE" @action;
