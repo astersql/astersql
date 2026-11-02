@@ -68,20 +68,25 @@ fn text_row(body: &[u8]) -> Vec<Option<String>> {
 
 #[test]
 fn pg10_17_behavior() {
-    cte_alias_behavior(false, false);
+    cte_alias_behavior(false, false, false);
 }
 
 #[test]
 fn pg10_18_behavior() {
-    cte_alias_behavior(true, false);
+    cte_alias_behavior(true, false, false);
 }
 
 #[test]
 fn pg10_19_behavior() {
-    cte_alias_behavior(false, true);
+    cte_alias_behavior(false, true, false);
 }
 
-fn cte_alias_behavior(partial: bool, repeat: bool) {
+#[test]
+fn pg10_20_behavior() {
+    cte_alias_behavior(false, false, true);
+}
+
+fn cte_alias_behavior(partial: bool, repeat: bool, gate: bool) {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -331,6 +336,16 @@ fn cte_alias_behavior(partial: bool, repeat: bool) {
     } else {
         cases
     };
+    let cases = if gate {
+        vec![
+            ("WITH unused AS (SELECT 1::int4/0::int4 AS bad) SELECT id,v FROM public.cte_read_doc ORDER BY id".into(), vec!["id", "v"], vec![vec![Some("1".into()),Some("10".into())],vec![Some("2".into()),None]]),
+            ("WITH unused AS (SELECT 1::int4/0::int4 AS bad),a AS (SELECT id,v FROM public.cte_read_doc) SELECT id,v FROM a WHERE id=3".into(),vec!["id","v"],vec![]),
+            ("WITH unused AS (SELECT 1::int4/0::int4 AS bad) SELECT v FROM public.cte_read_doc WHERE id=2".into(),vec!["v"],vec![vec![None]]),
+            ("WITH unused AS (SELECT 1::int4/0::int4 AS bad),dead AS (SELECT bad FROM unused),a AS (SELECT id,v FROM public.cte_read_doc),b AS (SELECT id,v FROM a) SELECT id,v FROM b ORDER BY id".into(),vec!["id","v"],vec![vec![Some("1".into()),Some("10".into())],vec![Some("2".into()),None]]),
+        ]
+    } else {
+        cases
+    };
     use astersql_session::runtime::{ConcretePreparedArgument, ConcreteSession};
     let mysql = ConcreteSession::new(domain.clone());
     let mysql_observer = ConcreteSession::new(domain.clone());
@@ -490,7 +505,7 @@ fn cte_alias_behavior(partial: bool, repeat: bool) {
         assert!(!m.iter().any(|m| matches!(m.0, b'D' | b'C')));
         assert_eq!(m.last(), Some(&(b'Z', vec![status])));
     }
-    if repeat {
+    if repeat || gate {
         // Fail after the CTE producer has installed its rowset, then reuse the
         // same CTE name with a fresh producer to detect leaked statement scope.
         let sql = "WITH a AS (SELECT v FROM public.cte_read_doc UNION ALL SELECT v FROM public.cte_read_doc) SELECT 10::int4/(l.v-10::int4)::int4 AS bad FROM a l CROSS JOIN a r WHERE l.v=10";
@@ -595,6 +610,40 @@ fn cte_alias_behavior(partial: bool, repeat: bool) {
             ),
         ]);
     }
+    if gate {
+        errors.extend([
+            (
+                "WITH unused AS (SELECT missing FROM public.cte_read_doc) SELECT 1 AS ok",
+                "42703",
+            ),
+            (
+                "WITH a AS MATERIALIZED (SELECT 1 AS v) SELECT v FROM a",
+                "0A000",
+            ),
+            (
+                "WITH a AS NOT MATERIALIZED (SELECT 1 AS v) SELECT v FROM a",
+                "0A000",
+            ),
+            (
+                "WITH a AS (SELECT 1 AS v) SEARCH DEPTH FIRST BY v SET ord SELECT v FROM a",
+                "0A000",
+            ),
+            (
+                "WITH a AS (SELECT 1 AS v) CYCLE v SET mark USING path SELECT v FROM a",
+                "0A000",
+            ),
+            (
+                "WITH a AS (SELECT id FROM public.cte_read_doc FOR UPDATE) SELECT id FROM a",
+                "0A000",
+            ),
+            ("WITH unused AS (SELECT random()) SELECT 1 AS ok", "0A000"),
+            (
+                "WITH unused AS (SELECT nextval('absent')) SELECT 1 AS ok",
+                "0A000",
+            ),
+        ]);
+    }
+    let error_variants = errors.len() * 4;
     for (sql, state) in errors {
         for transaction in [false, true] {
             for extended in [false, true] {
@@ -660,9 +709,10 @@ fn cte_alias_behavior(partial: bool, repeat: bool) {
     assert_eq!(_cleanup.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
     eprintln!(
-        "CTE partial={partial} repeat={repeat}: {} success protocol/transaction variants, 3 fresh parameter binds, {} errors with recovery and W/O readback; MySQL query/prepared coexistence",
+        "CTE partial={partial} repeat={repeat} gate={gate}: {} success protocol/transaction variants, 3 fresh parameter binds, {} analysis errors and {} runtime errors with recovery and W/O readback; MySQL query/prepared coexistence",
         cases.len() * 4,
-        if partial { 36 } else { 24 }
+        error_variants,
+        if repeat || gate { 4 } else { 0 }
     );
 }
 

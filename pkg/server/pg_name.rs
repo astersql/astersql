@@ -403,6 +403,15 @@ impl Resolver<'_> {
                 if self.symbol(i, b'(') {
                     i = self.close(i, end)? + 1;
                 }
+                if self.word(i, "as")
+                    && (self.word(i + 1, "materialized")
+                        || self.word(i + 1, "not") && self.word(i + 2, "materialized"))
+                {
+                    return Err(error(
+                        "0A000",
+                        "explicit CTE materialization is unsupported",
+                    ));
+                }
                 if !self.word(i, "as") || !self.symbol(i + 1, b'(') {
                     return Err(error("42601", "expected CTE query"));
                 }
@@ -414,6 +423,9 @@ impl Resolver<'_> {
                     break;
                 }
                 i += 1;
+            }
+            if self.word(i, "search") || self.word(i, "cycle") {
+                return Err(error("0A000", "CTE SEARCH/CYCLE is unsupported"));
             }
             if recursive {
                 // Reject a direct seed-term self reference before the capability
@@ -464,6 +476,33 @@ impl Resolver<'_> {
                 return Err(error("0A000", "recursive PG CTEs are unsupported"));
             }
             for (name, start, close) in definitions {
+                for token in start..close {
+                    if self.word(token, "for")
+                        && ["update", "share", "no", "key"]
+                            .iter()
+                            .any(|word| self.word(token + 1, word))
+                    {
+                        return Err(error("0A000", "row locking in PG CTEs is unsupported"));
+                    }
+                    if self.symbol(token + 1, b'(')
+                        && [
+                            "random",
+                            "nextval",
+                            "setval",
+                            "currval",
+                            "pg_sleep",
+                            "clock_timestamp",
+                            "timeofday",
+                        ]
+                        .iter()
+                        .any(|word| self.word(token, word))
+                    {
+                        return Err(error(
+                            "0A000",
+                            "volatile PG CTE expressions are unsupported",
+                        ));
+                    }
+                }
                 self.scope(start, close, &ctes)?;
                 ctes.insert(name);
             }

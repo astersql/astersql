@@ -17,6 +17,107 @@
 
 use super::*;
 
+/// This gate deliberately requires separate purity evidence for callable
+/// functions and session variables before they can be elided as unused CTEs.
+fn pg_cte_requires_evaluation_evidence(node: &dyn ast::Node) -> bool {
+    struct Evidence(bool);
+    impl ast::Visitor for Evidence {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
+                self.0 |= matches!(
+                    expr.Kind,
+                    ast::ExprKind::Function { .. } | ast::ExprKind::Variable { .. }
+                );
+            }
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                self.0 |= select.lock_info.is_some() || select.SelectIntoOpt.is_some();
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut evidence = Evidence(false);
+    let _ = node.accept(&mut evidence);
+    evidence.0
+}
+
+/// Resolve free relation references without evaluating SELECT expressions. Reverse
+/// WITH traversal preserves nonrecursive visibility and nested name shadowing.
+fn pg_cte_free_relations(node: &dyn ast::Node, resolve_with: bool) -> HashSet<String> {
+    fn with_clause(node: &dyn ast::Node) -> Option<&ast::WithClauseRef> {
+        if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+            select.With.as_ref()
+        } else if let Some(set) = node.as_any().downcast_ref::<ast::SetOprStmt>() {
+            set.With.as_ref()
+        } else {
+            node.as_any()
+                .downcast_ref::<ast::SetOprSelectList>()
+                .and_then(|list| list.With.as_ref())
+        }
+    }
+    fn identity(node: &dyn ast::Node) -> usize {
+        node as *const dyn ast::Node as *const () as usize
+    }
+    struct References {
+        root: usize,
+        definitions: HashSet<usize>,
+        names: HashSet<String>,
+    }
+    impl ast::Visitor for References {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            let id = identity(node);
+            if self.definitions.contains(&id) {
+                return true;
+            }
+            if id != self.root
+                && (node.as_any().is::<ast::SelectStmt>()
+                    || node.as_any().is::<ast::SetOprStmt>()
+                    || node.as_any().is::<ast::SetOprSelectList>())
+            {
+                self.names.extend(pg_cte_free_relations(node, true));
+                return true;
+            }
+            false
+        }
+        fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+            if table.Schema.L.is_empty() && table.PostgreSQLParts.len() <= 1 {
+                self.names.insert(relation_name(table).to_owned());
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let with = with_clause(node).map(|with| with.borrow());
+    let mut references = References {
+        root: identity(node),
+        definitions: with
+            .as_ref()
+            .map(|with| {
+                with.CTEs
+                    .iter()
+                    .map(|cte| identity(cte.Query.as_ref()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        names: HashSet::new(),
+    };
+    let _ = node.accept(&mut references);
+    if let Some(with) = with.filter(|_| resolve_with) {
+        for cte in with.CTEs.iter().rev() {
+            if references.names.remove(&cte.Name.L) {
+                references
+                    .names
+                    .extend(pg_cte_free_relations(cte.Query.as_ref(), true));
+            }
+        }
+    }
+    references.names
+}
+
 pub(super) fn function_source_is_correlated(source: &ast::TableSource) -> bool {
     struct Columns(bool);
     impl ast::Visitor for Columns {
@@ -1610,12 +1711,16 @@ impl ConcreteSession {
     pub(super) fn execute_with_clause<T>(
         &self,
         with: &ast::WithClause,
+        required: Option<&HashSet<String>>,
         outer: Option<&HashMap<String, Option<String>>>,
         execute_body: impl FnOnce() -> SessionResult<T>,
     ) -> SessionResult<T> {
         self.cte_scopes.borrow_mut().push(HashMap::new());
         let result = (|| {
             for cte in &with.CTEs {
+                if required.is_some_and(|names| !names.contains(&cte.Name.L)) {
+                    continue;
+                }
                 let recursive = with.IsRecursive || cte.IsRecursive;
                 let mut materialized = if recursive {
                     self.execute_recursive_cte(cte, outer)?
@@ -1921,7 +2026,33 @@ impl ConcreteSession {
         // queries recurse through this entry and retain their own table scope.
         self.collect_statement_predicate_stats(select)?;
         if let Some(with) = select.With.as_ref().map(|with| with.borrow()) {
-            return self.execute_with_clause(&with, outer, || {
+            let required = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                && !with.IsRecursive
+                && with.CTEs.iter().all(|cte| !cte.IsRecursive)
+            {
+                if with
+                    .CTEs
+                    .iter()
+                    .any(|cte| pg_cte_requires_evaluation_evidence(cte.Query.as_ref()))
+                {
+                    return Err(super::query::pg_union_error(
+                        "PG CTE function, variable or locking evaluation requires separate evidence",
+                        "0A000",
+                    ));
+                }
+                let mut names = pg_cte_free_relations(select, false);
+                let mut required = HashSet::new();
+                for cte in with.CTEs.iter().rev() {
+                    if names.remove(&cte.Name.L) {
+                        required.insert(cte.Name.L.clone());
+                        names.extend(pg_cte_free_relations(cte.Query.as_ref(), true));
+                    }
+                }
+                Some(required)
+            } else {
+                None
+            };
+            return self.execute_with_clause(&with, required.as_ref(), outer, || {
                 self.execute_insert_select_query_body_with_outer(select, outer)
             });
         }

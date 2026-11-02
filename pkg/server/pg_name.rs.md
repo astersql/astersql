@@ -148,3 +148,5 @@ PG10-10：关系适配入口保留解析器类型化能力拒绝为0A000，复�
 单段关系名先查可见 CTE 列绑定，显式 public 限定仍从真实表取列；未知投影继续交共享 binder，不执行样本查询。此局部检查让已知 CTE 的缺列（包括零行输入）在执行前返回 42703。裸 ORDER BY 输出别名按原始表达式跨度登记，不使 WHERE 或复合表达式获得输出别名可见性。
 
 `pg_query_test::pg10_17_behavior` 验证真实表/真实TCP两协议、顺序依赖、NULL/零行固定描述、嵌套遮蔽、显式表绕过、前向/缺列/重名/递归门禁、失败事务恢复和MySQL共享会话共存；`pg_name_test::pg10_17_cte_column_scopes` 覆盖局部列身份和WHERE边界。部分列别名、重复消费者、物化/volatile、写入CTE仍由各自任务验收。
+
+只读 CTE 求值门禁：显式 MATERIALIZED/NOT MATERIALIZED、SEARCH/CYCLE、行锁和已知 volatile/序列调用在名称分析阶段返回 0A000，保留原始关键字，不改写为普通 SELECT。共享执行层另外对未建立纯度证据的函数/变量保留执行门槛。

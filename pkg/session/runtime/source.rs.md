@@ -47,7 +47,7 @@ JOIN 先执行左源。派生子查询的 LATERAL 仍只允许作为 CROSS/INNER
 
 ### CTE
 
-`execute_with_clause` 推入空 scope，按声明顺序物化 CTE，因此后续 CTE 可引用前序定义；列名列表会校验宽度并重命名普通列及字符串 marker。主体完成或失败后都会执行 cleanup failpoint 边界并弹出 scope。
+PostgreSQL 非递归 SELECT 先由 `pg_cte_free_relations` 按嵌套词法作用域计算主查询及其传递依赖，跳过未消费的定义（包括未消费的错误表达式）；名称与列绑定仍在执行前完成。MySQL 与递归路径保持原顺序。`execute_with_clause` 推入空 scope，按声明顺序物化所需 CTE，因此后续 CTE 可引用前序定义；列名列表会校验宽度并重命名普通列及字符串 marker。主体完成或失败后都会执行 cleanup failpoint 边界并弹出 scope。
 
 递归 CTE 要求查询为集合运算且至少包含 seed 与一个递归成员。seed 执行后按显式列名重命名；UNION 而非 UNION ALL 时维护全局 `seen`。每轮只把上一轮 `delta` 安装为 CTE 当前值，执行所有递归分支，检查列数和仅允许 UNION/UNION ALL；空 delta 表示收敛。达到 `cte_max_recursion_depth` 则报错。
 
@@ -166,3 +166,5 @@ PG 的 FROM 函数沿现有逐外行 LATERAL 连接入口执行，函数可省�
 ## PostgreSQL CTE 重复消费者错误身份
 
 CTE 复用的 INSERT SELECT 行集投影保留已有 `pg_int4_error`，避免把运行期整数诊断转换成无类型字符串。消费者除零经协议返回 22012；行集作用域仍由 `execute_with_clause` 的结果退出路径释放。覆盖入口为 `pg10_19_repeated_cte_error_identity_and_cleanup` 和 `pg10_19_behavior`，不改变算术类型推断或物化策略。
+
+PostgreSQL CTE 中函数、会话变量、行锁及 SELECT INTO 的求值资格未由本任务建立，执行前明确 0A000，不能把未消费的副作用静默忽略。此门槛不声明完整物化、volatile 次数或递归支持。

@@ -1670,3 +1670,31 @@ fn pg10_19_repeated_cte_error_identity_and_cleanup() {
     assert!(rows[0].next_row().unwrap().is_none());
     assert!(pg.execute("SELECT v FROM a").is_err());
 }
+
+#[test]
+fn pg10_20_unused_cte_evaluation() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    for sql in [
+        "WITH a AS (SELECT 1::int4/0::int4 AS v) SELECT 7::int4 AS v",
+        "WITH a AS (SELECT 1::int4/0::int4 AS v),b AS (SELECT v FROM a) SELECT 7::int4 AS v",
+        "WITH a AS (SELECT 1::int4/0::int4 AS v) SELECT v FROM (WITH a AS (SELECT 7::int4 AS v) SELECT v FROM a) x",
+        "WITH a AS (SELECT 7::int4 AS v),b AS (WITH a AS (SELECT v FROM a) SELECT v FROM a) SELECT v FROM b",
+    ] {
+        let mut result = pg
+            .execute(sql)
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["7"], "{sql}");
+        assert!(result[0].next_row().unwrap().is_none());
+    }
+    let error = pg
+        .execute("WITH a AS (SELECT 1::int4/0::int4 AS v) SELECT v FROM a")
+        .err()
+        .expect("a consumed producer must execute");
+    assert_eq!(
+        error.pg_int4_error(),
+        Some(astersql_expression::PgInt4Error::DivisionByZero)
+    );
+    assert!(pg.execute("SELECT v FROM a").is_err());
+}
