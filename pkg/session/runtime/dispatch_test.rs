@@ -1355,3 +1355,66 @@ fn pg10_12_action_condition() {
         pg.execute("DROP TABLE action_condition").unwrap();
     }
 }
+
+#[test]
+fn pg10_13_secondary_errors_are_atomic() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let observer =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    fn rows(session: &ConcreteSession) -> Vec<Vec<String>> {
+        let mut sets = session
+            .execute("SELECT id,email,v FROM secondary_errors ORDER BY id")
+            .unwrap();
+        let mut rows = vec![];
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    }
+    let initial = vec![vec!["1", "a", "10"], vec!["2", "b", "20"]];
+    for transaction in [false, true] {
+        for assignment in [
+            "email=excluded.email",
+            "v=NULL",
+            "v=0",
+            "v=-excluded.v",
+            "v=dst.v/0",
+        ] {
+            pg.execute("CREATE TABLE secondary_errors(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL DEFAULT 7 CHECK(v>0))").unwrap();
+            pg.execute("INSERT INTO secondary_errors VALUES(1,'a',10),(2,'b',20)")
+                .unwrap();
+            if transaction {
+                pg.execute("BEGIN").unwrap();
+                pg.execute("INSERT INTO secondary_errors VALUES(9,'pending',90)")
+                    .unwrap();
+            }
+            let sql = format!(
+                "INSERT INTO secondary_errors AS dst VALUES(3,'c',30),(1,'b',3) ON CONFLICT(id) DO UPDATE SET {assignment}"
+            );
+            let error = pg
+                .execute(&sql)
+                .err()
+                .expect("secondary error must abort the statement");
+            if assignment == "v=0" || assignment == "v=-excluded.v" {
+                assert_eq!(error.pg_array_error().unwrap().state, "23514");
+            }
+            assert_eq!(rows(&observer), initial);
+            if transaction {
+                pg.execute("ROLLBACK").unwrap();
+            }
+            assert_eq!(rows(&pg), initial);
+            // Both unique indexes remain usable after the failed mixed statement.
+            pg.execute("BEGIN").unwrap();
+            pg.execute("INSERT INTO secondary_errors VALUES(3,'c',30)")
+                .unwrap();
+            pg.execute("ROLLBACK").unwrap();
+            assert_eq!(rows(&pg), initial);
+            pg.execute("DROP TABLE secondary_errors").unwrap();
+        }
+    }
+}

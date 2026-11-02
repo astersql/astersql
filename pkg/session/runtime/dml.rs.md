@@ -182,3 +182,29 @@ git diff --check
 初始红灯 /tmp/pg10-12-red.log：1 failed，0A000动作WHERE门禁，退出101。最终日志 /tmp/pg10-12-green-final.log、/tmp/pg10-12-session-final.log；相邻日志 /tmp/pg10-12-adjacent-{pg10_11_behavior,pg10_10_behavior,pg10_10_expression_gate,prepared_crud_roundtrip,session}.log；格式化和lint日志 /tmp/pg10-12-fmt.log、/tmp/pg10-12-lint.log。中间验证发现并修复冲突参数映射与typed NULL整数CAST绑定，未把编译或Parse拒绝冒充动作执行成功。
 
 未修改Go/Bazel/依赖，不触发bazel_prepare。未验证部分索引推断（独立门禁）、真实TiKV竞争、持久重启、独立PG18/MySQL客户端差分或性能；后续由各对应任务取证。此证据仅覆盖动作条件及必要局部接线，不外推完整冲突更新能力。
+
+## 2026-11-02 冲突更新二次错误（PG10-13）
+
+复用共享冲突更新、约束校验及整句写集，不增加执行门禁或第二条事务路径。唯一生产修订是 `pg_conflict_check_constraints` 在 CHECK 为 FALSE 时附带结构化 SQLSTATE 23514，保留原约束消息。该 helper 仅用于 PG INSERT 候选及冲突更新新行，不改变 MySQL 约束策略。
+
+真实 TCP 测试 `pg_dml_test::pg10_13_behavior` 覆盖二次 email 唯一冲突（23505）、SET v=NULL（23502）、SET v=0 / v=-excluded.v（23514）及运行期整数除零（22012），另测新插入后错误更新的整句撤销。9个输入各运行 simple/extended 与 idle/transaction，共36组合。扩展路径要求 Parse/Bind/Describe 成功后 Execute 才报错，没有成功行或命令标签；Sync 后显式事务保持 E，SELECT 1 返回25P02，ROLLBACK 撤销 pending 与部分写入并回 I。W/O 完整旧值回读、恢复查询、表清理、连接/listener关闭及资源归零均有断言。实际隔离为 REPEATABLE-READ。
+
+共享层独立测试 `pg10_13_secondary_errors_are_atomic` 覆盖10个混合失败/事务组合，并验证恢复后插入可复用候选主键及 email 唯一键。测试与生产文件分离。红灯 `/tmp/pg10-13-red.log` 实跑1测试、退出101：SET v=0返回XX000；修复后相同测试1 passed（36组合），日志 `/tmp/pg10-13-green.log`。共享层聚焦1 passed，日志 `/tmp/pg10-13-session.log`；TCP相邻14 passed，日志 `/tmp/pg10-13-adjacent.log`。
+
+Ready 按根AGENTS执行（verify-profile技能缺失）。动态领取共享槽位1，绝对 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；全部命令从仓库根目录执行并继承该路径：
+
+```bash
+cargo fmt --all
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_13_behavior -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_13_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_1 -- --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::prepared_crud_roundtrip -- --exact --nocapture --test-threads=1
+make lint
+git diff --check
+git diff --cached --check
+```
+
+格式化与lint分别见 `/tmp/pg10-13-fmt.log`、`/tmp/pg10-13-lint.log`，均退出0。未改Go/Bazel/依赖，不触发bazel_prepare。未验证独立PG18/MySQL参考端诊断全文/位置、RealTiKV、持久重启、并发或性能；这些继续交各专项任务，不外推完整冲突更新支持。
+
+最终共享层相邻命令7 passed，日志 `/tmp/pg10-13-session-adjacent.log`；MySQL预处理命令1 passed，日志 `/tmp/pg10-13-mysql.log`。所有最终验证命令退出0，共22个不同测试有通过证据，无ignored或零测试。槽位使用产物的所有子进程结束后释放自己的锁，保留编译缓存。

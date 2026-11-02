@@ -5428,10 +5428,10 @@ fn pg_conflict_check_constraints(
         match crate::dml_runtime::EvalExpr(&expression, row, None)?.as_deref() {
             None | Some("1") => {}
             Some("0") => {
-                return Err(SessionError::new(format!(
-                    "Check constraint '{}' is violated.",
-                    constraint.Name.O
-                )));
+                return Err(super::query::pg_union_error(
+                    &format!("Check constraint '{}' is violated.", constraint.Name.O),
+                    "23514",
+                ));
             }
             Some(_) => {
                 return Err(SessionError::new(
