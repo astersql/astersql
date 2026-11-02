@@ -208,3 +208,27 @@ git diff --cached --check
 格式化与lint分别见 `/tmp/pg10-13-fmt.log`、`/tmp/pg10-13-lint.log`，均退出0。未改Go/Bazel/依赖，不触发bazel_prepare。未验证独立PG18/MySQL参考端诊断全文/位置、RealTiKV、持久重启、并发或性能；这些继续交各专项任务，不外推完整冲突更新支持。
 
 最终共享层相邻命令7 passed，日志 `/tmp/pg10-13-session-adjacent.log`；MySQL预处理命令1 passed，日志 `/tmp/pg10-13-mysql.log`。所有最终验证命令退出0，共22个不同测试有通过证据，无ignored或零测试。槽位使用产物的所有子进程结束后释放自己的锁，保留编译缓存。
+
+
+## PostgreSQL 冲突更新重复命中（任务14）
+
+`execute_relational_insert_with_output` 的 `pg_updated_keys` 仅跟踪本语句实际插入或更新的目标行。冲突后先检查已写入身份，返回 SQLSTATE 21000（cardinality violation）；随后才计算动作 WHERE。FALSE/UNKNOWN 跳过时不留标记，因此先跳过再更新允许成功；先更新再跳过、新插入后再冲突及无值变化的重复更新均失败。沿用现有 mutations 批次提交与事务恢复，不改变 MySQL 分支。
+
+独立测试 `pg_dml_test::pg10_14_behavior` 覆盖 simple/extended、idle/显式事务、带/不带 RETURNING 的重复旧行、新行、前缀插入后重复、先更新后跳过、无值变化；成功例覆盖两次 FALSE/NULL 和先跳过后更新，分别 COMMIT/ROLLBACK，核对返回描述、命令标签、W/O 完整回读、25P02/E、ROLLBACK/I、资源清理。扩展参数用 typed NULL 和新 Bind 换值。共享测试 `pg10_14_repeated_rows_and_skipped_actions` 使用真实共享会话与存储，并验证错误恢复后唯一键仍可用。
+
+本机 PostgreSQL 18.4 独立临时实例采集7种边界（`/tmp/pg10-14-reference.log`），不将18.4视为18.6的实测。正确性关注语句原子性与身份标记，兼容性关注WHERE顺序和21000，性能未测。精确 S/V/C/M/D/H/P 全字段差分及18.6补丁差异未验证；本次验证SQLSTATE和执行阶段。
+
+
+2026-11-02 Ready 验证（默认 features、无 nextgen）：动态领取槽位1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`。命令均从仓库根目录执行并继承该环境变量：
+
+```sh
+cargo fmt --all
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_14_behavior -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_14_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_ -- --nocapture --test-threads=1
+make lint
+git diff --check
+```
+
+格式化、lint、diff检查退出0；聚焦协议1 passed（72组合、6次参数Bind），共享层1 passed（18组合），相邻协议15 passed，共享层19 passed（含MySQL Query/prepared共存），均退出0。红灯 `/tmp/pg10-14-red.log` 有效1测试、0A000与21000断言失败（Cargo退出101）；最终绿灯 `/tmp/pg10-14-green.log`、共享层 `/tmp/pg10-14-session.log`、相邻 `/tmp/pg10-14-adjacent.log` 和 `/tmp/pg10-14-session-adjacent.log`、lint `/tmp/pg10-14-lint.log`。真实隔离 REPEATABLE-READ。临时参考端已停止并删除其数据；槽位完成后释放锁、保留缓存。未修改Go/Bazel/Cargo依赖，不触发bazel_prepare；未运行昂贵全包/RealTiKV测试。

@@ -1418,3 +1418,119 @@ fn pg10_13_secondary_errors_are_atomic() {
         }
     }
 }
+
+#[test]
+fn pg10_14_repeated_rows_and_skipped_actions() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let observer =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    fn rows(session: &ConcreteSession) -> Vec<Vec<String>> {
+        let mut sets = session
+            .execute("SELECT id,email,v FROM repeated_rows ORDER BY id")
+            .unwrap();
+        let mut rows = vec![];
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    }
+    let initial = vec![vec!["1", "a", "10"], vec!["2", "b", "20"]];
+    for transaction in [false, true] {
+        for (input, action, fails, updated) in [
+            (
+                "(1,'candidate',3),(1,'again',4)",
+                "v=dst.v+excluded.v",
+                true,
+                false,
+            ),
+            ("(3,'c',3),(3,'d',4)", "v=dst.v+excluded.v", true, false),
+            (
+                "(3,'c',30),(1,'candidate',3),(1,'again',4)",
+                "v=dst.v+excluded.v",
+                true,
+                false,
+            ),
+            (
+                "(1,'candidate',30),(1,'again',4)",
+                "v=excluded.v WHERE dst.v<excluded.v",
+                true,
+                false,
+            ),
+            (
+                "(3,'c',30),(3,'d',4)",
+                "v=excluded.v WHERE false",
+                true,
+                false,
+            ),
+            ("(1,'candidate',3),(1,'again',4)", "v=dst.v", true, false),
+            (
+                "(1,'candidate',3),(1,'again',30)",
+                "v=excluded.v WHERE dst.v<excluded.v",
+                false,
+                true,
+            ),
+            (
+                "(1,'candidate',3),(1,'again',4)",
+                "v=1/0 WHERE false",
+                false,
+                false,
+            ),
+            (
+                "(1,'candidate',3),(1,'again',4)",
+                "v=1/0 WHERE NULL::boolean",
+                false,
+                false,
+            ),
+        ] {
+            pg.execute("CREATE TABLE repeated_rows(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL CHECK(v>0))").unwrap();
+            pg.execute("INSERT INTO repeated_rows VALUES(1,'a',10),(2,'b',20)")
+                .unwrap();
+            if transaction {
+                pg.execute("BEGIN").unwrap();
+            }
+            let sql = format!(
+                "INSERT INTO repeated_rows AS dst VALUES{input} ON CONFLICT(id) DO UPDATE SET {action}"
+            );
+            let result = pg.execute(&sql);
+            if fails {
+                assert_eq!(
+                    result
+                        .err()
+                        .expect("repeat must fail")
+                        .pg_array_error()
+                        .unwrap()
+                        .state,
+                    "21000"
+                );
+            } else {
+                result.unwrap();
+            }
+            if !transaction || fails {
+                let expected = if updated {
+                    vec![vec!["1", "a", "30"], vec!["2", "b", "20"]]
+                } else {
+                    initial.clone()
+                };
+                assert_eq!(rows(&observer), expected);
+            } else {
+                assert_eq!(rows(&observer), initial);
+            }
+            if transaction {
+                pg.execute("ROLLBACK").unwrap();
+            }
+            if transaction || fails {
+                assert_eq!(rows(&pg), initial);
+            }
+            pg.execute("BEGIN").unwrap();
+            pg.execute("INSERT INTO repeated_rows VALUES(3,'c',30)")
+                .unwrap();
+            pg.execute("ROLLBACK").unwrap();
+            pg.execute("DROP TABLE repeated_rows").unwrap();
+        }
+    }
+}

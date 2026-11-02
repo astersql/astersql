@@ -3598,10 +3598,13 @@ impl ConcreteSession {
                 };
                 if let Some(conflict_key) = conflict_key {
                     if let Some(assignments) = &pg_assignments {
-                        if !pg_updated_keys.insert(conflict_key.clone()) {
+                        // Check before WHERE: a row already written by this statement
+                        // cannot be revisited, even if this action would be skipped.
+                        // Skipped actions leave no marker; successful writes mark below.
+                        if pg_updated_keys.contains(&conflict_key) {
                             return Err(super::query::pg_union_error(
-                                "repeated conflict update is unsupported",
-                                "0A000",
+                                "ON CONFLICT DO UPDATE command cannot affect row a second time",
+                                "21000",
                             ));
                         }
                         let original =
