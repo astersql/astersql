@@ -168,3 +168,8 @@ PG 的 FROM 函数沿现有逐外行 LATERAL 连接入口执行，函数可省�
 CTE 复用的 INSERT SELECT 行集投影保留已有 `pg_int4_error`，避免把运行期整数诊断转换成无类型字符串。消费者除零经协议返回 22012；行集作用域仍由 `execute_with_clause` 的结果退出路径释放。覆盖入口为 `pg10_19_repeated_cte_error_identity_and_cleanup` 和 `pg10_19_behavior`，不改变算术类型推断或物化策略。
 
 PostgreSQL CTE 中函数、会话变量、行锁及 SELECT INTO 的求值资格未由本任务建立，执行前明确 0A000，不能把未消费的副作用静默忽略。此门槛不声明完整物化、volatile 次数或递归支持。
+
+
+## 写入公共表搬移接线
+
+写入CTE搬移的有界入口 `execute_pg_move_insert` 只允许单个 DELETE RETURNING 生产者和仅消费该行集的 INSERT SELECT。整数返回行按既有 NULL 表示还原；未验证的其他来源、函数、子查询和写入形态在副作用前拒绝。两侧复用同一事务与 StageStatement/ReleaseStatement/CleanupStatement，自动提交只提交一次；显式事务失败撤销本语句暂存。`pg_has_write_cte` 从 SELECT/集合/UPDATE/DELETE 的 With 字段识别生产者，不能依赖 embedded CommonTableExpression 收到 Visitor::enter。

@@ -7073,3 +7073,60 @@ fn pg10_10_unsupported_setup_requires_complete_syntax() {
         );
     }
 }
+
+#[test]
+fn pg10_21_write_cte_ast() {
+    use parser_ast::{DeleteStmt, InsertStmt, SelectStmt, SqlDialect};
+    crate::Parser::with_dialect(SqlDialect::MySQL)
+        .ParseSQL("SELECT id FROM src returning", &[])
+        .unwrap();
+    let sql = "WITH moved AS (DELETE FROM src WHERE id<=2 RETURNING id,v) INSERT INTO dst SELECT id,v FROM moved RETURNING id,v";
+    let (statements, _) = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .unwrap();
+    let insert = statements[0].as_any().downcast_ref::<InsertStmt>().unwrap();
+    assert_eq!(insert.Returning.len(), 2);
+    let select = insert
+        .Select
+        .as_ref()
+        .unwrap()
+        .as_any()
+        .downcast_ref::<SelectStmt>()
+        .unwrap();
+    let with = select.With.as_ref().unwrap().borrow();
+    assert_eq!(with.CTEs.len(), 1);
+    let delete = with.CTEs[0]
+        .Query
+        .as_any()
+        .downcast_ref::<DeleteStmt>()
+        .unwrap();
+    assert_eq!(delete.Returning.len(), 2);
+    assert!(delete.Where.is_some());
+    assert!(
+        crate::Parser::with_dialect(SqlDialect::MySQL)
+            .ParseSQL(sql, &[])
+            .is_err()
+    );
+    assert!(
+        crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseSQL(&format!("{sql} garbage garbage"), &[])
+            .is_err()
+    );
+    for sql in [
+        "INSERT INTO dst SELECT id,v FROM src RETURNING id,v",
+        "WITH moved AS (SELECT id,v FROM src) INSERT INTO dst SELECT id,v FROM moved RETURNING id,v",
+    ] {
+        let (statements, _) = crate::Parser::with_dialect(SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        assert_eq!(
+            statements[0]
+                .as_any()
+                .downcast_ref::<InsertStmt>()
+                .unwrap()
+                .Returning
+                .len(),
+            2
+        );
+    }
+}

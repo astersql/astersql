@@ -505,7 +505,9 @@ impl Scanner {
             t if t == token::stringLit => (tok, v.ident) = self.convert2Connection(tok, lit),
             _ => {}
         }
-        tok
+        // PG reserves this clause delimiter. Keep the legacy MySQL token
+        // unreserved so a table alias named returning retains its meaning.
+        if self.postgres && tok == token::returning { token::pgReturning } else { tok }
     }
 
     // LexLiteral returns the dynamic semantic value just like Go's interface{}.

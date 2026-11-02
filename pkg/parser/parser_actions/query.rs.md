@@ -118,3 +118,8 @@ PG 专属 TableFactor 接收 FunctionCallGeneric、可选表别名及列别名�
 ## 关联函数表源
 
 PG LATERAL 函数表源复用 PgFunctionSource 归约动作；显式产生式只设置现有 TableSource.Lateral，保留方言门禁和参数/别名载体。
+
+
+## 写入公共表搬移接线
+
+PG 的 CommonTableExpr 现在可持有完整 DeleteStmt（含 WHERE 和 RETURNING），不改写成分析用SELECT。PG scanner把RETURNING映射为专用保留token，避免INSERT SELECT尾部RETURNING被误吞为表别名；MySQL原有token、别名及RETURNING扩展不变。

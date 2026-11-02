@@ -98,6 +98,7 @@ enum QueryRule {
     WithListAlt01,
     WithListAlt02,
     CommonTableExprAlt01,
+    CommonTableDeleteAlt01,
     WindowClauseOptionalAlt01,
     WindowClauseOptionalAlt02,
     WindowDefinitionListAlt01,
@@ -425,6 +426,9 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "withclause_with_recursive_withlist--783be93a7c647ccf" => Some(QueryRule::WithClauseAlt02),
         "withlist_withlist_commontableexpr--db9bea65f8dc066c" => Some(QueryRule::WithListAlt01),
         "withlist_commontableexpr--79685d6b2934b390" => Some(QueryRule::WithListAlt02),
+        "commontableexpr_identifier_identlistwithparenopt--0553f81c6c4b6de6" => {
+            Some(QueryRule::CommonTableDeleteAlt01)
+        }
         "commontableexpr_identifier_identlistwithparenopt--c951be5209073e48" => {
             Some(QueryRule::CommonTableExprAlt01)
         }
@@ -591,7 +595,9 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         "partitionnamelistopt_partition_partitionnamelist--472022a361659a84" => {
             Some(QueryRule::PartitionNameListOptAlt02)
         }
-        "tableasnameopt_prec_empty--ba925be0fd99e42b" => Some(QueryRule::TableAsNameOptAlt01),
+        "tableasnameopt_prec_empty--ba925be0fd99e42b" => {
+            Some(QueryRule::TableAsNameOptAlt01)
+        }
         "tableasnameoptdelete_prec_higherthanreturning--8c4e5f049bc03c65" => {
             Some(QueryRule::TableAsNameOptDeleteAlt01)
         }
@@ -983,6 +989,26 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             out.item = Some(Box::new(parser_ast::WithClause {
                 IsRecursive: false,
                 CTEs: vec![cte],
+            }));
+        }
+        QueryRule::CommonTableDeleteAlt01 => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                return Err(rhs[1].offset as isize);
+            }
+            let Some(query) = rhs[5].statement.take() else {
+                return Ok(false);
+            };
+            let columns = rhs[2]
+                .item
+                .as_deref()
+                .and_then(|x| x.downcast_ref::<Vec<parser_ast::CIStr>>())
+                .cloned()
+                .unwrap_or_default();
+            out.item = Some(Box::new(parser_ast::CommonTableExpression {
+                Name: super::identifier(parser_state, &rhs[1]).0,
+                ColNameList: columns,
+                Query: query,
+                IsRecursive: false,
             }));
         }
         QueryRule::CommonTableExprAlt01 => {

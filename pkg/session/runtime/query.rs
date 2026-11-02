@@ -7289,6 +7289,9 @@ impl ConcreteSession {
         output_columns: &[String],
         inherited: &HashMap<String, Vec<ConcreteResultField>>,
     ) -> SessionResult<Vec<ConcreteResultField>> {
+        if let Some(delete) = node.as_any().downcast_ref::<ast::DeleteStmt>() {
+            return self.delete_returning_fields(delete);
+        }
         let mut ctes = inherited.clone();
         if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
             if self.sql_dialect() == ast::SqlDialect::PostgreSQL
@@ -8131,6 +8134,15 @@ impl ConcreteSession {
         };
         let plan = crate::dml_runtime::PlanInsert(values)?;
         let mut output = None;
+        #[cfg(test)]
+        crate::runtime_dispatch_test::pg10_21_record_move_event(
+            "insert",
+            self.state
+                .borrow()
+                .transaction
+                .as_ref()
+                .map_or(0, |txn| txn.StartTS()),
+        );
         self.execute_relational_insert_with_output(
             values,
             plan,

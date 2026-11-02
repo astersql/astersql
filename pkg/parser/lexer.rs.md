@@ -135,3 +135,8 @@ PG contextual percentile_disc/within tokens feed the existing aggregate grammar;
 PostgreSQL percentile_cont shares the ordered-set token with percentile_disc; the semantic action retains the actual function identifier. MySQL and quoted identifiers preserve existing tokenization.
 
 PG10-10：仅 PostgreSQL 模式识别 DEFERRABLE/INITIALLY/DEFERRED；EXCLUDE USING 用独立上下文 token 消除与非保留标识符的文法歧义，不改变窗口 EXCLUDE。
+
+
+## 写入公共表 RETURNING
+
+PG Lex 将未引用 RETURNING 从既有 keyword token 映射到 pgReturning，让它作为保留的DML分隔符，避免INSERT SELECT尾部被当作表别名。MySQL仍使用既有returning token，保留裸表别名及原有RETURNING扩展；字符串、注释、引用标识符不进入此映射。

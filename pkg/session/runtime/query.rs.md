@@ -388,3 +388,8 @@ validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影�
 ## PostgreSQL CTE 部分列别名
 
 非递归 CTE 的 PG 列别名列表仅重命名前缀，尾列保持原名及类型；超长列表拒绝，MySQL 保持原有数量相等规则。PG 超长别名返回 42601；重复列名允许声明，实际的非限定或限定引用歧义返回 42702，MySQL 诊断保持原路径。共享执行与静态结果描述采用同一数量规则，覆盖入口为 `pg10_18_partial_cte_aliases` 和 `pg10_18_behavior`。
+
+
+## 写入公共表搬移接线
+
+`relational_query_node_result_fields_with_ctes` 对 DELETE 生产者调用 delete_returning_fields，仅绑定 RETURNING 元数据，不执行删除；实际行集仍由共享 DELETE 执行入口产生。

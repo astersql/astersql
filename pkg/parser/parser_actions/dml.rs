@@ -76,6 +76,7 @@ enum DmlRule {
     ConflictUpdatePredicateOptAlt01,
     ConflictUpdatePredicateOptAlt02,
     InsertIntoStmtAlt01,
+    InsertWithAlt01,
     InsertTargetAlt01,
     InsertTargetAlt02,
     InsertOnClauseAlt01,
@@ -225,6 +226,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "importintostmt_import_into_tablename_columnnameo--0d7a8d564098e762" => {
             DmlRule::ImportIntoStmtAlt02
         }
+        "insertintostmt_withclause_insertintostmt--a5cc1bacd7679f69" => DmlRule::InsertWithAlt01,
         "insertintostmt_insert_tableoptimizerhintsopt_pri--fdae861e22bad8bd" => {
             DmlRule::InsertIntoStmtAlt01
         }
@@ -344,7 +346,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
             DmlRule::ReplaceIntoStmtAlt01
         }
         "returningclause_prec_empty--2219f44067652212" => DmlRule::ReturningClauseAlt01,
-        "returningclause_returning_fieldlist--c1444df4e6338fc9" => DmlRule::ReturningClauseAlt02,
+        "returningclause_pgreturning_fieldlist--3f2062165a05d21e" | "returningclause_returning_fieldlist--c1444df4e6338fc9" => DmlRule::ReturningClauseAlt02,
         "starting--a45620a3c225ca99" => DmlRule::StartingAlt01,
         "starting_starting_by_fieldterminator--84bbddf92173127e" => DmlRule::StartingAlt02,
         "updatestmt_withclause_updatestmtnowith--5f221bdc6a6e73aa" => DmlRule::UpdateStmtAlt01,
@@ -386,6 +388,7 @@ fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool,
     } else if matches!(
         rule,
         DmlRule::InsertIntoStmtAlt01
+            | DmlRule::InsertWithAlt01
             | DmlRule::InsertTargetAlt01
             | DmlRule::InsertTargetAlt02
             | DmlRule::InsertRowAliasOptAlt01
@@ -1204,6 +1207,41 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 },
                 ..Default::default()
             }));
+        }
+        DmlRule::InsertWithAlt01 => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                return Err(rhs[1].offset as isize);
+            }
+            let Some(with) = rhs[1]
+                .item
+                .take()
+                .and_then(|x| x.downcast::<parser_ast::WithClause>().ok())
+            else {
+                return Ok(false);
+            };
+            let Some(mut statement) = rhs[2].statement.take() else {
+                return Ok(false);
+            };
+            let Some(insert) = statement
+                .as_any_mut()
+                .downcast_mut::<parser_ast::InsertStmt>()
+            else {
+                return Ok(false);
+            };
+            let Some(select) = insert
+                .Select
+                .as_mut()
+                .and_then(|x| x.as_any_mut().downcast_mut::<parser_ast::SelectStmt>())
+            else {
+                return Err(rhs[1].offset as isize);
+            };
+            if select.With.is_some() {
+                return Err(rhs[1].offset as isize);
+            }
+            // WITH belongs to the INSERT's source scope; its full producer AST
+            // survives prepare/restore and is evaluated inside the DML boundary.
+            select.With = Some((*with).into_shared());
+            out.statement = Some(statement);
         }
         DmlRule::InsertIntoStmtAlt01 => {
             let Some(mut statement) = rhs[rhs_len - 2]

@@ -1503,6 +1503,15 @@ impl ConcreteSession {
         statement: &dyn ast::Node,
         statement_sql: Option<&str>,
     ) -> SessionResult<Option<ConcreteRecordSet>> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && super::source::pg_has_write_cte(statement)
+            && !statement.as_any().is::<ast::InsertStmt>()
+        {
+            return Err(super::query::pg_union_error(
+                "writable CTE requires an INSERT consumer",
+                "0A000",
+            ));
+        }
         // Keep the completed statement's marker observable until the next SQL
         // statement starts, as Go's ResetContextOfStmt does.
         self.check_materialized_shadow_access(statement)?;
@@ -3083,6 +3092,11 @@ impl ConcreteSession {
             }
             self.ensure_implicit_transaction()?;
             self.register_statement_mdl(statement)?;
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                && super::source::pg_has_write_cte(statement)
+            {
+                return self.execute_pg_move_insert(insert);
+            }
             if self.sql_dialect() == ast::SqlDialect::PostgreSQL && !insert.Returning.is_empty() {
                 return self.execute_pg_insert_returning(insert).map(Some);
             }

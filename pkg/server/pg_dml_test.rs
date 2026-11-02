@@ -4865,3 +4865,232 @@ fn pg10_14_behavior() {
     assert_eq!(service.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg10_21_behavior() {
+    let (domain, mysql) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let guard = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    for c in [&mut w, &mut o] {
+        eprintln!(
+            "pg10_21 actual isolation: {:?}",
+            pg10_rows(&pg10_ok(c, "SELECT @@transaction_isolation", b'I'))
+        );
+    }
+    let initial = vec![
+        text_row(&[Some("1"), Some("10")]),
+        text_row(&[Some("2"), None]),
+        text_row(&[Some("3"), Some("30")]),
+    ];
+    let moved = initial[..2].to_vec();
+    let scan_src = "SELECT id,v FROM public.pg10_21_src ORDER BY id";
+    let scan_dst = "SELECT id,v FROM public.pg10_21_dst ORDER BY id";
+    for extended in [false, true] {
+        for ending in ["COMMIT", "ROLLBACK"] {
+            for returning in [false, true] {
+                for bound in [Some(0), Some(2), None] {
+                    let count = bound.unwrap_or(0);
+                    for sql in [
+                        "CREATE TABLE public.pg10_21_src(id INT PRIMARY KEY,v INT)",
+                        "CREATE TABLE public.pg10_21_dst(id INT PRIMARY KEY,v INT)",
+                        "INSERT INTO public.pg10_21_src VALUES (1,10),(2,NULL),(3,30)",
+                    ] {
+                        pg10_ok(&mut w, sql, b'I');
+                    }
+                    pg10_ok(&mut w, "BEGIN", b'T');
+                    let suffix = if returning { " RETURNING id,v" } else { "" };
+                    let value = bound.map(|n| n.to_string());
+                    let predicate = if extended {
+                        "$1"
+                    } else {
+                        value.as_deref().unwrap_or("NULL")
+                    };
+                    let sql = format!(
+                        "WITH moved AS (DELETE FROM public.pg10_21_src WHERE id<={predicate} RETURNING id,v) INSERT INTO public.pg10_21_dst SELECT id,v FROM moved{suffix}"
+                    );
+                    let result = if extended {
+                        parse(&mut w, "move", &sql, &[23]);
+                        let parsed = read(&mut w);
+                        assert_eq!(parsed, (b'1', vec![]), "{parsed:?}");
+                        send(&mut w, b'D', b"Smove\0");
+                        assert_eq!(read(&mut w).0, b't');
+                        let description = read(&mut w);
+                        assert_eq!(description.0, if returning { b'T' } else { b'n' });
+                        assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial);
+                        bind(
+                            &mut w,
+                            "move_portal",
+                            "move",
+                            &[],
+                            &[value.as_deref().map(str::as_bytes)],
+                            &[],
+                        );
+                        assert_eq!(read(&mut w), (b'2', vec![]));
+                        send(&mut w, b'D', b"Pmove_portal\0");
+                        let portal_description = read(&mut w);
+                        assert_eq!(portal_description.0, if returning { b'T' } else { b'n' });
+                        if returning {
+                            let fields = pg10_description(&portal_description.1);
+                            assert_eq!(
+                                fields
+                                    .iter()
+                                    .map(|f| (f.0.as_str(), f.1, f.2, f.3))
+                                    .collect::<Vec<_>>(),
+                                vec![("id", 23, 4, -1), ("v", 23, 4, -1)]
+                            );
+                            assert!(fields.iter().all(|f| f.4 != 0));
+                            assert_eq!(fields[0].5, 1);
+                            assert_eq!(fields[1].5, 2);
+                        }
+                        execute(&mut w, "move_portal");
+                        send(&mut w, b'S', &[]);
+                        let mut messages = Vec::new();
+                        loop {
+                            let m = read(&mut w);
+                            let end = m.0 == b'Z';
+                            messages.push(m);
+                            if end {
+                                break;
+                            }
+                        }
+                        assert!(!messages.iter().any(|m| m.0 == b'E'), "{messages:?}");
+                        messages
+                    } else {
+                        pg10_ok(&mut w, &sql, b'T')
+                    };
+                    let expected = if count == 2 { moved.clone() } else { vec![] };
+                    assert_eq!(
+                        pg10_rows(&result),
+                        if returning { expected.clone() } else { vec![] }
+                    );
+                    assert!(
+                        result.contains(&(b'C', format!("INSERT 0 {count}\0").into_bytes())),
+                        "{result:?}"
+                    );
+                    if returning {
+                        let description = result.iter().find(|m| m.0 == b'T');
+                        if let Some((_, body)) = description {
+                            let fields = pg10_description(body);
+                            assert_eq!(
+                                fields
+                                    .iter()
+                                    .map(|f| (f.0.as_str(), f.1, f.2, f.3))
+                                    .collect::<Vec<_>>(),
+                                vec![("id", 23, 4, -1), ("v", 23, 4, -1)]
+                            );
+                        }
+                    }
+                    assert_eq!(pg10_rows(&pg10_ok(&mut w, scan_dst, b'T')), expected);
+                    assert_eq!(
+                        pg10_rows(&pg10_ok(&mut w, scan_src, b'T')),
+                        if count == 2 {
+                            initial[2..].to_vec()
+                        } else {
+                            initial.clone()
+                        }
+                    );
+                    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial);
+                    assert!(pg10_rows(&pg10_ok(&mut o, scan_dst, b'I')).is_empty());
+                    pg10_ok(&mut w, ending, b'I');
+                    assert_eq!(
+                        pg10_rows(&pg10_ok(&mut o, scan_src, b'I')),
+                        if ending == "COMMIT" && count == 2 {
+                            initial[2..].to_vec()
+                        } else {
+                            initial.clone()
+                        }
+                    );
+                    assert_eq!(
+                        pg10_rows(&pg10_ok(&mut o, scan_dst, b'I')),
+                        if ending == "COMMIT" { expected } else { vec![] }
+                    );
+                    if extended {
+                        send(&mut w, b'C', b"Smove\0");
+                        assert_eq!(read(&mut w), (b'3', vec![]));
+                        sync(&mut w);
+                    }
+                    for sql in [
+                        "DROP TABLE public.pg10_21_src",
+                        "DROP TABLE public.pg10_21_dst",
+                    ] {
+                        pg10_ok(&mut w, sql, b'I');
+                    }
+                }
+            }
+        }
+    }
+    // Autocommit failures cannot leave the DELETE committed separately.
+    for sql in [
+        "CREATE TABLE public.pg10_21_src(id INT PRIMARY KEY,v INT)",
+        "CREATE TABLE public.pg10_21_dst(id INT PRIMARY KEY,v INT)",
+        "INSERT INTO public.pg10_21_src VALUES(1,10),(2,NULL),(3,30)",
+        "INSERT INTO public.pg10_21_dst VALUES(1,99)",
+    ] {
+        pg10_ok(&mut w, sql, b'I');
+    }
+    let failed = simple_query(
+        &mut w,
+        "WITH moved AS (DELETE FROM public.pg10_21_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_21_dst SELECT id,v FROM moved RETURNING id,v",
+    );
+    assert_eq!(
+        error_state(&failed.iter().find(|m| m.0 == b'E').unwrap().1),
+        Some("23505")
+    );
+    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial);
+    assert_eq!(
+        pg10_rows(&pg10_ok(&mut o, scan_dst, b'I')),
+        vec![text_row(&[Some("1"), Some("99")])]
+    );
+    pg10_ok(&mut w, "BEGIN", b'T');
+    pg10_ok(&mut w, "INSERT INTO public.pg10_21_src VALUES (4,40)", b'T');
+    let failed = simple_query(
+        &mut w,
+        "WITH moved AS (DELETE FROM public.pg10_21_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_21_dst SELECT id,v FROM moved RETURNING id,v",
+    );
+    assert_eq!(
+        error_state(&failed.iter().find(|m| m.0 == b'E').unwrap().1),
+        Some("23505")
+    );
+    assert_eq!(failed.last(), Some(&(b'Z', b"E".to_vec())));
+    let rejected = simple_query(&mut w, "SELECT 1");
+    assert_eq!(error_state(&rejected[0].1), Some("25P02"));
+    send(&mut w, b'S', &[]);
+    assert_eq!(read(&mut w), (b'Z', b"E".to_vec()));
+    pg10_ok(&mut w, "ROLLBACK", b'I');
+    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial);
+    pg10_ok(&mut w, "DELETE FROM public.pg10_21_dst", b'I');
+    let success = pg10_ok(
+        &mut w,
+        "WITH moved AS (DELETE FROM public.pg10_21_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_21_dst SELECT id,v FROM moved RETURNING id,v",
+        b'I',
+    );
+    assert_eq!(pg10_rows(&success), moved);
+    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial[2..]);
+    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_dst, b'I')), moved);
+    pg10_ok(&mut w, "SELECT 1", b'I');
+    for sql in [
+        "DROP TABLE public.pg10_21_src",
+        "DROP TABLE public.pg10_21_dst",
+    ] {
+        pg10_ok(&mut w, sql, b'I');
+    }
+    mysql.execute("SELECT 1").unwrap();
+    drop(w);
+    drop(o);
+    drop(guard);
+}

@@ -16,6 +16,7 @@
 //! Relational query sources, joins, derived tables, and CTE traversal.
 
 use super::*;
+use ast::Node;
 
 /// This gate deliberately requires separate purity evidence for callable
 /// functions and session variables before they can be elided as unused CTEs.
@@ -43,20 +44,25 @@ fn pg_cte_requires_evaluation_evidence(node: &dyn ast::Node) -> bool {
     evidence.0
 }
 
+fn with_clause(node: &dyn ast::Node) -> Option<&ast::WithClauseRef> {
+    if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+        select.With.as_ref()
+    } else if let Some(set) = node.as_any().downcast_ref::<ast::SetOprStmt>() {
+        set.With.as_ref()
+    } else if let Some(delete) = node.as_any().downcast_ref::<ast::DeleteStmt>() {
+        delete.With.as_ref()
+    } else if let Some(update) = node.as_any().downcast_ref::<ast::UpdateStmt>() {
+        update.With.as_ref()
+    } else {
+        node.as_any()
+            .downcast_ref::<ast::SetOprSelectList>()
+            .and_then(|list| list.With.as_ref())
+    }
+}
+
 /// Resolve free relation references without evaluating SELECT expressions. Reverse
 /// WITH traversal preserves nonrecursive visibility and nested name shadowing.
 fn pg_cte_free_relations(node: &dyn ast::Node, resolve_with: bool) -> HashSet<String> {
-    fn with_clause(node: &dyn ast::Node) -> Option<&ast::WithClauseRef> {
-        if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
-            select.With.as_ref()
-        } else if let Some(set) = node.as_any().downcast_ref::<ast::SetOprStmt>() {
-            set.With.as_ref()
-        } else {
-            node.as_any()
-                .downcast_ref::<ast::SetOprSelectList>()
-                .and_then(|list| list.With.as_ref())
-        }
-    }
     fn identity(node: &dyn ast::Node) -> usize {
         node as *const dyn ast::Node as *const () as usize
     }
@@ -2963,6 +2969,36 @@ impl ConcreteSession {
         node: &dyn ast::Node,
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(delete) = node.as_any().downcast_ref::<ast::DeleteStmt>()
+        {
+            #[cfg(test)]
+            crate::runtime_dispatch_test::pg10_21_record_move_event(
+                "delete",
+                self.state
+                    .borrow()
+                    .transaction
+                    .as_ref()
+                    .map_or(0, |txn| txn.StartTS()),
+            );
+            let result = self.execute_pg_delete_returning(delete)?;
+            let columns = result.columns.clone();
+            let rows = result
+                .rows
+                .into_iter()
+                .map(|row| {
+                    columns
+                        .iter()
+                        .cloned()
+                        .zip(row.into_iter().map(|value| {
+                            (value != CONCRETE_NULL_VALUE && value != SHOW_NULL_CELL)
+                                .then_some(value)
+                        }))
+                        .collect()
+                })
+                .collect();
+            return Ok(InsertSelectRows { columns, rows });
+        }
         if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
             if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                 && select.Kind == ast::SelectStmtKind::Values
@@ -3383,5 +3419,174 @@ impl ConcreteSession {
             remaining: window.map_or(usize::MAX, |w| w.count),
         }));
         Ok(Some(result))
+    }
+}
+
+/// Detect write producers without interpreting SQL text at the protocol edge.
+pub(super) fn pg_has_write_cte(node: &dyn ast::Node) -> bool {
+    struct Writes(bool);
+    impl ast::Visitor for Writes {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(with) = with_clause(node) {
+                self.0 |= with
+                    .borrow()
+                    .CTEs
+                    .iter()
+                    .any(|cte| cte.Query.as_any().is::<ast::DeleteStmt>());
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut visitor = Writes(false);
+    node.accept(&mut visitor);
+    visitor.0
+}
+
+impl ConcreteSession {
+    /// The bounded DELETE -> INSERT pipeline has one table-reading producer.
+    /// Its consumer reads only that producer's row images, never the mutated
+    /// base table. Both writes share one transaction and statement rollback.
+    pub(super) fn execute_pg_move_insert(
+        &self,
+        insert: &ast::InsertStmt,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
+        let unsupported =
+            || super::query::pg_union_error("unsupported writable CTE shape", "0A000");
+        let select = insert
+            .Select
+            .as_ref()
+            .and_then(|node| node.as_any().downcast_ref::<ast::SelectStmt>())
+            .ok_or_else(unsupported)?;
+        let with = select.With.as_ref().ok_or_else(unsupported)?.borrow();
+        if with.IsRecursive || with.CTEs.len() != 1 || insert.PostgreSQLConflict.is_some() {
+            return Err(unsupported());
+        }
+        let cte = &with.CTEs[0];
+        let delete = cte
+            .Query
+            .as_any()
+            .downcast_ref::<ast::DeleteStmt>()
+            .ok_or_else(unsupported)?;
+        let from = select.From.as_ref().ok_or_else(unsupported)?;
+        let Some(ast::ResultSetNode::TableSource(source)) = from.TableRefs.Left.as_deref() else {
+            return Err(unsupported());
+        };
+        if from.TableRefs.Right.is_some()
+            || source.Source.Name.L != cte.Name.L
+            || !source.Source.Schema.L.is_empty()
+            || delete.Returning.is_empty()
+            || delete.With.is_some()
+            || delete.Using.is_some()
+            || select.Where.is_some()
+            || !select.GroupBy.is_empty()
+            || select.Having.is_some()
+            || select.Limit.is_some()
+            || insert.IgnoreErr
+            || insert.IsReplace
+            || !insert.OnDuplicate.is_empty()
+        {
+            return Err(unsupported());
+        }
+        if cte.IsRecursive
+            || source.QuerySource.is_some()
+            || source.FunctionSource.is_some()
+            || select.lock_info.is_some()
+        {
+            return Err(unsupported());
+        }
+        // This first pipeline transports integer row images. Do not conflate
+        // the legacy rendered NULL marker with a user's textual cell.
+        if self.delete_returning_fields(delete)?.iter().any(|field| {
+            !matches!(
+                field.column.GetType(),
+                astersql_parser_mysql::r#type::TypeTiny
+                    | astersql_parser_mysql::r#type::TypeShort
+                    | astersql_parser_mysql::r#type::TypeLong
+                    | astersql_parser_mysql::r#type::TypeLonglong
+                    | astersql_parser_mysql::r#type::TypeInt24
+            )
+        }) {
+            return Err(unsupported());
+        }
+        // Reject nested readers/functions before either producer can mutate.
+        struct Expressions(bool);
+        impl ast::Visitor for Expressions {
+            fn enter(&mut self, node: &dyn ast::Node) -> bool {
+                if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
+                    self.0 |= matches!(
+                        expr.Kind,
+                        ast::ExprKind::Subquery { .. }
+                            | ast::ExprKind::ExistsSubquery { .. }
+                            | ast::ExprKind::InSubquery { .. }
+                            | ast::ExprKind::CompareSubquery { .. }
+                            | ast::ExprKind::Function { .. }
+                            | ast::ExprKind::Variable { .. }
+                    );
+                }
+                false
+            }
+            fn leave(&mut self, _: &dyn ast::Node) -> bool {
+                true
+            }
+        }
+        let mut expressions = Expressions(false);
+        insert.accept(&mut expressions);
+        if expressions.0 {
+            return Err(unsupported());
+        }
+        drop(with);
+        let owns_transaction = self.state.borrow().transaction.is_none();
+        if owns_transaction {
+            self.begin_transaction(&ast::BeginStmt::default())?;
+        }
+        let checkpoint = (|| {
+            let mut state = self.state.borrow_mut();
+            let keys = state.transaction_write_keys.clone();
+            let buffer_keys = state.txn_mem_buffer_keys;
+            let buffer_bytes = state.txn_mem_buffer_bytes;
+            let handle = state
+                .transaction
+                .as_mut()
+                .expect("move transaction")
+                .StageStatement()
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            Ok::<_, SessionError>((handle, keys, buffer_keys, buffer_bytes))
+        })();
+        let (handle, keys, buffer_keys, buffer_bytes) = match checkpoint {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                if owns_transaction {
+                    self.finish_transaction(false)?;
+                }
+                return Err(error);
+            }
+        };
+        let result = if insert.Returning.is_empty() {
+            self.execute_insert(insert).map(|_| None)
+        } else {
+            self.execute_pg_insert_returning(insert).map(Some)
+        };
+        {
+            let mut state = self.state.borrow_mut();
+            let transaction = state.transaction.as_mut().expect("move transaction");
+            if result.is_ok() {
+                transaction.ReleaseStatement(handle)
+            } else {
+                transaction.CleanupStatement(handle)
+            }
+            .map_err(|e| SessionError::new(e.to_string()))?;
+            if result.is_err() {
+                state.transaction_write_keys = keys;
+                state.txn_mem_buffer_keys = buffer_keys;
+                state.txn_mem_buffer_bytes = buffer_bytes;
+            }
+        }
+        if owns_transaction {
+            self.finish_transaction(result.is_ok())?;
+        }
+        result
     }
 }

@@ -1698,3 +1698,140 @@ fn pg10_20_unused_cte_evaluation() {
     );
     assert!(pg.execute("SELECT v FROM a").is_err());
 }
+
+thread_local! {
+    static PG10_21_MOVE_EVENTS: std::cell::RefCell<Option<Vec<(&'static str,u64)>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn pg10_21_record_move_event(kind: &'static str, start_ts: u64) {
+    PG10_21_MOVE_EVENTS.with_borrow_mut(|events| {
+        if let Some(events) = events {
+            events.push((kind, start_ts));
+        }
+    });
+}
+
+#[test]
+fn pg10_21_move_atomic_rows() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let mysql_observer = ConcreteSession::new(domain.clone());
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    let observer = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let rows = |session: &ConcreteSession, sql: &str| {
+        let mut sets = session.execute(sql).unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows.sort();
+        rows
+    };
+    mysql
+        .execute("CREATE TABLE pg10_21_mysql(id INT PRIMARY KEY,v INT)")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO pg10_21_mysql VALUES(1,10),(2,NULL)")
+        .unwrap();
+    let mysql_initial = rows(&mysql, "SELECT id,v FROM pg10_21_mysql ORDER BY id");
+    let (prepared, _, _) = mysql
+        .prepare_protocol_statement("SELECT id,v FROM pg10_21_mysql WHERE id=?")
+        .unwrap();
+    let prepared_row = mysql
+        .execute_protocol_statement(
+            prepared,
+            &[crate::runtime::ConcretePreparedArgument::Signed(2)],
+        )
+        .unwrap()[0]
+        .next_row()
+        .unwrap()
+        .unwrap();
+    assert_eq!(prepared_row, mysql_initial[1]);
+    mysql.execute("BEGIN").unwrap();
+    mysql
+        .execute("UPDATE pg10_21_mysql SET v=11 WHERE id=1")
+        .unwrap();
+    assert_eq!(
+        rows(
+            &mysql_observer,
+            "SELECT id,v FROM pg10_21_mysql ORDER BY id"
+        ),
+        mysql_initial
+    );
+    for sql in [
+        "CREATE TABLE pg10_21_src(id INT PRIMARY KEY,v INT)",
+        "CREATE TABLE pg10_21_dst(id INT PRIMARY KEY,v INT)",
+        "INSERT INTO pg10_21_src VALUES (1,10),(2,NULL),(3,30)",
+    ] {
+        pg.execute(sql).unwrap();
+    }
+    let initial = rows(&pg, "SELECT id,v FROM pg10_21_src");
+    pg.execute("BEGIN").unwrap();
+    let start = rows(&pg, "SELECT @@tidb_current_ts")[0][0]
+        .parse::<u64>()
+        .unwrap();
+    PG10_21_MOVE_EVENTS.with_borrow_mut(|events| *events = Some(vec![]));
+    let returned = rows(
+        &pg,
+        "WITH moved AS (DELETE FROM pg10_21_src WHERE id<=2 RETURNING id,v) INSERT INTO pg10_21_dst SELECT id,v FROM moved RETURNING id,v",
+    );
+    let events = PG10_21_MOVE_EVENTS.with_borrow_mut(Option::take).unwrap();
+    eprintln!("pg10_21 real producer/consumer transaction events: {events:?}");
+    assert_eq!(events, vec![("delete", start), ("insert", start)]);
+    assert_ne!(start, 0);
+    assert_eq!(returned, initial[..2]);
+    assert_eq!(
+        rows(&pg, "SELECT @@tidb_current_ts")[0][0]
+            .parse::<u64>()
+            .unwrap(),
+        start
+    );
+    assert_eq!(rows(&pg, "SELECT id,v FROM pg10_21_src"), initial[2..]);
+    assert_eq!(rows(&pg, "SELECT id,v FROM pg10_21_dst"), returned);
+    assert_eq!(rows(&observer, "SELECT id,v FROM pg10_21_src"), initial);
+    assert!(rows(&observer, "SELECT id,v FROM pg10_21_dst").is_empty());
+    pg.execute("ROLLBACK").unwrap();
+    assert_eq!(rows(&observer, "SELECT id,v FROM pg10_21_src"), initial);
+    pg.execute("INSERT INTO pg10_21_dst VALUES(1,99)").unwrap();
+    assert!(pg.execute("WITH moved AS (DELETE FROM pg10_21_src WHERE id<=2 RETURNING id,v) INSERT INTO pg10_21_dst SELECT id,v FROM moved RETURNING id,v").is_err());
+    assert_eq!(rows(&observer, "SELECT id,v FROM pg10_21_src"), initial);
+    // Other readers and sibling writes require independent snapshot evidence.
+    assert!(pg.execute("WITH moved AS (DELETE FROM pg10_21_src WHERE id<=2 RETURNING id,v) SELECT id,v FROM moved").is_err());
+    assert_eq!(rows(&observer, "SELECT id,v FROM pg10_21_src"), initial);
+    assert_eq!(
+        rows(
+            &mysql_observer,
+            "SELECT id,v FROM pg10_21_mysql ORDER BY id"
+        ),
+        mysql_initial
+    );
+    mysql.execute("COMMIT").unwrap();
+    assert_eq!(
+        rows(&mysql_observer, "SELECT v FROM pg10_21_mysql WHERE id=1"),
+        vec![vec!["11".to_owned()]]
+    );
+    mysql.execute("BEGIN").unwrap();
+    mysql
+        .execute("UPDATE pg10_21_mysql SET v=12 WHERE id=1")
+        .unwrap();
+    mysql.execute("ROLLBACK").unwrap();
+    assert_eq!(
+        rows(&mysql_observer, "SELECT v FROM pg10_21_mysql WHERE id=1"),
+        vec![vec!["11".to_owned()]]
+    );
+    let next = mysql
+        .execute_protocol_statement(
+            prepared,
+            &[crate::runtime::ConcretePreparedArgument::Signed(2)],
+        )
+        .unwrap()[0]
+        .next_row()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, prepared_row);
+    mysql.close_protocol_statement(prepared).unwrap();
+    mysql.execute("DROP TABLE pg10_21_mysql").unwrap();
+    for sql in ["DROP TABLE pg10_21_src", "DROP TABLE pg10_21_dst"] {
+        pg.execute(sql).unwrap();
+    }
+}

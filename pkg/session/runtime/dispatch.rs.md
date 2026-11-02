@@ -182,3 +182,8 @@ SELECT结果的sql_select_limit经truncate_rows约束缓冲/活SRF两个形态�
 ### 59bfe3daab 局部增量
 
 59bfe3daab 必要局部接线：在已有 MySQL runtime 分派中将 CompareMaterializedViewStmt 交给 execute_compare_sql；SEM 在分派前执行，PostgreSQL 方言路径保持隔离。
+
+
+## 写入公共表搬移接线
+
+PG 写入CTE只在 INSERT 分支、既有写入检查和 MDL登记后交给 execute_pg_move_insert；其他主语句保留 0A000 门禁。该分派不拆分SQL或另建执行器。
