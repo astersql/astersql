@@ -261,3 +261,7 @@ Portal对活SRF结果持有既有ProtocolResultSet句柄，每个Execute按行�
 ### 无目标 DO NOTHING 扩展执行
 
 prepare/process 复用 pg_result::supported_conflict_do_nothing 判断 Any/列目标支持范围；无目标语句的引擎 prepared handle 保留原始冲突动作，analysis_sql 仍仅供未开放形态的描述。验证覆盖 Parse/Bind/Describe/Execute/Sync、新 Bind、typed NULL、零行返回及事务错误恢复。
+
+## 2026-11-02 冲突更新候选行绑定
+
+共享 INSERT 支持无动作 WHERE 的基本唯一目标 DO UPDATE：旧行与默认值求值后的 excluded 分别绑定，SET 右侧同时读取旧行；保留未赋值列，按实际新行投影 RETURNING 并按 PG 计数。supported_conflict_action 同时用于简单和扩展执行门禁，扩展 prepared handle 保留原始冲突节点。目标谓词、动作 WHERE、重复命中、生成列及物化视图日志表仍保留独立能力门禁。测试入口为 pg10_11_behavior 和共享层 pg10_11_；运行证据见本次交接。

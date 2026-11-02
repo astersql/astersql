@@ -245,8 +245,12 @@ pub(crate) fn prepare_command(sql: &str) -> Result<PrepareCommand, (&'static str
     command_for_phase(sql, true)
 }
 
-pub(crate) fn supported_conflict_do_nothing(clause: &ast::PostgreSQLConflictClause) -> bool {
-    clause.Action == ast::PostgreSQLConflictAction::DoNothing
+pub(crate) fn supported_conflict_action(clause: &ast::PostgreSQLConflictClause) -> bool {
+    (clause.Action == ast::PostgreSQLConflictAction::DoNothing
+        || (clause.Action == ast::PostgreSQLConflictAction::DoUpdate
+            && clause.Target != ast::PostgreSQLConflictTarget::Any
+            && clause.UpdatePredicate.is_none()
+            && !clause.UpdateAssignments.is_empty()))
         && (clause.Target == ast::PostgreSQLConflictTarget::Any
             || (clause.Target == ast::PostgreSQLConflictTarget::Constraint
                 && clause.Constraint.is_some())
@@ -299,7 +303,7 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         postgresql_conflict = insert.PostgreSQLConflict.clone();
         if postgresql_conflict
             .as_ref()
-            .is_some_and(|clause| !supported_conflict_do_nothing(clause))
+            .is_some_and(|clause| !supported_conflict_action(clause))
             && !prepare
         {
             return Err((

@@ -1239,3 +1239,55 @@ fn pg10_10_missing_index_is_a_binding_error() {
     }
     pg.execute("DROP TABLE missing_arbiter").unwrap();
 }
+
+#[test]
+fn pg10_11_candidate_binding() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let o = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    fn rows(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
+        let mut sets = session.execute(sql).unwrap();
+        let mut result = vec![];
+        while let Some(row) = sets[0].next_row().unwrap() {
+            result.push(row);
+        }
+        result
+    }
+    pg.execute("CREATE TABLE candidate_binding(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL DEFAULT 7 CHECK(v>0))").unwrap();
+    pg.execute("INSERT INTO candidate_binding VALUES(1,'a',10),(2,'b',20)")
+        .unwrap();
+    for commit in [false, true] {
+        pg.execute("BEGIN").unwrap();
+        assert_eq!(
+            rows(
+                &pg,
+                "INSERT INTO candidate_binding AS dst(id,email) VALUES(1,'candidate') ON CONFLICT(id) DO UPDATE SET v=dst.v+excluded.v RETURNING id,email,v"
+            ),
+            vec![vec!["1", "a", "17"]]
+        );
+        assert_eq!(
+            rows(&o, "SELECT v FROM candidate_binding WHERE id=1"),
+            vec![vec!["10"]]
+        );
+        pg.execute(if commit { "COMMIT" } else { "ROLLBACK" })
+            .unwrap();
+        assert_eq!(
+            rows(&o, "SELECT v FROM candidate_binding WHERE id=1"),
+            vec![vec![if commit { "17" } else { "10" }]]
+        );
+    }
+    // Binding errors must be found even when no update is needed.
+    for sql in [
+        "INSERT INTO candidate_binding AS dst VALUES(3,'c',3) ON CONFLICT(id) DO UPDATE SET v=candidate_binding.v",
+        "INSERT INTO candidate_binding AS dst VALUES(3,'c',3) ON CONFLICT(id) DO UPDATE SET dst.v=excluded.v",
+        "INSERT INTO candidate_binding AS dst VALUES(3,'c',3) ON CONFLICT(id) DO UPDATE SET v=excluded.missing",
+    ] {
+        assert!(pg.execute(sql).is_err(), "{sql}");
+        assert!(rows(&pg, "SELECT id FROM candidate_binding WHERE id=3").is_empty());
+    }
+    pg.execute("DROP TABLE candidate_binding").unwrap();
+}

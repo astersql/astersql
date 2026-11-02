@@ -265,3 +265,7 @@ supported_conflict_do_nothing 同时接受无目标 Any 和无谓词的非空列
 supported_conflict_do_nothing 验证全部 Elements 均为无表达式、无长度/排序的基本列；表达式与混合推断保持0A000写前门禁。准备阶段保留冲突AST和原SQL，描述用analysis_sql不成为执行SQL。
 
 PG10-10：结构化 PostgreSQLCapabilityError 映射为0A000；普通解析错误维持42601，不通过错误文本猜测合法性。
+
+## 2026-11-02 冲突更新候选行绑定
+
+共享 INSERT 支持无动作 WHERE 的基本唯一目标 DO UPDATE：旧行与默认值求值后的 excluded 分别绑定，SET 右侧同时读取旧行；保留未赋值列，按实际新行投影 RETURNING 并按 PG 计数。supported_conflict_action 同时用于简单和扩展执行门禁，扩展 prepared handle 保留原始冲突节点。目标谓词、动作 WHERE、重复命中、生成列及物化视图日志表仍保留独立能力门禁。测试入口为 pg10_11_behavior 和共享层 pg10_11_；运行证据见本次交接。

@@ -2237,7 +2237,10 @@ impl ConcreteSession {
         // arbiter, while column inference keeps non-target checks on the normal path.
         let pg_arbiter = if let Some(clause) = &statement.PostgreSQLConflict {
             if self.sql_dialect() != ast::SqlDialect::PostgreSQL
-                || clause.Action != ast::PostgreSQLConflictAction::DoNothing
+                || (clause.Action == ast::PostgreSQLConflictAction::DoUpdate
+                    && (clause.Target == ast::PostgreSQLConflictTarget::Any
+                        || clause.UpdatePredicate.is_some()
+                        || clause.UpdateAssignments.is_empty()))
                 || !matches!(
                     clause.Target,
                     ast::PostgreSQLConflictTarget::Any
@@ -2331,12 +2334,71 @@ impl ConcreteSession {
         } else {
             None
         };
+        let pg_update = statement
+            .PostgreSQLConflict
+            .as_ref()
+            .filter(|clause| clause.Action == ast::PostgreSQLConflictAction::DoUpdate);
+        let target_alias = statement
+            .Table
+            .as_ref()
+            .and_then(|refs| refs.TableRefs.Left.as_deref())
+            .and_then(|source| match source {
+                ast::ResultSetNode::TableSource(source) if !source.AsName.L.is_empty() => {
+                    Some(source.AsName.L.as_str())
+                }
+                _ => None,
+            })
+            .unwrap_or(table.Name.L.as_str());
+        let pg_assignments = pg_update
+            .map(|clause| {
+                let mut assigned = HashSet::new();
+                clause
+                    .UpdateAssignments
+                    .iter()
+                    .map(|assignment| {
+                        if !assignment.Column.Table.L.is_empty()
+                            || !assignment.Column.Schema.L.is_empty()
+                        {
+                            return Err(super::query::pg_union_error(
+                                "qualified SET target is not allowed",
+                                "42703",
+                            ));
+                        }
+                        let name = &assignment.Column.Name.L;
+                        if !table.Columns.iter().any(|column| column.Name.L == *name) {
+                            return Err(super::query::pg_union_error(
+                                "unknown SET target column",
+                                "42703",
+                            ));
+                        }
+                        if !assigned.insert(name.clone()) {
+                            return Err(super::query::pg_union_error(
+                                "multiple assignments to the same column",
+                                "42601",
+                            ));
+                        }
+                        Ok((
+                            name.clone(),
+                            pg_conflict_bind_expression(&assignment.Expr, &table, target_alias)?,
+                        ))
+                    })
+                    .collect::<SessionResult<Vec<_>>>()
+            })
+            .transpose()?;
         let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             Some(PgCastTable::enter_table(&table))
         } else {
             None
         };
         let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
+        if pg_update.is_some()
+            && (mlog.is_some() || table.Columns.iter().any(|column| column.IsGenerated()))
+        {
+            return Err(super::query::pg_union_error(
+                "conflict update on generated or logged tables is unsupported",
+                "0A000",
+            ));
+        }
         let has_foreign_key_checks = !table.ForeignKeys.is_empty();
         self.record_transaction_table_write(&table);
         if let Some(indexes) = RUNTIME_PENDING_WRITE_INDEXES
@@ -2395,6 +2457,7 @@ impl ConcreteSession {
                 .collect()
         };
         let mut mutations = Vec::new();
+        let mut pg_updated_keys = HashSet::new();
         let records = statement.Lists.len() as u64;
         let mut affected_rows = 0;
         let mut copied_rows = 0;
@@ -3266,26 +3329,7 @@ impl ConcreteSession {
             // before any statement writes. UNKNOWN satisfies CHECK; FALSE does not.
             // Reuse the same expression evaluator as generated columns.
             if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-                for constraint in table.Constraints.iter().filter(|constraint| {
-                    constraint.Enforced && constraint.State == astersql_meta_model::StatePublic
-                }) {
-                    let expression =
-                        crate::dml_runtime::ParseGeneratedExpr(&constraint.ExprString)?;
-                    match crate::dml_runtime::EvalExpr(&expression, &row, None)?.as_deref() {
-                        None | Some("1") => {}
-                        Some("0") => {
-                            return Err(SessionError::new(format!(
-                                "Check constraint '{}' is violated.",
-                                constraint.Name.O
-                            )));
-                        }
-                        Some(_) => {
-                            return Err(SessionError::new(
-                                "PostgreSQL CHECK expression did not evaluate to a boolean",
-                            ));
-                        }
-                    }
-                }
+                pg_conflict_check_constraints(&table, &row)?;
             }
             prepared_rows.push((row, candidate_insert_id, row_columns.to_vec()));
         }
@@ -3543,12 +3587,101 @@ impl ConcreteSession {
             let existing = working_rows.contains_key(&key.0)
                 || (committed_exists && !replaced_unique_keys.contains(&key.0));
             if let Some((primary, arbiters)) = &pg_arbiter {
-                if (*primary && existing)
-                    || Self::relational_unique_conflict(arbiters, &working_rows, &row, flags, None)?
-                        .is_some()
-                {
+                let conflict_key = if *primary && existing {
+                    Some(key.0.clone())
+                } else {
+                    Self::relational_unique_conflict(arbiters, &working_rows, &row, flags, None)?
+                        .map(|(key, _)| key)
+                };
+                if let Some(conflict_key) = conflict_key {
+                    if let Some(assignments) = &pg_assignments {
+                        if !pg_updated_keys.insert(conflict_key.clone()) {
+                            return Err(super::query::pg_union_error(
+                                "repeated conflict update is unsupported",
+                                "0A000",
+                            ));
+                        }
+                        let original =
+                            working_rows.get(&conflict_key).cloned().ok_or_else(|| {
+                                SessionError::new("conflicting PostgreSQL row was not decoded")
+                            })?;
+                        let mut scope = original.clone();
+                        for (name, value) in &original {
+                            scope.insert(format!("{target_alias}.{name}"), value.clone());
+                        }
+                        for (name, value) in &row {
+                            scope.insert(format!("excluded.{name}"), value.clone());
+                        }
+                        // Keep type identity alongside the qualified value slots. Without
+                        // these bindings, integer division can take the MySQL NULL path.
+                        let mut expression_table = table.clone();
+                        for prefix in [target_alias, "excluded"] {
+                            for column in &table.Columns {
+                                let mut bound = column.clone();
+                                bound.Name = ast::NewCIStr(format!("{prefix}.{}", column.Name.L));
+                                expression_table.Columns.push(bound);
+                            }
+                        }
+                        let expression_types = PgCastTable::enter_table(&expression_table);
+                        let mut updated = original.clone();
+                        // All RHS expressions see the same old row and defaulted candidate.
+                        for (name, expression) in assignments {
+                            updated.insert(
+                                name.clone(),
+                                relational_expression_value(expression, &scope)?,
+                            );
+                        }
+                        drop(expression_types);
+                        for column in &table.Columns {
+                            if updated.get(&column.Name.L).is_none_or(Option::is_none)
+                                && astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag())
+                            {
+                                return Err(super::query::pg_union_error(
+                                    "NULL in conflict update violates NOT NULL",
+                                    "23502",
+                                ));
+                            }
+                        }
+                        self.evaluate_generated_columns(&table, &mut updated)?;
+                        pg_conflict_check_constraints(&table, &updated)?;
+                        let (updated_key, updated_value) =
+                            self.encode_relational_row_for_write(&table, &updated, flags)?;
+                        if updated_key.0 != conflict_key
+                            && working_rows.contains_key(&updated_key.0)
+                        {
+                            return Err(duplicate_primary_key_error(&table, &updated));
+                        }
+                        Self::relational_unique_conflict(
+                            &table,
+                            &working_rows,
+                            &updated,
+                            flags,
+                            Some(&conflict_key),
+                        )?
+                        .map_or(Ok(()), |(_, message)| Err(SessionError::new(message)))?;
+                        updated_before.push(original.clone());
+                        updated_after.push(updated.clone());
+                        if updated_key.0 != conflict_key {
+                            working_rows.remove(&conflict_key);
+                            mutations.push((kv::Key(conflict_key), None));
+                        }
+                        mutations.extend(relational_index_mutations(
+                            &table,
+                            Some(&original),
+                            Some(&updated),
+                            flags,
+                        )?);
+                        pg_updated_keys.insert(updated_key.0.clone());
+                        working_rows.insert(updated_key.0.clone(), updated.clone());
+                        lock_rows.push(updated);
+                        mutations.push((updated_key, Some(updated_value)));
+                        affected_rows += 1;
+                    }
                     continue;
                 }
+            }
+            if pg_assignments.is_some() {
+                pg_updated_keys.insert(key.0.clone());
             }
             let conflict = if existing {
                 Some((
@@ -5173,4 +5306,90 @@ impl ConcreteSession {
         }
         Ok(())
     }
+}
+
+/// Bind the two INSERT conflict row identities without losing their qualifiers.
+fn pg_conflict_bind_expression(
+    expression: &ast::ExprNode,
+    table: &astersql_meta_model::TableInfo,
+    alias: &str,
+) -> SessionResult<ast::ExprNode> {
+    let mut bound = expression.clone();
+    match &mut bound.Kind {
+        ast::ExprKind::Column(column) => {
+            if column.Table.L == "excluded" && alias == "excluded" {
+                return Err(super::query::pg_union_error(
+                    "ambiguous excluded reference",
+                    "42702",
+                ));
+            }
+            if !column.Schema.L.is_empty()
+                || (!column.Table.L.is_empty()
+                    && column.Table.L != alias
+                    && column.Table.L != "excluded")
+            {
+                return Err(super::query::pg_union_error(
+                    "invalid conflict row reference",
+                    "42P01",
+                ));
+            }
+            if !table
+                .Columns
+                .iter()
+                .any(|field| field.Name.L == column.Name.L)
+            {
+                return Err(super::query::pg_union_error(
+                    "unknown conflict column",
+                    "42703",
+                ));
+            }
+            if !column.Table.L.is_empty() {
+                column.Name.L = format!("{}.{}", column.Table.L, column.Name.L);
+            }
+        }
+        ast::ExprKind::Value(_) => {}
+        ast::ExprKind::Parentheses(inner) => {
+            **inner = pg_conflict_bind_expression(inner, table, alias)?
+        }
+        ast::ExprKind::Unary { Op, V } if matches!(Op.as_str(), "+" | "-") => {
+            **V = pg_conflict_bind_expression(V, table, alias)?;
+        }
+        ast::ExprKind::Binary { Op, L, R } if matches!(Op.as_str(), "+" | "-" | "*" | "/") => {
+            **L = pg_conflict_bind_expression(L, table, alias)?;
+            **R = pg_conflict_bind_expression(R, table, alias)?;
+        }
+        _ => {
+            return Err(super::query::pg_union_error(
+                "unsupported conflict update expression",
+                "0A000",
+            ));
+        }
+    }
+    Ok(bound)
+}
+
+fn pg_conflict_check_constraints(
+    table: &astersql_meta_model::TableInfo,
+    row: &HashMap<String, Option<String>>,
+) -> SessionResult<()> {
+    for constraint in table.Constraints.iter().filter(|constraint| {
+        constraint.Enforced && constraint.State == astersql_meta_model::StatePublic
+    }) {
+        let expression = crate::dml_runtime::ParseGeneratedExpr(&constraint.ExprString)?;
+        match crate::dml_runtime::EvalExpr(&expression, row, None)?.as_deref() {
+            None | Some("1") => {}
+            Some("0") => {
+                return Err(SessionError::new(format!(
+                    "Check constraint '{}' is violated.",
+                    constraint.Name.O
+                )));
+            }
+            Some(_) => {
+                return Err(SessionError::new(
+                    "PostgreSQL CHECK expression did not evaluate to a boolean",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
