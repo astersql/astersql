@@ -1592,7 +1592,7 @@ pub enum PostgreSQLConflictTarget {
     /// No index inference target was specified.
     #[default]
     Any,
-    /// A column inference target, optionally restricted by a predicate.
+    /// An ordered column/expression inference target, optionally restricted by a predicate.
     Inference,
     /// A named unique or exclusion constraint target.
     Constraint,
@@ -1610,7 +1610,8 @@ pub enum PostgreSQLConflictAction {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PostgreSQLConflictClause {
     pub Target: PostgreSQLConflictTarget,
-    pub Columns: Vec<ColumnName>,
+    /// Ordered inference elements; parenthesized columns remain expressions.
+    pub Elements: Vec<IndexPartSpecification>,
     pub Constraint: Option<PostgreSQLIdentifier>,
     /// `WHERE` predicate attached to an index inference target.
     pub Predicate: Option<ExprNode>,

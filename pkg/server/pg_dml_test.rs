@@ -2933,3 +2933,197 @@ fn pg10_09_behavior() {
     drop(service);
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg10_10_expression_gate() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    for c in [&mut w, &mut o] {
+        let isolation = pg10_rows(&pg10_ok(
+            c,
+            "SELECT @@transaction_isolation AS isolation",
+            b'I',
+        ));
+        assert_eq!(isolation.len(), 1);
+        eprintln!("pg10_10 isolation: {isolation:?}");
+    }
+    let initial = vec![
+        text_row(&[Some("1"), Some("a"), Some("10")]),
+        text_row(&[Some("2"), Some("b"), Some("20")]),
+    ];
+    let scan = "SELECT id,email,v FROM public.conflict_doc ORDER BY id";
+    for extended in [false, true] {
+        for transaction in [false, true] {
+            for returning in [false, true] {
+                for sql in [
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT (id) WHERE v > 0 DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT (id) WHERE v < 0 DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT ((lower(email))) DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT (lower(email)) DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT ((id+1)) DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT (id,(v+1)) DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT ((id)) DO NOTHING",
+                    "INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT ((v+1)) WHERE v>0 DO NOTHING",
+                ] {
+                    let sql = format!(
+                        "{sql}{}",
+                        if returning {
+                            " RETURNING id,email,v"
+                        } else {
+                            ""
+                        }
+                    );
+                    pg10_ok(
+                        &mut w,
+                        "CREATE TABLE public.conflict_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL CHECK(v>0))",
+                        b'I',
+                    );
+                    pg10_ok(
+                        &mut w,
+                        "INSERT INTO public.conflict_doc VALUES (1,'a',10),(2,'b',20)",
+                        b'I',
+                    );
+                    for c in [&mut w, &mut o] {
+                        assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                    }
+                    if extended {
+                        parse(&mut w, "s", &sql, &[]);
+                        assert_eq!(read(&mut w), (b'1', vec![]));
+                        send(&mut w, b'D', b"Ss\0");
+                        assert_eq!(read(&mut w).0, b't');
+                        assert_eq!(read(&mut w).0, if returning { b'T' } else { b'n' });
+                        sync(&mut w);
+                        assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'I')), initial);
+                    }
+                    if transaction {
+                        pg10_ok(&mut w, "BEGIN", b'T');
+                        pg10_ok(
+                            &mut w,
+                            "INSERT INTO public.conflict_doc VALUES (9,'pending',90)",
+                            b'T',
+                        );
+                    }
+                    let state = if transaction { b'E' } else { b'I' };
+                    if extended {
+                        bind(&mut w, "p", "s", &[], &[], &[]);
+                        assert_eq!(read(&mut w), (b'2', vec![]));
+                        send(&mut w, b'D', b"Pp\0");
+                        assert_eq!(read(&mut w).0, if returning { b'T' } else { b'n' });
+                        execute(&mut w, "p");
+                        let failure = read(&mut w);
+                        assert_eq!(failure.0, b'E', "{sql}: {failure:?}");
+                        assert_eq!(error_state(&failure.1), Some("0A000"));
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', vec![state]));
+                    } else {
+                        let m = simple_query(&mut w, &sql);
+                        assert_eq!(m[0].0, b'E', "{sql}: {m:?}");
+                        assert_eq!(error_state(&m[0].1), Some("0A000"), "{sql}: {m:?}");
+                        assert!(!m.iter().any(|m| matches!(m.0, b'D' | b'C')));
+                        assert_eq!(m.last(), Some(&(b'Z', vec![state])));
+                    }
+                    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                    if transaction {
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', vec![b'E']));
+                        let m = simple_query(&mut w, "SELECT 1 AS ok");
+                        assert_eq!(error_state(&m[0].1), Some("25P02"));
+                        pg10_ok(&mut w, "ROLLBACK", b'I');
+                    }
+                    for c in [&mut w, &mut o] {
+                        assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                        pg10_ok(c, "SELECT 1 AS ok", b'I');
+                    }
+                    if extended {
+                        send(&mut w, b'C', b"Pp\0");
+                        assert_eq!(read(&mut w), (b'3', vec![]));
+                        send(&mut w, b'C', b"Ss\0");
+                        assert_eq!(read(&mut w), (b'3', vec![]));
+                        sync(&mut w);
+                    }
+                    pg10_ok(&mut w, "DROP TABLE public.conflict_doc", b'I');
+                }
+            }
+        }
+    }
+    // Invalid targets fail at syntax analysis, never at the capability gate.
+    pg10_ok(
+        &mut w,
+        "CREATE TABLE public.conflict_doc(id integer PRIMARY KEY,email text UNIQUE,v integer)",
+        b'I',
+    );
+    pg10_ok(
+        &mut w,
+        "INSERT INTO public.conflict_doc VALUES (1,'a',10),(2,'b',20)",
+        b'I',
+    );
+    for extended in [false, true] {
+        for transaction in [false, true] {
+            for target in ["()", "((id+))", "(lower(email)", "(id,)", "((id+1)) DO"] {
+                if transaction {
+                    pg10_ok(&mut w, "BEGIN", b'T');
+                    pg10_ok(
+                        &mut w,
+                        "INSERT INTO public.conflict_doc VALUES(9,'pending',90)",
+                        b'T',
+                    );
+                }
+                let sql = format!(
+                    "INSERT INTO public.conflict_doc VALUES(3,'c',30) ON CONFLICT {target} DO NOTHING"
+                );
+                let state = if transaction { b'E' } else { b'I' };
+                if extended {
+                    parse(&mut w, "bad", &sql, &[]);
+                    let failure = read(&mut w);
+                    assert_eq!(failure.0, b'E');
+                    assert_eq!(error_state(&failure.1), Some("42601"), "{sql}");
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', vec![state]));
+                } else {
+                    let messages = simple_query(&mut w, &sql);
+                    assert_eq!(error_state(&messages[0].1), Some("42601"), "{sql}");
+                    assert_eq!(messages.last(), Some(&(b'Z', vec![state])));
+                }
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                if transaction {
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', vec![b'E']));
+                    let failed = simple_query(&mut w, "SELECT 1 AS ok");
+                    assert_eq!(error_state(&failed[0].1), Some("25P02"));
+                    pg10_ok(&mut w, "ROLLBACK", b'I');
+                }
+                assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'I')), initial);
+            }
+        }
+    }
+    pg10_ok(&mut w, "DROP TABLE public.conflict_doc", b'I');
+    for c in [&mut w, &mut o] {
+        pg10_ok(c, "ROLLBACK", b'I');
+        send(c, b'X', &[]);
+    }
+    drop(w);
+    drop(o);
+    service.0.close();
+    assert_eq!(service.0.resource_counts(), (0, 0, 0));
+    drop(service);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "expression gate: 64 legal-target variants; extended first error at Execute=0A000; 20 malformed-target variants fail syntax=42601; W/O initial rows, E/25P02/Sync/ROLLBACK and resource_counts=(0,0,0)"
+    );
+}

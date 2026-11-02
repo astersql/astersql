@@ -2246,7 +2246,13 @@ impl ConcreteSession {
                 )
                 || clause.Predicate.is_some()
                 || (clause.Target == ast::PostgreSQLConflictTarget::Inference
-                    && clause.Columns.is_empty())
+                    && (clause.Elements.is_empty()
+                        || clause.Elements.iter().any(|element| {
+                            element.Expr.is_some()
+                                || element.Column.is_none()
+                                || element.Length != -1
+                                || element.Desc
+                        })))
             {
                 return Err(SessionError::new(
                     "unsupported PostgreSQL conflict target or action",
@@ -2266,8 +2272,9 @@ impl ConcreteSession {
                 None
             };
             let mut columns = clause
-                .Columns
+                .Elements
                 .iter()
+                .filter_map(|element| element.Column.as_ref())
                 .map(|column| column.Name.L.clone())
                 .collect::<Vec<_>>();
             columns.sort();

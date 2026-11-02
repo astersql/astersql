@@ -968,3 +968,68 @@ fn pg10_09_storage_failure_is_not_a_conflict() {
     }
     pg.execute("DROP TABLE conflict_storage").unwrap();
 }
+
+#[test]
+fn pg10_10_expression_gate() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let observer =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE expression_gate(id integer PRIMARY KEY,email text UNIQUE,v integer)")
+        .unwrap();
+    pg.execute("INSERT INTO expression_gate VALUES(1,'a',10),(2,'b',20)")
+        .unwrap();
+    fn rows(session: &ConcreteSession) -> Vec<Vec<String>> {
+        let mut result = session
+            .execute("SELECT id,email,v FROM expression_gate ORDER BY id")
+            .unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = result[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    }
+    let initial = rows(&pg);
+    for target in [
+        "((id+1))",
+        "(lower(email))",
+        "((lower(email)))",
+        "(id,(v+1))",
+        "((id))",
+        "((v+1)) WHERE v>0",
+    ] {
+        for transaction in [false, true] {
+            if transaction {
+                pg.execute("BEGIN").unwrap();
+                pg.execute("INSERT INTO expression_gate VALUES(9,'pending',90)")
+                    .unwrap();
+            }
+            let sql = format!(
+                "INSERT INTO expression_gate VALUES(3,'c',30) ON CONFLICT {target} DO NOTHING"
+            );
+            let error = pg
+                .execute(&sql)
+                .err()
+                .expect("expression arbitration must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported PostgreSQL conflict"),
+                "{sql}: {error}"
+            );
+            assert_eq!(rows(&observer), initial);
+            if transaction {
+                pg.execute("ROLLBACK").unwrap();
+            }
+            assert_eq!(rows(&pg), initial);
+        }
+    }
+    pg.execute("INSERT INTO expression_gate VALUES(1,'c',30) ON CONFLICT (id) DO NOTHING")
+        .unwrap();
+    assert_eq!(rows(&pg), initial);
+    pg.execute("DROP TABLE expression_gate").unwrap();
+}

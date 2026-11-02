@@ -6,7 +6,7 @@
 
 ## 核心职责
 
-- `identify` 把生成器提供的稳定字符串 `RuleId` 映射为私有 `DmlRule`。映射涵盖 95 个需要动作的 DML 产生式；`dml_rule_coverage` 会把它与 `main.astergram` 的实际产生式集合比较，并检查它不与 DDL、表达式、查询动作重复认领。
+- `identify` 把生成器提供的稳定字符串 `RuleId` 映射为私有 `DmlRule`。映射涵盖 115 个需要动作的 DML 产生式；`dml_rule_coverage` 会把它与 `main.astergram` 的实际产生式集合比较，并检查它不与 DDL、表达式、查询动作重复认领。
 - `apply_rule` 按语句族把动作路由到 `apply_general_rule`、`apply_insert_rule` 或 `apply_load_rule`，避免一个巨大 `match` 混合三类不同的数据形态。
 - 各动作从 `Rhs` 的相对位置读取或移动动态语义值，构造 `Assignment`、`InsertStmt`、`DeleteStmt`、`UpdateStmt`、`LoadDataStmt`、`ImportIntoStmt`、`NonTransactionalDMLStmt` 等 AST，并写入 `Context.output.item`、`statement` 或 `ident`。
 - 本文件保留 Go yacc 动作的兼容语义，例如：单表 DELETE 的修饰符和 RETURNING、LOCAL LOAD DATA 默认把重复键策略从 Error 改为 Ignore、括号子查询标记 `IsInBraces`、REPLACE 禁止 INSERT 行别名、IMPORT FROM SELECT 禁止用户变量和 SET 子句。
@@ -80,3 +80,5 @@ Rust 将 Go yacc 动作从产生式旁移入稳定 `RuleId` 分派，但数据�
 若新增 INSERT/REPLACE 形态，优先扩展 `apply_insert_rule` 并维持“中间 InsertStmt 后绑定目标表”的两阶段结构；若新增 LOAD/IMPORT 格式项，保持明确的 `Option`/空列表语义，并确认文件形式和 SELECT 形式是否都适用；若新增最终语句字段，要同时检查 AST restore/visitor 行为以及 Go 动作是否设置相同字段。
 
 测试逻辑继续放在独立文件：行为回归扩展 `pkg/parser/parser_actions/dml_test.rs`；规则所有权、数量和禁止数值回退等结构约束扩展 `pkg/parser/parser_actions/dml_aster_unit_test.rs`。建议覆盖成功 AST 字段、拒绝路径的错误码/错误文本、空选项与显式选项、单表/多表和括号 SELECT。兼容风险主要来自 Go/Rust AST 字段遗漏、nil/空集合差异和错误消息差异；性能风险主要来自把现有 `take` 改成深克隆或在长列表归约中反复复制。
+
+ON CONFLICT 使用专用 ConflictTargetElements/ConflictTargetElement 文法，分别归约 ColumnName、括号 Expression 和 FunctionCallGeneric，按输入顺序构造 IndexPartSpecification；不引入 MySQL 索引前缀长度或排序选项。目标承载由 Columns 迁移为 Elements，源文本跨度保持原输入字节边界。

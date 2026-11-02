@@ -108,3 +108,5 @@ TableSource.FunctionSource 通过原 Visitor/InPlaceVisitor 遍历函数参数�
 ## 本次提交对齐
 
 来源 af11710fe4550179e8d096cf517462ecf4c7be05：注册 COMPARE 并依次遍历 `ViewName → AsOf → OutputTable`。复用 children 宏实现只读、原地替换遍历；Enter 跳过、子节点 false 短路和缺失 Option 行为继承真实 visitor 契约。独立 misc_test.rs 验证顺序、跳过、停止和三个字段写回，不沿用 Go receiver 总数。
+
+PostgreSQLConflictClause 按 Elements、Predicate、UpdateAssignments、UpdatePredicate 顺序遍历；Elements 复用 IndexPartSpecification 的 Column/Expr 分支，读写两种访客均能观察混合目标和两个独立谓词。

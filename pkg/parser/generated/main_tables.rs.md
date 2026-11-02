@@ -214,3 +214,7 @@ Regenerated from main.astergram for the bounded ordered-set DISTINCT and missing
 ## 2026-11-02 命名约束仲裁
 
 解析表随 grammar/main.astergram 的 PG 列级命名 UNIQUE/PRIMARY KEY 规则重新生成；语义动作保存真实约束名称，不在生成文件手工编辑。
+
+## 表达式冲突目标
+
+由 main.astergram 的 ConflictTargetElements/ConflictTargetElement 五条产生式及两个推断入口重新生成，接入列、括号表达式和函数调用；没有新增 token，因此 lexer_tokens.rs 无差异。生成表只识别并保留语法，session/server 继续在写入前拒绝表达式目标。使用 `CARGO_PROFILE_DEV_OPT_LEVEL=2 cargo run --locked -p astersql-parsergen -- generate` 生成，再以 `CARGO_PROFILE_DEV_OPT_LEVEL=2 cargo run --locked -p astersql-parsergen -- check` 核对生成结果，未手工修改状态表。

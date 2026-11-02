@@ -3443,7 +3443,7 @@ fn pg_dialect_07_behavior() {
         .expect("conflict clause");
     assert_eq!(clause.Target, PostgreSQLConflictTarget::Any);
     assert_eq!(clause.Action, PostgreSQLConflictAction::DoNothing);
-    assert!(clause.Columns.is_empty());
+    assert!(clause.Elements.is_empty());
     assert!(clause.Constraint.is_none());
     assert!(clause.Predicate.is_none());
     let start = omitted_sql.find("ON CONFLICT").unwrap();
@@ -3461,9 +3461,12 @@ fn pg_dialect_07_behavior() {
         .as_ref()
         .expect("conflict clause");
     assert_eq!(clause.Target, PostgreSQLConflictTarget::Inference);
-    assert_eq!(clause.Columns.len(), 1);
-    assert_eq!(clause.Columns[0].Name.O, "id");
-    assert_eq!(clause.Columns[0].PostgreSQLParts[0].Original, "id");
+    assert_eq!(clause.Elements.len(), 1);
+    assert_eq!(clause.Elements[0].Column.as_ref().unwrap().Name.O, "id");
+    assert_eq!(
+        clause.Elements[0].Column.as_ref().unwrap().PostgreSQLParts[0].Original,
+        "id"
+    );
     let predicate = clause.Predicate.as_ref().expect("inference predicate");
     assert!(matches!(&predicate.Kind, ExprKind::Binary { Op, L, R }
         if Op == ">"
@@ -6897,4 +6900,117 @@ fn pg10_08_constraint_names() {
         .downcast_ref::<CreateTableStmt>()
         .unwrap();
     assert_eq!(table.Constraints[0].Name, "email_key");
+}
+
+#[test]
+fn pg10_10_expression_target_ast() {
+    for target in [
+        "(id)",
+        "((id+1))",
+        "(lower(email))",
+        "((lower(email)))",
+        "(id,(v+1))",
+        "((id))",
+        "(lower(email)) WHERE v > 0",
+    ] {
+        let sql = format!("/*中*/ INSERT INTO t VALUES (1) ON CONFLICT {target} DO NOTHING");
+        let node = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+            .ParseOneStmt(&sql, "", "")
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let insert = node
+            .as_any()
+            .downcast_ref::<parser_ast::InsertStmt>()
+            .unwrap();
+        let clause = insert.PostgreSQLConflict.as_ref().unwrap();
+        assert_eq!(
+            clause.OriginalText,
+            &sql[clause.SourceSpan.0..clause.SourceSpan.1]
+        );
+        assert_eq!(
+            clause.Elements.len(),
+            if target.starts_with("(id,") { 2 } else { 1 }
+        );
+        assert_eq!(
+            clause.Elements[0].Column.is_some(),
+            target == "(id)" || target.starts_with("(id,")
+        );
+        if target.starts_with("(id,") {
+            assert!(clause.Elements[1].Expr.is_some());
+        }
+        assert_eq!(clause.Predicate.is_some(), target.contains("WHERE"));
+    }
+
+    use parser_ast::{ExprKind, Node};
+    let sql = "/*中*/ INSERT INTO t VALUES (1) ON CONFLICT /*仲裁*/ (\"ID\",(v+1),lower(email)) WHERE active > 0 DO UPDATE SET v=2 WHERE v < 9 RETURNING v";
+    let mut node = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+        .ParseOneStmt(sql, "", "")
+        .unwrap();
+    let clause = node
+        .as_any()
+        .downcast_ref::<parser_ast::InsertStmt>()
+        .unwrap()
+        .PostgreSQLConflict
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        clause.OriginalText,
+        &sql[sql.find("ON CONFLICT").unwrap()..sql.find(" RETURNING").unwrap()]
+    );
+    assert_eq!(
+        clause.Elements[0].Column.as_ref().unwrap().PostgreSQLParts[0].Original,
+        "\"ID\""
+    );
+    struct Seen(Vec<String>);
+    impl parser_ast::Visitor for Seen {
+        fn enter(&mut self, node: &dyn Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<parser_ast::ExprNode>() {
+                match &expr.Kind {
+                    ExprKind::Binary { Op, .. } => self.0.push(Op.clone()),
+                    ExprKind::Function { FnName, .. } => self.0.push(FnName.L.clone()),
+                    _ => {}
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn Node) -> bool {
+            true
+        }
+    }
+    let mut seen = Seen(Vec::new());
+    node.accept(&mut seen);
+    assert_eq!(seen.0, ["+", "lower", ">", "<"]);
+    struct MutSeen(usize);
+    impl parser_ast::InPlaceVisitor for MutSeen {
+        fn enter(&mut self, node: &mut dyn Node) -> bool {
+            if node.as_any().is::<parser_ast::ExprNode>() {
+                self.0 += 1;
+            }
+            false
+        }
+        fn leave(&mut self, _: &mut dyn Node) -> bool {
+            true
+        }
+    }
+    let mut seen = MutSeen(0);
+    parser_ast::Walk(node.as_mut(), &mut seen);
+    assert_eq!(
+        seen.0, 14,
+        "mutable walker includes all conflict expressions and RETURNING"
+    );
+    for target in [
+        "()",
+        "((id+))",
+        "(lower(email)",
+        "(id,)",
+        "((id+1)) DO",
+        "(id DESC)",
+    ] {
+        let sql = format!("INSERT INTO t VALUES(1) ON CONFLICT {target} DO NOTHING");
+        assert!(
+            parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL)
+                .ParseOneStmt(&sql, "", "")
+                .is_err(),
+            "{sql}"
+        );
+    }
 }

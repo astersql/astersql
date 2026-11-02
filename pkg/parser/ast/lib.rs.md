@@ -39,3 +39,5 @@ parser_actions/mview.rs 构造本提交节点；walk.rs 访问字段，materiali
 ## 扩展指南
 
 新增实际 AST 必须同步 simple_node、walk 字段、SEM/Restore 和独立测试；结构变化时检查所有 semantic action。新增 MySQL 特性不能覆盖 PostgreSQL 身份与表达式语义。不要把整个 crate 的历史缺口纳入单个 Go commit 对齐任务。
+
+PostgreSQLConflictClause 的 Elements 使用有序 IndexPartSpecification 承载基本列、括号表达式及函数目标；不保留会丢失表达式的列投影。括号列仍属于表达式，不能据其内部 Column 节点开放基本列仲裁。SourceSpan/OriginalText 保留完整原始子句。

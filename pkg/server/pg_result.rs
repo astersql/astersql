@@ -242,7 +242,13 @@ pub(crate) fn supported_conflict_do_nothing(clause: &ast::PostgreSQLConflictClau
             || (clause.Target == ast::PostgreSQLConflictTarget::Constraint
                 && clause.Constraint.is_some())
             || (clause.Target == ast::PostgreSQLConflictTarget::Inference
-                && !clause.Columns.is_empty()))
+                && !clause.Elements.is_empty()
+                && clause.Elements.iter().all(|element| {
+                    element.Expr.is_none()
+                        && element.Column.is_some()
+                        && element.Length == -1
+                        && !element.Desc
+                })))
         && clause.Predicate.is_none()
 }
 

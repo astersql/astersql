@@ -64,6 +64,11 @@ enum DmlRule {
     ImportFromSelectStmtAlt04,
     ImportIntoStmtAlt01,
     ImportIntoStmtAlt02,
+    ConflictTargetElementsAlt01,
+    ConflictTargetElementsAlt02,
+    ConflictTargetElementAlt01,
+    ConflictTargetElementAlt02,
+    ConflictTargetElementAlt03,
     ConflictTargetPredicateOptAlt01,
     ConflictTargetPredicateOptAlt02,
     ConflictUpdateOptAlt01,
@@ -232,7 +237,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "insertonclause_on_identifier_do_identifier--6263e521f96106b7" => {
             DmlRule::InsertOnClauseAlt03
         }
-        "insertonclause_on_identifier_columnnamelist_conf--adf28edd3ec5e132" => {
+        "insertonclause_on_identifier_conflicttargeteleme--4a4993fce6d2dd5f" => {
             DmlRule::InsertOnClauseAlt04
         }
         "insertonclause_on_identifier_on_constraint_ident--e3e958280f69341a" => {
@@ -241,7 +246,7 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "insertonclause_on_identifier_do_update_conflictu--767abe990ec7f123" => {
             DmlRule::InsertOnClauseAlt06
         }
-        "insertonclause_on_identifier_columnnamelist_conf--8fe8a61cf3400dbe" => {
+        "insertonclause_on_identifier_conflicttargeteleme--ef046e7d6a63007b" => {
             DmlRule::InsertOnClauseAlt07
         }
         "insertonclause_on_identifier_on_constraint_ident--048945f483e05836" => {
@@ -307,6 +312,17 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "lowpriorityopt_low_priority--8f1a90ae7e616ef6" => DmlRule::LowPriorityOptAlt02,
         "nontransactionaldmlstmt_batch_optionalshardcolum--20064cecd92e889e" => {
             DmlRule::NonTransactionalDmlStmtAlt01
+        }
+        "conflicttargetelement_columnname--3136da0ff9a56f7e" => DmlRule::ConflictTargetElementAlt01,
+        "conflicttargetelement_expression--cf091bb32e45366c" => DmlRule::ConflictTargetElementAlt02,
+        "conflicttargetelement_functioncallgeneric--e989f2ea54abafa0" => {
+            DmlRule::ConflictTargetElementAlt03
+        }
+        "conflicttargetelements_conflicttargetelement--134bb5c685f792e3" => {
+            DmlRule::ConflictTargetElementsAlt01
+        }
+        "conflicttargetelements_conflicttargetelements_co--a862b44a1397b089" => {
+            DmlRule::ConflictTargetElementsAlt02
         }
         "conflicttargetpredicateopt--e6d6a85b39cf6444" => DmlRule::ConflictTargetPredicateOptAlt01,
         "conflicttargetpredicateopt_where_expression--933b8c07629f80d0" => {
@@ -396,6 +412,11 @@ fn apply_rule(rule: DmlRule, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool,
             | DmlRule::InsertOnClauseAlt06
             | DmlRule::InsertOnClauseAlt07
             | DmlRule::InsertOnClauseAlt08
+            | DmlRule::ConflictTargetElementsAlt01
+            | DmlRule::ConflictTargetElementsAlt02
+            | DmlRule::ConflictTargetElementAlt01
+            | DmlRule::ConflictTargetElementAlt02
+            | DmlRule::ConflictTargetElementAlt03
             | DmlRule::ConflictTargetPredicateOptAlt01
             | DmlRule::ConflictTargetPredicateOptAlt02
             | DmlRule::ConflictUpdateOptAlt01
@@ -714,7 +735,9 @@ fn apply_general_rule(
                     },
                 }
             } else {
-                parser_ast::TableRefsClause { TableRefs: join.clone() }
+                parser_ast::TableRefsClause {
+                    TableRefs: join.clone(),
+                }
             };
             out.statement = Some(Box::new(parser_ast::DeleteStmt {
                 Priority: rhs[rhs_len - priority_back]
@@ -739,16 +762,12 @@ fn apply_general_rule(
                 Tables: if is_postgresql_using {
                     Vec::new()
                 } else {
-                    targets
-                        .iter()
-                        .map(|target| target.Source.clone())
-                        .collect()
+                    targets.iter().map(|target| target.Source.clone()).collect()
                 },
                 TableRefs: Some(target_refs),
                 Using: is_postgresql_using
                     .then_some(parser_ast::TableRefsClause { TableRefs: join }),
-                UsingOffset: is_postgresql_using
-                    .then_some(rhs[rhs_len - 3].offset.max(0) as usize),
+                UsingOffset: is_postgresql_using.then_some(rhs[rhs_len - 3].offset.max(0) as usize),
                 TableHints: rhs[rhs_len - hints_back]
                     .item
                     .as_deref()
@@ -1036,14 +1055,12 @@ fn apply_general_rule(
     Ok(true)
 }
 
-fn conflict_keyword_is_unquoted(
-    parser_state: &Parser,
-    symbol: &yySymType,
-    expected: &str,
-) -> bool {
-    super::identifier(parser_state, symbol).1.is_some_and(|identifier| {
-        !identifier.Quoted && identifier.Decoded.eq_ignore_ascii_case(expected)
-    })
+fn conflict_keyword_is_unquoted(parser_state: &Parser, symbol: &yySymType, expected: &str) -> bool {
+    super::identifier(parser_state, symbol)
+        .1
+        .is_some_and(|identifier| {
+            !identifier.Quoted && identifier.Decoded.eq_ignore_ascii_case(expected)
+        })
 }
 
 #[derive(Clone)]
@@ -1062,7 +1079,7 @@ fn make_postgresql_conflict_clause(
     parser_state: &Parser,
     rhs: &Rhs<'_>,
     target: parser_ast::PostgreSQLConflictTarget,
-    columns: Vec<parser_ast::ColumnName>,
+    elements: Vec<parser_ast::IndexPartSpecification>,
     constraint: Option<parser_ast::PostgreSQLIdentifier>,
     predicate: Option<ConflictPredicate>,
     action: parser_ast::PostgreSQLConflictAction,
@@ -1082,7 +1099,7 @@ fn make_postgresql_conflict_clause(
         .unwrap_or_default();
     Ok(parser_ast::PostgreSQLConflictClause {
         Target: target,
-        Columns: columns,
+        Elements: elements,
         Constraint: constraint,
         Predicate: predicate,
         TargetPredicateSpan: target_predicate_span,
@@ -1109,6 +1126,62 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         lexer: yylex,
     } = context;
     match rule {
+        DmlRule::ConflictTargetElementsAlt01 | DmlRule::ConflictTargetElementsAlt02 => {
+            let mut elements = if rule == DmlRule::ConflictTargetElementsAlt02 {
+                rhs[1]
+                    .item
+                    .take()
+                    .and_then(|item| {
+                        item.downcast::<Vec<parser_ast::IndexPartSpecification>>()
+                            .ok()
+                    })
+                    .map(|item| *item)
+                    .ok_or(1isize)?
+            } else {
+                Vec::new()
+            };
+            let element = rhs[rhs_len]
+                .item
+                .take()
+                .and_then(|item| item.downcast::<parser_ast::IndexPartSpecification>().ok())
+                .ok_or(1isize)?;
+            elements.push(*element);
+            out.item = Some(Box::new(elements));
+        }
+        DmlRule::ConflictTargetElementAlt01
+        | DmlRule::ConflictTargetElementAlt02
+        | DmlRule::ConflictTargetElementAlt03 => {
+            let element = if rule == DmlRule::ConflictTargetElementAlt01 {
+                parser_ast::IndexPartSpecification {
+                    Length: -1,
+                    Column: Some(
+                        rhs[1]
+                            .item
+                            .as_deref()
+                            .and_then(|item| item.downcast_ref::<parser_ast::ColumnName>())
+                            .cloned()
+                            .ok_or(1isize)?,
+                    ),
+                    ..Default::default()
+                }
+            } else {
+                parser_ast::IndexPartSpecification {
+                    Length: -1,
+                    Expr: Some(
+                        rhs[if rule == DmlRule::ConflictTargetElementAlt02 {
+                            2
+                        } else {
+                            1
+                        }]
+                        .expr
+                        .clone()
+                        .ok_or(1isize)?,
+                    ),
+                    ..Default::default()
+                }
+            };
+            out.item = Some(Box::new(element));
+        }
         DmlRule::InsertTargetAlt01 | DmlRule::InsertTargetAlt02 => {
             let aliased = rule == DmlRule::InsertTargetAlt02;
             if aliased && parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
@@ -1367,8 +1440,7 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             }
             out.item = Some(Box::new(statement));
         }
-        DmlRule::InsertRowAliasOptAlt01
-        | DmlRule::ReturningClauseAlt01 => out.item = None,
+        DmlRule::InsertRowAliasOptAlt01 | DmlRule::ReturningClauseAlt01 => out.item = None,
         DmlRule::InsertOnClauseAlt01 => {
             out.item = Some(Box::new(None::<InsertOnClauseAction>));
         }
@@ -1387,8 +1459,7 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             out.expr = None;
             out.item = Some(Box::new(None::<ConflictPredicate>));
         }
-        DmlRule::ConflictTargetPredicateOptAlt02
-        | DmlRule::ConflictUpdatePredicateOptAlt02 => {
+        DmlRule::ConflictTargetPredicateOptAlt02 | DmlRule::ConflictUpdatePredicateOptAlt02 => {
             let expression = rhs[rhs_len].expr.clone().ok_or(1isize)?;
             let start = usize::try_from(rhs[1].offset).map_err(|_| 1isize)?;
             let predicate = ConflictPredicate {
@@ -1481,7 +1552,7 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 .and_then(|item| item.downcast_ref::<Option<ConflictUpdateClause>>())
                 .cloned()
                 .flatten();
-            let (target, columns, constraint, predicate) = match rule {
+            let (target, elements, constraint, predicate) = match rule {
                 DmlRule::InsertOnClauseAlt03 | DmlRule::InsertOnClauseAlt06 => (
                     parser_ast::PostgreSQLConflictTarget::Any,
                     Vec::new(),
@@ -1489,15 +1560,17 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     None,
                 ),
                 DmlRule::InsertOnClauseAlt04 | DmlRule::InsertOnClauseAlt07 => {
-                    let columns = rhs[4]
+                    let elements = rhs[4]
                         .item
                         .as_deref()
-                        .and_then(|item| item.downcast_ref::<Vec<parser_ast::ColumnName>>())
+                        .and_then(|item| {
+                            item.downcast_ref::<Vec<parser_ast::IndexPartSpecification>>()
+                        })
                         .cloned()
                         .unwrap_or_default();
                     (
                         parser_ast::PostgreSQLConflictTarget::Inference,
-                        columns,
+                        elements,
                         None,
                         rhs[6]
                             .item
@@ -1544,15 +1617,15 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 parser_state,
                 &rhs,
                 target,
-                columns,
+                elements,
                 constraint,
                 predicate,
                 action,
                 update,
             )?;
-            out.item = Some(Box::new(Some(
-                InsertOnClauseAction::PostgreSQLConflict(clause),
-            )));
+            out.item = Some(Box::new(Some(InsertOnClauseAction::PostgreSQLConflict(
+                clause,
+            ))));
         }
         DmlRule::InsertRowAliasOptAlt02 | DmlRule::InsertRowAliasOptAlt03 => {
             out.item = Some(Box::new(insertRowAlias {
