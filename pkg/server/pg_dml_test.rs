@@ -4013,3 +4013,361 @@ fn pg10_11_behavior() {
     assert_eq!(service.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg10_12_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    let scan = "SELECT id,email,v FROM public.upsert_doc ORDER BY id";
+    let initial = vec![
+        text_row(&[Some("1"), Some("a"), Some("10")]),
+        text_row(&[Some("2"), Some("b"), Some("20")]),
+    ];
+    for c in [&mut w, &mut o] {
+        eprintln!(
+            "pg10_12 isolation {:?}",
+            pg10_rows(&pg10_ok(
+                c,
+                "SELECT @@transaction_isolation AS isolation",
+                b'I'
+            ))
+        );
+    }
+    let mut cases = 0;
+    for extended in [false, true] {
+        for commit in [false, true] {
+            for returning in [false, true] {
+                for (input, assignment, expected, final_rows) in [
+                    (
+                        "VALUES (1,'candidate',30)",
+                        "v=excluded.v WHERE dst.v<excluded.v",
+                        vec![text_row(&[Some("1"), Some("a"), Some("30")])],
+                        vec![
+                            text_row(&[Some("1"), Some("a"), Some("30")]),
+                            initial[1].clone(),
+                        ],
+                    ),
+                    (
+                        "VALUES (1,'candidate',3)",
+                        "v=excluded.v WHERE dst.v<excluded.v",
+                        vec![],
+                        initial.clone(),
+                    ),
+                    (
+                        "VALUES (1,'candidate',3)",
+                        "v=excluded.v WHERE NULL::boolean",
+                        vec![],
+                        initial.clone(),
+                    ),
+                    (
+                        "VALUES (1,'candidate',3)",
+                        "v=dst.v",
+                        vec![initial[0].clone()],
+                        initial.clone(),
+                    ),
+                    (
+                        "VALUES (1,'candidate',3),(3,'c',30)",
+                        "v=dst.v+excluded.v",
+                        vec![
+                            text_row(&[Some("1"), Some("a"), Some("13")]),
+                            text_row(&[Some("3"), Some("c"), Some("30")]),
+                        ],
+                        vec![
+                            text_row(&[Some("1"), Some("a"), Some("13")]),
+                            initial[1].clone(),
+                            text_row(&[Some("3"), Some("c"), Some("30")]),
+                        ],
+                    ),
+                    (
+                        "VALUES (1,'candidate',3),(3,'c',30)",
+                        "v=1/0 WHERE dst.v<excluded.v",
+                        vec![text_row(&[Some("3"), Some("c"), Some("30")])],
+                        vec![
+                            initial[0].clone(),
+                            initial[1].clone(),
+                            text_row(&[Some("3"), Some("c"), Some("30")]),
+                        ],
+                    ),
+                ] {
+                    pg10_ok(
+                        &mut w,
+                        "CREATE TABLE public.upsert_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL DEFAULT 7 CHECK(v>0))",
+                        b'I',
+                    );
+                    pg10_ok(
+                        &mut w,
+                        "INSERT INTO public.upsert_doc VALUES (1,'a',10),(2,'b',20)",
+                        b'I',
+                    );
+                    let sql = format!(
+                        "INSERT INTO public.upsert_doc AS dst {input} ON CONFLICT(id) DO UPDATE SET {assignment}{}",
+                        if returning {
+                            " RETURNING id,email,v"
+                        } else {
+                            ""
+                        }
+                    );
+                    let mut description = None;
+                    if extended {
+                        parse(&mut w, "s", &sql, &[]);
+                        assert_eq!(read(&mut w), (b'1', vec![]));
+                        send(&mut w, b'D', b"Ss\0");
+                        assert_eq!(read(&mut w).0, b't');
+                        let d = read(&mut w);
+                        pg10_10_check_description(&d, returning);
+                        description = Some(d);
+                        sync(&mut w);
+                    }
+                    for c in [&mut w, &mut o] {
+                        assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                    }
+                    pg10_ok(&mut w, "BEGIN", b'T');
+                    let messages = if extended {
+                        bind(&mut w, "p", "s", &[], &[], &[]);
+                        assert_eq!(read(&mut w), (b'2', vec![]));
+                        send(&mut w, b'D', b"Pp\0");
+                        assert_eq!(read(&mut w), description.unwrap());
+                        execute(&mut w, "p");
+                        let mut messages = vec![];
+                        loop {
+                            let m = read(&mut w);
+                            let done = matches!(m.0, b'C' | b'E');
+                            messages.push(m);
+                            if done {
+                                break;
+                            }
+                        }
+                        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+                        send(&mut w, b'C', b"Pp\0");
+                        assert_eq!(read(&mut w), (b'3', vec![]));
+                        send(&mut w, b'C', b"Ss\0");
+                        assert_eq!(read(&mut w), (b'3', vec![]));
+                        send(&mut w, b'S', &[]);
+                        assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+                        messages
+                    } else {
+                        pg10_ok(&mut w, &sql, b'T')
+                    };
+                    let mut rows = pg10_rows(&messages);
+                    rows.sort();
+                    let mut expected_return = if returning { expected.clone() } else { vec![] };
+                    expected_return.sort();
+                    assert_eq!(rows, expected_return, "{sql}");
+                    assert!(
+                        messages.contains(&(
+                            b'C',
+                            format!("INSERT 0 {}\0", expected.len()).into_bytes()
+                        )),
+                        "{messages:?}"
+                    );
+                    if !extended && returning {
+                        pg10_10_check_description(
+                            messages.iter().find(|m| m.0 == b'T').unwrap(),
+                            true,
+                        );
+                    }
+                    assert_eq!(pg10_rows(&pg10_ok(&mut w, scan, b'T')), final_rows);
+                    assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                    pg10_ok(&mut w, if commit { "COMMIT" } else { "ROLLBACK" }, b'I');
+                    for c in [&mut w, &mut o] {
+                        assert_eq!(
+                            pg10_rows(&pg10_ok(c, scan, b'I')),
+                            if commit { &final_rows } else { &initial }.clone()
+                        );
+                    }
+                    pg10_ok(&mut w, "DROP TABLE public.upsert_doc", b'I');
+                    cases += 1;
+                }
+            }
+        }
+    }
+    // Parameters retain both identities through Parse and fresh Bind values.
+    for commit in [false, true] {
+        pg10_ok(
+            &mut w,
+            "CREATE TABLE public.upsert_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL DEFAULT 7 CHECK(v>0))",
+            b'I',
+        );
+        pg10_ok(
+            &mut w,
+            "INSERT INTO public.upsert_doc VALUES(1,'a',10),(2,'b',20)",
+            b'I',
+        );
+        parse(
+            &mut w,
+            "params",
+            "INSERT INTO public.upsert_doc AS dst VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET v=excluded.v WHERE dst.v<$4 RETURNING id,email,v",
+            &[23, 25, 23, 23],
+        );
+        assert_eq!(read(&mut w), (b'1', vec![]));
+        sync(&mut w);
+        pg10_ok(&mut w, "BEGIN", b'T');
+        for (value, expected) in [
+            (None, None),
+            (Some(b"30".as_slice()), Some("30")),
+            (Some(b"3".as_slice()), None),
+        ] {
+            bind(
+                &mut w,
+                "p",
+                "params",
+                &[],
+                &[Some(b"1"), Some(b"candidate"), Some(b"30"), value],
+                &[],
+            );
+            assert_eq!(read(&mut w), (b'2', vec![]));
+            execute(&mut w, "p");
+            if let Some(expected) = expected {
+                assert_eq!(
+                    read(&mut w),
+                    (b'D', text_row(&[Some("1"), Some("a"), Some(expected)]))
+                );
+            }
+            assert_eq!(
+                read(&mut w),
+                (
+                    b'C',
+                    format!("INSERT 0 {}\0", usize::from(expected.is_some())).into_bytes()
+                )
+            );
+            send(&mut w, b'S', &[]);
+            assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+            send(&mut w, b'C', b"Pp\0");
+            assert_eq!(read(&mut w), (b'3', vec![]));
+            send(&mut w, b'S', &[]);
+            assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+        }
+        assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+        pg10_ok(&mut w, if commit { "COMMIT" } else { "ROLLBACK" }, b'I');
+        let final_rows = if commit {
+            vec![
+                text_row(&[Some("1"), Some("a"), Some("30")]),
+                initial[1].clone(),
+            ]
+        } else {
+            initial.clone()
+        };
+        for c in [&mut w, &mut o] {
+            assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), final_rows);
+        }
+        send(&mut w, b'C', b"Sparams\0");
+        assert_eq!(read(&mut w), (b'3', vec![]));
+        sync(&mut w);
+        pg10_ok(&mut w, "DROP TABLE public.upsert_doc", b'I');
+    }
+    for extended in [false, true] {
+        for transaction in [false, true] {
+            for assignment in [
+                "v=excluded.v WHERE upsert_doc.v<excluded.v",
+                "v=excluded.v WHERE excluded.missing<dst.v",
+                "v=excluded.v WHERE dst.missing<excluded.v",
+                "v=excluded.v WHERE dst.v/0<excluded.v",
+            ] {
+                pg10_ok(
+                    &mut w,
+                    "CREATE TABLE public.upsert_doc(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL DEFAULT 7 CHECK(v>0))",
+                    b'I',
+                );
+                pg10_ok(
+                    &mut w,
+                    "INSERT INTO public.upsert_doc VALUES(1,'a',10),(2,'b',20)",
+                    b'I',
+                );
+                let sql = format!(
+                    "INSERT INTO public.upsert_doc AS dst VALUES({},'c',3) ON CONFLICT(id) DO UPDATE SET {assignment}",
+                    if assignment == "v=excluded.v WHERE dst.v/0<excluded.v" {
+                        1
+                    } else {
+                        3
+                    }
+                );
+                if transaction {
+                    pg10_ok(&mut w, "BEGIN", b'T');
+                    pg10_ok(
+                        &mut w,
+                        "INSERT INTO public.upsert_doc VALUES(9,'pending',90)",
+                        b'T',
+                    );
+                }
+                let state = if transaction { b'E' } else { b'I' };
+                let mut portal_created = false;
+                let failure = if extended {
+                    parse(&mut w, "bad", &sql, &[]);
+                    let parsed = read(&mut w);
+                    let failure = if parsed.0 == b'E' {
+                        assert_ne!(
+                            assignment, "v=excluded.v WHERE dst.v/0<excluded.v",
+                            "division must fail at Execute"
+                        );
+                        eprintln!("pg10_12 name rejection at Parse: {assignment}");
+                        parsed
+                    } else {
+                        assert_eq!(parsed, (b'1', vec![]));
+                        bind(&mut w, "p", "bad", &[], &[], &[]);
+                        assert_eq!(read(&mut w), (b'2', vec![]));
+                        portal_created = true;
+                        execute(&mut w, "p");
+                        read(&mut w)
+                    };
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', vec![state]));
+                    failure
+                } else {
+                    let messages = simple_query(&mut w, &sql);
+                    assert!(!messages.iter().any(|m| matches!(m.0, b'D' | b'C')));
+                    assert_eq!(messages.last(), Some(&(b'Z', vec![state])));
+                    messages[0].clone()
+                };
+                assert_eq!(failure.0, b'E', "{sql}: {failure:?}");
+                if assignment == "v=excluded.v WHERE dst.v/0<excluded.v" {
+                    assert_eq!(error_state(&failure.1), Some("22012"));
+                }
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, scan, b'I')), initial);
+                if transaction {
+                    let failure = simple_query(&mut w, "SELECT 1");
+                    assert_eq!(error_state(&failure[0].1), Some("25P02"));
+                    assert_eq!(failure.last(), Some(&(b'Z', vec![b'E'])));
+                    pg10_ok(&mut w, "ROLLBACK", b'I');
+                }
+                for c in [&mut w, &mut o] {
+                    assert_eq!(pg10_rows(&pg10_ok(c, scan, b'I')), initial);
+                    pg10_ok(c, "SELECT 1", b'I');
+                }
+                if portal_created {
+                    send(&mut w, b'C', b"Pp\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    send(&mut w, b'C', b"Sbad\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    sync(&mut w);
+                }
+                pg10_ok(&mut w, "DROP TABLE public.upsert_doc", b'I');
+            }
+        }
+    }
+    eprintln!("pg10_12 successful variants={cases}");
+    send(&mut w, b'X', &[]);
+    send(&mut o, b'X', &[]);
+    drop(w);
+    drop(o);
+    service.0.close();
+    assert_eq!(service.0.resource_counts(), (0, 0, 0));
+    assert!(TcpStream::connect(addr).is_err());
+}

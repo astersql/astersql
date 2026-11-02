@@ -2239,7 +2239,6 @@ impl ConcreteSession {
             if self.sql_dialect() != ast::SqlDialect::PostgreSQL
                 || (clause.Action == ast::PostgreSQLConflictAction::DoUpdate
                     && (clause.Target == ast::PostgreSQLConflictTarget::Any
-                        || clause.UpdatePredicate.is_some()
                         || clause.UpdateAssignments.is_empty()))
                 || !matches!(
                     clause.Target,
@@ -2384,6 +2383,10 @@ impl ConcreteSession {
                     })
                     .collect::<SessionResult<Vec<_>>>()
             })
+            .transpose()?;
+        let pg_update_predicate = pg_update
+            .and_then(|clause| clause.UpdatePredicate.as_ref())
+            .map(|predicate| pg_conflict_bind_predicate(predicate, &table, target_alias))
             .transpose()?;
         let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             Some(PgCastTable::enter_table(&table))
@@ -3623,6 +3626,14 @@ impl ConcreteSession {
                             }
                         }
                         let expression_types = PgCastTable::enter_table(&expression_table);
+                        // The action condition sees the old row and defaulted
+                        // candidate. FALSE/UNKNOWN must not evaluate SET or emit a row.
+                        if let Some(predicate) = &pg_update_predicate {
+                            let value = relational_expression_value(predicate, &scope)?;
+                            if relational_truth(value.as_deref()) != Some(true) {
+                                continue;
+                            }
+                        }
                         let mut updated = original.clone();
                         // All RHS expressions see the same old row and defaulted candidate.
                         for (name, expression) in assignments {
@@ -5351,6 +5362,11 @@ fn pg_conflict_bind_expression(
         ast::ExprKind::Parentheses(inner) => {
             **inner = pg_conflict_bind_expression(inner, table, alias)?
         }
+        ast::ExprKind::Cast { Expr, Tp, .. }
+            if matches!(Tp.PostgreSQLTypeOid(), Some(21 | 23 | 20)) =>
+        {
+            **Expr = pg_conflict_bind_expression(Expr, table, alias)?;
+        }
         ast::ExprKind::Unary { Op, V } if matches!(Op.as_str(), "+" | "-") => {
             **V = pg_conflict_bind_expression(V, table, alias)?;
         }
@@ -5361,6 +5377,39 @@ fn pg_conflict_bind_expression(
         _ => {
             return Err(super::query::pg_union_error(
                 "unsupported conflict update expression",
+                "0A000",
+            ));
+        }
+    }
+    Ok(bound)
+}
+
+/// Keep the action predicate separate from partial-index target inference.
+fn pg_conflict_bind_predicate(
+    expression: &ast::ExprNode,
+    table: &astersql_meta_model::TableInfo,
+    alias: &str,
+) -> SessionResult<ast::ExprNode> {
+    let mut bound = expression.clone();
+    match &mut bound.Kind {
+        ast::ExprKind::Binary { Op, L, R } if Op == "<" => {
+            **L = pg_conflict_bind_expression(L, table, alias)?;
+            **R = pg_conflict_bind_expression(R, table, alias)?;
+        }
+        ast::ExprKind::Cast { Expr, Tp, .. }
+            if Tp.PostgreSQLTypeOid() == Some(16)
+                && matches!(&Expr.Kind, ast::ExprKind::Value(_)) => {}
+        ast::ExprKind::Value(value)
+            if matches!(
+                value.Datum,
+                ast::ValueDatum::Null | ast::ValueDatum::Bool(_)
+            ) => {}
+        ast::ExprKind::Parentheses(inner) => {
+            **inner = pg_conflict_bind_predicate(inner, table, alias)?;
+        }
+        _ => {
+            return Err(super::query::pg_union_error(
+                "unsupported conflict action predicate",
                 "0A000",
             ));
         }

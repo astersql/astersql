@@ -1423,6 +1423,7 @@ impl Extended {
             &mapping,
             postgresql_conflict
                 .as_ref()
+                .filter(|conflict| !crate::pg_result::supported_conflict_action(conflict))
                 .map(|conflict| conflict.SourceSpan),
         )?;
         let analysis_occurrences = analysis_parameter_mapping(
@@ -1430,6 +1431,7 @@ impl Extended {
             &(0..mapping.len()).collect::<Vec<_>>(),
             postgresql_conflict
                 .as_ref()
+                .filter(|conflict| !crate::pg_result::supported_conflict_action(conflict))
                 .map(|conflict| conflict.SourceSpan),
         )?;
         if command.is_none() {

@@ -1291,3 +1291,67 @@ fn pg10_11_candidate_binding() {
     }
     pg.execute("DROP TABLE candidate_binding").unwrap();
 }
+
+#[test]
+fn pg10_12_action_condition() {
+    use crate::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    let observer =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    fn rows(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
+        let mut sets = session.execute(sql).unwrap();
+        let mut result = vec![];
+        while let Some(row) = sets[0].next_row().unwrap() {
+            result.push(row);
+        }
+        result
+    }
+    for commit in [false, true] {
+        pg.execute("CREATE TABLE action_condition(id integer PRIMARY KEY,email text UNIQUE,v integer NOT NULL DEFAULT 7 CHECK(v>0))").unwrap();
+        pg.execute("INSERT INTO action_condition VALUES(1,'a',10),(2,'b',20)")
+            .unwrap();
+        // Target WHERE remains an independent write-before-effect gate.
+        for sql in [
+            "INSERT INTO action_condition AS dst VALUES(3,'c',30) ON CONFLICT(id) WHERE id>0 DO UPDATE SET v=excluded.v WHERE dst.v<excluded.v",
+            "INSERT INTO action_condition AS dst VALUES(3,'c',30) ON CONFLICT(id) DO UPDATE SET v=excluded.v WHERE 7",
+        ] {
+            assert!(pg.execute(sql).is_err(), "{sql}");
+            assert!(rows(&pg, "SELECT id FROM action_condition WHERE id=3").is_empty());
+        }
+        pg.execute("BEGIN").unwrap();
+        for condition in ["dst.v<excluded.v", "NULL::boolean"] {
+            assert!(rows(&pg, &format!("INSERT INTO action_condition AS dst VALUES(1,'candidate',3) ON CONFLICT(id) DO UPDATE SET v=1/0 WHERE {condition} RETURNING id,email,v")).is_empty());
+            assert_eq!(pg.LastDmlReport().unwrap().AffectedRows, 0);
+        }
+        assert_eq!(
+            rows(
+                &pg,
+                "INSERT INTO action_condition AS dst VALUES(1,'candidate',30),(3,'c',3) ON CONFLICT(id) DO UPDATE SET v=excluded.v WHERE dst.v<excluded.v RETURNING id,email,v"
+            ),
+            vec![vec!["1", "a", "30"], vec!["3", "c", "3"]]
+        );
+        assert_eq!(pg.LastDmlReport().unwrap().AffectedRows, 2);
+        let scan = "SELECT id,email,v FROM action_condition ORDER BY id";
+        let initial = vec![vec!["1", "a", "10"], vec!["2", "b", "20"]];
+        let updated = vec![
+            vec!["1", "a", "30"],
+            vec!["2", "b", "20"],
+            vec!["3", "c", "3"],
+        ];
+        assert_eq!(rows(&pg, scan), updated);
+        assert_eq!(rows(&observer, scan), initial);
+        pg.execute(if commit { "COMMIT" } else { "ROLLBACK" })
+            .unwrap();
+        for session in [&pg, &observer] {
+            assert_eq!(
+                rows(session, scan),
+                if commit { &updated } else { &initial }.clone()
+            );
+        }
+        pg.execute("DROP TABLE action_condition").unwrap();
+    }
+}

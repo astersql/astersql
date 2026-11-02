@@ -153,3 +153,32 @@ PG10-10：普通列推断目标无匹配唯一索引时复用结构化 PG 诊断
 ## 2026-11-02 冲突更新候选行绑定
 
 共享 INSERT 支持无动作 WHERE 的基本唯一目标 DO UPDATE：旧行与默认值求值后的 excluded 分别绑定，SET 右侧同时读取旧行；保留未赋值列，按实际新行投影 RETURNING 并按 PG 计数。supported_conflict_action 同时用于简单和扩展执行门禁，扩展 prepared handle 保留原始冲突节点。目标谓词、动作 WHERE、重复命中、生成列及物化视图日志表仍保留独立能力门禁。测试入口为 pg10_11_behavior 和共享层 pg10_11_；运行证据见本次交接。
+
+
+## 2026-11-02 冲突更新动作条件
+
+PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受限 `<` 比较和布尔字面量/转换复用共享表达式求值；仅 TRUE 更新，FALSE/NULL 不求值 SET、不返回旧行且不计数。不变值更新仍计1，目标 WHERE 与部分索引推断继续拒绝。扩展协议保留支持的冲突子句参数映射，typed NULL 和新 Bind 条件值进入同一执行链。测试入口 pg10_12_behavior、pg10_12_action_condition；独立参考端、真实并发与性能不在本次验收范围。
+
+
+### PG10-12 验证证据（2026-11-02）
+
+Ready 按根协议执行；verify-profile 技能缺失，不声称运行该技能。动态领取槽位1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1，阶段结束释放锁并保留缓存。全部命令从仓库根目录执行，继承该绝对路径：
+
+```bash
+cargo fmt --all
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_12_behavior -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_12_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_11_behavior -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_10_behavior -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_10_expression_gate -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::prepared_crud_roundtrip -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_11_ -- --nocapture --test-threads=1
+make lint
+git diff --check
+```
+
+最终全部退出0；7条测试命令各运行1个有效测试，合计7 passed，无ignored或零测试。TCP新测试的48个成功组合覆盖simple/extended、RETURNING有/无、COMMIT/ROLLBACK，另含两组新Bind及16个错误/恢复组合。W/O完整回读证明提交及回滚；实际隔离REPEATABLE-READ。参数typed NULL不触发更新，参数换值true/false分别更新/跳过。动作表达式除零在Execute报22012，Sync后E、SELECT报25P02，ROLLBACK恢复I并撤销pending写入；服务关闭后资源计数(0,0,0)，端口拒连。共享层验证跳过不求值SET、更新加插入计2，以及目标WHERE和非布尔动作条件写前拒绝。
+
+初始红灯 /tmp/pg10-12-red.log：1 failed，0A000动作WHERE门禁，退出101。最终日志 /tmp/pg10-12-green-final.log、/tmp/pg10-12-session-final.log；相邻日志 /tmp/pg10-12-adjacent-{pg10_11_behavior,pg10_10_behavior,pg10_10_expression_gate,prepared_crud_roundtrip,session}.log；格式化和lint日志 /tmp/pg10-12-fmt.log、/tmp/pg10-12-lint.log。中间验证发现并修复冲突参数映射与typed NULL整数CAST绑定，未把编译或Parse拒绝冒充动作执行成功。
+
+未修改Go/Bazel/依赖，不触发bazel_prepare。未验证部分索引推断（独立门禁）、真实TiKV竞争、持久重启、独立PG18/MySQL客户端差分或性能；后续由各对应任务取证。此证据仅覆盖动作条件及必要局部接线，不外推完整冲突更新能力。

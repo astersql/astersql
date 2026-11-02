@@ -249,7 +249,6 @@ pub(crate) fn supported_conflict_action(clause: &ast::PostgreSQLConflictClause) 
     (clause.Action == ast::PostgreSQLConflictAction::DoNothing
         || (clause.Action == ast::PostgreSQLConflictAction::DoUpdate
             && clause.Target != ast::PostgreSQLConflictTarget::Any
-            && clause.UpdatePredicate.is_none()
             && !clause.UpdateAssignments.is_empty()))
         && (clause.Target == ast::PostgreSQLConflictTarget::Any
             || (clause.Target == ast::PostgreSQLConflictTarget::Constraint
