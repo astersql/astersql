@@ -2259,6 +2259,7 @@ impl ConcreteSession {
                         .relational_query_expression_value(expression, &input, None)
                         .map_err(|error| {
                             if error.pg_json_error().is_some()
+                                || error.pg_int4_error().is_some()
                                 || error.to_string() == "Subquery returns more than 1 row"
                             {
                                 error

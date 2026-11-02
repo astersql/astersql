@@ -1648,3 +1648,25 @@ fn pg10_18_partial_cte_aliases() {
         .unwrap();
     assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1", "2"]);
 }
+
+#[test]
+fn pg10_19_repeated_cte_error_identity_and_cleanup() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let sql = "WITH a AS (SELECT 10::int4 AS v UNION ALL SELECT 10::int4 AS v) SELECT 10::int4/(l.v-10::int4)::int4 AS bad FROM a l CROSS JOIN a r";
+    let error = pg
+        .execute(sql)
+        .err()
+        .expect("consumer must fail at runtime");
+    assert_eq!(
+        error.pg_int4_error(),
+        Some(astersql_expression::PgInt4Error::DivisionByZero)
+    );
+    let mut rows = pg
+        .execute("WITH a AS (SELECT 7::int4 AS v) SELECT l.v,r.v FROM a l CROSS JOIN a r")
+        .unwrap();
+    assert_eq!(rows[0].next_row().unwrap().unwrap(), vec!["7", "7"]);
+    assert!(rows[0].next_row().unwrap().is_none());
+    assert!(pg.execute("SELECT v FROM a").is_err());
+}

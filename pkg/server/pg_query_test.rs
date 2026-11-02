@@ -68,15 +68,20 @@ fn text_row(body: &[u8]) -> Vec<Option<String>> {
 
 #[test]
 fn pg10_17_behavior() {
-    cte_alias_behavior(false);
+    cte_alias_behavior(false, false);
 }
 
 #[test]
 fn pg10_18_behavior() {
-    cte_alias_behavior(true);
+    cte_alias_behavior(true, false);
 }
 
-fn cte_alias_behavior(partial: bool) {
+#[test]
+fn pg10_19_behavior() {
+    cte_alias_behavior(false, true);
+}
+
+fn cte_alias_behavior(partial: bool, repeat: bool) {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -290,6 +295,42 @@ fn cte_alias_behavior(partial: bool) {
         ("WITH cte_read_doc AS (SELECT 7 AS fresh) SELECT fresh FROM cte_read_doc".into(),vec!["fresh"],vec![vec![Some("7".into())]]),
     ]
     };
+    let cases = if repeat {
+        let base = "WITH a AS (SELECT v FROM public.cte_read_doc UNION ALL SELECT v FROM public.cte_read_doc) SELECT l.v AS lv,r.v AS rv FROM a AS l CROSS JOIN a AS r";
+        let rows = |pairs: &[(Option<&str>, Option<&str>)]| {
+            pairs
+                .iter()
+                .flat_map(|(l, r)| {
+                    std::iter::repeat_n(vec![l.map(str::to_owned), r.map(str::to_owned)], 4)
+                })
+                .collect::<Vec<_>>()
+        };
+        vec![
+            (
+                format!("{base} ORDER BY lv NULLS LAST,rv NULLS LAST"),
+                vec!["lv", "rv"],
+                rows(&[
+                    (Some("10"), Some("10")),
+                    (Some("10"), None),
+                    (None, Some("10")),
+                    (None, None),
+                ]),
+            ),
+            (
+                format!("{base} WHERE l.v=10 AND r.v IS NULL"),
+                vec!["lv", "rv"],
+                rows(&[(Some("10"), None)]),
+            ),
+            (
+                format!("{base} WHERE l.v IS NULL AND r.v=10"),
+                vec!["lv", "rv"],
+                rows(&[(None, Some("10"))]),
+            ),
+            (format!("{base} WHERE l.v=99"), vec!["lv", "rv"], vec![]),
+        ]
+    } else {
+        cases
+    };
     use astersql_session::runtime::{ConcretePreparedArgument, ConcreteSession};
     let mysql = ConcreteSession::new(domain.clone());
     let mysql_observer = ConcreteSession::new(domain.clone());
@@ -449,6 +490,74 @@ fn cte_alias_behavior(partial: bool) {
         assert!(!m.iter().any(|m| matches!(m.0, b'D' | b'C')));
         assert_eq!(m.last(), Some(&(b'Z', vec![status])));
     }
+    if repeat {
+        // Fail after the CTE producer has installed its rowset, then reuse the
+        // same CTE name with a fresh producer to detect leaked statement scope.
+        let sql = "WITH a AS (SELECT v FROM public.cte_read_doc UNION ALL SELECT v FROM public.cte_read_doc) SELECT 10::int4/(l.v-10::int4)::int4 AS bad FROM a l CROSS JOIN a r WHERE l.v=10";
+        for transaction in [false, true] {
+            for extended in [false, true] {
+                if transaction {
+                    successful(&mut socket, "BEGIN");
+                    successful(&mut socket, "INSERT INTO public.cte_read_doc VALUES (3,30)");
+                }
+                let messages = if extended {
+                    parse(&mut socket, sql, false, &["bad"]);
+                    send(
+                        &mut socket,
+                        b'B',
+                        &[
+                            b"portal17\0scope17\0".as_slice(),
+                            &0i16.to_be_bytes(),
+                            &0i16.to_be_bytes(),
+                            &0i16.to_be_bytes(),
+                        ]
+                        .concat(),
+                    );
+                    assert_eq!(read(&mut socket), (b'2', vec![]));
+                    send(
+                        &mut socket,
+                        b'E',
+                        &[b"portal17\0".as_slice(), &0u32.to_be_bytes()].concat(),
+                    );
+                    send(&mut socket, b'S', &[]);
+                    let mut messages = Vec::new();
+                    loop {
+                        let message = read(&mut socket);
+                        let done = message.0 == b'Z';
+                        messages.push(message);
+                        if done {
+                            break;
+                        }
+                    }
+                    messages
+                } else {
+                    query(&mut socket, sql)
+                };
+                error(&messages, "22012", if transaction { b'E' } else { b'I' });
+                if transaction {
+                    error(&query(&mut socket, "SELECT 1 AS ok"), "25P02", b'E');
+                    baseline(&mut observer);
+                    successful(&mut socket, "ROLLBACK");
+                }
+                baseline(&mut socket);
+                baseline(&mut observer);
+                result(
+                    &query(
+                        &mut socket,
+                        "WITH a AS (SELECT 7::int4 AS v) SELECT v FROM a",
+                    ),
+                    &["v"],
+                    &[vec![Some("7".into())]],
+                );
+                if extended {
+                    send(&mut socket, b'C', b"Pportal17\0");
+                    assert_eq!(read(&mut socket).0, b'3');
+                    send(&mut socket, b'C', b"Sscope17\0");
+                    assert_eq!(read(&mut socket).0, b'3');
+                }
+            }
+        }
+    }
     // Each ordinary/extended error gets an independent transaction and recovery.
     let mut errors = vec![
         ("SELECT k FROM a", "42P01"),
@@ -551,7 +660,7 @@ fn cte_alias_behavior(partial: bool) {
     assert_eq!(_cleanup.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
     eprintln!(
-        "CTE partial={partial}: {} success protocol/transaction variants, 3 fresh parameter binds, {} errors with recovery and W/O readback; MySQL query/prepared coexistence",
+        "CTE partial={partial} repeat={repeat}: {} success protocol/transaction variants, 3 fresh parameter binds, {} errors with recovery and W/O readback; MySQL query/prepared coexistence",
         cases.len() * 4,
         if partial { 36 } else { 24 }
     );

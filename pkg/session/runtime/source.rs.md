@@ -162,3 +162,7 @@ PG 的 FROM 函数沿现有逐外行 LATERAL 连接入口执行，函数可省�
 ## PostgreSQL CTE 部分列别名
 
 非递归 CTE 的 PG 列别名列表仅重命名前缀，尾列保持原名及类型；超长列表拒绝，MySQL 保持原有数量相等规则。共享执行与静态结果描述采用同一数量规则，覆盖入口为 `pg10_18_partial_cte_aliases` 和 `pg10_18_behavior`。
+
+## PostgreSQL CTE 重复消费者错误身份
+
+CTE 复用的 INSERT SELECT 行集投影保留已有 `pg_int4_error`，避免把运行期整数诊断转换成无类型字符串。消费者除零经协议返回 22012；行集作用域仍由 `execute_with_clause` 的结果退出路径释放。覆盖入口为 `pg10_19_repeated_cte_error_identity_and_cleanup` 和 `pg10_19_behavior`，不改变算术类型推断或物化策略。
