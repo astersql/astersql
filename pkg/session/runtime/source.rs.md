@@ -158,3 +158,7 @@ PG 的 FROM 函数沿现有逐外行 LATERAL 连接入口执行，函数可省�
 ## SRF暂停恢复与释放（任务29）
 
 非阻塞PostgreSQL SRF SELECT通过`pg_srf_record_set`注册`PgSrfRows`：沿既有IntegerSeries/Int4Unnest的Open/Next/Close逐行推进，保存当前外行、FROM/LATERAL叶和同层投影叶；短者补NULL，WHERE在投影SRF之前，LIMIT/OFFSET在展开之后。LIMIT停止、错误、Close和耗尽释放所有叶；每次推进检查既有SQLKiller。排序/分组/窗口/DISTINCT/WITH及子查询等仍沿原物化路径；原SRF物化循环也检查取消。不新增SQL解释器或协议侧结果生成。
+
+## PostgreSQL CTE 部分列别名
+
+非递归 CTE 的 PG 列别名列表仅重命名前缀，尾列保持原名及类型；超长列表拒绝，MySQL 保持原有数量相等规则。共享执行与静态结果描述采用同一数量规则，覆盖入口为 `pg10_18_partial_cte_aliases` 和 `pg10_18_behavior`。

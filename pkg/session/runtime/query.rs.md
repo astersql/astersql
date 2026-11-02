@@ -384,3 +384,7 @@ validate_pg_integer_select_inputs在观察行及常量折叠之前检查投影�
 ## 集合返回真实客户端差分（任务30）
 
 `validate_pg_integer_select_inputs` 对 CASE/COALESCE 中的 SRF 拒绝通过既有 `PgFunctionError` 保留 0A000、LATERAL FROM 建议及 SRF 调用的原 SQL 字节位置；协议层负责转为字符位置。
+
+## PostgreSQL CTE 部分列别名
+
+非递归 CTE 的 PG 列别名列表仅重命名前缀，尾列保持原名及类型；超长列表拒绝，MySQL 保持原有数量相等规则。PG 超长别名返回 42601；重复列名允许声明，实际的非限定或限定引用歧义返回 42702，MySQL 诊断保持原路径。共享执行与静态结果描述采用同一数量规则，覆盖入口为 `pg10_18_partial_cte_aliases` 和 `pg10_18_behavior`。

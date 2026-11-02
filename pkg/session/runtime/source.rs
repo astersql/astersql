@@ -1623,19 +1623,26 @@ impl ConcreteSession {
                     self.execute_insert_select_node_with_outer(cte.Query.as_ref(), outer)?
                 };
                 if !cte.ColNameList.is_empty() {
-                    if cte.ColNameList.len() != materialized.columns.len() {
-                        return Err(SessionError::new(format!(
+                    if cte.ColNameList.len() > materialized.columns.len()
+                        || (self.sql_dialect() != ast::SqlDialect::PostgreSQL
+                            && cte.ColNameList.len() != materialized.columns.len())
+                    {
+                        let message = format!(
                             "CTE {} has {} columns but {} column names were specified",
                             cte.Name.O,
                             materialized.columns.len(),
                             cte.ColNameList.len()
-                        )));
+                        );
+                        return Err(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                            super::query::pg_union_error(&message, "42601")
+                        } else {
+                            SessionError::new(message)
+                        });
                     }
-                    let renamed = cte
-                        .ColNameList
-                        .iter()
-                        .map(|column| column.L.clone())
-                        .collect::<Vec<_>>();
+                    let mut renamed = materialized.columns.clone();
+                    for (name, alias) in renamed.iter_mut().zip(&cte.ColNameList) {
+                        *name = alias.L.clone();
+                    }
                     materialized.rows = materialized
                         .rows
                         .into_iter()

@@ -1628,3 +1628,23 @@ fn pg10_16_refresh_keeps_updated_candidates() {
         pg.execute("DELETE FROM conflict_update_refresh").unwrap();
     }
 }
+
+#[test]
+fn pg10_18_partial_cte_aliases() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let sql = "WITH a(x) AS (SELECT 1 AS id,2 AS v) SELECT x,v FROM a";
+    let mut result = pg.execute(sql).unwrap();
+    assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1", "2"]);
+    assert!(result[0].next_row().unwrap().is_none());
+    assert!(mysql.execute(sql).is_err());
+    assert!(
+        pg.execute("WITH a(x,y,z) AS (SELECT 1 AS id,2 AS v) SELECT x FROM a")
+            .is_err()
+    );
+    let mut result = mysql
+        .execute("WITH a(x,v) AS (SELECT 1 AS id,2 AS v) SELECT x,v FROM a")
+        .unwrap();
+    assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1", "2"]);
+}

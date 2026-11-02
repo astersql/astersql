@@ -68,6 +68,15 @@ fn text_row(body: &[u8]) -> Vec<Option<String>> {
 
 #[test]
 fn pg10_17_behavior() {
+    cte_alias_behavior(false);
+}
+
+#[test]
+fn pg10_18_behavior() {
+    cte_alias_behavior(true);
+}
+
+fn cte_alias_behavior(partial: bool) {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -235,8 +244,43 @@ fn pg10_17_behavior() {
         send(s, b'C', b"Pportal17\0");
         assert_eq!(read(s).0, b'3');
     }
-    let chain = "WITH a(k,val) AS (SELECT id,v FROM public.cte_read_doc),b AS (SELECT k,val FROM a WHERE k=2) SELECT k,val FROM b ORDER BY k";
-    let cases=vec![
+    let chain = if partial {
+        "WITH a(k) AS (SELECT id,v FROM public.cte_read_doc) SELECT k,v AS val FROM a WHERE k=2 ORDER BY k"
+    } else {
+        "WITH a(k,val) AS (SELECT id,v FROM public.cte_read_doc),b AS (SELECT k,val FROM a WHERE k=2) SELECT k,val FROM b ORDER BY k"
+    };
+    let cases = if partial {
+        vec![
+            (
+                "WITH a(x) AS (SELECT id,v FROM public.cte_read_doc) SELECT x,v FROM a ORDER BY x"
+                    .into(),
+                vec!["x", "v"],
+                vec![
+                    vec![Some("1".into()), Some("10".into())],
+                    vec![Some("2".into()), None],
+                ],
+            ),
+            (
+                "WITH a(x) AS (SELECT id,v FROM public.cte_read_doc WHERE id=3) SELECT x,v FROM a"
+                    .into(),
+                vec!["x", "v"],
+                vec![],
+            ),
+            (
+                "WITH a(x) AS (SELECT id,v FROM public.cte_read_doc WHERE id=2) SELECT v FROM a"
+                    .into(),
+                vec!["v"],
+                vec![vec![None]],
+            ),
+            (
+                "WITH a(x,x) AS (SELECT id,v FROM public.cte_read_doc) SELECT 1::int4 AS ok FROM a"
+                    .into(),
+                vec!["ok"],
+                vec![vec![Some("1".into())], vec![Some("1".into())]],
+            ),
+        ]
+    } else {
+        vec![
         (chain.to_owned(),vec!["k","val"],vec![vec![Some("2".into()),None]]),
         (chain.replace("k=2","k=3"),vec!["k","val"],vec![]),
         ("WITH cte_read_doc AS (SELECT 7 AS id) SELECT c.id AS local_id,t.id AS table_id FROM cte_read_doc AS c CROSS JOIN public.cte_read_doc AS t ORDER BY table_id".into(),vec!["local_id","table_id"],vec![vec![Some("7".into()),Some("1".into())],vec![Some("7".into()),Some("2".into())]]),
@@ -244,7 +288,8 @@ fn pg10_17_behavior() {
         ("WITH a AS (SELECT id FROM public.cte_read_doc WHERE id=1),b AS (WITH a AS (SELECT id FROM a) SELECT id FROM a) SELECT id FROM b".into(),vec!["id"],vec![vec![Some("1".into())]]),
         ("WITH cte_read_doc AS (SELECT id FROM cte_read_doc) SELECT id FROM cte_read_doc ORDER BY id".into(),vec!["id"],vec![vec![Some("1".into())],vec![Some("2".into())]]),
         ("WITH cte_read_doc AS (SELECT 7 AS fresh) SELECT fresh FROM cte_read_doc".into(),vec!["fresh"],vec![vec![Some("7".into())]]),
-    ];
+    ]
+    };
     use astersql_session::runtime::{ConcretePreparedArgument, ConcreteSession};
     let mysql = ConcreteSession::new(domain.clone());
     let mysql_observer = ConcreteSession::new(domain.clone());
@@ -405,7 +450,7 @@ fn pg10_17_behavior() {
         assert_eq!(m.last(), Some(&(b'Z', vec![status])));
     }
     // Each ordinary/extended error gets an independent transaction and recovery.
-    for (sql, state) in [
+    let mut errors = vec![
         ("SELECT k FROM a", "42P01"),
         (
             "WITH a AS (SELECT v FROM b),b AS (SELECT 2 AS v) SELECT v FROM a",
@@ -424,7 +469,24 @@ fn pg10_17_behavior() {
             "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<3) SELECT n FROM r ORDER BY n",
             "0A000",
         ),
-    ] {
+    ];
+    if partial {
+        errors.extend([
+            (
+                "WITH a(x,y,z) AS (SELECT id,v FROM public.cte_read_doc) SELECT x FROM a",
+                "42601",
+            ),
+            (
+                "WITH a(x,x) AS (SELECT id,v FROM public.cte_read_doc) SELECT x FROM a",
+                "42702",
+            ),
+            (
+                "WITH a(x,x) AS (SELECT id,v FROM public.cte_read_doc) SELECT a.x FROM a",
+                "42702",
+            ),
+        ]);
+    }
+    for (sql, state) in errors {
         for transaction in [false, true] {
             for extended in [false, true] {
                 baseline(&mut socket);
@@ -489,7 +551,9 @@ fn pg10_17_behavior() {
     assert_eq!(_cleanup.0.resource_counts(), (0, 0, 0));
     assert!(TcpStream::connect(addr).is_err());
     eprintln!(
-        "pg10_17: 28 success protocol/transaction variants, 3 fresh parameter binds, 24 errors with recovery and W/O readback; MySQL query/prepared coexistence"
+        "CTE partial={partial}: {} success protocol/transaction variants, 3 fresh parameter binds, {} errors with recovery and W/O readback; MySQL query/prepared coexistence",
+        cases.len() * 4,
+        if partial { 36 } else { 24 }
     );
 }
 

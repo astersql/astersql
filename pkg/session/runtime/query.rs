@@ -7309,10 +7309,18 @@ impl ConcreteSession {
                             &ctes,
                         )?;
                         if !cte.ColNameList.is_empty() {
-                            if fields.len() != cte.ColNameList.len() {
-                                return Err(SessionError::new(
-                                    "CTE column-name count does not match query",
-                                ));
+                            if cte.ColNameList.len() > fields.len()
+                                || (self.sql_dialect() != ast::SqlDialect::PostgreSQL
+                                    && fields.len() != cte.ColNameList.len())
+                            {
+                                return Err(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                                    pg_union_error(
+                                        "CTE column-name count does not match query",
+                                        "42601",
+                                    )
+                                } else {
+                                    SessionError::new("CTE column-name count does not match query")
+                                });
                             }
                             for (field, name) in fields.iter_mut().zip(&cte.ColNameList) {
                                 field.column_as_name = name.clone();
@@ -7502,14 +7510,18 @@ impl ConcreteSession {
                             column.Name.O
                         )));
                     };
-                    if column.Table.L.is_empty()
+                    if (column.Table.L.is_empty()
+                        || self.sql_dialect() == ast::SqlDialect::PostgreSQL)
                         && !using_columns.contains(&column.Name.L)
                         && candidates.next().is_some()
                     {
-                        return Err(SessionError::new(format!(
-                            "Column '{}' in field list is ambiguous",
-                            column.Name.O
-                        )));
+                        let message =
+                            format!("Column '{}' in field list is ambiguous", column.Name.O);
+                        return Err(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                            pg_union_error(&message, "42702")
+                        } else {
+                            SessionError::new(message)
+                        });
                     }
                     let mut result_field = candidate.clone();
                     if !column.Table.L.is_empty() && result_field.column_origin.is_none() {
