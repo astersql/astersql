@@ -232,3 +232,11 @@ git diff --check
 ```
 
 格式化、lint、diff检查退出0；聚焦协议1 passed（72组合、6次参数Bind），共享层1 passed（18组合），相邻协议15 passed，共享层19 passed（含MySQL Query/prepared共存），均退出0。红灯 `/tmp/pg10-14-red.log` 有效1测试、0A000与21000断言失败（Cargo退出101）；最终绿灯 `/tmp/pg10-14-green.log`、共享层 `/tmp/pg10-14-session.log`、相邻 `/tmp/pg10-14-adjacent.log` 和 `/tmp/pg10-14-session-adjacent.log`、lint `/tmp/pg10-14-lint.log`。真实隔离 REPEATABLE-READ。临时参考端已停止并删除其数据；槽位完成后释放锁、保留缓存。未修改Go/Bazel/Cargo依赖，不触发bazel_prepare；未运行昂贵全包/RealTiKV测试。
+
+## PostgreSQL DO NOTHING 唯一键竞争
+
+显式悲观事务的 DO NOTHING 在仲裁前取得与普通写入相同的唯一键锁；等待持有者提交或回滚后，以最新提交行及事务内写入重建仲裁视图。这样次级唯一键也能在持有者提交时跳过、回滚时插入，而不是在语句末尾等待后继续使用旧判断。同一 VALUES 已插入但尚未应用的候选由 `lock_rows` 补回视图，保留语句内部重复仲裁。此接线仅限 DO NOTHING，不改变 DO UPDATE 或 MySQL 重复键策略。
+
+真实存储回归入口是 `pg_client_integration_test::pg10_15_competition`，使用外部真实 TiKV 目标与 PG18.6 参考端，以锁等待诊断作为释放写入者的屏障，记录返回值、命令标签、完整回读及清理；测试存储不能替代该竞争验收。
+
+该聚焦测试沿用 `PG_LIBPQ_LIBRARY` 与 `PG18_REFERENCE_DSN`；`PG10_TARGET_DSN` 指向已按真实 TiKV runbook 启动的隔离目标（不得回退测试存储），`PG10_MYSQL_PORT` 为同一服务器原生端口，仅用于创建独占数据库及读取真实 `information_schema.data_lock_waits` 屏障。`PG10_STORAGE_EVIDENCE` 指向启动者保存的脱敏 JSON：目标二进制路径/SHA256、源码 HEAD、PD 版本及 stores 的 TiKV 版本/构建信息；包装测试将其复制到每次运行证据目录。每侧独立执行64个竞争场景，共128个，覆盖双方提交/回滚、主键/次级唯一键/省略目标、NULL、返回/无返回、simple/extended；extended 用明确OID的参数、statement/portal Describe以及同statement的新Bind换值，并在ROLLBACK后回读。

@@ -1534,3 +1534,52 @@ fn pg10_14_repeated_rows_and_skipped_actions() {
         }
     }
 }
+
+#[test]
+fn pg10_15_refresh_keeps_prior_candidates() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session =
+        ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    session
+        .execute("CREATE DATABASE IF NOT EXISTS test")
+        .unwrap();
+    session.execute("USE test").unwrap();
+    session
+        .execute(
+            "CREATE TABLE conflict_refresh (id integer PRIMARY KEY,email text UNIQUE,v integer)",
+        )
+        .unwrap();
+    session
+        .execute("SET tidb_txn_mode = 'pessimistic'")
+        .unwrap();
+    for end in ["COMMIT", "ROLLBACK"] {
+        session.execute("BEGIN").unwrap();
+        session
+            .execute("INSERT INTO conflict_refresh VALUES (1,'earlier',10)")
+            .unwrap();
+        let mut result = session.execute("INSERT INTO conflict_refresh VALUES (2,'batch',20),(3,'batch',30),(4,'earlier',40),(5,NULL,50),(6,NULL,60) ON CONFLICT (email) DO NOTHING RETURNING id,v").unwrap();
+        let mut returned = vec![];
+        while let Some(row) = result[0].next_row().unwrap() {
+            returned.push(row);
+        }
+        assert_eq!(
+            returned,
+            vec![vec!["2", "20"], vec!["5", "50"], vec!["6", "60"]]
+        );
+        session.execute(end).unwrap();
+        let mut result = session
+            .execute("SELECT id,email,v FROM conflict_refresh ORDER BY id")
+            .unwrap();
+        let mut rows = vec![];
+        while let Some(row) = result[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        if end == "COMMIT" {
+            assert_eq!(rows.len(), 4);
+            assert_eq!(rows[0], vec!["1", "earlier", "10"]);
+        } else {
+            assert!(rows.is_empty());
+        }
+        session.execute("DELETE FROM conflict_refresh").unwrap();
+    }
+}

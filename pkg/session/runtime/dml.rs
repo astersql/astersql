@@ -3559,6 +3559,35 @@ impl ConcreteSession {
                     false,
                 )?;
             }
+            if pessimistic_transaction && pg_arbiter.is_some() && pg_assignments.is_none() {
+                // DO NOTHING must decide after the unique-key owner finishes.
+                // The mutation path locks these same keys, but waiting there is
+                // too late: arbitration would still use the pre-wait row view.
+                let domain_id = Arc::as_ptr(&self.domain) as usize;
+                self.acquire_row_locks(
+                    unique_lock_keys_for_rows(&table, [&row])
+                        .into_iter()
+                        .map(|key| RuntimeRowLockKey { domain_id, key })
+                        .collect(),
+                    false,
+                    None,
+                    false,
+                )?;
+                working_rows = self
+                    .scan_latest_with_transaction_overlay(&table)?
+                    .into_iter()
+                    .map(|(_, row)| {
+                        let (key, _) = encode_relational_row(&table, &row, flags)?;
+                        Ok((key.0, row))
+                    })
+                    .collect::<SessionResult<HashMap<_, _>>>()?;
+                // Earlier VALUES candidates are not applied until the whole
+                // statement validates. Retain their uniqueness conflicts too.
+                for inserted in &lock_rows {
+                    let (key, _) = encode_relational_row(&table, inserted, flags)?;
+                    working_rows.insert(key.0, inserted.clone());
+                }
+            }
             let committed_exists = if skip_committed_primary_key_check {
                 false
             } else if pessimistic_transaction {
