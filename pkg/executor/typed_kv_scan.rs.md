@@ -72,6 +72,8 @@
 
 ## 与 Go 版本的对应关系
 
+来源 e5c382810a 的必要局部接线：现役 TypedPointGet 复用 append_decoded_row_for_table；输出 ExtraPhysTblID 时从已经解码并校验的 record key table_id 生成整数，兼容旧/新行格式，避免从行值读取不存在的合成列。共享扫描路径也获得同一物理 ID 语义；未新增锁或事务策略。
+
 隐藏 ExtraHandleID 从真实 record key 解码；ExtraCommitTSID 从同一版本 retriever 的实际 ValueEntry.CommitTs 读取，零 timestamp 返回错误，支持有界 FAST 的真实窗口条件。
 
 两者不能视为行为完全等价。Go TableReader 把逻辑 ranger ranges 转成请求，构造 DAG，处理 TiKV/TiFlash、分区、signed/unsigned range 分段、correlated column、虚拟列、内存跟踪和 `SelectResult` 生命周期；Rust `TypedKVScan` 接受已编码 range，直接遍历调用者提供的 Retriever，并在本地用 tablecodec 解码。Rust 的 kill、锁键移交、detach 和分页行为由 typed adapter 协议显式实现；Go 对应能力分散在 executor、DistSQL result 和会话执行链中。

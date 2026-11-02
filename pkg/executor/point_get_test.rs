@@ -160,3 +160,65 @@ fn point_get_snapshot_runtime_merges_scan_diagnostics() {
         std::time::Duration::from_millis(12)
     );
 }
+
+/// The production typed point reader must supply the physical ID from the key,
+/// even though no synthetic column value is stored in either row format.
+#[test]
+fn port_e5c382810a_point_get_supplies_physical_partition_id() {
+    use crate::adapter::ExecExecutor;
+    use crate::physical_plan_runtime_test::{MemoryRetriever, encode_row};
+    use crate::typed_point_get::TypedPointGet;
+    use std::sync::Arc;
+    for new_format in [false, true] {
+        let retriever = Arc::new(MemoryRetriever::default());
+        let (key, mut value) = encode_row(1201, 4, 27, "partition");
+        if !new_format {
+            value = astersql_tablecodec::EncodeRow(
+                Some(astersql_tablecodec::time::UTC),
+                vec![astersql_types::datum::NewIntDatum(27)],
+                vec![1],
+                Vec::new(),
+                None,
+                None,
+                astersql_tablecodec::rowcodec::Encoder::new(false),
+            )
+            .unwrap();
+        }
+        retriever.Put(key.clone(), value);
+        let columns = vec![
+            astersql_meta_model::ColumnInfo {
+                ID: 1,
+                FieldType: astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeLonglong,
+                ),
+                ..Default::default()
+            },
+            astersql_meta_model::NewExtraPhysTblIDColInfo(),
+        ];
+        let mut point = TypedPointGet::new(
+            retriever,
+            1200,
+            1201,
+            false,
+            columns,
+            Some(4),
+            None,
+            Vec::new(),
+            0,
+            false,
+            1,
+            1,
+        );
+        point.Open().unwrap();
+        let mut output = point.NewChunk();
+        point.Next(&mut output).unwrap();
+        assert_eq!(output.NumRows(), 1);
+        assert_eq!(output.GetRow(0).GetInt64(0), 27);
+        assert!(!output.GetRow(0).IsNull(1));
+        assert_eq!(output.GetRow(0).GetInt64(1), 1201);
+        assert_eq!(point.TakeLockKeys(), vec![key.0]);
+        point.Next(&mut output).unwrap();
+        assert_eq!(output.NumRows(), 0);
+        point.Close().unwrap();
+    }
+}

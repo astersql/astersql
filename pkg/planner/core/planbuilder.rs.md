@@ -112,6 +112,10 @@ ANALYZE 新增 `NDVRate`，同 SampleRate 以 `f64::to_bits` 存入 `u64` map，
 - 访问路径扩展应维护 invisible、multi-valued、vector、global、temporary、prefix length、TiFlash 和 FORCE/USE/IGNORE 的组合含义；性能风险主要来自候选路径集合膨胀及不必要 clone。
 - 保持错误文本兼容时参考 Rust 的 `go_error_messages_and_table_plan` 及 Go 原测试。所有测试继续放在 `pkg/planner/core/planbuilder_test.rs`，遵守生产源码与测试分离要求。
 
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+buildMaterializedViewShowSchema 为六种物化 SHOW 生成 Go 同名列，列表/状态 ID 和计数使用 Int，其余 String；真实会话 system_query.rs 消费该 schema。权限收集在会话执行前直接校验，不经旧 ShowKind 的无元数据 buildShow 抽象。
+
 
 ### 59bfe3daab 局部增量
 

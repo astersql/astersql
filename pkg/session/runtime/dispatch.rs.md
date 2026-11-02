@@ -174,6 +174,10 @@ simple_typed_select_shape 排除 FunctionSource，防止将普通 FROM SRF 当�
 
 SELECT结果的sql_select_limit经truncate_rows约束缓冲/活SRF两个形态；TestSession转换用into_test_record_set保留原Send缓冲契约，生产会话读取仍可按需推进。
 
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+六种物化 SHOW 分发到 execute_show_materialized，消费已有 parser AST，不改 PostgreSQL 分支、协议或事务命令。该入口对应 Go ShowExec.fetchAll 增量。
+
 
 ### 59bfe3daab 局部增量
 

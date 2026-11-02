@@ -665,6 +665,9 @@ impl LogicalAggregation {
                 && func.OrderByItems.is_empty()
                 && matches!(func.Name.as_str(), "min" | "max")
                 && func.Args.len() == 1
+                // MIN/MAX return strings for binary literals; replacing them with
+                // the raw literal changes numeric coercion above aggregation.
+                && !expression::IsBinaryLiteral(func.Args[0].as_ref())
                 && func.Args[0].ConstLevel() >= expression::ConstOnlyInContext
         })
     }

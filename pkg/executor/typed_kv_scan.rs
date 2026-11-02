@@ -147,6 +147,9 @@ impl TypedKVScan {
         for (offset, column) in self.columns.iter().enumerate() {
             let datum = if column.ID == astersql_meta_model::ExtraHandleID {
                 NewIntDatum(handle.IntValue())
+            } else if column.ID == astersql_meta_model::ExtraPhysTblID {
+                // The shared point-row decoder must use the physical record key.
+                NewIntDatum(table_id)
             } else if column.ID == astersql_meta_model::ExtraCommitTSID {
                 let entry = self
                     .retriever

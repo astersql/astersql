@@ -141,3 +141,7 @@ Rust 版本只在无表常量 SELECT 专用路径中直接匹配这些函数，�
 ## PostgreSQL jsonb 数组（任务42）
 
 UNION/零行描述及求值允许Jsonb数组，首行NULL不丢3807身份。 独立pg05_array_jsonb测试和18.6四方向原始证据见docs/postgresql-pg05-array-jsonb-evidence.md。
+
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+execute_show_materialized 对列表检查 schema、对象种类、五种任一可见权限、名称过滤、名称/ID 排序和 WHERE；CREATE/REMAIN/WAIT 操作永久目录，日志权限检查使用实际日志名和确定性 fallback。CREATE 复用 executor 格式化器。状态查询独立维护会话 BEGIN、同一 MVCC snapshot 与 checkpoint、安全 purge TSO；正常或错误后 ROLLBACK，不改变调用方事务。Go 的池会话恢复由新建独立会话生命周期替代，Go 的 SQL COUNT 由真实 KV commit-ts 范围扫描替代，不使用伪计数。

@@ -3694,3 +3694,266 @@ fn port_63ec01b244_complete_refresh_nowait_and_outer_timestamp_semantics() {
         ]
     );
 }
+
+#[test]
+fn port_66d0e9e835_materialized_show_lists_definitions_and_checkpoints() {
+    let (f, session) = fixture();
+    let view = f.domain.table_by_name("test", "mv_runtime").unwrap();
+    assert_eq!(
+        query(
+            &session,
+            &format!("show materialized views where mview_id={}", view.ID)
+        ),
+        vec![vec![view.ID.to_string(), "mv_runtime".into()]]
+    );
+    assert!(
+        session
+            .execute("show materialized views from absent_schema")
+            .is_err()
+    );
+    let base = f.domain.table_by_name("test", "src_runtime").unwrap();
+    let log = f
+        .domain
+        .info_schema()
+        .TableByID(base.MaterializedViewBase.as_ref().unwrap().MLogID)
+        .unwrap();
+    let mut typed = session
+        .execute("show materialized views")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        typed.result_fields[0]
+            .as_ref()
+            .unwrap()
+            .column
+            .FieldType
+            .GetType(),
+        astersql_parser_mysql::r#type::TypeLonglong
+    );
+    assert_eq!(
+        typed.result_fields[1]
+            .as_ref()
+            .unwrap()
+            .column
+            .FieldType
+            .GetType(),
+        astersql_parser_mysql::r#type::TypeVarchar
+    );
+    typed.close().unwrap();
+    query(&session, "begin");
+    let caller_ts = session
+        .state
+        .borrow()
+        .transaction
+        .as_ref()
+        .unwrap()
+        .StartTS();
+    query(&session, "show materialized view mv_runtime remain_logs");
+    assert_eq!(
+        session
+            .state
+            .borrow()
+            .transaction
+            .as_ref()
+            .unwrap()
+            .StartTS(),
+        caller_ts
+    );
+    query(&session, "rollback");
+    let rows = query(&session, "show materialized views");
+    assert_eq!(rows, vec![vec![view.ID.to_string(), "mv_runtime".into()]]);
+    assert!(
+        query(
+            &session,
+            "show materialized views where mview_name='absent'"
+        )
+        .is_empty()
+    );
+    assert_eq!(query(&session, "show materialized views like 'mv_%'"), rows);
+    assert_eq!(
+        query(&session, "show materialized view logs")[0][1],
+        log.0.name.original
+    );
+    assert!(query(&session, "show materialized view logs like 'test.$mlog$%'").is_empty());
+    assert!(
+        query(&session, "show create materialized view mv_runtime")[0][1]
+            .starts_with("CREATE MATERIALIZED VIEW `mv_runtime`")
+    );
+    assert!(
+        query(&session, "show create materialized view log on src_runtime")[0][1]
+            .starts_with("CREATE MATERIALIZED VIEW LOG ON `src_runtime`")
+    );
+    assert_eq!(
+        query(&session, "show materialized view mv_runtime remain_logs")[0][4],
+        "0"
+    );
+    query(
+        &session,
+        "insert into src_runtime values (4,3,40),(5,3,50),(6,4,60)",
+    );
+    assert_eq!(
+        query(&session, "show materialized view mv_runtime remain_logs")[0][4],
+        "3"
+    );
+    query(&session, "refresh materialized view mv_runtime fast");
+    assert_eq!(
+        query(&session, "show materialized view mv_runtime remain_logs")[0][4],
+        "0"
+    );
+    assert_eq!(
+        query(
+            &session,
+            "show materialized view log on src_runtime wait_purge"
+        )[0][4],
+        "3"
+    );
+    assert!(
+        session
+            .execute("show materialized view src_runtime remain_logs")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("MATERIALIZED VIEW")
+    );
+    query(&session, "create temporary table src_runtime (x int)");
+    assert!(
+        query(&session, "show create materialized view log on src_runtime")[0][1]
+            .contains("`id`, `g`, `v`")
+    );
+}
+
+#[test]
+fn port_66d0e9e835_materialized_grant_and_show_privileges() {
+    let (f, session) = fixture();
+    query(&session, "create user 'show_mv_28'@'%'");
+    let mut user = ConcreteSession::new(f.domain.clone());
+    user.login_user = Some("show_mv_28".into());
+    user.login_host = Some("%".into());
+    user.authenticated_host = Some("%".into());
+    assert!(query(&user, "show materialized views from test").is_empty());
+    assert!(
+        user.execute("show materialized view test.mv_runtime remain_logs")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SHOW VIEW command denied")
+    );
+    query(
+        &session,
+        "grant show view on test.mv_runtime to 'show_mv_28'@'%'",
+    );
+    assert_eq!(query(&user, "show materialized views from test").len(), 1);
+    assert_eq!(
+        query(&user, "show materialized view test.mv_runtime remain_logs")[0][4],
+        "0"
+    );
+    assert!(
+        user.execute("show create materialized view test.mv_runtime")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SELECT command denied")
+    );
+    query(
+        &session,
+        "grant select on test.mv_runtime to 'show_mv_28'@'%'",
+    );
+    assert_eq!(
+        query(&user, "show create materialized view test.mv_runtime").len(),
+        1
+    );
+    assert!(query(&user, "show materialized view logs from test").is_empty());
+    query(
+        &session,
+        "grant show view on test.`$mlog$src_runtime` to 'show_mv_28'@'%'",
+    );
+    assert_eq!(
+        query(&user, "show materialized view logs from test").len(),
+        1
+    );
+    assert!(
+        user.execute("show create materialized view log on test.src_runtime")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SELECT command denied")
+    );
+    query(
+        &session,
+        "grant select on test.`$mlog$src_runtime` to 'show_mv_28'@'%'",
+    );
+    query(
+        &session,
+        "grant all privileges on test.`$mlog$src_runtime` to 'show_mv_28'@'%'",
+    );
+    assert_eq!(
+        query(
+            &user,
+            "show create materialized view log on test.src_runtime"
+        )
+        .len(),
+        1
+    );
+    let grants = query(
+        &session,
+        "select Table_priv, Column_priv from mysql.tables_priv where User='show_mv_28' and Table_name='$mlog$src_runtime'",
+    );
+    assert!(grants[0][0].contains("Operate View"));
+    assert!(!grants[0][0].contains("Insert"));
+    assert_eq!(grants[0][1], "");
+    query(
+        &session,
+        "revoke select on test.mv_runtime from 'show_mv_28'@'%'",
+    );
+    assert!(
+        user.execute("show create materialized view test.mv_runtime")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SELECT command denied")
+    );
+    query(&user, "show materialized view test.mv_runtime remain_logs");
+    query(
+        &session,
+        "revoke show view on test.mv_runtime from 'show_mv_28'@'%'",
+    );
+    assert!(
+        user.execute("show materialized view test.mv_runtime remain_logs")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("SHOW VIEW command denied")
+    );
+    for sql in [
+        "grant insert on test.mv_runtime to 'show_mv_28'@'%'",
+        "grant update on test.`$mlog$src_runtime` to 'show_mv_28'@'%'",
+    ] {
+        assert!(
+            session
+                .execute(sql)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("cannot grant")
+        );
+    }
+}
+
+#[test]
+fn port_66d0e9e835_original_go_materialized_view_setup() {
+    // Keep the original Go SHOW suite's DDL prerequisite observable; no model stub.
+    let f = Fixture::new();
+    BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+    let session = ConcreteSession::new(f.domain.clone());
+    for sql in [
+        "use test",
+        "set tidb_mview_enable=on",
+        "create table t (a int not null, b int not null)",
+        "create materialized view log on t (a, b) purge next date_add(now(), interval 1 hour)",
+        "create materialized view mv (a, s, cnt) as select a, sum(b), count(1) from t group by a",
+        "show materialized views",
+    ] {
+        query(&session, sql);
+    }
+}

@@ -1236,3 +1236,242 @@ pub const CAST_TABLE_AND_DATA_SQL: &[&str] = &[
     "CREATE TABLE tf460485d (col_57 tinytext COLLATE utf8_unicode_ci DEFAULT NULL,col_58 varchar(477) COLLATE utf8_general_ci NOT NULL DEFAULT '覽',col_59 tinyint unsigned NOT NULL,col_60 tinyint(1) NOT NULL DEFAULT '0',col_61 tinyint(1) NOT NULL,col_62 date DEFAULT '2031-12-15',col_63 smallint unsigned DEFAULT '28366',col_64 varbinary(389) NOT NULL,UNIQUE KEY idx_17 (col_58),PRIMARY KEY (col_58) /*T![clustered_index] NONCLUSTERED */ /*T![global_index] GLOBAL */) PARTITION BY RANGE COLUMNS(col_58)(PARTITION p0 VALUES LESS THAN ('$0Wc櫙'), PARTITION p1 VALUES LESS THAN ('襑蒢$堀$hKiV'), PARTITION p2 VALUES LESS THAN (MAXVALUE))",
     "INSERT INTO tf460485d VALUES('1','R獾',127,1,0,'1999-06-26',NULL,x'6f416e515e4e'),('-9Wd+h9FNWgtZ','~x',82,0,0,'2035-10-28',NULL,x''),('=I','UtEvX殃h瞉CpWOE',171,1,0,'1973-03-18',858,x'524228455f71'),('0ATpI@W+8uF','xq烱O',146,1,0,'1986-12-17',26667,x'76664d59257456233951366f506e'),('1','dT啛鋌PeJh喅AL',33,1,0,'2022-05-06',5881,x'296748734d6f7634525f655f26556a7161'),('1','Y掿麶絊磵夬$楯%悒也贒R',255,1,0,'2014-11-06',10258,x'6f6a2a624a414e445a686a32237a7a23536664'),('0ATpI@W+8uF','D7Xa',203,1,0,'1981-05-12',26055,x'695a45617445344c5a233872436d'),('1','-Jw瞲80z灧UsY觱艵X礋',156,1,0,'2007-09-27',31907,x'6b74'),('9Zv(^6PEL5%r','cm痵e缓R崻*駌Z*TuM',175,0,1,'2031-10-08',32717,x'6f462d634f4b795e58454a423246646b356666'),('0ATpI@W+8uF','(3攓i痈XDQ許WL薹F錓',119,0,1,'1981-02-19',56610,x'6c2163514c5026'),('cCfZwARDfmRnhT4V8D+','$4#Y助怔s',230,0,0,'2020-06-23',12937,x'5455554d744a5a75412a43365f41387a5456'),('s(O04','fQjXE#L櫘UOa膸',157,0,0,'2010-12-19',28999,x'26494a73216342313d344d514d'),('LR5^o$*2','跪熝葌0O冾湂~(D5犣Y@*',81,0,0,'2013-05-30',15558,x'7a78625e4c4f6b752d472854'),('6*Y$H62VB)','襾X_梼乵',25,0,1,'2024-03-29',40076,x'67576c505a21457a576b264f64523d5e4149'),('VH5P+UikL(','e坲V',31,1,1,'2005-05-07',1799,x'785e'),('0ATpI@W+8uF','%yr',61,0,1,'1976-07-20',65535,x'2d6566576a'),('!hJ7J!C#','d讦Il8鬏挻#R蜃顧',241,1,0,'1975-08-22',46070,x'37665f6f4f6d797a3243'),('DEhuX+rH(Tqnww','P溃挋%T',224,1,0,'2006-04-13',60626,x'5e2a712a4c234479436b796a455274525459'),('~6','1H罥詟蝮%n6',127,0,0,'2024-06-12',24793,x'3d3126474a5236284a'),('0ATpI@W+8uF','yyR寓卖=淙Q!',148,1,0,'1991-07-05',32767,x''),('0ATpI@W+8uF','澪',105,0,0,'1981-02-15',NULL,x'5f406767'),('0ATpI@W+8uF','9騞G眡gMJP+v+鋜襑鲯I',171,1,1,'1993-06-26',47054,x'74466e576550'),('tZ@aRBI8&','%酬dV遇5',81,0,0,'1975-09-16',48645,x'2366546f7573756b267832')",
 ];
+
+/// Keep every original assertion, but execute independent checks after a failure.
+/// This distinguishes missing legacy plan shapes from transaction/locking behavior.
+fn record_port30_check(failures: &mut Vec<String>, stage: String, check: impl FnOnce()) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
+    println!(
+        "PORT30_CHECK {} {stage}",
+        if result.is_ok() { "PASS" } else { "FAIL" }
+    );
+    if result.is_err() {
+        failures.push(stage);
+    }
+}
+
+/// Go e5c382810a: each original partition/key/transaction combination is independent.
+fn check_dirty_partition_point_get(partition: &str, key: &str, mode: &str) {
+    let _serial = serial_partition_pruner_test();
+    let mut failures = Vec::new();
+    let scenario = format!("{partition}/{key}/{mode}");
+    let result = std::panic::catch_unwind(|| {
+        let mut checks = Vec::new();
+        let mut tk = TestKitDraft::new();
+        tk.must_exec("use test");
+        tk.must_exec("set tidb_partition_prune_mode = 'dynamic'");
+        tk.must_exec(format!(
+            "create table t(a int, b int, c int default 0, {key}) partition by {partition}"
+        ));
+        tk.must_exec("insert into t(a, b) values (1, 10), (2, 20)");
+        tk.must_exec(format!("begin {mode}"));
+        tk.must_exec("update t set b = 11 where a = 1");
+        tk.must_exec("insert into t(a, b) values (3, 30)");
+        tk.must_exec("delete from t where a = 2");
+        let mut check = |tk: &mut TestKitDraft, predicate: &str, rows: &[&str]| {
+            let extra = if key == "primary key(a, c) clustered" {
+                " and c = 0"
+            } else {
+                ""
+            };
+            let sql = format!("select a, b from t where {predicate}{extra} order by b");
+            record_port30_check(&mut checks, format!("{scenario}/plan/{predicate}"), || {
+                let plan = tk
+                    .inner
+                    .MustQuery(&format!("explain format = 'brief' {sql}"), Vec::new())
+                    .String();
+                assert!(plan.contains("Point_Get"), "{scenario}: {plan}");
+                assert!(!plan.contains("UnionScan"), "{scenario}: {plan}");
+            });
+            record_port30_check(&mut checks, format!("{scenario}/rows/{predicate}"), || {
+                tk.must_query_check(&sql, rows)
+            });
+            record_port30_check(
+                &mut checks,
+                format!("{scenario}/locking_rows/{predicate}"),
+                || tk.must_query_check(format!("{sql} for update"), rows),
+            );
+        };
+        check(&mut tk, "a = 1", &["1 11"]);
+        check(&mut tk, "a = 1 and b = 10", &[]);
+        check(&mut tk, "a = 3", &["3 30"]);
+        check(&mut tk, "a = 2", &[]);
+        tk.must_exec("update t set a = 12 where a between 1 and 1");
+        check(&mut tk, "a = 1", &[]);
+        check(&mut tk, "a = 12", &["12 11"]);
+        tk.must_exec("delete from t where a between 12 and 12");
+        check(&mut tk, "a = 12", &[]);
+        tk.must_exec("rollback");
+        checks
+    });
+    match result {
+        Ok(checks) => failures.extend(checks),
+        Err(_) => failures.push(format!("{scenario}/mutation")),
+    }
+    assert!(
+        failures.is_empty(),
+        "dirty partition checks failed: {failures:?}"
+    );
+}
+
+macro_rules! dirty_partition_regression {
+    ($name:ident, $partition:expr, $key:expr, $mode:expr) => {
+        #[test]
+        fn $name() {
+            check_dirty_partition_point_get($partition, $key, $mode);
+        }
+    };
+}
+
+dirty_partition_regression!(
+    port_e5c382810a_hash_int_optimistic,
+    "hash(a) partitions 4",
+    "primary key(a) clustered",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_int_pessimistic,
+    "hash(a) partitions 4",
+    "primary key(a) clustered",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_common_optimistic,
+    "hash(a) partitions 4",
+    "primary key(a, c) clustered",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_common_pessimistic,
+    "hash(a) partitions 4",
+    "primary key(a, c) clustered",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_unique_optimistic,
+    "hash(a) partitions 4",
+    "unique key(a)",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_unique_pessimistic,
+    "hash(a) partitions 4",
+    "unique key(a)",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_global_optimistic,
+    "hash(a) partitions 4",
+    "unique key(a) global",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_hash_global_pessimistic,
+    "hash(a) partitions 4",
+    "unique key(a) global",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_int_optimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "primary key(a) clustered",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_int_pessimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "primary key(a) clustered",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_common_optimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "primary key(a, c) clustered",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_common_pessimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "primary key(a, c) clustered",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_unique_optimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "unique key(a)",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_unique_pessimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "unique key(a)",
+    "pessimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_global_optimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "unique key(a) global",
+    "optimistic"
+);
+dirty_partition_regression!(
+    port_e5c382810a_range_global_pessimistic,
+    "range(a) (partition p0 values less than (10), partition p1 values less than (100))",
+    "unique key(a) global",
+    "pessimistic"
+);
+
+/// Go's SQL contract retains SelectLock above a join and locks the physical row.
+#[test]
+fn port_e5c382810a_join_select_lock_nowait() {
+    let _serial = serial_partition_pruner_test();
+    let mut failures = Vec::new();
+    let store = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain().0;
+    let mut tk = TestKitDraft::from_store(store.clone());
+    tk.must_exec("use test");
+    tk.must_exec("set tidb_partition_prune_mode = 'dynamic'");
+    tk.must_exec(
+        "create table p(a int primary key clustered, b int) partition by hash(a) partitions 4",
+    );
+    tk.must_exec("create table t(a int primary key clustered)");
+    tk.must_exec("insert into p values (1, 10), (2, 20)");
+    tk.must_exec("insert into t values (2)");
+    tk.must_exec("begin pessimistic");
+    tk.must_exec("update p set b = 11 where a = 1");
+    record_port30_check(&mut failures, "join/dirty_plan".into(), || {
+        tk.must_query_contain(
+            "explain format = 'brief' select * from p where a = 1 order by b",
+            &["Point_Get", "partition:p1"],
+        )
+    });
+    record_port30_check(&mut failures, "join/dirty_rows".into(), || {
+        tk.must_query_check("select * from p where a = 1 order by b", &["1 11"])
+    });
+    let sql =
+        "select /*+ hash_join(p, t) */ p.* from p join t on p.a = t.a where p.a = 2 for update";
+    record_port30_check(&mut failures, "join/select_lock_plan".into(), || {
+        tk.must_query_contain(
+            format!("explain format = 'brief' {sql}"),
+            &["SelectLock", "Point_Get", "partition:p2"],
+        )
+    });
+    record_port30_check(&mut failures, "join/rows".into(), || {
+        tk.must_query_check(sql, &["2 20"])
+    });
+    let mut locker = TestKitDraft::from_store(store);
+    locker.must_exec("use test");
+    locker.must_exec("begin pessimistic");
+    record_port30_check(&mut failures, "join/nowait".into(), || {
+        let error = locker
+            .inner
+            .ExecToErr("select * from p where a = 2 for update nowait");
+        assert!(
+            error.message().contains("3572") && error.message().contains("NOWAIT"),
+            "{error}"
+        );
+    });
+    locker.must_exec("rollback");
+    tk.must_exec("rollback");
+    tk.must_exec("drop table p, t");
+    tk.must_exec("set tidb_partition_prune_mode = default");
+    assert!(failures.is_empty(), "join checks failed: {failures:?}");
+}

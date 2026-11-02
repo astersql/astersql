@@ -2399,6 +2399,18 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(show) = statement.as_any().downcast_ref::<ast::ShowStmt>() {
+            if matches!(
+                show.Tp,
+                ast::ShowStmtType::MaterializedViews
+                    | ast::ShowStmtType::MaterializedViewLogs
+                    | ast::ShowStmtType::MaterializedViewRemainLogs
+                    | ast::ShowStmtType::MaterializedViewLogWaitPurge
+                    | ast::ShowStmtType::CreateMaterializedView
+                    | ast::ShowStmtType::CreateMaterializedViewLog
+            ) {
+                return Ok(Some(self.execute_show_materialized(show)?));
+            }
+
             if show.Tp == ast::ShowStmtType::SessionStates {
                 return Ok(Some(self.show_migration_system_vars()?));
             }

@@ -76,6 +76,8 @@
 
 ## 与 Go 版本的对应关系
 
+来源 e5c382810a：`Next` 在 DecodeRowValToChunk 成功后、校验和及虚拟列计算前，将每个 ExtraPhysTblID 输出列整列替换为实际行键 table_id；旧行解码先追加 NULL，避免为无公开元数据的合成列查默认值。全局索引返回的分区 ID 与普通分区 ID 使用同一补值位置。该 Go 形状仍是依赖注入模型，现役 typed 链路另见 typed_kv_scan.rs。
+
 Rust 的 `buildPointGet` 对应 Go `executorBuilder.buildPointGet`；`PointGetExecutor` 字段及 `Recreated`、`Init`、`Open`、`Close`、`Next`、锁/读取辅助函数、事务作用域校验和行解码辅助函数均在 `pkg/executor/point_get.go` 有同名或直接对应实现。
 
 Rust 用局部数据结构和 `PointGetDependencies`/`PointGetBuilder` trait 代替 Go 的 `sessionctx.Context`、`kv.Transaction`、`kv.Snapshot`、planner/model 和表编解码包，错误也压缩为四类 `PointGetErrorKind`。这使语义可单测，但不等价于已经连接全部真实基础设施。Go 的执行器直接实现现役 `exec.Executor`；Rust 当前生产会话路径改走 typed point-get，这是最重要的接线差异。

@@ -285,3 +285,7 @@ INSERT VALUES, INSERT SELECT and UPDATE preparation reject typed text assignment
 来源 f137844d4ff6fb8dc5cfa6963c23778ab15681db 的必要局部接线：读时间戳与 snapshot 的 datetime 解析调用 migration::parse_session_read_datetime，使用当前会话时区而非进程时区，保证同一 SET SESSION_STATES 内先恢复时区即生效。三个字符集/排序规则及隔离级别依赖开关通过原规范变量 setter 保留重置副作用；数字 snapshot、既有事务和一次性读消费仍使用原运行时。
 
 同一增量在 tidb_snapshot 的真实 SET 完成后保留规范变量缓存中的原始字符串，使有效 TSO 未因时区变化而改变解释时，SHOW SESSION_STATES 可保留客户端 datetime 拼写；缓存不负责实际历史读取或一次性消费。
+
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+execute_grant 先解析永久元数据并复用 executor 白名单校验；规范表名只解析一次，临时表不覆盖目标。物化对象 ALL 只展开五种安全表权限，Column_priv 不由 ALL 引入 SELECT/INSERT/UPDATE/REFERENCES。原权限事务和缓存更新流程保持。此为 Go grant.go 的真实局部接线。

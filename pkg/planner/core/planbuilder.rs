@@ -3247,6 +3247,51 @@ fn parse_size(value: &str) -> Result<i64> {
     Ok(bytes as i64)
 }
 
+/// Result contract of materialized SHOW statements from Go buildShowSchema.
+/// The real session dispatcher consumes this schema alongside its privilege checks.
+pub fn buildMaterializedViewShowSchema(kind: crate::ast::ShowStmtType) -> Option<Schema> {
+    use crate::ast::ShowStmtType as S;
+    let names: &[&str] = match kind {
+        S::MaterializedViews => &["mview_id", "mview_name"],
+        S::MaterializedViewLogs => &["mlog_id", "mlog_name", "base_table_id", "base_table_name"],
+        S::MaterializedViewRemainLogs => &[
+            "mview_id",
+            "mview_name",
+            "mlog_id",
+            "mlog_name",
+            "remain_logs",
+        ],
+        S::MaterializedViewLogWaitPurge => &[
+            "mlog_id",
+            "mlog_name",
+            "base_table_id",
+            "base_table_name",
+            "wait_purge",
+        ],
+        S::CreateMaterializedView => &[
+            "Materialized View",
+            "Create Materialized View",
+            "character_set_client",
+            "collation_connection",
+        ],
+        S::CreateMaterializedViewLog => &["Materialized View Log", "Create Materialized View Log"],
+        _ => return None,
+    };
+    let mut result = schema(names).0;
+    if !matches!(
+        kind,
+        S::CreateMaterializedView | S::CreateMaterializedViewLog
+    ) {
+        for (i, column) in result.iter_mut().enumerate() {
+            if i % 2 == 0 {
+                column.field_type.code = TypeCode::Int;
+                column.field_type.flen = 20;
+            }
+        }
+    }
+    Some(result)
+}
+
 impl PlanBuilder {
     pub fn buildCompareMaterializedView(
         &mut self,

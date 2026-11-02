@@ -100,6 +100,8 @@ DataSource 分支的主流程如下：
 
 来源 `1c0793ea5765e203868fbed4c0840541cabb46d2`：`AccessPath` 保存 `eq_cond_count`、`eq_or_in_cond_count` 与 `const_cols`；`buildPrunedRangeAccessPath`、`rangesCoverAllIndexColumns` 和 `appendPrunedRangeCandidates` 对齐 Go 的短前缀 IN-list 备选、唯一索引排除、分析统计门槛和 saved-seek 行数保护。Rust 精简模型没有 Go 的完整 histogram/ranger，因此短前缀的 range 由现有 ranges 投影去重，保留既有行数上下界，而不是声称重做完整基数估算。
 
+来源 e5c382810a：isPointGetConvertableSchema 接收 single_point，isPointGetPath 按 ranges.len()==1 传入；ExtraPhysTblID（有符号 ID -3，在本模型 columns: Vec<usize> 中保留位表示）只允许单点，不允许批量路径。既有模型没有 Go ColumnInfo.State，不能声称已建立完整公开状态校验；本变更不扩展该历史缺口，也不把本地枚举模型等同于现役 SQL 的全部规划接线。
+
 Rust 独立测试与 Go `find_best_task_test.go` 对齐了三类核心回归：代价溢出不使 Task 无效、只有允许或 hint 要求时才通过 Sort 强制属性、hint 不可应用时回退并记录一次告警。Rust 还增加了 MPP 分区缓存键区分，以及 Index Join 调整行数稳定/不稳定两种 skyline 行为。
 
 但当前 Rust 文件是精简模型，不应宣称与 Go 完全等价：

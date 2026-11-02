@@ -100,3 +100,17 @@ fn explain_keys_and_empty_state_match_go() {
     assert_eq!(empty.Field(), "");
     assert!(empty.FieldPatternLike().is_none());
 }
+
+#[test]
+fn port_66d0e9e835_materialized_list_explain_uses_table_key() {
+    for kind in [
+        ShowStmtType::MaterializedViews,
+        ShowStmtType::MaterializedViewLogs,
+    ] {
+        let mut extractor =
+            newShowBaseExtractor(show(kind, Some(like(ExprNode::Value("Ab_%".into()), "\\"))));
+        assert!(extractor.Extract());
+        assert_eq!(extractor.ExplainInfo(), "table_pattern:[ab_%]");
+        assert!(extractor.FieldPatternLike().unwrap().DoMatch("ab_cd"));
+    }
+}

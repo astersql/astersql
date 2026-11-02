@@ -71,7 +71,9 @@
 
 结构主字段、`Init`、谓词下推、列裁剪、键/统计/列组/排序属性/FD 推导、coprocessor 禁止位、模式判定和 `CanPullUp` 都有对应概念。
 
-已核对的关键一致点包括：直接分组列保留顺序和重复；全局聚合推导最多一行；分组 NDV 用共享多列估算器；裁剪时保留副作用和一个占位聚合；`MIN/MAX` 仅在无 DISTINCT、无 ORDER BY、单个上下文常量参数时可与参数结果等价；空函数列表不是模式判定的正常输入。
+已核对的关键一致点包括：直接分组列保留顺序和重复；全局聚合推导最多一行；分组 NDV 用共享多列估算器；裁剪时保留副作用和一个占位聚合；`MIN/MAX` 仅在无 DISTINCT、无 ORDER BY、单个非二进制字面量的上下文常量参数时可与参数结果等价；空函数列表不是模式判定的正常输入。
+
+Go `8c92bcda87f46aaa856d6721d923a2d8adbce031` 的二进制字面量保护对应 `aggFuncResultMatchesArgForNonEmptyGroup` 中的 `expression::IsBinaryLiteral` 检查。二进制字面量的 MIN/MAX 返回字符串，不能用原字面量替换后再进行数字强制转换。独立测试覆盖 MIN/MAX、bit/hex 代表值和普通数字/字符串对照。该 helper 通过 `getAggFuncsColsForConstResult` 暴露；当前谓词下推仍未调用该查询，不将本次 helper 修复描述为已新增常量谓词优化接线。原始 SQL 全部分支保留在上层真实 TestKit 测试中。
 
 已确认的迁移差异/限制包括：
 

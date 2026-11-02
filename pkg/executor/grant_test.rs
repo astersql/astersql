@@ -512,3 +512,146 @@ fn account_tls_require_validation_preserves_go_errors() {
         "Unsupported cipher suite: not-a-cipher",
     );
 }
+
+#[test]
+fn port_66d0e9e835_special_object_privilege_matrix() {
+    use crate::grant::validateGrantOnSpecialMViewObject as validate;
+    use astersql_parser_mysql::privs as mysql;
+    let mut table = astersql_meta_model::TableInfo::default();
+    table.Name = astersql_parser_ast::NewCIStr("mv");
+    for log in [false, true] {
+        table.MaterializedView = (!log).then(Default::default);
+        table.MaterializedViewLog = log.then(Default::default);
+        for privilege in [
+            mysql::SelectPriv,
+            mysql::ShowViewPriv,
+            mysql::AlterPriv,
+            mysql::DropPriv,
+            mysql::OperateViewPriv,
+            mysql::AllPriv,
+            mysql::UsagePriv,
+            mysql::GrantPriv,
+        ] {
+            assert!(
+                validate(
+                    &table,
+                    &[astersql_parser_ast::PrivElem {
+                        Priv: privilege,
+                        ..Default::default()
+                    }]
+                )
+                .is_ok()
+            );
+        }
+        for privilege in [
+            mysql::InsertPriv,
+            mysql::UpdatePriv,
+            mysql::DeletePriv,
+            mysql::CreatePriv,
+        ] {
+            assert!(
+                validate(
+                    &table,
+                    &[astersql_parser_ast::PrivElem {
+                        Priv: privilege,
+                        ..Default::default()
+                    }]
+                )
+                .is_err()
+            );
+        }
+        for privilege in [
+            mysql::SelectPriv,
+            mysql::UsagePriv,
+            mysql::AllPriv,
+            mysql::UpdatePriv,
+        ] {
+            let columns = vec![astersql_parser_ast::ColumnName {
+                Name: astersql_parser_ast::NewCIStr("a"),
+                ..Default::default()
+            }];
+            assert_eq!(
+                validate(
+                    &table,
+                    &[astersql_parser_ast::PrivElem {
+                        Priv: privilege,
+                        Cols: columns,
+                        ..Default::default()
+                    }]
+                )
+                .is_ok(),
+                [mysql::SelectPriv, mysql::UsagePriv].contains(&privilege)
+            );
+        }
+    }
+    table.MaterializedViewShadow = Some(Default::default());
+    assert!(validate(&table, &[]).unwrap_err().contains("shadow table"));
+    table.MaterializedView = None;
+    table.MaterializedViewLog = None;
+    table.MaterializedViewShadow = None;
+    assert!(
+        validate(
+            &table,
+            &[astersql_parser_ast::PrivElem {
+                Priv: mysql::InsertPriv,
+                ..Default::default()
+            }]
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn port_66d0e9e835_show_create_restores_options_and_alerts() {
+    use crate::show::{
+        fetchShowCreateTable4MaterializedView as view_sql,
+        fetchShowCreateTable4MaterializedViewLog as log_sql,
+    };
+    let mut table = astersql_meta_model::TableInfo::default();
+    table.Name = astersql_parser_ast::NewCIStr("mv`name");
+    table.Columns = vec![
+        astersql_meta_model::ColumnInfo {
+            Name: astersql_parser_ast::NewCIStr("a"),
+            ..Default::default()
+        },
+        astersql_meta_model::ColumnInfo {
+            Name: astersql_parser_ast::NewCIStr("hidden"),
+            Hidden: true,
+            ..Default::default()
+        },
+    ];
+    table.Comment = "it's a view".into();
+    table.ShardRowIDBits = 2;
+    table.PreSplitRegions = 2;
+    table.MaterializedView = Some(astersql_meta_model::MaterializedViewInfo {
+        SQLContent: "SELECT 1".into(),
+        RefreshNext: "DATE_ADD(NOW(), INTERVAL 1 HOUR)".into(),
+        AlertOverdueSec: 10,
+        AlertRefreshFailed: true,
+        ..Default::default()
+    });
+    let sql = view_sql(&table, Default::default());
+    assert!(sql.starts_with("CREATE MATERIALIZED VIEW `mv``name` (`a`) COMMENT = 'it''s a view'"));
+    assert!(sql.contains("SHARD_ROW_ID_BITS = 2 PRE_SPLIT_REGIONS = 2 REFRESH FAST NEXT DATE_ADD(NOW(), INTERVAL 1 HOUR)"));
+    assert!(sql.ends_with(
+        "ATTRIBUTES='mview_alert_overdue=10,mview_alert_refresh_failed=yes' AS SELECT 1"
+    ));
+    table.MaterializedView.as_mut().unwrap().RefreshMethod = "COMPLETE".into();
+    assert!(!view_sql(&table, Default::default()).contains(" NEXT "));
+    let mut log = astersql_meta_model::TableInfo::default();
+    log.MaterializedViewLog = Some(astersql_meta_model::MaterializedViewLogInfo {
+        Columns: vec![astersql_parser_ast::NewCIStr("a")],
+        PurgeStartWith: "CAST('2026-01-02 03:04:05' AS DATETIME)".into(),
+        PurgeNext: "NOW()".into(),
+        LogAccumulationAlertRows: Some(2048),
+        ..Default::default()
+    });
+    let sql = log_sql(&table, &log, Default::default());
+    assert!(sql.ends_with(
+        "(`a`) PURGE START WITH CAST('2026-01-02 03:04:05' AS DATETIME) NEXT NOW() ALERT ROWS 2048"
+    ));
+    log.MaterializedViewLog.as_mut().unwrap().PurgeMethod = "IMMEDIATE".into();
+    assert!(
+        log_sql(&table, &log, Default::default()).ends_with(" PURGE IMMEDIATE ALERT ROWS 2048")
+    );
+}

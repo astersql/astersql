@@ -116,3 +116,7 @@ a87bf8db64 的时间工具提取通过 purge_history_duration 调用 executor::m
 - 修改历史或取消协议时，同时核对 `tidb_mlog_purge_hist` schema、`finalize_purge_history`、三个取消检查位置及权限目标解析。兼容性风险是 running 行永久残留、已提交任务被错误标 failed、或请求者绕过 `OPERATE VIEW`。
 - 修改后台调度时，保留 Domain 单例 worker、Weak 生命周期和关闭检测；若要并行处理到期 MLog，需要明确并发上限、逐任务错误隔离以及同一 MLog 的 NOWAIT 行锁行为。
 - 追求 Go 完整兼容时，应逐项对照 `pkg/executor/mlog_purge.go` 及其测试，而不是简化为“最终日志被删掉”。特别关注 maintenance session vars、context 取消、affected rows/message、历史字段条件和 Go 的内部/外部 SQL差异。
+
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+mlog_show_safe_tso 提取现有 purge 的公开/构建中视图检查点计算，purge 与 SHOW 共用；count_mlog_show_rows 复用现有 KV MVCC 扫描和 iterator 清理。SHOW 使用独立 BEGIN 快照、读取 checkpoint、不修改 purge 历史。必要局部接线源于 Go show.go 对 purge 计算器的复用，不扩展调度子系统。

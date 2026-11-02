@@ -94,3 +94,7 @@
 - 扩展 REQUIRE 类型时，要同步 parser AST 映射、`AuthTokenOrTlsOptionType`、重复项文案、校验函数、`GlobalPrivValue` 与 `serialize_global_priv`，并逐项对齐 Go `tlsOption2GlobalPriv` 和 `privileges.GlobalPrivValue` 的 JSON 兼容格式。
 - 若把 Rust `GrantExec` 接入生产执行链，需要先提供 `GrantDependencies`/`SystemSession` 的真实适配器和 builder 构造点，并验证权限缓存通知及系统会话池生命周期；当前文件本身不能证明这些接线已存在。
 - 性能上应避免在新增逻辑中为每个权限重复查询同一 SET；现实现按权限项执行读取—写回，批量优化必须保证顺序合并和去重语义不变，并评估多用户、多列授权的系统表往返次数。
+
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+新增 materializedViewTablePrivs 与 validateGrantOnSpecialMViewObject，按 SELECT、SHOW VIEW、ALTER、DROP、OPERATE VIEW 白名单限制物化对象；ALL/USAGE/GRANT 表级允许，列级只允许 SELECT/USAGE，影子表全部拒绝。真实调用方是 session/runtime/control.rs；旧 GrantExec 仍为独立抽象，未声称整体生产接线。

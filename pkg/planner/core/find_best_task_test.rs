@@ -330,3 +330,34 @@ fn range_count_threshold_limits_equality_in_preference() {
         );
     }
 }
+
+/// Go e5c382810a only exempts the physical table ID for a single point.
+#[test]
+fn port_e5c382810a_physical_id_is_single_point_only() {
+    let ds = DataSource {
+        columns: vec![1, (-3_i64) as usize],
+        partitioned: true,
+        ..DataSource::default()
+    };
+    let mut path = AccessPath {
+        is_int_handle: true,
+        ranges: vec![Range {
+            low: vec![Datum::Int(1)],
+            high: vec![Datum::Int(1)],
+            ..Range::default()
+        }],
+        ..AccessPath::default()
+    };
+    assert!(crate::find_best_task::isPointGetPath(&ds, &path));
+    path.ranges.push(Range {
+        low: vec![Datum::Int(2)],
+        high: vec![Datum::Int(2)],
+        ..Range::default()
+    });
+    assert!(!crate::find_best_task::isPointGetPath(&ds, &path));
+    let public_ds = DataSource {
+        columns: vec![1],
+        ..ds
+    };
+    assert!(crate::find_best_task::isPointGetPath(&public_ds, &path));
+}

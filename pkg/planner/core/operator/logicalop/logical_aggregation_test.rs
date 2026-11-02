@@ -146,3 +146,44 @@ fn aggregate_output_helpers_return_only_matching_schema_columns() {
         vec![first_row_output.UniqueID]
     );
 }
+
+#[test]
+fn port_8c92bcda87_binary_min_max_preserve_aggregate_results() {
+    for name in [aggregation::ast::AggFuncMin, aggregation::ast::AggFuncMax] {
+        for byte in [0x2a, 0x31] {
+            let mut value = expression::types::Datum::default();
+            value.SetBinaryLiteral(expression::types::BinaryLiteral(vec![byte]));
+            let argument = expression::Constant::with_type(
+                value,
+                *expression::types::NewFieldType(expression::mysql::TypeVarString),
+            );
+            let mut aggregate = LogicalAggregation {
+                AggFuncs: vec![descriptor(name, Box::new(argument))],
+                GroupByItems: vec![Box::new(column(1))],
+                ..LogicalAggregation::default()
+            };
+            aggregate.SetSchema(expression::NewSchema(vec![column(10)]));
+            assert!(aggregate.getAggFuncsColsForConstResult().is_empty());
+            assert!(expression::IsBinaryLiteral(
+                aggregate.AggFuncs[0].Args[0].as_ref()
+            ));
+            assert!(
+                !aggregate.aggFuncResultMatchesArgForNonEmptyGroup(0),
+                "{name} binary literal {byte} must retain its string result"
+            );
+        }
+        for argument in [
+            Box::new(expression::NewInt64Const(49)) as Expression,
+            Box::new(expression::NewStrConst("1")) as Expression,
+        ] {
+            let mut aggregate = LogicalAggregation {
+                AggFuncs: vec![descriptor(name, argument)],
+                GroupByItems: vec![Box::new(column(1))],
+                ..LogicalAggregation::default()
+            };
+            aggregate.SetSchema(expression::NewSchema(vec![column(10)]));
+            assert!(aggregate.aggFuncResultMatchesArgForNonEmptyGroup(0));
+            assert_eq!(aggregate.getAggFuncsColsForConstResult()[0].UniqueID, 10);
+        }
+    }
+}

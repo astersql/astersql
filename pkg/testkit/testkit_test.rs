@@ -177,3 +177,56 @@ fn plan_and_operator_info_helpers_use_the_go_columns() {
         "limit embedded"
     ));
 }
+
+#[test]
+fn port_8c92bcda87_binary_literal_min_max_having() {
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    let mut failures = Vec::new();
+    let mut passed = 0;
+    for key in [" primary key", ""] {
+        tk.MustExec(
+            &format!("create table binary_having(a int{key})"),
+            Vec::new(),
+        );
+        tk.MustExec("insert into binary_having values(1),(2)", Vec::new());
+        for (sql, expected) in [
+            (
+                "select abs(min(b'101010')) c2,1 c3 from binary_having group by a having any_value(c2)",
+                Vec::<&str>::new(),
+            ),
+            (
+                "select a from binary_having group by a having max(x'31')=49",
+                vec![],
+            ),
+            (
+                "select a from binary_having group by a having max(x'31')=1 order by a",
+                vec!["1", "2"],
+            ),
+            (
+                "select a from binary_having group by a having min(49)=49 order by a",
+                vec!["1", "2"],
+            ),
+            (
+                "select a from binary_having group by a having min('1')=1 order by a",
+                vec!["1", "2"],
+            ),
+        ] {
+            match tk.Query(sql, Vec::new()) {
+                Ok(actual) if actual.string_rows() == Rows(&expected) => passed += 1,
+                Ok(actual) => failures.push(format!(
+                    "key={key:?}, sql={sql:?}: expected {expected:?}, actual {:?}",
+                    actual.string_rows()
+                )),
+                Err(error) => failures.push(format!("key={key:?}, sql={sql:?}: {error}")),
+            }
+        }
+        tk.MustExec("drop table binary_having", Vec::new());
+    }
+    assert!(
+        failures.is_empty(),
+        "{passed}/10 original Go query branches passed; failures:\n{}",
+        failures.join("\n")
+    );
+}

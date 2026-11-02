@@ -1358,7 +1358,16 @@ pub fn getPruningInfo(candidates: &[candidatePath]) -> String {
         .join(",")
 }
 /// schema 是否可转为 PointGet。
-pub fn isPointGetConvertableSchema(ds: &DataSource) -> bool {
+pub fn isPointGetConvertableSchema(ds: &DataSource, single_point: bool) -> bool {
+    // Go e5c382810a: only PointGet supplies the synthetic physical table ID.
+    if !single_point
+        && ds
+            .columns
+            .iter()
+            .any(|id| *id as i64 == model_dependency::ExtraPhysTblID)
+    {
+        return false;
+    }
     ds.schema
         .iter()
         .all(|t| !matches!(t.code, crate::task::TypeCode::Vector))
@@ -1387,7 +1396,8 @@ pub fn isPointGetPath(ds: &DataSource, path: &AccessPath) -> bool {
             return false;
         }
     }
-    isPointGetConvertableSchema(ds) && path.ranges.iter().all(Range::is_point_non_nullable)
+    isPointGetConvertableSchema(ds, path.ranges.len() == 1)
+        && path.ranges.iter().all(Range::is_point_non_nullable)
 }
 
 /// 在扫描上包裹 Selection。

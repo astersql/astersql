@@ -1757,3 +1757,110 @@ fn escapeIdentifier(identifier: &str) -> String {
 #[cfg(test)]
 #[path = "show/distribution_jobs_test.rs"]
 mod distribution_jobs_test;
+
+/// Reconstruct the persisted definition, omitting hidden columns and zero alerts.
+pub fn fetchShowCreateTable4MaterializedView(
+    table: &astersql_meta_model::TableInfo,
+    mode: astersql_parser_mysql::r#const::SQLMode,
+) -> String {
+    let Some(info) = &table.MaterializedView else {
+        return String::new();
+    };
+    let escape = |name: &str| astersql_util_stringutil::string_util::Escape(name, mode.0);
+    let mut sql = format!(
+        "CREATE MATERIALIZED VIEW {} ({})",
+        escape(&table.Name.O),
+        table
+            .Columns
+            .iter()
+            .filter(|c| !c.Hidden)
+            .map(|c| escape(&c.Name.O))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if !table.Comment.is_empty() {
+        write!(
+            sql,
+            " COMMENT = '{}'",
+            astersql_parser_format::OutputFormat(&table.Comment)
+        )
+        .unwrap();
+    }
+    append_mview_sharding(&mut sql, table);
+    let method = if info.RefreshMethod.is_empty() {
+        "FAST"
+    } else {
+        &info.RefreshMethod
+    };
+    write!(sql, " REFRESH {method}").unwrap();
+    if method.eq_ignore_ascii_case("FAST") {
+        if !info.RefreshStartWith.is_empty() {
+            write!(sql, " START WITH {}", info.RefreshStartWith).unwrap();
+        }
+        if !info.RefreshNext.is_empty() {
+            write!(sql, " NEXT {}", info.RefreshNext).unwrap();
+        }
+    }
+    let mut attrs = Vec::new();
+    if info.AlertWarningSec > 0 {
+        attrs.push(format!("mview_alert_warning={}", info.AlertWarningSec));
+    }
+    if info.AlertOverdueSec > 0 {
+        attrs.push(format!("mview_alert_overdue={}", info.AlertOverdueSec));
+    }
+    if info.AlertRefreshFailed {
+        attrs.push("mview_alert_refresh_failed=yes".into());
+    }
+    if !attrs.is_empty() {
+        write!(sql, " ATTRIBUTES='{}'", attrs.join(",")).unwrap();
+    }
+    write!(sql, " AS {}", info.SQLContent).unwrap();
+    sql
+}
+fn append_mview_sharding(sql: &mut String, table: &astersql_meta_model::TableInfo) {
+    if table.ShardRowIDBits > 0 {
+        write!(sql, " SHARD_ROW_ID_BITS = {}", table.ShardRowIDBits).unwrap();
+    }
+    if table.PreSplitRegions > 0 {
+        write!(sql, " PRE_SPLIT_REGIONS = {}", table.PreSplitRegions).unwrap();
+    }
+}
+/// Reconstruct a log definition using its base table's name.
+pub fn fetchShowCreateTable4MaterializedViewLog(
+    base: &astersql_meta_model::TableInfo,
+    log: &astersql_meta_model::TableInfo,
+    mode: astersql_parser_mysql::r#const::SQLMode,
+) -> String {
+    let Some(info) = &log.MaterializedViewLog else {
+        return String::new();
+    };
+    let escape = |name: &str| astersql_util_stringutil::string_util::Escape(name, mode.0);
+    let mut sql = format!(
+        "CREATE MATERIALIZED VIEW LOG ON {} ({})",
+        escape(&base.Name.O),
+        info.Columns
+            .iter()
+            .map(|c| escape(&c.O))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    append_mview_sharding(&mut sql, log);
+    if !info.PurgeMethod.is_empty() || !info.PurgeStartWith.is_empty() || !info.PurgeNext.is_empty()
+    {
+        sql.push_str(" PURGE");
+        if info.PurgeMethod.eq_ignore_ascii_case("IMMEDIATE") {
+            sql.push_str(" IMMEDIATE");
+        } else {
+            if !info.PurgeStartWith.is_empty() {
+                write!(sql, " START WITH {}", info.PurgeStartWith).unwrap();
+            }
+            if !info.PurgeNext.is_empty() {
+                write!(sql, " NEXT {}", info.PurgeNext).unwrap();
+            }
+        }
+    }
+    if let Some(rows) = info.LogAccumulationAlertRows {
+        write!(sql, " ALERT ROWS {rows}").unwrap();
+    }
+    sql
+}

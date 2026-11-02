@@ -311,7 +311,10 @@ fn purge_mlog_snapshot_batch_from(
     Ok((deleted, last_seen, exhausted))
 }
 
-fn purge_sql_row(session: &ConcreteSession, sql: &str) -> SessionResult<Option<Vec<String>>> {
+pub(super) fn purge_sql_row(
+    session: &ConcreteSession,
+    sql: &str,
+) -> SessionResult<Option<Vec<String>>> {
     let mut sets = session.execute(sql)?;
     let Some(mut set) = sets.pop() else {
         return Err(SessionError::new("MLog purge query returned no result set"));
@@ -540,85 +543,7 @@ impl ConcreteSession {
             if job_id == 0 {
                 return Err(SessionError::new("invalid MLog purge start TSO"));
             }
-            let mut safe_tso = job_id;
-            let building_jobs = purge_sql_rows(
-                &maintenance,
-                &format!(
-                    "select job_meta, table_ids from mysql.tidb_ddl_job where type={}",
-                    astersql_meta_model::group_3::ACTION_CREATE_MATERIALIZED_VIEW
-                ),
-            )?;
-            let mut building_view_ids = Vec::new();
-            for row in building_jobs {
-                let Some(table_ids) = row.get(1) else {
-                    continue;
-                };
-                if !table_ids
-                    .split(',')
-                    .any(|id| id.trim().parse::<i64>().ok() == Some(log.ID))
-                {
-                    continue;
-                }
-                let Some(job_meta) = row.first() else {
-                    continue;
-                };
-                let job = astersql_meta_model::group_3::Job::decode(job_meta.as_bytes())
-                    .map_err(|error| session_error("decode MView DDL job", error))?;
-                if job.table_id > 0 {
-                    building_view_ids.push(job.table_id);
-                }
-            }
-            if let Some(base_info) = &base.MaterializedViewBase {
-                for view_id in &base_info.MViewIDs {
-                    let row = purge_sql_row(
-                        &maintenance,
-                        &format!("select LAST_SUCCESS_READ_TSO from mysql.tidb_mview_refresh_info where MVIEW_ID={view_id}"),
-                    )?
-                    .ok_or_else(|| SessionError::new(format!("MView refresh info missing for ID {view_id}")))?;
-                    let read_tso = row
-                        .first()
-                        .filter(|value| {
-                            !value.eq_ignore_ascii_case("null") && value.as_str() != "<nil>"
-                        })
-                        .map(|value| {
-                            value
-                                .parse::<u64>()
-                                .map_err(|_| SessionError::new("invalid MView refresh TSO"))
-                        })
-                        .transpose()?
-                        .unwrap_or(0);
-                    safe_tso = safe_tso.min(read_tso);
-                }
-            }
-            for view_id in building_view_ids {
-                if base
-                    .MaterializedViewBase
-                    .as_ref()
-                    .is_some_and(|info| info.MViewIDs.contains(&view_id))
-                {
-                    continue;
-                }
-                if let Some(row) = purge_sql_row(
-                    &maintenance,
-                    &format!(
-                        "select LAST_SUCCESS_READ_TSO from mysql.tidb_mview_refresh_info where MVIEW_ID={view_id}"
-                    ),
-                )? {
-                    let read_tso = row
-                        .first()
-                        .filter(|value| {
-                            !value.eq_ignore_ascii_case("null") && value.as_str() != "<nil>"
-                        })
-                        .map(|value| {
-                            value.parse::<u64>().map_err(|_| {
-                                SessionError::new("invalid building MView refresh TSO")
-                            })
-                        })
-                        .transpose()?
-                        .unwrap_or(0);
-                    safe_tso = safe_tso.min(read_tso);
-                }
-            }
+            let safe_tso = mlog_show_safe_tso(&maintenance, &base, &log, job_id)?;
             let latest_cutoff = purge_sql_row(
                 &history,
                 &format!("select PURGE_CUTOFF_TSO from mysql.tidb_mlog_purge_hist where MLOG_ID={} and PURGE_CUTOFF_TSO is not null order by PURGE_JOB_ID desc limit 1", log.ID),
@@ -1012,3 +937,97 @@ pub fn start_domain_mlog_purge_worker(domain: &Arc<Domain>) -> Result<bool, Stri
 #[cfg(test)]
 #[path = "mlog_purge_test.rs"]
 mod tests;
+
+/// Shared checkpoint calculation for SHOW: same public/building dependencies as purge.
+pub(super) fn mlog_show_safe_tso(
+    maintenance: &ConcreteSession,
+    base: &astersql_meta_model::TableInfo,
+    log: &astersql_meta_model::TableInfo,
+    start_ts: u64,
+) -> SessionResult<u64> {
+    let mut safe_tso = start_ts;
+    let building_jobs = purge_sql_rows(
+        maintenance,
+        &format!(
+            "select job_meta, table_ids from mysql.tidb_ddl_job where type={}",
+            astersql_meta_model::group_3::ACTION_CREATE_MATERIALIZED_VIEW
+        ),
+    )?;
+    let mut building_view_ids = Vec::new();
+    for row in building_jobs {
+        let Some(table_ids) = row.get(1) else {
+            continue;
+        };
+        if !table_ids
+            .split(',')
+            .any(|id| id.trim().parse::<i64>().ok() == Some(log.ID))
+        {
+            continue;
+        }
+        let Some(job_meta) = row.first() else {
+            continue;
+        };
+        let job = astersql_meta_model::group_3::Job::decode(job_meta.as_bytes())
+            .map_err(|error| session_error("decode MView DDL job", error))?;
+        if job.table_id > 0 {
+            building_view_ids.push(job.table_id);
+        }
+    }
+    if let Some(base_info) = &base.MaterializedViewBase {
+        for view_id in &base_info.MViewIDs {
+            let row = purge_sql_row(
+                        maintenance,
+                        &format!("select LAST_SUCCESS_READ_TSO from mysql.tidb_mview_refresh_info where MVIEW_ID={view_id}"),
+                    )?
+                    .ok_or_else(|| SessionError::new(format!("MView refresh info missing for ID {view_id}")))?;
+            let read_tso = row
+                .first()
+                .filter(|value| !value.eq_ignore_ascii_case("null") && value.as_str() != "<nil>")
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| SessionError::new("invalid MView refresh TSO"))
+                })
+                .transpose()?
+                .unwrap_or(0);
+            safe_tso = safe_tso.min(read_tso);
+        }
+    }
+    for view_id in building_view_ids {
+        if base
+            .MaterializedViewBase
+            .as_ref()
+            .is_some_and(|info| info.MViewIDs.contains(&view_id))
+        {
+            continue;
+        }
+        if let Some(row) = purge_sql_row(
+            maintenance,
+            &format!(
+                "select LAST_SUCCESS_READ_TSO from mysql.tidb_mview_refresh_info where MVIEW_ID={view_id}"
+            ),
+        )? {
+            let read_tso = row
+                .first()
+                .filter(|value| !value.eq_ignore_ascii_case("null") && value.as_str() != "<nil>")
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| SessionError::new("invalid building MView refresh TSO"))
+                })
+                .transpose()?
+                .unwrap_or(0);
+            safe_tso = safe_tso.min(read_tso);
+        }
+    }
+    Ok(safe_tso)
+}
+
+pub(super) fn count_mlog_show_rows(
+    snapshot: &dyn kv::Snapshot,
+    id: i64,
+    lower: Option<u64>,
+    upper: u64,
+) -> SessionResult<usize> {
+    Ok(pending_mlog_rows(snapshot, id, lower, upper)?.pending_rows)
+}

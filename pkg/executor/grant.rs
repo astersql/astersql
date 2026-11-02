@@ -1574,3 +1574,58 @@ fn json_escape(value: &str) -> String {
 fn _user_identity_display(identity: &UserIdentity) -> String {
     identity.display_name()
 }
+
+/// Table privileges safe for both materialized views and their logs.
+pub fn materializedViewTablePrivs() -> Vec<astersql_parser_mysql::privs::PrivilegeType> {
+    use astersql_parser_mysql::privs::*;
+    vec![
+        SelectPriv,
+        ShowViewPriv,
+        AlterPriv,
+        DropPriv,
+        OperateViewPriv,
+    ]
+}
+
+/// Validate the permanent target before starting a privilege transaction.
+pub fn validateGrantOnSpecialMViewObject(
+    table: &astersql_meta_model::TableInfo,
+    privileges: &[astersql_parser_ast::PrivElem],
+) -> Result<(), String> {
+    use astersql_parser_mysql::privs::*;
+    if table.MaterializedView.is_none()
+        && table.MaterializedViewLog.is_none()
+        && table.MaterializedViewShadow.is_none()
+    {
+        return Ok(());
+    }
+    if table.MaterializedViewShadow.is_some() {
+        return Err(format!(
+            "cannot grant privileges on materialized view shadow table {}",
+            table.Name.O
+        ));
+    }
+    let object = if table.MaterializedViewLog.is_some() {
+        "materialized view log"
+    } else {
+        "materialized view"
+    };
+    for privilege in privileges {
+        let column = !privilege.Cols.is_empty();
+        let safe = if column {
+            [SelectPriv, UsagePriv].contains(&privilege.Priv)
+        } else {
+            [AllPriv, UsagePriv, GrantPriv].contains(&privilege.Priv)
+                || materializedViewTablePrivs().contains(&privilege.Priv)
+        };
+        if !safe {
+            return Err(format!(
+                "cannot grant {} {}privilege on {object} {}",
+                privilege.Priv.SetString(),
+                if column { "column " } else { "" },
+                table.Name.O
+            ));
+        }
+    }
+    Ok(())
+}

@@ -637,3 +637,68 @@ fn analyze_default_options_reset_saved_values() {
     assert_eq!(layered[&AnalyzeOptionType::Buckets], 100);
     assert_eq!(layered[&AnalyzeOptionType::TopN], 10);
 }
+
+#[test]
+fn port_66d0e9e835_materialized_show_schema_names_and_integer_columns() {
+    use crate::ast::ShowStmtType as S;
+    for (kind, expected) in [
+        (S::MaterializedViews, vec!["mview_id", "mview_name"]),
+        (
+            S::MaterializedViewLogs,
+            vec!["mlog_id", "mlog_name", "base_table_id", "base_table_name"],
+        ),
+        (
+            S::MaterializedViewRemainLogs,
+            vec![
+                "mview_id",
+                "mview_name",
+                "mlog_id",
+                "mlog_name",
+                "remain_logs",
+            ],
+        ),
+        (
+            S::MaterializedViewLogWaitPurge,
+            vec![
+                "mlog_id",
+                "mlog_name",
+                "base_table_id",
+                "base_table_name",
+                "wait_purge",
+            ],
+        ),
+        (
+            S::CreateMaterializedView,
+            vec![
+                "Materialized View",
+                "Create Materialized View",
+                "character_set_client",
+                "collation_connection",
+            ],
+        ),
+        (
+            S::CreateMaterializedViewLog,
+            vec!["Materialized View Log", "Create Materialized View Log"],
+        ),
+    ] {
+        let schema = crate::planbuilder::buildMaterializedViewShowSchema(kind).unwrap();
+        assert_eq!(
+            schema.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            expected
+        );
+        for (i, column) in schema.iter().enumerate() {
+            let number = !matches!(
+                kind,
+                S::CreateMaterializedView | S::CreateMaterializedViewLog
+            ) && i % 2 == 0;
+            assert_eq!(
+                column.field_type.code,
+                if number {
+                    TypeCode::Int
+                } else {
+                    TypeCode::String
+                }
+            );
+        }
+    }
+}

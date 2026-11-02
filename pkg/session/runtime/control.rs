@@ -5942,7 +5942,38 @@ impl ConcreteSession {
         if statement.Level.Level != ast::GrantLevelType::Global && database.is_empty() {
             return Err(SessionError::new("No database selected for GRANT"));
         }
-        let table = statement.Level.TableName.clone();
+        if statement.Level.Level == ast::GrantLevelType::Table {
+            for privilege in &statement.Privs {
+                if !privilege.Cols.is_empty()
+                    && privilege.Priv != mysql::AllPriv
+                    && privilege.Priv != mysql::UsagePriv
+                    && !mysql::AllColumnPrivs().contains(&privilege.Priv)
+                {
+                    return Err(SessionError::new(
+                        "wrong usage: COLUMN GRANT with non-column privileges",
+                    ));
+                }
+            }
+        }
+        let target = if statement.Level.Level == ast::GrantLevelType::Table {
+            self.domain
+                .table_by_name(&database, &statement.Level.TableName)
+                .ok()
+                .map(|table| (*table).clone())
+        } else {
+            None
+        };
+        if let Some(target) = &target {
+            astersql_executor::grant::validateGrantOnSpecialMViewObject(target, &statement.Privs)
+                .map_err(SessionError::new)?;
+        }
+        let table = target.as_ref().map_or_else(
+            || statement.Level.TableName.clone(),
+            |table| table.Name.O.clone(),
+        );
+        let special = target.as_ref().is_some_and(|table| {
+            table.MaterializedView.is_some() || table.MaterializedViewLog.is_some()
+        });
         let quote = |value: &str| format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"));
         let user_columns = mysql::Priv2UserCol();
         let mut static_mask = mysql::PrivilegeType(0);
@@ -5950,6 +5981,9 @@ impl ConcreteSession {
         let allowed = match statement.Level.Level {
             ast::GrantLevelType::Global => mysql::AllGlobalPrivs(),
             ast::GrantLevelType::DB => mysql::AllDBPrivs(),
+            ast::GrantLevelType::Table if special => {
+                astersql_executor::grant::materializedViewTablePrivs()
+            }
             ast::GrantLevelType::Table => mysql::AllTablePrivs(),
         };
         for privilege in &statement.Privs {
@@ -6081,11 +6115,15 @@ impl ConcreteSession {
                             }) {
                                 old_table_names.push("Grant".to_owned());
                             }
-                            let old_column_names =
+                            let mut old_column_names =
                                 astersql_privilege_privileges::EncodePrivilegeSet(
                                     old.map_or(0, |record| record.ColumnPriv),
                                     astersql_privilege_privileges::ALL_TABLE_PRIVS,
                                 );
+                            if special && statement.Privs.iter().any(|p| p.Priv == mysql::AllPriv) {
+                                old_table_names.clear();
+                                old_column_names.clear();
+                            }
                             let table_set = mysql::AllTablePrivs()
                                 .into_iter()
                                 .chain(std::iter::once(mysql::GrantPriv))
@@ -6101,7 +6139,12 @@ impl ConcreteSession {
                             let column_set = mysql::AllColumnPrivs()
                                 .into_iter()
                                 .filter(|privilege| {
-                                    static_mask.0 & privilege.0 != 0
+                                    (static_mask.0 & privilege.0 != 0
+                                        && !(special
+                                            && statement
+                                                .Privs
+                                                .iter()
+                                                .any(|p| p.Priv == mysql::AllPriv)))
                                         || old_column_names.iter().any(|name| {
                                             name.eq_ignore_ascii_case(privilege.SetString())
                                         })

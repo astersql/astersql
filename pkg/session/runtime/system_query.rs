@@ -4276,3 +4276,396 @@ impl ConcreteSession {
         Ok(ConcreteRecordSet::new(columns.unwrap_or_default(), rows))
     }
 }
+
+impl ConcreteSession {
+    fn check_mview_show_privilege(
+        &self,
+        db: &str,
+        name: &str,
+        privilege: astersql_parser_mysql::privs::PrivilegeType,
+    ) -> SessionResult<()> {
+        let (Some(user), Some(host)) = (
+            self.login_user.as_deref(),
+            self.authenticated_host.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        if runtime_privilege_handle(&self.domain)
+            .Get()
+            .RequestVerification(
+                &self.active_roles.borrow(),
+                user,
+                host,
+                db,
+                name,
+                "",
+                astersql_privilege_privileges::decodeSetToPrivilege(&[privilege
+                    .SetString()
+                    .to_owned()]),
+            )
+        {
+            return Ok(());
+        }
+        Err(SessionError::new(format!(
+            "[planner:1142]{} command denied to user '{user}'@'{host}' for table '{name}'",
+            privilege.SetString().to_ascii_uppercase()
+        )))
+    }
+
+    /// SHOW resolves permanent objects and uses a separate read transaction for checkpoints.
+    pub(super) fn execute_show_materialized(
+        &self,
+        show: &ast::ShowStmt,
+    ) -> SessionResult<ConcreteRecordSet> {
+        use ast::ShowStmtType as S;
+        use astersql_parser_mysql::privs as mysql;
+        let db = show
+            .Table
+            .as_ref()
+            .filter(|t| !t.Schema.L.is_empty())
+            .map(|t| t.Schema.L.clone())
+            .unwrap_or_else(|| {
+                if show.DBName.is_empty() {
+                    self.current_database()
+                } else {
+                    show.DBName.to_lowercase()
+                }
+            });
+        if db.is_empty() {
+            return Err(SessionError::new("No database selected"));
+        }
+        if !self
+            .domain
+            .ddl_database_names()
+            .map_err(|e| session_error("read SHOW schema", e))?
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&db))
+            && !self
+                .domain
+                .info_schema()
+                .AllSchemas()
+                .iter()
+                .any(|s| s.name.lower == db)
+        {
+            return Err(SessionError::new(format!("Unknown database '{db}'")));
+        }
+        let catalog = self.metadata_catalog()?;
+        let mut rows = Vec::new();
+        let schema = astersql_planner_core::planbuilder::buildMaterializedViewShowSchema(show.Tp)
+            .ok_or_else(|| SessionError::new("invalid materialized SHOW kind"))?;
+        let columns = schema.iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+        if matches!(show.Tp, S::MaterializedViews | S::MaterializedViewLogs) {
+            // The Rust parser stores SHOW LIKE's operand directly; normalize it
+            // to the Go pattern node expected by the existing extractor.
+            let mut extracted_show = show.clone();
+            if let Some(pattern) = &show.Pattern
+                && !matches!(pattern.Kind, ast::ExprKind::Like { .. })
+            {
+                extracted_show.Pattern = Some(ast::ExprNode {
+                    Kind: ast::ExprKind::Like {
+                        Expr: Box::new(ast::ExprNode::Value(String::new())),
+                        Pattern: Box::new(pattern.clone()),
+                        Not: false,
+                        Escape: "\\".into(),
+                        EscapeExpr: None,
+                        Explicit: true,
+                        IsLike: true,
+                        Type: Default::default(),
+                    },
+                    ..ast::ExprNode::Value(String::new())
+                });
+            }
+            let mut extractor = astersql_planner_core::newShowBaseExtractor(extracted_show);
+            extractor.Extract();
+            let exact = extractor.Field();
+            let pattern = extractor.FieldPatternLike();
+            for ((schema, _), table) in &catalog {
+                if schema != &db
+                    || if show.Tp == S::MaterializedViews {
+                        table.MaterializedView.is_none()
+                    } else {
+                        table.MaterializedViewLog.is_none()
+                    }
+                {
+                    continue;
+                }
+                if !astersql_executor::grant::materializedViewTablePrivs()
+                    .iter()
+                    .any(|p| {
+                        self.check_mview_show_privilege(&db, &table.Name.O, *p)
+                            .is_ok()
+                    })
+                {
+                    continue;
+                }
+                if (!exact.is_empty() && table.Name.L != exact)
+                    || pattern.as_ref().is_some_and(|p| !p.DoMatch(&table.Name.L))
+                {
+                    continue;
+                }
+                let mut row = vec![table.ID.to_string(), table.Name.O.clone()];
+                if let Some(log) = &table.MaterializedViewLog {
+                    let Some(base) = catalog.values().find(|t| t.ID == log.BaseTableID) else {
+                        continue;
+                    };
+                    row.extend([base.ID.to_string(), base.Name.O.clone()]);
+                }
+                rows.push(row);
+            }
+            rows.sort_by(|a, b| {
+                a[1].cmp(&b[1]).then_with(|| {
+                    a[0].parse::<i64>()
+                        .unwrap()
+                        .cmp(&b[0].parse::<i64>().unwrap())
+                })
+            });
+        } else {
+            let target = show
+                .Table
+                .as_ref()
+                .ok_or_else(|| SessionError::new("SHOW target is missing"))?;
+            let resolved = catalog.get(&(db.clone(), target.Name.L.clone()));
+            if resolved.is_none() {
+                let privilege_name = if matches!(
+                    show.Tp,
+                    S::CreateMaterializedViewLog | S::MaterializedViewLogWaitPurge
+                ) {
+                    astersql_meta_model::MaterializedViewLogTableName(&target.Name).O
+                } else {
+                    target.Name.O.clone()
+                };
+                if show.Tp == S::CreateMaterializedView {
+                    self.check_mview_show_privilege(&db, &privilege_name, mysql::SelectPriv)?;
+                }
+                self.check_mview_show_privilege(&db, &privilege_name, mysql::ShowViewPriv)?;
+                if show.Tp == S::CreateMaterializedViewLog {
+                    self.check_mview_show_privilege(&db, &privilege_name, mysql::SelectPriv)?;
+                }
+            }
+            let table = resolved.ok_or_else(|| {
+                SessionError::new(format!("Table '{db}.{}' doesn't exist", target.Name.O))
+            })?;
+            let log_show = matches!(
+                show.Tp,
+                S::CreateMaterializedViewLog | S::MaterializedViewLogWaitPurge
+            );
+            // Privilege checks precede object validation; fallback log names avoid existence leaks.
+            let log_id = table.MaterializedViewBase.as_ref().map(|b| b.MLogID);
+            let log = log_id.and_then(|id| catalog.values().find(|t| t.ID == id));
+            let privilege_name = if log_show {
+                log.map(|t| t.Name.O.clone()).unwrap_or_else(|| {
+                    astersql_meta_model::MaterializedViewLogTableName(&table.Name).O
+                })
+            } else {
+                table.Name.O.clone()
+            };
+            if show.Tp == S::CreateMaterializedView {
+                self.check_mview_show_privilege(&db, &privilege_name, mysql::SelectPriv)?;
+            }
+            self.check_mview_show_privilege(&db, &privilege_name, mysql::ShowViewPriv)?;
+            if show.Tp == S::CreateMaterializedViewLog {
+                self.check_mview_show_privilege(&db, &privilege_name, mysql::SelectPriv)?;
+            }
+            let mode = astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
+                .map_err(|e| session_error("SHOW sql_mode", e))?;
+            if !log_show && table.MaterializedView.is_none() {
+                return Err(SessionError::new(format!(
+                    "{db}.{} is not MATERIALIZED VIEW",
+                    table.Name.O
+                )));
+            }
+            if log_show
+                && (table.View.is_some()
+                    || table.Sequence.is_some()
+                    || table.TempTableType != astersql_meta_model::TempTableNone)
+            {
+                return Err(SessionError::new(format!(
+                    "{db}.{} is not BASE TABLE",
+                    table.Name.O
+                )));
+            }
+            let log = if log_show {
+                Some(log.ok_or_else(|| {
+                    if show.Tp == S::CreateMaterializedViewLog {
+                        SessionError::new(format!(
+                            "{db}.{} is not BASE TABLE WITH MATERIALIZED VIEW LOG",
+                            table.Name.O
+                        ))
+                    } else {
+                        SessionError::new(format!(
+                            "materialized view log does not exist for base table {db}.{}",
+                            table.Name.O
+                        ))
+                    }
+                })?)
+            } else {
+                None
+            };
+            if let Some(log) = log
+                && log
+                    .MaterializedViewLog
+                    .as_ref()
+                    .is_none_or(|info| info.BaseTableID != table.ID)
+            {
+                return Err(SessionError::new(format!(
+                    "table {db}.{} is not a materialized view log for base table {db}.{}",
+                    log.Name.O, table.Name.O
+                )));
+            }
+            match show.Tp {
+                S::CreateMaterializedView => rows.push(vec![
+                    table.Name.O.clone(),
+                    astersql_executor::show::fetchShowCreateTable4MaterializedView(table, mode),
+                    table.Charset.clone(),
+                    table.Collate.clone(),
+                ]),
+                S::CreateMaterializedViewLog => rows.push(vec![
+                    table.Name.O.clone(),
+                    astersql_executor::show::fetchShowCreateTable4MaterializedViewLog(
+                        table,
+                        log.unwrap(),
+                        mode,
+                    ),
+                ]),
+                _ => {
+                    // Resolve every base/log before reading the checkpoint, as Go does.
+                    let mut mlogs = Vec::new();
+                    if show.Tp == S::MaterializedViewRemainLogs {
+                        let info = table.MaterializedView.as_ref().unwrap();
+                        if info.BaseTableIDs.is_empty() {
+                            return Err(SessionError::new(format!(
+                                "base table does not exist for materialized view {db}.{}",
+                                table.Name.O
+                            )));
+                        }
+                        let mut seen = HashSet::new();
+                        for base_id in &info.BaseTableIDs {
+                            let base =
+                                catalog.values().find(|t| &t.ID == base_id).ok_or_else(|| {
+                                    SessionError::new(format!(
+                                        "base table does not exist for materialized view {db}.{}",
+                                        table.Name.O
+                                    ))
+                                })?;
+                            let id = base
+                                .MaterializedViewBase
+                                .as_ref()
+                                .filter(|b| b.MLogID != 0)
+                                .ok_or_else(|| {
+                                    SessionError::new(format!(
+                                        "materialized view log does not exist for base table {}",
+                                        base.Name.O
+                                    ))
+                                })?
+                                .MLogID;
+                            if seen.insert(id) {
+                                let log = catalog.values().find(|t| t.ID == id).ok_or_else(|| SessionError::new(format!("materialized view log does not exist for base table {}", base.Name.O)))?;
+                                mlogs.push(log);
+                            }
+                        }
+                    }
+                    let maintenance = ConcreteSession::new(Arc::clone(&self.domain));
+                    maintenance.execute("SET tidb_mview_enable=ON")?;
+                    maintenance.execute("BEGIN")?;
+                    let result = (|| -> SessionResult<()> {
+                        maintenance.ensure_implicit_transaction()?;
+                        let start = maintenance
+                            .state
+                            .borrow()
+                            .transaction
+                            .as_ref()
+                            .ok_or_else(|| SessionError::new("SHOW transaction is missing"))?
+                            .StartTS();
+                        let snapshot = self
+                            .domain
+                            .storage()
+                            .with_storage(|s| s.GetSnapshot(kv::Version { Ver: start }));
+                        if let Some(log) = log {
+                            let checkpoint = super::mlog_purge::purge_sql_row(&maintenance, &format!("SELECT LAST_PURGED_TSO FROM mysql.tidb_mlog_purge_info WHERE MLOG_ID={}", log.ID))?.ok_or_else(|| SessionError::new("show materialized view log wait purge: purge info row missing"))?;
+                            let lower = checkpoint
+                                .first()
+                                .filter(|v| {
+                                    v.as_str() != "<nil>" && !v.eq_ignore_ascii_case("null")
+                                })
+                                .map(|v| {
+                                    v.parse::<u64>()
+                                        .map_err(|_| SessionError::new("invalid purge TSO"))
+                                })
+                                .transpose()?;
+                            let upper = super::mlog_purge::mlog_show_safe_tso(
+                                &maintenance,
+                                table,
+                                log,
+                                start,
+                            )?;
+                            let count = if upper > 0 && lower.is_none_or(|l| l < upper) {
+                                super::mlog_purge::count_mlog_show_rows(
+                                    snapshot.as_ref(),
+                                    log.ID,
+                                    lower,
+                                    upper,
+                                )?
+                            } else {
+                                0
+                            };
+                            rows.push(vec![
+                                log.ID.to_string(),
+                                log.Name.O.clone(),
+                                table.ID.to_string(),
+                                table.Name.O.clone(),
+                                count.to_string(),
+                            ]);
+                        } else {
+                            let checkpoint = super::mlog_purge::purge_sql_row(&maintenance, &format!("SELECT LAST_SUCCESS_READ_TSO FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}", table.ID))?.ok_or_else(|| SessionError::new("show materialized view remain logs: refresh info row missing"))?;
+                            let lower = checkpoint.first().filter(|v| v.as_str() != "<nil>" && !v.eq_ignore_ascii_case("null")).ok_or_else(|| SessionError::new("show materialized view remain logs: last success read tso is null"))?.parse::<u64>().map_err(|_| SessionError::new("invalid refresh TSO"))?;
+                            for log in &mlogs {
+                                let id = log.ID;
+                                let count = super::mlog_purge::count_mlog_show_rows(
+                                    snapshot.as_ref(),
+                                    id,
+                                    Some(lower),
+                                    start,
+                                )?;
+                                rows.push(vec![
+                                    table.ID.to_string(),
+                                    table.Name.O.clone(),
+                                    id.to_string(),
+                                    log.Name.O.clone(),
+                                    count.to_string(),
+                                ]);
+                            }
+                        }
+                        Ok(())
+                    })();
+                    let _ = maintenance.execute("ROLLBACK");
+                    result?;
+                }
+            }
+        }
+        if let Some(predicate) = &show.Where {
+            let mut filtered = Vec::new();
+            for row in rows {
+                if Self::show_predicate(predicate, &columns, &row)? {
+                    filtered.push(row);
+                }
+            }
+            rows = filtered;
+        }
+        let field_types = schema
+            .iter()
+            .map(|column| {
+                if column.field_type.code == astersql_planner_core::task::TypeCode::Int {
+                    astersql_parser_mysql::r#type::TypeLonglong
+                } else {
+                    astersql_parser_mysql::r#type::TypeVarchar
+                }
+            })
+            .collect::<Vec<_>>();
+        let fields = show_result_fields(&columns, &field_types, &[]);
+        Ok(ConcreteRecordSet::new_with_fields(
+            columns.into_iter().map(str::to_owned).collect(),
+            rows,
+            fields,
+        ))
+    }
+}

@@ -32,6 +32,8 @@ pub const GLOBAL_TXN_SCOPE: &str = "global";
 pub const EXTRA_HANDLE_ID: i64 = -1;
 /// 行校验和（row checksum）虚拟列 ID。
 pub const EXTRA_ROW_CHECKSUM_ID: i64 = -2;
+/// Physical partition ID, supplied by the row key rather than stored row data.
+pub const EXTRA_PHYS_TBL_ID: i64 = -3;
 /// 带 Snapshot 运行时统计的类型标签。
 pub const TP_RUNTIME_STATS_WITH_SNAPSHOT: i32 = 1;
 
@@ -1065,6 +1067,11 @@ impl PointGetExecutor {
             request,
             decoder.as_mut(),
         )?;
+        for (index, column) in self.schema.columns.iter().enumerate() {
+            if column.id == EXTRA_PHYS_TBL_ID {
+                request.set_column(index, vec![Datum::Int64(table_id)])?;
+            }
+        }
         fillRowChecksum(
             self.dependencies.as_ref(),
             0,
@@ -1391,7 +1398,7 @@ pub fn decodeOldRowValToChunk(
     }
     let mut decoder = dependencies.new_datum_decoder()?;
     for (schema_index, column) in schema.columns.iter().enumerate() {
-        if column.virtual_expression.is_some() {
+        if column.id == EXTRA_PHYS_TBL_ID || column.virtual_expression.is_some() {
             chunk.append(schema_index, Datum::Null)?;
             continue;
         }

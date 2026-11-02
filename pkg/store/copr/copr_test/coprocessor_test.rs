@@ -26,7 +26,7 @@ use astersql_store_copr::{
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn get_keyspace_aware_key(codec: &KeyCodec, key: &[u8]) -> Vec<u8> {
     codec.encode_key(key)
@@ -503,23 +503,106 @@ fn ten_small_ranges() -> (Vec<KeyRange>, Vec<LocatedKeyRanges>) {
     (ranges, locations)
 }
 
-#[test]
-fn TestQueryWithConcurrentSmallCop() {
-    let (ranges, locations) = ten_small_ranges();
-    let backend = SlowBackend::new(locations, Duration::from_millis(100));
-    let client = CopClient::new(backend.clone(), None, 4);
-    let mut request = cop_request(ranges, vec![1; 10]);
-    let mut iterator = client.build_cop_iterator(&mut request).unwrap();
-    assert_eq!(iterator.concurrency(), (1, 4));
+struct WaveBackend {
+    inner: Arc<TestBackend>,
+    expected: usize,
+    wave_size: usize,
+    arrived: Mutex<usize>,
+    ready: Condvar,
+}
+impl CopBackend for WaveBackend {
+    fn split_key_ranges(
+        &self,
+        ranges: &KeyRanges,
+        skip: bool,
+    ) -> astersql_store_copr::BatchResult<Vec<LocatedKeyRanges>> {
+        self.inner.split_key_ranges(ranges, skip)
+    }
+    fn build_batch_task(
+        &self,
+        _: &CopTask,
+        _: ReplicaReadType,
+    ) -> astersql_store_copr::BatchResult<Option<BatchedCopTask>> {
+        Ok(None)
+    }
+    fn tidb_server_addresses(&self) -> astersql_store_copr::BatchResult<Vec<(u64, String)>> {
+        Ok(Vec::new())
+    }
+    fn send(
+        &self,
+        task: &CopTask,
+        request: &CopWireRequest,
+    ) -> astersql_store_copr::BatchResult<CopProtocolResponse> {
+        assert_eq!(request.connection_alias, "concurrent_small_cop");
+        let mut arrived = self.arrived.lock().unwrap();
+        *arrived += 1;
+        assert!(*arrived <= self.expected, "unexpected extra request");
+        let wave_end = (*arrived).div_ceil(self.wave_size) * self.wave_size;
+        if *arrived % self.wave_size == 0 {
+            self.ready.notify_all();
+        }
+        let (arrived, _) = self
+            .ready
+            .wait_timeout_while(arrived, Duration::from_secs(10), |n| *n < wave_end)
+            .unwrap();
+        let overlapped = *arrived;
+        drop(arrived);
+        if overlapped < wave_end {
+            return Err(astersql_store_copr::BatchError::Transport(format!(
+                "only {overlapped} of {} requests overlapped",
+                wave_end
+            )));
+        }
+        self.inner.send(task, request)
+    }
+    fn invalidate_region(&self, _: RegionVerId) {}
+    fn update_buckets(&self, _: RegionVerId, _: u64, _: u64) {}
+    fn resolve_lock(&self, _: &[u8], _: u64) -> astersql_store_copr::BatchResult<()> {
+        Ok(())
+    }
+    fn check_visibility(&self, _: u64) -> astersql_store_copr::BatchResult<()> {
+        Ok(())
+    }
+}
 
-    let started = Instant::now();
+fn assert_request_overlap(expected: usize, row_hints: Vec<usize>, wave_size: usize) {
+    let (mut ranges, mut locations) = ten_small_ranges();
+    ranges.truncate(expected);
+    locations.truncate(expected);
+    let backend = Arc::new(WaveBackend {
+        inner: TestBackend::with_locations(locations),
+        expected,
+        wave_size,
+        arrived: Mutex::new(0),
+        ready: Condvar::new(),
+    });
+    let client = CopClient::new(backend.clone(), None, 4);
+    let mut request = cop_request(ranges, row_hints);
+    request.connection_alias = "concurrent_small_cop".to_owned();
+    let mut iterator = client.build_cop_iterator(&mut request).unwrap();
+    if !request.key_ranges[0].row_hints.is_empty() {
+        assert_eq!(iterator.concurrency(), (1, 4));
+    }
     let mut responses = 0;
     while iterator.next().unwrap().is_some() {
         responses += 1;
     }
-    assert_eq!(responses, 10);
-    assert!(backend.peak.load(Ordering::Acquire) > 1);
-    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(responses, expected);
+    assert_eq!(*backend.arrived.lock().unwrap(), expected);
+}
+
+/// Retain the existing small-task fixture and worker classification, replacing
+/// the 100ms sleep and 500ms latency assertion with a request arrival barrier.
+#[test]
+fn TestQueryWithConcurrentSmallCop() {
+    // The existing CPU=4 fixture has four small workers plus one normal worker.
+    // Both groups of five must overlap before any request in that group returns.
+    assert_request_overlap(10, vec![1; 10], 5);
+}
+
+#[test]
+fn port_48861f9004_small_cop_uses_request_barriers() {
+    TestQueryWithConcurrentSmallCop();
 }
 
 #[test]

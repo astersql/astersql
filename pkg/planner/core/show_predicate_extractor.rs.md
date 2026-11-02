@@ -96,3 +96,7 @@
 - 性能调整应关注 `Field()` 的克隆和 `FieldPatternLike()` 的重复分配/编译，但必须保留 collator 选择、模式所有权和线程安全契约；没有基准数据时不建议引入缓存。
 
 Rust 测试必须继续放在独立的 `pkg/planner/core/show_predicate_extractor_test.rs`，不应嵌入生产源文件。
+
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+ExplainInfo 对 MaterializedViews / MaterializedViewLogs 使用 table 键。真实会话 SHOW 列表复用 Extract、Field、FieldPatternLike，支持名称精确过滤和 UTF8MB4 通配匹配。

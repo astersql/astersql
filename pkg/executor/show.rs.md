@@ -83,3 +83,7 @@ Rust 不直接持有 Go `BaseExecutor`/session context，而是用 `ShowRuntimeC
 5. Rust 测试逻辑保持在独立文件：普通辅助函数和 Go 格式对齐扩展 `pkg/executor/show_test.rs`；Import group/job 执行器行为扩展 `pkg/executor/show/import_groups_test.rs`；不要把新测试内嵌到 `show.rs`。Go 回归对照主要在 `pkg/executor/show_test.go` 和 `pkg/executor/test/showtest/show_test.go`。
 
 主要风险：兼容性风险来自 MySQL/TiDB 的精确排序、列型、错误码/文本和权限语义；正确性风险来自将 runtime adapter 的快照、事务或可见性实现得过于简化；性能风险来自 `fetchAll` 全量物化和大量 LIKE 匹配的 `O(pattern_len * value_len)` 动态规划内存/时间开销（`show.rs:593-610, 1588-1628`）。
+
+## 来源 66d0e9e835392746f646a8d591b8908c7eec7fb1 的局部对齐
+
+新增 fetchShowCreateTable4MaterializedView / fetchShowCreateTable4MaterializedViewLog，从完整模型重建定义；隐藏列排除、SQLMode 标识符转义、注释、shard/pre-split、FAST 时刻、正数告警和 PURGE IMMEDIATE/定时选项保留。真实会话 system_query.rs 调用；旧 ShowExec 尚无这些枚举分支，不作为本次生产入口。
