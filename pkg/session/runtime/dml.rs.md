@@ -235,8 +235,34 @@ git diff --check
 
 ## PostgreSQL DO NOTHING 唯一键竞争
 
-显式悲观事务的 DO NOTHING 在仲裁前取得与普通写入相同的唯一键锁；等待持有者提交或回滚后，以最新提交行及事务内写入重建仲裁视图。这样次级唯一键也能在持有者提交时跳过、回滚时插入，而不是在语句末尾等待后继续使用旧判断。同一 VALUES 已插入但尚未应用的候选由 `lock_rows` 补回视图，保留语句内部重复仲裁。此接线仅限 DO NOTHING，不改变 DO UPDATE 或 MySQL 重复键策略。
+显式悲观事务的 DO NOTHING 在仲裁前取得与普通写入相同的唯一键锁；等待持有者提交或回滚后，以最新提交行及事务内写入重建仲裁视图。这样次级唯一键也能在持有者提交时跳过、回滚时插入，而不是在语句末尾等待后继续使用旧判断。同一 VALUES 已插入但尚未应用的候选由 `lock_rows` 补回视图，保留语句内部重复仲裁。该批次接线仅覆盖 DO NOTHING；后续 DO UPDATE 的扩展见下节，MySQL 重复键策略不变。
 
 真实存储回归入口是 `pg_client_integration_test::pg10_15_competition`，使用外部真实 TiKV 目标与 PG18.6 参考端，以锁等待诊断作为释放写入者的屏障，记录返回值、命令标签、完整回读及清理；测试存储不能替代该竞争验收。
 
 该聚焦测试沿用 `PG_LIBPQ_LIBRARY` 与 `PG18_REFERENCE_DSN`；`PG10_TARGET_DSN` 指向已按真实 TiKV runbook 启动的隔离目标（不得回退测试存储），`PG10_MYSQL_PORT` 为同一服务器原生端口，仅用于创建独占数据库及读取真实 `information_schema.data_lock_waits` 屏障。`PG10_STORAGE_EVIDENCE` 指向启动者保存的脱敏 JSON：目标二进制路径/SHA256、源码 HEAD、PD 版本及 stores 的 TiKV 版本/构建信息；包装测试将其复制到每次运行证据目录。每侧独立执行64个竞争场景，共128个，覆盖双方提交/回滚、主键/次级唯一键/省略目标、NULL、返回/无返回、simple/extended；extended 用明确OID的参数、statement/portal Describe以及同statement的新Bind换值，并在ROLLBACK后回读。
+
+## PostgreSQL DO UPDATE 等待后的仲裁
+
+DO UPDATE 同样在仲裁前取得候选唯一键锁，等待后复用最新行与事务内写入视图，SET 与动作 WHERE 据此读取锁持有者提交的值。刷新时先移除本语句暂存的删除键，再覆盖尚未应用的候选，避免前一候选移动主键后旧行复活。MySQL 路径保持原有策略。
+
+`pg10_16_competition` 使用任务15相同的真实TiKV/libpq入口与锁等待屏障，覆盖提交后最新值更新、回滚后插入、动作WHERE真/假/NULL、主键/次级唯一键、simple/extended、RETURNING、双方COMMIT/ROLLBACK和重绑定恢复。共享层 `pg10_16_refresh_keeps_updated_candidates` 验证同语句主键移动后的候选与回滚。
+
+任务16真实验收（2026-11-02）：参考端PostgreSQL18.6/libpq180006，目标PD/TiKV8.5.8，实际READ COMMITTED；每侧128组合，共256，`pg_client_integration_test::pg10_16_competition` 1 passed。证据 `target/pg10-16-evidence/31147-1793630051099981000/` 保存逐SQL、等待屏障、值/描述/标签、版本与构建、清理结果；日志 `/tmp/pg10-16-delivery.log`。初次真实红灯 `/tmp/pg10-16-red.log` 为XX000/冲突行未解码，非编译失败。中间重跑因既有WHERE仅开放`<`而拒绝`>`；改用等价的`15 < v`复用已开放能力，未扩大谓词支持。
+
+验证使用动态槽位1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`，各阶段结束释放锁并保留缓存。确切Cargo命令：
+
+```sh
+cargo fmt --all
+cargo build --locked -p astersql-cmd-tidb-server --bin astersql-cmd-tidb-server
+cargo test --locked -p astersql-server --lib pg_client_integration_test::pg10_16_competition -- --exact --nocapture --test-threads=1
+cargo test --locked -p astersql-session --lib pg10_ -- --nocapture --test-threads=1
+cargo test --locked -p astersql-server --lib pg_dml_test::pg10_ -- --nocapture --test-threads=1
+make lint
+git diff --check
+```
+
+Ready采用上述聚焦测试、格式化、lint及差异检查；`make lint`退出0，日志`/tmp/pg10-16-lint-delivery.log`。未验证高隔离、性能或完整PG兼容；测试中动作WHERE只消费既有开放表达式。未改变Go/Bazel或外部依赖。
+
+共享层新增回归还验证本语句移动主键后，已暂存删除的旧键不再被原始已提交键存在性误判为冲突；此排除只适用于PG DO UPDATE候选。该回归先在第一次相邻运行失败（20 passed/1 failed，`/tmp/pg10-16-adjacent.log`），随后局部修复。
+
+最终生产代码复验退出0：真实竞争1 passed/256场景（233.65秒）；共享层21 passed、相邻协议15 passed，退出0，日志`/tmp/pg10-16-adjacent2.log`。cargo fmt、构建、lint、diff检查均退出0。参考临时实例停止并删除数据；独占TiUP tag清理、PD端点不可达；槽位锁已释放。未出现阻塞本任务的无关回归失败。

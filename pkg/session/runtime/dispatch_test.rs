@@ -1583,3 +1583,48 @@ fn pg10_15_refresh_keeps_prior_candidates() {
         session.execute("DELETE FROM conflict_refresh").unwrap();
     }
 }
+
+#[test]
+fn pg10_16_refresh_keeps_updated_candidates() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE DATABASE IF NOT EXISTS test").unwrap();
+    pg.execute("USE test").unwrap();
+    pg.execute(
+        "CREATE TABLE conflict_update_refresh (id integer PRIMARY KEY,email text UNIQUE,v integer)",
+    )
+    .unwrap();
+    pg.execute("SET tidb_txn_mode = 'pessimistic'").unwrap();
+    for end in ["COMMIT", "ROLLBACK"] {
+        pg.execute("INSERT INTO conflict_update_refresh VALUES (1,'old',10)")
+            .unwrap();
+        pg.execute("BEGIN").unwrap();
+        // The first candidate moves the primary key; the second reuses the freed key.
+        // Refreshing arbitration must retain both the deletion and the new row.
+        let mut result = pg.execute("INSERT INTO conflict_update_refresh VALUES (2,'old',20),(1,'new',30) ON CONFLICT (email) DO UPDATE SET id=excluded.id,v=excluded.v RETURNING id,v").unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["2", "20"]);
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1", "30"]);
+        assert!(result[0].next_row().unwrap().is_none());
+        pg.execute(end).unwrap();
+        let mut result = pg
+            .execute("SELECT id,email,v FROM conflict_update_refresh ORDER BY id")
+            .unwrap();
+        if end == "COMMIT" {
+            assert_eq!(
+                result[0].next_row().unwrap().unwrap(),
+                vec!["1", "new", "30"]
+            );
+            assert_eq!(
+                result[0].next_row().unwrap().unwrap(),
+                vec!["2", "old", "20"]
+            );
+        } else {
+            assert_eq!(
+                result[0].next_row().unwrap().unwrap(),
+                vec!["1", "old", "10"]
+            );
+        }
+        assert!(result[0].next_row().unwrap().is_none());
+        pg.execute("DELETE FROM conflict_update_refresh").unwrap();
+    }
+}

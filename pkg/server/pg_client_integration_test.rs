@@ -14700,3 +14700,46 @@ fn pg10_15_competition() {
         assert_eq!(summary["cleanup"][side], true);
     }
 }
+
+#[test]
+fn pg10_16_competition() {
+    for key in ["PG10_TARGET_DSN", "PG18_REFERENCE_DSN", "PG10_MYSQL_PORT"] {
+        assert!(
+            std::env::var_os(key).is_some(),
+            "{key} is required (no skip)"
+        );
+    }
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg10-16-evidence")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    std::fs::create_dir_all(&evidence).unwrap();
+    let storage = std::env::var_os("PG10_STORAGE_EVIDENCE")
+        .expect("PG10_STORAGE_EVIDENCE must identify the real TiKV server build");
+    std::fs::copy(storage, evidence.join("storage-build.json")).unwrap();
+    println!("PG10_16_EVIDENCE_DIR={}", evidence.display());
+    let output = Command::new("python3")
+        .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/pg10_16_libpq.py"))
+        .arg(&evidence)
+        .output()
+        .expect("python3/libpq are required");
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "libpq competition failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["passed"], true);
+    assert_eq!(summary["cases"], 256);
+    for side in ["reference", "target", "database"] {
+        assert_eq!(summary["cleanup"][side], true);
+    }
+}

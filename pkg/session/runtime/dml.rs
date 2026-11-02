@@ -3559,8 +3559,8 @@ impl ConcreteSession {
                     false,
                 )?;
             }
-            if pessimistic_transaction && pg_arbiter.is_some() && pg_assignments.is_none() {
-                // DO NOTHING must decide after the unique-key owner finishes.
+            if pessimistic_transaction && pg_arbiter.is_some() {
+                // Both conflict actions must decide after the unique-key owner finishes.
                 // The mutation path locks these same keys, but waiting there is
                 // too late: arbitration would still use the pre-wait row view.
                 let domain_id = Arc::as_ptr(&self.domain) as usize;
@@ -3583,6 +3583,13 @@ impl ConcreteSession {
                     .collect::<SessionResult<HashMap<_, _>>>()?;
                 // Earlier VALUES candidates are not applied until the whole
                 // statement validates. Retain their uniqueness conflicts too.
+                // A preceding candidate may have moved a primary key. Do not
+                // resurrect its old record when refreshing the committed view.
+                for (key, value) in &mutations {
+                    if value.is_none() {
+                        working_rows.remove(&key.0);
+                    }
+                }
                 for inserted in &lock_rows {
                     let (key, _) = encode_relational_row(&table, inserted, flags)?;
                     working_rows.insert(key.0, inserted.clone());
@@ -3616,8 +3623,16 @@ impl ConcreteSession {
             } else {
                 self.read_raw_kv(key.clone())?.is_some()
             };
+            let removed_by_pg_candidate = pg_assignments.is_some()
+                && mutations
+                    .iter()
+                    .rev()
+                    .find(|(pending_key, _)| pending_key == &key)
+                    .is_some_and(|(_, value)| value.is_none());
             let existing = working_rows.contains_key(&key.0)
-                || (committed_exists && !replaced_unique_keys.contains(&key.0));
+                || (committed_exists
+                    && !replaced_unique_keys.contains(&key.0)
+                    && !removed_by_pg_candidate);
             if let Some((primary, arbiters)) = &pg_arbiter {
                 let conflict_key = if *primary && existing {
                     Some(key.0.clone())
