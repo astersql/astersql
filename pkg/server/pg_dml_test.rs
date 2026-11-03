@@ -6153,3 +6153,198 @@ fn pg10_25_cancel_tcp() {
     assert!(TcpStream::connect(addr).is_err());
     drop(guard);
 }
+
+#[test]
+fn pg10_26_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let guard = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    let initial = vec![
+        text_row(&[Some("1"), Some("10")]),
+        text_row(&[Some("2"), None]),
+        text_row(&[Some("3"), Some("30")]),
+    ];
+    let src = "SELECT id,v FROM public.pg10_26_src ORDER BY id";
+    let dst = "SELECT id,v FROM public.pg10_26_dst ORDER BY id";
+    for c in [&mut w, &mut o] {
+        eprintln!(
+            "pg10_26 isolation: {:?}",
+            pg10_rows(&pg10_ok(c, "SELECT @@transaction_isolation", b'I'))
+        );
+    }
+    for ending in ["COMMIT", "ROLLBACK"] {
+        for sql in [
+            "CREATE TABLE public.pg10_26_src(id INT PRIMARY KEY,v INT)",
+            "CREATE TABLE public.pg10_26_dst(id INT PRIMARY KEY,v INT)",
+            "INSERT INTO public.pg10_26_src VALUES(1,10),(2,NULL),(3,30)",
+        ] {
+            pg10_ok(&mut w, sql, b'I');
+        }
+        parse(
+            &mut w,
+            "move26",
+            "WITH moved AS (DELETE FROM public.pg10_26_src WHERE id<=$1 RETURNING id,v) INSERT INTO public.pg10_26_dst(id,v) SELECT id,v FROM moved RETURNING id,v",
+            &[23],
+        );
+        assert_eq!(read(&mut w), (b'1', vec![]));
+        send(&mut w, b'D', b"Smove26\0");
+        assert_eq!(read(&mut w), (b't', vec![0, 1, 0, 0, 0, 23]));
+        let description = read(&mut w);
+        assert_eq!(description.0, b'T');
+        let fields = pg10_description(&description.1);
+        assert_eq!(
+            fields
+                .iter()
+                .map(|f| (f.0.as_str(), f.1, f.2, f.3, f.5))
+                .collect::<Vec<_>>(),
+            vec![("id", 23, 4, -1, 1), ("v", 23, 4, -1, 2)]
+        );
+        assert!(fields.iter().all(|f| f.4 != 0 && f.4 == fields[0].4));
+        sync(&mut w);
+        pg10_ok(&mut w, "BEGIN", b'T');
+        // A new Bind evaluates new values; Describe and cached Execute do not.
+        for value in [Some("0"), None, Some("2"), Some("0")] {
+            let moved = value == Some("2");
+            let before = pg10_rows(&pg10_ok(&mut w, src, b'T'));
+            bind(
+                &mut w,
+                "portal26",
+                "move26",
+                &[],
+                &[value.map(str::as_bytes)],
+                &[],
+            );
+            assert_eq!(read(&mut w), (b'2', vec![]));
+            send(&mut w, b'D', b"Pportal26\0");
+            assert_eq!(read(&mut w), description);
+            send(&mut w, b'S', &[]);
+            assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+            assert_eq!(pg10_rows(&pg10_ok(&mut w, src, b'T')), before);
+            assert_eq!(pg10_rows(&pg10_ok(&mut o, src, b'I')), initial);
+            let mut rows = vec![];
+            let tag = if moved {
+                b"INSERT 0 2\0".to_vec()
+            } else {
+                b"INSERT 0 0\0".to_vec()
+            };
+            loop {
+                let mut request = b"portal26\0".to_vec();
+                request.extend_from_slice(&1u32.to_be_bytes());
+                send(&mut w, b'E', &request);
+                let end = loop {
+                    let m = read(&mut w);
+                    if m.0 == b'D' {
+                        rows.push(m.1);
+                    } else {
+                        assert!(m.0 == b's' || m == (b'C', tag.clone()), "{m:?}");
+                        break m.0;
+                    }
+                };
+                send(&mut w, b'S', &[]);
+                assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+                let after = if moved {
+                    initial[2..].to_vec()
+                } else {
+                    before.clone()
+                };
+                assert_eq!(pg10_rows(&pg10_ok(&mut w, src, b'T')), after);
+                assert_eq!(
+                    pg10_rows(&pg10_ok(&mut w, dst, b'T')),
+                    if moved || before.len() == 1 {
+                        initial[..2].to_vec()
+                    } else {
+                        vec![]
+                    }
+                );
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, src, b'I')), initial);
+                assert!(pg10_rows(&pg10_ok(&mut o, dst, b'I')).is_empty());
+                if end == b'C' {
+                    break;
+                }
+            }
+            rows.sort();
+            let mut expected = if moved { initial[..2].to_vec() } else { vec![] };
+            expected.sort();
+            assert_eq!(rows, expected);
+            // Reinstate a qualifying source row after completion: a repeated
+            // Execute must not delete it or encounter its duplicate destination.
+            if moved {
+                pg10_ok(&mut w, "INSERT INTO public.pg10_26_src VALUES(1,10)", b'T');
+            }
+            execute(&mut w, "portal26");
+            assert_eq!(read(&mut w), (b'C', tag));
+            send(&mut w, b'D', b"Pportal26\0");
+            assert_eq!(read(&mut w), description);
+            send(&mut w, b'S', &[]);
+            assert_eq!(read(&mut w), (b'Z', vec![b'T']));
+            if moved {
+                assert_eq!(
+                    pg10_rows(&pg10_ok(&mut w, src, b'T')),
+                    vec![initial[0].clone(), initial[2].clone()]
+                );
+                pg10_ok(&mut w, "DELETE FROM public.pg10_26_src WHERE id=1", b'T');
+            }
+            send(&mut w, b'C', b"Pportal26\0");
+            assert_eq!(read(&mut w), (b'3', vec![]));
+        }
+        assert_eq!(pg10_rows(&pg10_ok(&mut w, src, b'T')), initial[2..]);
+        assert_eq!(pg10_rows(&pg10_ok(&mut w, dst, b'T')), initial[..2]);
+        assert!(pg10_rows(&pg10_ok(&mut o, dst, b'I')).is_empty());
+        pg10_ok(&mut w, ending, b'I');
+        for c in [&mut w, &mut o] {
+            assert_eq!(
+                pg10_rows(&pg10_ok(c, src, b'I')),
+                if ending == "COMMIT" {
+                    initial[2..].to_vec()
+                } else {
+                    initial.clone()
+                }
+            );
+            assert_eq!(
+                pg10_rows(&pg10_ok(c, dst, b'I')),
+                if ending == "COMMIT" {
+                    initial[..2].to_vec()
+                } else {
+                    vec![]
+                }
+            );
+        }
+        send(&mut w, b'C', b"Smove26\0");
+        assert_eq!(read(&mut w), (b'3', vec![]));
+        sync(&mut w);
+        for sql in [
+            "DROP TABLE public.pg10_26_src",
+            "DROP TABLE public.pg10_26_dst",
+        ] {
+            pg10_ok(&mut w, sql, b'I');
+        }
+    }
+    for c in [&mut w, &mut o] {
+        pg10_ok(c, "ROLLBACK", b'I');
+        send(c, b'X', &[]);
+    }
+    drop(w);
+    drop(o);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0));
+    drop(guard);
+    assert!(TcpStream::connect(addr).is_err());
+    // Reuse the real Query/Execute source/destination failure matrix, including
+    // E/25P02, Sync remaining E and rollback of the prefix write.
+    pg10_move_failure_contract(true);
+}
