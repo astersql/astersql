@@ -7130,3 +7130,45 @@ fn pg10_21_write_cte_ast() {
         );
     }
 }
+
+#[test]
+fn pg10_23_writable_cte_values_preserves_producer() {
+    let sql = "WITH moved AS (DELETE FROM src WHERE id<=2) INSERT INTO dst VALUES(4,40)";
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let (statements, _) = pg.ParseSQL(sql, &[]).unwrap();
+    assert_eq!(
+        statements.len(),
+        1,
+        "nonempty input must not become an empty query"
+    );
+    let insert = statements[0]
+        .as_any()
+        .downcast_ref::<parser_ast::InsertStmt>()
+        .unwrap();
+    let source = insert
+        .Select
+        .as_ref()
+        .unwrap()
+        .as_any()
+        .downcast_ref::<parser_ast::SelectStmt>()
+        .unwrap();
+    assert_eq!(source.Kind, parser_ast::SelectStmtKind::Values);
+    assert!(insert.Lists.is_empty());
+    assert_eq!(source.Lists.len(), 1);
+    assert_eq!(source.Lists[0].Values.len(), 2);
+    let with = source.With.as_ref().unwrap().borrow();
+    assert_eq!(with.CTEs.len(), 1);
+    let delete = with.CTEs[0]
+        .Query
+        .as_any()
+        .downcast_ref::<parser_ast::DeleteStmt>()
+        .unwrap();
+    assert!(delete.Returning.is_empty());
+    assert!(delete.Where.is_some());
+    assert!(pg.ParseSQL(&format!("{sql} garbage"), &[]).is_err());
+    assert!(
+        parser::Parser::with_dialect(parser_ast::SqlDialect::MySQL)
+            .ParseSQL(sql, &[])
+            .is_err()
+    );
+}

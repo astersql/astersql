@@ -2984,6 +2984,11 @@ impl ConcreteSession {
                     .map_or(0, |txn| txn.StartTS()),
             );
             let result = self.execute_pg_delete_returning(delete)?;
+            #[cfg(test)]
+            crate::runtime_dispatch_test::pg10_21_record_move_event(
+                "delete-complete",
+                result.rows.len() as u64,
+            );
             let columns = result.columns.clone();
             let rows = result
                 .rows
@@ -3480,8 +3485,7 @@ impl ConcreteSession {
             return Err(unsupported());
         };
         let snapshot_reader = with.CTEs.get(1);
-        if (snapshot_reader.is_none()
-            && (from.TableRefs.Right.is_some() || source.Source.Name.L != cte.Name.L))
+        if (snapshot_reader.is_none() && source.Source.Name.L != cte.Name.L)
             || !source.Source.Schema.L.is_empty()
             || delete.Returning.is_empty()
             || delete.With.is_some()
@@ -3502,6 +3506,30 @@ impl ConcreteSession {
             || select.lock_info.is_some()
         {
             return Err(unsupported());
+        }
+        // A second reference consumes the same materialized producer. Keep
+        // the gate local to an explicit inner self-join of this CTE.
+        if snapshot_reader.is_none()
+            && let Some(right) = from.TableRefs.Right.as_deref()
+        {
+            let ast::ResultSetNode::TableSource(right) = right else {
+                return Err(unsupported());
+            };
+            if from.TableRefs.Tp != ast::JoinType::CrossJoin
+                || from.TableRefs.NaturalJoin
+                || !from.TableRefs.Using.is_empty()
+                || from.TableRefs.On.is_none()
+                || right.Source.Name.L != cte.Name.L
+                || !right.Source.Schema.L.is_empty()
+                || right.QuerySource.is_some()
+                || right.FunctionSource.is_some()
+                || right.AsOf.is_some()
+                || right.TableSample.is_some()
+                || source.AsOf.is_some()
+                || source.TableSample.is_some()
+            {
+                return Err(unsupported());
+            }
         }
         // Only the two-branch source-table snapshot join is added here. Other
         // write producers, unrelated readers and arbitrary joins retain gates.

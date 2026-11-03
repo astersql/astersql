@@ -1777,7 +1777,10 @@ fn pg10_21_move_atomic_rows() {
     );
     let events = PG10_21_MOVE_EVENTS.with_borrow_mut(Option::take).unwrap();
     eprintln!("pg10_21 real producer/consumer transaction events: {events:?}");
-    assert_eq!(events, vec![("delete", start), ("insert", start)]);
+    assert_eq!(
+        events,
+        vec![("delete", start), ("delete-complete", 2), ("insert", start)]
+    );
     assert_ne!(start, 0);
     assert_eq!(returned, initial[..2]);
     assert_eq!(
@@ -1890,6 +1893,90 @@ fn pg10_22_shared_statement_view() {
         pg.execute(ending).unwrap();
     }
     for sql in ["DROP TABLE pg10_22_src", "DROP TABLE pg10_22_dst"] {
+        pg.execute(sql).unwrap();
+    }
+}
+
+#[test]
+fn pg10_23_single_complete_producer() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let rows = |sql: &str| {
+        let mut sets = pg.execute(sql).unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows.sort();
+        rows
+    };
+    for sql in [
+        "CREATE TABLE pg10_23_src(id INT PRIMARY KEY,v INT)",
+        "CREATE TABLE pg10_23_dst(id INT PRIMARY KEY,v INT)",
+    ] {
+        pg.execute(sql).unwrap();
+    }
+    for ending in ["ROLLBACK", "COMMIT"] {
+        for bound in [0, 2] {
+            for sql in [
+                "DELETE FROM pg10_23_dst",
+                "DELETE FROM pg10_23_src",
+                "INSERT INTO pg10_23_src VALUES(1,10),(2,NULL),(3,30)",
+            ] {
+                pg.execute(sql).unwrap();
+            }
+            let initial = rows("SELECT id,v FROM pg10_23_src");
+            pg.execute("BEGIN").unwrap();
+            PG10_21_MOVE_EVENTS.with_borrow_mut(|events| *events = Some(vec![]));
+            let returned = rows(&format!(
+                "WITH moved AS (DELETE FROM pg10_23_src WHERE id<={bound} RETURNING id,v) INSERT INTO pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v"
+            ));
+            let events = PG10_21_MOVE_EVENTS.with_borrow_mut(Option::take).unwrap();
+            eprintln!("pg10_23 producer events {ending}/{bound}: {events:?}");
+            let starts = events
+                .iter()
+                .filter(|e| e.0 == "delete")
+                .collect::<Vec<_>>();
+            assert_eq!(starts.len(), 1);
+            assert_ne!(starts[0].1, 0);
+            let completed = events
+                .iter()
+                .filter(|e| e.0 == "delete-complete")
+                .collect::<Vec<_>>();
+            assert_eq!(completed.len(), 1);
+            assert_eq!(completed[0].1, bound);
+            let expected = if bound == 2 {
+                initial[..2].to_vec()
+            } else {
+                vec![]
+            };
+            assert_eq!(returned, expected);
+            assert_eq!(rows("SELECT id,v FROM pg10_23_dst"), expected);
+            assert_eq!(
+                rows("SELECT id,v FROM pg10_23_src"),
+                if bound == 2 {
+                    initial[2..].to_vec()
+                } else {
+                    initial.clone()
+                }
+            );
+            pg.execute(ending).unwrap();
+            assert_eq!(
+                rows("SELECT id,v FROM pg10_23_dst"),
+                if ending == "COMMIT" { expected } else { vec![] }
+            );
+            assert_eq!(
+                rows("SELECT id,v FROM pg10_23_src"),
+                if ending == "COMMIT" && bound == 2 {
+                    initial[2..].to_vec()
+                } else {
+                    initial
+                }
+            );
+        }
+    }
+    for sql in ["DROP TABLE pg10_23_src", "DROP TABLE pg10_23_dst"] {
         pg.execute(sql).unwrap();
     }
 }

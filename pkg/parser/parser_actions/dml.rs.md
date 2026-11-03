@@ -86,4 +86,6 @@ ON CONFLICT 使用专用 ConflictTargetElements/ConflictTargetElement 文法，�
 
 ## 写入公共表搬移接线
 
-PG 的前置 WITH + INSERT SELECT 动作复用 InsertStmt.Select 内的 SelectStmt.With 保存完整生产者AST；MySQL拒绝该新语法，已有INSERT RETURNING表示不变。只接普通SELECT来源，其他尚未验证形态保留语法门槛。
+PG 的前置 WITH + INSERT 动作复用 InsertStmt.Select 内的 SelectStmt.With 保存完整生产者AST；MySQL拒绝该新语法，已有INSERT RETURNING表示不变。普通SELECT来源沿用既有接线；包含DELETE生产者的VALUES输入仅保留AST供整体执行门禁拒绝。
+
+任务23的局部接线：前置WITH包含DELETE生产者而主INSERT使用VALUES时，将原Lists原样移入现有SelectStmtKind::Values节点，再附加With，避免合法非空输入被静默解析为空语句。没有新增AST字段或开放VALUES写入CTE执行；execute_pg_move_insert因缺少FROM在副作用前返回0A000。普通INSERT VALUES与MySQL路径不变。解析器回归为pg10_23_writable_cte_values_preserves_producer，协议门槛由pg10_23_behavior验证。

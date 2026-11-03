@@ -181,3 +181,9 @@ PostgreSQL CTE 中函数、会话变量、行锁及 SELECT INTO 的求值资格�
 验证覆盖由 `pg10_22_shared_statement_view` 与 `pg_dml_test::pg10_22_behavior` 提供，沿用批次21的两个相邻测试。前者观测两个分支使用相同非零视图身份，并验证本事务先前写入；后者以真实共享会话存储和TCP双连接检查NULL/零行、完整回读、COMMIT/ROLLBACK、描述/标签、参数重绑定与typed NULL、源端22012/目的端23505及E→25P02→Sync仍E→ROLLBACK恢复。非法无关源表在副作用前拒绝。测试隔离记录为REPEATABLE-READ；不由此推广全部隔离/并发语义。
 
 局部行视图增加源表物化及克隆的内存成本；未测性能、RealTiKV、持久重启或独立PostgreSQL参考端差分。MySQL和原单生产者入口沿用原执行路径，测试不代表完整写入CTE支持。
+
+## 写入 CTE 一次生产（任务23）
+
+`execute_pg_move_insert` 同时允许单个 DELETE RETURNING 的两次引用，以显式内连接消费同一物化行集；不重复执行 DELETE，也不共享会被首消费者耗尽的游标。仅增加同名 CTE、无派生来源/函数/时态采样的有界连接，沿用原语句检查点与错误回滚。零消费者及无 RETURNING 的写入定义仍整体拒绝，不能跳过生产者后成功执行主语句。
+
+`pg10_23_single_complete_producer` 在真实共享执行边界观测一次 DELETE 开始、一次完成与完整返回行数量，分别覆盖零行/两行和提交/回滚。`pg10_23_behavior` 使用真实 TCP 双连接验证重复消费、NULL、完整源/目的回读、Query/Extended、固定描述/主命令标签、portal 重复执行与新 Bind、源/目的失败恢复，以及未开放形态在副作用前拒绝。仅覆盖有界整数行集；不声明完整写入 CTE、RealTiKV、参考端差分或性能改进。

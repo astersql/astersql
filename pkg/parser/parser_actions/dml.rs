@@ -1228,6 +1228,21 @@ fn apply_insert_rule(rule: DmlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             else {
                 return Ok(false);
             };
+            // Preserve this write producer even when the consumer is VALUES.
+            // Reuse the existing query node so the shared executor can reject
+            // the entire unsupported shape before applying either write.
+            if insert.Select.is_none()
+                && !insert.Lists.is_empty()
+                && with.CTEs.iter().any(|cte| cte.Query.as_any().is::<parser_ast::DeleteStmt>())
+            {
+                insert.Select = Some(Box::new(parser_ast::SelectStmt {
+                    Kind: parser_ast::SelectStmtKind::Values,
+                    Lists: std::mem::take(&mut insert.Lists).into_iter()
+                        .map(|Values| parser_ast::RowExpr { Values, ..Default::default() })
+                        .collect(),
+                    ..Default::default()
+                }));
+            }
             let Some(select) = insert
                 .Select
                 .as_mut()
