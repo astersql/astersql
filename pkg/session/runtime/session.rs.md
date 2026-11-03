@@ -152,3 +152,7 @@ SessionState.import_query_schema 仅由独立 IMPORT worker 安装；runtime_sta
 ### 来源 f95ec32c8c 的局部增量
 
 new_with_global_accessor 保留普通会话局部初始化顺序，完成构造后才安装目标 runtime 的 GlobalVarsAccessor，顺序与 Go createCrossKSSession 一致。该入口保留 MySQL 方言，跳过实例内存仲裁器的重复初始化，避免目标租户配置污染当前实例。构造期继续使用原访问器，避免变量校验递归进入正在冷加载的目标缓存。普通 new_with_dialect 与 PostgreSQL 入口传 None，保留既有路径。对应 Go createCrossKSSession 的访问器赋值；缓存查询用池会话，但构造不递归读取缓存。
+
+## 写入 CTE 同语句源视图（任务22）
+
+`ConcreteSessionInner.pg_move_read_view` 保存有界写入 CTE 的源表 ID 与 Rc 不可变行集，仅在该语句执行期间存在，不替代事务或存储快照。

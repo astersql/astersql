@@ -266,3 +266,7 @@ Ready采用上述聚焦测试、格式化、lint及差异检查；`make lint`退
 共享层新增回归还验证本语句移动主键后，已暂存删除的旧键不再被原始已提交键存在性误判为冲突；此排除只适用于PG DO UPDATE候选。该回归先在第一次相邻运行失败（20 passed/1 failed，`/tmp/pg10-16-adjacent.log`），随后局部修复。
 
 最终生产代码复验退出0：真实竞争1 passed/256场景（233.65秒）；共享层21 passed、相邻协议15 passed，退出0，日志`/tmp/pg10-16-adjacent2.log`。cargo fmt、构建、lint、diff检查均退出0。参考临时实例停止并删除数据；独占TiUP tag清理、PD端点不可达；槽位锁已释放。未出现阻塞本任务的无关回归失败。
+
+## 写入 CTE 同语句源视图（任务22）
+
+`execute_relational_delete_with_output` 在有界写入 CTE 期间优先从共享源行视图选取候选，兄弟 SELECT 读取同一行集；普通 DELETE、写入应用及错误恢复仍复用既有逻辑。

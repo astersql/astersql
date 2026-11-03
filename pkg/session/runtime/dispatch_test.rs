@@ -1835,3 +1835,61 @@ fn pg10_21_move_atomic_rows() {
         pg.execute(sql).unwrap();
     }
 }
+
+thread_local! {
+    static PG10_22_VIEWS: std::cell::RefCell<Vec<(&'static str,usize)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+pub(crate) fn pg10_22_record_view(branch: &'static str, id: usize) {
+    PG10_22_VIEWS.with_borrow_mut(|events| events.push((branch, id)));
+}
+#[test]
+fn pg10_22_shared_statement_view() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let rows = |sql: &str| {
+        let mut sets = pg.execute(sql).unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows.sort();
+        rows
+    };
+    for sql in [
+        "CREATE TABLE pg10_22_src(id INT PRIMARY KEY,v INT)",
+        "CREATE TABLE pg10_22_dst(id INT PRIMARY KEY,v INT)",
+        "INSERT INTO pg10_22_src VALUES(1,10),(2,NULL),(3,30)",
+    ] {
+        pg.execute(sql).unwrap();
+    }
+    let initial = rows("SELECT id,v FROM pg10_22_src");
+    assert!(pg.execute("WITH moved AS (DELETE FROM pg10_22_src WHERE id<=2 RETURNING id,v),seen AS (SELECT id,v FROM pg10_22_dst WHERE id<=2) INSERT INTO pg10_22_dst SELECT seen.id,seen.v FROM seen JOIN moved ON seen.id=moved.id RETURNING id,v").is_err());
+    assert_eq!(rows("SELECT id,v FROM pg10_22_src"), initial);
+    assert!(rows("SELECT id,v FROM pg10_22_dst").is_empty());
+    for ending in ["ROLLBACK", "COMMIT"] {
+        pg.execute("BEGIN").unwrap();
+        // This earlier transaction write must be in the statement view.
+        pg.execute("UPDATE pg10_22_src SET v=11 WHERE id=1")
+            .unwrap();
+        PG10_22_VIEWS.with_borrow_mut(Vec::clear);
+        let returned = rows(
+            "WITH moved AS (DELETE FROM pg10_22_src WHERE id<=2 RETURNING id,v),seen AS (SELECT id,v FROM pg10_22_src WHERE id<=2) INSERT INTO pg10_22_dst SELECT seen.id,seen.v FROM seen JOIN moved ON seen.id=moved.id RETURNING id,v",
+        );
+        let events = PG10_22_VIEWS.with_borrow_mut(std::mem::take);
+        eprintln!("pg10_22 immutable source view identities: {events:?}");
+        assert!(events.iter().any(|e| e.0 == "delete"));
+        assert!(events.iter().any(|e| e.0 == "select"));
+        assert!(events.iter().all(|e| e.1 == events[0].1 && e.1 != 0));
+        assert_eq!(returned[0], vec!["1".to_owned(), "11".to_owned()]);
+        assert_eq!(returned.len(), 2);
+        assert_eq!(
+            rows("SELECT id,v FROM pg10_22_src"),
+            vec![vec!["3".to_owned(), "30".to_owned()]]
+        );
+        pg.execute(ending).unwrap();
+    }
+    for sql in ["DROP TABLE pg10_22_src", "DROP TABLE pg10_22_dst"] {
+        pg.execute(sql).unwrap();
+    }
+}

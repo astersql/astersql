@@ -665,6 +665,8 @@ pub struct ConcreteSessionInner {
     /// Statement-scoped, materialized non-recursive CTEs. Nested queries search
     /// innermost-to-outermost, matching Go's CTE name-resolution order.
     pub(super) cte_scopes: RefCell<Vec<HashMap<String, InsertSelectRows>>>,
+    /// Immutable source rows shared by the bounded writable-CTE branches.
+    pub(super) pg_move_read_view: RefCell<Option<(i64, Rc<Vec<RelationalRow>>)>>,
     pub(crate) session_vars: Arc<astersql_sessionctx_variable::session::SessionVars>,
     /// Retain the Domain queue across statement contexts and SQL executions.
     pub(super) stats_sync_load: SessionStatsSyncLoadAdapter,
@@ -1727,6 +1729,7 @@ impl ConcreteSession {
                 mdl_autocommit_write: std::cell::Cell::new(false),
                 mdl_tables: RefCell::new(HashMap::new()),
                 cte_scopes: RefCell::new(Vec::new()),
+                pg_move_read_view: RefCell::new(None),
                 import_files: RefCell::new(Default::default()),
                 session_vars: Arc::new(session_vars),
                 time_zone: RefCell::new(RuntimeTimeZone::Named(chrono_tz::UTC)),

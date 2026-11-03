@@ -5120,7 +5120,10 @@ impl ConcreteSession {
                     .map(|matches| matches.into_iter().all(|matches| matches))
             }
         };
-        let mut stats_before_with_handles = self.scan_registered_table(&table)?;
+        let mut stats_before_with_handles = match self.pg_move_source_rows(table.ID, "delete") {
+            Some(rows) => rows,
+            None => self.scan_registered_table(&table)?,
+        };
         let mut candidates = stats_before_with_handles
             .iter()
             .map(|row| matches_plan(&row.1).map(|matches| (row.clone(), matches)))

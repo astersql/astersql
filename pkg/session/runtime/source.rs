@@ -825,7 +825,9 @@ impl ConcreteSession {
         let filter = predicate.and_then(|predicate| {
             relational_handle_filter(&table, predicate, &source.AsName.L, self.dml_type_flags())
         });
-        let rows = if let Some(filter) = filter.as_ref() {
+        let rows = if let Some(rows) = self.pg_move_source_rows(table.ID, "select") {
+            rows
+        } else if let Some(filter) = filter.as_ref() {
             self.scan_registered_table_ranges_with_handle_filter(
                 &table,
                 &relational_row_scan_ranges(&table, None),
@@ -3446,9 +3448,9 @@ pub(super) fn pg_has_write_cte(node: &dyn ast::Node) -> bool {
 }
 
 impl ConcreteSession {
-    /// The bounded DELETE -> INSERT pipeline has one table-reading producer.
-    /// Its consumer reads only that producer's row images, never the mutated
-    /// base table. Both writes share one transaction and statement rollback.
+    /// The bounded DELETE -> INSERT pipeline shares one statement checkpoint.
+    /// An optional sibling SELECT reads the same immutable source view as the
+    /// deletion, while the INSERT consumes the producers' materialized rows.
     pub(super) fn execute_pg_move_insert(
         &self,
         insert: &ast::InsertStmt,
@@ -3461,7 +3463,10 @@ impl ConcreteSession {
             .and_then(|node| node.as_any().downcast_ref::<ast::SelectStmt>())
             .ok_or_else(unsupported)?;
         let with = select.With.as_ref().ok_or_else(unsupported)?.borrow();
-        if with.IsRecursive || with.CTEs.len() != 1 || insert.PostgreSQLConflict.is_some() {
+        if with.IsRecursive
+            || !(1..=2).contains(&with.CTEs.len())
+            || insert.PostgreSQLConflict.is_some()
+        {
             return Err(unsupported());
         }
         let cte = &with.CTEs[0];
@@ -3474,8 +3479,9 @@ impl ConcreteSession {
         let Some(ast::ResultSetNode::TableSource(source)) = from.TableRefs.Left.as_deref() else {
             return Err(unsupported());
         };
-        if from.TableRefs.Right.is_some()
-            || source.Source.Name.L != cte.Name.L
+        let snapshot_reader = with.CTEs.get(1);
+        if (snapshot_reader.is_none()
+            && (from.TableRefs.Right.is_some() || source.Source.Name.L != cte.Name.L))
             || !source.Source.Schema.L.is_empty()
             || delete.Returning.is_empty()
             || delete.With.is_some()
@@ -3496,6 +3502,71 @@ impl ConcreteSession {
             || select.lock_info.is_some()
         {
             return Err(unsupported());
+        }
+        // Only the two-branch source-table snapshot join is added here. Other
+        // write producers, unrelated readers and arbitrary joins retain gates.
+        let delete_from = delete.TableRefs.as_ref().ok_or_else(unsupported)?;
+        let Some(ast::ResultSetNode::TableSource(delete_source)) =
+            delete_from.TableRefs.Left.as_deref()
+        else {
+            return Err(unsupported());
+        };
+        let database = if delete_source.Source.Schema.L.is_empty() {
+            self.current_database()
+        } else {
+            delete_source.Source.Schema.L.clone()
+        };
+        let source_table = self
+            .resolve_runtime_table(&database, &delete_source.Source.Name.L)
+            .ok_or_else(unsupported)?;
+        if let Some(reader) = snapshot_reader {
+            let read = reader
+                .Query
+                .as_any()
+                .downcast_ref::<ast::SelectStmt>()
+                .ok_or_else(unsupported)?;
+            let read_from = read.From.as_ref().ok_or_else(unsupported)?;
+            let Some(ast::ResultSetNode::TableSource(base)) = read_from.TableRefs.Left.as_deref()
+            else {
+                return Err(unsupported());
+            };
+            let Some(ast::ResultSetNode::TableSource(right)) = from.TableRefs.Right.as_deref()
+            else {
+                return Err(unsupported());
+            };
+            if reader.IsRecursive
+                || read.With.is_some()
+                || read_from.TableRefs.Right.is_some()
+                || base.Source.Name.L != delete_source.Source.Name.L
+                || base.Source.Schema.L != delete_source.Source.Schema.L
+                || base.QuerySource.is_some()
+                || base.FunctionSource.is_some()
+                || base.AsOf.is_some()
+                || base.TableSample.is_some()
+                || delete_source.AsOf.is_some()
+                || delete_source.TableSample.is_some()
+                || read.lock_info.is_some()
+                || !read.GroupBy.is_empty()
+                || read.Having.is_some()
+                || read.Limit.is_some()
+                || read.SelectIntoOpt.is_some()
+                || read.Distinct
+                || from.TableRefs.Tp != ast::JoinType::CrossJoin
+                || from.TableRefs.NaturalJoin
+                || !from.TableRefs.Using.is_empty()
+                || source.Source.Name.L != reader.Name.L
+                || right.Source.Name.L != cte.Name.L
+                || !right.Source.Schema.L.is_empty()
+                || right.QuerySource.is_some()
+                || right.FunctionSource.is_some()
+                || from.TableRefs.On.is_none()
+                || !source_table.PKIsHandle
+                || source.QuerySource.is_some()
+                || source.FunctionSource.is_some()
+                || self.pg_move_read_view.borrow().is_some()
+            {
+                return Err(unsupported());
+            }
         }
         // This first pipeline transports integer row images. Do not conflate
         // the legacy rendered NULL marker with a user's textual cell.
@@ -3537,6 +3608,7 @@ impl ConcreteSession {
         if expressions.0 {
             return Err(unsupported());
         }
+        let has_snapshot_reader = snapshot_reader.is_some();
         drop(with);
         let owns_transaction = self.state.borrow().transaction.is_none();
         if owns_transaction {
@@ -3564,11 +3636,25 @@ impl ConcreteSession {
                 return Err(error);
             }
         };
-        let result = if insert.Returning.is_empty() {
-            self.execute_insert(insert).map(|_| None)
-        } else {
-            self.execute_pg_insert_returning(insert).map(Some)
-        };
+        let result = (|| {
+            // Capture before either branch executes, including earlier writes
+            // in this transaction. A storage-only snapshot would lose them.
+            let view = if has_snapshot_reader {
+                let rows = self.scan_registered_table(&source_table)?;
+                *self.pg_move_read_view.borrow_mut() =
+                    Some((source_table.ID, std::rc::Rc::new(rows)));
+                Some(PgMoveReadViewGuard(self))
+            } else {
+                None
+            };
+            let result = if insert.Returning.is_empty() {
+                self.execute_insert(insert).map(|_| None)
+            } else {
+                self.execute_pg_insert_returning(insert).map(Some)
+            };
+            drop(view);
+            result
+        })();
         {
             let mut state = self.state.borrow_mut();
             let transaction = state.transaction.as_mut().expect("move transaction");
@@ -3588,5 +3674,34 @@ impl ConcreteSession {
             self.finish_transaction(result.is_ok())?;
         }
         result
+    }
+}
+
+// Keep the view lifetime inside the statement checkpoint, including unwinding.
+struct PgMoveReadViewGuard<'a>(&'a ConcreteSession);
+impl Drop for PgMoveReadViewGuard<'_> {
+    fn drop(&mut self) {
+        self.0.pg_move_read_view.borrow_mut().take();
+    }
+}
+impl ConcreteSession {
+    pub(super) fn pg_move_source_rows(
+        &self,
+        table_id: i64,
+        branch: &'static str,
+    ) -> Option<Vec<RelationalRow>> {
+        let view = self.pg_move_read_view.borrow();
+        let (id, rows) = view.as_ref()?;
+        if *id != table_id {
+            return None;
+        }
+        #[cfg(test)]
+        crate::runtime_dispatch_test::pg10_22_record_view(
+            branch,
+            std::rc::Rc::as_ptr(rows) as usize,
+        );
+        #[cfg(not(test))]
+        let _ = branch;
+        Some(rows.as_ref().clone())
     }
 }

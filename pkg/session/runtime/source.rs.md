@@ -172,4 +172,12 @@ PostgreSQL CTE 中函数、会话变量、行锁及 SELECT INTO 的求值资格�
 
 ## 写入公共表搬移接线
 
-写入CTE搬移的有界入口 `execute_pg_move_insert` 只允许单个 DELETE RETURNING 生产者和仅消费该行集的 INSERT SELECT。整数返回行按既有 NULL 表示还原；未验证的其他来源、函数、子查询和写入形态在副作用前拒绝。两侧复用同一事务与 StageStatement/ReleaseStatement/CleanupStatement，自动提交只提交一次；显式事务失败撤销本语句暂存。`pg_has_write_cte` 从 SELECT/集合/UPDATE/DELETE 的 With 字段识别生产者，不能依赖 embedded CommonTableExpression 收到 Visitor::enter。
+写入CTE搬移的有界入口 `execute_pg_move_insert` 允许单个 DELETE RETURNING 生产者，以及可选的同源兄弟 SELECT；外层 INSERT SELECT 消费物化行集。整数返回行按既有 NULL 表示还原；未验证的其他来源、函数、子查询和写入形态在副作用前拒绝。两侧复用同一事务与 StageStatement/ReleaseStatement/CleanupStatement，自动提交只提交一次；显式事务失败撤销本语句暂存。`pg_has_write_cte` 从 SELECT/集合/UPDATE/DELETE 的 With 字段识别生产者，不能依赖 embedded CommonTableExpression 收到 Visitor::enter。
+
+## 写入 CTE 同语句源视图（任务22）
+
+`execute_pg_move_insert` 对 DELETE 加同源兄弟 SELECT 的有界 JOIN 在语句开始时物化真实事务可见源行。`pg_move_source_rows` 提供两分支共享的不可变视图，保留本事务先前写入；`PgMoveReadViewGuard` 在返回、错误和展开时清理视图。普通单生产者搬移沿用原路径。
+
+验证覆盖由 `pg10_22_shared_statement_view` 与 `pg_dml_test::pg10_22_behavior` 提供，沿用批次21的两个相邻测试。前者观测两个分支使用相同非零视图身份，并验证本事务先前写入；后者以真实共享会话存储和TCP双连接检查NULL/零行、完整回读、COMMIT/ROLLBACK、描述/标签、参数重绑定与typed NULL、源端22012/目的端23505及E→25P02→Sync仍E→ROLLBACK恢复。非法无关源表在副作用前拒绝。测试隔离记录为REPEATABLE-READ；不由此推广全部隔离/并发语义。
+
+局部行视图增加源表物化及克隆的内存成本；未测性能、RealTiKV、持久重启或独立PostgreSQL参考端差分。MySQL和原单生产者入口沿用原执行路径，测试不代表完整写入CTE支持。
