@@ -107,8 +107,10 @@ mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
 mod pg_schema;
+#[cfg(test)]
+mod pg_schema_test;
 mod pg_temporal;
-pub use pg_schema::PgSchemaCommand;
+pub use pg_schema::{PgNamespaceFact, PgSchemaCommand};
 #[cfg(test)]
 mod pg_temporal_test;
 mod pg_uuid;

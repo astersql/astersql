@@ -192,6 +192,8 @@ struct Resolver<'a> {
     sql: &'a str,
     database: &'a str,
     public: bool,
+    context: Option<&'a dyn TiDBContext>,
+    create: bool,
     edits: BTreeMap<usize, (usize, String)>,
     error_position: Option<usize>,
     snapshot: Option<astersql_infoschema::SchemaRef>,
@@ -233,6 +235,7 @@ impl Resolver<'_> {
         end: usize,
         ctes: &HashSet<String>,
         allow_columns: bool,
+        range_alias: bool,
     ) -> ParseResult<usize> {
         while i < end
             && (self.word(i, "if")
@@ -309,27 +312,66 @@ impl Resolver<'_> {
                 "cross-database references are not implemented",
             ));
         }
-        match parts.as_slice() {
-            [name] => {
-                if !self.public {
-                    self.error_position =
-                        Some(self.sql[..self.tokens[start].start].chars().count() + 1);
-                    return Err(error("42P01", "relation is not in the PG search path"));
-                }
-                name
+        let bound = self.context.and_then(|context| {
+            let schema = match parts.as_slice() {
+                [_] => None,
+                [schema, _] => Some(schema.clone()),
+                [_, schema, _] => Some(schema.clone()),
+                _ => return None,
+            };
+            // System catalog queries are handled by the catalog provider.
+            if schema.as_deref() == Some("pg_catalog") {
+                return None;
             }
-            [schema, name] if schema == "public" => name,
-            [db, schema, name]
-                if schema == "public" && (self.database.is_empty() || db == self.database) =>
+            let name = parts.last().unwrap().clone();
+            let bound = context.pg_bind_relation(schema.clone(), name.clone(), self.create);
+            // DROP IF EXISTS still binds the namespace but must not require the
+            // relation to exist. Preserve that established utility behavior.
+            if self.tokens.first().is_some_and(|t| t.word("drop"))
+                && self
+                    .tokens
+                    .windows(2)
+                    .any(|w| w[0].word("if") && w[1].word("exists"))
+                && bound.as_ref().is_some_and(|r| {
+                    r.as_ref()
+                        .is_err_and(|e| crate::pg_conn::sqlstate(e) == "42P01")
+                })
             {
-                name
+                return context.pg_bind_relation(schema, name, true);
             }
-            _ => {
-                return Err(error(
-                    "0A000",
-                    "cross-database or non-public relations are unsupported",
-                ));
-            }
+            bound
+        });
+        self.create = false;
+        let physical = if let Some(bound) = bound {
+            Some(bound.map_err(|e| {
+                self.error_position =
+                    Some(self.sql[..self.tokens[start].start].chars().count() + 1);
+                (crate::pg_conn::sqlstate(&e), e.to_string())
+            })?)
+        } else {
+            match parts.as_slice() {
+                [name] => {
+                    if !self.public {
+                        self.error_position =
+                            Some(self.sql[..self.tokens[start].start].chars().count() + 1);
+                        return Err(error("42P01", "relation is not in the PG search path"));
+                    }
+                    name
+                }
+                [schema, name] if schema == "public" => name,
+                [db, schema, name]
+                    if schema == "public" && (self.database.is_empty() || db == self.database) =>
+                {
+                    name
+                }
+                _ => {
+                    return Err(error(
+                        "0A000",
+                        "cross-database or non-public relations are unsupported",
+                    ));
+                }
+            };
+            None
         };
         if self.database.is_empty() {
             return Err(error("3D000", "no current database selected"));
@@ -337,7 +379,7 @@ impl Resolver<'_> {
         // Earlier visible CTEs took the return above. Resolve physical names
         // exactly in the owning connection's snapshot before native folding,
         // and diagnose missing objects at the original token.
-        if !allow_columns
+        if physical.is_none() && !allow_columns
             // Catalog relations are owned by the catalog parser/provider,
             // including invalid-parameter diagnostics before native fallback.
             && !(parts.len() == 1 && crate::pg_catalog_query::is_catalog_relation(&parts[0]))
@@ -357,6 +399,40 @@ impl Resolver<'_> {
         // Remove individual identifier edits swallowed by the relation span.
         self.edits
             .retain(|offset, _| *offset < first || *offset >= last);
+        let alias = if range_alias
+            && physical
+                .as_ref()
+                .is_some_and(|name| name != parts.last().unwrap())
+            && !self.word(i, "as")
+            && !self.tokens.get(i).is_some_and(|token| {
+                token.name.is_some()
+                    && ![
+                        "where",
+                        "join",
+                        "inner",
+                        "left",
+                        "right",
+                        "full",
+                        "cross",
+                        "on",
+                        "using",
+                        "order",
+                        "group",
+                        "having",
+                        "limit",
+                        "offset",
+                        "union",
+                        "for",
+                        "returning",
+                        "set",
+                    ]
+                    .iter()
+                    .any(|word| token.word(word))
+            }) {
+            format!(" AS {}", quote(parts.last().unwrap()))
+        } else {
+            String::new()
+        };
         self.edits.insert(
             first,
             // Keep the table segment's PG quotes. Re-quoting with backticks
@@ -364,9 +440,13 @@ impl Resolver<'_> {
             (
                 last,
                 format!(
-                    "{}.{}",
+                    "{}.{}{}",
                     quote(self.database),
-                    &self.sql[self.tokens[i - 1].start..last]
+                    &physical.as_ref().map_or_else(
+                        || self.sql[self.tokens[i - 1].start..last].to_owned(),
+                        |name| quote(name)
+                    ),
+                    alias,
                 ),
             ),
         );
@@ -650,6 +730,8 @@ impl Resolver<'_> {
                     end,
                     &ctes,
                     ddl || insert && self.word(i, "into") || self.word(i, "references"),
+                    select
+                        && (self.relation_from(i) || self.word(i, "join") || self.symbol(i, b',')),
                 )?;
                 expect = false;
             } else {
@@ -680,6 +762,17 @@ fn rewrite_with_snapshot(
     position: &mut Option<usize>,
     snapshot: Option<astersql_infoschema::SchemaRef>,
 ) -> ParseResult<String> {
+    rewrite_with_context(sql, database, public, position, snapshot, None)
+}
+
+fn rewrite_with_context<'a>(
+    sql: &'a str,
+    database: &'a str,
+    public: bool,
+    position: &mut Option<usize>,
+    snapshot: Option<astersql_infoschema::SchemaRef>,
+    context: Option<&'a dyn TiDBContext>,
+) -> ParseResult<String> {
     *position = None;
     let allowed_aliases = alias_scope(sql, snapshot.clone(), database, position)?;
     let parts: BTreeMap<_, _> = identifier_parts(sql, &allowed_aliases)?
@@ -698,6 +791,9 @@ fn rewrite_with_snapshot(
     }
     let mut resolver = Resolver {
         snapshot,
+        context,
+        create: tokens.first().is_some_and(|t| t.word("create"))
+            && tokens.iter().take(4).any(|t| t.word("table")),
         tokens,
         sql,
         database,
@@ -1288,6 +1384,8 @@ pub(crate) fn adapt(
     // Queries without native relations must not execute an extra engine query.
     match rewrite_with_position(sql, "", true, &mut session.relation_error_position) {
         Err(("3D000", _)) => {}
+        Err(("0A000", ref message))
+            if message == "cross-database or non-public relations are unsupported" => {}
         Err(("0A000", message))
             if message == "quoted mixed-case identifiers require exact name binding support" => {}
         result => return result,
@@ -1310,12 +1408,13 @@ pub(crate) fn adapt(
         database,
         &mut session.relation_error_position,
     )?;
-    let sql = rewrite_with_snapshot(
+    let sql = rewrite_with_context(
         sql,
         database,
         public,
         &mut session.relation_error_position,
         context.schema_snapshot(),
+        Some(context),
     )?;
     validate_relations(&sql, database)?;
     Ok(sql)

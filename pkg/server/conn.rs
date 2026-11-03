@@ -906,6 +906,24 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    /// All current-database namespace identities and USAGE facts for this actor.
+    /// None preserves contexts without PostgreSQL namespace support.
+    fn pg_namespace_facts(
+        &self,
+    ) -> Option<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>> {
+        None
+    }
+    /// Bind a logical relation to its native storage key without executing SQL.
+    /// Creation resolves the destination only; it does not create metadata.
+    fn pg_bind_relation(
+        &self,
+        _schema: Option<String>,
+        _name: String,
+        _create: bool,
+    ) -> Option<ConnResult<String>> {
+        None
+    }
+
     /// None means the context does not implement PostgreSQL namespace facts.
     fn pg_schema_path(
         &self,

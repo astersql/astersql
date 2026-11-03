@@ -28493,3 +28493,273 @@ fn pg11_02() {
         );
     }
 }
+
+#[test]
+fn pg11_03() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn rows(s: &mut TcpStream, sql: &str, ext: bool, expected: Vec<Vec<Option<String>>>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn one(value: &str) -> Vec<Vec<Option<String>>> {
+        vec![vec![Some(value.into())]]
+    }
+    native.execute("CREATE ROLE pg1103_reader").unwrap();
+    native
+        .execute("GRANT SELECT ON test.* TO pg1103_reader")
+        .unwrap();
+    native.execute("GRANT pg1103_reader TO 'root'@'%'").unwrap();
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let error = m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("expected {state}: {sql}: {m:?}"));
+        assert!(
+            error
+                .1
+                .windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        rows(s, "SELECT 1", ext, one("1"));
+    }
+    for ext in [false, true] {
+        let mut a = connect(Some("public"));
+        let mut b = connect(Some("public"));
+        for sql in [
+            "CREATE SCHEMA pg1103_reader",
+            "CREATE SCHEMA pg1103_other",
+            "CREATE TABLE pg1103_reader.path_doc (id integer)",
+            "CREATE TABLE pg1103_other.path_doc (id integer)",
+            "INSERT INTO pg1103_reader.path_doc VALUES (11)",
+            "INSERT INTO pg1103_other.path_doc VALUES (22)",
+            "GRANT USAGE ON SCHEMA pg1103_reader TO pg1103_reader",
+            "GRANT USAGE ON SCHEMA pg1103_other TO pg1103_reader",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        for sql in [
+            "CREATE TABLE pg1103_other.pg_namespace (nspname text)",
+            "INSERT INTO pg1103_other.pg_namespace VALUES ('custom_marker')",
+            "SET search_path TO pg1103_other,pg_catalog",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        rows(
+            &mut a,
+            "SELECT nspname FROM pg_namespace WHERE nspname='custom_marker'",
+            ext,
+            one("custom_marker"),
+        );
+        ok(&mut a, "SET search_path TO pg1103_other", ext);
+        rows(
+            &mut a,
+            "SELECT nspname FROM pg_namespace WHERE nspname='custom_marker'",
+            ext,
+            vec![],
+        );
+        ok(&mut a, "DROP TABLE pg1103_other.pg_namespace", ext);
+        for (path, expected) in [
+            ("pg1103_reader,pg1103_other", "11"),
+            ("pg1103_other,pg1103_reader", "22"),
+            ("missing,pg1103_reader", "11"),
+        ] {
+            ok(&mut a, &format!("SET search_path TO {path}"), ext);
+            rows(&mut a, "SELECT id FROM path_doc", ext, one(expected));
+        }
+        rows(
+            &mut b,
+            "SELECT id FROM pg1103_other.path_doc",
+            ext,
+            one("22"),
+        );
+        rows(&mut a, "SELECT path_doc.id FROM path_doc", ext, one("11"));
+        ok(&mut a, "CREATE TABLE created_here (id integer)", ext);
+        ok(&mut a, "INSERT INTO created_here VALUES (33)", ext);
+        rows(
+            &mut b,
+            "SELECT id FROM pg1103_reader.created_here",
+            ext,
+            one("33"),
+        );
+        ok(&mut a, "DROP TABLE created_here", ext);
+        ok(&mut a, "DROP TABLE IF EXISTS created_here", ext);
+        let identity_sql =
+            "SELECT n.oid::bigint FROM pg_catalog.pg_namespace n WHERE n.nspname='pg1103_reader'";
+        let identities = catalog_rows(&run(&mut a, identity_sql, ext));
+        assert_eq!(identities.len(), 1);
+        assert!(identities[0][0].as_ref().unwrap().parse::<u32>().unwrap() > 16384);
+        rows(&mut b, identity_sql, ext, identities.clone());
+        rows(
+            &mut a,
+            "SELECT n.nspname,c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relname='path_doc' ORDER BY n.nspname",
+            ext,
+            vec![
+                vec![Some("pg1103_other".into()), Some("path_doc".into())],
+                vec![Some("pg1103_reader".into()), Some("path_doc".into())],
+            ],
+        );
+        rows(&mut b, "SHOW search_path", ext, one("public"));
+        denied(&mut b, "SELECT id FROM path_doc", ext, "42P01");
+        ok(&mut a, "SET ROLE pg1103_reader", ext);
+        ok(&mut a, "SET search_path TO \"$user\",pg1103_other", ext);
+        rows(&mut a, "SELECT current_schema()", ext, one("pg1103_reader"));
+        rows(&mut a, "SELECT id FROM path_doc", ext, one("11"));
+        denied(
+            &mut a,
+            "CREATE TABLE permission_probe (id integer)",
+            ext,
+            "42501",
+        );
+        ok(
+            &mut b,
+            "REVOKE USAGE ON SCHEMA pg1103_reader FROM pg1103_reader",
+            ext,
+        );
+        rows(&mut a, "SELECT current_schema()", ext, one("pg1103_other"));
+        rows(&mut a, "SELECT id FROM path_doc", ext, one("22"));
+        denied(
+            &mut a,
+            "SELECT id FROM pg1103_reader.path_doc",
+            ext,
+            "42501",
+        );
+        denied(&mut a, "SELECT id FROM pg1103_reader.absent", ext, "42501");
+        ok(
+            &mut b,
+            "REVOKE USAGE ON SCHEMA pg1103_other FROM pg1103_reader",
+            ext,
+        );
+        rows(&mut a, "SELECT current_schema()", ext, vec![vec![None]]);
+        let tables_before = domain
+            .info_schema()
+            .SchemaTableInfos(&astersql_infoschema::CiString::new("test"))
+            .unwrap()
+            .len();
+        denied(
+            &mut a,
+            "CREATE TABLE should_not_exist (id integer)",
+            ext,
+            "3F000",
+        );
+        assert_eq!(
+            domain
+                .info_schema()
+                .SchemaTableInfos(&astersql_infoschema::CiString::new("test"))
+                .unwrap()
+                .len(),
+            tables_before
+        );
+        denied(&mut a, "SELECT id FROM path_doc", ext, "42P01");
+        denied(&mut a, "SET search_path TO", ext, "42601");
+        ok(
+            &mut b,
+            "GRANT USAGE ON SCHEMA pg1103_reader TO pg1103_reader",
+            ext,
+        );
+        rows(&mut a, "SELECT id FROM path_doc", ext, one("11"));
+        ok(&mut a, "SET ROLE NONE", ext);
+        for sql in [
+            "DROP TABLE pg1103_reader.path_doc",
+            "DROP TABLE pg1103_other.path_doc",
+            "DROP SCHEMA pg1103_reader",
+            "DROP SCHEMA pg1103_other",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        denied(
+            &mut b,
+            "SELECT id FROM public.should_not_exist",
+            ext,
+            "42P01",
+        );
+        ok(&mut b, "CREATE SCHEMA pg1103_reader", ext);
+        let recreated = catalog_rows(&run(&mut b, identity_sql, ext));
+        assert_ne!(identities, recreated);
+        ok(&mut b, "DROP SCHEMA pg1103_reader", ext);
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_03 ext={ext}: 20 scenario groups passed: order(3), catalog shadowing, create authorization, isolation, qualified range, default CREATE/drop, namespace/class identity, user expansion, usage refresh(2), explicit denial, empty NULL/create/lookup, syntax recovery, grant recovery, recreation/cleanup"
+        );
+    }
+    native.execute("DROP ROLE pg1103_reader").unwrap();
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+}

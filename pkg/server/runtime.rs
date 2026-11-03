@@ -821,6 +821,16 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgNamespaceFacts {
+        response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>>,
+    },
+    PgBindRelation {
+        schema: Option<String>,
+        name: String,
+        create: bool,
+        response: mpsc::SyncSender<ConnResult<String>>,
+    },
+
     PgSchemaPath {
         path: Vec<String>,
         command: Option<astersql_session::runtime::PgSchemaCommand>,
@@ -994,6 +1004,21 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgNamespaceFacts { response } => {
+                let _ = response.send(session.pg_namespace_facts().map_err(session_protocol_error));
+            }
+            SessionRequest::PgBindRelation {
+                schema,
+                name,
+                create,
+                response,
+            } => {
+                let _ = response.send(
+                    session
+                        .pg_bind_relation(schema.as_deref(), &name, create)
+                        .map_err(session_protocol_error),
+                );
+            }
             SessionRequest::PgSchemaPath {
                 path,
                 command,
@@ -1941,6 +1966,32 @@ impl TiDBContext for ConcreteTiDBContext {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;
         rx.recv().map_err(packet_error)
+    }
+    fn pg_namespace_facts(
+        &self,
+    ) -> Option<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        Some(
+            self.send_request(SessionRequest::PgNamespaceFacts { response: tx })
+                .and_then(|_| rx.recv().map_err(packet_error)?),
+        )
+    }
+    fn pg_bind_relation(
+        &self,
+        schema: Option<String>,
+        name: String,
+        create: bool,
+    ) -> Option<ConnResult<String>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        Some(
+            self.send_request(SessionRequest::PgBindRelation {
+                schema,
+                name,
+                create,
+                response: tx,
+            })
+            .and_then(|_| rx.recv().map_err(packet_error)?),
+        )
     }
     fn pg_schema_path(
         &self,

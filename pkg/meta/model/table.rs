@@ -69,6 +69,9 @@ pub const VirtualColFTSScoreID: i64 = -2050;
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TableInfo {
+    /// PG namespace identity and logical relation name; Name remains the storage key.
+    #[serde(rename = "postgresql_namespace", skip_serializing_if = "Option::is_none")]
+    pub PostgreSQLNamespace: Option<(i64, String)>,
     /// Declared PG primary constraint, including PKIsHandle without an index row.
     #[serde(rename = "postgresql_primary_constraint", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLPrimaryConstraint: Option<String>,

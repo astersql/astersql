@@ -328,6 +328,24 @@ fn table_metadata_json_matches_go_field_names_and_embedding() {
     let old_table: TableInfo =
         serde_json::from_value(serde_json::json!({"exact_name": true})).unwrap();
     assert!(!old_table.PostgreSQLDateText);
+    assert!(old_table.PostgreSQLNamespace.is_none());
+    assert!(
+        serde_json::to_value(&old_table)
+            .unwrap()
+            .get("postgresql_namespace")
+            .is_none()
+    );
+    let namespaced = TableInfo {
+        PostgreSQLNamespace: Some((501, "logical_relation".into())),
+        ..TableInfo::default()
+    };
+    let encoded_namespace = serde_json::to_value(&namespaced).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TableInfo>(encoded_namespace)
+            .unwrap()
+            .PostgreSQLNamespace,
+        namespaced.PostgreSQLNamespace
+    );
     assert!(
         serde_json::to_value(&old_table)
             .unwrap()

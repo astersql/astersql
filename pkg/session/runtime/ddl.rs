@@ -347,6 +347,11 @@ impl ConcreteSession {
         shard_row_id_bits: Option<u64>,
         pre_split_regions: Option<u64>,
     ) -> SessionResult<()> {
+        let _namespace_guard = (self.sql_dialect() == ast::SqlDialect::PostgreSQL).then(|| {
+            super::pg_schema::PG_NAMESPACE_DDL_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         astersql_planner_core::InstallPlannerExpressionFactory()
             .map_err(|error| SessionError::new(error.to_string()))?;
         Self::validate_create_table_collations(statement)?;
@@ -647,6 +652,9 @@ impl ConcreteSession {
             astersql_ddl::BuildTableInfoFromAST(&context, statement)
                 .map_err(|error| session_error("build CREATE TABLE metadata", error))?
         };
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
+        }
         astersql_ddl::storage_class::CheckStorageClassAdmission(
             &table.EngineAttribute,
             Some(&table),

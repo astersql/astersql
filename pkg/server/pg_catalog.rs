@@ -131,6 +131,25 @@ impl CatalogQuery {
             .position(|s| s == "public")
             .zip(path.iter().position(|s| s == "pg_catalog"))
             .is_some_and(|(public, catalog)| public < catalog);
+        // Only namespaces explicitly before pg_catalog can shadow it. If it
+        // was omitted, PostgreSQL searches the implicit catalog first.
+        if let Some(catalog) = path.iter().position(|name| name == "pg_catalog") {
+            for schema in &path[..catalog] {
+                for name in &names {
+                    if let Some(bound) =
+                        context.pg_bind_relation(Some(schema.clone()), name.clone(), false)
+                    {
+                        match bound {
+                            Ok(_) => shadowed.push(name.clone()),
+                            Err(error) if crate::pg_conn::sqlstate(&error) == "42P01" => {}
+                            Err(error) => {
+                                return Err((crate::pg_conn::sqlstate(&error), error.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if public_first && !names.is_empty() {
             let current = context
                 .execute_query("SELECT DATABASE()", false, &CancellationToken::new())
@@ -1381,7 +1400,7 @@ impl CatalogQuery {
                 if name == "pg_class" {
                     class_rows(snapshot.as_ref(), database)?
                 } else if name == "pg_namespace" {
-                    namespace_rows(snapshot.as_ref(), database)?
+                    namespace_rows_for_context(context, snapshot.as_ref(), database)?
                 } else {
                     // Native schema metadata has no shared-description rows. A
                     // LEFT JOIN to this empty relation keeps every schema and
@@ -2610,6 +2629,10 @@ fn class_rows(
         if model.State != astersql_meta_model::StatePublic {
             continue;
         }
+        let namespace = model
+            .PostgreSQLNamespace
+            .as_ref()
+            .map_or(Ok(namespace), |(id, _)| crate::pg_oid::namespace_oid(*id))?;
         let partitioned = model.GetPartitionInfo().is_some();
         let kind = if model.View.is_some() {
             "v"
@@ -2622,7 +2645,10 @@ fn class_rows(
         };
         rows.push(class_row(
             crate::pg_oid::table_oid(model.ID)?,
-            &model.Name.O,
+            model
+                .PostgreSQLNamespace
+                .as_ref()
+                .map_or(model.Name.O.as_str(), |(_, name)| name.as_str()),
             namespace,
             kind,
         ));
@@ -3555,6 +3581,10 @@ fn index_constraint_rows(
     for table in &tables {
         check_catalog_cancel(cancel)?;
         let model = table.model_meta.as_ref().ok_or_else(unsupported)?;
+        let namespace = model
+            .PostgreSQLNamespace
+            .as_ref()
+            .map_or(Ok(namespace), |(id, _)| namespace_oid(*id))?;
         if model.State != StatePublic || model.Sequence.is_some() || model.View.is_some() {
             continue;
         }
@@ -3779,4 +3809,27 @@ pub(crate) fn namespace_names(context: &dyn TiDBContext) -> ConnResult<Vec<Strin
             _ => None,
         })
         .collect())
+}
+
+fn namespace_rows_for_context(
+    context: &dyn TiDBContext,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+) -> ConnResult<Vec<Vec<Value>>> {
+    if let Some(facts) = context.pg_namespace_facts() {
+        return facts?
+            .into_iter()
+            .map(|fact| {
+                Ok(namespace_row(
+                    if fact.name == "pg_catalog" {
+                        11
+                    } else {
+                        namespace_oid(fact.id)?
+                    },
+                    &fact.name,
+                ))
+            })
+            .collect();
+    }
+    namespace_rows(snapshot, database)
 }
