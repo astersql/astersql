@@ -18,6 +18,7 @@ pub(crate) enum SessionQuery {
     DateStyleSet(Option<astersql_types::pg_temporal::PgDateOrder>),
     DateStyleReset,
     Set(Vec<String>),
+    LocalPath(Option<Vec<String>>),
     Reset,
     SchemaUtility(astersql_session::runtime::PgSchemaCommand),
 }
@@ -26,6 +27,9 @@ pub(crate) struct PgSession {
     path: Vec<String>,
     default_path: Vec<String>,
     transaction_path: Option<Vec<String>>,
+    // Value to retain on commit after a LOCAL override; transaction_path
+    // independently retains the value to restore on rollback.
+    local_path_restore: Option<Vec<String>>,
     failed_transaction: bool,
     // Original relation cursor from name adaptation, consumed by this request's
     // Q/Parse error response and reset before the next frontend command.
@@ -39,6 +43,7 @@ impl Default for PgSession {
             path: vec!["public".into()],
             default_path: vec!["public".into()],
             transaction_path: None,
+            local_path_restore: None,
             failed_transaction: false,
             relation_error_position: None,
             function_error_hint: None,
@@ -127,6 +132,9 @@ impl PgSession {
             self.transaction_path
                 .get_or_insert_with(|| self.path.clone());
         } else {
+            if let Some(path) = self.local_path_restore.take() {
+                self.path = path;
+            }
             if let Some(path) = self.transaction_path.take() {
                 if command == Some("ROLLBACK") {
                     self.path = path;
@@ -233,12 +241,23 @@ impl PgSession {
                     .collect::<Vec<_>>()
                     .join(", "),
             )),
+            SessionQuery::LocalPath(path) => {
+                if context.in_transaction() {
+                    self.local_path_restore
+                        .get_or_insert_with(|| self.path.clone());
+                    self.path = path.as_ref().unwrap_or(&self.default_path).clone();
+                    self.effective_explicit_path(context)?;
+                }
+                None
+            }
             SessionQuery::Set(path) => {
+                self.local_path_restore = None;
                 self.path = path.clone();
                 self.effective_explicit_path(context)?;
                 None
             }
             SessionQuery::Reset => {
+                self.local_path_restore = None;
                 self.path.clone_from(&self.default_path);
                 self.effective_explicit_path(context)?;
                 None
@@ -274,6 +293,7 @@ impl SessionQuery {
                     PgIntervalSetting::Set { local: true, .. } | PgIntervalSetting::ResetLocal
                 ) | Self::LcTimeSet(_, true)
                     | Self::NumericLocaleSet(_, _, true)
+                    | Self::LocalPath(_)
             )
         {
             vec![(b'N',b"SWARNING\0VWARNING\0C25P01\0MSET LOCAL can only be used in transaction blocks\0\0".to_vec())]
@@ -299,7 +319,10 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: true, .. } => "GRANT",
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
             },
-            Self::Set(_) | Self::DateStyleSet(_) | Self::IntervalStyleSet(_) => "SET",
+            Self::Set(_)
+            | Self::LocalPath(_)
+            | Self::DateStyleSet(_)
+            | Self::IntervalStyleSet(_) => "SET",
             Self::Reset | Self::DateStyleReset => "RESET",
         }
     }
@@ -580,6 +603,19 @@ impl SessionQuery {
                 Err(("42601", "invalid RESET search_path".into()))
             };
         }
+        let local_path = word(tokens.first(), "set")
+            && word(tokens.get(1), "local")
+            && word(tokens.get(2), "search_path");
+        if local_path {
+            tokens.remove(1);
+        }
+        let path_setting = |path| {
+            if local_path {
+                Self::LocalPath(Some(path))
+            } else {
+                Self::Set(path)
+            }
+        };
         // SESSION is an optional scope for this connection-private setting.
         if word(tokens.first(), "set")
             && word(tokens.get(1), "session")
@@ -592,14 +628,18 @@ impl SessionQuery {
                 return Err(("42601", "expected TO or =".into()));
             }
             if tokens.len() == 4 && word(tokens.get(3), "default") {
-                return Ok(Some(Self::Reset));
+                return Ok(Some(if local_path {
+                    Self::LocalPath(None)
+                } else {
+                    Self::Reset
+                }));
             }
             if word(tokens.get(3), "null") {
                 return Err(("42601", "syntax error at or near NULL".into()));
             }
             let values = &tokens[3..];
             if values == [Token::String(String::new())] {
-                return Ok(Some(Self::Set(Vec::new())));
+                return Ok(Some(path_setting(Vec::new())));
             }
             if values.is_empty() || values.len() % 2 == 0 {
                 return Err(("42601", "invalid search_path list".into()));
@@ -618,7 +658,7 @@ impl SessionQuery {
                 };
                 path.push(name.clone());
             }
-            return Ok(Some(Self::Set(path)));
+            return Ok(Some(path_setting(path)));
         }
         Ok(None)
     }

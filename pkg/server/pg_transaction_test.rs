@@ -535,3 +535,210 @@ fn pg11_04() {
         );
     }
 }
+
+#[test]
+fn pg11_05() {
+    for extended in [false, true] {
+        let (service, addr) = start();
+        let mut a = connect(addr);
+        let mut b = connect(addr);
+        path_ok(
+            &mut a,
+            "CREATE TABLE public.pg1105_doc (id integer PRIMARY KEY, v integer)",
+            extended,
+            b'I',
+        );
+        path_ok(
+            &mut a,
+            "INSERT INTO public.pg1105_doc VALUES (1,10)",
+            extended,
+            b'I',
+        );
+        let notice = path_ok(
+            &mut a,
+            "SET LOCAL search_path TO pg_catalog",
+            extended,
+            b'I',
+        );
+        assert!(
+            notice
+                .iter()
+                .any(|m| m.0 == b'N' && error_state(&m.1) == Some("25P01"))
+        );
+        path_value(&mut a, extended, b'I', "public");
+        // Each sequence starts from a fresh session value; ordinary SET/RESET
+        // override preceding LOCAL, but LOCAL never replaces the commit value.
+        for (commands, during, committed) in [
+            (
+                vec!["SET LOCAL search_path TO pg_catalog"],
+                "pg_catalog",
+                "public",
+            ),
+            (
+                vec![
+                    "SET search_path TO pg_catalog",
+                    "SET LOCAL search_path TO public",
+                ],
+                "public",
+                "pg_catalog",
+            ),
+            (
+                vec!["SET LOCAL search_path TO pg_catalog", "RESET search_path"],
+                "public",
+                "public",
+            ),
+            (
+                vec![
+                    "SET search_path TO pg_catalog",
+                    "SET LOCAL search_path TO public",
+                    "SET search_path TO pg_catalog",
+                ],
+                "pg_catalog",
+                "pg_catalog",
+            ),
+            (
+                vec![
+                    "SET search_path TO pg_catalog",
+                    "SET LOCAL search_path TO DEFAULT",
+                ],
+                "public",
+                "pg_catalog",
+            ),
+            (vec!["SET LOCAL search_path TO ''"], "\"\"", "public"),
+            (
+                vec![
+                    "SET search_path TO pg_catalog",
+                    "RESET search_path",
+                    "SET LOCAL search_path TO pg_catalog",
+                ],
+                "pg_catalog",
+                "public",
+            ),
+        ] {
+            for commit in [true, false] {
+                path_ok(&mut a, "SET search_path TO public", extended, b'I');
+                path_ok(&mut a, "BEGIN", extended, b'T');
+                for sql in &commands {
+                    path_ok(&mut a, sql, extended, b'T');
+                }
+                path_value(&mut a, extended, b'T', during);
+                path_ok(
+                    &mut a,
+                    "INSERT INTO public.pg1105_doc VALUES (2,20)",
+                    extended,
+                    b'T',
+                );
+                assert_eq!(
+                    row_count(&path_ok(
+                        &mut b,
+                        "SELECT id FROM pg1105_doc",
+                        extended,
+                        b'I'
+                    )),
+                    1
+                );
+                if during == "\"\"" {
+                    assert_eq!(
+                        path_rows(&path_ok(&mut a, "SELECT current_schema()", extended, b'T')),
+                        vec![vec![None]]
+                    );
+                }
+                path_value(&mut b, extended, b'I', "public");
+                path_ok(
+                    &mut a,
+                    if commit { "COMMIT" } else { "ROLLBACK" },
+                    extended,
+                    b'I',
+                );
+                path_value(
+                    &mut a,
+                    extended,
+                    b'I',
+                    if commit { committed } else { "public" },
+                );
+                let expected = if commit {
+                    vec![
+                        vec![Some("1".into()), Some("10".into())],
+                        vec![Some("2".into()), Some("20".into())],
+                    ]
+                } else {
+                    vec![vec![Some("1".into()), Some("10".into())]]
+                };
+                assert_eq!(
+                    path_rows(&path_ok(
+                        &mut b,
+                        "SELECT id,v FROM pg1105_doc ORDER BY id",
+                        extended,
+                        b'I'
+                    )),
+                    expected
+                );
+                if (if commit { committed } else { "public" }) == "public" {
+                    assert_eq!(
+                        path_rows(&path_ok(
+                            &mut a,
+                            "SELECT id,v FROM pg1105_doc ORDER BY id",
+                            extended,
+                            b'I'
+                        )),
+                        expected
+                    );
+                }
+                if commit {
+                    path_ok(
+                        &mut a,
+                        "DELETE FROM public.pg1105_doc WHERE id=2",
+                        extended,
+                        b'I',
+                    );
+                }
+            }
+        }
+        path_ok(&mut a, "SET search_path TO public", extended, b'I');
+        path_ok(&mut a, "BEGIN", extended, b'T');
+        path_ok(
+            &mut a,
+            "SET LOCAL search_path TO pg_catalog",
+            extended,
+            b'T',
+        );
+        path_ok(
+            &mut a,
+            "INSERT INTO public.pg1105_doc VALUES (3,30)",
+            extended,
+            b'T',
+        );
+        for (sql, expected) in [
+            ("SET LOCAL search_path TO NULL", "42601"),
+            ("SET LOCAL search_path TO public", "25P02"),
+        ] {
+            let failure = path_request(&mut a, sql, extended);
+            assert_eq!(
+                error_state(&failure.iter().find(|m| m.0 == b'E').unwrap().1),
+                Some(expected)
+            );
+            assert_eq!(failure.last(), Some(&(b'Z', b"E".to_vec())));
+        }
+        path_ok(&mut a, "ROLLBACK", extended, b'I');
+        path_value(&mut a, extended, b'I', "public");
+        path_value(&mut b, extended, b'I', "public");
+        path_ok(&mut a, "RESET search_path", extended, b'I');
+        assert_eq!(
+            path_rows(&path_ok(
+                &mut a,
+                "SELECT id,v FROM pg1105_doc ORDER BY id",
+                extended,
+                b'I'
+            )),
+            vec![vec![Some("1".into()), Some("10".into())]]
+        );
+        path_ok(&mut a, "DROP TABLE public.pg1105_doc", extended, b'I');
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        service.close();
+        assert!(TcpStream::connect(addr).is_err());
+        eprintln!(
+            "pg11_05 extended={extended}: outside notice, 14 lifecycle variants, NULL/error recovery and cleanup passed"
+        );
+    }
+}
