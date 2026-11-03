@@ -2101,3 +2101,28 @@ fn pg10_28_typed_returning_description_does_not_write() {
     pg.close_protocol_statement(id).unwrap();
     pg.execute("DROP DATABASE pg10_28_shared").unwrap();
 }
+
+#[test]
+fn pg10_29_not_null_conflict_does_not_swallow_or_write() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("CREATE TABLE pg10_29_nn(id integer PRIMARY KEY,v integer NOT NULL)")
+        .unwrap();
+    pg.execute("INSERT INTO pg10_29_nn VALUES(1,10)").unwrap();
+    for target in ["", "(id)"] {
+        let error = pg
+            .execute(&format!(
+                "INSERT INTO pg10_29_nn VALUES(2,20),(1,NULL) ON CONFLICT {target} DO NOTHING"
+            ))
+            .err()
+            .expect("NOT NULL precedes conflict skip");
+        assert_eq!(error.pg_array_error().unwrap().state, "23502");
+        let mut result = pg
+            .execute("SELECT id,v FROM pg10_29_nn ORDER BY id")
+            .unwrap()
+            .remove(0);
+        assert_eq!(result.next_row().unwrap().unwrap(), ["1", "10"]);
+        assert!(result.next_row().unwrap().is_none());
+    }
+    pg.execute("DROP TABLE pg10_29_nn").unwrap();
+}

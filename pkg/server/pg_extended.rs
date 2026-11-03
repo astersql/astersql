@@ -16,6 +16,85 @@ fn error(state: &'static str, message: &str) -> Error {
 fn engine(e: crate::conn::ConnError) -> Error {
     (sqlstate(&e), e.to_string())
 }
+/// Match PostgreSQL analysis/planning error boundaries without executing DML.
+fn conflict_plan(sql: &str, context: &dyn TiDBContext, bind: bool) -> Result<()> {
+    use astersql_parser_ast as ast;
+    let (source, _) = crate::pg_sql::values_parameter_source(sql)?;
+    let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(&source, &[])
+        .map_err(|e| error("42601", &e.to_string()))?;
+    for statement in statements {
+        let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>() else {
+            continue;
+        };
+        let Some(clause) = &insert.PostgreSQLConflict else {
+            continue;
+        };
+        if clause.Action != ast::PostgreSQLConflictAction::DoNothing
+            || !crate::pg_result::supported_conflict_action(clause)
+        {
+            continue;
+        }
+        if bind || clause.Target == ast::PostgreSQLConflictTarget::Constraint {
+            let name = insert
+                .Table
+                .as_ref()
+                .and_then(|t| t.TableRefs.Left.as_deref())
+                .and_then(|s| match s {
+                    ast::ResultSetNode::TableSource(s) => Some(&s.Source),
+                    _ => None,
+                });
+            if let (Some(name), Some(snapshot)) = (name, context.schema_snapshot()) {
+                let current = context
+                    .execute_query("SELECT DATABASE()", false, &CancellationToken::new())
+                    .map_err(engine)?;
+                let database = current
+                    .first()
+                    .and_then(|r| r.rows.first())
+                    .and_then(|r| r.first());
+                if let Some(crate::conn::Value::Text(database)) = database {
+                    let tables = snapshot
+                        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                        .map_err(|e| error("XX000", &e.to_string()))?;
+                    if let Some(table) = tables
+                        .iter()
+                        .filter_map(|t| t.model_meta.as_ref())
+                        .find(|t| t.Name.L == name.Name.L)
+                    {
+                        astersql_session::runtime::pg_conflict_arbiter(table, clause).map_err(
+                            |e| {
+                                (
+                                    e.pg_array_error().map_or("XX000", |e| e.state),
+                                    e.to_string(),
+                                )
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
+        if bind {
+            fn arithmetic(e: &ast::ExprNode) -> bool {
+                match &e.Kind {
+                    ast::ExprKind::Value(_) => true,
+                    ast::ExprKind::Parentheses(e) => arithmetic(e),
+                    ast::ExprKind::Binary { L, R, .. } => arithmetic(L) && arithmetic(R),
+                    _ => false,
+                }
+            }
+            for expression in insert.Lists.iter().flatten().filter(|e| arithmetic(e)) {
+                if let Err(e) =
+                    astersql_session::dml_runtime::EvalExpr(expression, &HashMap::new(), None)
+                {
+                    if e.to_string() == "division by zero in DML expression" {
+                        return Err(error("22012", &e.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 struct Reader<'a> {
     bytes: &'a [u8],
 }
@@ -1439,6 +1518,9 @@ impl Extended {
         }
         self.session
             .check_transaction_command(command, context.as_ref())?;
+        if postgresql_conflict.is_some() {
+            conflict_plan(&original_sql, context.as_ref(), false)?;
+        }
         let metadata = if let Some(query) = &session_query {
             query.metadata()
         } else if let Some(catalog) = &catalog {
@@ -1898,6 +1980,9 @@ impl Extended {
                             return Err(error("22008", "cannot convert infinite interval to time"));
                         }
                     }
+                }
+                if statement.postgresql_conflict.is_some() {
+                    conflict_plan(&statement.original_sql, context.as_ref(), true)?;
                 }
                 let mut execution_metadata = statement.metadata.clone();
                 if !execution_metadata.execution_native_types.is_empty() {

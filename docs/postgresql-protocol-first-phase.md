@@ -580,3 +580,5 @@ PG 列级显式 `CONSTRAINT name UNIQUE` 和命名主键保留声明名称。建
 RETURNING 门户把写入结果物化一次，但扩展协议 CommandComplete 的行数是本次 Execute 取出的行数。达到非零 max_rows 时返回 PortalSuspended，即使该行恰好是末行；下一次 Execute 探测到末尾，完成计数为 0。已完成门户再次 Execute 也返回零计数且不重复写入。未分页的首次 Execute 仍报告完整返回行数。该规则来自真实18.6参考实验及其 `pquery.c::PortalRun`，与是否交错简单 Query 无关；共享执行器的实际 affected_rows 不因此更改。简单 Query 的 DML 标签保持完整影响行数。
 
 本族测试在独立目录保存双方原始SQL、描述/来源字段、数据、标签、错误和清理证据；独立目录的表OID只比较非零身份和属性位置，不直接比较两个目录的数值OID。18.4、RealTiKV、持久重启和性能不由此测试推定通过。
+
+冲突忽略的独立客户端回归入口为 `pg_client_integration_test::pg10_29_differential`，通过 `testdata/pg10_29_libpq.py` 连接真实 libpq PostgreSQL 18.6 参考端与共享测试存储上的双协议 Server。覆盖列/无目标/命名约束、实际插入行的 RETURNING 与零行固定描述、typed NULL/重新 Bind、事务观察者、非仲裁错误与整句回滚，并记录原生 MySQL Query/prepared INSERT IGNORE 自身结果。扩展协议对不存在约束在 Parse 报 42704，对无匹配索引及直接常量除零在 Bind 报 42P10/22012；NOT NULL 插入错误保留 23502。部分索引 setup 仍以 0A000 拒绝，参考成功与产品限制分别记录。此入口要求 `PG18_REFERENCE_DSN` 与 `PG_LIBPQ_LIBRARY`，不静默跳过、不代表 PostgreSQL 18.4 或 RealTiKV 验证；真实锁竞争沿批次15独立入口验证。

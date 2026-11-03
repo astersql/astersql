@@ -51,6 +51,7 @@ mod ddl;
 mod ddl_index_validation;
 mod dispatch;
 mod dml;
+pub use dml::pg_conflict_arbiter;
 mod dxf_session;
 mod explain_analyze;
 mod explain_query;

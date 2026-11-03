@@ -1970,9 +1970,14 @@ fn pg10_06_behavior() {
                 let state = if transaction { b'E' } else { b'I' };
                 if extended {
                     bind(&mut w, "p", "s", &[], &[], &[]);
-                    assert_eq!(read(&mut w), (b'2', vec![]));
-                    execute(&mut w, "p");
-                    let failure = read(&mut w);
+                    let bound = read(&mut w);
+                    let failure = if sql.contains("ON CONFLICT(v)") {
+                        bound
+                    } else {
+                        assert_eq!(bound, (b'2', vec![]));
+                        execute(&mut w, "p");
+                        read(&mut w)
+                    };
                     assert_eq!(failure.0, b'E');
                     if !sql.contains("ON CONFLICT(v)") {
                         assert_eq!(error_state(&failure.1), Some("23505"));
@@ -2305,9 +2310,14 @@ fn pg10_07_behavior() {
                 let state = if transaction { b'E' } else { b'I' };
                 if extended {
                     bind(&mut w, "p", "s", &[], &[], &[]);
-                    assert_eq!(read(&mut w), (b'2', vec![]));
-                    execute(&mut w, "p");
-                    let failure = read(&mut w);
+                    let bound = read(&mut w);
+                    let failure = if sql.contains("1/0") {
+                        bound
+                    } else {
+                        assert_eq!(bound, (b'2', vec![]));
+                        execute(&mut w, "p");
+                        read(&mut w)
+                    };
                     assert_eq!(failure.0, b'E', "{sql}: {failure:?}");
                     assert_ne!(error_state(&failure.1), Some("0A000"));
                     send(&mut w, b'S', &[]);
@@ -2638,7 +2648,14 @@ fn pg10_08_behavior() {
                     "CREATE UNIQUE INDEX ordinary_email_idx ON public.conflict_doc(email)",
                     b'I',
                 );
-                if extended {
+                let undefined_constraint = [
+                    "missing_constraint",
+                    "other_email_key",
+                    "ordinary_email_idx",
+                ]
+                .iter()
+                .any(|name| sql.contains(name));
+                if extended && !undefined_constraint {
                     parse(&mut w, "s", sql, &[]);
                     assert_eq!(read(&mut w), (b'1', vec![]));
                     sync(&mut w);
@@ -2652,18 +2669,21 @@ fn pg10_08_behavior() {
                     );
                 }
                 let state = if transaction { b'E' } else { b'I' };
-                let undefined_constraint = [
-                    "missing_constraint",
-                    "other_email_key",
-                    "ordinary_email_idx",
-                ]
-                .iter()
-                .any(|name| sql.contains(name));
                 if extended {
-                    bind(&mut w, "p", "s", &[], &[], &[]);
-                    assert_eq!(read(&mut w), (b'2', vec![]));
-                    execute(&mut w, "p");
-                    let failure = read(&mut w);
+                    let failure = if undefined_constraint {
+                        parse(&mut w, "s", sql, &[]);
+                        read(&mut w)
+                    } else {
+                        bind(&mut w, "p", "s", &[], &[], &[]);
+                        let bound = read(&mut w);
+                        if sql.contains("1/0") {
+                            bound
+                        } else {
+                            assert_eq!(bound, (b'2', vec![]));
+                            execute(&mut w, "p");
+                            read(&mut w)
+                        }
+                    };
                     assert_eq!(failure.0, b'E', "{sql}: {failure:?}");
                     assert_ne!(error_state(&failure.1), Some("0A000"));
                     if undefined_constraint {
@@ -2887,11 +2907,16 @@ fn pg10_09_behavior() {
                     let state = if transaction { b'E' } else { b'I' };
                     if extended {
                         bind(&mut w, "p", "s", &[], &[], &[]);
-                        assert_eq!(read(&mut w), (b'2', vec![]));
-                        send(&mut w, b'D', b"Pp\0");
-                        assert_eq!(read(&mut w).0, if returning { b'T' } else { b'n' });
-                        execute(&mut w, "p");
-                        let failure = read(&mut w);
+                        let bound = read(&mut w);
+                        let failure = if sql.contains("1/0") {
+                            bound
+                        } else {
+                            assert_eq!(bound, (b'2', vec![]));
+                            send(&mut w, b'D', b"Pp\0");
+                            assert_eq!(read(&mut w).0, if returning { b'T' } else { b'n' });
+                            execute(&mut w, "p");
+                            read(&mut w)
+                        };
                         assert_eq!(failure.0, b'E', "{sql}: {failure:?}");
                         assert_ne!(error_state(&failure.1), Some("0A000"));
                         send(&mut w, b'S', &[]);
@@ -3511,8 +3536,6 @@ fn pg10_10_behavior() {
                 }
                 if extended {
                     bind(&mut w, "p", "s", &[], &[], &[]);
-                    assert_eq!(read(&mut w), (b'2', vec![]));
-                    execute(&mut w, "p");
                     let failure = read(&mut w);
                     assert_eq!(failure.0, b'E');
                     assert_eq!(error_state(&failure.1), Some("42P10"));
@@ -3652,7 +3675,7 @@ fn pg10_10_behavior() {
     drop(service);
     assert!(TcpStream::connect(addr).is_err());
     println!(
-        "full arbitration gate: 88 literal gate variants, 24 typed NULL/rebind variants, 72 basic-target commit/rollback positives, 8 missing-index binding variants, 3 unsupported setups and 20 malformed-target variants; first errors Query/Execute=0A000, missing index Execute=42P10, malformed Parse=42601; W/O full rows, E/25P02/Sync/ROLLBACK, resource_counts=(0,0,0), listener closed"
+        "full arbitration gate: 88 literal gate variants, 24 typed NULL/rebind variants, 72 basic-target commit/rollback positives, 8 missing-index binding variants, 3 unsupported setups and 20 malformed-target variants; first errors Query/Execute=0A000, missing index Bind=42P10, malformed Parse=42601; W/O full rows, E/25P02/Sync/ROLLBACK, resource_counts=(0,0,0), listener closed"
     );
 }
 

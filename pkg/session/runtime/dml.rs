@@ -17,6 +17,110 @@
 
 use super::*;
 
+/// Resolve only real unique arbiters. Shared by execution and read-only PG
+/// extended-query planning; this does not read or mutate table rows.
+pub fn pg_conflict_arbiter(
+    table: &astersql_meta_model::TableInfo,
+    clause: &ast::PostgreSQLConflictClause,
+) -> SessionResult<(bool, astersql_meta_model::TableInfo)> {
+    if (clause.Action == ast::PostgreSQLConflictAction::DoUpdate
+        && (clause.Target == ast::PostgreSQLConflictTarget::Any
+            || clause.UpdateAssignments.is_empty()))
+        || !matches!(
+            clause.Target,
+            ast::PostgreSQLConflictTarget::Any
+                | ast::PostgreSQLConflictTarget::Inference
+                | ast::PostgreSQLConflictTarget::Constraint
+        )
+        || clause.Predicate.is_some()
+        || (clause.Target == ast::PostgreSQLConflictTarget::Inference
+            && (clause.Elements.is_empty()
+                || clause.Elements.iter().any(|element| {
+                    element.Expr.is_some()
+                        || element.Column.is_none()
+                        || element.Length != -1
+                        || element.Desc
+                })))
+    {
+        return Err(SessionError::new(
+            "unsupported PostgreSQL conflict target or action",
+        ));
+    }
+    let all_keys = clause.Target == ast::PostgreSQLConflictTarget::Any;
+    let named = if clause.Target == ast::PostgreSQLConflictTarget::Constraint {
+        Some(
+            clause
+                .Constraint
+                .as_ref()
+                .ok_or_else(|| SessionError::new("missing PostgreSQL constraint name"))?
+                .Lookup
+                .as_str(),
+        )
+    } else {
+        None
+    };
+    let mut columns = clause
+        .Elements
+        .iter()
+        .filter_map(|element| element.Column.as_ref())
+        .map(|column| column.Name.L.clone())
+        .collect::<Vec<_>>();
+    columns.sort();
+    columns.dedup();
+    let mut primary = table
+        .Columns
+        .iter()
+        .filter(|column| astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag()))
+        .map(|column| column.Name.L.clone())
+        .collect::<Vec<_>>();
+    primary.sort();
+    let primary_matches = (table.PKIsHandle || table.IsCommonHandle)
+        && !primary.is_empty()
+        && (all_keys
+            || if let Some(name) = named {
+                table.PostgreSQLPrimaryConstraint.as_deref() == Some(name)
+            } else {
+                primary == columns
+            });
+    let mut arbiters = table.clone();
+    arbiters.Indices.retain(|index| {
+        let mut indexed = index
+            .Columns
+            .iter()
+            .map(|column| column.Name.L.clone())
+            .collect::<Vec<_>>();
+        indexed.sort();
+        index.Unique
+            && index.State == astersql_meta_model::StatePublic
+            && index.ConditionExprString.is_empty()
+            && !index.MVIndex
+            && index
+                .Columns
+                .iter()
+                .all(|column| column.Length == astersql_parser_types::UnspecifiedLength)
+            && (all_keys
+                || if let Some(name) = named {
+                    index.PostgreSQLConstraintName.as_deref() == Some(name)
+                } else {
+                    indexed == columns
+                })
+    });
+    if !all_keys && !primary_matches && arbiters.Indices.is_empty() {
+        return Err(if named.is_some() {
+            super::query::pg_union_error(
+                "no unique constraint matching PostgreSQL ON CONFLICT target",
+                "42704",
+            )
+        } else {
+            super::query::pg_union_error(
+                "no unique index matching PostgreSQL ON CONFLICT target",
+                "42P10",
+            )
+        });
+    }
+    Ok((primary_matches, arbiters))
+}
+
 fn ignored_integer_overflow_value(
     column: &astersql_meta_model::ColumnInfo,
     literal: &str,
@@ -2235,104 +2339,18 @@ impl ConcreteSession {
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
         // Select real public unique indexes: no target uses every supported
         // arbiter, while column inference keeps non-target checks on the normal path.
-        let pg_arbiter = if let Some(clause) = &statement.PostgreSQLConflict {
-            if self.sql_dialect() != ast::SqlDialect::PostgreSQL
-                || (clause.Action == ast::PostgreSQLConflictAction::DoUpdate
-                    && (clause.Target == ast::PostgreSQLConflictTarget::Any
-                        || clause.UpdateAssignments.is_empty()))
-                || !matches!(
-                    clause.Target,
-                    ast::PostgreSQLConflictTarget::Any
-                        | ast::PostgreSQLConflictTarget::Inference
-                        | ast::PostgreSQLConflictTarget::Constraint
-                )
-                || clause.Predicate.is_some()
-                || (clause.Target == ast::PostgreSQLConflictTarget::Inference
-                    && (clause.Elements.is_empty()
-                        || clause.Elements.iter().any(|element| {
-                            element.Expr.is_some()
-                                || element.Column.is_none()
-                                || element.Length != -1
-                                || element.Desc
-                        })))
-            {
-                return Err(SessionError::new(
-                    "unsupported PostgreSQL conflict target or action",
-                ));
-            }
-            let all_keys = clause.Target == ast::PostgreSQLConflictTarget::Any;
-            let named = if clause.Target == ast::PostgreSQLConflictTarget::Constraint {
-                Some(
-                    clause
-                        .Constraint
-                        .as_ref()
-                        .ok_or_else(|| SessionError::new("missing PostgreSQL constraint name"))?
-                        .Lookup
-                        .as_str(),
-                )
-            } else {
-                None
-            };
-            let mut columns = clause
-                .Elements
-                .iter()
-                .filter_map(|element| element.Column.as_ref())
-                .map(|column| column.Name.L.clone())
-                .collect::<Vec<_>>();
-            columns.sort();
-            columns.dedup();
-            let mut primary = table
-                .Columns
-                .iter()
-                .filter(|column| astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag()))
-                .map(|column| column.Name.L.clone())
-                .collect::<Vec<_>>();
-            primary.sort();
-            let primary_matches = (table.PKIsHandle || table.IsCommonHandle)
-                && !primary.is_empty()
-                && (all_keys
-                    || if let Some(name) = named {
-                        table.PostgreSQLPrimaryConstraint.as_deref() == Some(name)
-                    } else {
-                        primary == columns
-                    });
-            let mut arbiters = table.clone();
-            arbiters.Indices.retain(|index| {
-                let mut indexed = index
-                    .Columns
-                    .iter()
-                    .map(|column| column.Name.L.clone())
-                    .collect::<Vec<_>>();
-                indexed.sort();
-                index.Unique
-                    && index.State == astersql_meta_model::StatePublic
-                    && index.ConditionExprString.is_empty()
-                    && !index.MVIndex
-                    && index
-                        .Columns
-                        .iter()
-                        .all(|column| column.Length == astersql_parser_types::UnspecifiedLength)
-                    && (all_keys
-                        || if let Some(name) = named {
-                            index.PostgreSQLConstraintName.as_deref() == Some(name)
-                        } else {
-                            indexed == columns
-                        })
-            });
-            if !all_keys && !primary_matches && arbiters.Indices.is_empty() {
-                return Err(if named.is_some() {
-                    SessionError::new("no unique constraint matching PostgreSQL ON CONFLICT target")
-                } else {
-                    super::query::pg_union_error(
-                        "no unique index matching PostgreSQL ON CONFLICT target",
-                        "42P10",
-                    )
-                });
-            }
-            Some((primary_matches, arbiters))
-        } else {
-            None
-        };
+        if statement.PostgreSQLConflict.is_some()
+            && self.sql_dialect() != ast::SqlDialect::PostgreSQL
+        {
+            return Err(SessionError::new(
+                "unsupported PostgreSQL conflict target or action",
+            ));
+        }
+        let pg_arbiter = statement
+            .PostgreSQLConflict
+            .as_ref()
+            .map(|clause| pg_conflict_arbiter(&table, clause))
+            .transpose()?;
         let pg_update = statement
             .PostgreSQLConflict
             .as_ref()
@@ -3105,6 +3123,8 @@ impl ConcreteSession {
                             if plan.Ignore {
                                 self.set_warning_with_code(1048, message);
                                 value = Some(ignored_not_null_value(column_info));
+                            } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                                return Err(super::query::pg_union_error(&message, "23502"));
                             } else {
                                 return Err(SessionError::new(message));
                             }
