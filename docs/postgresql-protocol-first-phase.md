@@ -572,3 +572,11 @@ PG 列级显式 `CONSTRAINT name UNIQUE` 和命名主键保留声明名称。建
 验证入口为 `pg_dml_test::pg10_08_behavior`、共享层 `pg10_08_real_constraint_identity` 和解析器 `pg10_08_constraint_names`。本段描述实现范围，不替代实际运行证据；独立 PostgreSQL 参考端差分、RealTiKV、持久重启及性能仍需专项验证。
 
 本轮四个新增聚焦测试及十一个相邻测试通过。真实TCP的67个正常、NULL、错误和事务变体覆盖简单/扩展、有/无RETURNING、COMMIT/ROLLBACK、W/O完整回读、固定元数据/标签、42704及E→25P02→ROLLBACK→I恢复；关闭后的服务资源计数为零。共享层另验证目录强制重载、旧元数据缺省、支撑索引改名/删除、LIKE不复制声明身份及MySQL预处理事务。
+
+## RETURNING 独立客户端与门户完成计数
+
+`pg_client_integration_test::pg10_28_differential` 使用真实 libpq、隔离 PostgreSQL 18.6 参考端和 CreateAnalyzeSession 测试存储，覆盖普通表 INSERT/UPDATE/DELETE RETURNING 的值/NULL、固定描述、错误阶段、事务回读、恢复与 MySQL Query/整数 Prepared 共存。PG18 的 `RETURNING WITH (OLD AS ..., NEW AS ...)` 行镜像别名仍未开放；合法语法在写入前以 0A000 拒绝，畸形语法不被该能力门禁转换为成功或其他诊断。
+
+RETURNING 门户把写入结果物化一次，但扩展协议 CommandComplete 的行数是本次 Execute 取出的行数。达到非零 max_rows 时返回 PortalSuspended，即使该行恰好是末行；下一次 Execute 探测到末尾，完成计数为 0。已完成门户再次 Execute 也返回零计数且不重复写入。未分页的首次 Execute 仍报告完整返回行数。该规则来自真实18.6参考实验及其 `pquery.c::PortalRun`，与是否交错简单 Query 无关；共享执行器的实际 affected_rows 不因此更改。简单 Query 的 DML 标签保持完整影响行数。
+
+本族测试在独立目录保存双方原始SQL、描述/来源字段、数据、标签、错误和清理证据；独立目录的表OID只比较非零身份和属性位置，不直接比较两个目录的数值OID。18.4、RealTiKV、持久重启和性能不由此测试推定通过。

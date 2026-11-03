@@ -2055,3 +2055,49 @@ fn pg10_25_cancel_move_boundaries() {
         pg.execute(sql).unwrap();
     }
 }
+
+#[test]
+fn pg10_28_typed_returning_description_does_not_write() {
+    use crate::runtime::ConcretePreparedArgument;
+    let (domain, setup) = CreateAnalyzeSession().unwrap();
+    setup.execute("CREATE DATABASE pg10_28_shared").unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    pg.execute("USE pg10_28_shared").unwrap();
+    pg.execute("CREATE TABLE t(id integer PRIMARY KEY,v integer,note text)")
+        .unwrap();
+    pg.execute("INSERT INTO t VALUES(1,10,'before')").unwrap();
+    let (id, count, fields) = pg.prepare_protocol_statement_with_parameter_types(
+        "UPDATE t AS r SET v=v+?,note=? WHERE id=1 RETURNING r.id,r.v AS \"After\",r.note,r.v+? AS projected",
+        &[23,25,23],
+    ).unwrap();
+    assert_eq!(count, 3);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| f.column.FieldType.GetType())
+            .collect::<Vec<_>>(),
+        [3, 3, 252, 3]
+    );
+    let mut rows = pg.execute("SELECT id,v,note FROM t").unwrap().remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1", "10", "before"]);
+    pg.execute("BEGIN").unwrap();
+    let mut sets = pg
+        .execute_protocol_statement(
+            id,
+            &[
+                ConcretePreparedArgument::Signed(1),
+                ConcretePreparedArgument::Null,
+                ConcretePreparedArgument::Signed(100),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        sets[0].next_row().unwrap().unwrap(),
+        ["1", "11", "<nil>", "111"]
+    );
+    pg.execute("ROLLBACK").unwrap();
+    let mut rows = pg.execute("SELECT id,v,note FROM t").unwrap().remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), ["1", "10", "before"]);
+    pg.close_protocol_statement(id).unwrap();
+    pg.execute("DROP DATABASE pg10_28_shared").unwrap();
+}

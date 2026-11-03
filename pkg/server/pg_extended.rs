@@ -2101,6 +2101,12 @@ impl Extended {
                 let start = portal.offset;
                 let mut rows = 0;
                 while portal.offset < messages.len() {
+                    // PostgreSQL fetches RETURNING from a materialized portal.
+                    // An exact-size fetch suspends even at the last stored row;
+                    // the next Execute discovers EOF and completes with zero.
+                    if portal.returning && limit != 0 && rows == limit {
+                        break;
+                    }
                     if messages[portal.offset].0 == b'D' {
                         if limit != 0 && rows == limit {
                             break;
@@ -2115,6 +2121,22 @@ impl Extended {
                 } else if response.is_empty() {
                     if let Some(completion) = messages.last() {
                         response.push(completion.clone());
+                    }
+                }
+                // pquery.c PortalRun reports rows fetched by this Execute,
+                // including zero on a completed portal. Keep the stored result
+                // and write count intact; only protocol completion is per fetch.
+                if portal.returning {
+                    for (tag, body) in &mut response {
+                        if *tag == b'C' {
+                            *body = match portal.command {
+                                Some("INSERT") => format!("INSERT 0 {rows}\0").into_bytes(),
+                                Some(command @ ("UPDATE" | "DELETE")) => {
+                                    format!("{command} {rows}\0").into_bytes()
+                                }
+                                _ => body.clone(),
+                            };
+                        }
                     }
                 }
                 Ok(response)

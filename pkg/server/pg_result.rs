@@ -265,6 +265,7 @@ pub(crate) fn supported_conflict_action(clause: &ast::PostgreSQLConflictClause) 
 }
 
 fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'static str, String)> {
+    crate::pg_sql::check_returning_aliases(sql)?;
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|error| {

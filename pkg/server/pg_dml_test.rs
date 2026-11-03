@@ -535,10 +535,7 @@ fn pg10_01_behavior() {
                     assert_eq!(read(&mut w), (b'Z', b"T".to_vec()));
                     // A completed portal must not write again.
                     execute(&mut w, "pg10_p");
-                    assert_eq!(
-                        read(&mut w),
-                        (b'C', format!("INSERT 0 {count}\0").into_bytes())
-                    );
+                    assert_eq!(read(&mut w), (b'C', b"INSERT 0 0\0".to_vec()));
                     send(&mut w, b'S', &[]);
                     assert_eq!(read(&mut w), (b'Z', b"T".to_vec()));
                     send(&mut w, b'C', b"Ppg10_p\0");
@@ -1710,9 +1707,9 @@ fn pg10_05_behavior() {
                     }
                     stored.sort();
                     let tag = if kind == "INSERT" {
-                        format!("INSERT 0 {}\0", returned.len())
+                        "INSERT 0 0\0".to_owned()
                     } else {
-                        format!("{kind} {}\0", returned.len())
+                        format!("{kind} 0\0")
                     }
                     .into_bytes();
                     let mut rows = vec![];
@@ -6237,11 +6234,7 @@ fn pg10_26_behavior() {
             assert_eq!(pg10_rows(&pg10_ok(&mut w, src, b'T')), before);
             assert_eq!(pg10_rows(&pg10_ok(&mut o, src, b'I')), initial);
             let mut rows = vec![];
-            let tag = if moved {
-                b"INSERT 0 2\0".to_vec()
-            } else {
-                b"INSERT 0 0\0".to_vec()
-            };
+            let tag = b"INSERT 0 0\0".to_vec();
             loop {
                 let mut request = b"portal26\0".to_vec();
                 request.extend_from_slice(&1u32.to_be_bytes());

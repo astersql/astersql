@@ -1950,28 +1950,72 @@ impl ConcreteSession {
                 self.validate_pg_boolean_statement(typed.as_ref())?;
             }
         }
+        // RETURNING descriptions must use the supplied int4 identity before Bind.
+        // Keep this typed-NULL AST analysis-only: execution retains the original
+        // markers and receives actual values through the prepared statement.
+        let returning_analysis = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && supplied.contains(&23)
+            && (statement
+                .as_any()
+                .downcast_ref::<ast::InsertStmt>()
+                .is_some_and(|s| !s.Returning.is_empty())
+                || statement
+                    .as_any()
+                    .downcast_ref::<ast::UpdateStmt>()
+                    .is_some_and(|s| !s.Returning.is_empty())
+                || statement
+                    .as_any()
+                    .downcast_ref::<ast::DeleteStmt>()
+                    .is_some_and(|s| !s.Returning.is_empty()))
+        {
+            let arguments = supplied
+                .iter()
+                .map(|oid| {
+                    if *oid == 23 {
+                        "CAST(NULL AS INT4)".to_owned()
+                    } else {
+                        "?".to_owned()
+                    }
+                })
+                .collect::<Vec<_>>();
+            Some(parse_in_dialect(
+                &bind_parameter_markers(sql, &arguments)?,
+                self.sql_dialect(),
+            )?)
+        } else {
+            None
+        };
+        let description_statement = returning_analysis
+            .as_ref()
+            .map_or(statement, |nodes| &nodes[0]);
         let mut fields = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && let Some(insert) = statement.as_any().downcast_ref::<ast::InsertStmt>()
+            && let Some(insert) = description_statement
+                .as_any()
+                .downcast_ref::<ast::InsertStmt>()
             && !insert.Returning.is_empty()
         {
             self.insert_returning_fields(insert)?
         } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && let Some(update) = statement.as_any().downcast_ref::<ast::UpdateStmt>()
+            && let Some(update) = description_statement
+                .as_any()
+                .downcast_ref::<ast::UpdateStmt>()
             && !update.Returning.is_empty()
             && update.From.is_none()
         {
             self.update_returning_fields(update)?
         } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && let Some(delete) = statement.as_any().downcast_ref::<ast::DeleteStmt>()
+            && let Some(delete) = description_statement
+                .as_any()
+                .downcast_ref::<ast::DeleteStmt>()
             && !delete.Returning.is_empty()
             && delete.Using.is_none()
         {
             self.delete_returning_fields(delete)?
-        } else if statement.as_any().is::<ast::SelectStmt>()
-            || statement.as_any().is::<ast::SetOprStmt>()
-            || statement.as_any().is::<ast::SetOprSelectList>()
+        } else if description_statement.as_any().is::<ast::SelectStmt>()
+            || description_statement.as_any().is::<ast::SetOprStmt>()
+            || description_statement.as_any().is::<ast::SetOprSelectList>()
         {
-            self.relational_query_node_result_fields(statement.as_ref(), &[])
+            self.relational_query_node_result_fields(description_statement.as_ref(), &[])
                 .map_err(|error| {
                     if self.sql_dialect() == ast::SqlDialect::MySQL {
                         let mut state = self.state.borrow_mut();

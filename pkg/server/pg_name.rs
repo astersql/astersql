@@ -1236,6 +1236,7 @@ pub(crate) fn adapt(
     context: &dyn TiDBContext,
     session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
+    crate::pg_sql::check_returning_aliases(sql)?;
     let path = session
         .effective_explicit_path(context)
         .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;

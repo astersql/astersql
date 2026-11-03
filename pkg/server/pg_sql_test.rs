@@ -148,3 +148,30 @@ fn pg09_12_values_source() {
         );
     }
 }
+
+#[test]
+fn pg10_28_old_new_capability_gate_is_lexical_and_syntax_checked() {
+    for sql in [
+        "UPDATE t SET v=99 RETURNING WITH (OLD AS o, NEW AS n) o.v,n.v",
+        "DELETE FROM t RETURNING /* comment */ WITH (OLD AS \"before\") \"before\".*",
+        "INSERT INTO t VALUES(1) RETURNING WITH (NEW AS n) n.*",
+    ] {
+        assert_eq!(
+            crate::pg_sql::check_returning_aliases(sql).unwrap_err().0,
+            "0A000"
+        );
+        assert_eq!(
+            crate::pg_result::prepare_command(sql).err().unwrap().0,
+            "0A000"
+        );
+    }
+    for sql in [
+        "SELECT 'RETURNING WITH (OLD AS o) o.v'",
+        "UPDATE t SET v=99 RETURNING WITH (OLD o) o.v",
+        "UPDATE t SET v=99 RETURNING WITH (OLD AS o, OLD AS p) o.v",
+        "UPDATE t SET v=99 RETURNING WITH (OLD AS o)",
+        "UPDATE t SET RETURNING WITH (OLD AS o) o.v",
+    ] {
+        assert!(crate::pg_sql::check_returning_aliases(sql).is_ok(), "{sql}");
+    }
+}

@@ -237,6 +237,71 @@ fn mapped_type(tokens: &[Token], start: usize) -> ParseResult<Option<(usize, &'s
     Ok(Some((last, native)))
 }
 
+/// Recognize the PG18 row-image alias syntax before the shared parser, which
+/// has no representation for it yet. Validate the remaining DML grammar so
+/// malformed statements retain syntax diagnostics rather than a capability gate.
+pub(crate) fn check_returning_aliases(sql: &str) -> ParseResult<()> {
+    let ts = tokens(sql)?;
+    for start in 0..ts.len().saturating_sub(2) {
+        if !ts[start].word("returning")
+            || !ts[start + 1].word("with")
+            || !ts[start + 2].symbol(b'(')
+        {
+            continue;
+        }
+        let mut i = start + 3;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let Some(image) = ts.get(i) else {
+                return Ok(());
+            };
+            let name = if image.word("old") {
+                "old"
+            } else if image.word("new") {
+                "new"
+            } else {
+                return Ok(());
+            };
+            if !seen.insert(name)
+                || !ts.get(i + 1).is_some_and(|t| t.word("as"))
+                || !ts.get(i + 2).is_some_and(Token::identifier)
+            {
+                return Ok(());
+            }
+            i += 3;
+            if ts.get(i).is_some_and(|t| t.symbol(b',')) {
+                i += 1;
+                continue;
+            }
+            if !ts.get(i).is_some_and(|t| t.symbol(b')')) {
+                return Ok(());
+            }
+            break;
+        }
+        let stripped = format!("{} {}", &sql[..ts[start + 1].start], &sql[ts[i].end..]);
+        if let Ok((statements, _)) =
+            astersql_parser::Parser::with_dialect(astersql_parser_ast::SqlDialect::PostgreSQL)
+                .ParseSQL(&stripped, &[])
+            && statements.len() == 1
+            && (statements[0]
+                .as_any()
+                .is::<astersql_parser_ast::InsertStmt>()
+                || statements[0]
+                    .as_any()
+                    .is::<astersql_parser_ast::UpdateStmt>()
+                || statements[0]
+                    .as_any()
+                    .is::<astersql_parser_ast::DeleteStmt>())
+        {
+            return Err(error(
+                "0A000",
+                "PostgreSQL RETURNING OLD/NEW aliases are not supported",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn adapt(sql: &str) -> ParseResult<String> {
     adapt_internal(sql, None)
 }
