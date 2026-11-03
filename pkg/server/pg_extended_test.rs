@@ -262,9 +262,15 @@ fn parse_bind_execute_sync() {
     execute(&mut socket, "pages", 1);
     assert_eq!(read(&mut socket), (b'D', row(&[Some("1")])));
     assert_eq!(read(&mut socket), (b's', vec![]));
-    execute(&mut socket, "pages", 1);
+    // Drain the remainder to observe EOF; do not depend on an exact-size
+    // fetch detecting that the materialized result has no following row.
+    execute(&mut socket, "pages", 0);
     assert_eq!(read(&mut socket), (b'D', row(&[Some("2")])));
-    assert_eq!(read(&mut socket), (b'C', b"SELECT 2\0".to_vec()));
+    // PortalRun reports this Execute's fetch count, rather than the sum of
+    // previous pages (PostgreSQL pquery.c: PortalRun/PortalRunSelect).
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+    execute(&mut socket, "pages", 0);
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
     send(&mut socket, b'C', b"Ppages\0");
     assert_eq!(read(&mut socket), (b'3', vec![]));
     send(&mut socket, b'C', b"Ss\0");
