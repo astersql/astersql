@@ -5494,6 +5494,17 @@ fn pg10_22_behavior() {
 
 #[test]
 fn pg10_23_behavior() {
+    pg10_move_failure_contract(false);
+}
+
+#[test]
+fn pg10_24_behavior() {
+    pg10_move_failure_contract(true);
+}
+
+// Reuse the complete move fixture for repeated consumers and direct destination
+// failures, keeping protocol, NULL, transaction and recovery checks identical.
+fn pg10_move_failure_contract(direct: bool) {
     let (domain, mysql) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     mysql
         .execute("CREATE TABLE pg10_23_mysql(id INT PRIMARY KEY,v INT)")
@@ -5520,7 +5531,8 @@ fn pg10_23_behavior() {
     let mut o = pg10_connect(addr);
     for c in [&mut w, &mut o] {
         eprintln!(
-            "pg10_23 actual isolation: {:?}",
+            "pg10_{} actual isolation: {:?}",
+            if direct { 24 } else { 23 },
             pg10_rows(&pg10_ok(c, "SELECT @@transaction_isolation", b'I'))
         );
     }
@@ -5529,6 +5541,11 @@ fn pg10_23_behavior() {
         text_row(&[Some("2"), None]),
         text_row(&[Some("3"), Some("30")]),
     ];
+    let consumer = if direct {
+        "SELECT id,v FROM moved"
+    } else {
+        "SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id"
+    };
     let moved = initial[..2].to_vec();
     let scan_src = "SELECT id,v FROM public.pg10_23_src ORDER BY id";
     let scan_dst = "SELECT id,v FROM public.pg10_23_dst ORDER BY id";
@@ -5553,7 +5570,7 @@ fn pg10_23_behavior() {
                         value.as_deref().unwrap_or("NULL")
                     };
                     let sql = format!(
-                        "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<={predicate} RETURNING id,v) INSERT INTO public.pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id{suffix}"
+                        "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<={predicate} RETURNING id,v) INSERT INTO public.pg10_23_dst {consumer}{suffix}"
                     );
                     let result = if extended {
                         parse(&mut w, "move", &sql, &[23]);
@@ -5677,7 +5694,9 @@ fn pg10_23_behavior() {
     }
     let failed = simple_query(
         &mut w,
-        "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v",
+        &format!(
+            "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_23_dst {consumer} RETURNING id,v"
+        ),
     );
     assert_eq!(
         error_state(&failed.iter().find(|m| m.0 == b'E').unwrap().1),
@@ -5692,7 +5711,9 @@ fn pg10_23_behavior() {
     pg10_ok(&mut w, "INSERT INTO public.pg10_23_src VALUES (4,40)", b'T');
     let failed = simple_query(
         &mut w,
-        "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v",
+        &format!(
+            "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_23_dst {consumer} RETURNING id,v"
+        ),
     );
     assert_eq!(
         error_state(&failed.iter().find(|m| m.0 == b'E').unwrap().1),
@@ -5708,7 +5729,9 @@ fn pg10_23_behavior() {
     pg10_ok(&mut w, "DELETE FROM public.pg10_23_dst", b'I');
     let success = pg10_ok(
         &mut w,
-        "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v",
+        &format!(
+            "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_23_dst {consumer} RETURNING id,v"
+        ),
         b'I',
     );
     assert_eq!(pg10_rows(&success), moved);
@@ -5740,7 +5763,7 @@ fn pg10_23_behavior() {
                     "id,v"
                 };
                 let sql = format!(
-                    "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING {projection}) INSERT INTO public.pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v"
+                    "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=2 RETURNING {projection}) INSERT INTO public.pg10_23_dst {consumer} RETURNING id,v"
                 );
                 let result = if extended {
                     parse(&mut w, "snapshot_error", &sql, &[]);
@@ -5883,7 +5906,9 @@ fn pg10_23_behavior() {
     parse(
         &mut w,
         "snapshot_rebind",
-        "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=$1 RETURNING id,v) INSERT INTO public.pg10_23_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v",
+        &format!(
+            "WITH moved AS (DELETE FROM public.pg10_23_src WHERE id<=$1 RETURNING id,v) INSERT INTO public.pg10_23_dst {consumer} RETURNING id,v"
+        ),
         &[23],
     );
     assert_eq!(read(&mut w), (b'1', vec![]));
@@ -5961,5 +5986,8 @@ fn pg10_23_behavior() {
     mysql.execute("SELECT 1").unwrap();
     drop(w);
     drop(o);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0));
+    assert!(TcpStream::connect(addr).is_err());
     drop(guard);
 }
