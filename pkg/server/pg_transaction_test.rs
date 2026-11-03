@@ -301,3 +301,237 @@ fn prepared_dml_commit_and_rollback() {
     send(&mut observer, b'X', &[]);
     service.close();
 }
+
+// Each extended statement gets a fresh unnamed statement/portal and a Sync.
+fn path_request(socket: &mut TcpStream, sql: &str, extended: bool) -> Vec<(u8, Vec<u8>)> {
+    if !extended {
+        return query(socket, sql);
+    }
+    parse(socket, "", sql, &[]);
+    send(socket, b'B', b"\0\0\0\0\0\0\0\0");
+    send(socket, b'D', b"P\0");
+    execute(socket, "");
+    send(socket, b'S', &[]);
+    let mut messages = Vec::new();
+    loop {
+        let message = read(socket);
+        let ready = message.0 == b'Z';
+        messages.push(message);
+        if ready {
+            return messages;
+        }
+    }
+}
+
+fn path_ok(socket: &mut TcpStream, sql: &str, extended: bool, status: u8) -> Vec<(u8, Vec<u8>)> {
+    let messages = path_request(socket, sql, extended);
+    assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+    assert_eq!(messages.last(), Some(&(b'Z', vec![status])), "{sql}");
+    assert!(messages.iter().any(|m| m.0 == b'C'), "{sql}");
+    messages
+}
+
+fn path_rows(messages: &[(u8, Vec<u8>)]) -> Vec<Vec<Option<String>>> {
+    messages
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| {
+            let count = i16::from_be_bytes(m.1[..2].try_into().unwrap());
+            let mut offset = 2;
+            (0..count)
+                .map(|_| {
+                    let length = i32::from_be_bytes(m.1[offset..offset + 4].try_into().unwrap());
+                    offset += 4;
+                    if length == -1 {
+                        return None;
+                    }
+                    let value =
+                        String::from_utf8(m.1[offset..offset + length as usize].to_vec()).unwrap();
+                    offset += length as usize;
+                    Some(value)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn path_value(socket: &mut TcpStream, extended: bool, status: u8, expected: &str) {
+    let messages = path_ok(socket, "SHOW search_path", extended, status);
+    assert_eq!(path_rows(&messages), vec![vec![Some(expected.into())]]);
+    let description = &messages.iter().find(|m| m.0 == b'T').unwrap().1;
+    assert!(description.starts_with(b"\0\x01search_path\0"));
+    let field = &description[14..];
+    assert_eq!(u32::from_be_bytes(field[6..10].try_into().unwrap()), 25);
+    assert_eq!(i16::from_be_bytes(field[10..12].try_into().unwrap()), -1);
+    assert_eq!(i32::from_be_bytes(field[12..16].try_into().unwrap()), -1);
+    assert_eq!(i16::from_be_bytes(field[16..18].try_into().unwrap()), 0);
+}
+
+#[test]
+fn pg11_04() {
+    for extended in [false, true] {
+        let (service, addr) = start();
+        let mut a = connect(addr);
+        let mut b = connect(addr);
+        path_value(&mut a, extended, b'I', "public");
+        path_value(&mut b, extended, b'I', "public");
+        path_ok(
+            &mut a,
+            "CREATE TABLE public.path_doc (id integer PRIMARY KEY, v integer)",
+            extended,
+            b'I',
+        );
+        path_ok(
+            &mut a,
+            "INSERT INTO public.path_doc VALUES (1,10)",
+            extended,
+            b'I',
+        );
+        // SET and RESET each commit or roll back from an independent initial value.
+        for reset in [false, true] {
+            for commit in [true, false] {
+                let before = if reset { "pg_catalog" } else { "public" };
+                let during = if reset { "public" } else { "pg_catalog" };
+                path_ok(
+                    &mut a,
+                    &format!("SET search_path TO {before}"),
+                    extended,
+                    b'I',
+                );
+                path_ok(&mut a, "BEGIN", extended, b'T');
+                path_ok(
+                    &mut a,
+                    if reset {
+                        "RESET search_path"
+                    } else {
+                        "SET search_path TO pg_catalog"
+                    },
+                    extended,
+                    b'T',
+                );
+                path_value(&mut a, extended, b'T', during);
+                path_ok(
+                    &mut a,
+                    "INSERT INTO public.path_doc VALUES (2,20)",
+                    extended,
+                    b'T',
+                );
+                let rows = path_ok(
+                    &mut a,
+                    "SELECT id,v FROM public.path_doc ORDER BY id",
+                    extended,
+                    b'T',
+                );
+                assert_eq!(
+                    path_rows(&rows),
+                    vec![
+                        vec![Some("1".into()), Some("10".into())],
+                        vec![Some("2".into()), Some("20".into())]
+                    ]
+                );
+                path_value(&mut b, extended, b'I', "public");
+                assert_eq!(
+                    row_count(&path_ok(&mut b, "SELECT id FROM path_doc", extended, b'I')),
+                    1
+                );
+                path_ok(
+                    &mut a,
+                    if commit { "COMMIT" } else { "ROLLBACK" },
+                    extended,
+                    b'I',
+                );
+                path_value(&mut a, extended, b'I', if commit { during } else { before });
+                let rows = path_ok(
+                    &mut b,
+                    "SELECT id,v FROM path_doc ORDER BY id",
+                    extended,
+                    b'I',
+                );
+                let mut expected = vec![vec![Some("1".into()), Some("10".into())]];
+                if commit {
+                    expected.push(vec![Some("2".into()), Some("20".into())]);
+                }
+                assert_eq!(path_rows(&rows), expected);
+                if (if commit { during } else { before }) == "public" {
+                    assert_eq!(
+                        path_rows(&path_ok(
+                            &mut a,
+                            "SELECT id,v FROM path_doc ORDER BY id",
+                            extended,
+                            b'I'
+                        )),
+                        expected
+                    );
+                }
+                path_value(&mut b, extended, b'I', "public");
+                if commit {
+                    path_ok(
+                        &mut a,
+                        "DELETE FROM public.path_doc WHERE id=2",
+                        extended,
+                        b'I',
+                    );
+                }
+            }
+        }
+        // Empty effective path is NULL, while SHOW preserves the setting; rollback restores it.
+        path_ok(&mut a, "SET search_path TO public", extended, b'I');
+        path_ok(&mut a, "BEGIN", extended, b'T');
+        path_ok(&mut a, "SET search_path TO ''", extended, b'T');
+        path_value(&mut a, extended, b'T', "\"\"");
+        assert_eq!(
+            path_rows(&path_ok(&mut a, "SELECT current_schema()", extended, b'T')),
+            vec![vec![None]]
+        );
+        path_ok(&mut a, "ROLLBACK", extended, b'I');
+        path_value(&mut a, extended, b'I', "public");
+        // Syntax error aborts the real transaction; Sync alone must not restore it.
+        path_ok(&mut a, "BEGIN", extended, b'T');
+        path_ok(&mut a, "SET search_path TO pg_catalog", extended, b'T');
+        path_ok(
+            &mut a,
+            "INSERT INTO public.path_doc VALUES (3,30)",
+            extended,
+            b'T',
+        );
+        let failure = path_request(&mut a, "SET search_path TO", extended);
+        assert_eq!(
+            error_state(&failure.iter().find(|m| m.0 == b'E').unwrap().1),
+            Some("42601")
+        );
+        assert_eq!(failure.last(), Some(&(b'Z', b"E".to_vec())));
+        for sql in [
+            "SHOW search_path",
+            "SET search_path TO public",
+            "RESET search_path",
+        ] {
+            let failure = path_request(&mut a, sql, extended);
+            assert_eq!(
+                error_state(&failure.iter().find(|m| m.0 == b'E').unwrap().1),
+                Some("25P02")
+            );
+            assert_eq!(failure.last(), Some(&(b'Z', b"E".to_vec())));
+        }
+        path_value(&mut b, extended, b'I', "public");
+        path_ok(&mut a, "ROLLBACK", extended, b'I');
+        path_value(&mut a, extended, b'I', "public");
+        assert_eq!(
+            path_rows(&path_ok(
+                &mut a,
+                "SELECT id,v FROM path_doc",
+                extended,
+                b'I'
+            )),
+            vec![vec![Some("1".into()), Some("10".into())]]
+        );
+        path_ok(&mut a, "RESET search_path", extended, b'I');
+        path_ok(&mut a, "DROP TABLE public.path_doc", extended, b'I');
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        service.close();
+        assert!(TcpStream::connect(addr).is_err());
+        eprintln!(
+            "pg11_04 extended={extended}: 4 SET/RESET end variants, empty/NULL rollback, failed recovery, cleanup passed"
+        );
+    }
+}

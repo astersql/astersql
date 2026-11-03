@@ -25,6 +25,7 @@ pub(crate) enum SessionQuery {
 pub(crate) struct PgSession {
     path: Vec<String>,
     default_path: Vec<String>,
+    transaction_path: Option<Vec<String>>,
     failed_transaction: bool,
     // Original relation cursor from name adaptation, consumed by this request's
     // Q/Parse error response and reset before the next frontend command.
@@ -37,6 +38,7 @@ impl Default for PgSession {
         Self {
             path: vec!["public".into()],
             default_path: vec!["public".into()],
+            transaction_path: None,
             failed_transaction: false,
             relation_error_position: None,
             function_error_hint: None,
@@ -118,7 +120,18 @@ impl PgSession {
     }
 
     pub(crate) fn record_success(&mut self, command: Option<&str>, context: &dyn TiDBContext) {
-        if command == Some("ROLLBACK") || !context.in_transaction() {
+        // Capture only after the shared engine confirms an active transaction.
+        // Repeated BEGIN must retain the original value. End commands take effect
+        // only once the engine confirms the transaction has actually ended.
+        if context.in_transaction() {
+            self.transaction_path
+                .get_or_insert_with(|| self.path.clone());
+        } else {
+            if let Some(path) = self.transaction_path.take() {
+                if command == Some("ROLLBACK") {
+                    self.path = path;
+                }
+            }
             self.failed_transaction = false;
         }
     }
