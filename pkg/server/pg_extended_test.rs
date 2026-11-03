@@ -32821,3 +32821,332 @@ fn pg11_10() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_11() {
+    fn drain(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut out = Vec::new();
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            out.push(m);
+            if done {
+                return out;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str) {
+        let m = query(s, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn prepare(s: &mut TcpStream, name: &str, sql: &str) {
+        parse(s, name, sql, &[23]);
+        send(s, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        send(s, b'S', &[]);
+        let m = drain(s);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
+        assert_eq!(
+            m[1].1,
+            [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+        );
+        description(&m[2].1);
+    }
+    fn catalog_identity(s: &mut TcpStream, oid: u32) {
+        let m = query(
+            s,
+            "SELECT oid FROM pg_catalog.pg_class WHERE relname='pg1111_doc'",
+        );
+        assert!(!m.iter().any(|m| m.0 == b'E'));
+        assert_eq!(
+            m.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some(&oid.to_string())])]
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        eprintln!("pg11_11 catalog agrees with prepared relation source={oid}");
+    }
+    fn description(body: &[u8]) -> u32 {
+        assert_eq!(&body[..2], &2i16.to_be_bytes());
+        let mut pos = 2;
+        let mut source = 0;
+        for (name, attr) in [("id", 1i16), ("v", 2)] {
+            assert_eq!(
+                &body[pos..pos + name.len() + 1],
+                [name.as_bytes(), b"\0"].concat()
+            );
+            pos += name.len() + 1;
+            let oid = u32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            assert_ne!(oid, 0);
+            if source != 0 {
+                assert_eq!(oid, source);
+            }
+            source = oid;
+            assert_eq!(&body[pos + 4..pos + 6], &attr.to_be_bytes());
+            assert_eq!(
+                &body[pos + 6..pos + 18],
+                [
+                    23u32.to_be_bytes().as_slice(),
+                    &4i16.to_be_bytes(),
+                    &(-1i32).to_be_bytes(),
+                    &0i16.to_be_bytes()
+                ]
+                .concat()
+            );
+            pos += 18;
+        }
+        assert_eq!(pos, body.len());
+        source
+    }
+    fn value(
+        s: &mut TcpStream,
+        param: Option<&str>,
+        expected: Option<(&str, Option<&str>)>,
+    ) -> u32 {
+        bind(s, "", "s", &[param]);
+        send(s, b'D', b"P\0");
+        execute(s, "", 0);
+        send(s, b'S', &[]);
+        let m = drain(s);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{m:?}");
+        let oid = description(&m.iter().find(|m| m.0 == b'T').unwrap().1);
+        assert_eq!(
+            m.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected
+                .map(|(id, v)| vec![row(&[Some(id), v])])
+                .unwrap_or_default()
+        );
+        assert_eq!(
+            m.iter().find(|m| m.0 == b'C').unwrap().1,
+            if expected.is_some() {
+                b"SELECT 1\0".to_vec()
+            } else {
+                b"SELECT 0\0".to_vec()
+            }
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        eprintln!("pg11_11 Bind {param:?} => {expected:?}, source={oid}");
+        oid
+    }
+    fn rejected(s: &mut TcpStream, describe: bool, parameter: Option<&str>, state: &str) {
+        if describe {
+            send(s, b'D', b"Ss\0");
+        } else {
+            bind(s, "", "s", &[parameter]);
+        }
+        send(s, b'S', &[]);
+        let m = drain(s);
+        assert_eq!(
+            m.iter().map(|m| m.0).collect::<Vec<_>>(),
+            if describe && state != "26000" {
+                b"tEZ".as_slice()
+            } else {
+                b"EZ".as_slice()
+            }
+        );
+        if describe && state != "26000" {
+            assert_eq!(
+                m[0].1,
+                [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+            );
+        }
+        let error = &m.iter().find(|m| m.0 == b'E').unwrap().1;
+        assert!(
+            error
+                .windows(7)
+                .any(|w| w == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        eprintln!(
+            "pg11_11 {} rejected {state}: {:?}",
+            if describe { "Describe" } else { "Bind" },
+            error
+        );
+        let recovery = query(s, "SELECT 1 AS ok");
+        assert_eq!(
+            recovery
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some("1")])]
+        );
+        assert_eq!(recovery.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn close(s: &mut TcpStream) {
+        send(s, b'C', b"Ss\0");
+        send(s, b'S', &[]);
+        assert_eq!(drain(s), vec![(b'3', vec![]), (b'Z', b"I".to_vec())]);
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let quota = astersql_session::runtime::ConcreteSession::new(domain.clone());
+    quota
+        .execute("SET @@global.max_prepared_stmt_count = 2")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut sockets = [0, 1].map(|_| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        drain(&mut s);
+        s
+    });
+    let [a, b] = &mut sockets;
+    // Q uses its own initial objects, independently of the prepared fixture.
+    ok(
+        b,
+        "CREATE TABLE public.pg1111_q_doc (id integer PRIMARY KEY,v integer)",
+    );
+    ok(b, "INSERT INTO public.pg1111_q_doc VALUES (1,10)");
+    let initial = query(a, "SELECT id,v FROM public.pg1111_q_doc ORDER BY id");
+    assert_eq!(
+        initial
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("1"), Some("10")])]
+    );
+    ok(b, "DROP TABLE public.pg1111_q_doc");
+    let missing = query(a, "SELECT id,v FROM public.pg1111_q_doc ORDER BY id");
+    assert!(
+        missing
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42P01\0"))
+    );
+    assert!(!missing.iter().any(|m| matches!(m.0, b'D' | b'C')));
+    assert_eq!(missing.last().unwrap(), &(b'Z', b"I".to_vec()));
+    ok(
+        b,
+        "CREATE TABLE public.pg1111_q_doc (id integer PRIMARY KEY,v integer)",
+    );
+    ok(b, "INSERT INTO public.pg1111_q_doc VALUES (1,70)");
+    let recreated = query(a, "SELECT id,v FROM public.pg1111_q_doc ORDER BY id");
+    assert!(!recreated.iter().any(|m| m.0 == b'E'));
+    assert_eq!(
+        recreated
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("1"), Some("70")])]
+    );
+    ok(b, "DROP TABLE public.pg1111_q_doc");
+    eprintln!("pg11_11 Q independent initial/drop/recreate passed");
+    const SQL: &str = "SELECT id,v FROM public.pg1111_doc WHERE id=$1";
+    ok(
+        b,
+        "CREATE TABLE public.pg1111_doc (id integer PRIMARY KEY,v integer)",
+    );
+    ok(
+        b,
+        "INSERT INTO public.pg1111_doc VALUES (1,10),(2,20),(3,NULL)",
+    );
+    prepare(a, "s", SQL);
+    let old = value(a, Some("1"), Some(("1", Some("10"))));
+    catalog_identity(b, old);
+    assert_eq!(value(a, Some("2"), Some(("2", Some("20")))), old);
+    assert_eq!(value(a, Some("3"), Some(("3", None))), old);
+    assert_eq!(value(a, None, None), old);
+    rejected(a, false, Some("invalid"), "22P02");
+    assert_eq!(value(a, Some("1"), Some(("1", Some("10")))), old);
+    ok(b, "DROP TABLE public.pg1111_doc");
+    rejected(a, false, Some("1"), "42P01");
+    rejected(a, true, None, "42P01");
+    ok(
+        b,
+        "CREATE TABLE public.pg1111_doc (id integer PRIMARY KEY,v integer)",
+    );
+    ok(
+        b,
+        "INSERT INTO public.pg1111_doc VALUES (1,70),(2,80),(3,NULL)",
+    );
+    send(a, b'D', b"Ss\0");
+    send(a, b'S', &[]);
+    let m = drain(a);
+    assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"tTZ");
+    let new = description(&m[1].1);
+    assert_ne!(old, new, "recreated relation must have a fresh identity");
+    catalog_identity(b, new);
+    assert_eq!(value(a, Some("1"), Some(("1", Some("70")))), new);
+    assert_eq!(value(a, Some("2"), Some(("2", Some("80")))), new);
+    assert_eq!(value(a, Some("3"), Some(("3", None))), new);
+    assert_eq!(value(a, None, None), new);
+    // Independent simple-query observation on both connections confirms committed
+    // new rows, rather than a cached portal or the dropped object's contents.
+    for socket in [&mut *a, &mut *b] {
+        let m = query(socket, "SELECT id,v FROM public.pg1111_doc ORDER BY id");
+        assert!(!m.iter().any(|m| m.0 == b'E'));
+        assert_eq!(
+            m.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                row(&[Some("1"), Some("70")]),
+                row(&[Some("2"), Some("80")]),
+                row(&[Some("3"), None])
+            ]
+        );
+    }
+    close(a);
+    // Use the existing per-Domain shared-runtime quota as a handle-leak oracle:
+    // with one slot, every subsequent Parse succeeds only after prior native
+    // handles (including the retired pre-DDL handle) have been released.
+    quota
+        .execute("SET @@global.max_prepared_stmt_count = 1")
+        .unwrap();
+    rejected(a, false, Some("1"), "26000");
+    // Reuse the same name repeatedly after Close; no stale statement/portal may
+    // survive, including when Close happens while the relation is absent.
+    for _ in 0..3 {
+        prepare(a, "s", SQL);
+        assert_eq!(value(a, Some("1"), Some(("1", Some("70")))), new);
+        close(a);
+    }
+    prepare(a, "s", SQL);
+    ok(b, "DROP TABLE public.pg1111_doc");
+    rejected(a, true, None, "42P01");
+    close(a);
+    ok(
+        b,
+        "CREATE TABLE public.pg1111_doc (id integer PRIMARY KEY,v integer)",
+    );
+    ok(b, "INSERT INTO public.pg1111_doc VALUES (1,90)");
+    prepare(a, "s", SQL);
+    let last = value(a, Some("1"), Some(("1", Some("90"))));
+    assert_ne!(last, old);
+    assert_ne!(last, new);
+    catalog_identity(b, last);
+    close(a);
+    prepare(a, "s", SQL);
+    close(a);
+    eprintln!("pg11_11 native handle quota=1 reusable after Close and rebuild");
+    ok(b, "DROP TABLE public.pg1111_doc");
+    for s in &mut sockets {
+        send(s, b'X', &[]);
+    }
+    drop(quota);
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
