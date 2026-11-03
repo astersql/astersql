@@ -251,7 +251,7 @@ impl PgService {
             return Err(invalid("startup user is required"));
         };
         for (name, value) in &startup.parameters {
-            let supported = matches!(name.as_str(), "user" | "database" | "application_name")
+            let supported = matches!(name.as_str(), "user" | "database" | "application_name" | "search_path")
                 || (name == "client_encoding"
                     && matches!(value.to_ascii_uppercase().as_str(), "UTF8" | "UTF-8"))
                 // The text codec uses ISO dates. JDBC requests ISO at startup;
@@ -278,6 +278,15 @@ impl PgService {
                 return Ok(());
             }
         }
+        let pg_session = match crate::pg_session::PgSession::from_startup(
+            startup.parameters.get("search_path").map(String::as_str),
+        ) {
+            Ok(session) => session,
+            Err((state, message)) => {
+                write_error(socket, "FATAL", state, &message)?;
+                return Ok(());
+            }
+        };
         let pid = astersql_expression::pg_backend_pid(id)
             .ok_or_else(|| invalid("missing PostgreSQL connection identity"))?
             as u32;
@@ -362,6 +371,11 @@ impl PgService {
                     ))
                     .map_err(io::Error::other)?;
             }
+            // Apply the authenticated connection's initial path before ReadyForQuery.
+            if let Err(error) = pg_session.effective_explicit_path(context.as_ref()) {
+                write_error(socket, "FATAL", "08006", &error.to_string())?;
+                return Ok(false);
+            }
             let key_length = cancel_key_length(startup.protocol_version);
             let mut key = vec![0; key_length];
             rustls::crypto::aws_lc_rs::default_provider()
@@ -415,6 +429,7 @@ impl PgService {
             )?;
             socket.set_read_timeout(Some(context.wait_timeout()))?;
             let mut extended = crate::pg_extended::Extended::new(self.startup_epoch_micros);
+            extended.session = pg_session;
             loop {
                 let (tag, body) = match read_message(socket) {
                     Ok(m) => m,

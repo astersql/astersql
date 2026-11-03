@@ -24,6 +24,7 @@ pub(crate) enum SessionQuery {
 #[derive(Debug)]
 pub(crate) struct PgSession {
     path: Vec<String>,
+    default_path: Vec<String>,
     failed_transaction: bool,
     // Original relation cursor from name adaptation, consumed by this request's
     // Q/Parse error response and reset before the next frontend command.
@@ -35,6 +36,7 @@ impl Default for PgSession {
     fn default() -> Self {
         Self {
             path: vec!["public".into()],
+            default_path: vec!["public".into()],
             failed_transaction: false,
             relation_error_position: None,
             function_error_hint: None,
@@ -43,6 +45,22 @@ impl Default for PgSession {
     }
 }
 impl PgSession {
+    /// Snapshot this connection's startup setting, independent of later SETs.
+    pub(crate) fn from_startup(value: Option<&str>) -> ParseResult<Self> {
+        let mut session = Self::default();
+        if let Some(value) = value {
+            let value = if value.is_empty() { "''" } else { value };
+            match SessionQuery::parse(&format!("SET search_path TO {value}"))? {
+                Some(SessionQuery::Set(path)) => {
+                    session.path = path.clone();
+                    session.default_path = path;
+                }
+                _ => return Err(("22023", "invalid startup search_path".into())),
+            }
+        }
+        Ok(session)
+    }
+
     pub(crate) fn transaction_status(&mut self, context: &dyn TiDBContext) -> u8 {
         if !context.in_transaction() {
             self.failed_transaction = false;
@@ -208,7 +226,7 @@ impl PgSession {
                 None
             }
             SessionQuery::Reset => {
-                *self = Self::default();
+                self.path.clone_from(&self.default_path);
                 self.effective_explicit_path(context)?;
                 None
             }
@@ -549,6 +567,13 @@ impl SessionQuery {
                 Err(("42601", "invalid RESET search_path".into()))
             };
         }
+        // SESSION is an optional scope for this connection-private setting.
+        if word(tokens.first(), "set")
+            && word(tokens.get(1), "session")
+            && word(tokens.get(2), "search_path")
+        {
+            tokens.remove(1);
+        }
         if word(tokens.first(), "set") && word(tokens.get(1), "search_path") {
             if !(word(tokens.get(2), "to") || tokens.get(2) == Some(&Token::Symbol('='))) {
                 return Err(("42601", "expected TO or =".into()));
@@ -557,7 +582,7 @@ impl SessionQuery {
                 return Ok(Some(Self::Reset));
             }
             if word(tokens.get(3), "null") {
-                return Err(("0A000", "NULL search_path is unsupported".into()));
+                return Err(("42601", "syntax error at or near NULL".into()));
             }
             let values = &tokens[3..];
             if values == [Token::String(String::new())] {

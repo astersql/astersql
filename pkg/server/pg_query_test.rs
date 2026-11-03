@@ -1571,7 +1571,7 @@ fn pg_introspection_namespace_session_state() {
         vec![vec![Some("pg_catalog".into())], vec![Some("public".into())]]
     );
     for (sql, state) in [
-        ("SET search_path TO NULL", "0A000"),
+        ("SET search_path TO NULL", "42601"),
         ("SET search_path TO public; SELECT 1", "42601"),
     ] {
         let messages = query(&mut first, sql);
@@ -28112,4 +28112,163 @@ fn pg09_29_sql() {
     drop(b);
     service.close();
     assert_eq!(service.resource_counts(), (0, 0, 0));
+}
+
+#[test]
+fn pg11_01() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn show(s: &mut TcpStream, value: &str, ext: bool) {
+        let m = run(s, "SHOW search_path", ext);
+        assert_eq!(catalog_rows(&m), vec![vec![Some(value.into())]], "{m:?}");
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let expected = [
+            b"\0\x01search_path\0".as_slice(),
+            &0u32.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &25u32.to_be_bytes(),
+            &(-1i16).to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat();
+        assert_eq!(d, &expected);
+        assert!(m.iter().any(|m| m == &(b'C', b"SHOW\0".to_vec())));
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    for ext in [false, true] {
+        let mut a = connect(Some("pg_catalog"));
+        let mut b = connect(Some("public"));
+        let mut native = connect(None);
+        show(&mut a, "pg_catalog", ext);
+        show(&mut b, "public", ext);
+        show(&mut native, "public", ext);
+        for sql in [
+            "SET search_path TO public",
+            "SET SESSION search_path = public",
+            "SET SESSION search_path TO public",
+        ] {
+            ok(&mut a, sql, ext);
+            show(&mut a, "public", ext);
+            show(&mut b, "public", ext);
+            ok(&mut a, "RESET search_path", ext);
+            show(&mut a, "pg_catalog", ext);
+        }
+        for sql in [
+            "SET search_path TO DEFAULT",
+            "SET SESSION search_path = DEFAULT",
+        ] {
+            ok(&mut a, "SET search_path = public", ext);
+            ok(&mut a, sql, ext);
+            show(&mut a, "pg_catalog", ext);
+        }
+        ok(&mut a, "SET search_path TO ''", ext);
+        show(&mut a, "\"\"", ext);
+        assert_eq!(
+            catalog_rows(&run(&mut a, "SELECT current_schema()", ext)),
+            vec![vec![None]]
+        );
+        for (sql, state) in [
+            ("SET search_path TO", "42601"),
+            ("SET SESSION search_path TO NULL", "42601"),
+            ("SHOW search_path extra", "42601"),
+        ] {
+            let m = run(&mut a, sql, ext);
+            let e = &m.iter().find(|m| m.0 == b'E').expect(sql).1;
+            assert!(
+                e.windows(7)
+                    .any(|w| w == [b"C", state.as_bytes(), b"\0"].concat()),
+                "{sql}: {m:?}"
+            );
+            show(&mut a, "\"\"", ext);
+            show(&mut b, "public", ext);
+        }
+        ok(&mut a, "SET DateStyle TO DMY", ext);
+        ok(&mut a, "RESET search_path", ext);
+        show(&mut a, "pg_catalog", ext);
+        assert_eq!(
+            catalog_rows(&run(&mut a, "SHOW DateStyle", ext)),
+            vec![vec![Some("ISO, DMY".into())]]
+        );
+        send(&mut a, b'X', &[]);
+        let mut again = connect(Some("pg_catalog"));
+        show(&mut again, "pg_catalog", ext);
+        for s in [&mut b, &mut native, &mut again] {
+            send(s, b'X', &[]);
+        }
+        eprintln!(
+            "pg11_01 ext={ext}: startup, isolation, SET variants, RESET/default, empty/NULL, errors/recovery, other setting, reconnect passed"
+        );
+    }
 }
