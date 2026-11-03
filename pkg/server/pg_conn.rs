@@ -621,6 +621,24 @@ impl PgService {
                                     )?;
                                     continue;
                                 }
+                                if command == "INSERT" {
+                                    if let Err((state, message)) = crate::pg_extended::conflict_plan(
+                                        &sql,
+                                        context.as_ref(),
+                                        true,
+                                    ) {
+                                        extended.session.record_error(context.as_ref());
+                                        write_error(socket, "ERROR", state, &message)?;
+                                        write_message(
+                                            socket,
+                                            b'Z',
+                                            &[extended
+                                                .session
+                                                .transaction_status(context.as_ref())],
+                                        )?;
+                                        continue;
+                                    }
+                                }
                                 let execution = self.with_query(pid, |context| {
                                     if let Some(catalog) =
                                         catalog.as_ref().ok().and_then(|query| query.as_ref())

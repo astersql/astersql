@@ -17,7 +17,7 @@ fn engine(e: crate::conn::ConnError) -> Error {
     (sqlstate(&e), e.to_string())
 }
 /// Match PostgreSQL analysis/planning error boundaries without executing DML.
-fn conflict_plan(sql: &str, context: &dyn TiDBContext, bind: bool) -> Result<()> {
+pub(crate) fn conflict_plan(sql: &str, context: &dyn TiDBContext, bind: bool) -> Result<()> {
     use astersql_parser_ast as ast;
     let (source, _) = crate::pg_sql::values_parameter_source(sql)?;
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
@@ -30,9 +30,7 @@ fn conflict_plan(sql: &str, context: &dyn TiDBContext, bind: bool) -> Result<()>
         let Some(clause) = &insert.PostgreSQLConflict else {
             continue;
         };
-        if clause.Action != ast::PostgreSQLConflictAction::DoNothing
-            || !crate::pg_result::supported_conflict_action(clause)
-        {
+        if !crate::pg_result::supported_conflict_action(clause) {
             continue;
         }
         if bind || clause.Target == ast::PostgreSQLConflictTarget::Constraint {
@@ -82,7 +80,15 @@ fn conflict_plan(sql: &str, context: &dyn TiDBContext, bind: bool) -> Result<()>
                     _ => false,
                 }
             }
-            for expression in insert.Lists.iter().flatten().filter(|e| arithmetic(e)) {
+            // PostgreSQL plans immutable SET constants even if no row will
+            // conflict or the action predicate will later skip the update.
+            let expressions = insert.Lists.iter().flatten().chain(
+                clause
+                    .UpdateAssignments
+                    .iter()
+                    .map(|assignment| &assignment.Expr),
+            );
+            for expression in expressions.filter(|e| arithmetic(e)) {
                 if let Err(e) =
                     astersql_session::dml_runtime::EvalExpr(expression, &HashMap::new(), None)
                 {

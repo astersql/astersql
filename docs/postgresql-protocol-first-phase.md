@@ -582,3 +582,7 @@ RETURNING 门户把写入结果物化一次，但扩展协议 CommandComplete �
 本族测试在独立目录保存双方原始SQL、描述/来源字段、数据、标签、错误和清理证据；独立目录的表OID只比较非零身份和属性位置，不直接比较两个目录的数值OID。18.4、RealTiKV、持久重启和性能不由此测试推定通过。
 
 冲突忽略的独立客户端回归入口为 `pg_client_integration_test::pg10_29_differential`，通过 `testdata/pg10_29_libpq.py` 连接真实 libpq PostgreSQL 18.6 参考端与共享测试存储上的双协议 Server。覆盖列/无目标/命名约束、实际插入行的 RETURNING 与零行固定描述、typed NULL/重新 Bind、事务观察者、非仲裁错误与整句回滚，并记录原生 MySQL Query/prepared INSERT IGNORE 自身结果。扩展协议对不存在约束在 Parse 报 42704，对无匹配索引及直接常量除零在 Bind 报 42P10/22012；NOT NULL 插入错误保留 23502。部分索引 setup 仍以 0A000 拒绝，参考成功与产品限制分别记录。此入口要求 `PG18_REFERENCE_DSN` 与 `PG_LIBPQ_LIBRARY`，不静默跳过、不代表 PostgreSQL 18.4 或 RealTiKV 验证；真实锁竞争沿批次15独立入口验证。
+
+冲突更新的独立客户端入口为 `pg_client_integration_test::pg10_30_differential`，夹具 `testdata/pg10_30_libpq.py` 要求真实 libpq 和 PostgreSQL 18.6 参考端，缺失环境明确失败。覆盖旧行/候选行、默认值、动作 WHERE、NULL、未改变值、混合行、二次约束错误、重复影响同一行、整句回滚、固定描述、Parse/Bind/Execute 错误阶段、E/25P02 恢复，以及 MySQL Query/Prepared 原生冲突更新和事务观察者。原始 SQL、行、描述、标签、诊断及清理记录保存在仓库 `.local/pg10-30-evidence/`，避免构建缓存清理丢失证据。部分唯一索引 setup 的 0A000 单列为产品限制，不视为部分索引行为通过。
+
+PostgreSQL 18.6 在 Bind 规划阶段检查冲突更新中的不可变算术常量；简单 Query 同样在写入前检查。`SET v=1/0` 即使无冲突或动作 WHERE 为 false/NULL 仍报 22012。依赖旧行/候选行的更新表达式仍只在实际更新时求值；对应惰性求值回归使用 `dst.v/(excluded.v-3)`，原始常量输入继续由独立差分覆盖。MySQL 共存按自身口径记录实际更新 affected rows 2、未变值 0（CLIENT_FOUND_ROWS 未设置），PG 更新仍计 1。本入口使用共享测试存储，不能替代批次16的真实 TiKV 竞争证据；18.4、持久重启和性能没有在此验收。

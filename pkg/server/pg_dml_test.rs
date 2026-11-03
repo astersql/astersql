@@ -3760,7 +3760,7 @@ fn pg10_11_behavior() {
                     ),
                     (
                         "VALUES (3,'c',3)",
-                        "v=1/0",
+                        "v=dst.v/(excluded.v-3)",
                         vec![text_row(&[Some("3"), Some("c"), Some("3")])],
                         vec![
                             initial[0].clone(),
@@ -4124,7 +4124,7 @@ fn pg10_12_behavior() {
                     ),
                     (
                         "VALUES (1,'candidate',3),(3,'c',30)",
-                        "v=1/0 WHERE dst.v<excluded.v",
+                        "v=dst.v/(excluded.v-3) WHERE dst.v<excluded.v",
                         vec![text_row(&[Some("3"), Some("c"), Some("30")])],
                         vec![
                             initial[0].clone(),
@@ -4705,13 +4705,13 @@ fn pg10_14_behavior() {
                     ),
                     (
                         "VALUES(1,'candidate',3),(1,'again',4)",
-                        "v=1/0 WHERE false",
+                        "v=dst.v/(excluded.v-3) WHERE false",
                         vec![],
                         initial.clone(),
                     ),
                     (
                         "VALUES(1,'candidate',3),(1,'again',4)",
-                        "v=1/0 WHERE NULL::boolean",
+                        "v=dst.v/(excluded.v-3) WHERE NULL::boolean",
                         vec![],
                         initial.clone(),
                     ),
