@@ -6348,3 +6348,165 @@ fn pg10_26_behavior() {
     // E/25P02, Sync remaining E and rollback of the prefix write.
     pg10_move_failure_contract(true);
 }
+
+#[test]
+fn pg10_27_behavior() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let guard = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let mut w = pg10_connect(addr);
+    let mut o = pg10_connect(addr);
+    let initial = vec![
+        text_row(&[Some("1"), Some("10")]),
+        text_row(&[Some("2"), None]),
+        text_row(&[Some("3"), Some("30")]),
+    ];
+    let destination = vec![text_row(&[Some("8"), Some("80")])];
+    let src = "SELECT id,v FROM public.pg10_27_src ORDER BY id";
+    let dst = "SELECT id,v FROM public.pg10_27_dst ORDER BY id";
+    for c in [&mut w, &mut o] {
+        eprintln!(
+            "pg10_27 isolation: {:?}",
+            pg10_rows(&pg10_ok(c, "SELECT @@transaction_isolation", b'I'))
+        );
+    }
+    let cases = [
+        // PostgreSQL itself rejects these two structures (18.4 reference evidence).
+        (
+            "SELECT * FROM (WITH moved AS (DELETE FROM public.pg10_27_src WHERE id<=2 RETURNING id,v) SELECT * FROM moved) AS x",
+            "0A000",
+            "top level",
+        ),
+        (
+            "WITH RECURSIVE moved AS (DELETE FROM public.pg10_27_src WHERE id IN (SELECT id FROM moved) RETURNING id,v) SELECT * FROM moved",
+            "42P19",
+            "data-modifying",
+        ),
+        // These are legal PostgreSQL forms outside the bounded product subset.
+        (
+            "WITH RECURSIVE keys AS (SELECT 1 AS id) DELETE FROM public.pg10_27_src WHERE id IN (SELECT id FROM keys) RETURNING id,v",
+            "0A000",
+            "unsupported",
+        ),
+        (
+            "WITH moved AS (DELETE FROM public.pg10_27_src WHERE id<=2 RETURNING id,v) SELECT * FROM moved",
+            "0A000",
+            "INSERT consumer",
+        ),
+        (
+            "WITH moved AS (DELETE FROM public.pg10_27_src WHERE id<=2 RETURNING id,v) SELECT 7 AS marker",
+            "0A000",
+            "INSERT consumer",
+        ),
+        (
+            "WITH moved AS (DELETE FROM public.pg10_27_src WHERE id<=2) INSERT INTO public.pg10_27_dst VALUES(4,40)",
+            "0A000",
+            "unsupported",
+        ),
+    ];
+    for (sql, state, diagnostic) in cases {
+        for extended in [false, true] {
+            for explicit in [false, true] {
+                for setup in [
+                    "CREATE TABLE public.pg10_27_src(id INT PRIMARY KEY,v INT)",
+                    "CREATE TABLE public.pg10_27_dst(id INT PRIMARY KEY,v INT)",
+                    "INSERT INTO public.pg10_27_src VALUES(1,10),(2,NULL),(3,30)",
+                    "INSERT INTO public.pg10_27_dst VALUES(8,80)",
+                ] {
+                    pg10_ok(&mut w, setup, b'I');
+                }
+                if explicit {
+                    pg10_ok(&mut w, "BEGIN", b'T');
+                    pg10_ok(&mut w, "INSERT INTO public.pg10_27_src VALUES(9,90)", b'T');
+                }
+                let messages = if extended {
+                    parse(&mut w, "boundary27", sql, &[]);
+                    let first = read(&mut w);
+                    let mut messages = vec![first.clone()];
+                    if first.0 == b'1' {
+                        bind(&mut w, "boundary27_portal", "boundary27", &[], &[], &[]);
+                        assert_eq!(read(&mut w), (b'2', vec![]));
+                        send(&mut w, b'D', b"Pboundary27_portal\0");
+                        let description = read(&mut w);
+                        assert!(matches!(description.0, b'T' | b'n'), "{description:?}");
+                        assert_eq!(pg10_rows(&pg10_ok(&mut o, src, b'I')), initial);
+                        assert_eq!(pg10_rows(&pg10_ok(&mut o, dst, b'I')), destination);
+                        execute(&mut w, "boundary27_portal");
+                        messages.push(read(&mut w));
+                    }
+                    send(&mut w, b'S', &[]);
+                    messages.push(read(&mut w));
+                    messages
+                } else {
+                    simple_query(&mut w, sql)
+                };
+                eprintln!("pg10_27 extended={extended} explicit={explicit}: {sql}");
+                let error = &messages
+                    .iter()
+                    .find(|m| m.0 == b'E')
+                    .expect("must reject")
+                    .1;
+                assert_eq!(error_state(error), Some(state), "{messages:?}");
+                assert!(
+                    String::from_utf8_lossy(error).contains(diagnostic),
+                    "{messages:?}"
+                );
+                assert!(!messages.iter().any(|m| matches!(m.0, b'D' | b'C')));
+                assert_eq!(
+                    messages.last(),
+                    Some(&(b'Z', vec![if explicit { b'E' } else { b'I' }]))
+                );
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, src, b'I')), initial);
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, dst, b'I')), destination);
+                if explicit {
+                    assert_eq!(
+                        error_state(&simple_query(&mut w, "SELECT 1")[0].1),
+                        Some("25P02")
+                    );
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', b"E".to_vec()));
+                    pg10_ok(&mut w, "ROLLBACK", b'I');
+                }
+                for c in [&mut w, &mut o] {
+                    assert_eq!(pg10_rows(&pg10_ok(c, src, b'I')), initial);
+                    assert_eq!(pg10_rows(&pg10_ok(c, dst, b'I')), destination);
+                    pg10_ok(c, "SELECT 1", b'I');
+                }
+                if extended && messages[0].0 == b'1' {
+                    send(&mut w, b'C', b"Sboundary27\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    sync(&mut w);
+                }
+                for cleanup in [
+                    "DROP TABLE public.pg10_27_src",
+                    "DROP TABLE public.pg10_27_dst",
+                ] {
+                    pg10_ok(&mut w, cleanup, b'I');
+                }
+            }
+        }
+    }
+    for c in [&mut w, &mut o] {
+        pg10_ok(c, "ROLLBACK", b'I');
+        send(c, b'X', &[]);
+    }
+    drop(w);
+    drop(o);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0));
+    drop(guard);
+    assert!(TcpStream::connect(addr).is_err());
+}

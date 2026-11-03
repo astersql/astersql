@@ -374,6 +374,7 @@ impl Resolver<'_> {
     }
     fn scope(&mut self, mut i: usize, end: usize, inherited: &HashSet<String>) -> ParseResult<()> {
         let mut ctes = inherited.clone();
+        let with_start = i;
         if self.word(i, "with") {
             i += 1;
             let recursive = self.word(i, "recursive");
@@ -427,7 +428,64 @@ impl Resolver<'_> {
             if self.word(i, "search") || self.word(i, "cycle") {
                 return Err(error("0A000", "CTE SEARCH/CYCLE is unsupported"));
             }
+            if with_start != 0
+                && definitions.iter().any(|(_, start, _)| {
+                    ["insert", "update", "delete"]
+                        .iter()
+                        .any(|word| self.word(*start, word))
+                })
+            {
+                self.error_position =
+                    Some(self.sql[..self.tokens[with_start].start].chars().count() + 1);
+                return Err(error(
+                    "0A000",
+                    "WITH clause containing a data-modifying statement must be at the top level",
+                ));
+            }
             if recursive {
+                // Classify the direct DELETE self-reference before the general
+                // recursive capability gate. A qualified name is a real table,
+                // and the DELETE target itself is not a recursive CTE read.
+                for (name, start, close) in &definitions {
+                    if !self.word(*start, "delete") {
+                        continue;
+                    }
+                    let mut next = *start + 2;
+                    while next < *close {
+                        let open = next;
+                        next += 1;
+                        if !self.symbol(open, b'(') {
+                            continue;
+                        }
+                        let end = self.close(open, *close)?;
+                        next = end + 1;
+                        // Only a direct SELECT subquery is classified here;
+                        // nested WITH scopes stay behind the capability gate.
+                        if !self.symbol(open, b'(') || !self.word(open + 1, "select") {
+                            continue;
+                        }
+                        if (open + 1..end).any(|token| self.symbol(token, b'(')) {
+                            continue;
+                        }
+                        for cursor in open + 1..end {
+                            if (self.relation_from(cursor) || self.word(cursor, "join"))
+                                && self.tokens.get(cursor + 1).and_then(|t| t.name.as_ref())
+                                    == Some(name)
+                                && !self.symbol(cursor + 2, b'.')
+                                && !self.symbol(cursor + 2, b'(')
+                            {
+                                self.error_position =
+                                    Some(self.sql[..self.tokens[*start].start].chars().count() + 1);
+                                return Err(error(
+                                    "42P19",
+                                    &format!(
+                                        "recursive query \"{name}\" must not contain data-modifying statements"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
                 // Reject a direct seed-term self reference before the capability
                 // gate. Only a top-level UNION seed is classified here: nested
                 // query scopes need their own binder and remain behind the gate.

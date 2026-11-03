@@ -1204,3 +1204,35 @@ fn pg10_17_cte_column_scopes() {
         assert_eq!(rewrite(sql, "test", true).unwrap_err().0, "42703", "{sql}");
     }
 }
+
+#[test]
+fn pg10_27_name_boundaries() {
+    for projection in ["id", "other", "*"] {
+        let sql = format!(
+            "WITH RECURSIVE moved AS (DELETE FROM public.src WHERE id IN (SELECT {projection} FROM moved) RETURNING id) SELECT * FROM moved"
+        );
+        assert_eq!(rewrite(&sql, "db", true).unwrap_err().0, "42P19");
+    }
+    for source in [
+        "public.moved",
+        "other",
+        "(WITH moved AS (SELECT 1 AS id) SELECT id FROM moved) x",
+    ] {
+        let sql = format!(
+            "WITH RECURSIVE moved AS (DELETE FROM public.src WHERE id IN (SELECT id FROM {source}) RETURNING id) SELECT * FROM moved"
+        );
+        assert_eq!(rewrite(&sql, "db", true).unwrap_err().0, "0A000");
+    }
+    // Merely sharing the target table's name does not create a recursive read.
+    assert_eq!(
+        rewrite(
+            "WITH RECURSIVE moved AS (DELETE FROM moved RETURNING id) SELECT * FROM moved",
+            "db",
+            true
+        )
+        .unwrap_err()
+        .0,
+        "0A000"
+    );
+    assert!(rewrite("WITH moved AS (DELETE FROM public.src RETURNING id) INSERT INTO public.dst SELECT id FROM moved", "db", true).is_ok());
+}
