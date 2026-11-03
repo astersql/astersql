@@ -28763,3 +28763,252 @@ fn pg11_03() {
     drop(_cleanup);
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_07() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn rows(s: &mut TcpStream, sql: &str, ext: bool, expected: Vec<Vec<Option<String>>>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        if sql.starts_with("SELECT v FROM") {
+            let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+            assert_eq!(&d[..4], &[0, 1, b'v', 0]);
+            assert_eq!(&d[10..14], &23u32.to_be_bytes());
+            assert_eq!(&d[14..16], &4i16.to_be_bytes());
+            assert_eq!(&d[16..20], &(-1i32).to_be_bytes());
+            assert_eq!(&d[20..22], &0i16.to_be_bytes());
+        }
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn one(value: &str) -> Vec<Vec<Option<String>>> {
+        vec![vec![Some(value.into())]]
+    }
+
+    fn expect(s: &mut TcpStream, sql: &str, ext: bool, state: &str, status: u8) {
+        let m = run(s, sql, ext);
+        if state.is_empty() {
+            assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+            assert!(m.iter().any(|m| m.0 == b'C'));
+            if sql.starts_with("UPDATE ") {
+                assert!(m.iter().any(|m| m.0 == b'C' && m.1 == b"UPDATE 1\0"));
+            }
+        } else {
+            let e = m
+                .iter()
+                .find(|m| m.0 == b'E')
+                .unwrap_or_else(|| panic!("{sql}: {m:?}"));
+            assert!(
+                e.1.windows(state.len() + 2)
+                    .any(|w| w == format!("C{state}\0").as_bytes()),
+                "{sql}: {m:?}"
+            );
+        }
+        assert_eq!(m.last().unwrap(), &(b'Z', vec![status]), "{sql}");
+    }
+    for ext in [false, true] {
+        let mut a = connect(Some("public"));
+        let mut b = connect(Some("public"));
+        for sql in [
+            "CREATE TABLE public.pg1107_t (id integer PRIMARY KEY,v integer)",
+            "INSERT INTO public.pg1107_t VALUES (1,10)",
+            "CREATE TABLE public.\"PG1107_T\" (id integer PRIMARY KEY,v integer)",
+            "INSERT INTO public.\"PG1107_T\" VALUES (2,20)",
+            "CREATE TABLE public.\"pg1107.a.b\" (id integer PRIMARY KEY,v integer)",
+            "INSERT INTO public.\"pg1107.a.b\" VALUES (3,NULL)",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        for name in [
+            "pg1107_t",
+            "PG1107_T",
+            "\"pg1107_t\"",
+            "PUBLIC.PG1107_T",
+            "\"public\".\"pg1107_t\"",
+            "\"test\".public.pg1107_t",
+        ] {
+            rows(&mut a, &format!("SELECT v FROM {name}"), ext, one("10"));
+        }
+        rows(&mut a, "SELECT v FROM public.\"PG1107_T\"", ext, one("20"));
+        rows(
+            &mut a,
+            "SELECT v FROM public.\"pg1107.a.b\"",
+            ext,
+            vec![vec![None]],
+        );
+        rows(
+            &mut a,
+            "SELECT 'public.PG1107_T' AS marker FROM public.pg1107_t /* public.\"PG1107_T\" */",
+            ext,
+            one("public.PG1107_T"),
+        );
+        for commit in [false, true] {
+            expect(&mut a, "BEGIN", ext, "", b'T');
+            expect(
+                &mut a,
+                "UPDATE public.\"PG1107_T\" SET v=21 WHERE id=2",
+                ext,
+                "",
+                b'T',
+            );
+            let m = run(&mut a, "SELECT v FROM public.\"PG1107_T\"", ext);
+            assert_eq!(catalog_rows(&m), one("21"));
+            assert_eq!(m.last().unwrap(), &(b'Z', b"T".to_vec()));
+            rows(&mut b, "SELECT v FROM public.\"PG1107_T\"", ext, one("20"));
+            ok(&mut a, if commit { "COMMIT" } else { "ROLLBACK" }, ext);
+            rows(
+                &mut a,
+                "SELECT v FROM public.\"PG1107_T\"",
+                ext,
+                one(if commit { "21" } else { "20" }),
+            );
+            rows(
+                &mut b,
+                "SELECT v FROM public.\"PG1107_T\"",
+                ext,
+                one(if commit { "21" } else { "20" }),
+            );
+            rows(&mut a, "SELECT v FROM public.pg1107_t", ext, one("10"));
+            rows(
+                &mut b,
+                "SELECT v FROM public.\"pg1107.a.b\"",
+                ext,
+                vec![vec![None]],
+            );
+        }
+        expect(&mut a, "BEGIN", ext, "", b'T');
+        expect(
+            &mut a,
+            "UPDATE public.\"PG1107_T\" SET v=22 WHERE id=2",
+            ext,
+            "",
+            b'T',
+        );
+        expect(
+            &mut a,
+            "SELECT v FROM public.\"Pg1107_t\"",
+            ext,
+            "42P01",
+            b'E',
+        );
+        expect(
+            &mut a,
+            "SELECT v FROM public.\"PG1107_T\"",
+            ext,
+            "25P02",
+            b'E',
+        );
+        if ext {
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"E".to_vec()));
+        }
+        ok(&mut a, "ROLLBACK", ext);
+        rows(&mut a, "SELECT v FROM public.\"PG1107_T\"", ext, one("21"));
+        rows(&mut b, "SELECT v FROM public.\"PG1107_T\"", ext, one("21"));
+        for (sql, state) in [
+            ("SELECT v FROM other_db.public.pg1107_t", "0A000"),
+            ("SELECT v FROM public.\"Pg1107_t\"", "42P01"),
+            ("SELECT v FROM public.\"\"", "42601"),
+            ("SELECT v FROM public.\"broken", "42601"),
+        ] {
+            expect(&mut a, sql, ext, state, b'I');
+            rows(&mut a, "SELECT v FROM public.pg1107_t", ext, one("10"));
+            rows(&mut b, "SELECT v FROM public.\"PG1107_T\"", ext, one("21"));
+        }
+        ok(&mut a, "DROP TABLE public.\"PG1107_T\"", ext);
+        expect(
+            &mut a,
+            "SELECT v FROM public.\"PG1107_T\"",
+            ext,
+            "42P01",
+            b'I',
+        );
+        rows(&mut a, "SELECT v FROM public.pg1107_t", ext, one("10"));
+        for sql in [
+            "DROP TABLE public.pg1107_t",
+            "DROP TABLE public.\"pg1107.a.b\"",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_07 ext={ext}: 18 groups passed: folding(6), exact/dot/literal(3), rollback/commit(2), failed rollback(1), rejection recovery(4), no fallback(1), cleanup(1)"
+        );
+    }
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+}

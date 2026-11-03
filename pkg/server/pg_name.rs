@@ -904,7 +904,8 @@ fn identifier_parts(
         gate.exact_relations = statement.as_any().is::<ast::SelectStmt>()
             || statement.as_any().is::<ast::SetOprStmt>()
             || statement.as_any().is::<ast::InsertStmt>()
-            || statement.as_any().is::<ast::DropTableStmt>();
+            || statement.as_any().is::<ast::DropTableStmt>()
+            || statement.as_any().is::<ast::UpdateStmt>();
         // Declarations are not references; CREATE TABLE persists their decoded
         // spelling and matching policy in the normal shared catalog.
         let declaration =

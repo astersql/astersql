@@ -37,6 +37,10 @@ fn pg_introspection_names_token_scopes() {
             "UPDATE `db`.t SET note = 'JOIN other.t'",
         ),
         (
+            r#"UPDATE public."T" SET note = 'JOIN other.t' WHERE id = 2"#,
+            r#"UPDATE `db`."T" SET note = 'JOIN other.t' WHERE id = 2"#,
+        ),
+        (
             "DELETE FROM db.public.t WHERE id = 1",
             "DELETE FROM `db`.t WHERE id = 1",
         ),
