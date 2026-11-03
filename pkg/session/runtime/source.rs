@@ -2983,7 +2983,15 @@ impl ConcreteSession {
                     .as_ref()
                     .map_or(0, |txn| txn.StartTS()),
             );
+            astersql_testkit_testfailpoint::inject("astersql/session/pg_move_before_produce");
+            self.sql_killer
+                .HandleSignal()
+                .map_err(|error| super::query::pg_union_error(&error.to_string(), "57014"))?;
             let result = self.execute_pg_delete_returning(delete)?;
+            astersql_testkit_testfailpoint::inject("astersql/session/pg_move_before_consume");
+            self.sql_killer
+                .HandleSignal()
+                .map_err(|error| super::query::pg_union_error(&error.to_string(), "57014"))?;
             #[cfg(test)]
             crate::runtime_dispatch_test::pg10_21_record_move_event(
                 "delete-complete",

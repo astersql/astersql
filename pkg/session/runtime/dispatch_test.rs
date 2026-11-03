@@ -1980,3 +1980,78 @@ fn pg10_23_single_complete_producer() {
         pg.execute(sql).unwrap();
     }
 }
+
+#[test]
+fn pg10_25_cancel_move_boundaries() {
+    use astersql_parser_ast::SqlDialect;
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    let observer = ConcreteSession::new_with_dialect(domain, SqlDialect::PostgreSQL);
+    let rows = |session: &ConcreteSession, sql: &str| {
+        let mut sets = session.execute(sql).unwrap();
+        let mut result = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            result.push(row);
+        }
+        result.sort();
+        result
+    };
+    for sql in [
+        "CREATE TABLE pg10_25_src(id INT PRIMARY KEY,v INT)",
+        "CREATE TABLE pg10_25_dst(id INT PRIMARY KEY,v INT)",
+    ] {
+        pg.execute(sql).unwrap();
+    }
+    for boundary in ["produce", "consume"] {
+        for explicit in [false, true] {
+            for sql in [
+                "DELETE FROM pg10_25_dst",
+                "DELETE FROM pg10_25_src",
+                "INSERT INTO pg10_25_src VALUES(1,10),(2,NULL),(3,30)",
+            ] {
+                pg.execute(sql).unwrap();
+            }
+            let scan_src = "SELECT id,v FROM pg10_25_src ORDER BY id";
+            let scan_dst = "SELECT id,v FROM pg10_25_dst ORDER BY id";
+            let initial = rows(&pg, scan_src);
+            if explicit {
+                pg.execute("BEGIN").unwrap();
+                pg.execute("INSERT INTO pg10_25_src VALUES(9,90)").unwrap();
+            }
+            let killer = pg.cancellation_handle();
+            let cancellation = astersql_testkit_testfailpoint::enable_call(
+                &format!("astersql/session/pg_move_before_{boundary}"),
+                move || killer.SendKillSignal(astersql_util_memory::sqlkiller::QueryInterrupted),
+            );
+            let result = pg.execute("WITH moved AS (DELETE FROM pg10_25_src WHERE id<=2 RETURNING id,v) INSERT INTO pg10_25_dst SELECT id,v FROM moved RETURNING id,v");
+            drop(cancellation);
+            let error = result.err().expect("cancelled move must fail");
+            assert!(
+                error.to_string().contains("interrupted"),
+                "{boundary}: {error}"
+            );
+            assert_eq!(rows(&observer, scan_src), initial);
+            assert!(rows(&observer, scan_dst).is_empty());
+            if explicit {
+                pg.execute("ROLLBACK").unwrap();
+            }
+            for session in [&pg, &observer] {
+                assert_eq!(rows(session, scan_src), initial);
+                assert!(rows(session, scan_dst).is_empty());
+                session.execute("SELECT 1").unwrap();
+            }
+            // The next real move proves the CTE scope/snapshot and cancellation
+            // signal were cleaned up rather than merely hidden by readback.
+            let moved = rows(
+                &pg,
+                "WITH moved AS (DELETE FROM pg10_25_src WHERE id<=2 RETURNING id,v) INSERT INTO pg10_25_dst SELECT id,v FROM moved RETURNING id,v",
+            );
+            assert_eq!(moved, initial[..2]);
+            assert_eq!(rows(&observer, scan_src), initial[2..]);
+            assert_eq!(rows(&observer, scan_dst), moved);
+        }
+    }
+    for sql in ["DROP TABLE pg10_25_src", "DROP TABLE pg10_25_dst"] {
+        pg.execute(sql).unwrap();
+    }
+}

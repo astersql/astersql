@@ -328,6 +328,10 @@ impl Drop for Pg10ServiceGuard {
 }
 
 fn pg10_connect(addr: std::net::SocketAddr) -> TcpStream {
+    pg10_connect_with_key(addr).0
+}
+
+fn pg10_connect_with_key(addr: std::net::SocketAddr) -> (TcpStream, Vec<u8>) {
     let mut socket = TcpStream::connect(addr).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(15)))
@@ -337,9 +341,13 @@ fn pg10_connect(addr: std::net::SocketAddr) -> TcpStream {
         .write_all(&((startup.len() + 4) as u32).to_be_bytes())
         .unwrap();
     socket.write_all(&startup).unwrap();
+    let mut key = Vec::new();
     let mut settings = std::collections::HashMap::new();
     loop {
         let message = read(&mut socket);
+        if message.0 == b'K' {
+            key = message.1.clone();
+        }
         if message.0 == b'S' {
             let fields = message.1.split(|b| *b == 0).collect::<Vec<_>>();
             settings.insert(
@@ -357,7 +365,7 @@ fn pg10_connect(addr: std::net::SocketAddr) -> TcpStream {
         Some("UTF8")
     );
     assert_eq!(settings.get("TimeZone").map(String::as_str), Some("UTC"));
-    socket
+    (socket, key)
 }
 
 fn pg10_ok(socket: &mut TcpStream, sql: &str, state: u8) -> Vec<(u8, Vec<u8>)> {
@@ -5502,6 +5510,14 @@ fn pg10_24_behavior() {
     pg10_move_failure_contract(true);
 }
 
+#[test]
+fn pg10_25_behavior() {
+    pg10_25_cancel_tcp();
+    // Includes source division-by-zero in Query/Execute, complete W/O readback,
+    // failed-transaction recovery and successful NULL/zero-row move variants.
+    pg10_move_failure_contract(true);
+}
+
 // Reuse the complete move fixture for repeated consumers and direct destination
 // failures, keeping protocol, NULL, transaction and recovery checks identical.
 fn pg10_move_failure_contract(direct: bool) {
@@ -5984,6 +6000,152 @@ fn pg10_move_failure_contract(direct: bool) {
     );
     mysql.execute("DROP TABLE pg10_23_mysql").unwrap();
     mysql.execute("SELECT 1").unwrap();
+    drop(w);
+    drop(o);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0));
+    assert!(TcpStream::connect(addr).is_err());
+    drop(guard);
+}
+
+fn pg10_25_cancel_tcp() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let guard = Pg10ServiceGuard(
+        PgService::start(
+            listener,
+            driver,
+            Arc::new(CanonicalConnectionDomain::new(domain)),
+            false,
+        )
+        .unwrap(),
+    );
+    let (mut w, key) = pg10_connect_with_key(addr);
+    let mut o = pg10_connect(addr);
+    for sql in [
+        "CREATE TABLE public.pg10_25_src(id INT PRIMARY KEY,v INT)",
+        "CREATE TABLE public.pg10_25_dst(id INT PRIMARY KEY,v INT)",
+    ] {
+        pg10_ok(&mut w, sql, b'I');
+    }
+    let scan_src = "SELECT id,v FROM public.pg10_25_src ORDER BY id";
+    let scan_dst = "SELECT id,v FROM public.pg10_25_dst ORDER BY id";
+    for boundary in ["produce", "consume"] {
+        for extended in [false, true] {
+            for explicit in [false, true] {
+                for sql in [
+                    "DELETE FROM public.pg10_25_dst",
+                    "DELETE FROM public.pg10_25_src",
+                    "INSERT INTO public.pg10_25_src VALUES(1,10),(2,NULL),(3,30)",
+                ] {
+                    pg10_ok(&mut w, sql, b'I');
+                }
+                let initial = pg10_rows(&pg10_ok(&mut w, scan_src, b'I'));
+                if explicit {
+                    pg10_ok(&mut w, "BEGIN", b'T');
+                    pg10_ok(&mut w, "INSERT INTO public.pg10_25_src VALUES(9,90)", b'T');
+                }
+                let sql = "WITH moved AS (DELETE FROM public.pg10_25_src WHERE id<=2 RETURNING id,v) INSERT INTO public.pg10_25_dst SELECT id,v FROM moved RETURNING id,v";
+                if extended {
+                    parse(&mut w, "cancel_move", sql, &[]);
+                    assert_eq!(read(&mut w), (b'1', vec![]));
+                    bind(&mut w, "cancel_move_portal", "cancel_move", &[], &[], &[]);
+                    assert_eq!(read(&mut w), (b'2', vec![]));
+                }
+                // Pause only scheduling; evaluation and storage remain real.
+                let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+                let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+                let resume_rx = std::sync::Mutex::new(resume_rx);
+                let pause = astersql_testkit_testfailpoint::enable_concurrent_call(
+                    &format!("astersql/session/pg_move_before_{boundary}"),
+                    move || {
+                        entered_tx.send(()).unwrap();
+                        resume_rx
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(10))
+                            .unwrap();
+                    },
+                );
+                if extended {
+                    execute(&mut w, "cancel_move_portal");
+                    send(&mut w, b'S', &[]);
+                } else {
+                    send(&mut w, b'Q', &[sql.as_bytes(), b"\0"].concat());
+                }
+                entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                let mut cancel = TcpStream::connect(addr).unwrap();
+                cancel
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                cancel
+                    .write_all(&((key.len() + 8) as u32).to_be_bytes())
+                    .unwrap();
+                cancel.write_all(&80877102u32.to_be_bytes()).unwrap();
+                cancel.write_all(&key).unwrap();
+                let mut eof = [0];
+                assert_eq!(cancel.read(&mut eof).unwrap(), 0);
+                resume_tx.send(()).unwrap();
+                let mut messages = Vec::new();
+                loop {
+                    let m = read(&mut w);
+                    let done = m.0 == b'Z';
+                    messages.push(m);
+                    if done {
+                        break;
+                    }
+                }
+                drop(pause);
+                assert_eq!(
+                    error_state(&messages.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("57014")
+                );
+                assert!(!messages.iter().any(|m| m.0 == b'C'));
+                assert_eq!(
+                    messages.last(),
+                    Some(&(b'Z', vec![if explicit { b'E' } else { b'I' }]))
+                );
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial);
+                assert!(pg10_rows(&pg10_ok(&mut o, scan_dst, b'I')).is_empty());
+                if explicit {
+                    let rejected = simple_query(&mut w, "SELECT 1");
+                    assert_eq!(error_state(&rejected[0].1), Some("25P02"));
+                    send(&mut w, b'S', &[]);
+                    assert_eq!(read(&mut w), (b'Z', b"E".to_vec()));
+                    pg10_ok(&mut w, "ROLLBACK", b'I');
+                }
+                for c in [&mut w, &mut o] {
+                    assert_eq!(pg10_rows(&pg10_ok(c, scan_src, b'I')), initial);
+                    assert!(pg10_rows(&pg10_ok(c, scan_dst, b'I')).is_empty());
+                    pg10_ok(c, "SELECT 1", b'I');
+                }
+                if extended {
+                    send(&mut w, b'C', b"Pcancel_move_portal\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    send(&mut w, b'C', b"Scancel_move\0");
+                    assert_eq!(read(&mut w), (b'3', vec![]));
+                    sync(&mut w);
+                }
+                // A new execution after cancellation must see fresh CTE state.
+                assert_eq!(pg10_rows(&pg10_ok(&mut w, sql, b'I')), initial[..2]);
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_src, b'I')), initial[2..]);
+                assert_eq!(pg10_rows(&pg10_ok(&mut o, scan_dst, b'I')), initial[..2]);
+            }
+        }
+    }
+    for sql in [
+        "DROP TABLE public.pg10_25_src",
+        "DROP TABLE public.pg10_25_dst",
+    ] {
+        pg10_ok(&mut w, sql, b'I');
+    }
+    send(&mut w, b'X', &[]);
+    send(&mut o, b'X', &[]);
     drop(w);
     drop(o);
     guard.0.close();
