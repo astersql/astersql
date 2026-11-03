@@ -33150,3 +33150,285 @@ fn pg11_11() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_12() {
+    fn drain(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut out = Vec::new();
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            out.push(m);
+            if done {
+                return out;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str) {
+        let m = query(s, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+
+    fn finish(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        send(s, b'S', &[]);
+        drain(s)
+    }
+    fn parameter(m: &[(u8, Vec<u8>)]) {
+        assert_eq!(
+            m.iter().find(|m| m.0 == b't').unwrap().1,
+            [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+        );
+    }
+    fn describe(s: &mut TcpStream, name: &str) -> Vec<u8> {
+        send(s, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        let m = finish(s);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"tTZ");
+        parameter(&m);
+        m[1].1.clone()
+    }
+    fn prepare(s: &mut TcpStream, name: &str, sql: &str) -> Vec<u8> {
+        parse(s, name, sql, &[23]);
+        let m = finish(s);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"1Z");
+        describe(s, name)
+    }
+    fn reject(s: &mut TcpStream, name: &str, desc: bool, param: &str, state: &str) {
+        if desc {
+            send(s, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        } else {
+            bind(s, "", name, &[Some(param)]);
+            execute(s, "", 0);
+        }
+        let m = finish(s);
+        assert!(!m.iter().any(|m| matches!(m.0, b'D' | b'C' | b'2' | b'T')));
+        if desc {
+            parameter(&m);
+        }
+        let e = &m.iter().find(|m| m.0 == b'E').unwrap().1;
+        assert!(
+            e.windows(7)
+                .any(|w| w == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1");
+        eprintln!("pg11_12 reject {name} describe={desc} state={state}");
+    }
+    fn value(
+        s: &mut TcpStream,
+        name: &str,
+        param: Option<&str>,
+        expected: Vec<Vec<Option<&str>>>,
+    ) -> Vec<u8> {
+        bind(s, "", name, &[param]);
+        send(s, b'D', b"P\0");
+        execute(s, "", 0);
+        let m = finish(s);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{m:?}");
+        assert_eq!(
+            m.iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            expected.iter().map(|r| row(r)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            m.iter().find(|m| m.0 == b'C').unwrap().1,
+            format!("SELECT {}\0", expected.len()).as_bytes()
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        eprintln!("pg11_12 value {name}({param:?})={expected:?}");
+        m.iter().find(|m| m.0 == b'T').unwrap().1.clone()
+    }
+    fn columns(body: &[u8], expected: &[(&str, u32, i16)]) -> u32 {
+        assert_eq!(&body[..2], &(expected.len() as i16).to_be_bytes());
+        let mut pos = 2;
+        let mut source = None;
+        for (name, oid, attr) in expected {
+            assert_eq!(
+                &body[pos..pos + name.len() + 1],
+                [name.as_bytes(), b"\0"].concat()
+            );
+            pos += name.len() + 1;
+            let table = u32::from_be_bytes(body[pos..pos + 4].try_into().unwrap());
+            assert_ne!(table, 0);
+            assert_eq!(*source.get_or_insert(table), table);
+            assert_eq!(&body[pos + 4..pos + 6], &attr.to_be_bytes());
+            assert_eq!(&body[pos + 6..pos + 10], &oid.to_be_bytes());
+            assert_eq!(
+                &body[pos + 10..pos + 12],
+                &(if *oid == 20 { 8i16 } else { 4i16 }).to_be_bytes()
+            );
+            assert_eq!(&body[pos + 12..pos + 16], &(-1i32).to_be_bytes());
+            assert_eq!(&body[pos + 16..pos + 18], &0i16.to_be_bytes());
+            pos += 18;
+        }
+        assert_eq!(pos, body.len());
+        source.unwrap()
+    }
+    fn close(s: &mut TcpStream, name: &str) {
+        send(s, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(finish(s), vec![(b'3', vec![]), (b'Z', b"I".to_vec())]);
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut sockets = [0, 1].map(|_| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        drain(&mut s);
+        s
+    });
+    let [a, b] = &mut sockets;
+
+    // Q has independent initial state and sees the new shape immediately.
+    ok(
+        b,
+        "CREATE TABLE public.pg1112_q (id integer PRIMARY KEY,v integer)",
+    );
+    ok(b, "INSERT INTO public.pg1112_q VALUES (1,10)");
+    ok(a, "SELECT * FROM public.pg1112_q");
+    ok(b, "ALTER TABLE public.pg1112_q ADD COLUMN extra integer");
+    let q = query(a, "SELECT * FROM public.pg1112_q");
+    assert_eq!(
+        q.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("1"), Some("10"), None])]
+    );
+    ok(b, "DROP TABLE public.pg1112_q");
+    for (table, change) in [
+        ("pg1112_shape", "ADD COLUMN extra integer"),
+        ("pg1112_type", "ALTER COLUMN v TYPE bigint"),
+    ] {
+        ok(
+            b,
+            &format!("CREATE TABLE public.{table} (id integer PRIMARY KEY,v integer)"),
+        );
+        let sql = format!("SELECT * FROM public.{table} WHERE id=$1");
+        let original = prepare(a, "s", &sql);
+        columns(&original, &[("id", 23, 1), ("v", 23, 2)]);
+        let projection = prepare(
+            a,
+            "projection",
+            &format!("SELECT id FROM public.{table} WHERE id=$1"),
+        );
+        assert_eq!(value(a, "s", Some("1"), vec![]), original); // empty table
+        ok(
+            b,
+            &format!("INSERT INTO public.{table} VALUES (1,10),(2,NULL)"),
+        );
+        assert_eq!(
+            value(a, "s", Some("1"), vec![vec![Some("1"), Some("10")]]),
+            original
+        );
+        assert_eq!(
+            value(a, "s", Some("2"), vec![vec![Some("2"), None]]),
+            original
+        );
+        assert_eq!(value(a, "s", None, vec![]), original);
+        reject(a, "s", false, "invalid", "22P02");
+        // A write statement must be rejected before any mutation when its fixed
+        // RETURNING result changes; Describe must also be side-effect free.
+        let write = format!("UPDATE public.{table} SET v=99 WHERE id=$1 RETURNING *");
+        prepare(a, "w", &write);
+        ok(b, &format!("ALTER TABLE public.{table} {change}"));
+        assert_eq!(
+            value(a, "projection", Some("1"), vec![vec![Some("1")]]),
+            projection
+        );
+        close(a, "projection");
+        for name in ["s", "w"] {
+            reject(a, name, true, "1", "0A000");
+            reject(a, name, false, "1", "0A000");
+        }
+        let observed = query(b, &format!("SELECT v FROM public.{table} ORDER BY id"));
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.clone())
+                .collect::<Vec<_>>(),
+            vec![row(&[Some("10")]), row(&[None])]
+        );
+        close(a, "s");
+        close(a, "w");
+        let fresh = prepare(a, "s", &sql);
+        assert_ne!(fresh, original);
+        if table.ends_with("shape") {
+            columns(&fresh, &[("id", 23, 1), ("v", 23, 2), ("extra", 23, 3)]);
+        } else {
+            columns(&fresh, &[("id", 23, 1), ("v", 20, 2)]);
+        }
+        let expected = if table.ends_with("shape") {
+            vec![Some("1"), Some("10"), None]
+        } else {
+            vec![Some("1"), Some("10")]
+        };
+        assert_eq!(value(a, "s", Some("1"), vec![expected]), fresh);
+        close(a, "s");
+        ok(b, &format!("DROP TABLE public.{table}"));
+    }
+    // Compatible replacement updates physical origin and attribute number while
+    // preserving the original int4 parameter and result contract.
+    ok(
+        b,
+        "CREATE TABLE public.pg1112_identity (id integer PRIMARY KEY,v integer)",
+    );
+    let sql = "SELECT v FROM public.pg1112_identity WHERE id=$1";
+    let old = prepare(a, "s", sql);
+    columns(&old, &[("v", 23, 2)]);
+    ok(b, "DROP TABLE public.pg1112_identity");
+    ok(
+        b,
+        "CREATE TABLE public.pg1112_identity (v integer,id bigint PRIMARY KEY)",
+    );
+    ok(
+        b,
+        "INSERT INTO public.pg1112_identity VALUES (70,1),(80,2147483648)",
+    );
+    let new = describe(a, "s");
+    let source = columns(&new, &[("v", 23, 1)]);
+    let catalog = query(
+        b,
+        "SELECT oid FROM pg_catalog.pg_class WHERE relname='pg1112_identity'",
+    );
+    assert_eq!(
+        catalog
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some(&source.to_string())])]
+    );
+    assert_ne!(&old[4..8], &new[4..8]);
+    assert_eq!(&old[8..10], &2i16.to_be_bytes());
+    assert_eq!(&new[8..10], &1i16.to_be_bytes());
+    assert_eq!(&old[10..], &new[10..]);
+    assert_eq!(value(a, "s", Some("1"), vec![vec![Some("70")]]), new);
+    reject(a, "s", false, "2147483648", "22003");
+    assert_eq!(value(a, "s", None, vec![]), new);
+    close(a, "s");
+    ok(b, "DROP TABLE public.pg1112_identity");
+    for s in &mut sockets {
+        send(s, b'X', &[]);
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
