@@ -20,6 +20,46 @@ impl KvAutoIdStore {
     pub(crate) fn new(storage: Arc<StorageHandle>) -> Self {
         Self { storage }
     }
+
+    /// Initialize a sequence exactly once, independently of user transactions.
+    /// The marker and water level commit together; retries never rewind values.
+    pub(crate) fn initialize_sequence(
+        &self,
+        database_id: i64,
+        table_id: i64,
+        base: i64,
+    ) -> Result<()> {
+        let context = astersql_kv::Context::default();
+        self.storage
+            .with_storage(|storage| {
+                astersql_kv::RunInNewTxn(&context, storage, true, |_, transaction| {
+                    let marker = astersql_kv::Key(
+                        format!("{AUTO_ID_KEY_PREFIX}:DB:{database_id}:SID-initialized:{table_id}")
+                            .into_bytes(),
+                    );
+                    match transaction.Get(&context, marker.clone(), &[]) {
+                        Ok(_) => return Ok(()),
+                        Err(error) if astersql_kv::IsErrNotFound(&error) => {}
+                        Err(error) => return Err(error),
+                    }
+                    let key = KvAutoIdTransaction::key(AutoIdKey {
+                        database_id,
+                        table_id,
+                        kind: AutoIdKeyKind::SequenceValue,
+                    });
+                    // Preserve any water level written by an existing allocator.
+                    match transaction.Get(&context, key.clone(), &[]) {
+                        Ok(_) => {}
+                        Err(error) if astersql_kv::IsErrNotFound(&error) => {
+                            transaction.Set(key, base.to_string().into_bytes())?;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                    transaction.Set(marker, b"1".to_vec())
+                })
+            })
+            .map_err(|error| AutoIdError::Storage(error.to_string()))
+    }
 }
 
 struct KvAutoIdTransaction<'a> {

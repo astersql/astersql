@@ -29974,3 +29974,476 @@ fn pg11_09() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn pg11_14() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn value(s: &mut TcpStream, sql: &str, ext: bool, expected: Option<&str>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(
+            catalog_rows(&m),
+            vec![vec![expected.map(str::to_owned)]],
+            "{sql}: {m:?}"
+        );
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+        assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    let native = astersql_session::runtime::ConcreteSession::new(domain.clone());
+    native.execute("CREATE ROLE seq_reader").unwrap();
+    native.execute("GRANT seq_reader TO 'root'@'%'").unwrap();
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seq_contract AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE",
+            ext,
+        );
+        denied(
+            &mut a,
+            "SELECT currval('public.seq_contract'::regclass) AS v",
+            ext,
+            "55000",
+        );
+        value(
+            &mut a,
+            "SELECT nextval('public.seq_contract'::regclass) AS v",
+            ext,
+            Some("10"),
+        );
+        denied(
+            &mut b,
+            "SELECT currval('public.seq_contract'::regclass) AS v",
+            ext,
+            "55000",
+        );
+        value(
+            &mut b,
+            "SELECT nextval('public.seq_contract'::regclass) AS v",
+            ext,
+            Some("11"),
+        );
+        value(
+            &mut a,
+            "SELECT currval('public.seq_contract'::regclass) AS v",
+            ext,
+            Some("10"),
+        );
+        send(&mut a, b'X', &[]);
+        drop(a);
+        let mut a = connect(None);
+        denied(
+            &mut a,
+            "SELECT currval('public.seq_contract'::regclass) AS v",
+            ext,
+            "55000",
+        );
+        value(
+            &mut b,
+            "SELECT currval('public.seq_contract'::regclass) AS v",
+            ext,
+            Some("11"),
+        );
+        value(&mut a, "SELECT nextval(NULL::regclass) AS v", ext, None);
+        value(&mut a, "SELECT currval(NULL::regclass) AS v", ext, None);
+        denied(
+            &mut a,
+            "SELECT nextval('missing_sequence'::regclass) AS v",
+            ext,
+            "42P01",
+        );
+        ok(
+            &mut a,
+            "CREATE TABLE seq_not_sequence (nextval integer)",
+            ext,
+        );
+        ok(&mut a, "INSERT INTO seq_not_sequence VALUES (7)", ext);
+        assert_eq!(
+            catalog_rows(&run(&mut a, "SELECT nextval FROM seq_not_sequence", ext)),
+            vec![vec![Some("7".into())]]
+        );
+        denied(
+            &mut a,
+            "SELECT nextval('seq_not_sequence'::regclass) AS v",
+            ext,
+            "42809",
+        );
+        denied(&mut a, "SELECT nextval(true) AS v", ext, "42883");
+        ok(
+            &mut a,
+            "CREATE SEQUENCE seq_boundary AS bigint START WITH 1000 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE",
+            ext,
+        );
+        value(
+            &mut a,
+            "SELECT nextval('seq_boundary'::regclass) AS v",
+            ext,
+            Some("1000"),
+        );
+        denied(
+            &mut a,
+            "SELECT nextval('seq_boundary'::regclass) AS v",
+            ext,
+            "2200H",
+        );
+        value(
+            &mut a,
+            "SELECT currval('seq_boundary'::regclass) AS v",
+            ext,
+            Some("1000"),
+        );
+        let begin = run(&mut a, "BEGIN", ext);
+        assert_eq!(begin.last().unwrap(), &(b'Z', b"T".to_vec()));
+        let blocked = run(&mut a, "DROP SEQUENCE seq_contract", ext);
+        assert!(
+            blocked
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+            "{blocked:?}"
+        );
+        assert_eq!(blocked.last().unwrap(), &(b'Z', b"E".to_vec()));
+        let failed = run(&mut a, "SELECT 1", ext);
+        assert!(
+            failed
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C25P02\0")),
+            "{failed:?}"
+        );
+        assert_eq!(failed.last().unwrap(), &(b'Z', b"E".to_vec()));
+        ok(&mut a, "ROLLBACK", ext);
+        value(
+            &mut b,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            Some("11"),
+        );
+        // Independent real role: SELECT permits currval, UPDATE permits both.
+        ok(&mut a, "SET ROLE seq_reader", ext);
+        denied(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            "42501",
+        );
+        denied(
+            &mut a,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            "42501",
+        );
+        ok(
+            &mut b,
+            "GRANT SELECT ON SEQUENCE public.seq_contract TO seq_reader",
+            ext,
+        );
+        denied(
+            &mut a,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            "55000",
+        );
+        denied(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            "42501",
+        );
+        ok(
+            &mut b,
+            "GRANT USAGE ON SEQUENCE public.seq_contract TO seq_reader",
+            ext,
+        );
+        value(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            Some("12"),
+        );
+        value(
+            &mut a,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            Some("12"),
+        );
+        ok(
+            &mut b,
+            "REVOKE USAGE ON SEQUENCE public.seq_contract FROM seq_reader",
+            ext,
+        );
+        denied(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            "42501",
+        );
+        value(
+            &mut a,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            Some("12"),
+        );
+        denied(
+            &mut a,
+            "GRANT USAGE ON SEQUENCE seq_contract TO PUBLIC",
+            ext,
+            "42501",
+        );
+        denied(&mut a, "DROP SEQUENCE seq_contract", ext, "42501");
+        denied(
+            &mut b,
+            "GRANT USAGE ON SEQUENCE seq_contract TO absent_sequence_role",
+            ext,
+            "42704",
+        );
+        ok(
+            &mut b,
+            "GRANT UPDATE ON SEQUENCE seq_contract TO seq_reader",
+            ext,
+        );
+        value(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            Some("13"),
+        );
+        value(
+            &mut a,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            Some("13"),
+        );
+        ok(&mut a, "SET ROLE NONE", ext);
+        let old_id = domain.stats_table("test", "seq_contract").unwrap().1.ID;
+        ok(&mut b, "DROP SEQUENCE public.seq_contract", ext);
+        ok(
+            &mut b,
+            "CREATE SEQUENCE public.seq_contract AS bigint START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE",
+            ext,
+        );
+        assert_ne!(
+            old_id,
+            domain.stats_table("test", "seq_contract").unwrap().1.ID
+        );
+        denied(
+            &mut a,
+            "SELECT currval('seq_contract'::regclass) AS v",
+            ext,
+            "55000",
+        );
+        value(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            Some("10"),
+        );
+        ok(&mut a, "SET ROLE seq_reader", ext);
+        denied(
+            &mut a,
+            "SELECT nextval('seq_contract'::regclass) AS v",
+            ext,
+            "42501",
+        );
+        ok(&mut a, "SET ROLE NONE", ext);
+        if ext {
+            ok(
+                &mut a,
+                "CREATE SEQUENCE seq_phase AS bigint START WITH 10 CACHE 1 NO CYCLE",
+                ext,
+            );
+            send(
+                &mut a,
+                b'P',
+                &[
+                    b"phase\0".as_slice(),
+                    b"SELECT nextval('seq_phase'::regclass) AS v\0",
+                    &[0, 0],
+                ]
+                .concat(),
+            );
+            assert_eq!(read(&mut a), (b'1', vec![]));
+            send(&mut a, b'D', b"Sphase\0");
+            assert_eq!(read(&mut a), (b't', vec![0, 0]));
+            assert_eq!(read(&mut a).0, b'T');
+            value(
+                &mut b,
+                "SELECT nextval('seq_phase'::regclass) AS v",
+                false,
+                Some("10"),
+            );
+            send(&mut a, b'B', &[b"p\0phase\0".as_slice(), &[0; 6]].concat());
+            assert_eq!(read(&mut a), (b'2', vec![]));
+            send(&mut a, b'D', b"Pp\0");
+            assert_eq!(read(&mut a).0, b'T');
+            value(
+                &mut b,
+                "SELECT nextval('seq_phase'::regclass) AS v",
+                false,
+                Some("11"),
+            );
+            send(&mut a, b'E', &[b"p\0".as_slice(), &[0; 4]].concat());
+            assert_eq!(read(&mut a), (b'D', row(&[Some("12")])));
+            assert_eq!(read(&mut a), (b'C', b"SELECT 1\0".to_vec()));
+            send(&mut a, b'E', &[b"p\0".as_slice(), &[0; 4]].concat());
+            assert_eq!(read(&mut a), (b'C', b"SELECT 0\0".to_vec()));
+            value(
+                &mut b,
+                "SELECT nextval('seq_phase'::regclass) AS v",
+                false,
+                Some("13"),
+            );
+            for target in [b"Pp\0".as_slice(), b"Sphase\0".as_slice()] {
+                send(&mut a, b'C', target);
+                assert_eq!(read(&mut a), (b'3', vec![]));
+            }
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+            ok(&mut a, "DROP SEQUENCE seq_phase", ext);
+        }
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.\"SeqCase\" AS bigint START WITH 5 CACHE 1 NO CYCLE",
+            ext,
+        );
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seqcase AS bigint START WITH 8 CACHE 1 NO CYCLE",
+            ext,
+        );
+        value(
+            &mut a,
+            "SELECT nextval('public.\"SeqCase\"'::regclass) AS v",
+            ext,
+            Some("5"),
+        );
+        value(
+            &mut a,
+            "SELECT nextval('public.seqcase'::regclass) AS v",
+            ext,
+            Some("8"),
+        );
+        value(
+            &mut a,
+            "SELECT currval('public.\"SeqCase\"'::regclass) AS v",
+            ext,
+            Some("5"),
+        );
+        ok(&mut a, "DROP SEQUENCE public.\"SeqCase\"", ext);
+        value(
+            &mut a,
+            "SELECT currval('public.seqcase'::regclass) AS v",
+            ext,
+            Some("8"),
+        );
+        ok(&mut a, "DROP SEQUENCE public.seqcase", ext);
+        eprintln!(
+            "pg11_14 ext={ext}: first/cross/reconnect, NULL, missing/wrong-type/signature, exhaustion/recovery, SELECT/USAGE/UPDATE ACL, owner checks, role existence, object recreation passed"
+        );
+        for sql in [
+            "DROP SEQUENCE seq_contract",
+            "DROP SEQUENCE seq_boundary",
+            "DROP TABLE seq_not_sequence",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+    }
+    native.execute("DROP ROLE seq_reader").unwrap();
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}

@@ -3209,6 +3209,49 @@ impl Domain {
         )
     }
 
+    /// Allocate one CACHE 1 value using the canonical sequence water level.
+    /// Object metadata and IDs come from the shared catalog, never AUTO_INCREMENT.
+    pub fn sequence_next_value(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<i64, astersql_meta_autoid::AutoIdError> {
+        let seq = table.Sequence.as_ref().ok_or_else(|| {
+            astersql_meta_autoid::AutoIdError::NotImplemented("object is not a sequence".into())
+        })?;
+        if seq.Cache && seq.CacheValue != 1 {
+            return Err(astersql_meta_autoid::AutoIdError::NotImplemented(
+                "PostgreSQL sequence allocation requires CACHE 1".into(),
+            ));
+        }
+        let base = if seq.Increment > 0 {
+            seq.Start.checked_sub(1)
+        } else {
+            seq.Start.checked_add(1)
+        }
+        .ok_or_else(|| {
+            astersql_meta_autoid::AutoIdError::Storage(
+                "sequence initial water level overflows".into(),
+            )
+        })?;
+        KvAutoIdStore::new(self.storage_handle())
+            .initialize_sequence(table.DBID, table.ID, base)?;
+        let allocator = DefaultAllocator::new_sequence(
+            Arc::clone(&self.auto_id_store),
+            table.DBID,
+            table.ID,
+            astersql_meta_autoid::SequenceInfo {
+                start: seq.Start,
+                increment: seq.Increment,
+                min_value: seq.MinValue,
+                max_value: seq.MaxValue,
+                cache: false,
+                cache_value: 1,
+                cycle: seq.Cycle,
+            },
+        );
+        allocator.alloc_seq_cache().map(|(_, end, _)| end)
+    }
+
     fn new_stats_auto_id_allocator(
         &self,
         table: &astersql_meta_model::TableInfo,

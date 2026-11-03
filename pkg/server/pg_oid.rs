@@ -78,7 +78,7 @@ pub(crate) fn index_oid(table: i64, index: i64) -> ConnResult<u32> {
 }
 
 /// Parse PG relation input identifiers, retaining quoted case and escaped quotes.
-fn name_parts(input: &str) -> ConnResult<Vec<String>> {
+pub(crate) fn name_parts(input: &str) -> ConnResult<Vec<String>> {
     let mut chars = input.trim().chars().peekable();
     let mut parts = Vec::new();
     loop {

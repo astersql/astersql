@@ -107,6 +107,8 @@ mod pg_record;
 #[cfg(test)]
 mod pg_record_test;
 mod pg_schema;
+mod pg_sequence;
+pub use pg_sequence::PgSequenceCommand;
 #[cfg(test)]
 mod pg_schema_test;
 mod pg_temporal;

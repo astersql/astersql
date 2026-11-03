@@ -1350,7 +1350,17 @@ impl ConcreteSession {
         let sequence = astersql_ddl::sequence::build_sequence_info(&options)
             .map_err(|error| SessionError::new(format!("invalid sequence options: {error}")))?;
         let table = astersql_meta_model::TableInfo {
-            Name: ast::NewCIStr(&statement.Name.Name.L),
+            Name: ast::NewCIStr(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                &statement.Name.Name.O
+            } else {
+                &statement.Name.Name.L
+            }),
+            ExactName: self.sql_dialect() == ast::SqlDialect::PostgreSQL,
+            PostgreSQLNamespace: if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                self.pg_relation_namespace(&statement.Name.Name.O)?
+            } else {
+                None
+            },
             State: astersql_meta_model::StatePublic,
             Charset: "utf8mb4".to_owned(),
             Collate: "utf8mb4_bin".to_owned(),

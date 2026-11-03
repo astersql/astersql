@@ -139,3 +139,74 @@ fn legacy_empty_namespace_migrates_once_without_reusing_global_ids() {
             .unwrap();
     }
 }
+
+#[test]
+fn sequence_allocation_identity_and_recovery() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let b = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    a.pg_schema_command(&PgSchemaCommand::Create("seq_space".into()))
+        .unwrap();
+    let create = PgSequenceCommand::Create {
+        schema: Some("seq_space".into()),
+        name: "same".into(),
+        options: "START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 11 CACHE 1 NO CYCLE".into(),
+    };
+    let next = PgSequenceCommand::Value {
+        schema: Some("seq_space".into()),
+        name: Some("same".into()),
+        next: true,
+    };
+    let current = PgSequenceCommand::Value {
+        schema: Some("seq_space".into()),
+        name: Some("same".into()),
+        next: false,
+    };
+    a.pg_sequence(&create).unwrap();
+    assert_eq!(
+        a.pg_sequence(&current)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "55000"
+    );
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(10));
+    assert_eq!(
+        b.pg_sequence(&current)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "55000"
+    );
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(11));
+    assert_eq!(
+        a.pg_sequence(&next)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "2200H"
+    );
+    assert_eq!(a.pg_sequence(&current).unwrap(), Some(10));
+    assert_eq!(b.pg_sequence(&current).unwrap(), Some(11));
+    let drop = PgSequenceCommand::Drop {
+        schema: Some("seq_space".into()),
+        name: "same".into(),
+    };
+    a.pg_sequence(&drop).unwrap();
+    a.pg_sequence(&create).unwrap();
+    assert_eq!(
+        a.pg_sequence(&current)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "55000"
+    );
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(10));
+    a.pg_sequence(&drop).unwrap();
+    a.pg_schema_command(&PgSchemaCommand::Drop("seq_space".into()))
+        .unwrap();
+}

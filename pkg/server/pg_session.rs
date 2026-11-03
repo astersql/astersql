@@ -5,6 +5,7 @@ use crate::pg_catalog_query::{ParseResult, Token, lex};
 
 #[derive(Clone, Debug)]
 pub(crate) enum SessionQuery {
+    Sequence(astersql_session::runtime::PgSequenceCommand, Option<String>),
     NumericLocaleShow(bool),
     NumericLocaleSet(bool, String, bool),
     NumericLocaleReset(bool),
@@ -99,6 +100,8 @@ impl PgSession {
             command,
             Some(
                 "CREATE TABLE"
+                    | "CREATE SEQUENCE"
+                    | "DROP SEQUENCE"
                     | "DROP TABLE"
                     | "CREATE DATABASE"
                     | "DROP DATABASE"
@@ -182,6 +185,11 @@ impl PgSession {
         context: &dyn TiDBContext,
     ) -> crate::conn::ConnResult<QueryResult> {
         let value = match query {
+            SessionQuery::Sequence(command, name) => {
+                let value = context.pg_sequence(command.clone())?;
+                name.as_ref()
+                    .map(|_| value.map(Value::Signed).unwrap_or(Value::Null))
+            }
             SessionQuery::NumericLocaleShow(monetary) => {
                 Some(Value::Text(context.pg_numeric_locale(*monetary, None)?))
             }
@@ -303,6 +311,15 @@ impl SessionQuery {
     }
     pub(crate) fn command(&self) -> &'static str {
         match self {
+            Self::Sequence(command, _) => match command {
+                astersql_session::runtime::PgSequenceCommand::Create { .. } => "CREATE SEQUENCE",
+                astersql_session::runtime::PgSequenceCommand::Drop { .. } => "DROP SEQUENCE",
+                astersql_session::runtime::PgSequenceCommand::Grant { grant: true, .. } => "GRANT",
+                astersql_session::runtime::PgSequenceCommand::Grant { grant: false, .. } => {
+                    "REVOKE"
+                }
+                astersql_session::runtime::PgSequenceCommand::Value { .. } => "SELECT",
+            },
             Self::Show
             | Self::DateStyleShow
             | Self::IntervalStyleShow
@@ -328,6 +345,7 @@ impl SessionQuery {
     }
     pub(crate) fn metadata(&self) -> PreparedMetadata {
         let name = match self {
+            Self::Sequence(_, name) => name.as_deref(),
             Self::Show => Some("search_path"),
             Self::DateStyleShow => Some("DateStyle"),
             Self::LcTimeShow => Some("lc_time"),
@@ -350,7 +368,8 @@ impl SessionQuery {
             native_types: Vec::new(),
         };
         if let Some(name) = name {
-            let code = 253;
+            let sequence = matches!(self, Self::Sequence(_, Some(_)));
+            let code = if sequence { 8 } else { 253 };
             result.columns.push(ColumnInfo {
                 name: name.into(),
                 column_type: code,
@@ -367,7 +386,7 @@ impl SessionQuery {
             result.native_types.push(NativeType {
                 code,
                 flags: 0,
-                length: 64,
+                length: if sequence { 20 } else { 64 },
                 decimal: 0,
                 postgresql_text_oid: None,
                 postgresql_array_element: None,
@@ -385,6 +404,9 @@ impl SessionQuery {
         };
         if tokens.last() == Some(&Token::Symbol(';')) {
             tokens.pop();
+        }
+        if let Some((command, name)) = crate::pg_sequence::parse(&tokens)? {
+            return Ok(Some(Self::Sequence(command, name)));
         }
         let word = |token: Option<&Token>, expected: &str| matches!(token,Some(Token::Word(w)) if w==expected);
         use astersql_session::runtime::PgSchemaCommand;

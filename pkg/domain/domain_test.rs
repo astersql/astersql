@@ -27,3 +27,113 @@ fn canonical_analyze_sql_detection_matches_tidb_statement_prefixes() {
         assert!(!is_analyze_table_sql(sql), "{sql}");
     }
 }
+
+#[test]
+fn sequence_cache_one_uses_canonical_store() {
+    use std::sync::Arc;
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap_or_else(|_| panic!("mock storage has another owner"));
+    let handle = Arc::new(crate::StorageHandle::new(storage));
+    let make_domain = || {
+        crate::Domain::new_with_storage_handle(
+            handle.clone(),
+            Arc::new(crate::KvInfoSchemaLoader::default()),
+            crate::DomainConfig::default(),
+        )
+    };
+    let domain = Arc::new(make_domain());
+    let mut table = astersql_meta_model::TableInfo {
+        ID: 101,
+        DBID: 100,
+        Sequence: Some(astersql_meta_model::SequenceInfo {
+            Start: 10,
+            Increment: 1,
+            MinValue: 1,
+            MaxValue: 1000,
+            Cache: false,
+            CacheValue: 1,
+            Cycle: false,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(domain.sequence_next_value(&table).unwrap(), 10);
+    // A fresh Domain and allocator share the same canonical persisted water level.
+    let second = make_domain();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 11);
+    let threads = (0..4)
+        .map(|_| {
+            let domain = domain.clone();
+            let table = table.clone();
+            std::thread::spawn(move || {
+                (0..10)
+                    .map(|_| domain.sequence_next_value(&table).unwrap())
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut values = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    assert_eq!(values, (12..52).collect::<Vec<_>>());
+    table.ID = 102;
+    table.Sequence.as_mut().unwrap().Start = 1000;
+    assert_eq!(domain.sequence_next_value(&table).unwrap(), 1000);
+    assert!(matches!(
+        domain.sequence_next_value(&table),
+        Err(astersql_meta_autoid::AutoIdError::AutoIncrementReadFailed(
+            _
+        ))
+    ));
+    table.ID = 103;
+    let seq = table.Sequence.as_mut().unwrap();
+    seq.Start = -10;
+    seq.Increment = -2;
+    seq.MinValue = -12;
+    seq.MaxValue = -1;
+    assert_eq!(domain.sequence_next_value(&table).unwrap(), -10);
+    assert_eq!(domain.sequence_next_value(&table).unwrap(), -12);
+    assert!(domain.sequence_next_value(&table).is_err());
+    table.ID = 104;
+    table.Sequence.as_mut().unwrap().Cache = true;
+    table.Sequence.as_mut().unwrap().CacheValue = 4;
+    assert!(matches!(
+        domain.sequence_next_value(&table),
+        Err(astersql_meta_autoid::AutoIdError::NotImplemented(_))
+    ));
+    table.ID = 105;
+    let seq = table.Sequence.as_mut().unwrap();
+    seq.Start = 10;
+    seq.Increment = 1;
+    seq.MinValue = 1;
+    seq.MaxValue = 1000;
+    seq.Cache = false;
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let threads = (0..4)
+        .map(|_| {
+            let domain = domain.clone();
+            let table = table.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                domain.sequence_next_value(&table).unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut first_values = threads
+        .into_iter()
+        .map(|t| t.join().unwrap())
+        .collect::<Vec<_>>();
+    first_values.sort_unstable();
+    assert_eq!(first_values, vec![10, 11, 12, 13]);
+    table.Sequence = None;
+    assert!(domain.sequence_next_value(&table).is_err());
+}

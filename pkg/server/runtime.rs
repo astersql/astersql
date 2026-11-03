@@ -821,6 +821,10 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    PgSequence {
+        command: astersql_session::runtime::PgSequenceCommand,
+        response: mpsc::SyncSender<ConnResult<Option<i64>>>,
+    },
     PgNamespaceFacts {
         response: mpsc::SyncSender<ConnResult<Vec<astersql_session::runtime::PgNamespaceFact>>>,
     },
@@ -1004,6 +1008,13 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::PgSequence { command, response } => {
+                let _ = response.send(
+                    session
+                        .pg_sequence(&command)
+                        .map_err(session_protocol_error),
+                );
+            }
             SessionRequest::PgNamespaceFacts { response } => {
                 let _ = response.send(session.pg_namespace_facts().map_err(session_protocol_error));
             }
@@ -1992,6 +2003,17 @@ impl TiDBContext for ConcreteTiDBContext {
             })
             .and_then(|_| rx.recv().map_err(packet_error)?),
         )
+    }
+    fn pg_sequence(
+        &self,
+        command: astersql_session::runtime::PgSequenceCommand,
+    ) -> ConnResult<Option<i64>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::PgSequence {
+            command,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)?
     }
     fn pg_schema_path(
         &self,

@@ -906,6 +906,15 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    /// Dispatch PG sequence operations to the connection's shared session worker.
+    fn pg_sequence(
+        &self,
+        _command: astersql_session::runtime::PgSequenceCommand,
+    ) -> ConnResult<Option<i64>> {
+        Err(ConnError::Session(
+            "PostgreSQL sequence service unavailable".into(),
+        ))
+    }
     /// All current-database namespace identities and USAGE facts for this actor.
     /// None preserves contexts without PostgreSQL namespace support.
     fn pg_namespace_facts(

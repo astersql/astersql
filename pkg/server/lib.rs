@@ -180,6 +180,7 @@ mod pg_dml_test;
 mod pg_transaction_test;
 
 mod pg_extended;
+mod pg_sequence;
 mod pg_session;
 #[cfg(test)]
 mod pg_session_test;

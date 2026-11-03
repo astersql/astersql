@@ -36,7 +36,7 @@ impl ConcreteSession {
 
     // Bootstrap PG authentication currently admits root only. SET ROLE already
     // verifies membership in the shared role owner before replacing this actor.
-    fn pg_schema_identity(&self) -> String {
+    pub(super) fn pg_schema_identity(&self) -> String {
         self.active_roles
             .borrow()
             .first()
@@ -275,7 +275,7 @@ fn allocate_namespace_id(
     Ok(id)
 }
 
-fn namespace_error(state: &'static str, message: &str) -> SessionError {
+pub(super) fn namespace_error(state: &'static str, message: &str) -> SessionError {
     let error = super::function_diagnostics::PgFunctionError {
         state,
         message: message.into(),
