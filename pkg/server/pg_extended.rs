@@ -1035,10 +1035,67 @@ fn catalog_binary_parameter(
     })
 }
 
+/// Capture physical relations after PG name binding, including relations used only
+/// by predicates/joins. Output-column origins alone omit those dependencies.
+fn relation_dependencies(
+    sql: &str,
+    context: &dyn TiDBContext,
+) -> Option<Vec<(i64, serde_json::Value)>> {
+    use astersql_parser_ast as ast;
+    let snapshot = context.schema_snapshot()?;
+    let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .ok()?;
+    struct Relations {
+        names: Vec<(String, String)>,
+    }
+    impl ast::Visitor for Relations {
+        fn enter(&mut self, _: &dyn ast::Node) -> bool {
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+        fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+            // pg_name qualifies physical relations; unqualified names here are
+            // CTE references, whose underlying relations are visited separately.
+            if !table.Schema.O.is_empty() {
+                self.names
+                    .push((table.Schema.O.clone(), table.Name.O.clone()));
+            }
+            false
+        }
+    }
+    let mut relations = Relations { names: Vec::new() };
+    for statement in statements {
+        statement.accept(&mut relations);
+    }
+    let mut dependencies = Vec::new();
+    for (database, name) in relations.names {
+        let table = snapshot
+            .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(database), &name)
+            .ok()?;
+        // View definitions can hide transitive dependencies not present in
+        // this AST. Keep the existing global invalidation for those statements.
+        if table.IsView() {
+            return None;
+        }
+        if !dependencies.iter().any(|(id, _)| *id == table.ID) {
+            dependencies.push((table.ID, serde_json::to_value(table.as_ref()).ok()?));
+        }
+    }
+    if dependencies.is_empty() {
+        None
+    } else {
+        Some(dependencies)
+    }
+}
+
 struct Statement {
     original_sql: String,
     path: Vec<String>,
     schema_version: Option<i64>,
+    dependencies: Option<Vec<(i64, serde_json::Value)>>,
     catalog: Option<crate::pg_catalog::CatalogQuery>,
     session_query: Option<crate::pg_session::SessionQuery>,
     metadata: PreparedMetadata,
@@ -1399,10 +1456,12 @@ impl Extended {
                 &oids,
             )?
         };
+        let mut dependencies = None;
         let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
             (sql, Vec::new())
         } else {
             let sql = crate::pg_name::adapt(&sql, context.as_ref(), &mut self.session)?;
+            dependencies = relation_dependencies(&sql, context.as_ref());
             let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
             let (engine_sql, mapping) = markers(&sql)?;
             if !mapping.is_empty() {
@@ -1630,6 +1689,7 @@ impl Extended {
             interval_time_parameters,
             original_sql,
             path,
+            dependencies,
             schema_version: context
                 .schema_snapshot()
                 .map(|schema| schema.SchemaMetaVersion()),
@@ -1668,8 +1728,26 @@ impl Extended {
         let schema_version = context
             .schema_snapshot()
             .map(|schema| schema.SchemaMetaVersion());
-        if statement.path == path && statement.schema_version == schema_version {
-            return Ok(());
+        if statement.path == path {
+            if statement.schema_version == schema_version {
+                return Ok(());
+            }
+            if let (Some(dependencies), Some(snapshot)) =
+                (&statement.dependencies, context.schema_snapshot())
+                && dependencies.iter().all(|(id, definition)| {
+                    snapshot
+                        .TableByID(*id)
+                        .and_then(|table| table.0.model_meta.clone())
+                        .and_then(|table| serde_json::to_value(table.as_ref()).ok())
+                        .as_ref()
+                        == Some(definition)
+                })
+            {
+                // A new earlier same-name relation does not invalidate the
+                // analyzed relation. Re-resolve only on path/dependency changes.
+                self.statements.get_mut(name).unwrap().schema_version = schema_version;
+                return Ok(());
+            }
         }
         let original_sql = statement.original_sql.clone();
         let oids = statement.oids.clone();

@@ -32591,3 +32591,233 @@ fn pg_function_22() {
     assert!(TcpStream::connect(pg_address).is_err());
     assert!(TcpStream::connect(mysql_address).is_err());
 }
+
+#[test]
+fn pg11_10() {
+    fn drain(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut out = Vec::new();
+        loop {
+            let m = read(s);
+            let done = m.0 == b'Z';
+            out.push(m);
+            if done {
+                return out;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str) {
+        let m = query(s, sql);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn prepare(s: &mut TcpStream, name: &str, sql: &str) {
+        parse(s, name, sql, &[23]);
+        send(s, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        send(s, b'S', &[]);
+        let m = drain(s);
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"1tTZ");
+        assert_eq!(
+            m[1].1,
+            [1i16.to_be_bytes().as_slice(), &23u32.to_be_bytes()].concat()
+        );
+    }
+    fn value(s: &mut TcpStream, name: &str, param: Option<&str>, expected: Option<&str>) -> u32 {
+        bind(s, "", name, &[param]);
+        send(s, b'D', b"P\0");
+        execute(s, "", 0);
+        send(s, b'S', &[]);
+        let m = drain(s);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{name}: {m:?}");
+        let d = m.iter().find(|m| m.0 == b'T').unwrap();
+        assert_eq!(&d.1[..4], b"\0\x01v\0");
+        assert_eq!(
+            &d.1[10..],
+            [
+                23u32.to_be_bytes().as_slice(),
+                &4i16.to_be_bytes(),
+                &(-1i32).to_be_bytes(),
+                &0i16.to_be_bytes()
+            ]
+            .concat()
+        );
+        let rows = m
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            expected.map(|v| vec![row(&[Some(v)])]).unwrap_or_default(),
+            "{name}"
+        );
+        assert_eq!(
+            m.iter().find(|m| m.0 == b'C').unwrap().1,
+            if expected.is_some() {
+                b"SELECT 1\0".to_vec()
+            } else {
+                b"SELECT 0\0".to_vec()
+            }
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        let oid = u32::from_be_bytes(d.1[4..8].try_into().unwrap());
+        assert_ne!(oid, 0);
+        assert_eq!(&d.1[8..10], &2i16.to_be_bytes());
+        eprintln!("pg11_10 {name}({param:?}) => {expected:?}, source={oid}");
+        oid
+    }
+    fn rejected(s: &mut TcpStream, name: &str, parameter: Option<&str>, state: &str, ready: u8) {
+        bind(s, "", name, &[parameter]);
+        send(s, b'D', b"P\0");
+        execute(s, "", 0);
+        send(s, b'S', &[]);
+        let m = drain(s);
+        let e = m.iter().find(|m| m.0 == b'E').expect("expected rejection");
+        assert!(
+            e.1.windows(7)
+                .any(|w| w == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{m:?}"
+        );
+        assert!(!m.iter().any(|m| matches!(m.0, b'D' | b'C')));
+        assert_eq!(m.last().unwrap(), &(b'Z', vec![ready]));
+        eprintln!(
+            "pg11_10 rejected {name}: {state}, ready={ready}, frames={:?}",
+            m.iter().map(|m| m.0 as char).collect::<String>()
+        );
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut sockets = [0, 1].map(|_| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        drain(&mut s);
+        s
+    });
+    let [a, b] = &mut sockets;
+    ok(b, "CREATE SCHEMA pg1110_alt");
+    ok(
+        b,
+        "CREATE TABLE public.pg1110_doc (id integer PRIMARY KEY, v integer)",
+    );
+    ok(b, "INSERT INTO public.pg1110_doc VALUES (1,10),(2,20)");
+    ok(a, "SET search_path TO pg1110_alt, public");
+    prepare(a, "s", "SELECT v FROM pg1110_doc WHERE id=$1");
+    let public = value(a, "s", Some("1"), Some("10"));
+    value(a, "s", Some("2"), Some("20"));
+    value(a, "s", None, None);
+    prepare(a, "q", "SELECT v FROM public.pg1110_doc WHERE id=$1");
+    ok(
+        b,
+        "CREATE TABLE pg1110_alt.pg1110_doc (id integer PRIMARY KEY, v integer)",
+    );
+    ok(b, "INSERT INTO pg1110_alt.pg1110_doc VALUES (1,90)");
+    assert_eq!(
+        value(a, "s", Some("1"), Some("10")),
+        public,
+        "earlier-shadow must preserve dependency"
+    );
+    ok(a, "SET search_path TO public");
+    assert_eq!(value(a, "s", Some("1"), Some("10")), public);
+    ok(a, "SET search_path TO pg1110_alt, public");
+    let alt = value(a, "s", Some("1"), Some("90"));
+    assert_ne!(alt, public);
+    assert_eq!(value(a, "q", Some("1"), Some("10")), public);
+    ok(a, "SET search_path TO public");
+    assert_eq!(value(a, "s", Some("1"), Some("10")), public);
+    // Missing path rejects at new Bind, qualified names remain usable, and
+    // restoration recovers the original statement without a fresh Parse.
+    ok(a, "SET search_path TO pg_catalog");
+    rejected(a, "s", Some("1"), "42P01", b'I');
+    assert_eq!(value(a, "q", Some("1"), Some("10")), public);
+    ok(a, "SET search_path TO public");
+    assert_eq!(value(a, "s", Some("1"), Some("10")), public);
+    rejected(a, "s", Some("invalid"), "22P02", b'I');
+    assert_eq!(value(a, "s", Some("2"), Some("20")), public);
+    // A failed Bind inside a real transaction must preserve failure state and
+    // roll back prior writes. Sync alone must not clear that state.
+    ok(a, "SET search_path TO pg_catalog");
+    let begin = query(a, "BEGIN");
+    assert_eq!(begin.last().unwrap(), &(b'Z', b"T".to_vec()));
+    let inserted = query(a, "INSERT INTO public.pg1110_doc VALUES (9,99)");
+    assert!(!inserted.iter().any(|m| m.0 == b'E'));
+    let visible = query(a, "SELECT v FROM public.pg1110_doc WHERE id=9");
+    assert_eq!(
+        visible
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[Some("99")])]
+    );
+    let invisible = query(b, "SELECT v FROM public.pg1110_doc WHERE id=9");
+    assert!(!invisible.iter().any(|m| matches!(m.0, b'D' | b'E')));
+    rejected(a, "s", Some("1"), "42P01", b'E');
+    let failed = query(a, "SELECT 1");
+    assert!(
+        failed
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C25P02\0"))
+    );
+    assert_eq!(failed.last().unwrap(), &(b'Z', b"E".to_vec()));
+    ok(a, "ROLLBACK");
+    ok(a, "SET search_path TO public");
+    value(a, "s", Some("9"), None);
+    prepare(b, "observer", "SELECT v FROM public.pg1110_doc WHERE id=$1");
+    value(b, "observer", Some("9"), None);
+    // Changed definitions must still trigger validation. An explicit projection
+    // survives an unrelated added column with its original type and identity.
+    prepare(a, "shape", "SELECT * FROM public.pg1110_doc WHERE id=$1");
+    ok(b, "ALTER TABLE public.pg1110_doc ADD COLUMN extra integer");
+    rejected(a, "shape", Some("1"), "0A000", b'I');
+    assert_eq!(value(a, "s", Some("1"), Some("10")), public);
+    prepare(
+        a,
+        "j",
+        "SELECT d.v FROM public.pg1110_doc AS d JOIN pg1110_alt.pg1110_doc AS a ON d.id=a.id WHERE d.id=$1",
+    );
+    assert_eq!(value(a, "j", Some("1"), Some("10")), public);
+    ok(b, "DROP TABLE pg1110_alt.pg1110_doc");
+    rejected(a, "j", Some("1"), "42P01", b'I');
+    ok(
+        b,
+        "CREATE TABLE pg1110_alt.pg1110_doc (id integer PRIMARY KEY, v integer)",
+    );
+    ok(b, "INSERT INTO pg1110_alt.pg1110_doc VALUES (1,70)");
+    ok(a, "SET search_path TO pg1110_alt, public");
+    let recreated = value(a, "s", Some("1"), Some("70"));
+    assert_ne!(recreated, alt);
+    assert_eq!(value(a, "q", Some("1"), Some("10")), public);
+    assert_eq!(value(a, "j", Some("1"), Some("10")), public);
+    for name in ["s", "q", "j", "shape"] {
+        send(a, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(a), (b'3', vec![]));
+    }
+    send(a, b'S', &[]);
+    drain(a);
+    send(b, b'C', b"Sobserver\0");
+    assert_eq!(read(b), (b'3', vec![]));
+    send(b, b'S', &[]);
+    drain(b);
+    ok(b, "DROP TABLE pg1110_alt.pg1110_doc");
+    ok(b, "DROP TABLE public.pg1110_doc");
+    ok(b, "DROP SCHEMA pg1110_alt");
+    for s in &mut sockets {
+        send(s, b'X', &[]);
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
