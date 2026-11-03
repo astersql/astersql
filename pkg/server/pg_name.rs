@@ -783,10 +783,16 @@ fn rewrite_with_context<'a>(
     // Join semantic identities back to source tokens by their original spans.
     // This consumes the AST metadata before relation/schema adaptation, without
     // guessing identifiers inside strings or comments.
+    let mut edits = BTreeMap::new();
     for token in &mut tokens {
         if let Some(part) = parts.get(&(token.start, token.end)) {
             token.name = Some(part.Lookup.clone());
             token.quoted = part.Quoted;
+            // The native parser keeps display spelling even for unquoted names.
+            // Fold only parser-proven identifiers, never strings or comments.
+            if !part.Quoted && sql[token.start..token.end] != part.Lookup {
+                edits.insert(token.start, (token.end, part.Lookup.clone()));
+            }
         }
     }
     let mut resolver = Resolver {
@@ -798,7 +804,7 @@ fn rewrite_with_context<'a>(
         sql,
         database,
         public,
-        edits: BTreeMap::new(),
+        edits,
         error_position: None,
     };
     let resolved = resolver.scope(0, resolver.tokens.len(), &HashSet::new());
@@ -833,6 +839,7 @@ fn identifier_parts(
         parts: Vec<ast::PostgreSQLIdentifier>,
         declarations: HashSet<(usize, usize)>,
         exact_relations: bool,
+        tokens: Vec<Token>,
     }
     impl Gate {
         fn consume(&mut self, parts: &[ast::PostgreSQLIdentifier]) {
@@ -846,18 +853,40 @@ fn identifier_parts(
     }
     impl ast::Visitor for Gate {
         fn enter(&mut self, node: &dyn ast::Node) -> bool {
-            let parts = if let Some(expr) = node.as_any().downcast_ref::<ast::ExprNode>() {
-                if let ast::ExprKind::Column(column) = &expr.Kind {
-                    Some(&column.PostgreSQLParts)
-                } else {
-                    None
-                }
+            let fields = if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                select.Fields.Fields.as_slice()
+            } else if let Some(insert) = node.as_any().downcast_ref::<ast::InsertStmt>() {
+                insert.Returning.as_slice()
+            } else if let Some(update) = node.as_any().downcast_ref::<ast::UpdateStmt>() {
+                update.Returning.as_slice()
             } else {
-                None
+                &[]
             };
-            if let Some(parts) = parts {
-                self.consume(parts);
+            for field in fields.iter().filter(|field| !field.AsName.O.is_empty()) {
+                // OriginalText includes the projection's alias. Its last token
+                // is the declaration, including the bare-alias form without AS.
+                if let Some(token) = self.tokens.iter().rev().find(|token| {
+                    token.start >= field.Offset
+                        && token.end <= field.Offset + field.OriginalText.len()
+                }) && !token.quoted
+                    && token.name.as_deref() == Some(field.AsName.L.as_str())
+                {
+                    self.parts.push(ast::PostgreSQLIdentifier {
+                        Original: field.AsName.O.clone(),
+                        Decoded: field.AsName.O.clone(),
+                        Lookup: field.AsName.L.clone(),
+                        Quoted: false,
+                        Span: (token.start, token.end),
+                    });
+                }
             }
+            false
+        }
+        fn enter_column_name(&mut self, column: &ast::ColumnName) -> bool {
+            // The value-type visitor also covers INSERT targets, UPDATE SET,
+            // conflict assignments and DDL definitions, not just expressions.
+            // Their folded native keys cannot safely select a quoted C over c.
+            self.consume(&column.PostgreSQLParts);
             false
         }
         fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
@@ -884,6 +913,7 @@ fn identifier_parts(
         parts: Vec::new(),
         declarations: aliases.clone(),
         exact_relations: false,
+        tokens: tokens(sql)?,
     };
     for statement in statements {
         if let Some(create) = statement.as_any().downcast_ref::<ast::CreateTableStmt>()

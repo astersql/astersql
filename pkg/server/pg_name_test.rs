@@ -1240,3 +1240,39 @@ fn pg10_27_name_boundaries() {
     );
     assert!(rewrite("WITH moved AS (DELETE FROM public.src RETURNING id) INSERT INTO public.dst SELECT id FROM moved", "db", true).is_ok());
 }
+
+#[test]
+fn pg11_08_column_targets_and_output_names() {
+    for sql in [
+        r#"UPDATE public.t SET "C"=99 WHERE id=1"#,
+        r#"INSERT INTO public.t (id,"C") VALUES (2,99)"#,
+        r#"CREATE TABLE public.t (c integer,"C" integer)"#,
+        r#"INSERT INTO public.t (id,c) VALUES (1,10) ON CONFLICT (id) DO UPDATE SET "C"=99"#,
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000", "{sql}");
+    }
+    for (sql, expected) in [
+        (
+            r#"SELECT C AS V,c AS "V" FROM public.t"#,
+            r#"SELECT c AS v,c AS "V" FROM `db`.t"#,
+        ),
+        (
+            r#"SELECT C V,c "V" FROM public.t"#,
+            r#"SELECT c v,c "V" FROM `db`.t"#,
+        ),
+        (
+            r#"SELECT 'AS V public.T' AS V FROM public.t /* AS X */"#,
+            r#"SELECT 'AS V public.T' AS v FROM `db`.t /* AS X */"#,
+        ),
+        (
+            r#"UPDATE public.t SET "c"=99 WHERE ID=1"#,
+            r#"UPDATE `db`.t SET "c"=99 WHERE id=1"#,
+        ),
+        (
+            r#"INSERT INTO public.t (ID,"c") VALUES (1,10)"#,
+            r#"INSERT INTO `db`.t (id,"c") VALUES (1,10)"#,
+        ),
+    ] {
+        assert_eq!(rewrite(sql, "db", true).unwrap(), expected, "{sql}");
+    }
+}

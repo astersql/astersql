@@ -29012,3 +29012,355 @@ fn pg11_07() {
     drop(_cleanup);
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_08() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    // A missing exact-column backend must reject before mutating folded c.
+    // Keep every independent scenario running so a setup gate cannot hide alias regressions.
+    fn check(
+        s: &mut TcpStream,
+        sql: &str,
+        ext: bool,
+        expected: &[Option<&str>],
+        names: &[&str],
+        state: &str,
+        status: u8,
+        failures: &mut Vec<String>,
+    ) {
+        let m = run(s, sql, ext);
+        let error = m.iter().find(|m| m.0 == b'E');
+        let code = error
+            .map(|m| {
+                m.1.split(|b| *b == 0)
+                    .find(|f| f.first() == Some(&b'C'))
+                    .map(|f| String::from_utf8_lossy(&f[1..]).into_owned())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        let mut actual_names = Vec::new();
+        let mut types = Vec::new();
+        if let Some((_, description)) = m.iter().find(|m| m.0 == b'T') {
+            let mut at = 2;
+            for _ in 0..u16::from_be_bytes(description[..2].try_into().unwrap()) {
+                let end = at + description[at..].iter().position(|b| *b == 0).unwrap();
+                actual_names.push(String::from_utf8_lossy(&description[at..end]).into_owned());
+                types.push((
+                    u32::from_be_bytes(description[end + 7..end + 11].try_into().unwrap()),
+                    i16::from_be_bytes(description[end + 11..end + 13].try_into().unwrap()),
+                    i32::from_be_bytes(description[end + 13..end + 17].try_into().unwrap()),
+                    i16::from_be_bytes(description[end + 17..end + 19].try_into().unwrap()),
+                ));
+                at = end + 19;
+            }
+        }
+        let rows = catalog_rows(&m);
+        let wanted = vec![
+            expected
+                .iter()
+                .map(|v| v.map(str::to_owned))
+                .collect::<Vec<_>>(),
+        ];
+        let expected_types = names
+            .iter()
+            .map(|name| match *name {
+                "marker" => (25, -1, -1, 0),
+                "n" => (20, 8, -1, 0),
+                _ => (23, 4, -1, 0),
+            })
+            .collect::<Vec<_>>();
+        let valid = (state.is_empty() || !m.iter().any(|m| m.0 == b'C' || m.0 == b'D'))
+            && (names.is_empty() || types == expected_types)
+            && code == state
+            && m.last() == Some(&(b'Z', vec![status]))
+            && (!state.is_empty()
+                || (m.iter().any(|m| m.0 == b'C')
+                    && (names.is_empty() || (actual_names == names && rows == wanted))));
+        if !valid {
+            failures.push(format!("ext={ext} {sql}: wanted state={state:?} status={} rows={wanted:?} names={names:?}; actual code={code:?} rows={rows:?} names={actual_names:?} messages={m:?}", status as char));
+        }
+        eprintln!(
+            "pg11_08 ext={ext} valid={valid} SQL={sql} state={code} rows={rows:?} names={actual_names:?}"
+        );
+    }
+    let mut failures = Vec::new();
+    for ext in [false, true] {
+        let mut a = connect(Some("public"));
+        let mut b = connect(Some("public"));
+        check(
+            &mut a,
+            "CREATE TABLE public.pg1108_t (id integer PRIMARY KEY,c integer,\"a.b\" integer,\"a\"\"b\" integer)",
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "INSERT INTO public.pg1108_t VALUES (1,10,12,NULL)",
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        for (sql, values, names) in [
+            (
+                "SELECT c,C,\"c\" FROM public.pg1108_t",
+                vec![Some("10"); 3],
+                vec!["c"; 3],
+            ),
+            (
+                "SELECT A.c FROM public.pg1108_t AS A",
+                vec![Some("10")],
+                vec!["c"],
+            ),
+            (
+                "SELECT \"A\".c AS \"V\" FROM public.pg1108_t AS \"A\"",
+                vec![Some("10")],
+                vec!["V"],
+            ),
+            (
+                "SELECT c AS V,c AS \"V\" FROM public.pg1108_t",
+                vec![Some("10"); 2],
+                vec!["v", "V"],
+            ),
+            (
+                "SELECT \"a.b\",\"a\"\"b\" FROM public.pg1108_t",
+                vec![Some("12"), None],
+                vec!["a.b", "a\"b"],
+            ),
+            (
+                "SELECT 'public.T' AS marker FROM public.pg1108_t /* public.\"T\" */",
+                vec![Some("public.T")],
+                vec!["marker"],
+            ),
+        ] {
+            check(&mut a, sql, ext, &values, &names, "", b'I', &mut failures);
+        }
+        for (sql, state) in [
+            ("SELECT a.c FROM public.pg1108_t AS \"A\"", "42P01"),
+            ("SELECT pg1108_t.c FROM public.pg1108_t AS \"A\"", "42P01"),
+            ("SELECT \"C\" FROM public.pg1108_t", "42703"),
+            ("SELECT \"cC\" FROM public.pg1108_t", "42703"),
+            (
+                "SELECT a.c FROM public.pg1108_t AS a JOIN public.pg1108_t AS \"A\" ON a.id=\"A\".id",
+                "0A000",
+            ),
+            ("SELECT \"\" FROM public.pg1108_t", "42601"),
+            ("SELECT \"broken FROM public.pg1108_t", "42601"),
+            ("UPDATE public.pg1108_t SET \"C\"=99 WHERE id=1", "0A000"),
+            (
+                "INSERT INTO public.pg1108_t (id,\"C\") VALUES (2,99)",
+                "0A000",
+            ),
+            (
+                "CREATE TABLE public.pg1108_distinct (c integer,\"C\" integer)",
+                "0A000",
+            ),
+        ] {
+            check(&mut a, sql, ext, &[], &[], state, b'I', &mut failures);
+            check(
+                &mut a,
+                "SELECT c FROM public.pg1108_t WHERE id=1",
+                ext,
+                &[Some("10")],
+                &["c"],
+                "",
+                b'I',
+                &mut failures,
+            );
+        }
+        check(
+            &mut a,
+            "SELECT count(*) AS n FROM public.pg1108_t",
+            ext,
+            &[Some("1")],
+            &["n"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "SELECT c FROM public.pg1108_distinct",
+            ext,
+            &[],
+            &[],
+            "42P01",
+            b'I',
+            &mut failures,
+        );
+        // Writes to representable quoted names retain independent values and NULLs.
+        check(&mut a, "BEGIN", ext, &[], &[], "", b'T', &mut failures);
+        check(
+            &mut a,
+            r#"UPDATE public.pg1108_t SET "a.b"=13,"a""b"=14 WHERE id=1"#,
+            ext,
+            &[],
+            &[],
+            "",
+            b'T',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"SELECT c,"a.b","a""b" FROM public.pg1108_t"#,
+            ext,
+            &[Some("10"), Some("13"), Some("14")],
+            &["c", "a.b", "a\"b"],
+            "",
+            b'T',
+            &mut failures,
+        );
+        check(
+            &mut b,
+            r#"SELECT c,"a.b","a""b" FROM public.pg1108_t"#,
+            ext,
+            &[Some("10"), Some("12"), None],
+            &["c", "a.b", "a\"b"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(&mut a, "ROLLBACK", ext, &[], &[], "", b'I', &mut failures);
+        check(
+            &mut a,
+            r#"SELECT c,"a.b","a""b" FROM public.pg1108_t"#,
+            ext,
+            &[Some("10"), Some("12"), None],
+            &["c", "a.b", "a\"b"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        // A gated target fails the transaction before writing any folded column.
+        for sql in ["BEGIN", "UPDATE public.pg1108_t SET c=21 WHERE id=1"] {
+            check(&mut a, sql, ext, &[], &[], "", b'T', &mut failures);
+        }
+        check(
+            &mut a,
+            "UPDATE public.pg1108_t SET \"C\"=99 WHERE id=1",
+            ext,
+            &[],
+            &[],
+            "0A000",
+            b'E',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "SELECT c FROM public.pg1108_t",
+            ext,
+            &[],
+            &[],
+            "25P02",
+            b'E',
+            &mut failures,
+        );
+        if ext {
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"E".to_vec()));
+        }
+        check(&mut a, "ROLLBACK", ext, &[], &[], "", b'I', &mut failures);
+        check(
+            &mut b,
+            "SELECT c FROM public.pg1108_t WHERE id=1",
+            ext,
+            &[Some("10")],
+            &["c"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "DROP TABLE public.pg1108_t",
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+    }
+    drop(_cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    assert!(
+        failures.is_empty(),
+        "{} scenario failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
