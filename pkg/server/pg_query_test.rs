@@ -28272,3 +28272,224 @@ fn pg11_01() {
         );
     }
 }
+
+#[test]
+fn pg11_02() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service);
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn rows(s: &mut TcpStream, sql: &str, ext: bool, expected: Vec<Vec<Option<String>>>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn one(value: &str) -> Vec<Vec<Option<String>>> {
+        vec![vec![Some(value.into())]]
+    }
+    for ext in [false, true] {
+        let mut a = connect(Some("public"));
+        let mut b = connect(Some("public"));
+        for sql in [
+            "CREATE TABLE public.path_doc (id integer PRIMARY KEY,v integer)",
+            "INSERT INTO public.path_doc VALUES (1,10)",
+            "CREATE TABLE public.pg_namespace (nspname text)",
+            "INSERT INTO public.pg_namespace VALUES ('user_marker')",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        let snapshot = vec![vec![Some("1".into()), Some("10".into())]];
+        for path in ["public", "pg_catalog, public", "public, pg_catalog"] {
+            ok(&mut a, &format!("SET search_path TO {path}"), ext);
+            rows(
+                &mut a,
+                "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'",
+                ext,
+                if path == "public, pg_catalog" {
+                    vec![]
+                } else {
+                    one("pg_catalog")
+                },
+            );
+            rows(
+                &mut a,
+                "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname = 'pg_catalog'",
+                ext,
+                one("pg_catalog"),
+            );
+            rows(
+                &mut a,
+                "SELECT nspname FROM public.pg_namespace ORDER BY nspname",
+                ext,
+                one("user_marker"),
+            );
+            rows(
+                &mut b,
+                "SELECT id,v FROM path_doc ORDER BY id",
+                ext,
+                snapshot.clone(),
+            );
+        }
+        rows(&mut b, "SHOW search_path", ext, one("public"));
+        rows(
+            &mut b,
+            "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'",
+            ext,
+            one("pg_catalog"),
+        );
+        for path in ["''", "missing", "missing, pg_catalog"] {
+            ok(&mut a, &format!("SET search_path TO {path}"), ext);
+            rows(
+                &mut a,
+                "SHOW search_path",
+                ext,
+                one(if path == "''" { "\"\"" } else { path }),
+            );
+            rows(
+                &mut a,
+                "SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'",
+                ext,
+                one("pg_catalog"),
+            );
+            rows(
+                &mut a,
+                "SELECT current_schema()",
+                ext,
+                if path == "missing, pg_catalog" {
+                    one("pg_catalog")
+                } else {
+                    vec![vec![None]]
+                },
+            );
+            rows(
+                &mut a,
+                "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname = 'pg_catalog'",
+                ext,
+                one("pg_catalog"),
+            );
+            let m = run(&mut a, "SELECT id FROM path_doc", ext);
+            let e = &m
+                .iter()
+                .find(|m| m.0 == b'E')
+                .expect("invisible relation must fail")
+                .1;
+            assert!(e.windows(7).any(|w| w == b"C42P01\0"), "{m:?}");
+            assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+            rows(
+                &mut a,
+                "SELECT id,v FROM public.path_doc ORDER BY id",
+                ext,
+                snapshot.clone(),
+            );
+        }
+        ok(&mut a, "SET search_path TO missing, public", ext);
+        rows(&mut a, "SELECT current_schema()", ext, one("public"));
+        rows(
+            &mut a,
+            "SELECT id,v FROM path_doc ORDER BY id",
+            ext,
+            snapshot.clone(),
+        );
+        let m = run(&mut a, "SET search_path TO", ext);
+        assert!(
+            m.iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C42601\0")),
+            "{m:?}"
+        );
+        rows(
+            &mut a,
+            "SELECT id,v FROM path_doc ORDER BY id",
+            ext,
+            snapshot.clone(),
+        );
+        rows(
+            &mut b,
+            "SELECT id,v FROM path_doc ORDER BY id",
+            ext,
+            snapshot,
+        );
+        for sql in [
+            "ROLLBACK",
+            "RESET search_path",
+            "DROP TABLE public.pg_namespace",
+            "DROP TABLE public.path_doc",
+        ] {
+            ok(&mut a, sql, ext);
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_02 ext={ext}: 3 object-order, 3 invisible-path/NULL/recovery, missing-public, syntax recovery, isolation and cleanup passed"
+        );
+    }
+}
