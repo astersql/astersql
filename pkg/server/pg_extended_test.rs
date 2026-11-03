@@ -33432,3 +33432,254 @@ fn pg11_12() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_13() {
+    fn drain(s: &mut TcpStream) -> Vec<(u8, Vec<u8>)> {
+        let mut m = Vec::new();
+        loop {
+            let v = read(s);
+            let end = v.0 == b'Z';
+            m.push(v);
+            if end {
+                return m;
+            }
+        }
+    }
+    fn sync(s: &mut TcpStream, ready: u8) -> Vec<(u8, Vec<u8>)> {
+        send(s, b'S', &[]);
+        let m = drain(s);
+        assert_eq!(m.last().unwrap(), &(b'Z', vec![ready]));
+        m
+    }
+    fn q(s: &mut TcpStream, sql: &str, ready: u8) -> Vec<(u8, Vec<u8>)> {
+        let m = query(s, sql);
+        assert!(!m.iter().any(|v| v.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', vec![ready]));
+        m
+    }
+    fn rows(m: &[(u8, Vec<u8>)], values: &[&str]) {
+        assert!(!m.iter().any(|v| v.0 == b'E'), "{m:?}");
+        assert_eq!(
+            m.iter()
+                .filter(|v| v.0 == b'D')
+                .map(|v| v.1.clone())
+                .collect::<Vec<_>>(),
+            values.iter().map(|v| row(&[Some(v)])).collect::<Vec<_>>()
+        );
+    }
+    fn bound(s: &mut TcpStream, portal: &str, stmt: &str, args: &[Option<&str>]) -> Vec<u8> {
+        bind(s, portal, stmt, args);
+        send(s, b'D', &[b"P", portal.as_bytes(), b"\0"].concat());
+        send(s, b'H', &[]);
+        assert_eq!(read(s), (b'2', vec![]));
+        let m = read(s);
+        assert_eq!(m.0, b'T');
+        m.1
+    }
+    fn page(s: &mut TcpStream, p: &str, n: u32, values: &[&str], last: u8) {
+        execute(s, p, n);
+        send(s, b'H', &[]);
+        let mut m = Vec::new();
+        loop {
+            let v = read(s);
+            let done = matches!(v.0, b's' | b'C' | b'E');
+            m.push(v);
+            if done {
+                break;
+            }
+        }
+        rows(&m, values);
+        assert_eq!(m.last().unwrap().0, last, "{m:?}");
+    }
+    fn reject(s: &mut TcpStream, state: &str) {
+        let m = sync(s, b'I');
+        assert_eq!(m.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
+        assert!(
+            m[0].1
+                .windows(7)
+                .any(|v| v == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{m:?}"
+        );
+        rows(&q(s, "SELECT 1", b'I'), &["1"]);
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut sockets = [0, 1].map(|_| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        drain(&mut s);
+        s
+    });
+    let [a, b] = &mut sockets;
+    q(b, "CREATE SCHEMA pg1113_alt", b'I');
+    for schema in ["public", "pg1113_alt"] {
+        q(
+            b,
+            &format!("CREATE TABLE {schema}.pg1113_doc (id integer PRIMARY KEY, v integer)"),
+            b'I',
+        );
+    }
+    q(
+        b,
+        "INSERT INTO public.pg1113_doc VALUES (1,10),(2,20)",
+        b'I',
+    );
+    q(
+        b,
+        "INSERT INTO pg1113_alt.pg1113_doc VALUES (1,90),(2,80)",
+        b'I',
+    );
+    // Q uses an independent fixture and path baseline.
+    q(
+        b,
+        "CREATE TABLE pg1113_alt.pg1113_q (id integer PRIMARY KEY, v integer)",
+        b'I',
+    );
+    q(
+        b,
+        "INSERT INTO pg1113_alt.pg1113_q VALUES (1,90),(2,80)",
+        b'I',
+    );
+    q(b, "SET search_path TO pg1113_alt, public", b'I');
+    rows(
+        &q(b, "SELECT v FROM pg1113_q ORDER BY id", b'I'),
+        &["90", "80"],
+    );
+    q(a, "SET search_path TO public", b'I');
+    parse(
+        a,
+        "s",
+        "SELECT v FROM pg1113_doc WHERE id >= $1 ORDER BY id",
+        &[23],
+    );
+    assert_eq!(sync(a, b'I').iter().map(|v| v.0).collect::<Vec<_>>(), b"1Z");
+    q(a, "BEGIN", b'T');
+    let old = bound(a, "a", "s", &[Some("1")]);
+    q(a, "SET search_path TO pg1113_alt, public", b'T');
+    let new = bound(a, "b", "s", &[Some("1")]);
+    assert_eq!(&old[..4], b"\0\x01v\0");
+    assert_eq!(&old[8..], &new[8..]);
+    assert_ne!(&old[4..8], &new[4..8]);
+    assert_ne!(&old[4..8], &0u32.to_be_bytes());
+    assert_ne!(&new[4..8], &0u32.to_be_bytes());
+    assert_eq!(
+        &old[8..],
+        [
+            2i16.to_be_bytes().as_slice(),
+            &23u32.to_be_bytes(),
+            &4i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &0i16.to_be_bytes()
+        ]
+        .concat()
+    );
+    page(a, "a", 1, &["10"], b's');
+    page(a, "b", 1, &["90"], b's');
+    q(a, "SET search_path TO pg_catalog", b'T');
+    page(a, "a", 1, &["20"], b'C');
+    page(a, "b", 0, &["80"], b'C');
+    page(a, "a", 0, &[], b'C');
+    page(a, "a", 0, &[], b'C');
+    sync(a, b'T');
+    q(a, "ROLLBACK", b'I');
+    // A missing new environment rejects Bind, while restoring it permits NULL/empty results.
+    q(a, "SET search_path TO pg_catalog", b'I');
+    bind(a, "missing", "s", &[Some("1")]);
+    reject(a, "42P01");
+    q(a, "SET search_path TO public", b'I');
+    q(a, "BEGIN", b'T');
+    bound(a, "null", "s", &[None]);
+    page(a, "null", 0, &[], b'C');
+    bound(a, "empty", "s", &[Some("3")]);
+    page(a, "empty", 0, &[], b'C');
+    sync(a, b'T');
+    q(a, "ROLLBACK", b'I');
+    bind(a, "bad", "s", &[Some("invalid")]);
+    reject(a, "22P02");
+    // No other connection can use A's statement or portal.
+    bind(b, "foreign", "s", &[Some("1")]);
+    reject(b, "26000");
+    q(a, "BEGIN", b'T');
+    bound(a, "private", "s", &[Some("1")]);
+    execute(b, "private", 0);
+    reject(b, "34000");
+    page(a, "private", 0, &["10", "20"], b'C');
+    sync(a, b'T');
+    q(a, "ROLLBACK", b'I');
+    // Runtime session values are evaluated at Execute, independently of pinned tables.
+    parse(a, "schema", "SELECT current_schema()", &[]);
+    sync(a, b'I');
+    q(a, "BEGIN", b'T');
+    let schema_description = bound(a, "schema_old", "schema", &[]);
+    q(a, "SET search_path TO pg_catalog", b'T');
+    let schema_new = bound(a, "schema_new", "schema", &[]);
+    assert_eq!(schema_description, schema_new);
+    let type_offset = 2
+        + schema_description[2..]
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap()
+        + 1
+        + 6;
+    assert_eq!(
+        &schema_description[type_offset..type_offset + 4],
+        &19u32.to_be_bytes()
+    );
+    page(a, "schema_old", 0, &["pg_catalog"], b'C');
+    page(a, "schema_new", 0, &["pg_catalog"], b'C');
+    sync(a, b'T');
+    q(a, "ROLLBACK", b'I');
+    // RETURNING pagination and repeated Execute must not repeat the write.
+    parse(
+        a,
+        "write",
+        "UPDATE public.pg1113_doc SET v=v+1 RETURNING v",
+        &[],
+    );
+    sync(a, b'I');
+    q(a, "BEGIN", b'T');
+    bound(a, "write_p", "write", &[]);
+    page(a, "write_p", 1, &["11"], b's');
+    page(a, "write_p", 0, &["21"], b'C');
+    page(a, "write_p", 0, &[], b'C');
+    sync(a, b'T');
+    rows(
+        &q(a, "SELECT v FROM public.pg1113_doc ORDER BY id", b'T'),
+        &["11", "21"],
+    );
+    q(a, "COMMIT", b'I');
+    rows(
+        &q(b, "SELECT v FROM public.pg1113_doc ORDER BY id", b'I'),
+        &["11", "21"],
+    );
+    for name in ["s", "write", "schema"] {
+        send(a, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(a), (b'3', vec![]));
+    }
+    sync(a, b'I');
+    q(b, "DROP TABLE pg1113_alt.pg1113_q", b'I');
+    q(b, "DROP TABLE public.pg1113_doc", b'I');
+    q(b, "DROP TABLE pg1113_alt.pg1113_doc", b'I');
+    q(b, "DROP SCHEMA pg1113_alt", b'I');
+    for s in &mut sockets {
+        send(s, b'X', &[]);
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
