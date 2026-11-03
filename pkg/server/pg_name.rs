@@ -839,6 +839,7 @@ fn identifier_parts(
         parts: Vec<ast::PostgreSQLIdentifier>,
         declarations: HashSet<(usize, usize)>,
         exact_relations: bool,
+        exact_columns: bool,
         tokens: Vec<Token>,
     }
     impl Gate {
@@ -883,10 +884,14 @@ fn identifier_parts(
             false
         }
         fn enter_column_name(&mut self, column: &ast::ColumnName) -> bool {
-            // The value-type visitor also covers INSERT targets, UPDATE SET,
-            // conflict assignments and DDL definitions, not just expressions.
-            // Their folded native keys cannot safely select a quoted C over c.
-            self.consume(&column.PostgreSQLParts);
+            // These consumers bind PostgreSQLParts.Lookup at the owning shared
+            // session parse boundary, including write targets and declarations.
+            // Other statements keep their existing capability gate.
+            if self.exact_columns {
+                self.parts.extend_from_slice(&column.PostgreSQLParts);
+            } else {
+                self.consume(&column.PostgreSQLParts);
+            }
             false
         }
         fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
@@ -913,6 +918,7 @@ fn identifier_parts(
         parts: Vec::new(),
         declarations: aliases.clone(),
         exact_relations: false,
+        exact_columns: false,
         tokens: tokens(sql)?,
     };
     for statement in statements {
@@ -936,6 +942,11 @@ fn identifier_parts(
             || statement.as_any().is::<ast::InsertStmt>()
             || statement.as_any().is::<ast::DropTableStmt>()
             || statement.as_any().is::<ast::UpdateStmt>();
+        gate.exact_columns = statement.as_any().is::<ast::SelectStmt>()
+            || statement.as_any().is::<ast::SetOprStmt>()
+            || statement.as_any().is::<ast::InsertStmt>()
+            || statement.as_any().is::<ast::UpdateStmt>()
+            || statement.as_any().is::<ast::CreateTableStmt>();
         // Declarations are not references; CREATE TABLE persists their decoded
         // spelling and matching policy in the normal shared catalog.
         let declaration =

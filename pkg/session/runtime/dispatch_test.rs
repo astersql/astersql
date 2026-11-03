@@ -2127,3 +2127,144 @@ fn pg10_29_not_null_conflict_does_not_swallow_or_write() {
     }
     pg.execute("DROP TABLE pg10_29_nn").unwrap();
 }
+
+#[test]
+fn pg11_08_exact_column_identity() {
+    use crate::runtime::ConcretePreparedArgument;
+    use astersql_meta_model::{DecodeTableInfo, EncodeTableInfo};
+    use astersql_parser_ast::SqlDialect;
+    fn row(session: &ConcreteSession, sql: &str) -> Vec<String> {
+        let mut result = session
+            .execute(sql)
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let value = result[0].next_row().unwrap().unwrap();
+        assert!(result[0].next_row().unwrap().is_none());
+        result[0].close().unwrap();
+        value
+    }
+    let (domain, mysql) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain.clone(), SqlDialect::PostgreSQL);
+    let mysql_observer = ConcreteSession::new(domain.clone());
+    mysql
+        .execute("CREATE TABLE mysql_pg1108 (id INT PRIMARY KEY,c INT)")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO mysql_pg1108 VALUES (1,30)")
+        .unwrap();
+    let saved_mode = row(&mysql, "SELECT @@SESSION.sql_mode")[0].clone();
+    let (mysql_statement, count, _) = mysql
+        .prepare_protocol_statement("SELECT C FROM mysql_pg1108 WHERE id=?")
+        .unwrap();
+    assert_eq!(count, 1);
+    assert!(
+        mysql
+            .execute("CREATE TABLE mysql_pg1108_duplicate (c INT,`C` INT)")
+            .is_err()
+    );
+    mysql
+        .execute("CREATE TABLE mysql_pg1108_legacy (id INT PRIMARY KEY,C INT)")
+        .unwrap();
+    mysql
+        .execute("INSERT INTO mysql_pg1108_legacy VALUES (1,42)")
+        .unwrap();
+    assert_eq!(row(&pg, r#"SELECT "C" FROM mysql_pg1108_legacy"#), ["42"]);
+    assert!(pg.execute("SELECT c FROM mysql_pg1108_legacy").is_err());
+    let legacy = domain.table_by_name("test", "mysql_pg1108_legacy").unwrap();
+    assert_eq!(
+        (
+            legacy.Columns[1].Name.O.as_str(),
+            legacy.Columns[1].Name.L.as_str()
+        ),
+        ("C", "c")
+    );
+    assert_eq!(
+        row(&mysql, "SELECT c,C FROM mysql_pg1108_legacy"),
+        ["42", "42"]
+    );
+
+    mysql.execute("BEGIN").unwrap();
+    mysql
+        .execute("UPDATE mysql_pg1108 SET C=31 WHERE id=1")
+        .unwrap();
+    pg.execute(r#"CREATE TABLE pg1108_bound (id integer PRIMARY KEY,c integer,"C" integer)"#)
+        .unwrap();
+    pg.execute(r#"INSERT INTO pg1108_bound (id,"C",c) VALUES (1,11,10)"#)
+        .unwrap();
+    domain.force_full_reload_for_test().unwrap();
+    let table = domain.table_by_name("test", "pg1108_bound").unwrap();
+    let table = DecodeTableInfo(&EncodeTableInfo(&table).unwrap()).unwrap();
+    assert!(table.ExactName);
+    assert_eq!(
+        table
+            .Columns
+            .iter()
+            .map(|c| (c.ID, c.Offset, c.Name.O.as_str(), c.Name.L.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, 0, "id", "id"), (2, 1, "c", "c"), (3, 2, "C", "C")]
+    );
+    assert_eq!(astersql_parser_ast::NewCIStr("C").L, "c");
+    let (statement, count, fields) = pg
+        .prepare_protocol_statement(r#"SELECT c,"C" FROM pg1108_bound WHERE id=?"#)
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| (
+                f.column_as_name.O.as_str(),
+                f.column_origin.unwrap().table_id,
+                f.column_origin.unwrap().attribute_number
+            ))
+            .collect::<Vec<_>>(),
+        [("c", table.ID, 2), ("C", table.ID, 3)]
+    );
+    pg.execute(r#"UPDATE pg1108_bound SET "C"=21 WHERE id=1"#)
+        .unwrap();
+    let mut result = pg
+        .execute_protocol_statement(statement, &[ConcretePreparedArgument::Signed(1)])
+        .unwrap();
+    assert_eq!(result[0].next_row().unwrap().unwrap(), ["10", "21"]);
+    assert!(result[0].next_row().unwrap().is_none());
+    result[0].close().unwrap();
+    for bad in [
+        r#"UPDATE pg1108_bound SET "cC"=99 WHERE id=99"#,
+        r#"INSERT INTO pg1108_bound (id,"cC") VALUES (2,99)"#,
+    ] {
+        assert!(pg.execute(bad).is_err(), "{bad}");
+        assert_eq!(row(&pg, r#"SELECT c,"C" FROM pg1108_bound"#), ["10", "21"]);
+    }
+    for mode in ["", "ANSI_QUOTES"] {
+        mysql
+            .execute(&format!("SET SESSION sql_mode='{mode}'"))
+            .unwrap();
+        assert_eq!(row(&mysql, "SELECT c,C FROM mysql_pg1108"), ["31", "31"]);
+        assert_eq!(
+            row(&mysql_observer, "SELECT c,C FROM mysql_pg1108"),
+            ["30", "30"]
+        );
+        assert_eq!(
+            row(&mysql, r#"SELECT "c" FROM mysql_pg1108"#),
+            [if mode.is_empty() { "c" } else { "31" }]
+        );
+        assert_eq!(row(&pg, r#"SELECT c,"C" FROM pg1108_bound"#), ["10", "21"]);
+        let mut result = mysql
+            .execute_protocol_statement(mysql_statement, &[ConcretePreparedArgument::Signed(1)])
+            .unwrap();
+        assert_eq!(result[0].next_row().unwrap().unwrap(), ["31"]);
+        result[0].close().unwrap();
+    }
+    mysql
+        .execute(&format!(
+            "SET SESSION sql_mode='{}'",
+            saved_mode.replace('\'', "''")
+        ))
+        .unwrap();
+    assert_eq!(row(&mysql, "SELECT @@SESSION.sql_mode"), [saved_mode]);
+    mysql.execute("ROLLBACK").unwrap();
+    assert_eq!(row(&mysql, "SELECT C FROM mysql_pg1108"), ["30"]);
+    pg.close_protocol_statement(statement).unwrap();
+    mysql.close_protocol_statement(mysql_statement).unwrap();
+    pg.execute("DROP TABLE pg1108_bound").unwrap();
+    mysql.execute("DROP TABLE mysql_pg1108").unwrap();
+    mysql.execute("DROP TABLE mysql_pg1108_legacy").unwrap();
+}

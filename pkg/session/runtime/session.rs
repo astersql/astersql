@@ -1424,9 +1424,33 @@ impl ConcreteSession {
         name: &str,
     ) -> Option<Arc<astersql_meta_model::TableInfo>> {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-            schema
+            let mut table = schema
                 .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(database), name)
-                .ok()
+                .ok()?;
+            // Older/MySQL catalogs retain folded L keys. Bind a connection-local
+            // metadata view by decoded column identity; physical IDs and offsets
+            // still read the same rows. Never mutate the shared MySQL catalog.
+            if table
+                .Columns
+                .iter()
+                .any(|column| column.Name.L != column.Name.O)
+            {
+                let bound = Arc::make_mut(&mut table);
+                for column in &mut bound.Columns {
+                    column.Name.L.clone_from(&column.Name.O);
+                }
+                for index in &mut bound.Indices {
+                    for part in &mut index.Columns {
+                        if let Some(column) = usize::try_from(part.Offset)
+                            .ok()
+                            .and_then(|offset| bound.Columns.get(offset))
+                        {
+                            part.Name.clone_from(&column.Name);
+                        }
+                    }
+                }
+            }
+            Some(table)
         } else {
             schema
                 .ModelTableInfoByName(

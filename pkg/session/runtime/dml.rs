@@ -2477,6 +2477,16 @@ impl ConcreteSession {
                 .map(|column| column.Name.L.clone())
                 .collect()
         };
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            for name in &input_columns {
+                if !table.Columns.iter().any(|column| column.Name.L == *name) {
+                    return Err(super::query::pg_union_error(
+                        "unknown INSERT target column",
+                        "42703",
+                    ));
+                }
+            }
+        }
         let mut mutations = Vec::new();
         let mut pg_updated_keys = HashSet::new();
         let records = statement.Lists.len() as u64;
@@ -4176,6 +4186,16 @@ impl ConcreteSession {
         let table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            for (name, _) in &plan.Assignments {
+                if !table.Columns.iter().any(|column| column.Name.L == *name) {
+                    return Err(super::query::pg_union_error(
+                        "unknown SET target column",
+                        "42703",
+                    ));
+                }
+            }
+        }
         let _pg_cast_types = if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             Some(PgCastTable::enter_table(&table))
         } else {

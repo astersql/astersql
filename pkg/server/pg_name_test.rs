@@ -121,9 +121,10 @@ fn pg_dialect_13_name_boundary() {
         rewrite("CREATE TABLE public.\"Foo\" (id int)", "db", true).unwrap(),
         "CREATE TABLE `db`.\"Foo\" (id int)"
     );
-    for sql in ["SELECT \"Foo\" FROM public.t"] {
-        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000");
-    }
+    assert_eq!(
+        rewrite("SELECT \"Foo\" FROM public.t", "db", true).unwrap(),
+        "SELECT \"Foo\" FROM `db`.t"
+    );
 }
 
 #[test]
@@ -1249,7 +1250,7 @@ fn pg11_08_column_targets_and_output_names() {
         r#"CREATE TABLE public.t (c integer,"C" integer)"#,
         r#"INSERT INTO public.t (id,c) VALUES (1,10) ON CONFLICT (id) DO UPDATE SET "C"=99"#,
     ] {
-        assert_eq!(rewrite(sql, "db", true).unwrap_err().0, "0A000", "{sql}");
+        assert!(rewrite(sql, "db", true).is_ok(), "{sql}");
     }
     for (sql, expected) in [
         (

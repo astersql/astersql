@@ -29082,8 +29082,8 @@ fn pg11_08() {
             }
         }
     }
-    // A missing exact-column backend must reject before mutating folded c.
-    // Keep every independent scenario running so a setup gate cannot hide alias regressions.
+    // Exercise exact columns and keep negative cases on a lower-case-only table.
+    // Run independent cases even after a failure so setup cannot hide regressions.
     fn check(
         s: &mut TcpStream,
         sql: &str,
@@ -29106,11 +29106,16 @@ fn pg11_08() {
             .unwrap_or_default();
         let mut actual_names = Vec::new();
         let mut types = Vec::new();
+        let mut origins = Vec::new();
         if let Some((_, description)) = m.iter().find(|m| m.0 == b'T') {
             let mut at = 2;
             for _ in 0..u16::from_be_bytes(description[..2].try_into().unwrap()) {
                 let end = at + description[at..].iter().position(|b| *b == 0).unwrap();
                 actual_names.push(String::from_utf8_lossy(&description[at..end]).into_owned());
+                origins.push((
+                    u32::from_be_bytes(description[end + 1..end + 5].try_into().unwrap()),
+                    i16::from_be_bytes(description[end + 5..end + 7].try_into().unwrap()),
+                ));
                 types.push((
                     u32::from_be_bytes(description[end + 7..end + 11].try_into().unwrap()),
                     i16::from_be_bytes(description[end + 11..end + 13].try_into().unwrap()),
@@ -29135,7 +29140,25 @@ fn pg11_08() {
                 _ => (23, 4, -1, 0),
             })
             .collect::<Vec<_>>();
-        let valid = (state.is_empty() || !m.iter().any(|m| m.0 == b'C' || m.0 == b'D'))
+        let exact_origins = if sql.contains("pg1108_exact")
+            && !names.is_empty()
+            && names.iter().all(|name| matches!(*name, "c" | "C"))
+        {
+            origins.len() == names.len()
+                && origins.iter().zip(names).all(|((table, attribute), name)| {
+                    *table != 0
+                        && *attribute == if *name == "C" { 3 } else { 2 }
+                        && *table == origins[0].0
+                })
+        } else {
+            true
+        };
+        let update_tag = !state.is_empty()
+            || !sql.starts_with("UPDATE ")
+            || m.iter().any(|m| m.0 == b'C' && m.1 == b"UPDATE 1\0");
+        let valid = exact_origins
+            && update_tag
+            && (state.is_empty() || !m.iter().any(|m| m.0 == b'C' || m.0 == b'D'))
             && (names.is_empty() || types == expected_types)
             && code == state
             && m.last() == Some(&(b'Z', vec![status]))
@@ -29153,6 +29176,229 @@ fn pg11_08() {
     for ext in [false, true] {
         let mut a = connect(Some("public"));
         let mut b = connect(Some("public"));
+        check(
+            &mut a,
+            r#"CREATE TABLE public.pg1108_exact (id integer PRIMARY KEY,c integer,"C" integer)"#,
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "INSERT INTO public.pg1108_exact VALUES (1,10,11)",
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"SELECT c,C,"c","C" FROM public.pg1108_exact"#,
+            ext,
+            &[Some("10"), Some("10"), Some("10"), Some("11")],
+            &["c", "c", "c", "C"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"SELECT "A"."C" AS "V" FROM public.pg1108_exact AS "A""#,
+            ext,
+            &[Some("11")],
+            &["V"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        for commit in [false, true] {
+            check(&mut a, "BEGIN", ext, &[], &[], "", b'T', &mut failures);
+            check(
+                &mut a,
+                r#"UPDATE public.pg1108_exact SET "C"=21 WHERE id=1"#,
+                ext,
+                &[],
+                &[],
+                "",
+                b'T',
+                &mut failures,
+            );
+            check(
+                &mut a,
+                r#"SELECT c,"C" FROM public.pg1108_exact"#,
+                ext,
+                &[Some("10"), Some("21")],
+                &["c", "C"],
+                "",
+                b'T',
+                &mut failures,
+            );
+            check(
+                &mut b,
+                r#"SELECT c,"C" FROM public.pg1108_exact"#,
+                ext,
+                &[Some("10"), Some("11")],
+                &["c", "C"],
+                "",
+                b'I',
+                &mut failures,
+            );
+            check(
+                &mut a,
+                if commit { "COMMIT" } else { "ROLLBACK" },
+                ext,
+                &[],
+                &[],
+                "",
+                b'I',
+                &mut failures,
+            );
+            for stream in [&mut a, &mut b] {
+                check(
+                    stream,
+                    r#"SELECT c,"C" FROM public.pg1108_exact"#,
+                    ext,
+                    &[Some("10"), Some(if commit { "21" } else { "11" })],
+                    &["c", "C"],
+                    "",
+                    b'I',
+                    &mut failures,
+                );
+            }
+        }
+        check(
+            &mut a,
+            r#"UPDATE public.pg1108_exact SET c=12 WHERE "C"=21"#,
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut b,
+            r#"SELECT c,"C" FROM public.pg1108_exact WHERE "C"=21"#,
+            ext,
+            &[Some("12"), Some("21")],
+            &["c", "C"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "UPDATE public.pg1108_exact SET C=10 WHERE id=1",
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"INSERT INTO public.pg1108_exact (id,"C",C) VALUES (2,31,30)"#,
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"SELECT c,"C" FROM public.pg1108_exact WHERE id=2"#,
+            ext,
+            &[Some("30"), Some("31")],
+            &["c", "C"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"UPDATE public.pg1108_exact SET C=32,"C"=NULL WHERE id=2"#,
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut b,
+            r#"SELECT c,"C" FROM public.pg1108_exact WHERE id=2"#,
+            ext,
+            &[Some("32"), None],
+            &["c", "C"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        for sql in [
+            "BEGIN",
+            r#"UPDATE public.pg1108_exact SET c=40,"C"=41 WHERE id=1"#,
+        ] {
+            check(&mut a, sql, ext, &[], &[], "", b'T', &mut failures);
+        }
+        check(
+            &mut a,
+            r#"SELECT "cC" FROM public.pg1108_exact"#,
+            ext,
+            &[],
+            &[],
+            "42703",
+            b'E',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            r#"SELECT c,"C" FROM public.pg1108_exact"#,
+            ext,
+            &[],
+            &[],
+            "25P02",
+            b'E',
+            &mut failures,
+        );
+        check(
+            &mut b,
+            r#"SELECT c,"C" FROM public.pg1108_exact WHERE id=1"#,
+            ext,
+            &[Some("10"), Some("21")],
+            &["c", "C"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(&mut a, "ROLLBACK", ext, &[], &[], "", b'I', &mut failures);
+        check(
+            &mut a,
+            r#"SELECT c,"C" FROM public.pg1108_exact WHERE id=1"#,
+            ext,
+            &[Some("10"), Some("21")],
+            &["c", "C"],
+            "",
+            b'I',
+            &mut failures,
+        );
+        check(
+            &mut a,
+            "DROP TABLE public.pg1108_exact",
+            ext,
+            &[],
+            &[],
+            "",
+            b'I',
+            &mut failures,
+        );
+
         check(
             &mut a,
             "CREATE TABLE public.pg1108_t (id integer PRIMARY KEY,c integer,\"a.b\" integer,\"a\"\"b\" integer)",
@@ -29218,14 +29464,10 @@ fn pg11_08() {
             ),
             ("SELECT \"\" FROM public.pg1108_t", "42601"),
             ("SELECT \"broken FROM public.pg1108_t", "42601"),
-            ("UPDATE public.pg1108_t SET \"C\"=99 WHERE id=1", "0A000"),
+            ("UPDATE public.pg1108_t SET \"C\"=99 WHERE id=1", "42703"),
             (
                 "INSERT INTO public.pg1108_t (id,\"C\") VALUES (2,99)",
-                "0A000",
-            ),
-            (
-                "CREATE TABLE public.pg1108_distinct (c integer,\"C\" integer)",
-                "0A000",
+                "42703",
             ),
         ] {
             check(&mut a, sql, ext, &[], &[], state, b'I', &mut failures);
@@ -29303,7 +29545,7 @@ fn pg11_08() {
             b'I',
             &mut failures,
         );
-        // A gated target fails the transaction before writing any folded column.
+        // A missing exact target fails before writing the folded lower-case column.
         for sql in ["BEGIN", "UPDATE public.pg1108_t SET c=21 WHERE id=1"] {
             check(&mut a, sql, ext, &[], &[], "", b'T', &mut failures);
         }
@@ -29313,7 +29555,7 @@ fn pg11_08() {
             ext,
             &[],
             &[],
-            "0A000",
+            "42703",
             b'E',
             &mut failures,
         );

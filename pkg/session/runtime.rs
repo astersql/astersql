@@ -1386,13 +1386,43 @@ fn parse_with_dialect_and_warnings(
                 "[parser:1064]You have an error in your SQL syntax; {error}"
             ))
         })
-        .and_then(|(statements, warnings)| {
+        .and_then(|(mut statements, warnings)| {
+            if dialect == ast::SqlDialect::PostgreSQL {
+                for statement in &mut statements {
+                    bind_postgresql_column_names(statement.as_mut());
+                }
+            }
             planning::validate_function_visibility(&statements, dialect)?;
             Ok((
                 statements,
                 warnings.iter().map(SessionWarning::from_error).collect(),
             ))
         })
+}
+
+/// Bind PG column identities once, before DDL, planning or prepared metadata.
+/// O remains the decoded display name; L is the bound execution key in this
+/// PG AST and its column metadata. MySQL ASTs and NewCIStr keep normal folding.
+/// Existing column IDs/offsets and row codecs then distinguish c from "C"
+/// without inventing storage names or changing the physical row format.
+fn bind_postgresql_column_names(statement: &mut dyn ast::Node) {
+    struct Bind;
+    impl ast::InPlaceVisitor for Bind {
+        fn enter(&mut self, _: &mut dyn ast::Node) -> bool {
+            false
+        }
+        fn leave(&mut self, _: &mut dyn ast::Node) -> bool {
+            true
+        }
+        fn enter_column_name(&mut self, column: &mut ast::ColumnName) -> bool {
+            if let Some(part) = column.PostgreSQLParts.last() {
+                column.Name.O.clone_from(&part.Lookup);
+                column.Name.L.clone_from(&part.Lookup);
+            }
+            false
+        }
+    }
+    statement.accept_in_place(&mut Bind);
 }
 
 /// Name identity supplied by the owning parser, without changing shared CIStr folding.
