@@ -7319,7 +7319,7 @@ impl ConcreteSession {
                                 return Err(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
                                     pg_union_error(
                                         "CTE column-name count does not match query",
-                                        "42601",
+                                        "42P10",
                                     )
                                 } else {
                                     SessionError::new("CTE column-name count does not match query")

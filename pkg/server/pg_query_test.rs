@@ -251,6 +251,16 @@ fn cte_alias_behavior(partial: bool, repeat: bool, gate: bool) {
         }
         result(&m, names, expected);
         assert_eq!(m.last(), Some(&(b'Z', vec![status])));
+        if status == b'T' {
+            send(
+                s,
+                b'E',
+                &[b"portal17\0".as_slice(), &0u32.to_be_bytes()].concat(),
+            );
+            assert_eq!(read(s), (b'C', b"SELECT 0\0".to_vec()));
+            send(s, b'S', &[]);
+            assert_eq!(read(s), (b'Z', vec![status]));
+        }
         send(s, b'C', b"Pportal17\0");
         assert_eq!(read(s).0, b'3');
     }
@@ -598,7 +608,7 @@ fn cte_alias_behavior(partial: bool, repeat: bool, gate: bool) {
         errors.extend([
             (
                 "WITH a(x,y,z) AS (SELECT id,v FROM public.cte_read_doc) SELECT x FROM a",
-                "42601",
+                "42P10",
             ),
             (
                 "WITH a(x,x) AS (SELECT id,v FROM public.cte_read_doc) SELECT x FROM a",

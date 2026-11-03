@@ -586,3 +586,9 @@ RETURNING 门户把写入结果物化一次，但扩展协议 CommandComplete �
 冲突更新的独立客户端入口为 `pg_client_integration_test::pg10_30_differential`，夹具 `testdata/pg10_30_libpq.py` 要求真实 libpq 和 PostgreSQL 18.6 参考端，缺失环境明确失败。覆盖旧行/候选行、默认值、动作 WHERE、NULL、未改变值、混合行、二次约束错误、重复影响同一行、整句回滚、固定描述、Parse/Bind/Execute 错误阶段、E/25P02 恢复，以及 MySQL Query/Prepared 原生冲突更新和事务观察者。原始 SQL、行、描述、标签、诊断及清理记录保存在仓库 `.local/pg10-30-evidence/`，避免构建缓存清理丢失证据。部分唯一索引 setup 的 0A000 单列为产品限制，不视为部分索引行为通过。
 
 PostgreSQL 18.6 在 Bind 规划阶段检查冲突更新中的不可变算术常量；简单 Query 同样在写入前检查。`SET v=1/0` 即使无冲突或动作 WHERE 为 false/NULL 仍报 22012。依赖旧行/候选行的更新表达式仍只在实际更新时求值；对应惰性求值回归使用 `dst.v/(excluded.v-3)`，原始常量输入继续由独立差分覆盖。MySQL 共存按自身口径记录实际更新 affected rows 2、未变值 0（CLIENT_FOUND_ROWS 未设置），PG 更新仍计 1。本入口使用共享测试存储，不能替代批次16的真实 TiKV 竞争证据；18.4、持久重启和性能没有在此验收。
+
+## 只读 CTE 独立客户端差分
+
+`pg_client_integration_test::pg10_31_differential` 通过 `testdata/pg10_31_libpq.py` 连接隔离 PostgreSQL 18.6 与共享测试存储上的真实双协议 Server。夹具要求 `PG18_REFERENCE_DSN` 和可装载的 libpq 18，缺失时明确失败；双方原始 SQL、值/NULL、固定描述、列来源、命令标签、错误阶段、事务及清理记录保存在 `.local/pg10-31-evidence/`。308 个双端场景覆盖任务17–20的链式依赖、重复值多重集、遮蔽/嵌套、部分列别名、零行、typed NULL/新 Bind、未消费生产者、非法名称、运行期失败与恢复。目录间表 OID 比较有无来源身份及属性号，保存各自实际 OID，不比较独立目录的 OID 数值。错误全文/位置原样记录，自动差分比较 SQLSTATE、协议阶段和事务状态。
+
+真实18.6参考端对超长 CTE 别名列表返回42P10，PG共享执行与准备描述路径均保持此码。完成的只读 SELECT 门户再次 Execute 返回零行及 SELECT 0，不重新执行生产者。递归、显式物化、SEARCH/CYCLE、行锁和volatile/sequence仍按已有门禁拒绝；参考端成功、语法非法和缺少sequence的结果分别保存，拒绝边界不计为能力已支持。原生MySQL Query/Prepared CTE保留自身类型/标志/警告，PG执行前中后交错真实行查询、事务观察者及COMMIT/ROLLBACK验证。未验证PostgreSQL18.4、RealTiKV、持久重启或性能；此入口不宣称完整递归、物化执行或完整诊断文本兼容。

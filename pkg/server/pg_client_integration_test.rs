@@ -14930,3 +14930,67 @@ fn pg10_30_differential() {
     assert_eq!(summary["cleanup"]["pg_connections"], 4);
     assert_eq!(summary["cleanup"]["mysql_connections"], 2);
 }
+
+#[test]
+fn pg10_31_differential() {
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN required (no skip)"
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql = server.listener_addr().unwrap();
+    let database = format!("pg10_31_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/pg10-31-evidence")
+        .join(&database);
+    std::fs::create_dir_all(&evidence).unwrap();
+    println!("PG10_31_EVIDENCE_DIR={}", evidence.display());
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    std::fs::write(evidence.join("aster-head.txt"), head.stdout).unwrap();
+    let result = Command::new("python3")
+        .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/pg10_31_libpq.py"))
+        .args([
+            evidence.display().to_string(),
+            pg.port().to_string(),
+            database.clone(),
+            mysql.port().to_string(),
+        ])
+        .output();
+    server.close();
+    native
+        .execute(&format!("DROP DATABASE {database}"))
+        .unwrap();
+    assert!(TcpStream::connect(pg).is_err(), "PG listener leaked");
+    assert!(TcpStream::connect(mysql).is_err(), "MySQL listener leaked");
+    let output = result.expect("python3/libpq required");
+    std::fs::write(
+        evidence.join("client-exit-code.txt"),
+        output.status.code().unwrap_or(-1).to_string(),
+    )
+    .unwrap();
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["passed"], true);
+    assert_eq!(summary["cases"], 308);
+    assert_eq!(summary["mysql_cases"], 2);
+    assert_eq!(summary["cleanup"]["reference"], true);
+    assert_eq!(summary["cleanup"]["target"], true);
+    assert_eq!(summary["cleanup"]["pg_connections"], 4);
+    assert_eq!(summary["cleanup"]["mysql_connections"], 2);
+}

@@ -1747,7 +1747,7 @@ impl ConcreteSession {
                             cte.ColNameList.len()
                         );
                         return Err(if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
-                            super::query::pg_union_error(&message, "42601")
+                            super::query::pg_union_error(&message, "42P10")
                         } else {
                             SessionError::new(message)
                         });

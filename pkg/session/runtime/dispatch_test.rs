@@ -1639,10 +1639,11 @@ fn pg10_18_partial_cte_aliases() {
     assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["1", "2"]);
     assert!(result[0].next_row().unwrap().is_none());
     assert!(mysql.execute(sql).is_err());
-    assert!(
-        pg.execute("WITH a(x,y,z) AS (SELECT 1 AS id,2 AS v) SELECT x FROM a")
-            .is_err()
-    );
+    let error = pg
+        .execute("WITH a(x,y,z) AS (SELECT 1 AS id,2 AS v) SELECT x FROM a")
+        .err()
+        .expect("excess aliases must fail");
+    assert_eq!(error.pg_array_error().unwrap().state, "42P10");
     let mut result = mysql
         .execute("WITH a(x,v) AS (SELECT 1 AS id,2 AS v) SELECT x,v FROM a")
         .unwrap();

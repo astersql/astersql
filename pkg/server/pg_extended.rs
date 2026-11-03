@@ -2217,10 +2217,11 @@ impl Extended {
                 // pquery.c PortalRun reports rows fetched by this Execute,
                 // including zero on a completed portal. Keep the stored result
                 // and write count intact; only protocol completion is per fetch.
-                if portal.returning {
+                if portal.returning || portal.command == Some("SELECT") {
                     for (tag, body) in &mut response {
                         if *tag == b'C' {
                             *body = match portal.command {
+                                Some("SELECT") => format!("SELECT {rows}\0").into_bytes(),
                                 Some("INSERT") => format!("INSERT 0 {rows}\0").into_bytes(),
                                 Some(command @ ("UPDATE" | "DELETE")) => {
                                     format!("{command} {rows}\0").into_bytes()
