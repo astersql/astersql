@@ -742,3 +742,126 @@ fn pg11_05() {
         );
     }
 }
+
+#[test]
+fn pg11_06() {
+    for extended in [false, true] {
+        let (service, addr) = start();
+        let mut a = connect(addr);
+        let mut b = connect(addr);
+        path_ok(
+            &mut a,
+            "CREATE TABLE public.pg1106_doc (id integer PRIMARY KEY, v integer)",
+            extended,
+            b'I',
+        );
+        path_ok(
+            &mut a,
+            "INSERT INTO public.pg1106_doc VALUES (1,10)",
+            extended,
+            b'I',
+        );
+        let baseline = vec![vec![Some("1".into()), Some("10".into())]];
+        for setting in [
+            "SET search_path TO pg_catalog",
+            "SET search_path TO ''",
+            "SET LOCAL search_path TO pg_catalog",
+        ] {
+            path_value(&mut a, extended, b'I', "public");
+            path_ok(&mut a, "BEGIN", extended, b'T');
+            path_ok(&mut a, setting, extended, b'T');
+            let empty = setting == "SET search_path TO ''";
+            path_value(
+                &mut a,
+                extended,
+                b'T',
+                if empty { "\"\"" } else { "pg_catalog" },
+            );
+            if empty {
+                assert_eq!(
+                    path_rows(&path_ok(&mut a, "SELECT current_schema()", extended, b'T')),
+                    vec![vec![None]]
+                );
+            }
+            path_ok(
+                &mut a,
+                "UPDATE public.pg1106_doc SET v=11 WHERE id=1",
+                extended,
+                b'T',
+            );
+            let failure = path_request(
+                &mut a,
+                "INSERT INTO public.pg1106_doc VALUES (1,99)",
+                extended,
+            );
+            assert_eq!(
+                error_state(&failure.iter().find(|m| m.0 == b'E').unwrap().1),
+                Some("23505")
+            );
+            assert_eq!(failure.last(), Some(&(b'Z', b"E".to_vec())));
+            for sql in [
+                "SHOW search_path",
+                "SET search_path TO public",
+                "RESET search_path",
+                "SET LOCAL search_path TO public",
+                "SET search_path TO DEFAULT",
+                "SET LOCAL search_path TO ''",
+                "SELECT current_schema()",
+                "SHOW search_path",
+            ] {
+                let blocked = path_request(&mut a, sql, extended);
+                assert_eq!(
+                    error_state(&blocked.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("25P02"),
+                    "{sql}: {blocked:?}"
+                );
+                assert_eq!(blocked.last(), Some(&(b'Z', b"E".to_vec())));
+                assert!(!blocked.iter().any(|m| matches!(m.0, b'C' | b'D' | b'N')));
+                if extended {
+                    assert_eq!(blocked.first().unwrap().0, b'E');
+                    sync(&mut a, b'E');
+                }
+                path_value(&mut b, extended, b'I', "public");
+                assert_eq!(
+                    path_rows(&path_ok(
+                        &mut b,
+                        "SELECT id,v FROM pg1106_doc ORDER BY id",
+                        extended,
+                        b'I'
+                    )),
+                    baseline
+                );
+            }
+            path_ok(&mut a, "ROLLBACK", extended, b'I');
+            path_value(&mut a, extended, b'I', "public");
+            assert_eq!(
+                path_rows(&path_ok(
+                    &mut a,
+                    "SELECT id,v FROM pg1106_doc ORDER BY id",
+                    extended,
+                    b'I'
+                )),
+                baseline
+            );
+        }
+        // NULL is invalid input, not a successful NULL setting.
+        path_ok(&mut a, "BEGIN", extended, b'T');
+        let invalid = path_request(&mut a, "SET LOCAL search_path TO NULL", extended);
+        assert_eq!(
+            error_state(&invalid.iter().find(|m| m.0 == b'E').unwrap().1),
+            Some("42601")
+        );
+        assert_eq!(invalid.last(), Some(&(b'Z', b"E".to_vec())));
+        path_ok(&mut a, "ROLLBACK", extended, b'I');
+        path_value(&mut a, extended, b'I', "public");
+        path_ok(&mut a, "RESET search_path", extended, b'I');
+        path_ok(&mut a, "DROP TABLE public.pg1106_doc", extended, b'I');
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        service.close();
+        assert!(TcpStream::connect(addr).is_err());
+        eprintln!(
+            "pg11_06 extended={extended}: 3 duplicate-key recovery variants, 24 blocked requests, NULL recovery and cleanup passed"
+        );
+    }
+}
