@@ -865,3 +865,209 @@ fn pg11_06() {
         );
     }
 }
+
+#[test]
+fn pg11_17() {
+    fn run(socket: &mut TcpStream, sql: &str, extended: bool) -> Vec<(u8, Vec<u8>)> {
+        if !extended {
+            return query(socket, sql);
+        }
+        parse(socket, "", sql, &[]);
+        assert_eq!(read(socket), (b'1', vec![]), "{sql}");
+        send(socket, b'D', b"S\0");
+        assert_eq!(read(socket), (b't', 0i16.to_be_bytes().to_vec()));
+        let description = read(socket);
+        if sql.starts_with("SELECT") {
+            assert_eq!(description.0, b'T', "{sql}");
+            if sql.contains("val(") {
+                let field = &description.1;
+                assert_eq!(&field[..4], b"\0\x01v\0");
+                assert_eq!(&field[10..14], &20u32.to_be_bytes());
+                assert_eq!(&field[14..16], &8i16.to_be_bytes());
+            }
+        } else {
+            assert_eq!(description, (b'n', vec![]));
+        }
+        let mut body = b"\0\0".to_vec();
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&0i16.to_be_bytes());
+        send(socket, b'B', &body);
+        assert_eq!(read(socket), (b'2', vec![]), "{sql}");
+        execute(socket, "");
+        send(socket, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let done = m.0 == b'Z';
+            messages.push(m);
+            if done {
+                return messages;
+            }
+        }
+    }
+    fn ok(socket: &mut TcpStream, sql: &str, extended: bool, status: u8) -> Vec<(u8, Vec<u8>)> {
+        let m = run(socket, sql, extended);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![status])), "{sql}");
+        m
+    }
+    fn value(socket: &mut TcpStream, sql: &str, expected: Option<i64>, extended: bool, status: u8) {
+        let m = ok(socket, sql, extended, status);
+        let rows: Vec<_> = m.iter().filter(|m| m.0 == b'D').collect();
+        assert_eq!(rows.len(), 1, "{sql}");
+        let data = &rows[0].1;
+        assert_eq!(&data[..2], &1i16.to_be_bytes());
+        match expected {
+            Some(v) => {
+                let text = v.to_string();
+                assert_eq!(&data[2..6], &(text.len() as i32).to_be_bytes());
+                assert_eq!(&data[6..], text.as_bytes(), "{sql}");
+            }
+            None => assert_eq!(&data[2..], &(-1i32).to_be_bytes()),
+        }
+    }
+    for extended in [false, true] {
+        for scenario in 0..4 {
+            let (service, addr) = start();
+            let mut a = connect(addr);
+            let mut b = connect(addr);
+            ok(
+                &mut a,
+                "CREATE SEQUENCE public.seq_contract AS bigint INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 START WITH 10 CACHE 1 NO CYCLE",
+                false,
+                b'I',
+            );
+            ok(
+                &mut a,
+                "CREATE TABLE public.seq_rows (id integer PRIMARY KEY,v bigint)",
+                false,
+                b'I',
+            );
+            if scenario == 1 {
+                value(
+                    &mut a,
+                    "SELECT nextval('public.seq_contract'::regclass) AS v",
+                    Some(10),
+                    extended,
+                    b'I',
+                );
+            }
+            ok(&mut a, "BEGIN", extended, b'T');
+            if scenario == 1 {
+                value(
+                    &mut a,
+                    "SELECT setval('public.seq_contract'::regclass,80,true) AS v",
+                    Some(80),
+                    extended,
+                    b'T',
+                );
+                value(
+                    &mut b,
+                    "SELECT nextval('public.seq_contract'::regclass) AS v",
+                    Some(81),
+                    extended,
+                    b'I',
+                );
+            } else {
+                value(
+                    &mut a,
+                    "SELECT nextval('public.seq_contract'::regclass) AS v",
+                    Some(10),
+                    extended,
+                    b'T',
+                );
+                ok(
+                    &mut a,
+                    "INSERT INTO public.seq_rows VALUES (1,10)",
+                    extended,
+                    b'T',
+                );
+                assert_eq!(
+                    row_count(&ok(
+                        &mut b,
+                        "SELECT id,v FROM public.seq_rows ORDER BY id",
+                        extended,
+                        b'I'
+                    )),
+                    0
+                );
+            }
+            if scenario == 2 {
+                value(
+                    &mut a,
+                    "SELECT setval('public.seq_contract'::regclass,NULL,true) AS v",
+                    None,
+                    extended,
+                    b'T',
+                );
+                let m = run(
+                    &mut a,
+                    "SELECT setval('public.seq_contract'::regclass,0,true) AS v",
+                    extended,
+                );
+                let error = m.iter().find(|m| m.0 == b'E').unwrap();
+                assert_eq!(error_state(&error.1), Some("22003"));
+                assert_eq!(m.last(), Some(&(b'Z', vec![b'E'])));
+                let blocked = query(&mut a, "SELECT 1");
+                assert_eq!(error_state(&blocked[0].1), Some("25P02"));
+                if extended {
+                    sync(&mut a, b'E');
+                }
+            }
+            if scenario == 3 {
+                send(&mut a, b'X', &[]);
+                drop(a);
+                // A new connection has no currval; close must roll back its rows.
+                a = connect(addr);
+            } else {
+                ok(&mut a, "ROLLBACK", extended, b'I');
+            }
+            if scenario != 3 {
+                value(
+                    &mut a,
+                    "SELECT currval('public.seq_contract'::regclass) AS v",
+                    Some(if scenario == 1 { 80 } else { 10 }),
+                    extended,
+                    b'I',
+                );
+            } else {
+                let m = run(
+                    &mut a,
+                    "SELECT currval('public.seq_contract'::regclass) AS v",
+                    extended,
+                );
+                assert_eq!(
+                    error_state(&m.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("55000")
+                );
+                assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+            }
+            assert_eq!(
+                row_count(&ok(
+                    &mut b,
+                    "SELECT id,v FROM public.seq_rows ORDER BY id",
+                    extended,
+                    b'I'
+                )),
+                0
+            );
+            value(
+                &mut b,
+                "SELECT nextval('public.seq_contract'::regclass) AS v",
+                Some(if scenario == 1 { 82 } else { 11 }),
+                extended,
+                b'I',
+            );
+            value(&mut a, "SELECT 1 AS ok", Some(1), extended, b'I');
+            value(&mut b, "SELECT 1 AS ok", Some(1), extended, b'I');
+            ok(&mut a, "DROP TABLE public.seq_rows", false, b'I');
+            ok(&mut a, "DROP SEQUENCE public.seq_contract", false, b'I');
+            send(&mut a, b'X', &[]);
+            send(&mut b, b'X', &[]);
+            service.close();
+            assert!(TcpStream::connect(addr).is_err());
+            eprintln!("pg11_17 extended={extended} scenario={scenario} passed");
+        }
+    }
+}
