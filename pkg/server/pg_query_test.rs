@@ -31449,3 +31449,228 @@ fn pg11_18() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_19() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn value(s: &mut TcpStream, sql: &str, ext: bool, expected: Option<&str>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(
+            catalog_rows(&m),
+            vec![vec![expected.map(str::to_owned)]],
+            "{sql}: {m:?}"
+        );
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+        assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    let native = astersql_session::runtime::ConcreteSession::new(domain.clone());
+    native.execute("CREATE ROLE seq_operation_reader").unwrap();
+    native
+        .execute("GRANT seq_operation_reader TO 'root'@'%'")
+        .unwrap();
+    for ext in [false, true] {
+        for (privilege, admin_next) in [
+            (None, "10"),
+            (Some("USAGE"), "11"),
+            (Some("SELECT"), "10"),
+            (Some("UPDATE"), "41"),
+        ] {
+            let mut admin = connect(None);
+            let mut actor = connect(None);
+            ok(
+                &mut admin,
+                "CREATE SEQUENCE public.seq_operation AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE",
+                ext,
+            );
+            if let Some(privilege) = privilege {
+                ok(
+                    &mut admin,
+                    &format!(
+                        "GRANT {privilege} ON SEQUENCE public.seq_operation TO seq_operation_reader"
+                    ),
+                    ext,
+                );
+            }
+            ok(&mut actor, "SET ROLE seq_operation_reader", ext);
+            let next = "SELECT nextval('public.seq_operation'::regclass) AS v";
+            let curr = "SELECT currval('public.seq_operation'::regclass) AS v";
+            let set = "SELECT setval('public.seq_operation'::regclass,40) AS v";
+            match privilege {
+                None => {
+                    for sql in [next, curr, set] {
+                        denied(&mut actor, sql, ext, "42501");
+                    }
+                }
+                Some("USAGE") => {
+                    denied(&mut actor, curr, ext, "55000");
+                    value(&mut actor, next, ext, Some("10"));
+                    value(&mut actor, curr, ext, Some("10"));
+                    denied(&mut actor, set, ext, "42501");
+                    value(&mut actor, curr, ext, Some("10"));
+                }
+                Some("SELECT") => {
+                    denied(&mut actor, next, ext, "42501");
+                    denied(&mut actor, curr, ext, "55000");
+                    denied(&mut actor, set, ext, "42501");
+                }
+                Some("UPDATE") => {
+                    value(&mut actor, next, ext, Some("10"));
+                    denied(&mut actor, curr, ext, "42501");
+                    value(&mut actor, set, ext, Some("40"));
+                    denied(&mut actor, curr, ext, "42501");
+                    denied(
+                        &mut actor,
+                        "SELECT setval('public.seq_operation'::regclass,1001) AS v",
+                        ext,
+                        "22003",
+                    );
+                    denied(
+                        &mut actor,
+                        "SELECT setval('public.seq_operation'::regclass,40,1) AS v",
+                        ext,
+                        "42883",
+                    );
+                }
+                _ => unreachable!(),
+            }
+            // Strict NULL calls have no ACL lookup or sequence side effect.
+            for sql in [
+                "SELECT nextval(NULL::regclass) AS v",
+                "SELECT currval(NULL::regclass) AS v",
+                "SELECT setval(NULL::regclass,40) AS v",
+                "SELECT setval('public.seq_operation'::regclass,NULL) AS v",
+            ] {
+                value(&mut actor, sql, ext, None);
+            }
+            value(&mut admin, next, ext, Some(admin_next));
+            // Even an initialized local value must remain inaccessible after revoke.
+            if let Some(privilege) = privilege {
+                ok(
+                    &mut admin,
+                    &format!(
+                        "REVOKE {privilege} ON SEQUENCE public.seq_operation FROM seq_operation_reader"
+                    ),
+                    ext,
+                );
+            }
+            for sql in [next, curr, set] {
+                denied(&mut actor, sql, ext, "42501");
+            }
+            ok(&mut actor, "SET ROLE NONE", ext);
+            ok(&mut admin, "DROP SEQUENCE public.seq_operation", ext);
+            for stream in [&mut actor, &mut admin] {
+                ok(stream, "SELECT 1", ext);
+                if ext {
+                    send(stream, b'C', b"P\0");
+                    assert_eq!(read(stream).0, b'3');
+                    send(stream, b'C', b"S\0");
+                    assert_eq!(read(stream).0, b'3');
+                    send(stream, b'S', &[]);
+                    assert_eq!(read(stream), (b'Z', b"I".to_vec()));
+                }
+                send(stream, b'X', &[]);
+            }
+            eprintln!(
+                "pg11_19 ext={ext} privilege={privilege:?}: independent permission round passed; administrator next={admin_next}"
+            );
+        }
+    }
+    // The isolated test domain owns the role fixture and releases it on drop.
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
