@@ -323,10 +323,13 @@ impl ConcreteSession {
     ) -> SessionResult<String> {
         let facts = self.pg_namespace_facts()?;
         let path = if let Some(schema) = schema {
-            let fact = facts
-                .iter()
-                .find(|f| f.name == schema)
-                .ok_or_else(|| namespace_error("3F000", "schema does not exist"))?;
+            let fact = facts.iter().find(|f| f.name == schema).ok_or_else(|| {
+                if create {
+                    namespace_error("3F000", "schema does not exist")
+                } else {
+                    namespace_error("42P01", "relation does not exist")
+                }
+            })?;
             if !fact.usage {
                 return Err(namespace_error("42501", "permission denied for schema"));
             }

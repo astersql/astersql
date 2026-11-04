@@ -2186,6 +2186,19 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
+                    let mut utility_notices = if command == "DROP TABLE" {
+                        self.statements
+                            .get(&portal.statement_name)
+                            .map(|statement| {
+                                crate::pg_name::drop_if_exists_notices(
+                                    &statement.original_sql,
+                                    context.as_ref(),
+                                )
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
                     let execution = if let Some(query) = &portal.session_query {
                         self.session.execute(query, context.as_ref())
                     } else {
@@ -2250,6 +2263,9 @@ impl Extended {
                     }
                     context.finish_protocol_response(std::time::Duration::ZERO);
                     let mut messages = encoded?;
+                    utility_notices.append(&mut messages);
+                    messages = utility_notices;
+
                     if let Some(query) = &portal.session_query {
                         let mut notices = query.notices(context.as_ref());
                         notices.append(&mut messages);

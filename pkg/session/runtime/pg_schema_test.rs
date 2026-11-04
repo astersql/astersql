@@ -613,3 +613,15 @@ fn identity_user_override_preserves_owned_sequence() {
         assert!(domain.info_schema().TableByID(id).is_none());
     }
 }
+
+#[test]
+fn pg11_30_missing_schema_relation_diagnostics() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for (create, expected) in [(false, "42P01"), (true, "3F000")] {
+        let error = pg
+            .pg_bind_relation(Some("absent_schema"), "path_doc", create)
+            .unwrap_err();
+        assert_eq!(error.pg_function_error().unwrap().state, expected);
+    }
+}

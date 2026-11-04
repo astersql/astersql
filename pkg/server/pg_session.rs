@@ -21,6 +21,7 @@ pub(crate) enum SessionQuery {
     Set(Vec<String>),
     LocalPath(Option<Vec<String>>),
     Reset,
+    DefaultPath,
     SchemaUtility(astersql_session::runtime::PgSchemaCommand),
 }
 #[derive(Debug)]
@@ -57,7 +58,15 @@ impl PgSession {
     pub(crate) fn from_startup(value: Option<&str>) -> ParseResult<Self> {
         let mut session = Self::default();
         if let Some(value) = value {
-            let value = if value.is_empty() { "''" } else { value };
+            if value.is_empty() {
+                // A raw empty startup GUC displays as empty text. SQL SET TO ''
+                // instead canonicalizes to the quoted empty identifier (two double quotes).
+                // Neither entry resolves a namespace; retaining this spelling in
+                // the existing path snapshot also preserves RESET and rollback.
+                session.path = vec![String::new()];
+                session.default_path.clone_from(&session.path);
+                return Ok(session);
+            }
             match SessionQuery::parse(&format!("SET search_path TO {value}"))? {
                 Some(SessionQuery::Set(path)) => {
                     session.path = path.clone();
@@ -67,6 +76,52 @@ impl PgSession {
             }
         }
         Ok(session)
+    }
+
+    /// libpq transports command-line settings in StartupMessage.options. Only
+    /// search_path is supported here; never silently accept another GUC/flag.
+    pub(crate) fn from_startup_options(
+        value: Option<&str>,
+        options: Option<&str>,
+    ) -> ParseResult<Self> {
+        let mut words = Vec::new();
+        let mut word = String::new();
+        let mut escaped = false;
+        for ch in options.unwrap_or_default().chars() {
+            if escaped {
+                word.push(ch);
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch.is_ascii_whitespace() {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            } else {
+                word.push(ch);
+            }
+        }
+        if escaped {
+            return Err(("22023", "incomplete startup options escape".into()));
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+        let mut path = None;
+        let mut words = words.iter();
+        while let Some(word) = words.next() {
+            let setting = if word == "-c" {
+                words.next().map(String::as_str)
+            } else {
+                word.strip_prefix("-c").or_else(|| word.strip_prefix("--"))
+            }
+            .ok_or_else(|| ("0A000", "unsupported startup option".into()))?;
+            let Some(("search_path", setting)) = setting.split_once('=') else {
+                return Err(("0A000", "only startup search_path is supported".into()));
+            };
+            path = Some(setting);
+        }
+        Self::from_startup(value.or(path))
     }
 
     pub(crate) fn transaction_status(&mut self, context: &dyn TiDBContext) -> u8 {
@@ -264,7 +319,7 @@ impl PgSession {
                 self.effective_explicit_path(context)?;
                 None
             }
-            SessionQuery::Reset => {
+            SessionQuery::Reset | SessionQuery::DefaultPath => {
                 self.local_path_restore = None;
                 self.path.clone_from(&self.default_path);
                 self.effective_explicit_path(context)?;
@@ -338,6 +393,7 @@ impl SessionQuery {
                 astersql_session::runtime::PgSchemaCommand::Usage { grant: false, .. } => "REVOKE",
             },
             Self::Set(_)
+            | Self::DefaultPath
             | Self::LocalPath(_)
             | Self::DateStyleSet(_)
             | Self::IntervalStyleSet(_) => "SET",
@@ -654,7 +710,7 @@ impl SessionQuery {
                 return Ok(Some(if local_path {
                     Self::LocalPath(None)
                 } else {
-                    Self::Reset
+                    Self::DefaultPath
                 }));
             }
             if word(tokens.get(3), "null") {

@@ -95,3 +95,19 @@ fn pg_interval_constant_union_precision() {
     }
     session.close_protocol_statement(id).unwrap();
 }
+
+#[test]
+fn pg11_30_current_schema_column_name() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let pg = ConcreteSession::new_with_dialect(domain, astersql_parser_ast::SqlDialect::PostgreSQL);
+    for (sql, expected) in [
+        ("SELECT current_schema()", "current_schema"),
+        ("SELECT pg_catalog.current_schema()", "current_schema"),
+        ("SELECT current_schema() AS explicit_name", "explicit_name"),
+    ] {
+        let (_, _, fields) = pg
+            .prepare_protocol_statement_with_parameter_types(sql, &[])
+            .unwrap();
+        assert_eq!(fields[0].column_as_name.O, expected);
+    }
+}

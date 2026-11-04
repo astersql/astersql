@@ -635,7 +635,9 @@ impl CatalogQuery {
             } else {
                 match (relation.name.as_str(), name) {
                     ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                    ("pg_class", "relname") => Some((1, 253, 0)),
+                    ("pg_class", "relname") => {
+                        Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
+                    }
                     ("pg_class", "relnamespace") => Some((2, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_class", "relkind") => Some((3, 253, 0)),
                     ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),

@@ -1277,3 +1277,35 @@ fn pg11_08_column_targets_and_output_names() {
         assert_eq!(rewrite(sql, "db", true).unwrap(), expected, "{sql}");
     }
 }
+
+#[test]
+fn pg11_30_drop_if_exists_notice() {
+    use crate::conn::SessionDriver;
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = crate::runtime::ConcreteSessionDriver::new_for_test(
+        domain,
+        crate::runtime::BootstrapAuthMode::InsecureRootOnly,
+    );
+    let ctx = driver
+        .open_ctx_with_dialect(
+            91130,
+            0,
+            45,
+            "test",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        )
+        .unwrap();
+    let sql = "DROP TABLE IF EXISTS public.notice_probe";
+    let missing = crate::pg_name::drop_if_exists_notices(sql, ctx.as_ref());
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].0, b'N');
+    assert!(missing[0].1.windows(7).any(|part| part == b"C00000\0"));
+    native
+        .execute("CREATE TABLE notice_probe (id int)")
+        .unwrap();
+    assert!(crate::pg_name::drop_if_exists_notices(sql, ctx.as_ref()).is_empty());
+    assert!(
+        crate::pg_name::drop_if_exists_notices("DROP TABLE public.absent", ctx.as_ref()).is_empty()
+    );
+}

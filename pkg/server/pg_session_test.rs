@@ -124,3 +124,47 @@ fn search_path_startup_and_reset_preserve_session_state() {
     assert_eq!(pg.error_detail, Some("kept detail"));
     assert_eq!(pg.function_error_hint, Some("kept hint"));
 }
+
+#[test]
+fn pg11_30_bounded_startup_options() {
+    use crate::pg_session::PgSession;
+    for options in [
+        "",
+        "-c search_path=pg_catalog",
+        "-csearch_path=public",
+        "--search_path=public",
+        "-c search_path=",
+        "-c search_path=pg_catalog,\\ public",
+        "-c search_path=public -c search_path=pg_catalog",
+    ] {
+        assert!(
+            PgSession::from_startup_options(None, Some(options)).is_ok(),
+            "{options}"
+        );
+    }
+    for options in [
+        "-c",
+        "-x",
+        "-c work_mem=1MB",
+        "--timezone=UTC",
+        "-c search_path=public -c work_mem=1MB",
+        "-c search_path=public\\",
+        "-c search_path=NULL",
+        "-c search_path=public;SELECT",
+    ] {
+        assert!(
+            PgSession::from_startup_options(None, Some(options)).is_err(),
+            "{options}"
+        );
+    }
+}
+
+#[test]
+fn pg11_30_default_path_retains_set_command_tag() {
+    let set = SessionQuery::parse("SET search_path TO DEFAULT")
+        .unwrap()
+        .unwrap();
+    assert_eq!(set.command(), "SET");
+    let reset = SessionQuery::parse("RESET search_path").unwrap().unwrap();
+    assert_eq!(reset.command(), "RESET");
+}

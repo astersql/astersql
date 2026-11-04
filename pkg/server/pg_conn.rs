@@ -251,7 +251,7 @@ impl PgService {
             return Err(invalid("startup user is required"));
         };
         for (name, value) in &startup.parameters {
-            let supported = matches!(name.as_str(), "user" | "database" | "application_name" | "search_path")
+            let supported = matches!(name.as_str(), "user" | "database" | "application_name" | "search_path" | "options")
                 || (name == "client_encoding"
                     && matches!(value.to_ascii_uppercase().as_str(), "UTF8" | "UTF-8"))
                 // The text codec uses ISO dates. JDBC requests ISO at startup;
@@ -278,8 +278,9 @@ impl PgService {
                 return Ok(());
             }
         }
-        let pg_session = match crate::pg_session::PgSession::from_startup(
+        let pg_session = match crate::pg_session::PgSession::from_startup_options(
             startup.parameters.get("search_path").map(String::as_str),
+            startup.parameters.get("options").map(String::as_str),
         ) {
             Ok(session) => session,
             Err((state, message)) => {
@@ -654,6 +655,14 @@ impl PgService {
                                         continue;
                                     }
                                 }
+                                let utility_notices = if command == "DROP TABLE" {
+                                    crate::pg_name::drop_if_exists_notices(
+                                        original_sql,
+                                        context.as_ref(),
+                                    )
+                                } else {
+                                    vec![]
+                                };
                                 let execution = self.with_query(pid, |context| {
                                     if let Some(catalog) =
                                         catalog.as_ref().ok().and_then(|query| query.as_ref())
@@ -666,6 +675,9 @@ impl PgService {
                                 })?;
                                 match execution {
                                     Ok(results) => {
+                                        for (tag, body) in &utility_notices {
+                                            write_message(socket, *tag, body)?;
+                                        }
                                         extended
                                             .session
                                             .record_success(Some(command), context.as_ref());

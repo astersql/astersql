@@ -547,7 +547,7 @@ fn pg_introspection_relations_live() {
         columns(&result[0].1),
         vec![
             ("oid".into(), 26),
-            ("relname".into(), 25),
+            ("relname".into(), 19),
             ("relnamespace".into(), 26),
             ("relkind".into(), 25),
             ("absent".into(), 25)
@@ -831,7 +831,7 @@ fn pg_introspection_relations_live() {
     assert_eq!(empty.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
     assert_eq!(
         columns(&empty[0].1),
-        vec![("oid".into(), 26), ("relname".into(), 25)]
+        vec![("oid".into(), 26), ("relname".into(), 19)]
     );
     send(&mut socket, b'X', &[]);
     service.close();
@@ -2559,7 +2559,7 @@ order by owner_id
     assert_eq!(
         columns(&result[0].1),
         vec![
-            ("relname".into(), 25),
+            ("relname".into(), 19),
             ("nspname".into(), 19),
             ("classid".into(), 26),
             ("refclassid".into(), 26),

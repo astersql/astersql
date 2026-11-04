@@ -1920,7 +1920,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         result = describe(conn, b'live_catalog')
         try:
             assert result_status(result)==1, result_error(result).decode()
-            assert columns(result)==1 and field_name(result,0)==b'relname' and field_type(result,0)==25
+            assert columns(result)==1 and field_name(result,0)==b'relname' and field_type(result,0)==19
         finally: clear(result)
         def live_rows():
             result = prepared_execute(conn,b'live_catalog',0,None,None,None,0)
@@ -1945,7 +1945,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         query('CREATE DATABASE pg_client_catalog_live')
         query('CREATE TABLE public.pg_client_relation_live (id INT)')
         for extended in [False, True]:
-            relations = query("SELECT oid, relname, relnamespace, relkind FROM pg_class WHERE relname = 'pg_client_relation_live'", metadata=[('oid', 26), ('relname', 25), ('relnamespace', 26), ('relkind', 25)], extended=extended)
+            relations = query("SELECT oid, relname, relnamespace, relkind FROM pg_class WHERE relname = 'pg_client_relation_live'", metadata=[('oid', 26), ('relname', 19), ('relnamespace', 26), ('relkind', 25)], extended=extended)
             assert len(relations) == 1 and relations[0][1:] == ['pg_client_relation_live', str(namespace_id), 'r'], relations
             assert int(relations[0][0]) > 0, relations
             databases = query(sys.argv[2], metadata=[('id', 20), ('name', 25), ('description', 25), ('is_template', 16), ('allow_connections', 16), ('owner', 25)], extended=extended)
@@ -15057,4 +15057,227 @@ fn pg10_32_differential() {
     assert_eq!(summary["cleanup"]["target"], true);
     assert_eq!(summary["cleanup"]["pg_connections"], 4);
     assert_eq!(summary["cleanup"]["mysql_connections"], 2);
+}
+
+#[test]
+fn pg11_30() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = start_client_server(domain, Some(0));
+    let _close = CloseServer(&server);
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql_address = server.listener_addr().unwrap();
+    let database = format!("pg1130_{}_{}", std::process::id(), pg.port());
+    let role = format!("pg1130_role_{}_{}", std::process::id(), pg.port());
+    native
+        .execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    native.execute(&format!("CREATE ROLE {role}")).unwrap();
+    native
+        .execute(&format!("GRANT SELECT ON {database}.* TO {role}"))
+        .unwrap();
+    native
+        .execute(&format!("GRANT {role} TO 'root'@'%'"))
+        .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        server.close();
+        native
+            .execute(&format!("DROP DATABASE {database}"))
+            .unwrap();
+        native.execute(&format!("DROP ROLE {role}")).unwrap();
+    });
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg11-30-evidence")
+        .join(format!("{}-{}", std::process::id(), pg.port()));
+    std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    println!("PG11_30_EVIDENCE={}", evidence.display());
+    fn connect_mysql(addr: std::net::SocketAddr) -> TcpStream {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        mysql_handshake(&mut s);
+        s
+    }
+    // Retain complete native column packets, including charset/type/flags/length/
+    // decimals. They are compared to this connection's own pre-PG baseline.
+    fn snapshot(s: &mut TcpStream, sql: &str) -> serde_json::Value {
+        let mut packet = vec![3];
+        packet.extend_from_slice(sql.as_bytes());
+        mysql_packet(s, 0, &packet);
+        let head = mysql_read(s);
+        assert!(head[0] > 0 && head[0] < 251, "{sql}: {head:?}");
+        let mut columns = vec![];
+        for _ in 0..head[0] {
+            columns.push(mysql_read(s));
+        }
+        let eof = mysql_read(s);
+        assert_eq!(eof[0], 0xfe);
+        assert_eq!(&eof[1..3], &[0, 0]);
+        let mut rows = vec![];
+        loop {
+            let row = mysql_read(s);
+            if row[0] == 0xfe && row.len() < 9 {
+                assert_eq!(&row[1..3], &[0, 0]);
+                break;
+            }
+            assert_ne!(row[0], 0xff, "{sql}: {row:?}");
+            rows.push(row);
+        }
+        serde_json::json!({"sql":sql,"columns":columns,"rows":rows,"warnings":0})
+    }
+    fn prepare(s: &mut TcpStream) -> (u32, Vec<u8>) {
+        let mut request = vec![0x16];
+        request.extend_from_slice(b"SELECT v FROM path_mysql_doc WHERE id=?");
+        mysql_packet(s, 0, &request);
+        let head = mysql_read(s);
+        assert_eq!(head[0], 0);
+        assert_eq!(&head[5..9], &[1, 0, 1, 0]);
+        let id = u32::from_le_bytes(head[1..5].try_into().unwrap());
+        mysql_read(s);
+        assert_eq!(mysql_read(s)[0], 0xfe);
+        let column = mysql_read(s);
+        assert_eq!(mysql_read(s)[0], 0xfe);
+        (id, column)
+    }
+    fn execute(s: &mut TcpStream, statement: &(u32, Vec<u8>), expected: i32) -> serde_json::Value {
+        let mut request = vec![0x17];
+        request.extend_from_slice(&statement.0.to_le_bytes());
+        request.extend_from_slice(&[0, 1, 0, 0, 0, 0, 1, 3, 0]);
+        request.extend_from_slice(&1_i32.to_le_bytes());
+        mysql_packet(s, 0, &request);
+        assert_eq!(mysql_read(s), vec![1]);
+        let column = mysql_read(s);
+        assert_eq!(column, statement.1);
+        assert_eq!(mysql_read(s)[0], 0xfe);
+        let row = mysql_read(s);
+        assert_eq!(&row[..2], &[0, 0]);
+        assert_eq!(i32::from_le_bytes(row[2..6].try_into().unwrap()), expected);
+        let eof = mysql_read(s);
+        assert_eq!(eof[0], 0xfe);
+        assert_eq!(&eof[1..3], &[0, 0]);
+        serde_json::json!({"description_source":"COM_STMT_EXECUTE","columns":[column],"rows":[row],"warnings":0})
+    }
+    let mut mysql = connect_mysql(mysql_address);
+    mysql_isolation(&mut mysql);
+    for sql in [
+        "SET autocommit=1",
+        "CREATE TABLE path_mysql_doc (id INT PRIMARY KEY,v INT)",
+        "INSERT INTO path_mysql_doc VALUES (1,10)",
+    ] {
+        mysql_query(&mut mysql, sql);
+    }
+    let mut observer = connect_mysql(mysql_address);
+    mysql_query(&mut observer, "USE public");
+    mysql_query(&mut observer, "SET autocommit=1");
+    let prepared_m = prepare(&mut mysql);
+    let prepared_n = prepare(&mut observer);
+    let baseline_m = snapshot(&mut mysql, "SELECT id,v FROM path_mysql_doc ORDER BY id");
+    let baseline_n = snapshot(&mut observer, "SELECT id,v FROM path_mysql_doc ORDER BY id");
+    assert_eq!(
+        mysql_query(&mut mysql, "SELECT id,v FROM path_mysql_doc ORDER BY id"),
+        vec![vec![Some(b"1".to_vec()), Some(b"10".to_vec())]]
+    );
+    let modes = "SELECT DATABASE(), @@sql_mode, @@lower_case_table_names, @@transaction_isolation";
+    let mode_m = snapshot(&mut mysql, modes);
+    let mode_n = snapshot(&mut observer, modes);
+    let checkpoint = |m: &mut TcpStream, n: &mut TcpStream, phase: &str, expected: i32| {
+        let q_m = snapshot(m, "SELECT id,v FROM path_mysql_doc ORDER BY id");
+        let q_n = snapshot(n, "SELECT id,v FROM path_mysql_doc ORDER BY id");
+        assert_eq!(q_m["columns"], baseline_m["columns"]);
+        assert_eq!(q_n, baseline_n);
+        assert_eq!(snapshot(m, modes), mode_m);
+        assert_eq!(snapshot(n, modes), mode_n);
+        assert_eq!(
+            mysql_query(m, "SELECT id,v FROM path_mysql_doc ORDER BY id"),
+            vec![vec![
+                Some(b"1".to_vec()),
+                Some(expected.to_string().into_bytes())
+            ]]
+        );
+        let p_m = execute(m, &prepared_m, expected);
+        let p_n = execute(n, &prepared_n, 10);
+        let record = serde_json::json!({"case_id":phase,"M_query":q_m,"N_query":q_n,
+            "M_prepared":p_m,"N_prepared":p_n,"M_modes":mode_m,"N_modes":mode_n});
+        use std::fs::OpenOptions;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(evidence.with_extension("mysql.jsonl"))
+            .unwrap();
+        writeln!(file, "{record}").unwrap();
+    };
+    checkpoint(&mut mysql, &mut observer, "before", 10);
+    mysql_query(&mut mysql, "BEGIN");
+    mysql_query(&mut mysql, "UPDATE path_mysql_doc SET v=11 WHERE id=1");
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            self.0.wait().unwrap();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pg11_30.py"))
+            .args([pg.port().to_string(), database.clone()])
+            .env("PG11_MYSQL_PORT", mysql_address.port().to_string())
+            .env("PG11_30_ROLE", &role)
+            .env("PG11_30_EVIDENCE_DIR", &evidence)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut middle = 0;
+    for line in std::io::BufReader::new(child.0.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line == "PG11_30_MID" {
+            checkpoint(&mut mysql, &mut observer, "during", 11);
+            middle += 1;
+            child
+                .0
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+    }
+    let status = child.0.wait().unwrap();
+    checkpoint(&mut mysql, &mut observer, "after", 11);
+    mysql_query(&mut mysql, "ROLLBACK");
+    checkpoint(&mut mysql, &mut observer, "rollback", 10);
+    for (socket, statement) in [(&mut mysql, &prepared_m), (&mut observer, &prepared_n)] {
+        let mut close = vec![0x19];
+        close.extend_from_slice(&statement.0.to_le_bytes());
+        mysql_packet(socket, 0, &close);
+    }
+    mysql_query(&mut mysql, "DROP TABLE path_mysql_doc");
+    mysql_query(&mut mysql, "DROP DATABASE public");
+    mysql_packet(&mut mysql, 0, &[0x01]);
+    mysql_packet(&mut observer, 0, &[0x01]);
+    assert!(status.success(), "path-session libpq differential failed");
+    assert_eq!(middle, 2);
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["passed"], true);
+    assert_eq!(summary["paired_inputs"], 1373);
+    assert_eq!(summary["protocols"], 2);
+    assert_eq!(summary["role_rounds"], 2);
+    assert_eq!(summary["startup_defaults"], 6);
+    assert_eq!(summary["negative_checks"], 18);
+    for field in ["reference_database", "reference_role", "pg_connections"] {
+        assert_eq!(summary["cleanup"][field], true);
+    }
+    drop(child);
+    drop(cleanup);
+    assert!(TcpStream::connect(pg).is_err());
+    assert!(TcpStream::connect(mysql_address).is_err());
 }

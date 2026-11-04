@@ -5784,6 +5784,12 @@ impl ConcreteSession {
             ast::ExprKind::Parentheses(inner) => self.pg_grouped_projection_name(inner),
             ast::ExprKind::Value(_) => Some("?column?".into()),
             ast::ExprKind::Column(column) => Some(column.Name.O.clone()),
+            ast::ExprKind::Function { FnName, Schema, .. }
+                if FnName.L == "current_schema"
+                    && (Schema.L.is_empty() || Schema.L == "pg_catalog") =>
+            {
+                Some(FnName.L.clone())
+            }
             ast::ExprKind::ExplicitRow { .. } | ast::ExprKind::ImplicitRow { .. } => {
                 Some("row".into())
             }

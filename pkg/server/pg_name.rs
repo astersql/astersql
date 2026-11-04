@@ -1512,3 +1512,42 @@ pub(crate) fn validate_relations(sql: &str, database: &str) -> ParseResult<()> {
     }
     Ok(())
 }
+
+/// A missing relation in DROP IF EXISTS is a successful utility with a NOTICE.
+/// Probe the same authoritative binder before execution; callers emit only when
+/// the existing executor succeeds, so failed/denied commands never gain notices.
+pub(crate) fn drop_if_exists_notices(sql: &str, context: &dyn TiDBContext) -> Vec<(u8, Vec<u8>)> {
+    use astersql_parser_ast as ast;
+    let Ok((nodes, _)) =
+        astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
+    else {
+        return vec![];
+    };
+    if nodes.len() != 1 {
+        return vec![];
+    }
+    let Some(drop) = nodes[0].as_any().downcast_ref::<ast::DropTableStmt>() else {
+        return vec![];
+    };
+    if !drop.IfExists || drop.IsView {
+        return vec![];
+    }
+    drop.Tables
+        .iter()
+        .filter_map(|table| {
+            let schema = (!table.Schema.O.is_empty()).then(|| table.Schema.O.clone());
+            let missing = context
+                .pg_bind_relation(schema, table.Name.O.clone(), false)
+                .is_some_and(|bound| bound.is_err_and(|e| crate::pg_conn::sqlstate(&e) == "42P01"));
+            if !missing {
+                return None;
+            }
+            let mut body = b"SNOTICE\0VNOTICE\0C00000\0M".to_vec();
+            body.extend_from_slice(
+                format!("table \"{}\" does not exist, skipping", table.Name.O).as_bytes(),
+            );
+            body.extend_from_slice(&[0, 0]);
+            Some((b'N', body))
+        })
+        .collect()
+}
