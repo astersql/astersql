@@ -1607,6 +1607,11 @@ fn pg12_single_implicit() {
     pg12_transaction_case("single_implicit");
 }
 
+#[test]
+fn pg12_repeated_begin() {
+    pg12_transaction_case("repeated_begin");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),

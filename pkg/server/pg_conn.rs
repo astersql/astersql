@@ -662,6 +662,19 @@ impl PgService {
                                     )?;
                                     continue;
                                 }
+                                if let Some(messages) =
+                                    extended.session.repeated_begin(command, context.as_ref())
+                                {
+                                    for (tag, body) in messages {
+                                        write_message(socket, tag, &body)?;
+                                    }
+                                    write_message(
+                                        socket,
+                                        b'Z',
+                                        &[extended.session.transaction_status(context.as_ref())],
+                                    )?;
+                                    continue;
+                                }
                                 if command == "INSERT" {
                                     if let Err((state, message)) = crate::pg_extended::conflict_plan(
                                         &sql,

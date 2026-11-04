@@ -2228,6 +2228,18 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
+                    let repeated_begin = if self.implicit_transaction {
+                        None
+                    } else {
+                        self.session.repeated_begin(command, context.as_ref())
+                    };
+                    if let Some(messages) = repeated_begin {
+                        // Complete this portal without starting a native command.
+                        // A later Execute replays only CommandComplete.
+                        portal.offset = messages.len();
+                        portal.messages = Some(messages.clone());
+                        return Ok(messages);
+                    }
                     if command == "BEGIN" {
                         // BEGIN in a pending implicit segment promotes the same
                         // shared transaction to explicit client ownership.

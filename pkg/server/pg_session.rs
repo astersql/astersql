@@ -176,6 +176,26 @@ impl PgSession {
         Ok(())
     }
 
+    /// PostgreSQL BEGIN in an active block is a warning and a no-op. Never
+    /// dispatch it to the native engine, where BEGIN commits the previous block.
+    /// Call after the failed-transaction gate so an aborted block still errors.
+    pub(crate) fn repeated_begin(
+        &self,
+        command: &str,
+        context: &dyn TiDBContext,
+    ) -> Option<Vec<(u8, Vec<u8>)>> {
+        (command == "BEGIN" && context.in_transaction()).then(|| {
+            vec![
+                (
+                    b'N',
+                    b"SWARNING\0VWARNING\0C25001\0Mthere is already a transaction in progress\0\0"
+                        .to_vec(),
+                ),
+                (b'C', b"BEGIN\0".to_vec()),
+            ]
+        })
+    }
+
     pub(crate) fn record_error(&mut self, context: &dyn TiDBContext) {
         if context.in_transaction() {
             self.failed_transaction = true;

@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -52,6 +52,8 @@ diag = api('PQresultErrorField', S, P, I)
 tx = api('PQtransactionStatus', I, P)
 libversion = api('PQlibVersion', I)
 serverversion = api('PQserverVersion', I, P)
+NoticeReceiver = c.CFUNCTYPE(None, P, P)
+set_notice_receiver = api('PQsetNoticeReceiver', P, P, NoticeReceiver, P)
 assert libversion() >= 180000, 'libpq18 required'
 root = Path(__file__).resolve().parents[3]
 evidence = root / 'target' / f'pg12-{a.case}-evidence' / a.database
@@ -66,6 +68,11 @@ class Connection:
         self.ptr = connect(dsn.encode())
         self.name, self.observations, self.sequence = name, observations, 0
         assert self.ptr and status(self.ptr) == 0, 'connection failed (DSN redacted)'
+        self.pending_notices = []
+        def receive_notice(arg, result):
+            self.pending_notices.append({k:text(diag(result,ord(k))) for k in 'SVCMDHP'})
+        self.notice_receiver = NoticeReceiver(receive_notice)
+        set_notice_receiver(self.ptr, self.notice_receiver, None)
     def result(self, r, sql, phase):
         assert r, 'no libpq result'
         try:
@@ -77,6 +84,9 @@ class Connection:
                    'rows': [[None if null(r,i,j) else text(val(r,i,j)) for j in range(nf(r))] for i in range(nt(r))],
                    'command':text(tag(r)), 'affected':text(affected(r)),
                    'diagnostics':{k:text(diag(r,ord(k))) for k in 'SVCMDHP'}}
+            if a.case == 'repeated_begin':
+                row['notices'] = self.pending_notices
+            self.pending_notices = []
             self.observations.append(row)
             return row
         finally:
@@ -194,6 +204,22 @@ def observe_transaction(side, admin_dsn):
                     S1 = S0 + [['3',None if inserted == 'NULL' else '30']]
                     check(A,S1,'T')
                     check(B,initial,'I')
+                    if a.case == 'repeated_begin':
+                        r = A.query('BEGIN', extended)
+                        assert r['transaction'] == 'T' and r['command'] == 'BEGIN' and not r['columns'], r
+                        check(A,S1,'T')
+                        check(B,initial,'I')
+                        assert r['notices'] == [dict(S='WARNING', V='WARNING', C='25001',
+                            M='there is already a transaction in progress', D=None, H=None, P=None)], r
+                        r = A.query('ROLLBACK', extended)
+                        assert r['transaction'] == 'I' and r['command'] == 'ROLLBACK' and not r['columns'], r
+                        check(A,initial,'I')
+                        check(B,initial,'I')
+                        A.query('DROP TABLE public.tx_contract')
+                        for conn in (A,B):
+                            conn.close()
+                        record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':True,'connections_closed':True})
+                        continue
                     r = A.query('COMMIT', extended)
                     assert r['transaction'] == 'I' and r['command'] == 'COMMIT' and not r['columns'], r
                     check(A,S1,'I')
@@ -225,7 +251,7 @@ for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.po
     outputs[side] = observe_transaction(side, dsn)
 # Compare independently collected behavior, excluding endpoint identity and setup.
 def behavior(record):
-    return [{k:r[k] for k in ('sql','phase','transaction','columns','rows','command','affected','diagnostics')}
+    return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case == 'repeated_begin' else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
             if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
 reference_behavior, aster_behavior = [behavior(outputs[side]) for side in ('reference','aster')]
