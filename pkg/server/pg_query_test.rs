@@ -30802,3 +30802,359 @@ fn pg11_15() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_16() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn value(s: &mut TcpStream, sql: &str, ext: bool, expected: Option<&str>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(
+            catalog_rows(&m),
+            vec![vec![expected.map(str::to_owned)]],
+            "{sql}: {m:?}"
+        );
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+        assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    let native = astersql_session::runtime::ConcreteSession::new(domain.clone());
+    native.execute("CREATE ROLE seq_uncalled_setter").unwrap();
+    native
+        .execute("GRANT seq_uncalled_setter TO 'root'@'%'")
+        .unwrap();
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seq_uncalled AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE",
+            ext,
+        );
+        let set =
+            |args: &str| format!("SELECT setval('public.seq_uncalled'::regclass,{args}) AS v");
+        let curr = "SELECT currval('public.seq_uncalled'::regclass) AS v";
+        let next = "SELECT nextval('public.seq_uncalled'::regclass) AS v";
+        value(&mut a, &set("60,false"), ext, Some("60"));
+        denied(&mut a, curr, ext, "55000");
+        value(&mut b, next, ext, Some("60"));
+        value(&mut b, curr, ext, Some("60"));
+        value(&mut a, next, ext, Some("61"));
+        value(&mut a, &set("70,false"), ext, Some("70"));
+        value(&mut a, curr, ext, Some("61"));
+        value(&mut b, next, ext, Some("70"));
+        value(&mut a, curr, ext, Some("61"));
+        value(&mut b, curr, ext, Some("70"));
+        // Strict NULL arguments neither replace nor consume a pending reset.
+        value(&mut a, &set("80,false"), ext, Some("80"));
+        for sql in [
+            "SELECT setval(NULL::regclass,90,false) AS v".to_owned(),
+            set("NULL,false"),
+            set("90,NULL"),
+        ] {
+            value(&mut a, &sql, ext, None);
+        }
+        value(&mut a, curr, ext, Some("61"));
+        value(&mut b, next, ext, Some("80"));
+        for args in ["0,false", "1001,false", "-1,false"] {
+            denied(&mut a, &set(args), ext, "22003");
+        }
+        for args in ["true,false", "1.5,false", "40,1", "40,false,true"] {
+            denied(&mut a, &set(args), ext, "42883");
+        }
+        denied(&mut a, &set("9223372036854775808,false"), ext, "22003");
+        denied(
+            &mut a,
+            "SELECT setval('absent_uncalled'::regclass,60,false) AS v",
+            ext,
+            "42P01",
+        );
+        ok(&mut a, "CREATE TABLE uncalled_table (id integer)", ext);
+        denied(
+            &mut a,
+            "SELECT setval('uncalled_table'::regclass,60,false) AS v",
+            ext,
+            "42809",
+        );
+        value(&mut a, curr, ext, Some("61"));
+        value(&mut b, next, ext, Some("81"));
+        // UPDATE remains necessary for false, while currval remains private.
+        ok(&mut a, "SET ROLE seq_uncalled_setter", ext);
+        denied(&mut a, &set("90,false"), ext, "42501");
+        for privilege in ["USAGE", "SELECT"] {
+            ok(
+                &mut b,
+                &format!(
+                    "GRANT {privilege} ON SEQUENCE public.seq_uncalled TO seq_uncalled_setter"
+                ),
+                ext,
+            );
+            denied(&mut a, &set("90,false"), ext, "42501");
+            ok(
+                &mut b,
+                &format!(
+                    "REVOKE {privilege} ON SEQUENCE public.seq_uncalled FROM seq_uncalled_setter"
+                ),
+                ext,
+            );
+        }
+        value(&mut b, next, ext, Some("82"));
+        ok(
+            &mut b,
+            "GRANT UPDATE ON SEQUENCE public.seq_uncalled TO seq_uncalled_setter",
+            ext,
+        );
+        value(&mut a, &set("90,false"), ext, Some("90"));
+        ok(&mut a, "SET ROLE NONE", ext);
+        value(&mut a, curr, ext, Some("61"));
+        value(&mut b, next, ext, Some("90"));
+        // A failed reset must preserve a previously pending value through recovery.
+        value(&mut a, &set("95,false"), ext, Some("95"));
+        let m = run(&mut a, "BEGIN", ext);
+        assert_eq!(m.last().unwrap(), &(b'Z', b"T".to_vec()));
+        let m = run(&mut a, &set("0,false"), ext);
+        assert!(
+            m.iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C22003\0"))
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"E".to_vec()));
+        let m = run(&mut a, "SELECT 1", ext);
+        assert!(
+            m.iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C25P02\0"))
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"E".to_vec()));
+        ok(&mut a, "ROLLBACK", ext);
+        value(&mut a, curr, ext, Some("61"));
+        value(&mut b, next, ext, Some("95"));
+        value(&mut a, &set("1000,false"), ext, Some("1000"));
+        value(&mut b, next, ext, Some("1000"));
+        denied(&mut b, next, ext, "2200H");
+        value(&mut b, curr, ext, Some("1000"));
+        value(&mut a, &set("1,false"), ext, Some("1"));
+        value(&mut b, next, ext, Some("1"));
+        // A later true reset replaces the pending false state.
+        value(&mut a, &set("30,false"), ext, Some("30"));
+        value(&mut a, &set("40,true"), ext, Some("40"));
+        value(&mut b, next, ext, Some("41"));
+        send(&mut a, b'X', &[]);
+        a = connect(None);
+        denied(&mut a, curr, ext, "55000");
+        value(&mut b, curr, ext, Some("41"));
+        ok(&mut a, "DROP SEQUENCE public.seq_uncalled", ext);
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seq_uncalled AS bigint START WITH 10 CACHE 1",
+            ext,
+        );
+        denied(&mut b, curr, ext, "55000");
+        value(&mut b, next, ext, Some("10"));
+        ok(&mut a, "DROP SEQUENCE public.seq_uncalled", ext);
+        ok(&mut a, "DROP TABLE uncalled_table", ext);
+        for (name, start, step, min, max, reset, after) in [
+            ("uncalled_step", 10, 3, 1, 1000, 20, 23),
+            ("uncalled_negative", -10, -3, -1000, -1, -20, -23),
+        ] {
+            ok(
+                &mut a,
+                &format!(
+                    "CREATE SEQUENCE {name} AS bigint START WITH {start} INCREMENT BY {step} MINVALUE {min} MAXVALUE {max} CACHE 1 NO CYCLE"
+                ),
+                ext,
+            );
+            value(
+                &mut a,
+                &format!("SELECT setval('{name}'::regclass,{reset},false) AS v"),
+                ext,
+                Some(&reset.to_string()),
+            );
+            value(
+                &mut b,
+                &format!("SELECT nextval('{name}'::regclass) AS v"),
+                ext,
+                Some(&reset.to_string()),
+            );
+            value(
+                &mut b,
+                &format!("SELECT nextval('{name}'::regclass) AS v"),
+                ext,
+                Some(&after.to_string()),
+            );
+            ok(&mut a, &format!("DROP SEQUENCE {name}"), ext);
+        }
+        if ext {
+            ok(
+                &mut a,
+                "CREATE SEQUENCE seq_uncalled_phase AS bigint START WITH 10 CACHE 1 NO CYCLE",
+                ext,
+            );
+            let sql = "SELECT setval('seq_uncalled_phase'::regclass,40,false) AS v";
+            send(
+                &mut a,
+                b'P',
+                &[b"set_phase\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+            );
+            assert_eq!(read(&mut a), (b'1', vec![]));
+            send(&mut a, b'D', b"Sset_phase\0");
+            assert_eq!(read(&mut a).0, b't');
+            assert_eq!(read(&mut a).0, b'T');
+            value(
+                &mut b,
+                "SELECT nextval('seq_uncalled_phase'::regclass) AS v",
+                false,
+                Some("10"),
+            );
+            send(
+                &mut a,
+                b'B',
+                &[b"set_portal\0set_phase\0".as_slice(), &[0; 6]].concat(),
+            );
+            assert_eq!(read(&mut a), (b'2', vec![]));
+            send(&mut a, b'D', b"Pset_portal\0");
+            assert_eq!(read(&mut a).0, b'T');
+            value(
+                &mut b,
+                "SELECT nextval('seq_uncalled_phase'::regclass) AS v",
+                false,
+                Some("11"),
+            );
+            send(
+                &mut a,
+                b'E',
+                &[b"set_portal\0".as_slice(), &[0; 4]].concat(),
+            );
+            assert_eq!(read(&mut a), (b'D', row(&[Some("40")])));
+            assert_eq!(read(&mut a), (b'C', b"SELECT 1\0".to_vec()));
+            value(
+                &mut b,
+                "SELECT nextval('seq_uncalled_phase'::regclass) AS v",
+                false,
+                Some("40"),
+            );
+            send(
+                &mut a,
+                b'E',
+                &[b"set_portal\0".as_slice(), &[0; 4]].concat(),
+            );
+            assert_eq!(read(&mut a), (b'C', b"SELECT 0\0".to_vec()));
+            value(
+                &mut b,
+                "SELECT nextval('seq_uncalled_phase'::regclass) AS v",
+                false,
+                Some("41"),
+            );
+            for target in [b"Pset_portal\0".as_slice(), b"Sset_phase\0".as_slice()] {
+                send(&mut a, b'C', target);
+                assert_eq!(read(&mut a), (b'3', vec![]));
+            }
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+            ok(&mut a, "DROP SEQUENCE seq_uncalled_phase", ext);
+            for kind in [b'P', b'S'] {
+                send(&mut a, b'C', &[kind, 0]);
+                assert_eq!(read(&mut a), (b'3', vec![]));
+            }
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+        }
+        eprintln!("pg11_16 ext={ext}: required behavior groups and cleanup passed");
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+    }
+    native.execute("DROP ROLE seq_uncalled_setter").unwrap();
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}

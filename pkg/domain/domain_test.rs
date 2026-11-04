@@ -187,8 +187,42 @@ fn sequence_set_value_uses_canonical_store() {
     assert!(second.sequence_next_value(&table).is_err());
     domain.sequence_set_value(&table, 1).unwrap();
     assert_eq!(second.sequence_next_value(&table).unwrap(), 2);
+    // Uncalled resets are returned exactly once across separate Domain instances.
+    domain
+        .sequence_set_value_with_state(&table, 60, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 60);
+    assert_eq!(domain.sequence_next_value(&table).unwrap(), 61);
+    domain
+        .sequence_set_value_with_state(&table, 70, false)
+        .unwrap();
+    assert!(
+        second
+            .sequence_set_value_with_state(&table, 0, false)
+            .is_err()
+    );
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 70);
+    domain
+        .sequence_set_value_with_state(&table, 1000, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 1000);
+    assert!(second.sequence_next_value(&table).is_err());
+    domain
+        .sequence_set_value_with_state(&table, 1, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 1);
+    domain
+        .sequence_set_value_with_state(&table, 80, false)
+        .unwrap();
+    domain.sequence_set_value(&table, 90).unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 91);
     table.ID += 1;
     table.Sequence.as_mut().unwrap().Increment = 3;
+    domain
+        .sequence_set_value_with_state(&table, 20, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 20);
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 23);
     domain.sequence_set_value(&table, 20).unwrap();
     assert_eq!(second.sequence_next_value(&table).unwrap(), 23);
     domain.sequence_set_value(&table, 5).unwrap();
@@ -199,6 +233,11 @@ fn sequence_set_value_uses_canonical_store() {
     seq.Increment = -3;
     seq.MinValue = -1000;
     seq.MaxValue = -1;
+    domain
+        .sequence_set_value_with_state(&table, -20, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), -20);
+    assert_eq!(second.sequence_next_value(&table).unwrap(), -23);
     domain.sequence_set_value(&table, -20).unwrap();
     assert_eq!(second.sequence_next_value(&table).unwrap(), -23);
     domain.sequence_set_value(&table, -1).unwrap();
@@ -213,9 +252,19 @@ fn sequence_set_value_uses_canonical_store() {
     table.Sequence.as_mut().unwrap().MinValue = i64::MIN;
     table.Sequence.as_mut().unwrap().MaxValue = i64::MAX;
     table.Sequence.as_mut().unwrap().Cycle = false;
+    domain
+        .sequence_set_value_with_state(&table, i64::MIN, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), i64::MIN);
+    assert!(second.sequence_next_value(&table).is_err());
     domain.sequence_set_value(&table, i64::MIN).unwrap();
     assert!(second.sequence_next_value(&table).is_err());
     table.Sequence.as_mut().unwrap().Increment = 3;
+    domain
+        .sequence_set_value_with_state(&table, i64::MAX, false)
+        .unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), i64::MAX);
+    assert!(second.sequence_next_value(&table).is_err());
     domain.sequence_set_value(&table, i64::MAX).unwrap();
     assert!(second.sequence_next_value(&table).is_err());
     table.Sequence.as_mut().unwrap().Cycle = true;

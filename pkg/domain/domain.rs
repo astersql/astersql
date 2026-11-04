@@ -3245,6 +3245,16 @@ impl Domain {
         table: &astersql_meta_model::TableInfo,
         value: i64,
     ) -> Result<i64, astersql_meta_autoid::AutoIdError> {
+        self.sequence_set_value_with_state(table, value, true)
+    }
+
+    /// Atomically publish the value and whether nextval must advance it first.
+    pub fn sequence_set_value_with_state(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        value: i64,
+        is_called: bool,
+    ) -> Result<i64, astersql_meta_autoid::AutoIdError> {
         let seq = table.Sequence.as_ref().ok_or_else(|| {
             astersql_meta_autoid::AutoIdError::NotImplemented("object is not a sequence".into())
         })?;
@@ -3259,7 +3269,7 @@ impl Domain {
             ));
         }
         let store = KvAutoIdStore::new(self.storage_handle());
-        store.set_sequence_value(table.DBID, table.ID, value)?;
+        store.set_sequence_value(table.DBID, table.ID, value, is_called)?;
         Ok(value)
     }
 

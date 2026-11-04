@@ -242,6 +242,27 @@ fn sequence_set_value_identity_and_recovery() {
         name: "seq_set_local".into(),
     };
     a.pg_sequence(&create).unwrap();
+    let uncalled = |value| PgSequenceCommand::Set {
+        schema: None,
+        name: Some("seq_set_local".into()),
+        value,
+        is_called: Some(false),
+    };
+    assert_eq!(a.pg_sequence(&uncalled(Some(60))).unwrap(), Some(60));
+    assert_eq!(
+        a.pg_sequence(&curr)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "55000"
+    );
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(60));
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(61));
+    assert_eq!(a.pg_sequence(&uncalled(Some(70))).unwrap(), Some(70));
+    assert_eq!(a.pg_sequence(&curr).unwrap(), Some(61));
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(70));
+    assert_eq!(a.pg_sequence(&curr).unwrap(), Some(61));
     assert_eq!(a.pg_sequence(&set(Some(40))).unwrap(), Some(40));
     assert_eq!(a.pg_sequence(&curr).unwrap(), Some(40));
     assert_eq!(b.pg_sequence(&next).unwrap(), Some(41));
@@ -259,6 +280,11 @@ fn sequence_set_value_identity_and_recovery() {
     );
     assert_eq!(a.pg_sequence(&curr).unwrap(), Some(20));
     assert_eq!(b.pg_sequence(&next).unwrap(), Some(22));
+    assert_eq!(a.pg_sequence(&uncalled(Some(95))).unwrap(), Some(95));
+    assert_eq!(a.pg_sequence(&uncalled(None)).unwrap(), None);
+    assert!(a.pg_sequence(&uncalled(Some(0))).is_err());
+    assert_eq!(a.pg_sequence(&curr).unwrap(), Some(20));
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(95));
     a.pg_sequence(&drop).unwrap();
     a.pg_sequence(&create).unwrap();
     assert_eq!(

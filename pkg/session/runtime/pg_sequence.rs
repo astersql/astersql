@@ -120,15 +120,6 @@ impl ConcreteSession {
             | PgSequenceCommand::Set {
                 is_called: None, ..
             } => return Ok(None),
-            PgSequenceCommand::Set {
-                is_called: Some(false),
-                ..
-            } => {
-                return Err(namespace_error(
-                    "0A000",
-                    "setval is_called=false is not yet supported",
-                ));
-            }
             PgSequenceCommand::Value {
                 schema,
                 name: Some(name),
@@ -200,7 +191,9 @@ impl ConcreteSession {
                 Ok(None)
             }
             PgSequenceCommand::Set {
-                value: Some(value), ..
+                value: Some(value),
+                is_called,
+                ..
             } => {
                 let has_update = [actor.as_str(), "PUBLIC"].iter().any(|role| {
                     acl.grants
@@ -219,17 +212,19 @@ impl ConcreteSession {
                 }
                 let value = self
                     .domain
-                    .sequence_set_value(&table, *value)
+                    .sequence_set_value_with_state(&table, *value, *is_called == Some(true))
                     .map_err(|error| match error {
                         astersql_meta_autoid::AutoIdError::NotImplemented(_) => {
                             namespace_error("0A000", "sequence requires CACHE 1")
                         }
                         _ => session_error("set sequence value", error),
                     })?;
-                self.state
-                    .borrow_mut()
-                    .pg_sequence_values
-                    .insert(table.ID, value);
+                if *is_called == Some(true) {
+                    self.state
+                        .borrow_mut()
+                        .pg_sequence_values
+                        .insert(table.ID, value);
+                }
                 Ok(Some(value))
             }
             PgSequenceCommand::Set { value: None, .. } => unreachable!(),

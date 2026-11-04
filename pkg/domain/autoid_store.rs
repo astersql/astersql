@@ -62,12 +62,13 @@ impl KvAutoIdStore {
     }
 
     /// Set the canonical sequence water level, including a PostgreSQL reset marker.
-    /// Both writes commit together, independently of the caller's SQL transaction.
+    /// Water level and called state commit together, independently of the caller's SQL transaction.
     pub(crate) fn set_sequence_value(
         &self,
         database_id: i64,
         table_id: i64,
         value: i64,
+        is_called: bool,
     ) -> Result<()> {
         self.sequence_transaction(database_id, table_id, |adapter, key, reset_key| {
             adapter.put(key, value)?;
@@ -82,7 +83,7 @@ impl KvAutoIdStore {
                 .map_err(KvAutoIdTransaction::storage_error)?;
             adapter
                 .transaction
-                .Set(reset_key, b"1".to_vec())
+                .Set(reset_key, if is_called { b"1" } else { b"0" }.to_vec())
                 .map_err(KvAutoIdTransaction::storage_error)?;
             Ok(value)
         })
@@ -99,12 +100,24 @@ impl KvAutoIdStore {
         sequence: &astersql_meta_model::SequenceInfo,
     ) -> Result<i64> {
         self.sequence_transaction(database_id, table_id, |adapter, key, reset_key| {
-            let reset = match adapter.transaction.Get(&adapter.context, reset_key, &[]) {
-                Ok(_) => true,
-                Err(error) if astersql_kv::IsErrNotFound(&error) => false,
+            let reset = match adapter
+                .transaction
+                .Get(&adapter.context, reset_key.clone(), &[])
+            {
+                Ok(value) => Some(value.Value != b"0"),
+                Err(error) if astersql_kv::IsErrNotFound(&error) => None,
                 Err(error) => return Err(KvAutoIdTransaction::storage_error(error)),
             };
             let base = adapter.get(key)?;
+            if reset == Some(false) {
+                // Consume the pending value in the allocation transaction. No arithmetic
+                // is needed, including at i64 boundaries or for off-grid increments.
+                adapter
+                    .transaction
+                    .Set(reset_key, b"1".to_vec())
+                    .map_err(KvAutoIdTransaction::storage_error)?;
+                return Ok(base);
+            }
             let cycle_key = AutoIdKey {
                 kind: AutoIdKeyKind::SequenceCycle,
                 ..key
@@ -119,7 +132,7 @@ impl KvAutoIdStore {
             } else {
                 sequence.Start
             };
-            let next = if reset {
+            let next = if reset.is_some() {
                 let next = i128::from(base) + i128::from(sequence.Increment);
                 if next < i128::from(sequence.MinValue) || next > i128::from(sequence.MaxValue) {
                     None
