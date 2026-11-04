@@ -1612,6 +1612,11 @@ fn pg12_repeated_begin() {
     pg12_transaction_case("repeated_begin");
 }
 
+#[test]
+fn pg12_outside_end() {
+    pg12_transaction_case("outside_end");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),

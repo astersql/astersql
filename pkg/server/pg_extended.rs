@@ -2233,7 +2233,9 @@ impl Extended {
                     } else {
                         self.session.repeated_begin(command, context.as_ref())
                     };
-                    if let Some(messages) = repeated_begin {
+                    let control_noop = repeated_begin
+                        .or_else(|| self.session.outside_end(command, context.as_ref()));
+                    if let Some(messages) = control_noop {
                         // Complete this portal without starting a native command.
                         // A later Execute replays only CommandComplete.
                         portal.offset = messages.len();

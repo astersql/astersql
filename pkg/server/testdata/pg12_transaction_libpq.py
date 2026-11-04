@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -84,7 +84,7 @@ class Connection:
                    'rows': [[None if null(r,i,j) else text(val(r,i,j)) for j in range(nf(r))] for i in range(nt(r))],
                    'command':text(tag(r)), 'affected':text(affected(r)),
                    'diagnostics':{k:text(diag(r,ord(k))) for k in 'SVCMDHP'}}
-            if a.case == 'repeated_begin':
+            if a.case in ('repeated_begin', 'outside_end'):
                 row['notices'] = self.pending_notices
             self.pending_notices = []
             self.observations.append(row)
@@ -150,6 +150,28 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'outside_end':
+                    check(A,initial,'I')
+                    for sql in ('COMMIT', 'ROLLBACK'):
+                        r = A.query(sql, extended)
+                        assert r['transaction'] == 'I' and r['command'] == sql and not r['columns'] and not r['rows'] and r['affected'] == '', r
+                        check(A,initial,'I')
+                        check(B,initial,'I')
+                        assert r['notices'] == [dict(S='WARNING', V='WARNING', C='25P01',
+                            M='there is no transaction in progress', D=None, H=None, P=None)], r
+                    r = A.query('BEGIN', extended)
+                    assert r['transaction'] == 'T' and r['command'] == 'BEGIN' and not r['columns'] and not r['notices'], r
+                    r = A.query('ROLLBACK', extended)
+                    assert r['transaction'] == 'I' and r['command'] == 'ROLLBACK' and not r['columns'] and not r['notices'], r
+                    r = A.query('SELECT 1::int4', extended)
+                    assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+                    check(A,initial,'I')
+                    check(B,initial,'I')
+                    A.query('DROP TABLE public.tx_contract')
+                    for conn in (A,B):
+                        conn.close()
+                    record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':True,'connections_closed':True})
+                    continue
                 if a.case == 'single_implicit':
                     r = A.query(f'INSERT INTO public.tx_contract VALUES (3,{inserted})', extended)
                     assert r['transaction'] == 'I' and r['command'] == 'INSERT 0 1' and r['affected'] == '1' and not r['columns'], r
@@ -251,7 +273,7 @@ for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.po
     outputs[side] = observe_transaction(side, dsn)
 # Compare independently collected behavior, excluding endpoint identity and setup.
 def behavior(record):
-    return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case == 'repeated_begin' else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
+    return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
             if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
 reference_behavior, aster_behavior = [behavior(outputs[side]) for side in ('reference','aster')]

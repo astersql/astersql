@@ -196,6 +196,25 @@ impl PgSession {
         })
     }
 
+    /// Ending an idle PostgreSQL transaction reports a warning without
+    /// dispatching a native transaction command or changing session state.
+    pub(crate) fn outside_end(
+        &self,
+        command: &str,
+        context: &dyn TiDBContext,
+    ) -> Option<Vec<(u8, Vec<u8>)>> {
+        (matches!(command, "COMMIT" | "ROLLBACK") && !context.in_transaction()).then(|| {
+            vec![
+                (
+                    b'N',
+                    b"SWARNING\0VWARNING\0C25P01\0Mthere is no transaction in progress\0\0"
+                        .to_vec(),
+                ),
+                (b'C', format!("{command}\0").into_bytes()),
+            ]
+        })
+    }
+
     pub(crate) fn record_error(&mut self, context: &dyn TiDBContext) {
         if context.in_transaction() {
             self.failed_transaction = true;

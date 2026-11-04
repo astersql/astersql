@@ -662,8 +662,12 @@ impl PgService {
                                     )?;
                                     continue;
                                 }
-                                if let Some(messages) =
-                                    extended.session.repeated_begin(command, context.as_ref())
+                                if let Some(messages) = extended
+                                    .session
+                                    .repeated_begin(command, context.as_ref())
+                                    .or_else(|| {
+                                        extended.session.outside_end(command, context.as_ref())
+                                    })
                                 {
                                     for (tag, body) in messages {
                                         write_message(socket, tag, &body)?;
