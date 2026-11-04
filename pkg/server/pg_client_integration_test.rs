@@ -16484,3 +16484,197 @@ fn pg11_35() {
     assert!(restarted, "normal restart checkpoint was not reached");
     println!("PG11_35_EVIDENCE={}", evidence.display());
 }
+
+#[test]
+fn pg11_36() {
+    use std::io::BufRead;
+    use std::process::{Child, Stdio};
+    struct ServerProcess(Option<Child>);
+    impl ServerProcess {
+        fn stop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                assert!(
+                    Command::new("kill")
+                        .args(["-TERM", &child.id().to_string()])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                loop {
+                    if let Some(status) = child.try_wait().unwrap() {
+                        assert!(status.success(), "server normal shutdown: {status}");
+                        break;
+                    }
+                    if std::time::Instant::now() > deadline {
+                        child.kill().unwrap();
+                        child.wait().unwrap();
+                        panic!("server did not shut down normally");
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    impl Drop for ServerProcess {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = Command::new("kill")
+                    .args(["-TERM", &child.id().to_string()])
+                    .status();
+                for _ in 0..300 {
+                    if child.try_wait().ok().flatten().is_some() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let binary = std::env::var("PG11_SERVER_BINARY").expect("real server binary required");
+    let pd = std::env::var("PG11_PD_ADDRESS").expect("isolated RealTiKV PD required");
+    let target = std::env::var("PG11_TARGET_DSN").expect("PG11_TARGET_DSN required");
+    let mysql_port: u16 = std::env::var("PG11_MYSQL_PORT")
+        .expect("PG11_MYSQL_PORT required")
+        .parse()
+        .unwrap();
+    let pg_port: u16 = std::env::var("PG11_PG_PORT").unwrap().parse().unwrap();
+    let status_port: u16 = std::env::var("PG11_STATUS_PORT").unwrap().parse().unwrap();
+    let database = format!("pg1136_{}", std::process::id());
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pg11-36-evidence")
+        .join(std::process::id().to_string());
+    std::fs::create_dir_all(&evidence).unwrap();
+    let start = |generation| {
+        let log = std::fs::File::create(evidence.join(format!("server-{generation}.log"))).unwrap();
+        let child = Command::new(&binary)
+            .args([
+                "--store=tikv".to_owned(),
+                format!("--path={pd}"),
+                "--host=127.0.0.1".to_owned(),
+                format!("-P={mysql_port}"),
+                format!("--postgres-port={pg_port}"),
+                "--report-status=true".to_owned(),
+                "--status-host=127.0.0.1".to_owned(),
+                format!("--status={status_port}"),
+                "--socket=".to_owned(),
+            ])
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        let mut process = ServerProcess(Some(child));
+        for _ in 0..600 {
+            if TcpStream::connect(("127.0.0.1", pg_port)).is_ok() {
+                return process;
+            }
+            assert!(
+                process.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "real server exited before readiness; see {}",
+                evidence.display()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("real server readiness timeout: {}", evidence.display());
+    };
+    let connect_native = || {
+        let mut socket = TcpStream::connect(("127.0.0.1", mysql_port)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        mysql_handshake(&mut socket);
+        socket
+    };
+    let mut server = start(1);
+    let mut mysql = connect_native();
+    mysql_query(&mut mysql, &format!("CREATE DATABASE {database}"));
+    mysql_query(&mut mysql, &format!("USE {database}"));
+    mysql_query(
+        &mut mysql,
+        "CREATE SEQUENCE seq_native START WITH 5 NOCACHE",
+    );
+    mysql_query(
+        &mut mysql,
+        "CREATE TABLE native_ids(id BIGINT AUTO_INCREMENT PRIMARY KEY,v INT)",
+    );
+    mysql_query(&mut mysql, "INSERT INTO native_ids(v) VALUES(1)");
+    let auto = mysql_query(&mut mysql, "SELECT LAST_INSERT_ID()");
+    assert_eq!(auto, vec![vec![Some(b"1".to_vec())]]);
+    let first = mysql_query(&mut mysql, "SELECT NEXTVAL(seq_native)");
+    let last = mysql_query(&mut mysql, "SELECT LASTVAL(seq_native)");
+    assert_eq!(first, vec![vec![Some(b"5".to_vec())]]);
+    assert_eq!(first, last);
+    let mut fixture = Command::new("python3")
+        .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/pg11_36.py"))
+        .args([pg_port.to_string(), database.clone()])
+        .env("PG11_TARGET_DSN", format!("{target} dbname={database}"))
+        .env("PG11_36_EVIDENCE_DIR", evidence.join("client"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut restarted = false;
+    let mut summary_seen = false;
+    for line in std::io::BufReader::new(fixture.stdout.take().unwrap()).lines() {
+        let line = line.unwrap();
+        println!("{line}");
+        if line.starts_with('{') {
+            let o: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if o["summary"] == true {
+                assert_eq!(o["scenarios"], 32);
+                assert_eq!(o["negative_checks"], 6);
+                summary_seen = true;
+            }
+        }
+        if line == "PG11_36_RESTART" {
+            assert!(!restarted);
+            assert_eq!(mysql_query(&mut mysql, "SELECT LASTVAL(seq_native)"), last);
+            assert_eq!(mysql_query(&mut mysql, "SELECT LAST_INSERT_ID()"), auto);
+            assert_eq!(
+                mysql_query(&mut mysql, "SELECT NEXTVAL(seq_native)"),
+                vec![vec![Some(b"6".to_vec())]]
+            );
+            mysql_query(&mut mysql, "INSERT INTO native_ids(id,v) VALUES(900,2)");
+            mysql_query(&mut mysql, "INSERT INTO native_ids(id,v) VALUES(NULL,3)");
+            assert_eq!(
+                mysql_query(&mut mysql, "SELECT LAST_INSERT_ID()"),
+                vec![vec![Some(b"901".to_vec())]]
+            );
+            std::fs::write(
+                evidence.join("mysql.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "before_nextval":first, "before_lastval":last,"before_last_insert_id":auto,
+                    "after_pg_nextval":6,"after_pg_last_insert_id":901
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            mysql_packet(&mut mysql, 0, &[1]);
+            drop(mysql);
+            server.stop();
+            assert!(TcpStream::connect(("127.0.0.1", pg_port)).is_err());
+            server = start(2);
+            mysql = connect_native();
+            mysql_query(&mut mysql, &format!("USE {database}"));
+            fixture
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"restarted\n")
+                .unwrap();
+            restarted = true;
+        }
+    }
+    let status = fixture.wait().unwrap();
+    mysql_query(&mut mysql, &format!("DROP DATABASE {database}"));
+    mysql_packet(&mut mysql, 0, &[1]);
+    drop(mysql);
+    server.stop();
+    assert!(status.success(), "real identity fixture: {status}");
+    assert!(summary_seen, "all identity scenarios must execute");
+    assert!(restarted, "normal restart checkpoint was not reached");
+    println!("PG11_36_EVIDENCE={}", evidence.display());
+}

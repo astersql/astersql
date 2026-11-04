@@ -251,6 +251,30 @@ impl Builder {
                 } else {
                     affected.extend(self.applyDropTable(diff.schema_id, diff.table_id));
                 }
+                // A final DROP can remove identity-owned sequences in the
+                // same metadata transaction. Invalidate these real identities
+                // too; refreshing a missing table would leave stale catalog rows.
+                for option in &diff.affected_options {
+                    if option.schema_id == 0 {
+                        continue;
+                    }
+                    let current = metadata.table(option.schema_id, option.table_id)?;
+                    if current.as_ref().is_some_and(|table| {
+                        table
+                            .model_meta
+                            .as_ref()
+                            .is_none_or(|model| model.State != astersql_meta_model::StateNone)
+                    }) {
+                        affected.extend(self.apply_table_ids(
+                            metadata,
+                            option.schema_id,
+                            option.table_id,
+                            option.old_table_id,
+                        )?);
+                    } else {
+                        affected.extend(self.applyDropTable(option.schema_id, option.table_id));
+                    }
+                }
             }
             ActionType::DropMaterializedView
             | ActionType::DropMaterializedViewLog

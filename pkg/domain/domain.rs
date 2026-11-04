@@ -5096,10 +5096,40 @@ impl Domain {
             if self.is_temporary_stats_table(table.table_id) {
                 return Ok(());
             }
-            return Err(DomainError::Stats(format!(
-                "unknown statistics table {}",
-                table.table_id
-            )));
+            // Startup's read-only lite load leaves tables without persisted
+            // stats_meta out of the cache. They still exist in the canonical
+            // catalog: register their first committed delta through the same
+            // Handle entry point used by DDL, without writing startup metadata.
+            let catalog = self
+                .stats_catalog
+                .read()
+                .expect("domain stats catalog lock poisoned");
+            let metadata = catalog.values().find_map(|(key, metadata)| {
+                (key.database == table.database
+                    && key.table == table.table
+                    && Self::physical_ids(metadata).contains(&table.table_id))
+                .then_some(metadata)
+            });
+            let Some(metadata) = metadata else {
+                return Err(DomainError::Stats(format!(
+                    "unknown statistics table {}",
+                    table.table_id
+                )));
+            };
+            let mut handle = self
+                .stats_handle
+                .lock()
+                .expect("domain stats handle lock poisoned");
+            // Another committing session may have registered it meanwhile.
+            if handle.stats_meta(table.table_id).is_none() {
+                handle
+                    .register_table_stats(table.table_id)
+                    .map_err(|error| DomainError::Stats(error.to_string()))?;
+                let stats = handle.cache_mut().get_mut(table.table_id).unwrap();
+                for column in metadata.Columns.iter().filter(|column| !column.Hidden) {
+                    stats.columns.entry(column.ID).or_default();
+                }
+            }
         }
         self.enqueue_stats_mutations(std::iter::once((table.table_id, row_delta, modified_rows)));
         Ok(())

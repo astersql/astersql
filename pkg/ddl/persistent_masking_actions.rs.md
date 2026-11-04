@@ -33,7 +33,7 @@
 
 1. 用 `GetDropTableArgs` 解码 job；失败即把 `job.state` 设为 `Cancelled`。
 2. 在事务中确认库表存在，执行对象类型、物化视图依赖和外键检查，再按一次调用推进一个 schema state。
-3. 若刚进入 `WriteOnly` 且表有 TTL，删除 TTL 注册；随后在新事务中生成 schema version、更新表元数据，并在 `None` 阶段删除表及 auto ID。物化视图依赖变化决定写普通 table diff 还是 drop-mview diff。
+3. 若刚进入 `WriteOnly` 且表有 TTL，删除 TTL 注册；随后在新事务中生成 schema version、更新表元数据，并在 `None` 阶段删除表及 auto ID。同一最终事务按列的 PostgreSQLIdentity.SequenceID 校验并删除真实拥有序列，加入 affected schema diff；中间状态保留序列。物化视图依赖或 identity 序列变化复用包含 affected options 的 diff。
 4. 仅在 `None` 阶段清理物化视图系统行、TiFlash/affinity 等资源，发送 drop 事件，删除表上的所有脱敏策略，收集分区和 rule ID，调用 `finish_table_job` 并序列化 V1 或当前版本完成参数。
 
 `rename_tables` 的主流程如下：

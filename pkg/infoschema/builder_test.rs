@@ -471,3 +471,41 @@ fn crossks_align_meta_loader_drop_waits_for_state_none() {
     assert_eq!(builder.ApplyDiff(&metadata, &diff).unwrap(), vec![100]);
     assert!(builder.Build(3).TableByID(100).is_none());
 }
+
+#[test]
+fn drop_table_invalidates_owned_identity_sequence_from_affected_options() {
+    let mut db = DBInfo {
+        id: 1,
+        name: CiString::new("test"),
+        tables: vec![
+            mock_table(100, 1, "identity_table"),
+            mock_table(101, 1, "owned_sequence"),
+        ],
+        ..Default::default()
+    };
+    let mut builder = NewBuilder(0, NewData(), false);
+    builder.InitWithDBInfos(std::slice::from_mut(&mut db), vec![], vec![], 1);
+    let metadata = MockMetadata {
+        db: Some(db),
+        tables: Default::default(),
+    };
+    let diff = SchemaDiff {
+        version: 2,
+        action_type: ActionType::DropTable,
+        schema_id: 1,
+        table_id: 100,
+        affected_options: vec![AffectedOption {
+            schema_id: 1,
+            old_schema_id: 1,
+            table_id: 101,
+            old_table_id: 101,
+        }],
+        ..Default::default()
+    };
+    let affected = builder.ApplyDiff(&metadata, &diff).unwrap();
+    assert!(affected.contains(&100));
+    assert!(affected.contains(&101));
+    let schema = builder.Build(2);
+    assert!(schema.TableByID(100).is_none());
+    assert!(schema.TableByID(101).is_none());
+}

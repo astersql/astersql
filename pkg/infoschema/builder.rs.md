@@ -35,7 +35,7 @@
 
 特殊分支包括：
 
-- `DropTable` 在 metadata 中的 model state 尚非 `StateNone` 时仍刷新表，直到最终状态才删除；物化视图删除采用相近但略宽松的 state 判定。
+- `DropTable` 在 metadata 中的 model state 尚非 `StateNone` 时仍刷新表，直到最终状态才删除；同时消费 affected_options，对仍存在的关联表刷新，对已删除的真实 identity 拥有序列同步失效。物化视图删除采用相近但略宽松的 state 判定。
 - `MViewRefreshOutOfPlaceCutover` 先验证数据库存在，再删除旧物化视图和可能残留的 shadow 表名，写入新表，并刷新 `affected_options` 指向的 base/log 等关联表。
 - `RefreshMeta` 以 `table_id == 0` 区分 schema 操作；库不存在时删库，库存在时刷新或创建。表级刷新若库已不存在则忽略，metadata 已无表则删除，否则更新。
 - placement policy alter/drop 会请求重算引用表 ID，但当前 `tables_referencing_policy` 返回空；bundle 自身仍可借 `bundle_policy_updates` 在旧快照增量路径中按策略刷新。

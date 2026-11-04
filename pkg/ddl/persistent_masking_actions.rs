@@ -209,6 +209,21 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
         meta.update_table(job.schema_id, &mut t)?;
         if t.State == SchemaState::None {
             affected = update_materialized_view_dependencies(&mut meta, job, &t)?;
+            // Identity ownership is stored on the column, independently of
+            // the serving process. Remove its sequence in this final owner
+            // transaction and invalidate both identities in the schema diff.
+            for identity in t
+                .Columns
+                .iter()
+                .filter_map(|c| c.PostgreSQLIdentity.as_ref())
+            {
+                let sequence = meta.get_table(job.schema_id, identity.SequenceID)?;
+                if !sequence.is_some_and(|sequence| sequence.IsSequence()) {
+                    return Err("identity owned sequence is missing or is not a sequence".into());
+                }
+                meta.drop_table_and_auto_ids(job.schema_id, identity.SequenceID)?;
+                affected.push(identity.SequenceID);
+            }
             meta.drop_table_and_auto_ids(job.schema_id, job.table_id)?;
         }
         if affected.is_empty() {

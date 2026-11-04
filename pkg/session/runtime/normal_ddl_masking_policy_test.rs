@@ -3619,3 +3619,44 @@ fn port_0766a90d52_rollback_before_start_preserves_foreign_index() {
         "a cancelled task that never allocated its index must preserve another job's public index"
     );
 }
+
+#[test]
+fn identity_drop_table_removes_owned_sequence_in_final_job_transaction() {
+    use astersql_meta_model::{PostgreSQLIdentity, SequenceInfo, TableInfo};
+    let f = Fixture::new();
+    let sequence_id = f.table + 1_000_000;
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    let mut meta = astersql_meta::TransactionMutator::new(txn.as_mut());
+    let mut table = meta.get_table(f.db, f.table).unwrap().unwrap();
+    table.Columns[0].PostgreSQLIdentity = Some(PostgreSQLIdentity {
+        Always: true,
+        SequenceID: sequence_id,
+        Sequence: SequenceInfo::default(),
+    });
+    meta.update_table(f.db, &mut table).unwrap();
+    meta.create_table(
+        f.db,
+        &TableInfo {
+            ID: sequence_id,
+            DBID: f.db,
+            Name: astersql_meta_model::ast::NewCIStr("owned_identity_sequence"),
+            State: SchemaState::Public,
+            Sequence: Some(SequenceInfo::default()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let job = insert_drop(&f);
+    run(&f);
+    run(&f);
+    assert!(f.reader().get_table(f.db, sequence_id).unwrap().is_some());
+    run(&f);
+    assert_eq!(f.queue(job.id).unwrap().state, JobState::Done);
+    assert!(f.reader().get_table(f.db, f.table).unwrap().is_none());
+    assert!(f.reader().get_table(f.db, sequence_id).unwrap().is_none());
+}

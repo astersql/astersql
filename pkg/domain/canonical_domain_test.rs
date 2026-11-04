@@ -2101,3 +2101,39 @@ fn identity_catalog_creation_and_drop_are_atomic() {
             .is_err()
     );
 }
+
+#[test]
+fn restored_table_without_persisted_stats_accepts_committed_delta() {
+    let counters = Arc::new(TransactionCounters::default());
+    let domain = Domain::new(
+        TestStorage::with_transactions(Arc::clone(&counters)),
+        Arc::new(TableSchemaLoader),
+        DomainConfig::default(),
+    );
+    domain.init().unwrap();
+    domain.initialize_stats().unwrap();
+    assert!(domain.stats_context().physical_stats(42).is_none());
+    let wrong_name = astersql_statistics_handle::StatsTableKey::new("other", "t", 42);
+    assert!(domain.record_stats_mutation(&wrong_name, 1, 1).is_err());
+    assert!(domain.stats_context().physical_stats(42).is_none());
+    let key = astersql_statistics_handle::StatsTableKey::new("test", "t", 42);
+    domain.record_stats_mutation(&key, 1, 1).unwrap();
+    domain.preflush_stats_delta(&[42]).unwrap();
+    let stats = domain.stats_context().physical_stats(42).unwrap();
+    assert_eq!(stats.realtime_count, 1);
+    assert_eq!(stats.modify_count, 1);
+    domain.record_stats_mutation(&key, 1, 1).unwrap();
+    domain.preflush_stats_delta(&[42]).unwrap();
+    assert_eq!(
+        domain
+            .stats_context()
+            .physical_stats(42)
+            .unwrap()
+            .realtime_count,
+        2
+    );
+    let unknown = astersql_statistics_handle::StatsTableKey::new("test", "t", 999);
+    assert!(domain.record_stats_mutation(&unknown, 1, 1).is_err());
+    let wrong_name = astersql_statistics_handle::StatsTableKey::new("other", "t", 43);
+    assert!(domain.record_stats_mutation(&wrong_name, 1, 1).is_err());
+}
