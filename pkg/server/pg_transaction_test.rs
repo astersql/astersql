@@ -1594,6 +1594,15 @@ fn pg11_34_implicit_identity_transaction() {
 /// Check complete values through two independent libpq endpoint observations.
 #[test]
 fn pg12_commit() {
+    pg12_transaction_case("commit");
+}
+
+#[test]
+fn pg12_rollback() {
+    pg12_transaction_case("rollback");
+}
+
+fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
         "PG18_REFERENCE_DSN is required (no skip)"
@@ -1606,7 +1615,7 @@ fn pg12_commit() {
         }
     }
     let guard = Close(service);
-    let database = format!("pg12_commit_{}_{}", std::process::id(), addr.port());
+    let database = format!("pg12_{case}_{}_{}", std::process::id(), addr.port());
     let mut admin = connect(addr);
     let created = query(&mut admin, &format!("CREATE DATABASE {database}"));
     assert_eq!(created[0].0, b'C', "{created:?}");
@@ -1635,7 +1644,7 @@ fn pg12_commit() {
         ))
         .args([
             "--case",
-            "commit",
+            case,
             "--host",
             "127.0.0.1",
             "--port",

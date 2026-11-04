@@ -1,5 +1,5 @@
 # Copyright 2026 AsterSQL.
-"""Independent commit observations through libpq; never owns the reference server."""
+"""Independent transaction observations through libpq; never owns the reference server."""
 import argparse
 import ctypes as c
 import ctypes.util
@@ -10,13 +10,13 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
 a = p.parse_args()
 def interrupted(signum, frame):
-    raise RuntimeError('commit client interrupted or timed out')
+    raise RuntimeError('transaction client interrupted or timed out')
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM):
     signal.signal(sig, interrupted)
 signal.alarm(90)
@@ -54,7 +54,7 @@ libversion = api('PQlibVersion', I)
 serverversion = api('PQserverVersion', I, P)
 assert libversion() >= 180000, 'libpq18 required'
 root = Path(__file__).resolve().parents[3]
-evidence = root / 'target' / 'pg12-commit-evidence' / a.database
+evidence = root / 'target' / f'pg12-{a.case}-evidence' / a.database
 evidence.mkdir(parents=True, exist_ok=True)
 head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
 
@@ -101,7 +101,7 @@ class Connection:
 O = 'SELECT id,value FROM public.tx_contract ORDER BY id'
 S0 = [['1','10'],['2','20']]
 outputs = {}
-def observe_commit(side, admin_dsn):
+def observe_transaction(side, admin_dsn):
     obs, connections = [], []
     record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
               'storage':'PostgreSQL local persistent reference' if side == 'reference' else 'CreateAnalyzeSession shared test storage (not RealTiKV)',
@@ -130,30 +130,60 @@ def observe_commit(side, admin_dsn):
                     if sql == 'SHOW server_version_num' and side == 'reference':
                         assert r['rows'] == [['180006']], 'exact PG18.6 required; record 18.4 separately'
                 A.query('CREATE TABLE public.tx_contract (id integer PRIMARY KEY,value integer)')
-                A.query('INSERT INTO public.tx_contract VALUES (1,10),(2,20)')
+                old = None if a.case == 'rollback' and inserted == 'NULL' else '10'
+                initial = [['1',old],['2','20']]
+                A.query(f"INSERT INTO public.tx_contract VALUES (1,{old or 'NULL'}),(2,20)")
                 def check(conn, expected, state):
                     r = conn.query(O, extended)
                     assert r['rows'] == expected, r
                     assert r['transaction'] == state, r
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
-                check(B,S0,'I')
+                check(B,initial,'I')
                 r = A.query('BEGIN', extended)
                 assert r['transaction'] == 'T' and not r['columns'], r
-                check(A,S0,'T')
-                check(B,S0,'I')
-                r = A.query(f'INSERT INTO public.tx_contract VALUES (3,{inserted})', extended)
-                assert r['transaction'] == 'T' and r['affected'] == '1' and not r['columns'], r
-                S1 = S0 + [['3',None if inserted == 'NULL' else '30']]
-                check(A,S1,'T')
-                check(B,S0,'I')
-                r = A.query('COMMIT', extended)
-                assert r['transaction'] == 'I' and r['command'] == 'COMMIT' and not r['columns'], r
-                check(A,S1,'I')
-                check(B,S1,'I')
-                C = Connection(dsn,'C',obs)
-                connections.append(C)
-                check(C,S1,'I')
+                check(A,initial,'T')
+                check(B,initial,'I')
+                if a.case == 'rollback':
+                    for sql, expected, command in (
+                        ('UPDATE public.tx_contract SET value=11 WHERE id=1', [['1','11'],['2','20']], 'UPDATE 1'),
+                        ('DELETE FROM public.tx_contract WHERE id=2', [['1','11']], 'DELETE 1'),
+                    ):
+                        r = A.query(sql, extended)
+                        assert r['transaction'] == 'T' and r['affected'] == '1' and r['command'] == command and not r['columns'], r
+                        check(A,expected,'T')
+                        check(B,initial,'I')
+                    r = A.query('ROLLBACK', extended)
+                    assert r['transaction'] == 'I' and r['command'] == 'ROLLBACK' and not r['columns'], r
+                    check(A,initial,'I')
+                    check(B,initial,'I')
+                    r = A.query('SELECT 1::int4', extended)
+                    assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+                    A.query('BEGIN', extended)
+                    r = A.query('INSERT INTO public.tx_contract VALUES (5,50)', extended)
+                    assert r['affected'] == '1' and r['transaction'] == 'T', r
+                    check(A,initial + [['5','50']],'T')
+                    check(B,initial,'I')
+                    r = A.query('COMMIT', extended)
+                    assert r['command'] == 'COMMIT' and r['transaction'] == 'I', r
+                    check(A,initial + [['5','50']],'I')
+                    check(B,initial + [['5','50']],'I')
+                    C = Connection(dsn,'C',obs)
+                    connections.append(C)
+                    check(C,initial + [['5','50']],'I')
+                else:
+                    r = A.query(f'INSERT INTO public.tx_contract VALUES (3,{inserted})', extended)
+                    assert r['transaction'] == 'T' and r['affected'] == '1' and not r['columns'], r
+                    S1 = S0 + [['3',None if inserted == 'NULL' else '30']]
+                    check(A,S1,'T')
+                    check(B,initial,'I')
+                    r = A.query('COMMIT', extended)
+                    assert r['transaction'] == 'I' and r['command'] == 'COMMIT' and not r['columns'], r
+                    check(A,S1,'I')
+                    check(B,S1,'I')
+                    C = Connection(dsn,'C',obs)
+                    connections.append(C)
+                    check(C,S1,'I')
                 # SQL NULL is represented as None, never as an empty string.
                 A.query('DROP TABLE public.tx_contract')
                 for conn in (A,B,C):
@@ -175,13 +205,27 @@ def observe_commit(side, admin_dsn):
     return record
 
 for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.port} user=root dbname=test')]:
-    outputs[side] = observe_commit(side, dsn)
+    outputs[side] = observe_transaction(side, dsn)
 # Compare independently collected behavior, excluding endpoint identity and setup.
 def behavior(record):
     return [{k:r[k] for k in ('sql','phase','transaction','columns','rows','command','affected','diagnostics')}
             for r in record['observations']
-            if r['sql'] in (O,'BEGIN','COMMIT') or r['sql'].startswith('INSERT INTO public.tx_contract')]
-assert behavior(outputs['reference']) == behavior(outputs['aster']), 'endpoint commit observations differ'
+            if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
+reference_behavior, aster_behavior = [behavior(outputs[side]) for side in ('reference','aster')]
+# The recovery probe's implicit expression name is a separate existing SQL
+# naming difference, not a transaction outcome. Preserve raw metadata above
+# and report the exact difference; compare all its other metadata unchanged.
+probe_names = []
+for ref, local in zip(reference_behavior, aster_behavior):
+    if ref['sql'] == local['sql'] == 'SELECT 1::int4' and ref['phase'] != 'Parse/Sync':
+        assert len(ref['columns']) == len(local['columns']) == 1
+        names = (ref['columns'][0]['name'], local['columns'][0]['name'])
+        assert names == ('int4','1::int4'), names
+        probe_names.append({'phase':ref['phase'],'reference':names[0],'aster':names[1]})
+        ref['columns'] = [dict(ref['columns'][0], name='<implicit recovery expression>')]
+        local['columns'] = [dict(local['columns'][0], name='<implicit recovery expression>')]
+(evidence / 'comparison.json').write_text(json.dumps({'recovery_probe_name_differences':probe_names},indent=2))
+assert reference_behavior == aster_behavior, 'endpoint transaction observations differ'
 # Both independently observed endpoints must have passed the same four inputs.
 assert outputs['reference']['cases_passed'] == outputs['aster']['cases_passed'] == 4
-print(json.dumps({'case':'commit','cases_per_endpoint':4,'evidence':str(evidence),'cleanup':'passed'}))
+print(json.dumps({'case':a.case,'cases_per_endpoint':4,'evidence':str(evidence),'cleanup':'passed'}))
