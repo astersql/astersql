@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -100,7 +100,10 @@ class Connection:
             self.sequence += 1
             name = f'commit_{self.sequence}'.encode()
             r = self.result(prepare(self.ptr,name,sql.encode(),0,None),sql,'Parse/Sync')
-            assert r['status'] == 1, r
+            if r['status'] != 1:
+                if required:
+                    assert r['status'] == 1, r
+                return r
             r = self.result(prepared(self.ptr,name,0,None,None,None,0),sql,'Bind/Execute/Sync')
         else:
             r = self.result(execq(self.ptr,sql.encode()),sql,'Q')
@@ -131,7 +134,7 @@ def observe_transaction(side, admin_dsn):
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
         for extended in (False, True):
-            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else ('30', 'NULL')):
+            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case == 'failed_rollback' else ('30', 'NULL'))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -154,6 +157,62 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'failed_rollback':
+                    failure = 'INSERT INTO public.tx_contract VALUES (1,99)' if inserted == '23505' else 'SELECT 1/0 AS bad'
+                    def error(sql, code, state):
+                        r = A.query(sql, extended, required=False)
+                        assert r['status'] == 7 and r['diagnostics']['C'] == code and r['transaction'] == state, r
+                        assert not r['rows'] and not r['command'], r
+                        check(B, initial, 'I')
+                    def command(conn, sql, tag, state, affected=''):
+                        r = conn.query(sql, extended)
+                        assert r['command'] == tag and r['transaction'] == state and r['affected'] == affected and not r['columns'] and not r['rows'], r
+                    def probe(conn):
+                        r = conn.query('SELECT 1::int4', extended)
+                        assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+                    command(A, 'BEGIN', 'BEGIN', 'T')
+                    command(A, 'UPDATE public.tx_contract SET value=11 WHERE id=1', 'UPDATE 1', 'T', '1')
+                    check(A, [['1','11'],['2','20']], 'T')
+                    check(B, initial, 'I')
+                    command(A, 'INSERT INTO public.tx_contract VALUES (3,30)', 'INSERT 0 1', 'T', '1')
+                    check(A, [['1','11'],['2','20'],['3','30']], 'T')
+                    check(B, initial, 'I')
+                    error(failure, inserted, 'E')
+                    for sql in ('SELECT 1::int4', O,
+                                'INSERT INTO public.tx_contract VALUES (4,40)',
+                                'UPDATE public.tx_contract SET value=99 WHERE id=2',
+                                'DELETE FROM public.tx_contract WHERE id=2',
+                                'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace'):
+                        error(sql, '25P02', 'E')
+                    C = Connection(dsn, 'C', obs)
+                    connections.append(C)
+                    for conn in (B,C):
+                        probe(conn)
+                        check(conn, initial, 'I')
+                    command(B, 'BEGIN', 'BEGIN', 'T')
+                    command(B, 'UPDATE public.tx_contract SET value=21 WHERE id=2', 'UPDATE 1', 'T', '1')
+                    check(B, [['1','10'],['2','21']], 'T')
+                    command(B, 'ROLLBACK', 'ROLLBACK', 'I')
+                    check(B, initial, 'I')
+                    error('SELECT 1::int4', '25P02', 'E')
+                    command(A, 'ROLLBACK', 'ROLLBACK', 'I')
+                    for conn in (A,B,C):
+                        check(conn, initial, 'I')
+                        probe(conn)
+                    error(failure, inserted, 'I')
+                    probe(A)
+                    check(A, initial, 'I')
+                    command(A, 'BEGIN', 'BEGIN', 'T')
+                    command(A, 'INSERT INTO public.tx_contract VALUES (5,50)', 'INSERT 0 1', 'T', '1')
+                    check(B, initial, 'I')
+                    command(A, 'COMMIT', 'COMMIT', 'I')
+                    for conn in (A,B,C):
+                        check(conn, initial + [['5','50']], 'I')
+                    A.query('DROP TABLE public.tx_contract')
+                    for conn in (A,B,C):
+                        conn.close()
+                    record['cleanup'].append({'mode':'extended' if extended else 'simple','first_error':inserted,'table_dropped':True,'connections_closed':True})
+                    continue
                 if a.case == 'disconnect':
                     pid = backendpid(A.ptr)
                     A.query('BEGIN', extended)
@@ -327,14 +386,14 @@ for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.po
 def behavior(record):
     return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
-            if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
+            if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case == 'failed_rollback' and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
 reference_behavior, aster_behavior = [behavior(outputs[side]) for side in ('reference','aster')]
 # The recovery probe's implicit expression name is a separate existing SQL
 # naming difference, not a transaction outcome. Preserve raw metadata above
 # and report the exact difference; compare all its other metadata unchanged.
 probe_names = []
 for ref, local in zip(reference_behavior, aster_behavior):
-    if ref['sql'] == local['sql'] == 'SELECT 1::int4' and ref['phase'] != 'Parse/Sync':
+    if ref['sql'] == local['sql'] == 'SELECT 1::int4' and ref['phase'] != 'Parse/Sync' and ref['columns']:
         assert len(ref['columns']) == len(local['columns']) == 1
         names = (ref['columns'][0]['name'], local['columns'][0]['name'])
         assert names == ('int4','1::int4'), names
@@ -342,16 +401,16 @@ for ref, local in zip(reference_behavior, aster_behavior):
         ref['columns'] = [dict(ref['columns'][0], name='<implicit recovery expression>')]
         local['columns'] = [dict(local['columns'][0], name='<implicit recovery expression>')]
 (evidence / 'comparison.json').write_text(json.dumps({'recovery_probe_name_differences':probe_names},indent=2))
-if a.case == 'single_implicit':
+if a.case in ('single_implicit', 'failed_rollback'):
     # Raw diagnostics remain in endpoint evidence; compare SQLSTATE while
     # recording backend-specific wording and detail/position differences.
     differences = []
     assert len(reference_behavior) == len(aster_behavior)
     for ref, local in zip(reference_behavior, aster_behavior):
-        if ref['diagnostics']['C'] == '23505':
+        if ref['diagnostics']['C'] in ('23505', '22012', '25P02'):
             differences.append({'sql':ref['sql'],'phase':ref['phase'],
                                 'reference':ref['diagnostics'], 'aster':local['diagnostics']})
-            assert local['diagnostics']['C'] == '23505'
+            assert local['diagnostics']['C'] == ref['diagnostics']['C']
             ref['diagnostics'] = {k:ref['diagnostics'][k] for k in 'SVC'}
             local['diagnostics'] = {k:local['diagnostics'][k] for k in 'SVC'}
     (evidence / 'diagnostic-differences.json').write_text(json.dumps(differences,indent=2))

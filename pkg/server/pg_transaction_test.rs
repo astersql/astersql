@@ -1622,6 +1622,11 @@ fn pg12_disconnect() {
     pg12_transaction_case("disconnect");
 }
 
+#[test]
+fn pg12_failed_rollback() {
+    pg12_transaction_case("failed_rollback");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
