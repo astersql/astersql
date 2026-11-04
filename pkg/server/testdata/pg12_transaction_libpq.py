@@ -7,12 +7,13 @@ import json
 import os
 import signal
 import socket
+import struct
 import time
 from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -115,6 +116,166 @@ class Connection:
             finish(self.ptr)
             self.ptr = None
 
+# libpq performs authentication; a duplicate of its idle, unencrypted socket
+# then permits separate Bind/Execute/Flush messages (PQexecPrepared cannot keep
+# a named, suspended portal). Never mix libpq reads with this wire session.
+class PortalWire:
+    def __init__(self, conn, observations):
+        assert api('PQsslInUse', I, P)(conn.ptr) == 0, 'portal probe requires local non-TLS socket'
+        self.sock = socket.socket(fileno=os.dup(pqsocket(conn.ptr)))
+        self.sock.settimeout(10)
+        self.observations = observations
+        self.columns = {}
+    @staticmethod
+    def message(tag, body=b''):
+        return tag + struct.pack('!I', len(body)+4) + body
+    def read(self, n):
+        data = b''
+        while len(data) < n:
+            chunk = self.sock.recv(n-len(data))
+            assert chunk, 'portal socket closed'
+            data += chunk
+        return data
+    def exchange(self, messages, sql, phase, portal=None, flush=False):
+        self.sock.sendall(b''.join(self.message(t,b) for t,b in messages)
+                          + (b'' if messages and messages[0][0] == b'Q' else self.message(b'H' if flush else b'S')))
+        row = dict(connection='A', sql=sql, phase=phase, portal=portal,
+                   transaction=None, columns=[], rows=[], command='', affected='',
+                   diagnostics={k:None for k in 'SVCMDHP'}, tags=[])
+        # Save partial observations too, so assertion failures retain evidence.
+        self.observations.append(row)
+        while True:
+            t = self.read(1).decode()
+            body = self.read(struct.unpack('!I', self.read(4))[0]-4)
+            row['tags'].append(t)
+            if t == 'T':
+                count, = struct.unpack('!H',body[:2])
+                offset = 2
+                for _ in range(count):
+                    end = body.index(0, offset)
+                    name = body[offset:end].decode()
+                    _, _, oid, size, mod, fmt = struct.unpack('!IhIhih',body[end+1:end+19])
+                    row['columns'].append(dict(name=name,oid=oid,typlen=size,typmod=mod,format=fmt,nullable='unverified'))
+                    offset = end+19
+                assert offset == len(body)
+                self.columns[portal] = row['columns']
+            elif t == 'D':
+                count, = struct.unpack('!H',body[:2])
+                offset, values = 2, []
+                for _ in range(count):
+                    size, = struct.unpack('!i',body[offset:offset+4])
+                    offset += 4
+                    values.append(None if size == -1 else body[offset:offset+size].decode())
+                    if size != -1:
+                        offset += size
+                assert offset == len(body)
+                row['rows'].append(values)
+                row['columns'] = self.columns[portal]
+            elif t == 'C':
+                row['command'] = body[:-1].decode()
+                parts = row['command'].split()
+                if parts[0] in ('SELECT','INSERT','UPDATE','DELETE'):
+                    row['affected'] = parts[-1]
+            elif t == 'E':
+                fields = body[:-1].split(b'\0')
+                row['diagnostics'] = {k:next((f[1:].decode() for f in fields if f[:1] == k.encode()),None) for k in 'SVCMDHP'}
+            elif t == 'Z':
+                row['transaction'] = body.decode()
+                break
+            if flush and t in ('s','C','E'):
+                break
+        return row
+    def query(self, sql):
+        return self.exchange([(b'Q',sql.encode()+b'\0')],sql,'Q')
+    def bind(self, name, sql):
+        n = name.encode()+b'\0'
+        return self.exchange([(b'P',n+sql.encode()+b'\0'+b'\0\0'),
+                              (b'B',n+n+b'\0'*6), (b'D',b'P'+n)],sql,'Parse/Bind/Describe/Sync',name)
+    def execute(self, name, sql, limit=0, flush=False):
+        return self.exchange([(b'E',name.encode()+b'\0'+struct.pack('!I',limit))],sql,
+                             'Execute/Flush' if flush else 'Execute/Sync',name,flush)
+
+
+def old_portals(A, B, check, side, record, extended, variant):
+    observations = record.setdefault('portal_observations', [])
+    wire = PortalWire(A, observations)
+    try:
+        assert wire.query('BEGIN')['transaction'] == 'T'
+        statements = [('read', O), ('write','INSERT INTO public.tx_contract VALUES (4,40)'),
+                      ('session','SHOW search_path'),
+                      ('catalog','SELECT oid,nspname FROM pg_catalog.pg_namespace'),
+                      ('page', O),
+                      ('catalog_page', "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname IN ('pg_catalog','public') ORDER BY nspname")]
+        for name, sql in statements:
+            r = wire.bind(name, sql)
+            assert r['tags'][:2] == ['1','2'] and r['transaction'] == 'T', r
+            assert not r['diagnostics']['C'], r
+            if name in ('read','page'):
+                assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
+            if name == 'write':
+                assert r['tags'][2] == 'n' and not r['columns'], r
+        r = wire.bind('closed', O)
+        assert not r['diagnostics']['C'] and r['transaction'] == 'T', r
+        r = wire.exchange([(b'C', b'Pclosed\0')], O, 'Close/Sync', 'closed')
+        assert r['tags'] == ['3','Z'] and r['transaction'] == 'T', r
+        # Ordinary table reads may stream; catalog queries produce the
+        # materialized Portal.messages/offset path. Suspend and retry both.
+        for name, sql in [statements[4], statements[5]]:
+            r = wire.execute(name, sql, 1, flush=True)
+            expected = [['1','10']] if name == 'page' else [['pg_catalog']]
+            assert r['tags'] == ['D','s'] and r['rows'] == expected, r
+            r = wire.exchange([], '<sync after suspended portal>', 'Sync')
+            assert r['transaction'] == 'T', r
+        if variant == 'with_prefix':
+            for sql, tag in [('UPDATE public.tx_contract SET value=11 WHERE id=1', 'UPDATE 1'),
+                             ('INSERT INTO public.tx_contract VALUES (3,30)', 'INSERT 0 1')]:
+                r = wire.query(sql)
+                assert r['command'] == tag and r['transaction'] == 'T', r
+                check(B, S0, 'I')
+        failure = 'INSERT INTO public.tx_contract VALUES (1,99)'
+        if extended:
+            r = wire.bind('failure', failure)
+            assert r['transaction'] == 'T' and not r['diagnostics']['C'], r
+            r = wire.execute('failure', failure)
+        else:
+            r = wire.query(failure)
+        assert r['diagnostics']['C'] == '23505' and r['transaction'] == 'E' and not r['rows'], r
+        check(B, S0, 'I')
+        for name, sql in statements:
+            r = wire.execute(name, sql)
+            # Observe the failure gate independently on each endpoint, including
+            # a cached second page. A missing-portal diagnostic is a lifecycle
+            # observation, never evidence of the 25P02 gate.
+            expected = '25P02'
+            assert r['diagnostics']['C'] == expected and r['transaction'] == 'E', r
+            assert r['tags'] == ['E','Z'] and not r['rows'] and not r['command'], r
+            r['lifecycle'] = 'bound before error; failed-state gate observed'
+            check(B, S0, 'I')
+        r = wire.execute('closed', O)
+        expected = '34000'
+        assert r['diagnostics']['C'] == expected and r['transaction'] == 'E' and r['tags'] == ['E','Z'], r
+        r['lifecycle'] = 'explicitly closed; missing portal (not gate coverage)'
+        check(B, S0, 'I')
+        r = wire.query('ROLLBACK')
+        assert r['command'] == 'ROLLBACK' and r['transaction'] == 'I' and not r['columns'], r
+        assert wire.query('BEGIN')['transaction'] == 'T'
+        r = wire.bind('recovered', O)
+        assert r['transaction'] == 'T' and not r['diagnostics']['C'], r
+        r = wire.execute('recovered', O)
+        assert r['rows'] == S0 and r['command'] == 'SELECT 2' and r['transaction'] == 'T', r
+        assert wire.query('ROLLBACK')['transaction'] == 'I'
+        check(B, S0, 'I')
+        r = wire.query('SELECT 1::int4')
+        assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+        r = wire.query('DROP TABLE public.tx_contract')
+        assert r['command'] == 'DROP TABLE' and r['transaction'] == 'I', r
+    finally:
+        try:
+            wire.query('ROLLBACK')
+        finally:
+            wire.sock.close()
+            A.close()
+
 O = 'SELECT id,value FROM public.tx_contract ORDER BY id'
 S0 = [['1','10'],['2','20']]
 outputs = {}
@@ -134,7 +295,7 @@ def observe_transaction(side, admin_dsn):
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
         for extended in (False, True):
-            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else ('30', 'NULL'))):
+            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else ('30', 'NULL')))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -157,6 +318,11 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'old_portal':
+                    old_portals(A, B, check, side, record, extended, inserted)
+                    B.close()
+                    record['cleanup'].append({'mode':'extended' if extended else 'simple','table_dropped':True,'connections_closed':True})
+                    continue
                 if a.case in ('failed_rollback', 'failed_commit'):
                     failure = 'INSERT INTO public.tx_contract VALUES (1,99)' if inserted == '23505' else 'SELECT 1/0 AS bad'
                     def error(sql, code, state):
@@ -433,4 +599,27 @@ if a.case in ('single_implicit', 'failed_rollback', 'failed_commit'):
 assert reference_behavior == aster_behavior, 'endpoint transaction observations differ'
 # Both independently observed endpoints must have passed the same four inputs.
 assert outputs['reference']['cases_passed'] == outputs['aster']['cases_passed'] == 4
+
+if a.case == 'old_portal':
+    summary = {}
+    for side in ('reference','aster'):
+        rows = outputs[side]['portal_observations']
+        gates = [r for r in rows if 'lifecycle' in r]
+        assert len(gates) == 28, gates
+        summary[side] = [{'portal':r['portal'],'sqlstate':r['diagnostics']['C'],'lifecycle':r['lifecycle']} for r in gates]
+    (evidence / 'portal-lifecycle.json').write_text(json.dumps(summary,indent=2))
+    # These are independently collected wire responses, not common expected
+    # query results. Preserve full diagnostics/metadata and report differences.
+    ref, local = [outputs[side]['portal_observations'] for side in ('reference','aster')]
+    assert len(ref) == len(local)
+    differences = []
+    for r, l in zip(ref, local):
+        keys = ('sql','phase','portal','transaction','rows','command','affected','tags')
+        assert {k:r[k] for k in keys} == {k:l[k] for k in keys}, (r,l)
+        assert r['diagnostics']['C'] == l['diagnostics']['C'], (r,l)
+        if r['columns'] != l['columns'] or r['diagnostics'] != l['diagnostics']:
+            differences.append({'sql':r['sql'],'phase':r['phase'],'portal':r['portal'],
+                                'reference':{'columns':r['columns'],'diagnostics':r['diagnostics']},
+                                'aster':{'columns':l['columns'],'diagnostics':l['diagnostics']}})
+    (evidence / 'portal-differences.json').write_text(json.dumps(differences,indent=2))
 print(json.dumps({'case':a.case,'cases_per_endpoint':4,'evidence':str(evidence),'cleanup':'passed'}))

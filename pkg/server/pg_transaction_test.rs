@@ -1620,6 +1620,11 @@ fn pg12_disconnect() {
 }
 
 #[test]
+fn pg12_old_portal() {
+    pg12_transaction_case("old_portal");
+}
+
+#[test]
 fn pg12_failed_commit() {
     pg12_transaction_case("failed_commit");
 }
