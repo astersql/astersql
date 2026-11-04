@@ -297,3 +297,235 @@ fn pg12_ddl_atomic_boundary_commit_failure() {
     a.execute("COMMIT").unwrap();
     a.execute("DROP TABLE txddl_probe").unwrap();
 }
+
+fn visibility_observe(
+    session: &ConcreteSession,
+    sql: &str,
+    observations: &mut Vec<serde_json::Value>,
+) -> Option<Vec<Vec<String>>> {
+    let result = session.execute(sql);
+    let state = session.protocol_state();
+    let mut record = serde_json::json!({"sql":sql,"phase":"internal ConcreteSession execute",
+        "native_status":state.status,"affected_rows":state.affected_rows,
+        "wire_command_and_diagnostics":"not applicable: internal API; no synthetic PG fields"});
+    let values = match result {
+        Ok(mut sets) => {
+            record["metadata"] = serde_json::json!(sets.iter().map(|set| serde_json::json!({
+                "labels":set.columns(),
+                "native_fields":set.result_fields().iter().map(|f|f.as_ref().map(|f| &f.column)).collect::<Vec<_>>()
+            })).collect::<Vec<_>>());
+            let mut values = Vec::new();
+            for set in &mut sets {
+                while let Some(row) = set.next_row().unwrap() {
+                    values.push(row);
+                }
+            }
+            record["rows"] = serde_json::json!(values);
+            Some(values)
+        }
+        Err(error) => {
+            record["native_error"] = serde_json::json!(error.to_string());
+            None
+        }
+    };
+    eprintln!("native observation={record}");
+    observations.push(record);
+    values
+}
+
+#[test]
+fn pg12_ddl_visibility() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let database = format!("pg12_ddl_visibility_{}", std::process::id());
+    assert!(
+        std::process::Command::new("python3")
+            .arg(root.join("pkg/server/testdata/pg12_transaction_libpq.py"))
+            .args([
+                "--case",
+                "ddl_visibility_reference",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--database",
+                &database
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "independent PG18.6 reference required; no skip"
+    );
+    let evidence = root
+        .join("target/pg12-ddl_visibility_reference-evidence")
+        .join(database);
+    let reference: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("reference.json")).unwrap()).unwrap();
+    let (domain, _bootstrap) = CreateAnalyzeSession().unwrap();
+    let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let b = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    // Query the same logical public namespace as the independent PG reference.
+    let directory = "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name='txddl_probe'";
+    let columns = "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='txddl_probe' ORDER BY ordinal_position";
+    let keys = "SELECT constraint_type FROM information_schema.table_constraints WHERE table_schema='public' AND table_name='txddl_probe' AND constraint_type='PRIMARY KEY'";
+    let data = "SELECT id,v FROM txddl_probe ORDER BY id";
+    let sentinel = "SELECT id,v FROM txddl_sentinel ORDER BY id";
+    let mut observations = Vec::new();
+    let mut cases = Vec::new();
+    for sql in ["SELECT version()", "SHOW server_version_num"] {
+        visibility_observe(&a, sql, &mut observations);
+    }
+    for (index, exit) in ["ROLLBACK", "COMMIT"].iter().enumerate() {
+        let reference = &reference["cases"][index];
+        for sql in [
+            "CREATE TABLE txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_sentinel VALUES (1,10)",
+        ] {
+            visibility_observe(&a, sql, &mut observations).unwrap();
+        }
+        for session in [&a, &b] {
+            assert!(
+                visibility_observe(session, directory, &mut observations)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                visibility_observe(session, sentinel, &mut observations).unwrap(),
+                [["1", "10"]]
+            );
+        }
+        for sql in [
+            "BEGIN",
+            "UPDATE txddl_sentinel SET v=11 WHERE id=1",
+            "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_probe VALUES (1,20)",
+        ] {
+            visibility_observe(&a, sql, &mut observations).unwrap();
+        }
+        let writer_data = visibility_observe(&a, data, &mut observations).unwrap();
+        assert_eq!(
+            serde_json::json!(writer_data),
+            reference["before_a"]["data"]
+        );
+        assert_eq!(
+            visibility_observe(&a, directory, &mut observations).unwrap(),
+            [["txddl_probe"]]
+        );
+        let writer_columns = visibility_observe(&a, columns, &mut observations).unwrap();
+        let writer_keys = visibility_observe(&a, keys, &mut observations).unwrap();
+        assert_eq!(
+            serde_json::json!(writer_columns),
+            reference["before_a"]["columns"]
+        );
+        assert_eq!(
+            serde_json::json!(writer_keys),
+            reference["before_a"]["keys"]
+        );
+        for sql in [directory, columns, keys] {
+            assert!(
+                visibility_observe(&b, sql, &mut observations)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(visibility_observe(&b, data, &mut observations).is_none());
+        assert!(
+            observations.last().unwrap()["native_error"]
+                .as_str()
+                .unwrap()
+                .contains("Table 'test.txddl_probe' doesn't exist")
+        );
+        assert_eq!(
+            serde_json::json!(visibility_observe(&a, sentinel, &mut observations).unwrap()),
+            reference["before_a"]["sentinel"]
+        );
+        assert_eq!(
+            serde_json::json!(visibility_observe(&b, sentinel, &mut observations).unwrap()),
+            reference["before_b"]["sentinel"]
+        );
+        visibility_observe(&a, exit, &mut observations).unwrap();
+        let mut after = Vec::new();
+        for (i, session) in [&a, &b].iter().enumerate() {
+            let tables = visibility_observe(session, directory, &mut observations).unwrap();
+            let cols = visibility_observe(session, columns, &mut observations).unwrap();
+            let constraints = visibility_observe(session, keys, &mut observations).unwrap();
+            let values = visibility_observe(session, data, &mut observations);
+            if *exit == "ROLLBACK" {
+                assert!(
+                    observations.last().unwrap()["native_error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Table 'test.txddl_probe' doesn't exist")
+                );
+            }
+            let sentinel_rows = visibility_observe(session, sentinel, &mut observations).unwrap();
+            assert_eq!(
+                tables,
+                if *exit == "COMMIT" {
+                    vec![vec!["txddl_probe"]]
+                } else {
+                    vec![]
+                }
+            );
+            let actual = serde_json::json!({"columns":cols,"keys":constraints,"data":values,"sentinel":sentinel_rows});
+            for key in ["columns", "keys", "data", "sentinel"] {
+                assert_eq!(actual[key], reference["after"][i][key]);
+            }
+            after.push(actual);
+        }
+        if *exit == "COMMIT" {
+            let mysql = ConcreteSession::new(a.domain.clone());
+            assert_eq!(
+                rows(
+                    &mysql,
+                    "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='test' AND table_name='txddl_probe' ORDER BY ordinal_position"
+                ),
+                [["id", "int", "NO"], ["v", "int", "NO"]]
+            );
+        }
+        if *exit == "ROLLBACK" {
+            visibility_observe(
+                &a,
+                "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+                &mut observations,
+            )
+            .unwrap();
+            assert_eq!(
+                visibility_observe(&b, directory, &mut observations).unwrap(),
+                [["txddl_probe"]]
+            );
+            assert!(
+                visibility_observe(&b, data, &mut observations)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        cases.push(serde_json::json!({"exit":exit,"after":after,"name_reused":*exit=="ROLLBACK"}));
+        for sql in ["DROP TABLE txddl_probe", "DROP TABLE txddl_sentinel"] {
+            visibility_observe(&a, sql, &mut observations).unwrap();
+        }
+        for session in [&a, &b] {
+            for sql in [directory, columns, keys] {
+                assert!(
+                    visibility_observe(session, sql, &mut observations)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    }
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    std::fs::write(evidence.join("aster.json"),serde_json::to_vec_pretty(&serde_json::json!({
+        "repository_sha":String::from_utf8_lossy(&sha.stdout).trim(),"storage":"CreateAnalyzeSession shared MVCC test store; not RealTiKV",
+        "isolation":a.TransactionIsolation(),"client":"native ConcreteSession API",
+        "observations":observations,"cases":cases,"cleanup":"both tables absent after each round",
+        "wire":"not applicable: native internal prototype; actual PG wire reference retained separately",
+        "schema_mapping":"native storage database test; actual INFORMATION_SCHEMA and PG catalog queries expose public"
+    })).unwrap()).unwrap();
+}

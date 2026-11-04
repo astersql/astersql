@@ -2804,3 +2804,161 @@ fn identity_owned_catalog_column_origins() {
         );
     }
 }
+
+#[test]
+fn pg12_ddl_visibility_catalog() {
+    use crate::conn::{CancellationToken, SessionDriver, TiDBContext, Value};
+    fn directory(
+        ctx: &dyn TiDBContext,
+        observations: &mut Vec<serde_json::Value>,
+    ) -> Vec<Vec<Value>> {
+        let sql = "SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='txddl_probe'";
+        let result = crate::pg_catalog::CatalogQuery::parse(sql)
+            .unwrap()
+            .unwrap()
+            .execute(ctx, &CancellationToken::new())
+            .unwrap();
+        eprintln!("real catalog SQL={sql} result={result:?}");
+        let values = result
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|value| match value {
+                        Value::Text(text) => Some(text.clone()),
+                        Value::Null => None,
+                        other => panic!("unexpected directory type: {other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        observations.push(
+            serde_json::json!({"sql":sql,"rows":values,"native_result":format!("{result:?}")}),
+        );
+        result.rows
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let database = format!("pg12_ddl_visibility_catalog_{}", std::process::id());
+    assert!(
+        std::process::Command::new("python3")
+            .arg(root.join("pkg/server/testdata/pg12_transaction_libpq.py"))
+            .args([
+                "--case",
+                "ddl_visibility_reference",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--database",
+                &database
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "PG18.6 reference required"
+    );
+    let evidence = root
+        .join("target/pg12-ddl_visibility_reference-evidence")
+        .join(database);
+    let reference: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("reference.json")).unwrap()).unwrap();
+    let mut observations = Vec::new();
+    let (domain, _bootstrap) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = ConcreteSessionDriver::new_for_test(domain, BootstrapAuthMode::InsecureRootOnly);
+    let a = driver
+        .open_ctx_with_dialect(
+            98200,
+            0,
+            45,
+            "test",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        )
+        .unwrap();
+    let b = driver
+        .open_ctx_with_dialect(
+            98201,
+            0,
+            45,
+            "test",
+            None,
+            astersql_parser_ast::SqlDialect::PostgreSQL,
+        )
+        .unwrap();
+    let token = CancellationToken::new();
+    let expected = vec![vec![
+        Value::Text("public".into()),
+        Value::Text("txddl_probe".into()),
+        Value::Text("r".into()),
+    ]];
+    for (index, exit) in ["ROLLBACK", "COMMIT"].iter().enumerate() {
+        assert!(directory(a.as_ref(), &mut observations).is_empty());
+        assert!(directory(b.as_ref(), &mut observations).is_empty());
+        // Deliberately enter through the internal shared session, keeping the
+        // public PgService transaction-DDL rejection intact.
+        for sql in [
+            "BEGIN",
+            "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_probe VALUES (1,20)",
+        ] {
+            a.execute_query(sql, false, &token).unwrap();
+        }
+        assert_eq!(directory(a.as_ref(), &mut observations), expected);
+        assert_eq!(
+            observations.last().unwrap()["rows"],
+            reference["cases"][index]["before_a"]["directory"]
+        );
+        assert!(directory(b.as_ref(), &mut observations).is_empty());
+        assert_eq!(
+            observations.last().unwrap()["rows"],
+            reference["cases"][index]["before_b"]["directory"]
+        );
+        a.execute_query(exit, false, &token).unwrap();
+        for (i, ctx) in [&a, &b].iter().enumerate() {
+            assert_eq!(
+                directory(ctx.as_ref(), &mut observations),
+                if *exit == "COMMIT" {
+                    expected.clone()
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(
+                observations.last().unwrap()["rows"],
+                reference["cases"][index]["after"][i]["directory"]
+            );
+        }
+        if *exit == "ROLLBACK" {
+            a.execute_query(
+                "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+                false,
+                &token,
+            )
+            .unwrap();
+        }
+        a.execute_query("DROP TABLE txddl_probe", false, &token)
+            .unwrap();
+        assert!(directory(b.as_ref(), &mut observations).is_empty());
+    }
+    a.close().unwrap();
+    b.close().unwrap();
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    std::fs::write(
+        evidence.join("aster-catalog.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "repository_sha":String::from_utf8_lossy(&sha.stdout).trim(),
+            "observations":observations,"client":"real CatalogQuery over worker-backed TiDBContext",
+            "cleanup":"connections closed; probe absent in both rounds",
+            "wire":"internal provider; public gate separately tested"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}

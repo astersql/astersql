@@ -1720,6 +1720,16 @@ impl ConcreteSession {
         Arc::new(extended)
     }
 
+    /// Catalog providers use the creator's staged schema before publication.
+    /// Other sessions continue to observe the committed Domain snapshot.
+    pub fn catalog_schema_snapshot(&self) -> SchemaRef {
+        self.state
+            .borrow()
+            .pending_create_schema
+            .clone()
+            .unwrap_or_else(|| self.domain.info_schema())
+    }
+
     pub fn transaction_mdl(&self) -> Arc<astersql_session_sessmgr::TransactionMDL> {
         Arc::clone(&self.transaction_mdl)
     }

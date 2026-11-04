@@ -164,6 +164,15 @@ to use committed metadata. User COMMIT publishes the schema after KV commit;
 ROLLBACK discards metadata, history and rows together. Existing transaction MDL
 is retained until the user transaction ends. MySQL keeps its implicit DDL commit.
 
+The creator's INFORMATION_SCHEMA table, column and constraint reads use the
+same private schema. For PostgreSQL default-namespace ordinary tables those
+three views expose `public` rather than the storage database name, and integer
+columns report `integer`. PG catalog providers request the session snapshot
+through its worker, so `pg_class` joins also see the creator's pending table.
+Other connections read committed metadata; rollback removes the private
+snapshot and permits immediate name reuse. The focused visibility tests cover
+both the internal session and the existing server catalog provider.
+
 This internal path excludes temporary tables, partitioning, foreign keys,
 identity sequences, TTL, explicit region splitting, placement and external
 storage attributes. It does not enlist general DDL owner jobs into user

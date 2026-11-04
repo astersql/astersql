@@ -821,6 +821,9 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    CatalogSchemaSnapshot {
+        response: mpsc::SyncSender<astersql_infoschema::SchemaRef>,
+    },
     PgSequence {
         command: astersql_session::runtime::PgSequenceCommand,
         response: mpsc::SyncSender<ConnResult<Option<i64>>>,
@@ -1017,6 +1020,9 @@ fn run_session_worker(
             }
             SessionRequest::PgNamespaceFacts { response } => {
                 let _ = response.send(session.pg_namespace_facts().map_err(session_protocol_error));
+            }
+            SessionRequest::CatalogSchemaSnapshot { response } => {
+                let _ = response.send(session.catalog_schema_snapshot());
             }
             SessionRequest::PgBindRelation {
                 schema,
@@ -2043,7 +2049,10 @@ impl TiDBContext for ConcreteTiDBContext {
     }
 
     fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
-        Some(self.domain.info_schema())
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::CatalogSchemaSnapshot { response: tx })
+            .ok()?;
+        rx.recv().ok()
     }
 
     fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {

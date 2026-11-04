@@ -1057,10 +1057,21 @@ impl ConcreteSession {
             let state = self.state.borrow();
             (state.snapshot_read_ts, state.snapshot_catalog_version)
         };
-        let mut catalog = if let Some(snapshot_read_ts) = snapshot_read_ts.filter(|ts| *ts != 0) {
-            self.domain
-                .snapshot_info_schema(snapshot_read_ts)
-                .map_err(|error| session_error("load snapshot metadata catalog", error))?
+        // Use the same private snapshot as name resolution until user exit.
+        // No pending metadata is added to the shared Domain or stats catalog.
+        let schema = if let Some(schema) = self.state.borrow().pending_create_schema.clone() {
+            Some(schema)
+        } else if let Some(ts) = snapshot_read_ts.filter(|ts| *ts != 0) {
+            Some(
+                self.domain
+                    .snapshot_info_schema(ts)
+                    .map_err(|error| session_error("load snapshot metadata catalog", error))?,
+            )
+        } else {
+            None
+        };
+        let mut catalog = if let Some(schema) = schema {
+            schema
                 .AllSchemas()
                 .into_iter()
                 .flat_map(|database| {
@@ -1762,6 +1773,26 @@ impl ConcreteSession {
             .into_iter()
             .filter(|((database, table), _)| self.information_schema_table_visible(database, table))
             .collect::<SessionMetadataCatalog>();
+        // The default PG namespace is public, while storage and privileges use
+        // the current native database. Apply this after physical privilege checks.
+        let metadata_catalog = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && matches!(table_name, "tables" | "columns" | "table_constraints")
+        {
+            metadata_catalog
+                .into_iter()
+                .map(|((database, name), table)| {
+                    let namespace =
+                        if database == current_database && !name.starts_with("__astersql_pg_") {
+                            "public".to_owned()
+                        } else {
+                            database
+                        };
+                    ((namespace, name), table)
+                })
+                .collect::<SessionMetadataCatalog>()
+        } else {
+            metadata_catalog
+        };
         if table_name.eq_ignore_ascii_case("tiflash_replica") {
             let rows = metadata_catalog
                 .into_iter()
@@ -2632,10 +2663,18 @@ impl ConcreteSession {
                         ),
                         (
                             "data_type".to_owned(),
-                            Some(astersql_types::metadata::TypeToStr(
-                                data_type,
-                                column.GetCharset(),
-                            )),
+                            Some(
+                                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                                    && data_type == astersql_parser_mysql::r#type::TypeLong
+                                {
+                                    "integer".to_owned()
+                                } else {
+                                    astersql_types::metadata::TypeToStr(
+                                        data_type,
+                                        column.GetCharset(),
+                                    )
+                                },
+                            ),
                         ),
                         (
                             "character_maximum_length".to_owned(),
@@ -2744,16 +2783,9 @@ impl ConcreteSession {
                 &|expression, row| self.relational_query_expression_value(expression, row, None),
             )?));
         }
-        let context = self.domain.stats_context();
-        let catalog = self
-            .state
-            .borrow()
-            .snapshot_catalog_version
-            .map(|version| context.catalog_at(version))
-            .unwrap_or_else(|| context.catalog());
-        let catalog = catalog
+        let catalog = metadata_catalog
             .into_iter()
-            .filter(|((database, table), _)| self.information_schema_table_visible(database, table))
+            .map(|(key, table)| (key, (table.ID, table)))
             .collect::<BTreeMap<_, _>>();
         if table_name.eq_ignore_ascii_case("check_constraints")
             || table_name.eq_ignore_ascii_case("tidb_check_constraints")
