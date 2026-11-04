@@ -32450,3 +32450,182 @@ fn pg11_22() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_23() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        eprintln!(
+            "pg11_23 diagnostic ext={ext} state={state} response_tags={:?}",
+            m.iter().map(|m| m.0 as char).collect::<Vec<_>>()
+        );
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    fn rows(s: &mut TcpStream, sql: &str, ext: bool, expected: &[Vec<Option<String>>], oid: u32) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}: {m:?}");
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &oid.to_be_bytes(), "{sql}");
+        let length: i16 = match oid {
+            21 => 2,
+            23 => 4,
+            20 => 8,
+            _ => panic!("unexpected identity OID"),
+        };
+        assert_eq!(&d[offset + 10..offset + 12], &length.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        for (mode, value, state) in [
+            ("ALWAYS", "900", Some("428C9")),
+            ("ALWAYS", "NULL", Some("428C9")),
+            ("BY DEFAULT", "900", None),
+            ("BY DEFAULT", "NULL", Some("23502")),
+        ] {
+            ok(
+                &mut a,
+                &format!(
+                    "CREATE TABLE public.identity_policy23 (id bigint GENERATED {mode} AS IDENTITY (START 10), note text)"
+                ),
+                ext,
+            );
+            let insert =
+                format!("INSERT INTO public.identity_policy23(id,note) VALUES ({value},'manual')");
+            if let Some(state) = state {
+                denied(&mut a, &insert, ext, state);
+                rows(
+                    &mut b,
+                    "SELECT id FROM public.identity_policy23",
+                    ext,
+                    &[],
+                    20,
+                );
+            } else {
+                ok(&mut a, &insert, ext);
+                rows(
+                    &mut b,
+                    "SELECT id FROM public.identity_policy23",
+                    ext,
+                    &[vec![Some("900".into())]],
+                    20,
+                );
+            }
+            ok(
+                &mut a,
+                "INSERT INTO public.identity_policy23(note) VALUES ('next')",
+                ext,
+            );
+            let mut expected = vec![vec![Some("10".into())]];
+            if state.is_none() {
+                expected.push(vec![Some("900".into())]);
+            }
+            rows(
+                &mut b,
+                "SELECT id FROM public.identity_policy23 ORDER BY id",
+                ext,
+                &expected,
+                20,
+            );
+            ok(&mut a, "DROP TABLE public.identity_policy23", ext);
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_23 ext={ext}: 4 independent explicit value/NULL groups passed, cross-connection rows and next=10 verified"
+        );
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}

@@ -2445,8 +2445,10 @@ impl ConcreteSession {
                         ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
                     ) {
                         return Err(super::query::pg_union_error(
-                            "explicit values for GENERATED ALWAYS identity require an overriding policy",
-                            "0A000",
+                            &format!(
+                                "cannot insert a non-DEFAULT value into column \"{name}\": identity column defined as GENERATED ALWAYS"
+                            ),
+                            "428C9",
                         ));
                     }
                 }
