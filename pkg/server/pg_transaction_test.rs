@@ -1634,6 +1634,11 @@ fn pg12_failed_rollback() {
     pg12_transaction_case("failed_rollback");
 }
 
+#[test]
+fn pg12_savepoint_gate() {
+    pg12_transaction_case("savepoint_gate");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),

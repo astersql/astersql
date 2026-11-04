@@ -350,12 +350,19 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         "BEGIN"
     } else if node.is::<ast::CommitStmt>() {
         "COMMIT"
-    } else if node.is::<ast::RollbackStmt>() {
+    } else if let Some(rollback) = node.downcast_ref::<ast::RollbackStmt>() {
+        if !rollback.SavepointName.is_empty() {
+            return Err((
+                "0A000",
+                "PostgreSQL savepoint recovery is unsupported".into(),
+            ));
+        }
         "ROLLBACK"
-    } else if node.is::<ast::SavepointStmt>() {
-        "SAVEPOINT"
-    } else if node.is::<ast::ReleaseSavepointStmt>() {
-        "RELEASE"
+    } else if node.is::<ast::SavepointStmt>() || node.is::<ast::ReleaseSavepointStmt>() {
+        // The shared executor cannot provide PostgreSQL subtransaction recovery.
+        // Reject before reporting success or allowing a partial rollback to be
+        // classified as the full transaction recovery command.
+        return Err(("0A000", "PostgreSQL savepoints are unsupported".into()));
     } else if node.is::<ast::SetRoleStmt>() || node.is::<ast::SetStmt>() {
         "SET"
     } else {

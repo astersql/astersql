@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -279,6 +279,61 @@ def old_portals(A, B, check, side, record, extended, variant):
 O = 'SELECT id,value FROM public.tx_contract ORDER BY id'
 S0 = [['1','10'],['2','20']]
 outputs = {}
+def savepoint_gate(A, B, check, side, record, extended, variant):
+    initial = [['1','10'],['2','20']]
+    updated = [['1','11'],['2','20']]
+    def command(sql, tag, state, affected=''):
+        r = A.query(sql, extended)
+        assert (r['command'], r['transaction'], r['affected']) == (tag,state,affected), r
+        assert not r['columns'] and not r['rows'], r
+        return r
+    command('BEGIN', 'BEGIN', 'T')
+    command('UPDATE public.tx_contract SET value=11 WHERE id=1', 'UPDATE 1', 'T', '1')
+    check(A, updated, 'T')
+    check(B, initial, 'I')
+    r = A.query('SAVEPOINT s', extended, required=False)
+    if r['status'] == 7:
+        assert side == 'aster' and r['diagnostics']['C'] in ('0A000','42601'), r
+        assert r['transaction'] == 'E' and not r['rows'] and not r['command'], r
+        record.setdefault('savepoint_boundaries', []).append(dict(
+            mode='extended' if extended else 'simple', variant=variant,
+            capability='rejected', rejection=r))
+        check(B, initial, 'I')
+        # A refused savepoint must not make ROLLBACK TO a successful full
+        # rollback, even when sent directly in the failed transaction.
+        sql = 'ROLLBACK TO SAVEPOINT s' if variant == '30' else 'ROLLBACK TO s'
+        r = A.query(sql, extended, required=False)
+        assert r['status'] == 7 and r['diagnostics']['C'] == '0A000' and r['transaction'] == 'E', r
+        assert not r['command'] and not r['rows'] and not r['columns'], r
+        check(B, initial, 'I')
+        command('ROLLBACK', 'ROLLBACK', 'I')
+    else:
+        assert r['command'] == 'SAVEPOINT' and r['transaction'] == 'T' and not r['columns'], r
+        command('INSERT INTO public.tx_contract VALUES (3,30)', 'INSERT 0 1', 'T', '1')
+        r = A.query('INSERT INTO public.tx_contract VALUES (1,99)', extended, required=False)
+        assert r['status'] == 7 and r['diagnostics']['C'] == '23505' and r['transaction'] == 'E', r
+        check(B, initial, 'I')
+        sql = 'ROLLBACK TO SAVEPOINT s' if variant == '30' else 'ROLLBACK TO s'
+        command(sql, 'ROLLBACK', 'T')
+        check(A, updated, 'T')
+        check(B, initial, 'I')
+        command('COMMIT', 'COMMIT', 'I')
+        check(A, updated, 'I')
+        check(B, updated, 'I')
+        record.setdefault('savepoint_boundaries', []).append(dict(
+            mode='extended' if extended else 'simple', variant=variant,
+            capability='local recovery verified'))
+        # Restore the fixture only after verifying committed visibility.
+        A.query('UPDATE public.tx_contract SET value=10 WHERE id=1')
+    for conn in (A,B):
+        check(conn, initial, 'I')
+        r = conn.query('SELECT 1::int4', extended)
+        assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+    A.query('DROP TABLE public.tx_contract')
+    A.close()
+    B.close()
+    record['cleanup'].append(dict(table_dropped=True, connections_closed=True))
+
 def observe_transaction(side, admin_dsn):
     obs, connections = [], []
     record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
@@ -318,6 +373,9 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'savepoint_gate':
+                    savepoint_gate(A, B, check, side, record, extended, inserted)
+                    continue
                 if a.case == 'old_portal':
                     old_portals(A, B, check, side, record, extended, inserted)
                     B.close()
@@ -569,6 +627,14 @@ def behavior(record):
     return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
             if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case in ('failed_rollback', 'failed_commit') and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
+if a.case == 'savepoint_gate':
+    # Success and safe rejection are distinct contracts; retain both independent
+    # observations instead of demanding identical unsupported capabilities.
+    assert all(v['cases_passed'] == 4 for v in outputs.values())
+    (evidence / 'savepoint-boundaries.json').write_text(json.dumps(
+        {side:v['savepoint_boundaries'] for side,v in outputs.items()}, indent=2))
+    print(json.dumps(dict(case=a.case, cases_per_endpoint=4, evidence=str(evidence), cleanup='passed')))
+    raise SystemExit(0)
 reference_behavior, aster_behavior = [behavior(outputs[side]) for side in ('reference','aster')]
 # The recovery probe's implicit expression name is a separate existing SQL
 # naming difference, not a transaction outcome. Preserve raw metadata above
