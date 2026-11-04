@@ -594,7 +594,7 @@ fn identity_user_override_preserves_owned_sequence() {
                 .unwrap();
             assert_eq!(session.pg_sequence(&current).unwrap(), Some(expected));
         }
-        for input in ["'invalid'", "1/0"] {
+        for input in ["'invalid'"] {
             assert!(
                 session
                     .execute(&format!(
@@ -606,9 +606,13 @@ fn identity_user_override_preserves_owned_sequence() {
             session.execute("SELECT 1").unwrap();
         }
         session
-            .execute("INSERT INTO user25 DEFAULT VALUES")
+            .execute("INSERT INTO user25 OVERRIDING USER VALUE VALUES (1/0)")
             .unwrap();
         assert_eq!(session.pg_sequence(&current).unwrap(), Some(14));
+        session
+            .execute("INSERT INTO user25 DEFAULT VALUES")
+            .unwrap();
+        assert_eq!(session.pg_sequence(&current).unwrap(), Some(15));
         session.execute("DROP TABLE user25").unwrap();
         assert!(domain.info_schema().TableByID(id).is_none());
     }
@@ -624,4 +628,71 @@ fn pg11_30_missing_schema_relation_diagnostics() {
             .unwrap_err();
         assert_eq!(error.pg_function_error().unwrap().state, expected);
     }
+}
+
+#[test]
+fn identity_declaration_bounds_sqlstate() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    for option in ["START 32768", "MAXVALUE 32768"] {
+        let error = session
+            .execute(&format!(
+                "CREATE TABLE bad_identity(id smallint GENERATED ALWAYS AS IDENTITY ({option}))"
+            ))
+            .err()
+            .unwrap();
+        assert_eq!(error.pg_array_error().unwrap().state, "22023");
+        session.execute("SELECT 1").unwrap();
+    }
+    session
+        .execute(
+            "CREATE TABLE bad_identity(id smallint GENERATED ALWAYS AS IDENTITY (START 32767))",
+        )
+        .unwrap();
+    session
+        .execute("INSERT INTO bad_identity DEFAULT VALUES")
+        .unwrap();
+    session.execute("DROP TABLE bad_identity").unwrap();
+}
+
+#[test]
+fn identity_prepare_validates_without_allocating() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    session
+        .execute("CREATE TABLE identity_prepare(id bigint GENERATED ALWAYS AS IDENTITY (START 10))")
+        .unwrap();
+    for (sql, state) in [
+        (
+            "INSERT INTO identity_prepare VALUES(900) RETURNING id",
+            "428C9",
+        ),
+        (
+            "INSERT INTO identity_prepare OVERRIDING USER VALUE VALUES('invalid') RETURNING id",
+            "22P02",
+        ),
+    ] {
+        let error = session.prepare_protocol_statement(sql).err().unwrap();
+        assert_eq!(
+            error
+                .pg_array_error()
+                .map(|e| e.state)
+                .or_else(|| error.pg_int4_error().map(|e| e.sqlstate())),
+            Some(state)
+        );
+    }
+    session
+        .prepare_protocol_statement(
+            "INSERT INTO identity_prepare OVERRIDING USER VALUE VALUES(1/0) RETURNING id",
+        )
+        .unwrap();
+    session
+        .execute("INSERT INTO identity_prepare DEFAULT VALUES")
+        .unwrap();
+    let mut rows = session
+        .execute("SELECT id FROM identity_prepare")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.next_row().unwrap().unwrap(), vec!["10"]);
+    session.execute("DROP TABLE identity_prepare").unwrap();
 }

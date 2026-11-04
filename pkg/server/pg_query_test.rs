@@ -32374,7 +32374,7 @@ fn pg11_22() {
         for (invalid, state) in [
             (
                 "smallint GENERATED ALWAYS AS IDENTITY (MAXVALUE 32768)",
-                "22003",
+                "22023",
             ),
             ("text GENERATED ALWAYS AS IDENTITY", "22023"),
             ("integer GENERATED ALWAYS AS IDENTITY (CACHE 0)", "22023"),
@@ -33084,7 +33084,7 @@ fn pg11_25() {
                 ),
                 ext,
             );
-            for (input, state) in [("'invalid'", "22P02"), ("1/0", "22012")] {
+            for (input, state) in [("'invalid'", "22P02")] {
                 denied(
                     &mut a,
                     &format!(
@@ -33124,6 +33124,18 @@ fn pg11_25() {
                 "SELECT id FROM public.identity_user25",
                 ext,
                 &[vec![Some("10".into())]],
+                20,
+            );
+            ok(
+                &mut a,
+                "INSERT INTO public.identity_user25 OVERRIDING USER VALUE VALUES (1/0,'ignored')",
+                ext,
+            );
+            rows(
+                &mut b,
+                "SELECT id FROM public.identity_user25 ORDER BY id",
+                ext,
+                &[vec![Some("10".into())], vec![Some("11".into())]],
                 20,
             );
             ok(&mut a, "DROP TABLE public.identity_user25", ext);
@@ -33441,16 +33453,12 @@ fn pg11_26() {
     assert_eq!(first.0, b'D');
     assert_eq!(catalog_rows(&[first]), values(&[("11", Some("prepared"))]));
     assert_eq!(read(&mut a).0, b's');
-    // The whole INSERT executes once even though delivery pauses after one row.
+    // Execution materializes both rows, but neither is committed before Sync.
     returned(
         &mut b,
         "SELECT id,note FROM public.identity_phase26 ORDER BY id",
         false,
-        &values(&[
-            ("10", Some("observer")),
-            ("11", Some("prepared")),
-            ("12", Some("second")),
-        ]),
+        &values(&[("10", Some("observer"))]),
     );
     send(&mut a, b'E', b"portal26\0\0\0\0\0");
     let second = read(&mut a);
@@ -33644,6 +33652,9 @@ fn pg11_29() {
             ] {
                 let m = run(&mut s, &bad, ext);
                 assert!(m.iter().any(|m| m.0 == b'E'), "{bad}: {m:?}");
+                if !ext {
+                    assert_eq!(m[0].0, b'T', "lookup errors follow RowDescription: {m:?}");
+                }
                 ok(&mut s, "SELECT 1", ext);
             }
 
@@ -33673,6 +33684,11 @@ fn pg11_29() {
             assert!(
                 m.iter().any(|m| m.0 == b'E'),
                 "owned sequence survived DROP: {m:?}"
+            );
+            assert_eq!(
+                m.iter().map(|m| m.0).collect::<Vec<_>>(),
+                b"EZ",
+                "missing literal regclass fails before description: {m:?}"
             );
             ok(&mut s, "SELECT 1", ext);
         }

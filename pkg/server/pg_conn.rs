@@ -746,6 +746,26 @@ impl PgService {
                                         }
                                     }
                                     Err(error) => {
+                                        if matches!(sqlstate(&error), "42703" | "42P01")
+                                            && let Some(query) =
+                                                catalog.as_ref().ok().and_then(|q| q.as_ref())
+                                            && query.describes_identity_lookup_error()
+                                        {
+                                            let m = query.metadata();
+                                            let result = crate::conn::QueryResult {
+                                                columns: m.columns,
+                                                native_types: m.native_types,
+                                                catalog_column_origins: m.catalog_column_origins,
+                                                ..Default::default()
+                                            };
+                                            let messages = crate::pg_result::encode_formats(
+                                                &result,
+                                                command,
+                                                &[],
+                                            )
+                                            .map_err(io::Error::other)?;
+                                            write_message(socket, messages[0].0, &messages[0].1)?;
+                                        }
                                         extended.session.record_error(context.as_ref());
                                         if let Some(hint) = temporal_error_hint(&error) {
                                             write_function_error(

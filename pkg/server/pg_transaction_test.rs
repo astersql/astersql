@@ -1482,3 +1482,111 @@ fn pg11_28() {
         }
     }
 }
+
+#[test]
+fn pg11_34_implicit_identity_transaction() {
+    fn insert(socket: &mut TcpStream, name: &str) -> (u8, Vec<u8>) {
+        parse(
+            socket,
+            name,
+            "INSERT INTO identity_sync(note) VALUES ('seed') RETURNING id,note",
+            &[],
+        );
+        assert_eq!(read(socket).0, b'1');
+        let body = [name.as_bytes(), b"\0", name.as_bytes(), b"\0\0\0\0\0\0\0"].concat();
+        send(socket, b'B', &body);
+        assert_eq!(read(socket).0, b'2');
+        execute(socket, name);
+        loop {
+            let message = read(socket);
+            if matches!(message.0, b'C' | b'E') {
+                return message;
+            }
+        }
+    }
+    for scenario in [
+        "commit",
+        "execute_error",
+        "parse_error",
+        "disconnect",
+        "explicit",
+        "explicit_error",
+    ] {
+        let (service, addr) = start();
+        let mut a = connect(addr);
+        let mut b = connect(addr);
+        assert!(!query(&mut a,"CREATE TABLE identity_sync(id bigint GENERATED ALWAYS AS IDENTITY (START 10),note text UNIQUE)").iter().any(|m| m.0==b'E'));
+        let explicit = scenario.starts_with("explicit");
+        if explicit {
+            assert_eq!(query(&mut a, "BEGIN").last().unwrap(), &(b'Z', vec![b'T']));
+        }
+        assert_eq!(insert(&mut a, "first").0, b'C');
+        assert!(
+            path_rows(&query(&mut b, "SELECT id,note FROM identity_sync")).is_empty(),
+            "{scenario}: writes before Sync"
+        );
+        let error = scenario.ends_with("error");
+        if scenario == "parse_error" {
+            parse(&mut a, "bad", "SELECT missing_identity_column", &[]);
+            let message = read(&mut a);
+            assert_eq!(message.0, b'E');
+            assert_eq!(error_state(&message.1), Some("42703"));
+        } else if error {
+            let message = insert(&mut a, "second");
+            assert_eq!(message.0, b'E');
+            assert_eq!(error_state(&message.1), Some("23505"));
+        }
+        if scenario == "disconnect" {
+            send(&mut a, b'X', &[]);
+            drop(a);
+            a = connect(addr);
+        } else {
+            sync(
+                &mut a,
+                if explicit {
+                    if error { b'E' } else { b'T' }
+                } else {
+                    b'I'
+                },
+            );
+        }
+        if explicit {
+            assert!(path_rows(&query(&mut b, "SELECT id,note FROM identity_sync")).is_empty());
+            if error {
+                let m = query(&mut a, "SELECT 1");
+                assert_eq!(error_state(&m[0].1), Some("25P02"));
+            }
+            query(&mut a, "ROLLBACK");
+        }
+        let rows = path_rows(&query(
+            &mut b,
+            "SELECT id,note FROM identity_sync ORDER BY id",
+        ));
+        assert_eq!(
+            rows,
+            if scenario == "commit" {
+                vec![vec![Some("10".into()), Some("seed".into())]]
+            } else {
+                vec![]
+            },
+            "{scenario}"
+        );
+        let next = if scenario == "execute_error" || scenario == "explicit_error" {
+            "12"
+        } else {
+            "11"
+        };
+        assert_eq!(
+            path_rows(&query(
+                &mut b,
+                "INSERT INTO identity_sync(note) VALUES ('after') RETURNING id"
+            )),
+            vec![vec![Some(next.into())]],
+            "{scenario}: allocation must survive rollback"
+        );
+        query(&mut b, "DROP TABLE identity_sync");
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        service.close();
+    }
+}

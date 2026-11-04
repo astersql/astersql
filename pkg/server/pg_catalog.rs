@@ -186,8 +186,51 @@ impl CatalogQuery {
         };
         query.parameters(oids)?;
         query.bind()?;
+        query.validate_regclass_literals(context)?;
         Ok(Some(query))
     }
+    // Literal regclass input is analyzed before Bind/Execute. In particular,
+    // a dropped owned sequence must fail Parse, without a portal descriptor.
+    // Provider rows and parameter values still use the execution snapshot.
+    fn validate_regclass_literals(&mut self, context: &dyn TiDBContext) -> ParseResult<()> {
+        let mut literals = Vec::new();
+        visit_all_select_exprs(&mut self.select, &mut |expr| {
+            if let Expr::Cast(value, CastType::Regclass) = expr
+                && let Expr::Text(input) = value.as_ref()
+            {
+                literals.push(input.clone());
+            }
+            Ok::<_, (&'static str, String)>(())
+        })?;
+        if literals.is_empty() {
+            return Ok(());
+        }
+        let Some(snapshot) = context.schema_snapshot() else {
+            return Ok(());
+        };
+        let current = context
+            .execute_query("SELECT DATABASE()", false, &CancellationToken::new())
+            .map_err(|error| (crate::pg_conn::sqlstate(&error), error.to_string()))?;
+        let database = match current
+            .first()
+            .and_then(|r| r.rows.first())
+            .and_then(|r| r.first())
+        {
+            Some(Value::Text(name)) => name.as_str(),
+            _ => "",
+        };
+        for input in literals {
+            crate::pg_oid::resolve_with_path(
+                &input,
+                database,
+                snapshot.as_ref(),
+                self.public_first,
+            )
+            .map_err(|error| (crate::pg_conn::sqlstate(&error), error.to_string()))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn classify(sql: &str) -> Option<Self> {
         Self::parse(sql).ok().flatten()
     }
@@ -639,7 +682,11 @@ impl CatalogQuery {
                         Some((1, crate::pg_result::CatalogColumnType::Name as u8, 0))
                     }
                     ("pg_class", "relnamespace") => Some((2, crate::pg_oid::OID_TYPE, 0)),
-                    ("pg_class", "relkind") => Some((3, 253, 0)),
+                    ("pg_class", "relkind") => Some((
+                        3,
+                        crate::pg_result::CatalogColumnType::InternalChar as u8,
+                        0,
+                    )),
                     ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                     ("pg_database", "datname") => Some((1, 253, 0)),
                     ("pg_database", "datistemplate") => Some((3, 1, boolean)),
@@ -1024,6 +1071,13 @@ impl CatalogQuery {
             }
         }
     }
+    /// The lookup runs after result description, unlike regclass literal binding.
+    pub(crate) fn describes_identity_lookup_error(&self) -> bool {
+        self.select.projections.iter().any(|projection| {
+            matches!(&projection.expr, Expr::Call(path, _) if path.last().is_some_and(|name| name == "pg_get_serial_sequence"))
+        })
+    }
+
     pub(crate) fn metadata(&self) -> PreparedMetadata {
         let fields = self
             .select
@@ -1078,13 +1132,32 @@ impl CatalogQuery {
                     };
                     let (slot, _, _) = self.column(path).ok()?;
                     let relation = self.relations().nth(slot / CATALOG_ROW_WIDTH)?;
-                    if relation.cte_id.is_some() || relation.name != "pg_namespace" {
+                    if relation.cte_id.is_some() {
                         return None;
                     }
-                    let attribute = match slot % CATALOG_ROW_WIDTH {
-                        0 => 1,
-                        1 => 2,
-                        5 => 3,
+                    // These are PostgreSQL catalog attribute numbers, not the
+                    // compact row slots used internally by the catalog evaluator.
+                    let attribute = match (relation.name.as_str(), slot % CATALOG_ROW_WIDTH) {
+                        ("pg_namespace", 0) => 1,
+                        ("pg_namespace", 1) => 2,
+                        ("pg_namespace", 5) => 3,
+                        ("pg_attribute", 3) => 3,
+                        ("pg_attribute", 6) => 12,
+                        ("pg_attribute", 9) => 15,
+                        ("pg_attribute", 12) => 13,
+                        ("pg_attrdef", 1) => 3,
+                        ("pg_sequence", 2) => 3,
+                        ("pg_sequence", 3) => 4,
+                        ("pg_sequence", 4) => 6,
+                        ("pg_sequence", 5) => 5,
+                        ("pg_sequence", 6) => 7,
+                        ("pg_sequence", 7) => 8,
+                        ("pg_depend", 4) => 6,
+                        ("pg_depend", 5) => 7,
+                        ("pg_class", 0) => 1,
+                        ("pg_class", 1) => 2,
+                        ("pg_class", 2) => 3,
+                        ("pg_class", 3) => 18,
                         _ => return None,
                     };
                     let oid = crate::pg_oid::SYSTEM_RELATIONS

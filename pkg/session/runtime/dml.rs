@@ -2300,6 +2300,84 @@ impl ConcreteSession {
         )
     }
 
+    /// Validate identity rewrite inputs without evaluating expressions or allocating.
+    pub(super) fn validate_pg_identity_inputs(
+        &self,
+        statement: &ast::InsertStmt,
+        table: &astersql_meta_model::TableInfo,
+    ) -> SessionResult<()> {
+        if self.sql_dialect() != ast::SqlDialect::PostgreSQL
+            || !table
+                .Columns
+                .iter()
+                .any(|column| column.PostgreSQLIdentity.is_some())
+        {
+            return Ok(());
+        }
+        let columns = if statement.Columns.is_empty() {
+            table
+                .Columns
+                .iter()
+                .filter(|c| !c.Hidden && !c.IsGenerated())
+                .map(Some)
+                .collect::<Vec<_>>()
+        } else {
+            statement
+                .Columns
+                .iter()
+                .map(|name| table.Columns.iter().find(|c| c.Name.L == name.Name.L))
+                .collect()
+        };
+        for expressions in &statement.Lists {
+            for (column, expression) in columns.iter().zip(expressions) {
+                let Some(column) = column else { continue };
+                let Some(identity) = &column.PostgreSQLIdentity else {
+                    continue;
+                };
+                if matches!(
+                    expression.Kind,
+                    ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
+                ) {
+                    continue;
+                }
+                // Unknown string literals are coerced during analysis even when
+                // USER later discards the expression. Never evaluate runtime terms.
+                if is_typed_literal(expression) {
+                    let value =
+                        self.relational_query_expression_value(expression, &HashMap::new(), None)?;
+                    let check = match column.GetType() {
+                        astersql_parser_mysql::r#type::TypeShort => {
+                            astersql_expression::pg_cast_int2(value.as_deref()).map(|_| ())
+                        }
+                        astersql_parser_mysql::r#type::TypeLong => {
+                            astersql_expression::pg_cast_int4(value.as_deref()).map(|_| ())
+                        }
+                        _ => astersql_expression::pg_cast_int8(value.as_deref()).map(|_| ()),
+                    };
+                    check.map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?;
+                }
+                if identity.Always
+                    && !statement.PostgreSQLOverrideSystem
+                    && !statement.PostgreSQLOverrideUser
+                {
+                    return Err(super::query::pg_union_error(
+                        &format!(
+                            "cannot insert a non-DEFAULT value into column \"{}\": identity column defined as GENERATED ALWAYS",
+                            column.Name.O
+                        ),
+                        "428C9",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn execute_relational_insert_with_output(
         &self,
         statement: &ast::InsertStmt,
@@ -2420,42 +2498,7 @@ impl ConcreteSession {
                 "0A000",
             ));
         }
-        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
-            && !statement.PostgreSQLOverrideSystem
-            && !statement.PostgreSQLOverrideUser
-            && table
-                .Columns
-                .iter()
-                .any(|c| c.PostgreSQLIdentity.as_ref().is_some_and(|i| i.Always))
-        {
-            let names = if statement.Columns.is_empty() {
-                table
-                    .Columns
-                    .iter()
-                    .filter(|c| !c.Hidden && !c.IsGenerated())
-                    .map(|c| c.Name.L.clone())
-                    .collect::<Vec<_>>()
-            } else {
-                statement.Columns.iter().map(|c| c.Name.L.clone()).collect()
-            };
-            for expressions in &statement.Lists {
-                for (name, expr) in names.iter().zip(expressions) {
-                    if table.Columns.iter().any(|c| {
-                        c.Name.L == *name && c.PostgreSQLIdentity.as_ref().is_some_and(|i| i.Always)
-                    }) && !matches!(
-                        expr.Kind,
-                        ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
-                    ) {
-                        return Err(super::query::pg_union_error(
-                            &format!(
-                                "cannot insert a non-DEFAULT value into column \"{name}\": identity column defined as GENERATED ALWAYS"
-                            ),
-                            "428C9",
-                        ));
-                    }
-                }
-            }
-        }
+        self.validate_pg_identity_inputs(statement, &table)?;
         let has_foreign_key_checks = !table.ForeignKeys.is_empty();
         self.record_transaction_table_write(&table);
         if let Some(indexes) = RUNTIME_PENDING_WRITE_INDEXES
@@ -2660,6 +2703,18 @@ impl ConcreteSession {
                         )
                     });
                 let mut value = if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && statement.PostgreSQLOverrideUser
+                    && column_info.is_some_and(|column| column.PostgreSQLIdentity.is_some())
+                    && !is_typed_literal(expression)
+                    && !matches!(
+                        expression.Kind,
+                        ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
+                    ) {
+                    // USER rewrites the supplied expression to the owned sequence
+                    // default. Runtime errors/side effects in that expression must
+                    // not run; literal input conversion is still checked below.
+                    None
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
                     && column_info.is_some_and(|column| {
                         column.FieldType.PostgreSQLArrayElement()
                             == Some(astersql_parser_types::PostgreSQLArrayElement::Int8)
@@ -3000,8 +3055,8 @@ impl ConcreteSession {
                     && statement.PostgreSQLOverrideUser
                     && column_info.is_some_and(|column| column.PostgreSQLIdentity.is_some())
                 {
-                    // Preserve PG diagnostics and expression side effects before
-                    // USER discards the value; shared literal coercion is MySQL-specific.
+                    // Keep literal input conversion diagnostics even when USER
+                    // discards the value; shared literal coercion is MySQL-specific.
                     self.relational_query_expression_value(expression, &row, None)?
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
@@ -3166,9 +3221,9 @@ impl ConcreteSession {
                         ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
                     )
                 {
-                    // USER replaces the stored input, not its evaluation. Validate
-                    // the supplied integer before allocating the owned sequence;
-                    // NULL is ignored here rather than failing NOT NULL below.
+                    // Validate supplied literals before allocating the owned
+                    // sequence. Rewritten expressions and NULL carry no value
+                    // here and do not trigger NOT NULL validation.
                     let column = column_info.unwrap();
                     let check = match column.GetType() {
                         astersql_parser_mysql::r#type::TypeShort => {

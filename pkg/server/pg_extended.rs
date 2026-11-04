@@ -1232,6 +1232,9 @@ pub(crate) struct Extended {
     statements: HashMap<String, Statement>,
     portals: HashMap<String, Portal>,
     failed: bool,
+    // Own only transactions started by extended DML. Explicit BEGIN remains
+    // controlled by the client, including across Sync and failed segments.
+    implicit_transaction: bool,
     // A bound portal pins its engine plan across Statement reanalysis.
     retired_statements: Vec<u32>,
 }
@@ -1334,6 +1337,23 @@ impl Extended {
                 self.failed = true;
                 write_error(socket, "ERROR", "08P01", "Sync must be empty")?;
                 return Ok(true);
+            }
+            if self.implicit_transaction {
+                // Portals/streams cannot outlive the transaction they used.
+                self.portals.clear();
+                let command = if self.failed { "ROLLBACK" } else { "COMMIT" };
+                let outcome = transaction_control(context, command);
+                self.implicit_transaction = false;
+                if let Err((state, message)) = outcome {
+                    // A failed owned commit must not leave this connection's
+                    // uncommitted writes for a subsequent command to publish.
+                    let _ = transaction_control(context, "ROLLBACK");
+                    self.session
+                        .record_success(Some("ROLLBACK"), context.as_ref());
+                    write_error(socket, "ERROR", state, &message)?;
+                } else {
+                    self.session.record_success(Some(command), context.as_ref());
+                }
             }
             self.failed = false;
             if !context.in_transaction() {
@@ -2181,6 +2201,8 @@ impl Extended {
                     .portals
                     .get_mut(&name)
                     .ok_or_else(|| error("34000", "unknown portal"))?;
+                self.session
+                    .check_transaction_command(portal.command, context.as_ref())?;
                 if portal.stream.is_some() || portal.stream_failed {
                     return portal.stream_page(limit, context);
                 }
@@ -2206,6 +2228,17 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
+                    if command == "BEGIN" {
+                        // BEGIN in a pending implicit segment promotes the same
+                        // shared transaction to explicit client ownership.
+                        self.implicit_transaction = false;
+                    } else if matches!(command, "INSERT" | "UPDATE" | "DELETE")
+                        && !context.in_transaction()
+                    {
+                        transaction_control(context, "BEGIN")?;
+                        self.implicit_transaction = true;
+                        self.session.record_success(Some("BEGIN"), context.as_ref());
+                    }
                     let mut utility_notices = if command == "DROP TABLE" {
                         self.statements
                             .get(&portal.statement_name)
@@ -2386,6 +2419,21 @@ impl Extended {
         }
     }
 }
+// Use the canonical session worker's existing transaction controls. These
+// internal controls have no frontend CommandComplete/ReadyForQuery response.
+fn transaction_control(context: &Arc<dyn TiDBContext>, command: &str) -> Result<()> {
+    let result = context.execute_query(command, false, &CancellationToken::new());
+    if let Ok(results) = &result {
+        for result in results {
+            if let Some(lifecycle) = &result.response_lifecycle {
+                lifecycle.finish();
+            }
+        }
+    }
+    context.finish_protocol_response(std::time::Duration::ZERO);
+    result.map(|_| ()).map_err(engine)
+}
+
 // PostgreSQL's fixed result contract compares names and types, not origin IDs:
 // another relation with the same row type is a valid reanalysis target.
 fn result_shape(metadata: &PreparedMetadata, command: &str) -> Result<Option<Vec<u8>>> {

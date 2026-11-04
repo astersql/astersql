@@ -549,7 +549,7 @@ fn pg_introspection_relations_live() {
             ("oid".into(), 26),
             ("relname".into(), 19),
             ("relnamespace".into(), 26),
-            ("relkind".into(), 25),
+            ("relkind".into(), 18),
             ("absent".into(), 25)
         ]
     );
@@ -2745,4 +2745,62 @@ order by owner_id
     );
     send(&mut socket, b'X', b"");
     service.close();
+}
+
+#[test]
+fn identity_catalog_column_origins() {
+    let metadata = crate::pg_catalog::CatalogQuery::parse(
+        "SELECT attidentity,attnotnull,atthasdef,atttypid FROM pg_attribute",
+    )
+    .unwrap()
+    .unwrap()
+    .metadata();
+    assert_eq!(
+        metadata.catalog_column_origins,
+        vec![
+            Some((1249, 15)),
+            Some((1249, 12)),
+            Some((1249, 13)),
+            Some((1249, 3))
+        ]
+    );
+    let metadata = crate::pg_catalog::CatalogQuery::parse("SELECT adnum FROM pg_attrdef")
+        .unwrap()
+        .unwrap()
+        .metadata();
+    assert_eq!(metadata.catalog_column_origins, vec![Some((2604, 3))]);
+}
+
+#[test]
+fn identity_owned_catalog_column_origins() {
+    for (sql, expected) in [
+        (
+            "SELECT seqstart,seqincrement,seqmin,seqmax,seqcache,seqcycle FROM pg_sequence",
+            vec![
+                (2224, 3),
+                (2224, 4),
+                (2224, 6),
+                (2224, 5),
+                (2224, 7),
+                (2224, 8),
+            ],
+        ),
+        (
+            "SELECT deptype,refobjsubid FROM pg_depend",
+            vec![(2608, 7), (2608, 6)],
+        ),
+        (
+            "SELECT oid,relname,relnamespace,relkind FROM pg_class",
+            vec![(1259, 1), (1259, 2), (1259, 3), (1259, 18)],
+        ),
+    ] {
+        let metadata = crate::pg_catalog::CatalogQuery::parse(sql)
+            .unwrap()
+            .unwrap()
+            .metadata();
+        assert_eq!(
+            metadata.catalog_column_origins,
+            expected.into_iter().map(Some).collect::<Vec<_>>()
+        );
+    }
 }

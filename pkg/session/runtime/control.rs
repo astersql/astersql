@@ -3283,6 +3283,7 @@ impl ConcreteSession {
         else {
             return Ok(());
         };
+        self.validate_pg_identity_inputs(statement, &table)?;
         let columns = if statement.Columns.is_empty() {
             table
                 .Columns

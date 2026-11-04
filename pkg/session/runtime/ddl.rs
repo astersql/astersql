@@ -655,7 +655,7 @@ impl ConcreteSession {
                     let state = match message.as_str() {
                         "identity currently requires positive INCREMENT and CACHE 1"
                         | "identity START at bigint minimum is not supported" => Some("0A000"),
-                        "identity sequence bounds exceed declared integer type" => Some("22003"),
+                        "identity sequence bounds exceed declared integer type" => Some("22023"),
                         "invalid identity sequence increment or cache"
                         | "identity requires smallint, integer or bigint" => Some("22023"),
                         "duplicate identity sequence option"
