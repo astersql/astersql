@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -447,6 +447,94 @@ def extended_error(A, B, check, record, stage):
     B.close()
     record['cleanup'].append(dict(stage=stage, table_dropped=True, connections_closed=True))
 
+def explicit_sync(A, B, check, record, stage):
+    wire = PortalWire(A, record.setdefault('explicit_segments', []))
+    def pbx(name, sql):
+        n = name.encode() + b'\0'
+        return [(b'P', n + sql.encode() + b'\0\0\0'),
+                (b'B', n + n + b'\0'*6),
+                (b'E', n + struct.pack('!I', 0))]
+    try:
+        r = wire.query('BEGIN')
+        assert r['command'] == 'BEGIN' and r['transaction'] == 'T', r
+        assert not r['columns'] and not r['rows'], r
+        sql = 'UPDATE public.tx_contract SET value=11 WHERE id=1'
+        r = wire.exchange(pbx('prefix', sql), sql, 'prefix/Flush', flush=True)
+        assert r['tags'] == ['1','2','C'] and r['command'] == 'UPDATE 1', r
+        assert r['transaction'] is None and r['affected'] == '1' and not r['columns'] and not r['rows'], r
+        check(B, S0, 'I')
+        if stage == 'success':
+            r = wire.exchange([], '<successful explicit Sync>', 'success/Sync')
+            assert r['tags'] == ['Z'] and r['transaction'] == 'T', r
+            check(B, S0, 'I')
+            r = wire.query(O)
+            assert r['rows'] == [['1','11'],['2','20']] and r['transaction'] == 'T', r
+            r = wire.query('ROLLBACK')
+            assert r['command'] == 'ROLLBACK' and r['transaction'] == 'I', r
+            check(B, S0, 'I')
+        elif stage == 'Parse':
+            sql = 'SELECT FROM'
+            messages = [(b'P', b'bad\0' + sql.encode() + b'\0\0\0')]
+            code, tags = '42601', ['E']
+        elif stage == 'Bind':
+            sql = 'SELECT id FROM public.tx_contract WHERE id=$1'
+            messages = [(b'P', b'bad\0' + sql.encode() + b'\0' + struct.pack('!hI', 1, 23)),
+                        (b'B', b'bad\0bad\0' + struct.pack('!hhI', 0, 1, 3) + b'bad' + struct.pack('!h', 0))]
+            code, tags = '22P02', ['1','E']
+        else:
+            sql = 'INSERT INTO public.tx_contract VALUES (1,99)'
+            messages = pbx('bad', sql)
+            code, tags = '23505', ['1','2','E']
+        if stage != 'success':
+            r = wire.exchange(messages, sql, stage + '/Flush', flush=True)
+            assert r['tags'] == tags and r['diagnostics']['C'] == code, r
+            assert r['transaction'] is None and not r['rows'] and not r['command'], r
+            check(B, S0, 'I')
+            # A single Sync response proves the intervening messages were discarded;
+            # no timeout is used as evidence of suppression (including ROLLBACK).
+            discarded = pbx('discard', 'INSERT INTO public.tx_contract VALUES (3,30)')
+            discarded += [(b'Q', b'INSERT INTO public.tx_contract VALUES (4,40)\0'),
+                          (b'Q', b'ROLLBACK\0'), (b'H', b'')]
+            r = wire.exchange(discarded, 'PBX INSERT (3,30); Q INSERT (4,40); Q ROLLBACK; Flush; Sync', stage + '/discard/Sync')
+            assert r['tags'] == ['Z'] and r['transaction'] == 'E', r
+            assert not r['rows'] and not r['columns'] and not r['command'], r
+            check(B, S0, 'I')
+            for sql in (O, 'INSERT INTO public.tx_contract VALUES (4,40)'):
+                r = wire.query(sql)
+                assert r['tags'] == ['E','Z'] and r['diagnostics']['C'] == '25P02' and r['transaction'] == 'E', r
+                assert not r['rows'] and not r['command'], r
+                check(B, S0, 'I')
+            sql = 'INSERT INTO public.tx_contract VALUES (4,40)'
+            r = wire.exchange(pbx('failed_write', sql), sql, stage + '/failed write/Sync')
+            assert r['tags'] == ['E','Z'] and r['diagnostics']['C'] == '25P02' and r['transaction'] == 'E', r
+            check(B, S0, 'I')
+            r = wire.query('ROLLBACK')
+            assert r['command'] == 'ROLLBACK' and r['transaction'] == 'I', r
+            assert not r['columns'] and not r['rows'], r
+            check(B, S0, 'I')
+        r = wire.query(O)
+        assert r['rows'] == S0 and r['transaction'] == 'I', r
+        r = wire.query('SELECT 1::int4')
+        assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+        sql = 'INSERT INTO public.tx_contract VALUES (3,30)'
+        r = wire.exchange(pbx('recovered', sql), sql, stage + '/new segment/Sync')
+        assert r['tags'] == ['1','2','C','Z'] and r['command'] == 'INSERT 0 1' and r['transaction'] == 'I', r
+        check(B, (S0 + [['3','30']]), 'I')
+        r = wire.query(O)
+        assert r['rows'] == (S0 + [['3','30']]) and r['transaction'] == 'I', r
+        assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
+        wire.query('DROP TABLE public.tx_contract')
+    finally:
+        # Restore libpq's idle socket before outer failure cleanup too.
+        try:
+            wire.exchange([], '<cleanup sync>', 'cleanup/Sync')
+            wire.query('ROLLBACK')
+        finally:
+            wire.sock.close()
+    A.close()
+    B.close()
+    record['cleanup'].append(dict(stage=stage, table_dropped=True, connections_closed=True))
+
 def observe_transaction(side, admin_dsn):
     obs, connections = [], []
     record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
@@ -462,8 +550,8 @@ def observe_transaction(side, admin_dsn):
             admin.query(f'CREATE DATABASE {a.database}')
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
-        for extended in ((False,) if a.case in ('query_block', 'extended_error') else (False, True)):
-            for inserted in (('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else ('30', 'NULL'))))):
+        for extended in ((False,) if a.case in ('query_block', 'extended_error', 'explicit_sync') else (False, True)):
+            for inserted in (('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else ('30', 'NULL'))))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -486,6 +574,9 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'explicit_sync':
+                    explicit_sync(A, B, check, record, inserted)
+                    continue
                 if a.case == 'extended_error':
                     extended_error(A, B, check, record, inserted)
                     continue
@@ -780,9 +871,9 @@ def behavior(record):
     return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
             if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case in ('failed_rollback', 'failed_commit') and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
-if a.case == 'extended_error':
+if a.case in ('extended_error', 'explicit_sync'):
     differences, probe_names = [], []
-    ref, local = [outputs[side]['error_segments'] for side in ('reference', 'aster')]
+    ref, local = [outputs[side]['explicit_segments' if a.case == 'explicit_sync' else 'error_segments'] for side in ('reference', 'aster')]
     assert len(ref) == len(local) > 0
     for r, l in zip(ref, local):
         for key in ('sql','phase','transaction','rows','columns','command','affected','tags'):
@@ -797,9 +888,10 @@ if a.case == 'extended_error':
         assert r['diagnostics']['C'] == l['diagnostics']['C'], (r,l)
         if r['diagnostics']['C']:
             differences.append(dict(stage=r['phase'], reference=r['diagnostics'], aster=l['diagnostics']))
-    assert all(v['cases_passed'] == 3 for v in outputs.values())
-    (evidence / 'comparison.json').write_text(json.dumps(dict(stages_per_endpoint=3, wire_observations=len(ref), matched=True, diagnostics=differences, recovery_probe_name_differences=probe_names),indent=2))
-    print(json.dumps(dict(case=a.case, cases_per_endpoint=3, evidence=str(evidence), cleanup='passed')))
+    count = 4 if a.case == 'explicit_sync' else 3
+    assert all(v['cases_passed'] == count for v in outputs.values())
+    (evidence / 'comparison.json').write_text(json.dumps(dict(stages_per_endpoint=count, wire_observations=len(ref), matched=True, diagnostics=differences, recovery_probe_name_differences=probe_names),indent=2))
+    print(json.dumps(dict(case=a.case, cases_per_endpoint=count, evidence=str(evidence), cleanup='passed')))
     raise SystemExit(0)
 if a.case == 'extended_success':
     ref, local = [outputs[side]['extended_segments'] for side in ('reference', 'aster')]

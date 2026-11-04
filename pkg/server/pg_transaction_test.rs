@@ -1654,6 +1654,11 @@ fn pg12_savepoint_gate() {
     pg12_transaction_case("savepoint_gate");
 }
 
+#[test]
+fn pg12_explicit_sync() {
+    pg12_transaction_case("explicit_sync");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
