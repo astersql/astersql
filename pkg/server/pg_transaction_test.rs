@@ -95,6 +95,15 @@ fn sync(socket: &mut TcpStream, status: u8) {
 }
 
 fn start() -> (Arc<PgService>, std::net::SocketAddr) {
+    let (service, addr, _) = start_with_domain();
+    (service, addr)
+}
+
+fn start_with_domain() -> (
+    Arc<PgService>,
+    std::net::SocketAddr,
+    Arc<astersql_domain::Domain>,
+) {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -105,11 +114,11 @@ fn start() -> (Arc<PgService>, std::net::SocketAddr) {
     let service = PgService::start(
         listener,
         driver,
-        Arc::new(CanonicalConnectionDomain::new(domain)),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
         false,
     )
     .unwrap();
-    (service, addr)
+    (service, addr, domain)
 }
 
 #[test]
@@ -1655,6 +1664,11 @@ fn pg12_savepoint_gate() {
 }
 
 #[test]
+fn pg12_table_ddl_gate() {
+    pg12_transaction_case("table_ddl_gate");
+}
+
+#[test]
 fn pg12_explicit_sync() {
     pg12_transaction_case("explicit_sync");
 }
@@ -1664,7 +1678,7 @@ fn pg12_transaction_case(case: &str) {
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
         "PG18_REFERENCE_DSN is required (no skip)"
     );
-    let (service, addr) = start();
+    let (service, addr, domain) = start_with_domain();
     struct Close(Arc<PgService>);
     impl Drop for Close {
         fn drop(&mut self) {
@@ -1695,7 +1709,10 @@ fn pg12_transaction_case(case: &str) {
     }
     assert_eq!(offset, description.len());
     let barrier = std::env::temp_dir().join(format!("{database}_cleanup"));
+    let ddl_snapshot = barrier.with_extension("ddl");
+    let ddl_reply = barrier.with_extension("reply");
     let mut child = std::process::Command::new("python3")
+        .env("PG12_DDL_SNAPSHOT", &ddl_snapshot)
         .env("PG12_CLEANUP_BARRIER", &barrier)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1720,6 +1737,13 @@ fn pg12_transaction_case(case: &str) {
         // The surviving connections are Rust admin, Python admin and B.
         // Socket removal follows synchronous context.close(), so both counts
         // reaching three confirms rollback has completed before observation.
+        if ddl_snapshot.exists() {
+            // Read the real canonical schema after the client's completed SQL;
+            // the handshake never changes execution or returns query results.
+            let version = domain.info_schema().SchemaMetaVersion();
+            std::fs::write(&ddl_reply, version.to_string()).unwrap();
+            std::fs::remove_file(&ddl_snapshot).unwrap();
+        }
         let (active, sockets, _) = guard.0.resource_counts();
         if barrier.exists() && active == 3 && sockets == 3 {
             std::fs::remove_file(&barrier).unwrap();
@@ -1732,6 +1756,8 @@ fn pg12_transaction_case(case: &str) {
     }
     let output = child.wait_with_output();
     let _ = std::fs::remove_file(&barrier);
+    let _ = std::fs::remove_file(&ddl_snapshot);
+    let _ = std::fs::remove_file(&ddl_reply);
     let cleanup = query(&mut admin, &format!("DROP DATABASE {database}"));
     send(&mut admin, b'X', &[]);
     drop(admin);
