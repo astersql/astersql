@@ -155,6 +155,8 @@ impl PgSession {
             command,
             Some(
                 "CREATE TABLE"
+                    | "CREATE INDEX"
+                    | "DROP VIEW"
                     | "CREATE SEQUENCE"
                     | "DROP SEQUENCE"
                     | "DROP TABLE"

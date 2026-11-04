@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -403,6 +403,110 @@ def table_ddl_gate(A, B, side, record, extended, operation):
     A.close()
     B.close()
 
+def other_ddl_gate(A, B, side, record, extended, operation):
+    def schema_version():
+        request = Path(os.environ['PG12_DDL_SNAPSHOT'])
+        reply = request.with_suffix('.reply')
+        if reply.exists():
+            reply.unlink()
+        request.touch()
+        deadline = time.monotonic() + 5
+        while request.exists() or not reply.exists():
+            assert time.monotonic() < deadline, 'canonical schema observation timed out'
+            time.sleep(.005)
+        return int(reply.read_text())
+    sentinel = 'SELECT id,v FROM public.txddl_sentinel ORDER BY id'
+    directory = "SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='txddl_probe'"
+    ddls = dict(create_view='CREATE VIEW public.txddl_probe AS SELECT id,v FROM public.txddl_sentinel',
+                drop_view='DROP VIEW public.txddl_probe',
+                create_index='CREATE INDEX txddl_probe ON public.txddl_sentinel (v)',
+                drop_index='DROP INDEX public.txddl_probe',
+                create_sequence='CREATE SEQUENCE public.txddl_probe',
+                alter_sequence='ALTER SEQUENCE public.txddl_probe INCREMENT BY 2',
+                drop_sequence='DROP SEQUENCE public.txddl_probe')
+    A.query('CREATE TABLE public.txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)')
+    A.query('INSERT INTO public.txddl_sentinel VALUES (1,10)')
+    setup = None
+    if operation in ('drop_view', 'drop_index', 'alter_sequence', 'drop_sequence'):
+        source = 'create_' + operation.split('_')[1]
+        setup = A.query(ddls[source], required=False)
+    baseline = B.query(directory)['rows']
+    metadata = {}
+    for sql in ("SELECT attname,atttypid,attnotnull FROM pg_catalog.pg_attribute WHERE attrelid='public.txddl_sentinel'::regclass::oid AND attnum>0 AND NOT attisdropped ORDER BY attnum",
+                "SELECT contype,conkey FROM pg_catalog.pg_constraint WHERE conrelid='public.txddl_sentinel'::regclass::oid AND contype='p' ORDER BY conkey"):
+        metadata[sql] = B.query(sql)['rows']
+    assert list(metadata.values()) == [[['id','23','t'],['v','23','t']], [['p','{1}']]], metadata
+    wire = PortalWire(A, record.setdefault('other_ddl_wire', []))
+    def query(sql):
+        if not extended:
+            return wire.query(sql)
+        n = f'other_ddl_{len(record["other_ddl_wire"])}'.encode() + b'\0'
+        return wire.exchange([(b'P', n + sql.encode() + b'\0\0\0'),
+                              (b'B', n + n + b'\0'*6),
+                              (b'E', n + struct.pack('!I', 0))], sql, 'Parse/Bind/Execute/Sync')
+    def unchanged(conn):
+        r = conn.query(sentinel)
+        assert r['rows'] == [['1','10']] and r['transaction'] == 'I', r
+        assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('v',23,4,-1,0)], r
+        assert conn.query(directory)['rows'] == baseline
+        for sql, expected in metadata.items():
+            assert conn.query(sql)['rows'] == expected
+    try:
+        assert query('BEGIN')['transaction'] == 'T'
+        r = query('UPDATE public.txddl_sentinel SET v=11 WHERE id=1')
+        assert r['command'] == 'UPDATE 1' and r['affected'] == '1' and r['transaction'] == 'T', r
+        assert wire.query(sentinel)['rows'] == [['1','11']]
+        unchanged(B)
+        before_version = schema_version() if side == 'aster' else None
+        r = query(ddls[operation])
+        boundary = dict(mode='extended' if extended else 'simple', operation=operation, setup=setup, baseline=baseline, ddl=r)
+        record.setdefault('other_ddl_boundaries', []).append(boundary)
+        if side == 'aster':
+            expected_code = '42P01' if operation in ('create_view','drop_view') else '42601' if operation == 'drop_index' else '0A000'
+            assert r['diagnostics']['C'] == expected_code and r['transaction'] == 'E', r
+            if operation in ('create_index','create_sequence','drop_sequence'):
+                assert r['diagnostics']['M'] == 'DDL inside a PostgreSQL transaction is unsupported', r
+            assert not r['command'] and not r['rows'] and not r['columns'], r
+            assert r['tags'] == ['E','Z'], r
+            after_version = schema_version()
+            boundary['schema_versions'] = [before_version, after_version]
+            assert before_version == after_version, boundary
+            boundary['rejection_stage'] = dict(create_view='relation adaptation', drop_view='relation adaptation',
+                drop_index='parser', alter_sequence='command adaptation').get(operation, 'transaction gate')
+            boundary['protocol_stage'] = 'Parse' if extended else 'Q'
+            unchanged(B)
+            r = query('SELECT 1::int4')
+            assert r['diagnostics']['C'] == '25P02' and r['transaction'] == 'E', r
+        else:
+            assert not r['diagnostics']['C'] and r['transaction'] == 'T' and r['command'], r
+            assert B.query(directory)['rows'] == baseline
+        r = query('ROLLBACK')
+        assert r['command'] == 'ROLLBACK' and r['transaction'] == 'I', r
+        unchanged(B)
+        unchanged(A)
+        boundary['recovered'] = dict(sentinel=A.query(sentinel)['rows'], directory=A.query(directory)['rows'], metadata=metadata)
+        r = wire.query('SELECT 1::int4')
+        assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+    finally:
+        try:
+            wire.exchange([], '<cleanup sync>', 'cleanup/Sync')
+            wire.query('ROLLBACK')
+        finally:
+            wire.sock.close()
+    if baseline:
+        kind = baseline[0][2]
+        if kind in ('v', 'S'):
+            A.query(('DROP VIEW' if kind == 'v' else 'DROP SEQUENCE') + ' public.txddl_probe')
+        else:
+            assert kind == 'i', baseline
+            # Dropping the owning table removes its index even on the product
+            # whose PostgreSQL DROP INDEX syntax is rejected by the parser.
+    A.query('DROP TABLE public.txddl_sentinel')
+    assert B.query(directory)['rows'] == []
+    record['cleanup'].append(dict(operation=operation, mode='extended' if extended else 'simple', objects_dropped=True))
+    A.close()
+    B.close()
+
 def savepoint_gate(A, B, check, side, record, extended, variant):
     initial = [['1','10'],['2','20']]
     updated = [['1','11'],['2','20']]
@@ -668,7 +772,7 @@ def observe_transaction(side, admin_dsn):
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
         for extended in ((False,) if a.case in ('query_block', 'extended_error', 'explicit_sync') else (False, True)):
-            for inserted in (('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else (('create', 'drop', 'alter', 'truncate') if a.case == 'table_ddl_gate' else ('30', 'NULL')))))):
+            for inserted in (('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else (('create', 'drop', 'alter', 'truncate') if a.case == 'table_ddl_gate' else (('create_index','drop_view','create_view','drop_index','create_sequence','alter_sequence','drop_sequence') if a.case == 'other_ddl_gate' else ('30', 'NULL'))))))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -680,6 +784,9 @@ def observe_transaction(side, admin_dsn):
                     r = A.query(sql, required=False)
                     if sql == 'SHOW server_version_num' and side == 'reference':
                         assert r['rows'] == [['180006']], 'exact PG18.6 required; record 18.4 separately'
+                if a.case == 'other_ddl_gate':
+                    other_ddl_gate(A, B, side, record, extended, inserted)
+                    continue
                 if a.case == 'table_ddl_gate':
                     table_ddl_gate(A, B, side, record, extended, inserted)
                     continue
@@ -969,7 +1076,7 @@ def observe_transaction(side, admin_dsn):
                 for conn in (A,B,C):
                     conn.close()
                 record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':True,'connections_closed':True})
-        record['cases_passed'] = 16 if a.case == 'table_ddl_gate' else 3 if a.case == 'extended_error' else 4
+        record['cases_passed'] = 14 if a.case == 'other_ddl_gate' else 16 if a.case == 'table_ddl_gate' else 3 if a.case == 'extended_error' else 4
     finally:
         for conn in connections:
             if conn.ptr:
@@ -994,6 +1101,20 @@ def behavior(record):
     return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
             if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case in ('failed_rollback', 'failed_commit') and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
+if a.case == 'other_ddl_gate':
+    assert all(v['cases_passed'] == 14 and len(v['other_ddl_boundaries']) == 14 for v in outputs.values())
+    for ref, local in zip(outputs['reference']['other_ddl_boundaries'], outputs['aster']['other_ddl_boundaries']):
+        for key in ('operation', 'mode'):
+            assert ref[key] == local[key], (ref, local)
+        assert ref['recovered']['sentinel'] == local['recovered']['sentinel'] == [['1','10']]
+        assert ref['recovered']['metadata'] == local['recovered']['metadata']
+        assert ref['recovered']['directory'] == ref['baseline']
+        assert local['recovered']['directory'] == local['baseline']
+    (evidence / 'comparison.json').write_text(json.dumps(dict(cases_per_endpoint=14,
+        reference='transactional DDL success then rollback', aster='early refusal without implicit commit',
+        boundaries={side:v['other_ddl_boundaries'] for side,v in outputs.items()}), indent=2))
+    print(json.dumps(dict(case=a.case, cases_per_endpoint=14, evidence=str(evidence), cleanup='passed')))
+    raise SystemExit(0)
 if a.case == 'table_ddl_gate':
     assert all(v['cases_passed'] == 16 for v in outputs.values())
     for ref, local in zip(outputs['reference']['ddl_boundaries'], outputs['aster']['ddl_boundaries']):
