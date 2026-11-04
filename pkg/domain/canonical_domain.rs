@@ -144,17 +144,32 @@ impl DdlMetadataService {
             .lock()
             .expect("DDL metadata writer lock poisoned");
         let mut transaction = store.Begin(&[])?;
+        let change = Self::mutate_transaction(transaction.as_mut(), operation)?;
+        if change.changed {
+            transaction.Commit(&kv::Context::default())?;
+        } else {
+            transaction.Rollback()?;
+        }
+        Ok(change)
+    }
+
+    fn mutate_transaction(
+        transaction: &mut dyn kv::Transaction,
+        operation: impl FnOnce(
+            &mut MetadataCatalog,
+            &mut dyn kv::Transaction,
+        ) -> Result<DdlMetadataChange, kv::errors::SharedError>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let start_ts = transaction.StartTS();
         // Go `meta.NewMutator` marks every metadata transaction as
         // AllowedOnAlmostFull so bootstrap/DDL can repair a nearly-full store.
         transaction.SetDiskFullOpt(kv::kvrpcpb::DiskFullOpt::AllowedOnAlmostFull);
-        let mut catalog = read_catalog(transaction.as_ref())?;
+        let mut catalog = read_catalog(&*transaction)?;
         let previous = catalog.clone();
-        let mut change = operation(&mut catalog, transaction.as_mut())?;
+        let mut change = operation(&mut catalog, &mut *transaction)?;
         // 无实际变更：回滚事务，仍返回当前 schema_version。
         if !change.changed {
             change.schema_version = catalog.version;
-            transaction.Rollback()?;
             return Ok(change);
         }
         // Go records the DDL transaction start timestamp in every newly
@@ -174,7 +189,7 @@ impl DdlMetadataService {
         let schema_version_key = tidb_string_key(b"SchemaVersionKey");
         let existing_schema_version = match kv::GetValue(
             &kv::Context::default(),
-            transaction.as_ref(),
+            &*transaction,
             schema_version_key.clone(),
         ) {
             Ok(value) => std::str::from_utf8(&value)
@@ -189,7 +204,7 @@ impl DdlMetadataService {
             .max(existing_schema_version)
             .saturating_add(1);
         change.schema_version = catalog.version;
-        publish_tidb_schema_metadata(transaction.as_mut(), &previous, &catalog)?;
+        publish_tidb_schema_metadata(&mut *transaction, &previous, &catalog)?;
         // TiFlash reloads the complete schema when this flag is set. This is
         // required while the canonical DDL path does not emit action-specific
         // TiDB schema diffs, and keeps table ID mappings in sync after DDL.
@@ -215,7 +230,6 @@ impl DdlMetadataService {
         // snapshots after publishing the split metadata; read_catalog still
         // accepts them when upgrading stores that do not yet have hash keys.
         transaction.Delete(kv::Key(DDL_CATALOG_KEY.to_vec()))?;
-        transaction.Commit(&kv::Context::default())?;
         Ok(change)
     }
 
@@ -357,85 +371,119 @@ impl DdlMetadataService {
         &self,
         store: &dyn kv::Storage,
         database: &str,
+        table: TableInfo,
+        if_not_exists: bool,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate(store, move |catalog| {
+            Self::create_table_change(catalog, database, table, if_not_exists)
+        })
+    }
+
+    fn create_table_change(
+        catalog: &mut MetadataCatalog,
+        database: &str,
         mut table: TableInfo,
         if_not_exists: bool,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let database = database.to_ascii_lowercase();
-        self.mutate(store, move |catalog| {
-            let key = (database.clone(), catalog_table_name(&table));
-            let existing = if table.ExactName {
-                catalog.tables.get(&key)
-            } else {
-                catalog
-                    .tables
-                    .iter()
-                    .find(|((db, _), t)| db == &database && t.Name.L == table.Name.L)
-                    .map(|(_, t)| t)
-            };
-            if let Some(existing) = existing {
-                if if_not_exists {
-                    return Ok(DdlMetadataChange {
-                        new_tables: vec![(database, existing.clone())],
-                        ..DdlMetadataChange::default()
-                    });
+        let key = (database.clone(), catalog_table_name(&table));
+        let existing = if table.ExactName {
+            catalog.tables.get(&key)
+        } else {
+            catalog
+                .tables
+                .iter()
+                .find(|((db, _), t)| db == &database && t.Name.L == table.Name.L)
+                .map(|(_, t)| t)
+        };
+        if let Some(existing) = existing {
+            if if_not_exists {
+                return Ok(DdlMetadataChange {
+                    new_tables: vec![(database, existing.clone())],
+                    ..DdlMetadataChange::default()
+                });
+            }
+            return Err(kv::errors::New(format!(
+                "table {}.{} already exists",
+                key.0, key.1
+            )));
+        }
+        if !catalog.databases.contains_key(&database) {
+            let id = allocate_id(catalog);
+            catalog.databases.insert(
+                database.clone(),
+                DBInfo {
+                    ID: id,
+                    Name: ast::NewCIStr(&database),
+                    State: astersql_meta_model::StatePublic,
+                    ..DBInfo::default()
+                },
+            );
+        }
+        let database_info = catalog
+            .databases
+            .get(&database)
+            .expect("database inserted above");
+        table.DBID = database_info.ID;
+        assign_table_physical_ids(catalog, &mut table);
+        let mut new_tables = Vec::new();
+        for column in &mut table.Columns {
+            if let Some(identity) = column.PostgreSQLIdentity.as_mut() {
+                let name = format!("{}__identity_{}", table.Name.O, column.ID);
+                let key = (database.clone(), name.clone());
+                if catalog.tables.contains_key(&key) {
+                    return Err(kv::errors::New("identity sequence name already exists"));
                 }
-                return Err(kv::errors::New(format!(
-                    "table {}.{} already exists",
-                    key.0, key.1
-                )));
+                let mut sequence = TableInfo {
+                    Name: ast::NewCIStr(&name),
+                    DBID: table.DBID,
+                    ExactName: table.ExactName,
+                    State: astersql_meta_model::StatePublic,
+                    Sequence: Some(identity.Sequence.clone()),
+                    PostgreSQLNamespace: table
+                        .PostgreSQLNamespace
+                        .as_ref()
+                        .map(|(id, name)| (*id, format!("{name}__identity_{}", column.ID))),
+                    ..Default::default()
+                };
+                assign_table_physical_ids(catalog, &mut sequence);
+                identity.SequenceID = sequence.ID;
+                catalog.tables.insert(key, sequence.clone());
+                new_tables.push((database.clone(), sequence));
             }
-            if !catalog.databases.contains_key(&database) {
-                let id = allocate_id(catalog);
-                catalog.databases.insert(
-                    database.clone(),
-                    DBInfo {
-                        ID: id,
-                        Name: ast::NewCIStr(&database),
-                        State: astersql_meta_model::StatePublic,
-                        ..DBInfo::default()
-                    },
-                );
-            }
-            let database_info = catalog
-                .databases
-                .get(&database)
-                .expect("database inserted above");
-            table.DBID = database_info.ID;
-            assign_table_physical_ids(catalog, &mut table);
-            let mut new_tables = Vec::new();
-            for column in &mut table.Columns {
-                if let Some(identity) = column.PostgreSQLIdentity.as_mut() {
-                    let name = format!("{}__identity_{}", table.Name.O, column.ID);
-                    let key = (database.clone(), name.clone());
-                    if catalog.tables.contains_key(&key) {
-                        return Err(kv::errors::New("identity sequence name already exists"));
-                    }
-                    let mut sequence = TableInfo {
-                        Name: ast::NewCIStr(&name),
-                        DBID: table.DBID,
-                        ExactName: table.ExactName,
-                        State: astersql_meta_model::StatePublic,
-                        Sequence: Some(identity.Sequence.clone()),
-                        PostgreSQLNamespace: table
-                            .PostgreSQLNamespace
-                            .as_ref()
-                            .map(|(id, name)| (*id, format!("{name}__identity_{}", column.ID))),
-                        ..Default::default()
-                    };
-                    assign_table_physical_ids(catalog, &mut sequence);
-                    identity.SequenceID = sequence.ID;
-                    catalog.tables.insert(key, sequence.clone());
-                    new_tables.push((database.clone(), sequence));
-                }
-            }
-            catalog.tables.insert(key, table.clone());
-            new_tables.insert(0, (database, table));
-            Ok(DdlMetadataChange {
-                new_tables,
-                changed: true,
-                ..DdlMetadataChange::default()
-            })
+        }
+        catalog.tables.insert(key, table.clone());
+        new_tables.insert(0, (database, table));
+        Ok(DdlMetadataChange {
+            new_tables,
+            changed: true,
+            ..DdlMetadataChange::default()
         })
+    }
+
+    /// Stage ordinary table metadata on the caller's transaction. No shared
+    /// schema is published and the caller retains commit/rollback ownership.
+    pub fn stage_create_table(
+        transaction: &mut dyn kv::Transaction,
+        database: &str,
+        table: TableInfo,
+        if_not_exists: bool,
+    ) -> Result<(DdlMetadataChange, SchemaRef, i64), kv::errors::SharedError> {
+        let mut job_id = 0;
+        let change = Self::mutate_transaction(transaction, |catalog, _| {
+            job_id = allocate_id(catalog);
+            Self::create_table_change(catalog, database, table, if_not_exists)
+        })?;
+        let schema = build_info_schema(&read_catalog(transaction)?);
+        Ok((change, schema, job_id))
+    }
+
+    /// Serialize the caller's commit with canonical metadata writers. Staging
+    /// never holds this guard while user code runs.
+    pub fn lock_writer(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.writer
+            .lock()
+            .expect("DDL metadata writer lock poisoned")
     }
 
     /// Install an MLog and its base-table link in one committed catalog change.

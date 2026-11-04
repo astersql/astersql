@@ -147,6 +147,9 @@ pub(super) struct SessionState {
         Option<HashMap<String, Vec<HashMap<String, Option<String>>>>>,
     pub(super) prepared_database_override: Option<String>,
     pub(super) transaction: Option<Box<dyn kv::Transaction>>,
+    /// Creator-only schema for ordinary PG tables staged in the user txn.
+    pub(super) pending_create_schema: Option<SchemaRef>,
+    pub(super) pending_create_jobs: Vec<i64>,
     /// Immutable InfoSchema captured when the active transaction starts.
     pub(super) transaction_info_schema: Option<SchemaRef>,
     /// An IMPORT worker sees only its snapshot-validated source definitions.
@@ -455,6 +458,8 @@ impl Default for SessionState {
             inspection_table_cache: None,
             prepared_database_override: None,
             transaction: None,
+            pending_create_schema: None,
+            pending_create_jobs: Vec::new(),
             transaction_info_schema: None,
             import_query_schema: None,
             transaction_related_table_ids: HashSet::new(),
@@ -1477,7 +1482,9 @@ impl ConcreteSession {
         astersql_statistics_handle::StatsTableKey,
         astersql_meta_model::TableInfo,
     )> {
-        let schema = if let Some(schema) = self.state.borrow().import_query_schema.clone() {
+        let schema = if let Some(schema) = self.state.borrow().pending_create_schema.clone() {
+            schema
+        } else if let Some(schema) = self.state.borrow().import_query_schema.clone() {
             schema
         } else {
             match self.state.borrow().snapshot_read_ts {
@@ -1515,6 +1522,18 @@ impl ConcreteSession {
         astersql_statistics_handle::StatsTableKey,
         astersql_meta_model::TableInfo,
     )> {
+        if let Some(schema) = self.state.borrow().pending_create_schema.clone() {
+            if let Ok(table) = schema
+                .ModelTableInfoByExactName(&astersql_infoschema::CiString::new(database), name)
+            {
+                if self.domain.info_schema().TableByID(table.ID).is_none() {
+                    return Some((
+                        astersql_statistics_handle::StatsTableKey::new(database, name, table.ID),
+                        (*table).clone(),
+                    ));
+                }
+            }
+        }
         let lock = {
             let state = self.state.borrow();
             astersql_sessionctx_vardef::IsMDLEnabled()
@@ -1674,6 +1693,12 @@ impl ConcreteSession {
     }
 
     pub(super) fn transaction_mdl_schema(&self, base: SchemaRef) -> SchemaRef {
+        let base = self
+            .state
+            .borrow()
+            .pending_create_schema
+            .clone()
+            .unwrap_or(base);
         if self.mdl_tables.borrow().is_empty() {
             return base;
         }

@@ -1026,6 +1026,13 @@ impl ConcreteSession {
                 );
             }
         }
+        let pending_schema = self.state.borrow_mut().pending_create_schema.take();
+        self.state.borrow_mut().pending_create_jobs.clear();
+        // Keep the metadata check and actual user commit ordered with ordinary
+        // canonical writers; do not hold this lock across SQL statements.
+        let _ddl_commit_guard = pending_schema
+            .as_ref()
+            .map(|_| self.domain.lock_transactional_ddl());
         let (
             transaction,
             had_transaction,
@@ -1389,6 +1396,12 @@ impl ConcreteSession {
                     .map_err(|error| session_error("rollback transaction", error))
             }
         })();
+        if commit && had_transaction && result.is_ok() && pending_schema.is_some() {
+            result = self
+                .domain
+                .publish_transactional_ddl()
+                .map_err(|error| session_error("publish committed CREATE TABLE", error));
+        }
         self.release_all_row_locks();
         if commit && had_transaction && result.is_ok() {
             for table in global_temporary_tables.values() {

@@ -880,6 +880,69 @@ impl ConcreteSession {
                 (1_u64 << allocation_bits) - 1
             }
         });
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && self.state.borrow().transaction.is_some()
+        {
+            // Only ordinary tables participate in this internal prototype.
+            // Keep side-effecting table variants on the existing DDL path.
+            if table.TTLInfo.is_some()
+                || table.PlacementPolicyRef.is_some()
+                || table.TiFlashReplica.is_some()
+                || !table.EngineAttribute.is_empty()
+                || has_explicit_region_split_config(&table)
+                || table.Partition.is_some()
+                || table.Sequence.is_some()
+                || !table.ForeignKeys.is_empty()
+                || table.Columns.iter().any(|c| c.PostgreSQLIdentity.is_some())
+                || table.TempTableType != astersql_meta_model::TempTableNone
+            {
+                return Err(SessionError::new(
+                    "[pg:0A000]transactional CREATE requires an ordinary persistent table",
+                ));
+            }
+            let mut state = self.state.borrow_mut();
+            let transaction = state.transaction.as_mut().expect("active user transaction");
+            let (change, schema, job_id) = astersql_domain::DdlMetadataService::stage_create_table(
+                transaction.as_mut(),
+                &database,
+                table,
+                statement.IfNotExists,
+            )
+            .map_err(|error| session_error("stage CREATE TABLE metadata", error))?;
+            if change.changed {
+                let table = &change.new_tables[0].1;
+                let mut job = astersql_meta_model::group_3::Job {
+                    id: job_id,
+                    tp: 3,
+                    schema_id: table.DBID,
+                    table_id: table.ID,
+                    schema_name: database.clone(),
+                    table_name: table.Name.O.clone(),
+                    start_ts: transaction.StartTS(),
+                    ..Default::default()
+                };
+                job.finish_table_job(
+                    astersql_meta_model::group_3::JobState::Synced,
+                    astersql_meta_model::SchemaState::Public,
+                    change.schema_version,
+                    Arc::new(table.clone()),
+                );
+                astersql_meta::TransactionMutator::new(transaction.as_mut())
+                    .add_history_ddl_job(&mut job)
+                    .map_err(SessionError::new)?;
+            }
+            state.pending_create_schema = Some(schema);
+            state.pending_create_jobs.push(job_id);
+            // Include shared allocation/version keys in the existing mock-store
+            // conflict check. Real TiKV also validates these writes at prewrite.
+            for field in [b"SchemaVersionKey".as_slice(), b"NextGlobalID".as_slice()] {
+                state.transaction_write_keys.insert(RuntimeRowLockKey {
+                    domain_id: Arc::as_ptr(&self.domain) as usize,
+                    key: astersql_meta::transaction_meta_string_key(field).0,
+                });
+            }
+            return Ok(());
+        }
         let job_id = begin_runtime_ddl_job(
             &self.domain,
             &database,
@@ -4433,3 +4496,7 @@ impl ConcreteSession {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "pg12_ddl_probe_test.rs"]
+mod pg12_ddl_probe_test;

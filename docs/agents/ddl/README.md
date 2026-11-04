@@ -150,3 +150,23 @@ mode.
 - Pause/Resume DDL: `docs/design/2023-04-15-ddl-pause-resume.md`
 - Pause user DDL while upgrading: `docs/design/2023-04-11-pause-user-ddl-when-upgrading.md`
 - Dist task framework: `docs/design/2023-04-11-dist-task.md`
+
+## Rust internal transactional CREATE TABLE prototype
+
+The Go owner/worker flow above remains the normal DDL contract. The Rust
+PostgreSQL public entry still rejects transaction-block DDL. Internal
+`ConcreteSession` execution supports ordinary persistent CREATE TABLE on its
+existing user transaction: `DdlMetadataService::stage_create_table` writes the
+canonical table metadata and schema version without committing, and the session
+writes the durable DDL history entry on that same transaction. A private schema
+allows the creator's subsequent DML to resolve the table. Other sessions continue
+to use committed metadata. User COMMIT publishes the schema after KV commit;
+ROLLBACK discards metadata, history and rows together. Existing transaction MDL
+is retained until the user transaction ends. MySQL keeps its implicit DDL commit.
+
+This internal path excludes temporary tables, partitioning, foreign keys,
+identity sequences, TTL, explicit region splitting, placement and external
+storage attributes. It does not enlist general DDL owner jobs into user
+transactions. Its focused regression tests live in
+`pkg/session/runtime/pg12_ddl_probe_test.rs`; the real PostgreSQL reference is
+collected independently by `pkg/server/testdata/pg12_transaction_libpq.py`.

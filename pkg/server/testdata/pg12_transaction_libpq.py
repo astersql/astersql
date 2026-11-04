@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['active_cancel', 'commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
+p.add_argument('--case', choices=['ddl_atomic_reference', 'active_cancel', 'commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -1299,6 +1299,73 @@ if a.restart_check:
     finally:
         reader.close()
     print(json.dumps(dict(case='restart', cases_per_endpoint=1, evidence=str(evidence), cleanup='passed')))
+    raise SystemExit(0)
+
+# The internal session prototype has no public PG wire entry. This scenario
+# independently collects only the real PostgreSQL reference; Rust collects the
+# local shared-session results before comparing their actual outcomes.
+if a.case == 'ddl_atomic_reference':
+    obs, connections = [], []
+    record = dict(repository_sha=head, client_version=libversion(),
+                  storage='PostgreSQL persistent reference', observations=obs,
+                  source_commit_sha='unverified: release archive', cases=[], cleanup=[])
+    admin = Connection(reference, 'admin', obs)
+    created = False
+    try:
+        assert serverversion(admin.ptr) == 180006, 'exact PG18.6 required'
+        record['server_version_num'] = serverversion(admin.ptr)
+        admin.query(f'CREATE DATABASE {a.database}')
+        created = True
+        dsn = reference + f' dbname={a.database}'
+        A, B = [Connection(dsn, n, obs) for n in ('A', 'B')]
+        connections.extend((A, B))
+        for conn in connections:
+            conn.query("SET statement_timeout = '5s'")
+        for sql in ('SELECT version()', 'SHOW server_version_num', 'SHOW transaction_isolation'):
+            A.query(sql)
+        sentinel = 'SELECT id,v FROM public.txddl_sentinel ORDER BY id'
+        directory = "SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='txddl_probe'"
+        for exit in ('ROLLBACK', 'COMMIT'):
+            A.query('CREATE TABLE public.txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)')
+            A.query('INSERT INTO public.txddl_sentinel VALUES (1,10)')
+            assert B.query(directory)['rows'] == []
+            assert A.query('BEGIN')['transaction'] == 'T'
+            assert A.query('UPDATE public.txddl_sentinel SET v=11 WHERE id=1')['affected'] == '1'
+            assert B.query(sentinel)['rows'] == [['1','10']]
+            r = A.query('CREATE TABLE public.txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)')
+            assert r['transaction'] == 'T' and r['command'] == 'CREATE TABLE' and not r['columns']
+            assert B.query(directory)['rows'] == []
+            assert A.query(directory)['rows'] == [['public','txddl_probe','r']]
+            columns = A.query("SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='txddl_probe' ORDER BY ordinal_position")
+            assert columns['rows'] == [['id','integer','NO'],['v','integer','NO']]
+            constraints = A.query("SELECT constraint_type FROM information_schema.table_constraints WHERE table_schema='public' AND table_name='txddl_probe' AND constraint_type='PRIMARY KEY'")
+            assert constraints['rows'] == [['PRIMARY KEY']]
+            assert A.query('INSERT INTO public.txddl_probe VALUES (1,30)')['affected'] == '1'
+            assert A.query('SELECT id,v FROM public.txddl_probe ORDER BY id')['rows'] == [['1','30']]
+            assert A.query(exit)['transaction'] == 'I'
+            observed = dict(exit=exit, sentinel=B.query(sentinel)['rows'], directory=B.query(directory)['rows'])
+            observed['data'] = B.query('SELECT id,v FROM public.txddl_probe ORDER BY id')['rows'] if observed['directory'] else None
+            record['cases'].append(observed)
+            assert observed['sentinel'] == [['1','10' if exit == 'ROLLBACK' else '11']]
+            assert bool(observed['directory']) == (exit == 'COMMIT')
+            assert observed['data'] == ([['1','30']] if exit == 'COMMIT' else None)
+            A.query('DROP TABLE IF EXISTS public.txddl_probe')
+            A.query('DROP TABLE public.txddl_sentinel')
+            assert B.query(directory)['rows'] == []
+            record['cleanup'].append(dict(exit=exit, objects_absent=True))
+        assert A.query('SELECT 1::int4')['rows'] == [['1']]
+    finally:
+        for conn in connections:
+            if conn.ptr:
+                conn.query('ROLLBACK', required=False)
+                conn.close()
+        if created:
+            admin.query(f'DROP DATABASE {a.database}')
+            assert admin.query(f"SELECT datname FROM pg_catalog.pg_database WHERE datname='{a.database}'")['rows'] == []
+            record['cleanup'].append(dict(database_dropped=True, connections_closed=True))
+        admin.close()
+        (evidence / 'reference.json').write_text(json.dumps(record, indent=2))
+    print(json.dumps(dict(evidence=str(evidence), cases=2, cleanup='passed')))
     raise SystemExit(0)
 
 for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.port} user=root dbname=test')]:

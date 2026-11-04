@@ -1855,7 +1855,13 @@ impl ConcreteSession {
             || statement.as_any().is::<ast::CreateResourceGroupStmt>()
             || statement.as_any().is::<ast::AlterResourceGroupStmt>()
             || statement.as_any().is::<ast::DropResourceGroupStmt>();
-        if implicit_commit_ddl && self.state.borrow().transaction.is_some() {
+        let transactional_create = self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && statement
+                .as_any()
+                .downcast_ref::<ast::CreateTableStmt>()
+                .is_some_and(|create| create.TemporaryKeyword == ast::TemporaryKeyword::None);
+        if implicit_commit_ddl && !transactional_create && self.state.borrow().transaction.is_some()
+        {
             self.finish_transaction(true)?;
         }
         if let Some(create_database) = statement.as_any().downcast_ref::<ast::CreateDatabaseStmt>()

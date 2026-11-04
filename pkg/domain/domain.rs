@@ -3745,6 +3745,16 @@ impl Domain {
         self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
+    /// Commit serialization for a caller-owned ordinary CREATE TABLE.
+    pub fn lock_transactional_ddl(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.ddl_metadata.lock_writer()
+    }
+
+    /// Publish only after the caller's KV transaction has committed.
+    pub fn publish_transactional_ddl(&self) -> Result<(), DomainError> {
+        self.reconcile_from_committed_metadata()
+    }
+
     /// DDL 建表后同步统计 catalog。
     pub fn ddl_create_table(
         &self,
