@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -140,6 +140,23 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'single_implicit':
+                    r = A.query(f'INSERT INTO public.tx_contract VALUES (3,{inserted})', extended)
+                    assert r['transaction'] == 'I' and r['command'] == 'INSERT 0 1' and r['affected'] == '1' and not r['columns'], r
+                    expected = initial + [['3', None if inserted == 'NULL' else '30']]
+                    check(A, expected, 'I')
+                    check(B, expected, 'I')
+                    r = A.query('INSERT INTO public.tx_contract VALUES (4,40),(1,99)', extended, required=False)
+                    assert r['status'] == 7 and r['diagnostics']['C'] == '23505' and r['transaction'] == 'I', r
+                    check(B, expected, 'I')
+                    check(A, expected, 'I')
+                    r = A.query('SELECT 1::int4', extended)
+                    assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+                    A.query('DROP TABLE public.tx_contract')
+                    for conn in (A, B):
+                        conn.close()
+                    record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':True,'connections_closed':True})
+                    continue
                 r = A.query('BEGIN', extended)
                 assert r['transaction'] == 'T' and not r['columns'], r
                 check(A,initial,'T')
@@ -225,6 +242,19 @@ for ref, local in zip(reference_behavior, aster_behavior):
         ref['columns'] = [dict(ref['columns'][0], name='<implicit recovery expression>')]
         local['columns'] = [dict(local['columns'][0], name='<implicit recovery expression>')]
 (evidence / 'comparison.json').write_text(json.dumps({'recovery_probe_name_differences':probe_names},indent=2))
+if a.case == 'single_implicit':
+    # Raw diagnostics remain in endpoint evidence; compare SQLSTATE while
+    # recording backend-specific wording and detail/position differences.
+    differences = []
+    assert len(reference_behavior) == len(aster_behavior)
+    for ref, local in zip(reference_behavior, aster_behavior):
+        if ref['diagnostics']['C'] == '23505':
+            differences.append({'sql':ref['sql'],'phase':ref['phase'],
+                                'reference':ref['diagnostics'], 'aster':local['diagnostics']})
+            assert local['diagnostics']['C'] == '23505'
+            ref['diagnostics'] = {k:ref['diagnostics'][k] for k in 'SVC'}
+            local['diagnostics'] = {k:local['diagnostics'][k] for k in 'SVC'}
+    (evidence / 'diagnostic-differences.json').write_text(json.dumps(differences,indent=2))
 assert reference_behavior == aster_behavior, 'endpoint transaction observations differ'
 # Both independently observed endpoints must have passed the same four inputs.
 assert outputs['reference']['cases_passed'] == outputs['aster']['cases_passed'] == 4

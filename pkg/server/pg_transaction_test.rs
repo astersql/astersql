@@ -1602,6 +1602,11 @@ fn pg12_rollback() {
     pg12_transaction_case("rollback");
 }
 
+#[test]
+fn pg12_single_implicit() {
+    pg12_transaction_case("single_implicit");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
