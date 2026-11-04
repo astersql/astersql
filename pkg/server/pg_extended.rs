@@ -1446,6 +1446,26 @@ impl Extended {
             .effective_explicit_path(context.as_ref())
             .map_err(engine)?;
         let session_query = crate::pg_session::SessionQuery::parse(&sql)?;
+        // A literal regclass is resolved during Parse, without executing the
+        // sequence function or consuming its connection-local cache.
+        if let Some(crate::pg_session::SessionQuery::Sequence(command, _)) = &session_query {
+            use astersql_session::runtime::PgSequenceCommand;
+            if let PgSequenceCommand::Value {
+                schema,
+                name: Some(name),
+                ..
+            }
+            | PgSequenceCommand::Set {
+                schema,
+                name: Some(name),
+                ..
+            } = command
+                && let Some(result) = context.pg_bind_relation(schema.clone(), name.clone(), false)
+            {
+                result.map_err(engine)?;
+            }
+        }
+
         let catalog = if session_query.is_some() {
             None
         } else {

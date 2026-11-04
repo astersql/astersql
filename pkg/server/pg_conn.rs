@@ -516,6 +516,31 @@ impl PgService {
                                         .map_err(io::Error::other)?,
                                 )?,
                                 Err(error) => {
+                                    // These sequence failures arise during execution,
+                                    // after the simple-query result descriptor.
+                                    if matches!(
+                                        query,
+                                        crate::pg_session::SessionQuery::Sequence(_, Some(_))
+                                    ) && matches!(
+                                        sqlstate(&error),
+                                        "55000" | "2200H" | "22003" | "42501" | "42809"
+                                    ) {
+                                        let m = query.metadata();
+                                        let result = crate::conn::QueryResult {
+                                            columns: m.columns,
+                                            native_types: m.native_types,
+                                            column_origins: m.column_origins,
+                                            catalog_column_origins: m.catalog_column_origins,
+                                            ..Default::default()
+                                        };
+                                        let messages = crate::pg_result::encode_formats(
+                                            &result,
+                                            query.command(),
+                                            &[],
+                                        )
+                                        .map_err(io::Error::other)?;
+                                        write_message(socket, messages[0].0, &messages[0].1)?;
+                                    }
                                     extended.session.record_error(context.as_ref());
                                     if let Some(hint) = temporal_error_hint(&error) {
                                         write_function_error(

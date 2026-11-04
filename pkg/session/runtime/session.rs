@@ -128,6 +128,7 @@ pub(super) struct SessionState {
     pub(super) databases: BTreeSet<String>,
     /// Successful PG sequence values survive rollback, but never a new connection.
     pub(super) pg_sequence_values: HashMap<i64, i64>,
+    pub(super) native_sequence_values: HashMap<i64, i64>,
     /// Reserved next/end values are connection-local and survive user rollback.
     pub(super) pg_sequence_cache: HashMap<i64, (i64, i64)>,
     /// Local temporary tables shadow the Domain catalog only for this session.
@@ -445,6 +446,7 @@ impl Default for SessionState {
         Self {
             databases,
             pg_sequence_values: HashMap::new(),
+            native_sequence_values: HashMap::new(),
             pg_sequence_cache: HashMap::new(),
             local_temporary_tables: HashMap::new(),
             local_temporary_auto_ids: HashMap::new(),

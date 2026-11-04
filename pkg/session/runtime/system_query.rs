@@ -3929,6 +3929,76 @@ impl ConcreteSession {
                     }
                 }
                 ast::ExprKind::Function { FnName, Args, .. }
+                    if self.sql_dialect() == ast::SqlDialect::MySQL
+                        && matches!(FnName.L.as_str(), "nextval" | "lastval")
+                        && Args.len() == 1 =>
+                {
+                    // Preserve the native parser's relation-name argument.
+                    let source = match &Args[0].Kind {
+                        ast::ExprKind::TableName(table) => Some(if table.Schema.O.is_empty() {
+                            table.Name.O.clone()
+                        } else {
+                            format!("{}.{}", table.Schema.O, table.Name.O)
+                        }),
+                        ast::ExprKind::Column(name) => Some(if name.Schema.O.is_empty() {
+                            name.Name.O.clone()
+                        } else {
+                            format!("{}.{}", name.Schema.O, name.Name.O)
+                        }),
+                        _ => relational_expression_value(&Args[0], &HashMap::new())?,
+                    };
+                    let Some(source) = source else {
+                        row.push(CONCRETE_NULL_VALUE.to_owned());
+                        columns.push(if field.AsName.O.is_empty() {
+                            format!("{}()", FnName.O.to_uppercase())
+                        } else {
+                            field.AsName.O.clone()
+                        });
+                        continue;
+                    };
+                    let (db, name) = source
+                        .split_once('.')
+                        .map(|(db, name)| (db.to_owned(), name.to_owned()))
+                        .unwrap_or_else(|| (self.current_database(), source.clone()));
+                    let sequence = self
+                        .domain
+                        .info_schema()
+                        .ModelTableInfoByName(&db.as_str().into(), &name.as_str().into())
+                        .map_err(|error| session_error("resolve native sequence", error))?;
+                    if sequence.Sequence.is_none() {
+                        return Err(SessionError::new("object is not a sequence"));
+                    }
+                    self.check_mview_show_privilege(
+                        &db,
+                        &name,
+                        if FnName.L == "nextval" {
+                            astersql_parser_mysql::privs::InsertPriv
+                        } else {
+                            astersql_parser_mysql::privs::SelectPriv
+                        },
+                    )?;
+                    // Native LASTVAL is nullable and keyed by real sequence ID;
+                    // it never reads PostgreSQL currval or LAST_INSERT_ID state.
+                    if FnName.L == "nextval" {
+                        let value = self
+                            .domain
+                            .sequence_next_value(&sequence)
+                            .map_err(|error| session_error("allocate native sequence", error))?;
+                        self.state
+                            .borrow_mut()
+                            .native_sequence_values
+                            .insert(sequence.ID, value);
+                        value.to_string()
+                    } else {
+                        self.state
+                            .borrow()
+                            .native_sequence_values
+                            .get(&sequence.ID)
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
+                    }
+                }
+                ast::ExprKind::Function { FnName, Args, .. }
                     if FnName.L.eq_ignore_ascii_case("last_insert_id")
                         && matches!(Args.len(), 0 | 1) =>
                 {
@@ -4179,6 +4249,24 @@ impl ConcreteSession {
                 let ast::ExprKind::Function { FnName, Args, .. } = &expr.Kind else {
                     return None;
                 };
+                if self.sql_dialect() == ast::SqlDialect::MySQL
+                    && matches!(FnName.L.as_str(), "nextval" | "lastval")
+                    && Args.len() == 1
+                {
+                    return Some(ConcreteResultField {
+                        column: astersql_meta_model::ColumnInfo {
+                            FieldType: astersql_parser_types::NewFieldType(
+                                astersql_parser_mysql::r#type::TypeLonglong,
+                            ),
+                            ..Default::default()
+                        },
+                        column_as_name: ast::NewCIStr(name),
+                        table_name: Default::default(),
+                        table_as_name: Default::default(),
+                        db_name: Default::default(),
+                        column_origin: None,
+                    });
+                }
                 if self.sql_dialect() == ast::SqlDialect::MySQL
                     && Args.is_empty()
                     && let Some(tp) =

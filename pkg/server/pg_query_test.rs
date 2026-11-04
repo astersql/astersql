@@ -30080,6 +30080,14 @@ fn pg11_14() {
             !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
             "{sql}: {m:?}"
         );
+        if !ext && state == "55000" {
+            let description = m.iter().position(|message| message.0 == b'T').unwrap();
+            let error = m.iter().position(|message| message.0 == b'E').unwrap();
+            assert!(
+                description < error,
+                "execution error follows descriptor: {m:?}"
+            );
+        }
         assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
         ok(s, "SELECT 1", ext);
     }

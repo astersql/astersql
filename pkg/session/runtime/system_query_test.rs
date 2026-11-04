@@ -111,3 +111,31 @@ fn pg11_30_current_schema_column_name() {
         assert_eq!(fields[0].column_as_name.O, expected);
     }
 }
+
+#[test]
+fn native_sequence_connection_state() {
+    let (domain, a) = CreateAnalyzeSession().unwrap();
+    let b = ConcreteSession::new(Arc::clone(&domain));
+    fn scalar(s: &ConcreteSession, sql: &str) -> Vec<String> {
+        s.execute(sql)
+            .unwrap()
+            .remove(0)
+            .next_row()
+            .unwrap()
+            .unwrap()
+    }
+    a.execute("CREATE SEQUENCE native_seq START WITH 5 NOCACHE")
+        .unwrap();
+    assert_eq!(scalar(&a, "SELECT NEXTVAL(native_seq)"), vec!["5"]);
+    assert_eq!(scalar(&a, "SELECT LASTVAL(native_seq)"), vec!["5"]);
+    assert_eq!(
+        scalar(&b, "SELECT LASTVAL(test.native_seq)"),
+        vec![crate::runtime::CONCRETE_NULL_VALUE]
+    );
+    assert_eq!(scalar(&b, "SELECT NEXTVAL(test.native_seq)"), vec!["6"]);
+    assert_eq!(scalar(&a, "SELECT LASTVAL(native_seq)"), vec!["5"]);
+    a.execute("BEGIN").unwrap();
+    assert_eq!(scalar(&a, "SELECT NEXTVAL(native_seq)"), vec!["7"]);
+    a.execute("ROLLBACK").unwrap();
+    assert_eq!(scalar(&a, "SELECT LASTVAL(native_seq)"), vec!["7"]);
+}
