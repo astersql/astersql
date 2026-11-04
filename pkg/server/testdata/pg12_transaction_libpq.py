@@ -1,0 +1,187 @@
+# Copyright 2026 AsterSQL.
+"""Independent commit observations through libpq; never owns the reference server."""
+import argparse
+import ctypes as c
+import ctypes.util
+import json
+import os
+import signal
+from pathlib import Path
+import subprocess
+
+p = argparse.ArgumentParser()
+p.add_argument('--case', choices=['commit'], required=True)
+p.add_argument('--host', choices=['127.0.0.1'], required=True)
+p.add_argument('--port', type=int, required=True)
+p.add_argument('--database', required=True)
+a = p.parse_args()
+def interrupted(signum, frame):
+    raise RuntimeError('commit client interrupted or timed out')
+for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM):
+    signal.signal(sig, interrupted)
+signal.alarm(90)
+assert a.database.replace('_', '').isalnum(), 'invalid test database'
+reference = os.environ.get('PG18_REFERENCE_DSN')
+assert reference, 'PG18_REFERENCE_DSN is required (no skip)'
+pq = c.CDLL(os.environ.get('PG_LIBPQ_LIBRARY') or ctypes.util.find_library('pq'))
+def api(name, result, *args):
+    fn = getattr(pq, name)
+    fn.restype, fn.argtypes = result, args
+    return fn
+P, I, S = c.c_void_p, c.c_int, c.c_char_p
+connect = api('PQconnectdb', P, S)
+status = api('PQstatus', I, P)
+finish = api('PQfinish', None, P)
+execq = api('PQexec', P, P, S)
+prepare = api('PQprepare', P, P, S, S, I, P)
+prepared = api('PQexecPrepared', P, P, S, I, P, P, P, I)
+clear = api('PQclear', None, P)
+rs = api('PQresultStatus', I, P)
+nt = api('PQntuples', I, P)
+nf = api('PQnfields', I, P)
+val = api('PQgetvalue', S, P, I, I)
+null = api('PQgetisnull', I, P, I, I)
+field = api('PQfname', S, P, I)
+typeoid = api('PQftype', c.c_uint, P, I)
+size = api('PQfsize', I, P, I)
+mod = api('PQfmod', I, P, I)
+fmt = api('PQfformat', I, P, I)
+tag = api('PQcmdStatus', S, P)
+affected = api('PQcmdTuples', S, P)
+diag = api('PQresultErrorField', S, P, I)
+tx = api('PQtransactionStatus', I, P)
+libversion = api('PQlibVersion', I)
+serverversion = api('PQserverVersion', I, P)
+assert libversion() >= 180000, 'libpq18 required'
+root = Path(__file__).resolve().parents[3]
+evidence = root / 'target' / 'pg12-commit-evidence' / a.database
+evidence.mkdir(parents=True, exist_ok=True)
+head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+
+def text(v):
+    return v.decode('utf8') if v is not None else None
+
+class Connection:
+    def __init__(self, dsn, name, observations):
+        self.ptr = connect(dsn.encode())
+        self.name, self.observations, self.sequence = name, observations, 0
+        assert self.ptr and status(self.ptr) == 0, 'connection failed (DSN redacted)'
+    def result(self, r, sql, phase):
+        assert r, 'no libpq result'
+        try:
+            row = {'connection': self.name, 'sql': sql, 'phase': phase,
+                   'status': rs(r), 'transaction': {0:'I', 1:'active', 2:'T', 3:'E', 4:'unknown'}[tx(self.ptr)],
+                   'columns': [{'name':text(field(r,j)), 'oid':typeoid(r,j),
+                                'typlen':size(r,j), 'typmod':mod(r,j), 'format':fmt(r,j),
+                                'nullable':'unverified'} for j in range(nf(r))],
+                   'rows': [[None if null(r,i,j) else text(val(r,i,j)) for j in range(nf(r))] for i in range(nt(r))],
+                   'command':text(tag(r)), 'affected':text(affected(r)),
+                   'diagnostics':{k:text(diag(r,ord(k))) for k in 'SVCMDHP'}}
+            self.observations.append(row)
+            return row
+        finally:
+            clear(r)
+    def query(self, sql, extended=False, required=True):
+        if extended:
+            self.sequence += 1
+            name = f'commit_{self.sequence}'.encode()
+            r = self.result(prepare(self.ptr,name,sql.encode(),0,None),sql,'Parse/Sync')
+            assert r['status'] == 1, r
+            r = self.result(prepared(self.ptr,name,0,None,None,None,0),sql,'Bind/Execute/Sync')
+        else:
+            r = self.result(execq(self.ptr,sql.encode()),sql,'Q')
+        if required:
+            assert r['status'] in (1,2), r
+        return r
+    def close(self):
+        if self.ptr:
+            finish(self.ptr)
+            self.ptr = None
+
+O = 'SELECT id,value FROM public.tx_contract ORDER BY id'
+S0 = [['1','10'],['2','20']]
+outputs = {}
+def observe_commit(side, admin_dsn):
+    obs, connections = [], []
+    record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
+              'storage':'PostgreSQL local persistent reference' if side == 'reference' else 'CreateAnalyzeSession shared test storage (not RealTiKV)',
+              'observations':obs, 'cleanup':[]}
+    admin = None
+    created = False
+    try:
+        admin = Connection(admin_dsn, 'admin', obs)
+        record['server_version_num'] = serverversion(admin.ptr)
+        record['source_commit_sha'] = head if side == 'aster' else 'unverified: reference installed from release archive'
+        if side == 'reference':
+            admin.query(f'CREATE DATABASE {a.database}')
+            created = True
+        dsn = admin_dsn + f' dbname={a.database}'
+        for extended in (False, True):
+            for inserted in ('30', 'NULL'):
+                A, B = [Connection(dsn, n, obs) for n in ('A','B')]
+                connections += [A,B]
+                for conn in (A,B):
+                    conn.query("SET TimeZone TO 'UTC'" if side == 'reference' else "SET time_zone = '+00:00'")
+                    conn.query('SET search_path TO public')
+                if side == 'reference':
+                    A.query('SET default_transaction_isolation TO \'read committed\'')
+                for sql in ('SELECT version()', 'SHOW server_version_num', ('SHOW transaction_isolation' if side == 'reference' else 'SELECT @@transaction_isolation'), ('SHOW TimeZone' if side == 'reference' else 'SELECT @@time_zone')):
+                    r = A.query(sql, required=False)
+                    if sql == 'SHOW server_version_num' and side == 'reference':
+                        assert r['rows'] == [['180006']], 'exact PG18.6 required; record 18.4 separately'
+                A.query('CREATE TABLE public.tx_contract (id integer PRIMARY KEY,value integer)')
+                A.query('INSERT INTO public.tx_contract VALUES (1,10),(2,20)')
+                def check(conn, expected, state):
+                    r = conn.query(O, extended)
+                    assert r['rows'] == expected, r
+                    assert r['transaction'] == state, r
+                    assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
+                    return r
+                check(B,S0,'I')
+                r = A.query('BEGIN', extended)
+                assert r['transaction'] == 'T' and not r['columns'], r
+                check(A,S0,'T')
+                check(B,S0,'I')
+                r = A.query(f'INSERT INTO public.tx_contract VALUES (3,{inserted})', extended)
+                assert r['transaction'] == 'T' and r['affected'] == '1' and not r['columns'], r
+                S1 = S0 + [['3',None if inserted == 'NULL' else '30']]
+                check(A,S1,'T')
+                check(B,S0,'I')
+                r = A.query('COMMIT', extended)
+                assert r['transaction'] == 'I' and r['command'] == 'COMMIT' and not r['columns'], r
+                check(A,S1,'I')
+                check(B,S1,'I')
+                C = Connection(dsn,'C',obs)
+                connections.append(C)
+                check(C,S1,'I')
+                # SQL NULL is represented as None, never as an empty string.
+                A.query('DROP TABLE public.tx_contract')
+                for conn in (A,B,C):
+                    conn.close()
+                record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':True,'connections_closed':True})
+        record['cases_passed'] = 4
+    finally:
+        for conn in connections:
+            if conn.ptr:
+                conn.query('ROLLBACK', required=False)
+                conn.query('DROP TABLE IF EXISTS public.tx_contract', required=False)
+                conn.close()
+        if admin:
+            if created:
+                admin.query(f'DROP DATABASE {a.database}')
+                record['cleanup'].append({'database_dropped':True})
+            admin.close()
+        (evidence / f'{side}.json').write_text(json.dumps(record,ensure_ascii=False,indent=2))
+    return record
+
+for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.port} user=root dbname=test')]:
+    outputs[side] = observe_commit(side, dsn)
+# Compare independently collected behavior, excluding endpoint identity and setup.
+def behavior(record):
+    return [{k:r[k] for k in ('sql','phase','transaction','columns','rows','command','affected','diagnostics')}
+            for r in record['observations']
+            if r['sql'] in (O,'BEGIN','COMMIT') or r['sql'].startswith('INSERT INTO public.tx_contract')]
+assert behavior(outputs['reference']) == behavior(outputs['aster']), 'endpoint commit observations differ'
+# Both independently observed endpoints must have passed the same four inputs.
+assert outputs['reference']['cases_passed'] == outputs['aster']['cases_passed'] == 4
+print(json.dumps({'case':'commit','cases_per_endpoint':4,'evidence':str(evidence),'cleanup':'passed'}))

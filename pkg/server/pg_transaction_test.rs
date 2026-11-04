@@ -1590,3 +1590,71 @@ fn pg11_34_implicit_identity_transaction() {
         service.close();
     }
 }
+
+/// Check complete values through two independent libpq endpoint observations.
+#[test]
+fn pg12_commit() {
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "PG18_REFERENCE_DSN is required (no skip)"
+    );
+    let (service, addr) = start();
+    struct Close(Arc<PgService>);
+    impl Drop for Close {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let guard = Close(service);
+    let database = format!("pg12_commit_{}_{}", std::process::id(), addr.port());
+    let mut admin = connect(addr);
+    let created = query(&mut admin, &format!("CREATE DATABASE {database}"));
+    assert_eq!(created[0].0, b'C', "{created:?}");
+    // Reuse the existing DataRow decoder; inspect every RowDescription field
+    // needed by this integer/NULL contract rather than accepting row counts.
+    let probe = query(&mut admin, "SELECT 1::int4 AS id, NULL::int4 AS value");
+    assert_eq!(path_rows(&probe), vec![vec![Some("1".into()), None]]);
+    let description = &probe.iter().find(|m| m.0 == b'T').unwrap().1;
+    assert_eq!(i16::from_be_bytes(description[..2].try_into().unwrap()), 2);
+    let mut offset = 2;
+    for name in [b"id".as_slice(), b"value".as_slice()] {
+        let end = offset + description[offset..].iter().position(|b| *b == 0).unwrap();
+        assert_eq!(&description[offset..end], name);
+        let field = &description[end + 1..end + 19];
+        assert_eq!(u32::from_be_bytes(field[6..10].try_into().unwrap()), 23);
+        assert_eq!(i16::from_be_bytes(field[10..12].try_into().unwrap()), 4);
+        assert_eq!(i32::from_be_bytes(field[12..16].try_into().unwrap()), -1);
+        assert_eq!(i16::from_be_bytes(field[16..18].try_into().unwrap()), 0);
+        offset = end + 19;
+    }
+    assert_eq!(offset, description.len());
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/pg12_transaction_libpq.py"
+        ))
+        .args([
+            "--case",
+            "commit",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &addr.port().to_string(),
+            "--database",
+            &database,
+        ])
+        .output();
+    let cleanup = query(&mut admin, &format!("DROP DATABASE {database}"));
+    send(&mut admin, b'X', &[]);
+    drop(admin);
+    drop(guard);
+    assert!(TcpStream::connect(addr).is_err(), "PG listener leaked");
+    assert_eq!(cleanup[0].0, b'C', "{cleanup:?}");
+    let output = output.expect("Python3 required");
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
