@@ -2421,6 +2421,7 @@ impl ConcreteSession {
             ));
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && !statement.PostgreSQLOverrideSystem
             && table
                 .Columns
                 .iter()

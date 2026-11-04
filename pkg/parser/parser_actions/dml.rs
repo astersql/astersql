@@ -91,6 +91,7 @@ enum DmlRule {
     InsertRowAliasOptAlt02,
     InsertRowAliasOptAlt03,
     PgDefaultValues,
+    PgSystemOverride,
     InsertValuesAlt01,
     InsertValuesAlt02,
     InsertValuesAlt03,
@@ -141,6 +142,10 @@ enum DmlRule {
 fn identify(rule_id: RuleId) -> Option<DmlRule> {
     Some(match rule_id.as_str() {
         "insertvalues_default_values--d23d92ed1f9dde90" => DmlRule::PgDefaultValues,
+        "insertvalues_pgoverriding_system_value_valuesym--502492593b3ac391"
+        | "insertvalues_columnnamelistopt_pgoverriding_syst--c045e29625e39972" => {
+            DmlRule::PgSystemOverride
+        }
         "assignment_columnname_eqorassignmenteq_exprordef--abbd2bcf34d982b3" => {
             DmlRule::AssignmentAlt01
         }
@@ -575,6 +580,34 @@ fn apply_general_rule(
         lexer: yylex,
     } = context;
     match rule {
+        DmlRule::PgSystemOverride => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(yylex.Errorf("OVERRIDING SYSTEM VALUE requires PostgreSQL", &[]));
+                return Err(1);
+            }
+            let columns = if rhs_len == 8 {
+                rhs[2]
+                    .item
+                    .take()
+                    .and_then(|item| item.downcast::<Vec<parser_ast::ColumnName>>().ok())
+                    .map(|item| *item)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let lists = rhs[rhs_len]
+                .item
+                .take()
+                .and_then(|item| item.downcast::<Vec<Vec<parser_ast::ExprNode>>>().ok())
+                .map(|item| *item)
+                .unwrap_or_default();
+            out.item = Some(Box::new(parser_ast::InsertStmt {
+                Columns: columns,
+                Lists: lists,
+                PostgreSQLOverrideSystem: true,
+                ..Default::default()
+            }));
+        }
         DmlRule::PgDefaultValues => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
                 yylex.AppendError(yylex.Errorf("DEFAULT VALUES requires PostgreSQL", &[]));

@@ -967,4 +967,5 @@ mod token {
     pub const pgDeferred: i32 = 58284;
     pub const pgConstraintExclude: i32 = 58285;
     pub const pgReturning: i32 = 58286;
+    pub const pgOverriding: i32 = 58287;
 }

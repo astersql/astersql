@@ -32629,3 +32629,279 @@ fn pg11_23() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_24() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        eprintln!(
+            "pg11_24 diagnostic ext={ext} state={state} response_tags={:?}",
+            m.iter().map(|m| m.0 as char).collect::<Vec<_>>()
+        );
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    fn rows(s: &mut TcpStream, sql: &str, ext: bool, expected: &[Vec<Option<String>>], oid: u32) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}: {m:?}");
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &oid.to_be_bytes(), "{sql}");
+        let length: i16 = match oid {
+            21 => 2,
+            23 => 4,
+            20 => 8,
+            _ => panic!("unexpected identity OID"),
+        };
+        assert_eq!(&d[offset + 10..offset + 12], &length.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        for mode in ["ALWAYS", "BY DEFAULT"] {
+            for (columns, values, expected) in [
+                ("(id,note)", "(900,'manual')", Some("900")),
+                ("(id,note)", "(-1,'negative')", Some("-1")),
+                (
+                    "(id,note)",
+                    "(9223372036854775807,'max')",
+                    Some("9223372036854775807"),
+                ),
+                ("", "(900,'manual')", Some("900")),
+                ("(id,note)", "(DEFAULT,'default')", Some("10")),
+                ("(note)", "('omit')", Some("10")),
+                ("(id,note)", "(NULL,'null')", None),
+            ] {
+                ok(
+                    &mut a,
+                    &format!(
+                        "CREATE TABLE public.identity_system24 (id bigint GENERATED {mode} AS IDENTITY (START 10), note text)"
+                    ),
+                    ext,
+                );
+                let sql = format!(
+                    "INSERT INTO public.identity_system24{columns} OVERRIDING SYSTEM VALUE VALUES {values}"
+                );
+                if expected.is_some() {
+                    ok(&mut a, &sql, ext);
+                } else {
+                    denied(&mut a, &sql, ext, "23502");
+                }
+                let initial = expected
+                    .map(|x| vec![vec![Some(x.into())]])
+                    .unwrap_or_default();
+                rows(
+                    &mut b,
+                    "SELECT id FROM public.identity_system24",
+                    ext,
+                    &initial,
+                    20,
+                );
+                let next = if expected == Some("10") { "11" } else { "10" };
+                ok(
+                    &mut a,
+                    "INSERT INTO public.identity_system24(note) VALUES ('next')",
+                    ext,
+                );
+                let mut final_rows = vec![vec![Some(next.into())]];
+                if let Some(value) = expected {
+                    final_rows.push(vec![Some(value.into())]);
+                }
+                final_rows.sort();
+                rows(
+                    &mut b,
+                    "SELECT id FROM public.identity_system24 ORDER BY id",
+                    ext,
+                    &final_rows,
+                    20,
+                );
+                ok(&mut a, "DROP TABLE public.identity_system24", ext);
+            }
+            ok(
+                &mut a,
+                &format!(
+                    "CREATE TABLE public.identity_system24 (id bigint GENERATED {mode} AS IDENTITY (START 10), note text)"
+                ),
+                ext,
+            );
+            denied(
+                &mut a,
+                "INSERT INTO public.identity_system24 OVERRIDING SYSTEM VALUE DEFAULT VALUES",
+                ext,
+                "42601",
+            );
+            rows(
+                &mut b,
+                "SELECT id FROM public.identity_system24",
+                ext,
+                &[],
+                20,
+            );
+            ok(
+                &mut a,
+                "INSERT INTO public.identity_system24 DEFAULT VALUES",
+                ext,
+            );
+            rows(
+                &mut b,
+                "SELECT id FROM public.identity_system24",
+                ext,
+                &[vec![Some("10".into())]],
+                20,
+            );
+            ok(&mut a, "DROP TABLE public.identity_system24", ext);
+        }
+        if ext {
+            for input in ["900", "DEFAULT"] {
+                ok(
+                    &mut a,
+                    "CREATE TABLE public.identity_phase24 (id bigint GENERATED ALWAYS AS IDENTITY (START 10))",
+                    false,
+                );
+                let sql = format!(
+                    "INSERT INTO public.identity_phase24 OVERRIDING SYSTEM VALUE VALUES ({input})"
+                );
+                send(
+                    &mut a,
+                    b'P',
+                    &[b"phase24\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+                );
+                assert_eq!(read(&mut a).0, b'1');
+                send(&mut a, b'D', b"Sphase24\0");
+                assert_eq!(read(&mut a).0, b't');
+                assert_eq!(read(&mut a).0, b'n');
+                send(&mut a, b'B', b"portal24\0phase24\0\0\0\0\0\0\0");
+                assert_eq!(read(&mut a).0, b'2');
+                send(&mut a, b'D', b"Pportal24\0");
+                assert_eq!(read(&mut a).0, b'n');
+                ok(
+                    &mut b,
+                    "INSERT INTO public.identity_phase24 DEFAULT VALUES",
+                    false,
+                );
+                rows(
+                    &mut b,
+                    "SELECT id FROM public.identity_phase24",
+                    false,
+                    &[vec![Some("10".into())]],
+                    20,
+                );
+                send(&mut a, b'E', b"portal24\0\0\0\0\0");
+                assert_eq!(read(&mut a).0, b'C');
+                send(&mut a, b'S', &[]);
+                assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+                let value = if input == "DEFAULT" { "11" } else { "900" };
+                rows(
+                    &mut b,
+                    "SELECT id FROM public.identity_phase24 ORDER BY id",
+                    false,
+                    &[vec![Some("10".into())], vec![Some(value.into())]],
+                    20,
+                );
+                for name in [b"Pportal24\0".as_slice(), b"Sphase24\0"] {
+                    send(&mut a, b'C', name);
+                    assert_eq!(read(&mut a).0, b'3');
+                }
+                send(&mut a, b'S', &[]);
+                assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+                ok(&mut a, "DROP TABLE public.identity_phase24", false);
+            }
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_24 ext={ext}: 16 SYSTEM groups passed, cross-connection rows and next value verified"
+        );
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}

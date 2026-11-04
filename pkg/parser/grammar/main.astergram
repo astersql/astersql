@@ -965,6 +965,7 @@
 %token pgDeferred 58284 "DEFERRED";
 %token pgConstraintExclude 58285;
 %token pgReturning 58286;
+%token pgOverriding 58287;
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -4488,3 +4489,8 @@ ShowStmt : "SHOW" "MATERIALIZED" "VIEW" TableName identifier @action;
 ShowStmt : "SHOW" "MATERIALIZED" "VIEW" "LOG" "ON" TableName identifier @action;
 ShowStmt : "SHOW" "CREATE" "MATERIALIZED" "VIEW" TableName @action;
 ShowStmt : "SHOW" "CREATE" "MATERIALIZED" "VIEW" "LOG" "ON" TableName @action;
+
+// SYSTEM override retains ordinary VALUES/default expressions and column binding.
+UnReservedKeyword : pgOverriding;
+InsertValues : pgOverriding "SYSTEM" "VALUE" ValueSym ValuesList @action;
+InsertValues : "(" ColumnNameListOpt ")" pgOverriding "SYSTEM" "VALUE" ValueSym ValuesList @action;

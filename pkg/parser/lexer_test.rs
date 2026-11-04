@@ -385,3 +385,23 @@ fn test_feature_ids() {
         assert_eq!(!normalized.is_empty(), supported, "{sql:?}: {normalized:?}");
     }
 }
+
+#[test]
+fn postgresql_system_override_keyword_preserves_identifiers() {
+    let mut pg = parser::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in ["SELECT overriding FROM t", "SELECT \"overriding\" FROM t"] {
+        pg.ParseOneStmt(sql, "", "").unwrap();
+    }
+    let sql = "INSERT INTO t OVERRIDING SYSTEM VALUE VALUES (900)";
+    pg.ParseOneStmt(sql, "", "").unwrap();
+    assert!(parser::New().ParseOneStmt(sql, "", "").is_err());
+    assert_parse_ok("SELECT overriding FROM t");
+    assert!(
+        pg.ParseOneStmt(
+            "INSERT INTO t \"OVERRIDING\" SYSTEM VALUE VALUES (900)",
+            "",
+            ""
+        )
+        .is_err()
+    );
+}

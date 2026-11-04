@@ -494,3 +494,62 @@ fn identity_explicit_policy_preserves_owned_sequence() {
         );
     }
 }
+
+#[test]
+fn identity_system_override_preserves_owned_sequence() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    for mode in ["ALWAYS", "BY DEFAULT"] {
+        let session =
+            ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+        session
+            .execute(&format!(
+                "CREATE TABLE system24 (id bigint GENERATED {mode} AS IDENTITY (START 10))"
+            ))
+            .unwrap();
+        let table = domain
+            .info_schema()
+            .ModelTableInfoByExactName(&astersql_infoschema::CiString::new("test"), "system24")
+            .unwrap();
+        let id = table.Columns[0]
+            .PostgreSQLIdentity
+            .as_ref()
+            .unwrap()
+            .SequenceID;
+        let sequence = domain
+            .info_schema()
+            .TableByID(id)
+            .unwrap()
+            .ModelMeta()
+            .unwrap();
+        let current = PgSequenceCommand::Value {
+            schema: None,
+            name: Some(sequence.Name.O.clone()),
+            next: false,
+        };
+        session
+            .execute("INSERT INTO system24 OVERRIDING SYSTEM VALUE VALUES (900)")
+            .unwrap();
+        assert!(session.pg_sequence(&current).is_err());
+        assert!(
+            session
+                .execute("INSERT INTO system24 OVERRIDING SYSTEM VALUE VALUES (NULL)")
+                .is_err()
+        );
+        assert!(
+            session
+                .execute("INSERT INTO system24 OVERRIDING SYSTEM VALUE DEFAULT VALUES")
+                .is_err()
+        );
+        assert!(session.pg_sequence(&current).is_err());
+        session
+            .execute("INSERT INTO system24 OVERRIDING SYSTEM VALUE VALUES (DEFAULT)")
+            .unwrap();
+        assert_eq!(session.pg_sequence(&current).unwrap(), Some(10));
+        session
+            .execute("INSERT INTO system24 DEFAULT VALUES")
+            .unwrap();
+        assert_eq!(session.pg_sequence(&current).unwrap(), Some(11));
+        session.execute("DROP TABLE system24").unwrap();
+        assert!(domain.info_schema().TableByID(id).is_none());
+    }
+}

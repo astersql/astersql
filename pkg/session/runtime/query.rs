@@ -8033,6 +8033,7 @@ impl ConcreteSession {
             Setlist: statement.Setlist,
             OnDuplicate: statement.OnDuplicate.clone(),
             PostgreSQLConflict: None,
+            PostgreSQLOverrideSystem: statement.PostgreSQLOverrideSystem,
             Select: None,
             TableHints: statement.TableHints.clone(),
             PartitionNames: statement.PartitionNames.clone(),

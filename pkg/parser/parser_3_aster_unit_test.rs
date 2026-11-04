@@ -335,8 +335,8 @@ fn parser_3_marks_every_generated_semantic_action_as_implemented() {
         .filter_map(|(required, rule)| required.then_some(*rule))
         .collect::<Vec<_>>();
 
-    // Includes the identity declaration/default-row actions and existing PG grammar actions.
-    assert_eq!(required_rules.len(), 2323);
+    // Includes identity declaration/default-row and SYSTEM override actions.
+    assert_eq!(required_rules.len(), 2325);
     let missing = required_rules
         .into_iter()
         .filter(|rule_id| !parser_actions::has_semantic_action(*rule_id))

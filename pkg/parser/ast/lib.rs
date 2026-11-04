@@ -1646,6 +1646,8 @@ pub struct InsertStmt {
     pub PartitionNames: Vec<CIStr>,
     pub Returning: Vec<SelectField>,
     pub PostgreSQLConflict: Option<PostgreSQLConflictClause>,
+    /// Explicit SYSTEM override permits identity input without rebasing its sequence.
+    pub PostgreSQLOverrideSystem: bool,
     pub RowAlias: CIStr,
     pub ColumnAliases: Vec<CIStr>,
 }
