@@ -213,12 +213,9 @@ impl ConcreteSession {
                 let value = self
                     .domain
                     .sequence_set_value_with_state(&table, *value, *is_called == Some(true))
-                    .map_err(|error| match error {
-                        astersql_meta_autoid::AutoIdError::NotImplemented(_) => {
-                            namespace_error("0A000", "sequence requires CACHE 1")
-                        }
-                        _ => session_error("set sequence value", error),
-                    })?;
+                    .map_err(|error| session_error("set sequence value", error))?;
+                // Other connections keep their preallocated values after setval.
+                self.state.borrow_mut().pg_sequence_cache.remove(&table.ID);
                 if *is_called == Some(true) {
                     self.state
                         .borrow_mut()
@@ -244,18 +241,31 @@ impl ConcreteSession {
                     return Err(namespace_error("42501", "permission denied for sequence"));
                 }
                 if *next {
-                    let value =
+                    let seq = table.Sequence.as_ref().unwrap();
+                    let cached = self.state.borrow_mut().pg_sequence_cache.remove(&table.ID);
+                    let (value, last) = if let Some(range) = cached {
+                        range
+                    } else {
                         self.domain
-                            .sequence_next_value(&table)
+                            .sequence_reserve_range(
+                                &table,
+                                if seq.Cache { seq.CacheValue } else { 1 },
+                            )
                             .map_err(|error| match error {
                                 astersql_meta_autoid::AutoIdError::AutoIncrementReadFailed(_) => {
                                     namespace_error("2200H", "sequence has reached its limit")
                                 }
-                                astersql_meta_autoid::AutoIdError::NotImplemented(_) => {
-                                    namespace_error("0A000", "sequence requires CACHE 1")
-                                }
                                 _ => session_error("allocate sequence value", error),
-                            })?;
+                            })?
+                    };
+                    if value != last {
+                        // The reserved endpoint proves this addition remains within bigint.
+                        let next = (i128::from(value) + i128::from(seq.Increment)) as i64;
+                        self.state
+                            .borrow_mut()
+                            .pg_sequence_cache
+                            .insert(table.ID, (next, last));
+                    }
                     self.state
                         .borrow_mut()
                         .pg_sequence_values

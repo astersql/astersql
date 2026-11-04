@@ -90,15 +90,16 @@ impl KvAutoIdStore {
         .map(|_| ())
     }
 
-    /// CACHE 1 allocation shares the exact same KV transaction boundary as setval.
+    /// Reserve a bounded contiguous range in the same KV transaction as setval.
     /// Native allocators retain their original start-congruence semantics; after a
     /// PG reset, the next value is the reset value plus the increment, even off-grid.
-    pub(crate) fn next_sequence_value(
+    pub(crate) fn next_sequence_range(
         &self,
         database_id: i64,
         table_id: i64,
         sequence: &astersql_meta_model::SequenceInfo,
-    ) -> Result<i64> {
+        count: i64,
+    ) -> Result<(i64, i64)> {
         self.sequence_transaction(database_id, table_id, |adapter, key, reset_key| {
             let reset = match adapter
                 .transaction
@@ -116,7 +117,7 @@ impl KvAutoIdStore {
                     .transaction
                     .Set(reset_key, b"1".to_vec())
                     .map_err(KvAutoIdTransaction::storage_error)?;
-                return Ok(base);
+                return Self::reserve_sequence_tail(adapter, key, sequence, count, base);
             }
             let cycle_key = AutoIdKey {
                 kind: AutoIdKeyKind::SequenceCycle,
@@ -174,12 +175,32 @@ impl KvAutoIdStore {
                     ));
                 }
             };
-            adapter.put(key, value)?;
-            Ok(value)
+            Self::reserve_sequence_tail(adapter, key, sequence, count, value)
         })
     }
 
-    fn sequence_transaction(
+    // Stop at the boundary; a subsequent reservation performs CYCLE wrapping.
+    // i128 keeps both the full bigint span and negative increments exact.
+    fn reserve_sequence_tail(
+        adapter: &mut KvAutoIdTransaction,
+        key: AutoIdKey,
+        sequence: &astersql_meta_model::SequenceInfo,
+        count: i64,
+        first: i64,
+    ) -> Result<(i64, i64)> {
+        let increment = i128::from(sequence.Increment);
+        let distance = if increment > 0 {
+            i128::from(sequence.MaxValue) - i128::from(first)
+        } else {
+            i128::from(first) - i128::from(sequence.MinValue)
+        };
+        let steps = (i128::from(count.max(1)) - 1).min(distance / increment.abs());
+        let last = (i128::from(first) + steps * increment) as i64;
+        adapter.put(key, last)?;
+        Ok((first, last))
+    }
+
+    fn sequence_transaction<T: Default>(
         &self,
         database_id: i64,
         table_id: i64,
@@ -187,10 +208,10 @@ impl KvAutoIdStore {
             &mut KvAutoIdTransaction<'_>,
             AutoIdKey,
             astersql_kv::Key,
-        ) -> Result<i64>,
-    ) -> Result<i64> {
+        ) -> Result<T>,
+    ) -> Result<T> {
         let context = astersql_kv::Context::default();
-        let mut value = 0;
+        let mut value = T::default();
         let mut operation_error = None;
         let result = self.storage.with_storage(|storage| {
             astersql_kv::RunInNewTxn(&context, storage, true, |_, transaction| {

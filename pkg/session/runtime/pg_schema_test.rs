@@ -298,3 +298,43 @@ fn sequence_set_value_identity_and_recovery() {
     assert_eq!(b.pg_sequence(&next).unwrap(), Some(10));
     a.pg_sequence(&drop).unwrap();
 }
+
+#[test]
+fn sequence_cache_setval_preserves_other_connections() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let b = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let create = PgSequenceCommand::Create {
+        schema: None,
+        name: "seq_cache_local21".into(),
+        options: "START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 3 NO CYCLE".into(),
+    };
+    let next = PgSequenceCommand::Value {
+        schema: None,
+        name: Some("seq_cache_local21".into()),
+        next: true,
+    };
+    let set = |value, called| PgSequenceCommand::Set {
+        schema: None,
+        name: Some("seq_cache_local21".into()),
+        value,
+        is_called: Some(called),
+    };
+    a.pg_sequence(&create).unwrap();
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(10));
+    assert_eq!(b.pg_sequence(&set(Some(40), true)).unwrap(), Some(40));
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(11));
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(12));
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(41));
+    assert!(a.pg_sequence(&set(Some(1001), false)).is_err());
+    assert_eq!(a.pg_sequence(&set(None, false)).unwrap(), None);
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(42));
+    assert_eq!(a.pg_sequence(&set(Some(60), false)).unwrap(), Some(60));
+    assert_eq!(a.pg_sequence(&next).unwrap(), Some(60));
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(63));
+    a.pg_sequence(&PgSequenceCommand::Drop {
+        schema: None,
+        name: "seq_cache_local21".into(),
+    })
+    .unwrap();
+}

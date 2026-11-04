@@ -65,12 +65,13 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
                     let number = value
                         .parse::<i64>()
                         .map_err(|_| ("22003", "sequence option is outside bigint".into()))?;
-                    if key == "cache" && number != 1 {
-                        return Err(("0A000", "sequence execution requires CACHE 1".into()));
+                    if key == "cache" && number < 1 {
+                        return Err(("22023", "CACHE must be greater than zero".into()));
                     }
                     options.push(format!("{key} {value}"));
                     i += 1;
                 }
+                "cycle" => options.push("CYCLE".into()),
                 "no" if word(tokens.get(i), "cycle") => {
                     options.push("NO CYCLE".into());
                     i += 1;
@@ -78,7 +79,7 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
                 _ => return Err(("0A000", "unsupported sequence option".into())),
             }
         }
-        // Native defaults cache multiple values; this bounded contract is CACHE 1.
+        // PostgreSQL defaults to CACHE 1, independently of native defaults.
         if !options.iter().any(|o| o.starts_with("cache ")) {
             options.push("CACHE 1".into());
         }

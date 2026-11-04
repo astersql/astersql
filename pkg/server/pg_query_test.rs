@@ -31873,3 +31873,240 @@ fn pg11_20() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_21() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn value(s: &mut TcpStream, sql: &str, ext: bool, expected: Option<&str>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(
+            catalog_rows(&m),
+            vec![vec![expected.map(str::to_owned)]],
+            "{sql}: {m:?}"
+        );
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+        assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        for cache in [0, -1] {
+            denied(
+                &mut a,
+                &format!("CREATE SEQUENCE public.seq_cache21_invalid CACHE {cache}"),
+                ext,
+                "22023",
+            );
+        }
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seq_cache21 AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 3 NO CYCLE",
+            ext,
+        );
+        let next = "SELECT nextval('public.seq_cache21'::regclass) AS v";
+        let curr = "SELECT currval('public.seq_cache21'::regclass) AS v";
+        denied(&mut a, curr, ext, "55000");
+        value(&mut a, next, ext, Some("10"));
+        value(
+            &mut b,
+            "SELECT setval('public.seq_cache21'::regclass,40,true) AS v",
+            ext,
+            Some("40"),
+        );
+        value(&mut a, next, ext, Some("11"));
+        value(&mut a, next, ext, Some("12"));
+        value(&mut a, next, ext, Some("41"));
+        value(&mut b, curr, ext, Some("40"));
+        value(&mut b, next, ext, Some("44"));
+        // Failed and NULL resets cannot discard A's already reserved 42/43.
+        denied(
+            &mut a,
+            "SELECT setval('public.seq_cache21'::regclass,1001,false) AS v",
+            ext,
+            "22003",
+        );
+        value(
+            &mut a,
+            "SELECT setval('public.seq_cache21'::regclass,NULL,false) AS v",
+            ext,
+            None,
+        );
+        value(&mut a, "SELECT nextval(NULL::regclass) AS v", ext, None);
+        value(&mut a, next, ext, Some("42"));
+        // Only the setter's own cache is discarded, including uncalled resets.
+        value(
+            &mut a,
+            "SELECT setval('public.seq_cache21'::regclass,60,false) AS v",
+            ext,
+            Some("60"),
+        );
+        value(&mut a, curr, ext, Some("42"));
+        value(&mut a, next, ext, Some("60"));
+        value(&mut b, next, ext, Some("45"));
+        value(&mut b, next, ext, Some("46"));
+        value(&mut b, next, ext, Some("63"));
+        value(
+            &mut a,
+            "SELECT setval('public.seq_cache21'::regclass,999,false) AS v",
+            ext,
+            Some("999"),
+        );
+        value(&mut a, next, ext, Some("999"));
+        value(&mut a, next, ext, Some("1000"));
+        denied(&mut a, next, ext, "2200H");
+        value(&mut a, curr, ext, Some("1000"));
+        value(
+            &mut a,
+            "SELECT setval('public.seq_cache21'::regclass,20,true) AS v",
+            ext,
+            Some("20"),
+        );
+        value(&mut a, next, ext, Some("21"));
+        denied(
+            &mut a,
+            "SELECT nextval('public.seq_cache21_missing'::regclass) AS v",
+            ext,
+            "42P01",
+        );
+        ok(&mut a, "DROP SEQUENCE public.seq_cache21", ext);
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seq_cycle21 AS bigint START WITH 1 INCREMENT BY 1 MINVALUE 1 MAXVALUE 3 CACHE 1 CYCLE",
+            ext,
+        );
+        for expected in ["1", "2", "3", "1"] {
+            value(
+                &mut a,
+                "SELECT nextval('public.seq_cycle21'::regclass) AS v",
+                ext,
+                Some(expected),
+            );
+        }
+        ok(&mut a, "DROP SEQUENCE public.seq_cycle21", ext);
+        // A new object with the same name cannot inherit the dropped object's cache.
+        ok(
+            &mut a,
+            "CREATE SEQUENCE public.seq_cache21 AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 3 NO CYCLE",
+            ext,
+        );
+        denied(&mut a, curr, ext, "55000");
+        value(&mut a, next, ext, Some("10"));
+        send(&mut a, b'X', &[]);
+        let mut fresh = connect(None);
+        denied(&mut fresh, curr, ext, "55000");
+        value(&mut fresh, next, ext, Some("13"));
+        ok(&mut fresh, "DROP SEQUENCE public.seq_cache21", ext);
+        for stream in [&mut b, &mut fresh] {
+            ok(stream, "SELECT 1", ext);
+            if ext {
+                send(stream, b'C', b"P\0");
+                assert_eq!(read(stream).0, b'3');
+                send(stream, b'C', b"S\0");
+                assert_eq!(read(stream).0, b'3');
+                send(stream, b'S', &[]);
+                assert_eq!(read(stream), (b'Z', b"I".to_vec()));
+            }
+            send(stream, b'X', &[]);
+        }
+        eprintln!(
+            "pg11_21 ext={ext}: cache/setval, invalid/NULL preservation, local reset, partial boundary/exhaustion/recovery, cycle, identity and reconnect passed (7 groups)"
+        );
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}

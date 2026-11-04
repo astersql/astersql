@@ -3215,14 +3215,18 @@ impl Domain {
         &self,
         table: &astersql_meta_model::TableInfo,
     ) -> Result<i64, astersql_meta_autoid::AutoIdError> {
+        self.sequence_reserve_range(table, 1).map(|range| range.0)
+    }
+
+    /// Reserve a session cache from the canonical water level, atomically with resets.
+    pub fn sequence_reserve_range(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        count: i64,
+    ) -> Result<(i64, i64), astersql_meta_autoid::AutoIdError> {
         let seq = table.Sequence.as_ref().ok_or_else(|| {
             astersql_meta_autoid::AutoIdError::NotImplemented("object is not a sequence".into())
         })?;
-        if seq.Cache && seq.CacheValue != 1 {
-            return Err(astersql_meta_autoid::AutoIdError::NotImplemented(
-                "PostgreSQL sequence allocation requires CACHE 1".into(),
-            ));
-        }
         let base = if seq.Increment > 0 {
             seq.Start.checked_sub(1)
         } else {
@@ -3235,10 +3239,11 @@ impl Domain {
         })?;
         KvAutoIdStore::new(self.storage_handle())
             .initialize_sequence(table.DBID, table.ID, base)?;
-        KvAutoIdStore::new(self.storage_handle()).next_sequence_value(table.DBID, table.ID, seq)
+        KvAutoIdStore::new(self.storage_handle())
+            .next_sequence_range(table.DBID, table.ID, seq, count)
     }
 
-    /// Atomically reset a PostgreSQL CACHE 1 sequence to an already-called value.
+    /// Atomically reset a PostgreSQL sequence to an already-called value.
     /// This is a real reset, including backwards movement, rather than rebase_seq.
     pub fn sequence_set_value(
         &self,
@@ -3258,11 +3263,6 @@ impl Domain {
         let seq = table.Sequence.as_ref().ok_or_else(|| {
             astersql_meta_autoid::AutoIdError::NotImplemented("object is not a sequence".into())
         })?;
-        if seq.Cache && seq.CacheValue != 1 {
-            return Err(astersql_meta_autoid::AutoIdError::NotImplemented(
-                "PostgreSQL sequence reset requires CACHE 1".into(),
-            ));
-        }
         if value < seq.MinValue || value > seq.MaxValue {
             return Err(astersql_meta_autoid::AutoIdError::AutoIncrementReadFailed(
                 "setval value is outside sequence bounds".into(),

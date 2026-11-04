@@ -271,7 +271,33 @@ fn sequence_set_value_uses_canonical_store() {
     assert_eq!(second.sequence_next_value(&table).unwrap(), i64::MIN);
     table.Sequence.as_mut().unwrap().Cache = true;
     table.Sequence.as_mut().unwrap().CacheValue = 4;
-    assert!(domain.sequence_set_value(&table, -20).is_err());
+    assert_eq!(domain.sequence_set_value(&table, -20).unwrap(), -20);
+    assert_eq!(second.sequence_reserve_range(&table, 4).unwrap(), (-17, -8));
+    // A reserved range advances the shared water level, not just its first value.
+    assert_eq!(domain.sequence_next_value(&table).unwrap(), -5);
+    let seq = table.Sequence.as_mut().unwrap();
+    seq.Increment = -3;
+    seq.MinValue = -10;
+    seq.MaxValue = -1;
+    seq.Cycle = false;
+    domain
+        .sequence_set_value_with_state(&table, -8, false)
+        .unwrap();
+    assert_eq!(second.sequence_reserve_range(&table, 4).unwrap(), (-8, -8));
+    assert!(domain.sequence_reserve_range(&table, 4).is_err());
+    table.Sequence.as_mut().unwrap().Cycle = true;
+    assert_eq!(domain.sequence_reserve_range(&table, 4).unwrap(), (-1, -10));
+    table.Sequence.as_mut().unwrap().Increment = 1;
+    table.Sequence.as_mut().unwrap().MinValue = 1;
+    table.Sequence.as_mut().unwrap().MaxValue = 1000;
+    domain
+        .sequence_set_value_with_state(&table, 999, false)
+        .unwrap();
+    assert_eq!(
+        second.sequence_reserve_range(&table, 3).unwrap(),
+        (999, 1000)
+    );
+    assert_eq!(domain.sequence_reserve_range(&table, 3).unwrap(), (1, 3));
     table.Sequence = None;
     assert!(domain.sequence_set_value(&table, -20).is_err());
 }
