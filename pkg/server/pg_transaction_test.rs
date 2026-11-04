@@ -1071,3 +1071,226 @@ fn pg11_17() {
         }
     }
 }
+
+#[test]
+fn pg11_27() {
+    fn run(socket: &mut TcpStream, sql: &str, extended: bool) -> Vec<(u8, Vec<u8>)> {
+        if !extended {
+            return query(socket, sql);
+        }
+        parse(socket, "", sql, &[]);
+        assert_eq!(read(socket), (b'1', vec![]), "{sql}");
+        send(socket, b'D', b"S\0");
+        assert_eq!(read(socket), (b't', 0i16.to_be_bytes().to_vec()));
+        let description = read(socket);
+        if sql.starts_with("SELECT") {
+            assert_eq!(description.0, b'T', "{sql}");
+            if sql.contains("val(") {
+                let field = &description.1;
+                assert_eq!(&field[..4], b"\0\x01v\0");
+                assert_eq!(&field[10..14], &20u32.to_be_bytes());
+                assert_eq!(&field[14..16], &8i16.to_be_bytes());
+            }
+        } else {
+            assert_eq!(description, (b'n', vec![]));
+        }
+        let mut body = b"\0\0".to_vec();
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&0i16.to_be_bytes());
+        send(socket, b'B', &body);
+        assert_eq!(read(socket), (b'2', vec![]), "{sql}");
+        execute(socket, "");
+        send(socket, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let done = m.0 == b'Z';
+            messages.push(m);
+            if done {
+                return messages;
+            }
+        }
+    }
+    fn ok(socket: &mut TcpStream, sql: &str, extended: bool, status: u8) -> Vec<(u8, Vec<u8>)> {
+        let m = run(socket, sql, extended);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![status])), "{sql}");
+        m
+    }
+    fn value(socket: &mut TcpStream, sql: &str, expected: Option<i64>, extended: bool, status: u8) {
+        let m = ok(socket, sql, extended, status);
+        let rows: Vec<_> = m.iter().filter(|m| m.0 == b'D').collect();
+        assert_eq!(rows.len(), 1, "{sql}");
+        let data = &rows[0].1;
+        assert_eq!(&data[..2], &1i16.to_be_bytes());
+        match expected {
+            Some(v) => {
+                let text = v.to_string();
+                assert_eq!(&data[2..6], &(text.len() as i32).to_be_bytes());
+                assert_eq!(&data[6..], text.as_bytes(), "{sql}");
+            }
+            None => assert_eq!(&data[2..], &(-1i32).to_be_bytes()),
+        }
+    }
+    for extended in [false, true] {
+        for scenario in 0..3 {
+            let (service, addr) = start();
+            let mut a = connect(addr);
+            let mut b = connect(addr);
+            ok(
+                &mut a,
+                "CREATE TABLE public.identity_rollback (id bigint GENERATED ALWAYS AS IDENTITY (START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 1) PRIMARY KEY,note text)",
+                false,
+                b'I',
+            );
+            // Resolve the owned sequence from metadata, never from its generated name.
+            let m = ok(
+                &mut a,
+                "SELECT relname FROM pg_catalog.pg_class WHERE relkind = 'S'",
+                false,
+                b'I',
+            );
+            let row = &m.iter().find(|m| m.0 == b'D').unwrap().1;
+            assert_eq!(row_count(&m), 1);
+            let seq = std::str::from_utf8(&row[6..]).unwrap();
+            let curr = format!("SELECT currval('{seq}'::regclass) AS v");
+            let m = run(&mut b, &curr, extended);
+            assert_eq!(
+                error_state(&m.iter().find(|m| m.0 == b'E').unwrap().1),
+                Some("55000")
+            );
+            assert_eq!(m.last(), Some(&(b'Z', vec![b'I'])));
+            ok(&mut a, "BEGIN", extended, b'T');
+            ok(
+                &mut a,
+                "INSERT INTO public.identity_rollback(note) VALUES (NULL)",
+                extended,
+                b'T',
+            );
+            value(
+                &mut a,
+                "SELECT id AS v FROM public.identity_rollback",
+                Some(10),
+                extended,
+                b'T',
+            );
+            value(
+                &mut a,
+                "SELECT note AS v FROM public.identity_rollback",
+                None,
+                extended,
+                b'T',
+            );
+            assert_eq!(
+                row_count(&ok(
+                    &mut b,
+                    "SELECT id FROM public.identity_rollback",
+                    extended,
+                    b'I'
+                )),
+                0
+            );
+            value(&mut a, &curr, Some(10), extended, b'T');
+            if scenario == 1 {
+                let m = run(
+                    &mut a,
+                    "INSERT INTO public.identity_rollback(id) OVERRIDING SYSTEM VALUE VALUES (NULL)",
+                    extended,
+                );
+                assert_eq!(
+                    error_state(&m.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("23502")
+                );
+                assert_eq!(row_count(&m), 0);
+                assert_eq!(m.last(), Some(&(b'Z', vec![b'E'])));
+                let blocked = query(&mut a, "SELECT 1");
+                assert_eq!(
+                    error_state(&blocked.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("25P02")
+                );
+                if extended {
+                    sync(&mut a, b'E');
+                }
+            }
+            if scenario == 2 {
+                send(&mut a, b'X', &[]);
+                drop(a);
+                a = connect(addr);
+                let m = run(&mut a, &curr, extended);
+                assert_eq!(
+                    error_state(&m.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("55000")
+                );
+            } else {
+                ok(&mut a, "ROLLBACK", extended, b'I');
+                value(&mut a, &curr, Some(10), extended, b'I');
+            }
+            for socket in [&mut a, &mut b] {
+                assert_eq!(
+                    row_count(&ok(
+                        socket,
+                        "SELECT id,note FROM public.identity_rollback",
+                        extended,
+                        b'I'
+                    )),
+                    0
+                );
+            }
+            ok(
+                &mut b,
+                "INSERT INTO public.identity_rollback(note) VALUES ('survivor')",
+                extended,
+                b'I',
+            );
+            value(
+                &mut b,
+                "SELECT id AS v FROM public.identity_rollback",
+                Some(11),
+                extended,
+                b'I',
+            );
+            value(&mut b, &curr, Some(11), extended, b'I');
+            if scenario != 2 {
+                value(&mut a, &curr, Some(10), extended, b'I');
+            }
+            send(&mut a, b'X', &[]);
+            drop(a);
+            // Closing A cannot clear B's private currval or its committed row.
+            let committed = ok(
+                &mut b,
+                "SELECT id,note FROM public.identity_rollback",
+                extended,
+                b'I',
+            );
+            let rows: Vec<_> = committed
+                .iter()
+                .filter(|m| m.0 == b'D')
+                .map(|m| m.1.as_slice())
+                .collect();
+            let expected = [
+                2i16.to_be_bytes().as_slice(),
+                2i32.to_be_bytes().as_slice(),
+                b"11",
+                8i32.to_be_bytes().as_slice(),
+                b"survivor",
+            ]
+            .concat();
+            assert_eq!(rows, vec![expected.as_slice()]);
+            value(&mut b, &curr, Some(11), extended, b'I');
+            value(
+                &mut b,
+                "SELECT id AS v FROM public.identity_rollback",
+                Some(11),
+                extended,
+                b'I',
+            );
+            value(&mut b, "SELECT 1 AS ok", Some(1), extended, b'I');
+            ok(&mut b, "DROP TABLE public.identity_rollback", false, b'I');
+            send(&mut b, b'X', &[]);
+            service.close();
+            assert!(TcpStream::connect(addr).is_err());
+            eprintln!("pg11_27 extended={extended} scenario={scenario} passed");
+        }
+    }
+}
