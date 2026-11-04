@@ -1617,6 +1617,11 @@ fn pg12_outside_end() {
     pg12_transaction_case("outside_end");
 }
 
+#[test]
+fn pg12_disconnect() {
+    pg12_transaction_case("disconnect");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
@@ -1652,7 +1657,11 @@ fn pg12_transaction_case(case: &str) {
         offset = end + 19;
     }
     assert_eq!(offset, description.len());
-    let output = std::process::Command::new("python3")
+    let barrier = std::env::temp_dir().join(format!("{database}_cleanup"));
+    let mut child = std::process::Command::new("python3")
+        .env("PG12_CLEANUP_BARRIER", &barrier)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/pg12_transaction_libpq.py"
@@ -1667,10 +1676,30 @@ fn pg12_transaction_case(case: &str) {
             "--database",
             &database,
         ])
-        .output();
+        .spawn()
+        .expect("Python3 required");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(100);
+    while child.try_wait().expect("poll client").is_none() {
+        // The surviving connections are Rust admin, Python admin and B.
+        // Socket removal follows synchronous context.close(), so both counts
+        // reaching three confirms rollback has completed before observation.
+        let (active, sockets, _) = guard.0.resource_counts();
+        if barrier.exists() && active == 3 && sockets == 3 {
+            std::fs::remove_file(&barrier).unwrap();
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("stop timed out client");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let output = child.wait_with_output();
+    let _ = std::fs::remove_file(&barrier);
     let cleanup = query(&mut admin, &format!("DROP DATABASE {database}"));
     send(&mut admin, b'X', &[]);
     drop(admin);
+    guard.0.close();
+    assert_eq!(guard.0.resource_counts(), (0, 0, 0), "PG resources leaked");
     drop(guard);
     assert!(TcpStream::connect(addr).is_err(), "PG listener leaked");
     assert_eq!(cleanup[0].0, b'C', "{cleanup:?}");

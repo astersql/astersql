@@ -6,11 +6,13 @@ import ctypes.util
 import json
 import os
 import signal
+import socket
+import time
 from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -51,6 +53,8 @@ affected = api('PQcmdTuples', S, P)
 diag = api('PQresultErrorField', S, P, I)
 tx = api('PQtransactionStatus', I, P)
 libversion = api('PQlibVersion', I)
+pqsocket = api('PQsocket', I, P)
+backendpid = api('PQbackendPID', I, P)
 serverversion = api('PQserverVersion', I, P)
 NoticeReceiver = c.CFUNCTYPE(None, P, P)
 set_notice_receiver = api('PQsetNoticeReceiver', P, P, NoticeReceiver, P)
@@ -127,7 +131,7 @@ def observe_transaction(side, admin_dsn):
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
         for extended in (False, True):
-            for inserted in ('30', 'NULL'):
+            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else ('30', 'NULL')):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -150,6 +154,54 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'disconnect':
+                    pid = backendpid(A.ptr)
+                    A.query('BEGIN', extended)
+                    for sql, command in (
+                        ('UPDATE public.tx_contract SET value=11 WHERE id=1', 'UPDATE 1'),
+                        ('DELETE FROM public.tx_contract WHERE id=2', 'DELETE 1'),
+                        ('INSERT INTO public.tx_contract VALUES (3,30)', 'INSERT 0 1'),
+                    ):
+                        r = A.query(sql, extended)
+                        assert r['transaction'] == 'T' and r['command'] == command and r['affected'] == '1' and not r['columns'], r
+                    check(A, [['1','11'],['3','30']], 'T')
+                    check(B, initial, 'I')
+                    if inserted == 'socket':
+                        # Shut down a duplicate of libpq's real TCP socket before
+                        # PQfinish: no Terminate can be sent on this connection.
+                        with socket.socket(fileno=os.dup(pqsocket(A.ptr))) as raw:
+                            raw.shutdown(socket.SHUT_RDWR)
+                    A.close()
+                    deadline = time.monotonic() + 10
+                    if side == 'reference':
+                        while admin.query(f'SELECT pid FROM pg_stat_activity WHERE pid={pid}')['rows']:
+                            assert time.monotonic() < deadline, 'reference session cleanup timed out'
+                            time.sleep(.01)
+                    else:
+                        barrier = Path(os.environ['PG12_CLEANUP_BARRIER'])
+                        barrier.write_text(f'{extended}-{inserted}')
+                        while barrier.exists():
+                            assert time.monotonic() < deadline, 'Aster session cleanup timed out'
+                            time.sleep(.01)
+                    check(B, initial, 'I')
+                    C = Connection(dsn, 'A2', obs)
+                    connections.append(C)
+                    check(C, initial, 'I')
+                    r = C.query('SELECT 1::int4', extended)
+                    assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+                    r = C.query('BEGIN', extended)
+                    assert r['transaction'] == 'T' and r['command'] == 'BEGIN' and not r['columns'], r
+                    r = C.query('INSERT INTO public.tx_contract VALUES (3,30)', extended)
+                    assert r['command'] == 'INSERT 0 1' and r['affected'] == '1' and r['transaction'] == 'T', r
+                    r = C.query('COMMIT', extended)
+                    assert r['transaction'] == 'I' and r['command'] == 'COMMIT' and not r['columns'], r
+                    check(C, initial + [['3','30']], 'I')
+                    check(B, initial + [['3','30']], 'I')
+                    C.query('DROP TABLE public.tx_contract')
+                    C.close()
+                    B.close()
+                    record['cleanup'].append({'mode':'extended' if extended else 'simple', 'disconnect':inserted, 'session_cleanup_confirmed':True, 'table_dropped':True, 'connections_closed':True})
+                    continue
                 if a.case == 'outside_end':
                     check(A,initial,'I')
                     for sql in ('COMMIT', 'ROLLBACK'):
