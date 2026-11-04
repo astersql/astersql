@@ -150,7 +150,7 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
     let Some(function) = ident(tokens.get(i)) else {
         return Ok(None);
     };
-    if !matches!(function.as_str(), "nextval" | "currval") {
+    if !matches!(function.as_str(), "nextval" | "currval" | "setval") {
         return Ok(None);
     }
     i += 1;
@@ -170,6 +170,47 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
             return Err(("42883", "sequence function requires regclass".into()));
         }
         i += 2;
+    }
+    let mut set_value = None;
+    let mut is_called = Some(true);
+    if function == "setval" {
+        if tokens.get(i) != Some(&Token::Symbol(',')) {
+            return Err((
+                "42883",
+                "setval requires regclass, bigint and optional boolean".into(),
+            ));
+        }
+        i += 1;
+        let negative = tokens.get(i) == Some(&Token::Symbol('-'));
+        if negative {
+            i += 1;
+        }
+        set_value = match tokens.get(i) {
+            Some(Token::Number(number)) if !number.contains('.') => Some(
+                format!("{}{number}", if negative { "-" } else { "" })
+                    .parse::<i64>()
+                    .map_err(|_| ("22003", "setval value is outside bigint".into()))?,
+            ),
+            t if !negative && word(t, "null") => None,
+            _ => return Err(("42883", "setval value requires bigint".into())),
+        };
+        i += 1;
+        if tokens.get(i) == Some(&Token::Cast) && word(tokens.get(i + 1), "bigint") {
+            i += 2;
+        }
+        if tokens.get(i) == Some(&Token::Symbol(',')) {
+            i += 1;
+            is_called = match tokens.get(i) {
+                t if word(t, "true") => Some(true),
+                t if word(t, "false") => Some(false),
+                t if word(t, "null") => None,
+                _ => return Err(("42883", "setval is_called requires boolean".into())),
+            };
+            i += 1;
+            if tokens.get(i) == Some(&Token::Cast) && word(tokens.get(i + 1), "boolean") {
+                i += 2;
+            }
+        }
     }
     if tokens.get(i) != Some(&Token::Symbol(')')) {
         return Err((
@@ -202,10 +243,19 @@ pub(crate) fn parse(tokens: &[Token]) -> ParseResult<Option<(Command, Option<Str
         (None, None)
     };
     Ok(Some((
-        Command::Value {
-            schema,
-            name,
-            next: function == "nextval",
+        if function == "setval" {
+            Command::Set {
+                schema,
+                name,
+                value: set_value,
+                is_called,
+            }
+        } else {
+            Command::Value {
+                schema,
+                name,
+                next: function == "nextval",
+            }
         },
         Some(alias),
     )))

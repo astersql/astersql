@@ -25,6 +25,12 @@ pub enum PgSequenceCommand {
         grantee: String,
         grant: bool,
     },
+    Set {
+        schema: Option<String>,
+        name: Option<String>,
+        value: Option<i64>,
+        is_called: Option<bool>,
+    },
     Value {
         schema: Option<String>,
         name: Option<String>,
@@ -108,8 +114,27 @@ impl ConcreteSession {
             ));
         }
         let (schema, name) = match command {
-            PgSequenceCommand::Value { name: None, .. } => return Ok(None),
+            PgSequenceCommand::Value { name: None, .. }
+            | PgSequenceCommand::Set { name: None, .. }
+            | PgSequenceCommand::Set { value: None, .. }
+            | PgSequenceCommand::Set {
+                is_called: None, ..
+            } => return Ok(None),
+            PgSequenceCommand::Set {
+                is_called: Some(false),
+                ..
+            } => {
+                return Err(namespace_error(
+                    "0A000",
+                    "setval is_called=false is not yet supported",
+                ));
+            }
             PgSequenceCommand::Value {
+                schema,
+                name: Some(name),
+                ..
+            }
+            | PgSequenceCommand::Set {
                 schema,
                 name: Some(name),
                 ..
@@ -174,6 +199,40 @@ impl ConcreteSession {
                 self.sequence_acl(table.ID, None, Some((privileges, grantee, *grant)))?;
                 Ok(None)
             }
+            PgSequenceCommand::Set {
+                value: Some(value), ..
+            } => {
+                let has_update = [actor.as_str(), "PUBLIC"].iter().any(|role| {
+                    acl.grants
+                        .get(*role)
+                        .is_some_and(|privileges| privileges.contains("update"))
+                });
+                if actor != "root" && actor != acl.owner && !has_update {
+                    return Err(namespace_error("42501", "permission denied for sequence"));
+                }
+                let seq = table.Sequence.as_ref().unwrap();
+                if *value < seq.MinValue || *value > seq.MaxValue {
+                    return Err(namespace_error(
+                        "22003",
+                        "setval value is outside sequence bounds",
+                    ));
+                }
+                let value = self
+                    .domain
+                    .sequence_set_value(&table, *value)
+                    .map_err(|error| match error {
+                        astersql_meta_autoid::AutoIdError::NotImplemented(_) => {
+                            namespace_error("0A000", "sequence requires CACHE 1")
+                        }
+                        _ => session_error("set sequence value", error),
+                    })?;
+                self.state
+                    .borrow_mut()
+                    .pg_sequence_values
+                    .insert(table.ID, value);
+                Ok(Some(value))
+            }
+            PgSequenceCommand::Set { value: None, .. } => unreachable!(),
             PgSequenceCommand::Value { next, .. } => {
                 let has = |privilege: &str| {
                     [actor.as_str(), "PUBLIC"].iter().any(|role| {

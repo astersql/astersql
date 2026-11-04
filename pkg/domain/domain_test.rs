@@ -137,3 +137,92 @@ fn sequence_cache_one_uses_canonical_store() {
     table.Sequence = None;
     assert!(domain.sequence_next_value(&table).is_err());
 }
+
+#[test]
+fn sequence_set_value_uses_canonical_store() {
+    use std::sync::Arc;
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap_or_else(|_| panic!("mock storage has another owner"));
+    let handle = Arc::new(crate::StorageHandle::new(storage));
+    let make_domain = || {
+        crate::Domain::new_with_storage_handle(
+            handle.clone(),
+            Arc::new(crate::KvInfoSchemaLoader::default()),
+            crate::DomainConfig::default(),
+        )
+    };
+    let domain = Arc::new(make_domain());
+    let mut table = astersql_meta_model::TableInfo {
+        ID: 101,
+        DBID: 100,
+        Sequence: Some(astersql_meta_model::SequenceInfo {
+            Start: 10,
+            Increment: 1,
+            MinValue: 1,
+            MaxValue: 1000,
+            Cache: false,
+            CacheValue: 1,
+            Cycle: false,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(domain.sequence_set_value(&table, 40).unwrap(), 40);
+    let second = make_domain();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 41);
+    assert_eq!(domain.sequence_set_value(&table, 20).unwrap(), 20);
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 21);
+    for value in [0, 1001] {
+        assert!(domain.sequence_set_value(&table, value).is_err());
+    }
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 22);
+    domain.sequence_set_value(&table, 1000).unwrap();
+    assert!(second.sequence_next_value(&table).is_err());
+    domain.sequence_set_value(&table, 1).unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 2);
+    table.ID += 1;
+    table.Sequence.as_mut().unwrap().Increment = 3;
+    domain.sequence_set_value(&table, 20).unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 23);
+    domain.sequence_set_value(&table, 5).unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), 8);
+    table.ID += 1;
+    let seq = table.Sequence.as_mut().unwrap();
+    seq.Start = -10;
+    seq.Increment = -3;
+    seq.MinValue = -1000;
+    seq.MaxValue = -1;
+    domain.sequence_set_value(&table, -20).unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), -23);
+    domain.sequence_set_value(&table, -1).unwrap();
+    assert_eq!(second.sequence_next_value(&table).unwrap(), -4);
+    domain.sequence_set_value(&table, -1000).unwrap();
+    assert!(second.sequence_next_value(&table).is_err());
+    table.Sequence.as_mut().unwrap().Cycle = true;
+    assert_eq!(second.sequence_next_value(&table).unwrap(), -1);
+    // Distinct IDs and databases retain independent water levels.
+    table.DBID += 1;
+    assert_eq!(second.sequence_next_value(&table).unwrap(), -10);
+    table.Sequence.as_mut().unwrap().MinValue = i64::MIN;
+    table.Sequence.as_mut().unwrap().MaxValue = i64::MAX;
+    table.Sequence.as_mut().unwrap().Cycle = false;
+    domain.sequence_set_value(&table, i64::MIN).unwrap();
+    assert!(second.sequence_next_value(&table).is_err());
+    table.Sequence.as_mut().unwrap().Increment = 3;
+    domain.sequence_set_value(&table, i64::MAX).unwrap();
+    assert!(second.sequence_next_value(&table).is_err());
+    table.Sequence.as_mut().unwrap().Cycle = true;
+    assert_eq!(second.sequence_next_value(&table).unwrap(), i64::MIN);
+    table.Sequence.as_mut().unwrap().Cache = true;
+    table.Sequence.as_mut().unwrap().CacheValue = 4;
+    assert!(domain.sequence_set_value(&table, -20).is_err());
+    table.Sequence = None;
+    assert!(domain.sequence_set_value(&table, -20).is_err());
+}

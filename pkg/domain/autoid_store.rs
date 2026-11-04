@@ -60,6 +60,159 @@ impl KvAutoIdStore {
             })
             .map_err(|error| AutoIdError::Storage(error.to_string()))
     }
+
+    /// Set the canonical sequence water level, including a PostgreSQL reset marker.
+    /// Both writes commit together, independently of the caller's SQL transaction.
+    pub(crate) fn set_sequence_value(
+        &self,
+        database_id: i64,
+        table_id: i64,
+        value: i64,
+    ) -> Result<()> {
+        self.sequence_transaction(database_id, table_id, |adapter, key, reset_key| {
+            adapter.put(key, value)?;
+            // Publish initialization with the reset, never an intermediate water level.
+            let initialized = astersql_kv::Key(
+                format!("{AUTO_ID_KEY_PREFIX}:DB:{database_id}:SID-initialized:{table_id}")
+                    .into_bytes(),
+            );
+            adapter
+                .transaction
+                .Set(initialized, b"1".to_vec())
+                .map_err(KvAutoIdTransaction::storage_error)?;
+            adapter
+                .transaction
+                .Set(reset_key, b"1".to_vec())
+                .map_err(KvAutoIdTransaction::storage_error)?;
+            Ok(value)
+        })
+        .map(|_| ())
+    }
+
+    /// CACHE 1 allocation shares the exact same KV transaction boundary as setval.
+    /// Native allocators retain their original start-congruence semantics; after a
+    /// PG reset, the next value is the reset value plus the increment, even off-grid.
+    pub(crate) fn next_sequence_value(
+        &self,
+        database_id: i64,
+        table_id: i64,
+        sequence: &astersql_meta_model::SequenceInfo,
+    ) -> Result<i64> {
+        self.sequence_transaction(database_id, table_id, |adapter, key, reset_key| {
+            let reset = match adapter.transaction.Get(&adapter.context, reset_key, &[]) {
+                Ok(_) => true,
+                Err(error) if astersql_kv::IsErrNotFound(&error) => false,
+                Err(error) => return Err(KvAutoIdTransaction::storage_error(error)),
+            };
+            let base = adapter.get(key)?;
+            let cycle_key = AutoIdKey {
+                kind: AutoIdKeyKind::SequenceCycle,
+                ..key
+            };
+            let round = adapter.get(cycle_key)?;
+            let offset = if sequence.Cycle && round > 0 {
+                if sequence.Increment > 0 {
+                    sequence.MinValue
+                } else {
+                    sequence.MaxValue
+                }
+            } else {
+                sequence.Start
+            };
+            let next = if reset {
+                let next = i128::from(base) + i128::from(sequence.Increment);
+                if next < i128::from(sequence.MinValue) || next > i128::from(sequence.MaxValue) {
+                    None
+                } else {
+                    Some(next as i64)
+                }
+            } else {
+                match astersql_meta_autoid::calc_sequence_batch_size(
+                    base,
+                    1,
+                    sequence.Increment,
+                    offset,
+                    sequence.MinValue,
+                    sequence.MaxValue,
+                ) {
+                    Ok(step) => Some(if sequence.Increment > 0 {
+                        base.wrapping_add(step)
+                    } else {
+                        base.wrapping_sub(step)
+                    }),
+                    Err(AutoIdError::AutoIncrementReadFailed(_)) => None,
+                    Err(error) => return Err(error),
+                }
+            };
+            let value = match next {
+                Some(value) => value,
+                None if sequence.Cycle => {
+                    let boundary = if sequence.Increment > 0 {
+                        sequence.MinValue
+                    } else {
+                        sequence.MaxValue
+                    };
+                    adapter.put(cycle_key, round.wrapping_add(1))?;
+                    boundary
+                }
+                None => {
+                    return Err(AutoIdError::AutoIncrementReadFailed(
+                        "sequence has reached its limit".into(),
+                    ));
+                }
+            };
+            adapter.put(key, value)?;
+            Ok(value)
+        })
+    }
+
+    fn sequence_transaction(
+        &self,
+        database_id: i64,
+        table_id: i64,
+        mut operation: impl FnMut(
+            &mut KvAutoIdTransaction<'_>,
+            AutoIdKey,
+            astersql_kv::Key,
+        ) -> Result<i64>,
+    ) -> Result<i64> {
+        let context = astersql_kv::Context::default();
+        let mut value = 0;
+        let mut operation_error = None;
+        let result = self.storage.with_storage(|storage| {
+            astersql_kv::RunInNewTxn(&context, storage, true, |_, transaction| {
+                let mut adapter = KvAutoIdTransaction {
+                    transaction,
+                    context: astersql_kv::Context::default(),
+                };
+                let key = AutoIdKey {
+                    database_id,
+                    table_id,
+                    kind: AutoIdKeyKind::SequenceValue,
+                };
+                let reset_key = astersql_kv::Key(
+                    format!("{AUTO_ID_KEY_PREFIX}:DB:{database_id}:SID-pg-reset:{table_id}")
+                        .into_bytes(),
+                );
+                match operation(&mut adapter, key, reset_key) {
+                    Ok(result) => {
+                        value = result;
+                        operation_error = None;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        operation_error = Some(error.clone());
+                        Err(astersql_kv::errors::New(error.to_string()))
+                    }
+                }
+            })
+        });
+        if let Some(error) = operation_error {
+            return Err(error);
+        }
+        result.map_err(KvAutoIdTransaction::storage_error)?;
+        Ok(value)
+    }
 }
 
 struct KvAutoIdTransaction<'a> {

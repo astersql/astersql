@@ -318,7 +318,8 @@ impl SessionQuery {
                 astersql_session::runtime::PgSequenceCommand::Grant { grant: false, .. } => {
                     "REVOKE"
                 }
-                astersql_session::runtime::PgSequenceCommand::Value { .. } => "SELECT",
+                astersql_session::runtime::PgSequenceCommand::Value { .. }
+                | astersql_session::runtime::PgSequenceCommand::Set { .. } => "SELECT",
             },
             Self::Show
             | Self::DateStyleShow

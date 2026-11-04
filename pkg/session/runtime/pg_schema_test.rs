@@ -210,3 +210,65 @@ fn sequence_allocation_identity_and_recovery() {
     a.pg_schema_command(&PgSchemaCommand::Drop("seq_space".into()))
         .unwrap();
 }
+
+#[test]
+fn sequence_set_value_identity_and_recovery() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let b = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let create = PgSequenceCommand::Create {
+        schema: None,
+        name: "seq_set_local".into(),
+        options: "START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE".into(),
+    };
+    let set = |value| PgSequenceCommand::Set {
+        schema: None,
+        name: Some("seq_set_local".into()),
+        value,
+        is_called: Some(true),
+    };
+    let next = PgSequenceCommand::Value {
+        schema: None,
+        name: Some("seq_set_local".into()),
+        next: true,
+    };
+    let curr = PgSequenceCommand::Value {
+        schema: None,
+        name: Some("seq_set_local".into()),
+        next: false,
+    };
+    let drop = PgSequenceCommand::Drop {
+        schema: None,
+        name: "seq_set_local".into(),
+    };
+    a.pg_sequence(&create).unwrap();
+    assert_eq!(a.pg_sequence(&set(Some(40))).unwrap(), Some(40));
+    assert_eq!(a.pg_sequence(&curr).unwrap(), Some(40));
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(41));
+    assert_eq!(a.pg_sequence(&set(Some(20))).unwrap(), Some(20));
+    assert_eq!(b.pg_sequence(&curr).unwrap(), Some(41));
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(21));
+    assert_eq!(a.pg_sequence(&set(None)).unwrap(), None);
+    assert_eq!(
+        a.pg_sequence(&set(Some(0)))
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "22003"
+    );
+    assert_eq!(a.pg_sequence(&curr).unwrap(), Some(20));
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(22));
+    a.pg_sequence(&drop).unwrap();
+    a.pg_sequence(&create).unwrap();
+    assert_eq!(
+        a.pg_sequence(&curr)
+            .unwrap_err()
+            .pg_function_error()
+            .unwrap()
+            .state,
+        "55000"
+    );
+    assert_eq!(b.pg_sequence(&next).unwrap(), Some(10));
+    a.pg_sequence(&drop).unwrap();
+}

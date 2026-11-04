@@ -3235,21 +3235,32 @@ impl Domain {
         })?;
         KvAutoIdStore::new(self.storage_handle())
             .initialize_sequence(table.DBID, table.ID, base)?;
-        let allocator = DefaultAllocator::new_sequence(
-            Arc::clone(&self.auto_id_store),
-            table.DBID,
-            table.ID,
-            astersql_meta_autoid::SequenceInfo {
-                start: seq.Start,
-                increment: seq.Increment,
-                min_value: seq.MinValue,
-                max_value: seq.MaxValue,
-                cache: false,
-                cache_value: 1,
-                cycle: seq.Cycle,
-            },
-        );
-        allocator.alloc_seq_cache().map(|(_, end, _)| end)
+        KvAutoIdStore::new(self.storage_handle()).next_sequence_value(table.DBID, table.ID, seq)
+    }
+
+    /// Atomically reset a PostgreSQL CACHE 1 sequence to an already-called value.
+    /// This is a real reset, including backwards movement, rather than rebase_seq.
+    pub fn sequence_set_value(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        value: i64,
+    ) -> Result<i64, astersql_meta_autoid::AutoIdError> {
+        let seq = table.Sequence.as_ref().ok_or_else(|| {
+            astersql_meta_autoid::AutoIdError::NotImplemented("object is not a sequence".into())
+        })?;
+        if seq.Cache && seq.CacheValue != 1 {
+            return Err(astersql_meta_autoid::AutoIdError::NotImplemented(
+                "PostgreSQL sequence reset requires CACHE 1".into(),
+            ));
+        }
+        if value < seq.MinValue || value > seq.MaxValue {
+            return Err(astersql_meta_autoid::AutoIdError::AutoIncrementReadFailed(
+                "setval value is outside sequence bounds".into(),
+            ));
+        }
+        let store = KvAutoIdStore::new(self.storage_handle());
+        store.set_sequence_value(table.DBID, table.ID, value)?;
+        Ok(value)
     }
 
     fn new_stats_auto_id_allocator(
