@@ -336,7 +336,7 @@ fn parser_3_marks_every_generated_semantic_action_as_implemented() {
         .collect::<Vec<_>>();
 
     // Includes identity declaration/default-row and SYSTEM override actions.
-    assert_eq!(required_rules.len(), 2325);
+    assert_eq!(required_rules.len(), 2327);
     let missing = required_rules
         .into_iter()
         .filter(|rule_id| !parser_actions::has_semantic_action(*rule_id))

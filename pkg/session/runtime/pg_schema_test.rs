@@ -553,3 +553,63 @@ fn identity_system_override_preserves_owned_sequence() {
         assert!(domain.info_schema().TableByID(id).is_none());
     }
 }
+
+#[test]
+fn identity_user_override_preserves_owned_sequence() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    for mode in ["ALWAYS", "BY DEFAULT"] {
+        let session =
+            ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+        session
+            .execute(&format!(
+                "CREATE TABLE user25 (id bigint GENERATED {mode} AS IDENTITY (START 10))"
+            ))
+            .unwrap();
+        let table = domain
+            .info_schema()
+            .ModelTableInfoByExactName(&astersql_infoschema::CiString::new("test"), "user25")
+            .unwrap();
+        let id = table.Columns[0]
+            .PostgreSQLIdentity
+            .as_ref()
+            .unwrap()
+            .SequenceID;
+        let sequence = domain
+            .info_schema()
+            .TableByID(id)
+            .unwrap()
+            .ModelMeta()
+            .unwrap();
+        let current = PgSequenceCommand::Value {
+            schema: None,
+            name: Some(sequence.Name.O.clone()),
+            next: false,
+        };
+        assert!(session.pg_sequence(&current).is_err());
+        for (input, expected) in [("900", 10), ("NULL", 11), ("DEFAULT", 12), ("900+1", 13)] {
+            session
+                .execute(&format!(
+                    "INSERT INTO user25 OVERRIDING USER VALUE VALUES ({input})"
+                ))
+                .unwrap();
+            assert_eq!(session.pg_sequence(&current).unwrap(), Some(expected));
+        }
+        for input in ["'invalid'", "1/0"] {
+            assert!(
+                session
+                    .execute(&format!(
+                        "INSERT INTO user25 OVERRIDING USER VALUE VALUES ({input})"
+                    ))
+                    .is_err()
+            );
+            assert_eq!(session.pg_sequence(&current).unwrap(), Some(13));
+            session.execute("SELECT 1").unwrap();
+        }
+        session
+            .execute("INSERT INTO user25 DEFAULT VALUES")
+            .unwrap();
+        assert_eq!(session.pg_sequence(&current).unwrap(), Some(14));
+        session.execute("DROP TABLE user25").unwrap();
+        assert!(domain.info_schema().TableByID(id).is_none());
+    }
+}

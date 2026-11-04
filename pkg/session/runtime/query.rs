@@ -8034,6 +8034,7 @@ impl ConcreteSession {
             OnDuplicate: statement.OnDuplicate.clone(),
             PostgreSQLConflict: None,
             PostgreSQLOverrideSystem: statement.PostgreSQLOverrideSystem,
+            PostgreSQLOverrideUser: statement.PostgreSQLOverrideUser,
             Select: None,
             TableHints: statement.TableHints.clone(),
             PartitionNames: statement.PartitionNames.clone(),

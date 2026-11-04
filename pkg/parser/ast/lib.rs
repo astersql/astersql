@@ -1648,6 +1648,8 @@ pub struct InsertStmt {
     pub PostgreSQLConflict: Option<PostgreSQLConflictClause>,
     /// Explicit SYSTEM override permits identity input without rebasing its sequence.
     pub PostgreSQLOverrideSystem: bool,
+    /// USER override evaluates supplied identity input and generates its stored value.
+    pub PostgreSQLOverrideUser: bool,
     pub RowAlias: CIStr,
     pub ColumnAliases: Vec<CIStr>,
 }

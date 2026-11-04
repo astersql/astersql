@@ -82,7 +82,7 @@ fn dml_rule_coverage() {
         .map(|production| production.rule_id.as_str())
         .collect::<HashSet<_>>();
 
-    assert_eq!(expected.len(), 120, "DML RuleId inventory changed");
+    assert_eq!(expected.len(), 122, "DML RuleId inventory changed");
 
     let mut actual = HashSet::new();
     for rule_id in RULE_IDS_BY_REDUCTION.iter().copied() {
@@ -131,7 +131,6 @@ fn postgresql_system_override_ast() {
     for sql in [
         "INSERT INTO t OVERRIDING SYSTEM VALUE DEFAULT VALUES",
         "INSERT INTO t(id) OVERRIDING SYSTEM VALUE DEFAULT VALUES",
-        "INSERT INTO t OVERRIDING USER VALUE VALUES (900)",
         "INSERT INTO t other SYSTEM VALUE VALUES (900)",
         "INSERT INTO t \"OVERRIDING\" SYSTEM VALUE VALUES (900)",
     ] {
@@ -146,5 +145,42 @@ fn postgresql_system_override_ast() {
             .downcast_ref::<parser_ast::InsertStmt>()
             .unwrap()
             .PostgreSQLOverrideSystem
+    );
+}
+
+#[test]
+fn postgresql_user_override_ast() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for sql in [
+        "INSERT INTO t(id,note) OVERRIDING USER VALUE VALUES (900,'manual')",
+        "INSERT INTO t OVERRIDING USER VALUE VALUES (DEFAULT,'default')",
+        "INSERT INTO t(note) OVERRIDING USER VALUE VALUES ('omit')",
+    ] {
+        let node = parser.ParseOneStmt(sql, "", "").unwrap();
+        let insert = node
+            .as_any()
+            .downcast_ref::<parser_ast::InsertStmt>()
+            .unwrap();
+        assert!(insert.PostgreSQLOverrideUser);
+        assert_eq!(insert.Lists.len(), 1);
+        assert!(crate::New().ParseOneStmt(sql, "", "").is_err());
+    }
+    for sql in [
+        "INSERT INTO t OVERRIDING USER VALUE DEFAULT VALUES",
+        "INSERT INTO t(id) OVERRIDING USER VALUE DEFAULT VALUES",
+        "INSERT INTO t other USER VALUE VALUES (900)",
+        "INSERT INTO t \"OVERRIDING\" USER VALUE VALUES (900)",
+    ] {
+        assert!(parser.ParseOneStmt(sql, "", "").is_err(), "{sql}");
+    }
+    let node = parser
+        .ParseOneStmt("INSERT INTO t VALUES (900)", "", "")
+        .unwrap();
+    assert!(
+        !node
+            .as_any()
+            .downcast_ref::<parser_ast::InsertStmt>()
+            .unwrap()
+            .PostgreSQLOverrideUser
     );
 }

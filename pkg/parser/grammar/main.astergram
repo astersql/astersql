@@ -4494,3 +4494,6 @@ ShowStmt : "SHOW" "CREATE" "MATERIALIZED" "VIEW" "LOG" "ON" TableName @action;
 UnReservedKeyword : pgOverriding;
 InsertValues : pgOverriding "SYSTEM" "VALUE" ValueSym ValuesList @action;
 InsertValues : "(" ColumnNameListOpt ")" pgOverriding "SYSTEM" "VALUE" ValueSym ValuesList @action;
+
+InsertValues : pgOverriding "USER" "VALUE" ValueSym ValuesList @action;
+InsertValues : "(" ColumnNameListOpt ")" pgOverriding "USER" "VALUE" ValueSym ValuesList @action;

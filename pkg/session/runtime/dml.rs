@@ -2422,6 +2422,7 @@ impl ConcreteSession {
         }
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && !statement.PostgreSQLOverrideSystem
+            && !statement.PostgreSQLOverrideUser
             && table
                 .Columns
                 .iter()
@@ -2995,6 +2996,13 @@ impl ConcreteSession {
                     } else {
                         pg_float8_relational_value(expression, value)?
                     }
+                } else if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && statement.PostgreSQLOverrideUser
+                    && column_info.is_some_and(|column| column.PostgreSQLIdentity.is_some())
+                {
+                    // Preserve PG diagnostics and expression side effects before
+                    // USER discards the value; shared literal coercion is MySQL-specific.
+                    self.relational_query_expression_value(expression, &row, None)?
                 } else if pg_integer_narrowing_assignment {
                     // Bound integer parameters may become literals. Preserve their
                     // source value until the PG target range check below.
@@ -3149,6 +3157,35 @@ impl ConcreteSession {
                         .CheckDimsFitColumn(column_info.GetFlen() as i32)
                         .map_err(|error| SessionError::new(error.to_string()))?;
                     value = Some(vector.String());
+                }
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                    && statement.PostgreSQLOverrideUser
+                    && column_info.is_some_and(|column| column.PostgreSQLIdentity.is_some())
+                    && !matches!(
+                        expression.Kind,
+                        ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
+                    )
+                {
+                    // USER replaces the stored input, not its evaluation. Validate
+                    // the supplied integer before allocating the owned sequence;
+                    // NULL is ignored here rather than failing NOT NULL below.
+                    let column = column_info.unwrap();
+                    let check = match column.GetType() {
+                        astersql_parser_mysql::r#type::TypeShort => {
+                            astersql_expression::pg_cast_int2(value.as_deref()).map(|_| ())
+                        }
+                        astersql_parser_mysql::r#type::TypeLong => {
+                            astersql_expression::pg_cast_int4(value.as_deref()).map(|_| ())
+                        }
+                        _ => astersql_expression::pg_cast_int8(value.as_deref()).map(|_| ()),
+                    };
+                    check.map_err(|error| {
+                        SessionError::with_source(
+                            error.to_string(),
+                            astersql_errors::SharedError::new(error),
+                        )
+                    })?;
+                    value = self.insert_column_default(column)?;
                 }
                 if value.is_none() {
                     if let Some(column_info) =

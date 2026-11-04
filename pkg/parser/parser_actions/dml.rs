@@ -92,6 +92,7 @@ enum DmlRule {
     InsertRowAliasOptAlt03,
     PgDefaultValues,
     PgSystemOverride,
+    PgUserOverride,
     InsertValuesAlt01,
     InsertValuesAlt02,
     InsertValuesAlt03,
@@ -145,6 +146,10 @@ fn identify(rule_id: RuleId) -> Option<DmlRule> {
         "insertvalues_pgoverriding_system_value_valuesym--502492593b3ac391"
         | "insertvalues_columnnamelistopt_pgoverriding_syst--c045e29625e39972" => {
             DmlRule::PgSystemOverride
+        }
+        "insertvalues_pgoverriding_user_value_valuesym_va--c29a6d6fda19c10f"
+        | "insertvalues_columnnamelistopt_pgoverriding_user--795d264be181bdbc" => {
+            DmlRule::PgUserOverride
         }
         "assignment_columnname_eqorassignmenteq_exprordef--abbd2bcf34d982b3" => {
             DmlRule::AssignmentAlt01
@@ -580,9 +585,10 @@ fn apply_general_rule(
         lexer: yylex,
     } = context;
     match rule {
-        DmlRule::PgSystemOverride => {
+        DmlRule::PgSystemOverride | DmlRule::PgUserOverride => {
+            let user = matches!(rule, DmlRule::PgUserOverride);
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
-                yylex.AppendError(yylex.Errorf("OVERRIDING SYSTEM VALUE requires PostgreSQL", &[]));
+                yylex.AppendError(yylex.Errorf("OVERRIDING requires PostgreSQL", &[]));
                 return Err(1);
             }
             let columns = if rhs_len == 8 {
@@ -604,7 +610,8 @@ fn apply_general_rule(
             out.item = Some(Box::new(parser_ast::InsertStmt {
                 Columns: columns,
                 Lists: lists,
-                PostgreSQLOverrideSystem: true,
+                PostgreSQLOverrideSystem: !user,
+                PostgreSQLOverrideUser: user,
                 ..Default::default()
             }));
         }
