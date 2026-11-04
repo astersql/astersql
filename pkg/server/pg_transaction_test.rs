@@ -1294,3 +1294,191 @@ fn pg11_27() {
         }
     }
 }
+
+#[test]
+fn pg11_28() {
+    fn run(socket: &mut TcpStream, sql: &str, extended: bool) -> Vec<(u8, Vec<u8>)> {
+        if !extended {
+            return query(socket, sql);
+        }
+        parse(socket, "", sql, &[]);
+        assert_eq!(read(socket), (b'1', vec![]), "{sql}");
+        send(socket, b'D', b"S\0");
+        assert_eq!(read(socket), (b't', 0i16.to_be_bytes().to_vec()));
+        let description = read(socket);
+        if sql.starts_with("SELECT") || sql.contains("RETURNING") {
+            assert_eq!(description.0, b'T', "{sql}");
+            if sql.contains("val(") {
+                let field = &description.1;
+                assert_eq!(&field[..4], b"\0\x01v\0");
+                assert_eq!(&field[10..14], &20u32.to_be_bytes());
+                assert_eq!(&field[14..16], &8i16.to_be_bytes());
+            }
+        } else {
+            assert_eq!(description, (b'n', vec![]));
+        }
+        let mut body = b"\0\0".to_vec();
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&0i16.to_be_bytes());
+        body.extend_from_slice(&0i16.to_be_bytes());
+        send(socket, b'B', &body);
+        assert_eq!(read(socket), (b'2', vec![]), "{sql}");
+        execute(socket, "");
+        send(socket, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(socket);
+            let done = m.0 == b'Z';
+            messages.push(m);
+            if done {
+                return messages;
+            }
+        }
+    }
+    fn ok(socket: &mut TcpStream, sql: &str, extended: bool, status: u8) -> Vec<(u8, Vec<u8>)> {
+        let m = run(socket, sql, extended);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(m.last(), Some(&(b'Z', vec![status])), "{sql}");
+        m
+    }
+    fn value(socket: &mut TcpStream, sql: &str, expected: Option<i64>, extended: bool, status: u8) {
+        let m = ok(socket, sql, extended, status);
+        let rows: Vec<_> = m.iter().filter(|m| m.0 == b'D').collect();
+        assert_eq!(rows.len(), 1, "{sql}");
+        let data = &rows[0].1;
+        assert_eq!(&data[..2], &1i16.to_be_bytes());
+        match expected {
+            Some(v) => {
+                let text = v.to_string();
+                assert_eq!(&data[2..6], &(text.len() as i32).to_be_bytes());
+                assert_eq!(&data[6..], text.as_bytes(), "{sql}");
+            }
+            None => assert_eq!(&data[2..], &(-1i32).to_be_bytes()),
+        }
+    }
+
+    fn rows(m: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+        m.iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect()
+    }
+    fn row(id: &str, note: Option<&str>) -> Vec<u8> {
+        let mut b = 2i16.to_be_bytes().to_vec();
+        for v in [Some(id), note] {
+            if let Some(v) = v {
+                b.extend_from_slice(&(v.len() as i32).to_be_bytes());
+                b.extend_from_slice(v.as_bytes());
+            } else {
+                b.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+        }
+        b
+    }
+    for extended in [false, true] {
+        for transaction in [false, true] {
+            let (service, addr) = start();
+            let mut a = connect(addr);
+            let mut b = connect(addr);
+            ok(
+                &mut a,
+                "CREATE TABLE public.identity_failure (id bigint GENERATED ALWAYS AS IDENTITY (START WITH 10 MINVALUE 1 MAXVALUE 1000 CACHE 1) PRIMARY KEY,note text UNIQUE)",
+                false,
+                b'I',
+            );
+            let seed = ok(
+                &mut a,
+                "INSERT INTO public.identity_failure(note) VALUES ('seed') RETURNING id,note",
+                extended,
+                b'I',
+            );
+            assert_eq!(rows(&seed), vec![row("10", Some("seed"))]);
+            if transaction {
+                ok(&mut a, "BEGIN", extended, b'T');
+            }
+            let failed = run(
+                &mut a,
+                "INSERT INTO public.identity_failure(note) VALUES ('seed') RETURNING id,note",
+                extended,
+            );
+            assert_eq!(
+                error_state(
+                    &failed
+                        .iter()
+                        .find(|m| m.0 == b'E')
+                        .expect("unique violation")
+                        .1
+                ),
+                Some("23505")
+            );
+            assert!(rows(&failed).is_empty());
+            assert!(!failed.iter().any(|m| m.0 == b'C'));
+            assert_eq!(
+                failed.last(),
+                Some(&(b'Z', vec![if transaction { b'E' } else { b'I' }]))
+            );
+            if transaction {
+                let blocked = query(&mut a, "SELECT 1");
+                assert_eq!(
+                    error_state(&blocked.iter().find(|m| m.0 == b'E').unwrap().1),
+                    Some("25P02")
+                );
+                assert_eq!(blocked.last(), Some(&(b'Z', vec![b'E'])));
+                if extended {
+                    sync(&mut a, b'E');
+                }
+                ok(&mut a, "ROLLBACK", extended, b'I');
+            }
+            value(&mut a, "SELECT 1 AS ok", Some(1), extended, b'I');
+            let snapshot = "SELECT id,note FROM public.identity_failure ORDER BY id";
+            assert_eq!(
+                rows(&ok(&mut b, snapshot, extended, b'I')),
+                vec![row("10", Some("seed"))]
+            );
+            let after = ok(
+                &mut a,
+                "INSERT INTO public.identity_failure(note) VALUES ('after') RETURNING id,note",
+                extended,
+                b'I',
+            );
+            assert_eq!(
+                rows(&after),
+                vec![row("12", Some("after"))],
+                "allocated 11 must not be reclaimed"
+            );
+            assert_eq!(
+                rows(&ok(&mut b, snapshot, extended, b'I')),
+                vec![row("10", Some("seed")), row("12", Some("after"))]
+            );
+            // Independent UNIQUE permits multiple SQL NULLs; both consume real identities.
+            for id in ["13", "14"] {
+                assert_eq!(
+                    rows(&ok(
+                        &mut a,
+                        "INSERT INTO public.identity_failure(note) VALUES (NULL) RETURNING id,note",
+                        extended,
+                        b'I'
+                    )),
+                    vec![row(id, None)]
+                );
+            }
+            send(&mut a, b'X', &[]);
+            drop(a);
+            assert_eq!(
+                rows(&ok(&mut b, snapshot, extended, b'I')),
+                vec![
+                    row("10", Some("seed")),
+                    row("12", Some("after")),
+                    row("13", None),
+                    row("14", None)
+                ]
+            );
+            value(&mut b, "SELECT 1 AS ok", Some(1), extended, b'I');
+            ok(&mut b, "DROP TABLE public.identity_failure", false, b'I');
+            send(&mut b, b'X', &[]);
+            service.close();
+            assert!(TcpStream::connect(addr).is_err());
+            eprintln!("pg11_28 extended={extended} transaction={transaction} passed");
+        }
+    }
+}
