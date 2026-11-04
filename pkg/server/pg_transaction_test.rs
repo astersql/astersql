@@ -1664,6 +1664,11 @@ fn pg12_savepoint_gate() {
 }
 
 #[test]
+fn pg12_database_ddl_gate() {
+    pg12_transaction_case("database_ddl_gate");
+}
+
+#[test]
 fn pg12_other_ddl_gate() {
     pg12_transaction_case("other_ddl_gate");
 }
