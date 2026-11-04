@@ -17,7 +17,10 @@ p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repe
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
+p.add_argument('--storage', choices=['test', 'tikv'], default='test')
+p.add_argument('--restart-check', action='store_true')
 a = p.parse_args()
+assert not a.restart_check or (a.storage == 'tikv' and a.case == 'commit')
 def interrupted(signum, frame):
     raise RuntimeError('transaction client interrupted or timed out')
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM):
@@ -829,7 +832,7 @@ def explicit_sync(A, B, check, record, stage):
 def observe_transaction(side, admin_dsn):
     obs, connections = [], []
     record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
-              'storage':'PostgreSQL local persistent reference' if side == 'reference' else 'CreateAnalyzeSession shared test storage (not RealTiKV)',
+              'storage':'PostgreSQL local persistent reference' if side == 'reference' else ('RealTiKV isolated playground' if a.storage == 'tikv' else 'CreateAnalyzeSession shared test storage (not RealTiKV)'),
               'observations':obs, 'cleanup':[]}
     admin = None
     created = False
@@ -1020,12 +1023,15 @@ def observe_transaction(side, admin_dsn):
                         while admin.query(f'SELECT pid FROM pg_stat_activity WHERE pid={pid}')['rows']:
                             assert time.monotonic() < deadline, 'reference session cleanup timed out'
                             time.sleep(.01)
-                    else:
+                    elif a.storage != 'tikv':
                         barrier = Path(os.environ['PG12_CLEANUP_BARRIER'])
                         barrier.write_text(f'{extended}-{inserted}')
                         while barrier.exists():
                             assert time.monotonic() < deadline, 'Aster session cleanup timed out'
                             time.sleep(.01)
+                    # RealTiKV has no in-process test barrier. The independent
+                    # reader plus the replacement writer's commit below prove
+                    # rollback visibility and release of the same inserted key.
                     check(B, initial, 'I')
                     C = Connection(dsn, 'A2', obs)
                     connections.append(C)
@@ -1144,11 +1150,17 @@ def observe_transaction(side, admin_dsn):
                     C = Connection(dsn,'C',obs)
                     connections.append(C)
                     check(C,S1,'I')
+                # Preserve the final independently observed commit for restart;
+                # never recreate the fixture in the restart reader.
+                preserve = a.storage == 'tikv' and a.case == 'commit' and side == 'aster' and extended and inserted == 'NULL'
+                if preserve:
+                    (evidence / 'restart-baseline.json').write_text(json.dumps(obs[-1], indent=2))
                 # SQL NULL is represented as None, never as an empty string.
-                A.query('DROP TABLE public.tx_contract')
+                if not preserve:
+                    A.query('DROP TABLE public.tx_contract')
                 for conn in (A,B,C):
                     conn.close()
-                record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':True,'connections_closed':True})
+                record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':not preserve,'preserved_for_restart':preserve,'connections_closed':True})
         record['cases_passed'] = 14 if a.case == 'other_ddl_gate' else 16 if a.case == 'table_ddl_gate' else 3 if a.case == 'extended_error' else 4
     finally:
         for conn in connections:
@@ -1157,7 +1169,8 @@ def observe_transaction(side, admin_dsn):
                 if a.case == 'table_ddl_gate':
                     conn.query('DROP TABLE IF EXISTS public.txddl_probe', required=False)
                     conn.query('DROP TABLE IF EXISTS public.txddl_sentinel', required=False)
-                conn.query('DROP TABLE IF EXISTS public.tx_contract', required=False)
+                if not (a.storage == 'tikv' and a.case == 'commit' and side == 'aster' and (evidence / 'restart-baseline.json').exists()):
+                    conn.query('DROP TABLE IF EXISTS public.tx_contract', required=False)
                 conn.close()
         if admin:
             if created:
@@ -1166,6 +1179,25 @@ def observe_transaction(side, admin_dsn):
             admin.close()
         (evidence / f'{side}.json').write_text(json.dumps(record,ensure_ascii=False,indent=2))
     return record
+
+if a.restart_check:
+    baseline = json.loads((evidence / 'restart-baseline.json').read_text())
+    observations = []
+    reader = Connection(f'host={a.host} port={a.port} user=root dbname={a.database}', 'restart reader', observations)
+    try:
+        actual = reader.query(O)
+        # Full values (including NULL), descriptors, command and transaction
+        # state must survive server restart; no setup runs in this mode.
+        for key in ('rows','columns','command','affected','transaction'):
+            assert actual[key] == baseline[key], (key, actual, baseline)
+        reader.query('DROP TABLE public.tx_contract')
+        (evidence / 'restart.json').write_text(json.dumps(dict(repository_sha=head,
+            storage='RealTiKV isolated playground', baseline=baseline,
+            observations=observations, cases_passed=1), indent=2))
+    finally:
+        reader.close()
+    print(json.dumps(dict(case='restart', cases_per_endpoint=1, evidence=str(evidence), cleanup='passed')))
+    raise SystemExit(0)
 
 for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.port} user=root dbname=test')]:
     outputs[side] = observe_transaction(side, dsn)
