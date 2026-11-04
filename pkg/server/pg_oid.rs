@@ -250,7 +250,7 @@ fn native_name(name: &str) -> String {
         quoted(name)
     }
 }
-fn quoted(name: &str) -> String {
+pub(crate) fn quoted(name: &str) -> String {
     if name
         .chars()
         .next()

@@ -33481,3 +33481,194 @@ fn pg11_26() {
     assert!(TcpStream::connect(addr).is_err());
     eprintln!("pg11_26: describe/execute allocation, suspension/resume, close and shutdown passed");
 }
+
+#[test]
+fn pg11_29() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+
+    for ext in [false, true] {
+        let mut s = connect(None);
+        for (name, mode, identity) in [("pg1129_a", "ALWAYS", "a"), ("pg1129_d", "BY DEFAULT", "d")]
+        {
+            ok(
+                &mut s,
+                &format!(
+                    "CREATE TABLE {name} (id bigint GENERATED {mode} AS IDENTITY (START WITH 10 INCREMENT BY 2), plain integer)"
+                ),
+                ext,
+            );
+            let m = run(
+                &mut s,
+                &format!(
+                    "SELECT attidentity, attnotnull, atthasdef, atttypid FROM pg_attribute WHERE attrelid='public.{name}'::regclass AND attname='id'"
+                ),
+                ext,
+            );
+            assert_eq!(
+                m.iter()
+                    .filter(|m| m.0 == b'D')
+                    .map(|m| text_row(&m.1))
+                    .collect::<Vec<_>>(),
+                vec![vec![
+                    Some(identity.into()),
+                    Some("t".into()),
+                    Some("f".into()),
+                    Some("20".into())
+                ]]
+            );
+            let m = run(
+                &mut s,
+                &format!("SELECT pg_get_serial_sequence('public.{name}', 'id')"),
+                ext,
+            );
+            assert!(!m.iter().any(|m| m.0 == b'E'), "serial lookup: {m:?}");
+            let sequence = text_row(&m.iter().find(|m| m.0 == b'D').unwrap().1)[0]
+                .clone()
+                .unwrap();
+            for (sql, expected) in [
+                (
+                    format!(
+                        "SELECT deptype, refobjsubid FROM pg_depend WHERE objid='{sequence}'::regclass AND refobjid='public.{name}'::regclass"
+                    ),
+                    vec![Some("i".into()), Some("1".into())],
+                ),
+                (
+                    format!(
+                        "SELECT seqstart, seqincrement FROM pg_sequence WHERE seqrelid='{sequence}'::regclass"
+                    ),
+                    vec![Some("10".into()), Some("2".into())],
+                ),
+            ] {
+                let m = run(&mut s, &sql, ext);
+                assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+                assert_eq!(
+                    m.iter()
+                        .filter(|m| m.0 == b'D')
+                        .map(|m| text_row(&m.1))
+                        .collect::<Vec<_>>(),
+                    vec![expected]
+                );
+            }
+            let m = run(
+                &mut s,
+                &format!("SELECT adnum FROM pg_attrdef WHERE adrelid='public.{name}'::regclass"),
+                ext,
+            );
+            assert!(
+                !m.iter().any(|m| m.0 == b'E' || m.0 == b'D'),
+                "identity default: {m:?}"
+            );
+            for bad in [
+                format!("SELECT pg_get_serial_sequence('public.{name}', 'missing')"),
+                "SELECT pg_get_serial_sequence('public.pg1129_missing', 'id')".into(),
+            ] {
+                let m = run(&mut s, &bad, ext);
+                assert!(m.iter().any(|m| m.0 == b'E'), "{bad}: {m:?}");
+                ok(&mut s, "SELECT 1", ext);
+            }
+
+            let m = run(
+                &mut s,
+                &format!(
+                    "SELECT pg_get_serial_sequence('public.{name}', 'plain'), pg_get_serial_sequence(NULL, 'id')"
+                ),
+                ext,
+            );
+            assert_eq!(
+                text_row(&m.iter().find(|m| m.0 == b'D').unwrap().1),
+                vec![None, None]
+            );
+            ok(&mut s, &format!("INSERT INTO {name} DEFAULT VALUES"), ext);
+            let m = run(&mut s, &format!("SELECT id FROM {name}"), ext);
+            assert_eq!(
+                text_row(&m.iter().find(|m| m.0 == b'D').unwrap().1),
+                vec![Some("10".into())]
+            );
+            ok(&mut s, &format!("DROP TABLE {name}"), ext);
+            let m = run(
+                &mut s,
+                &format!("SELECT relname FROM pg_class WHERE oid='{sequence}'::regclass"),
+                ext,
+            );
+            assert!(
+                m.iter().any(|m| m.0 == b'E'),
+                "owned sequence survived DROP: {m:?}"
+            );
+            ok(&mut s, "SELECT 1", ext);
+        }
+        send(&mut s, b'X', &[]);
+    }
+    service.close();
+}

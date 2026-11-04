@@ -828,6 +828,16 @@ impl CatalogQuery {
                 }
                 match (name, args.as_slice()) {
                     ("current_user", []) => Ok((253, 0)),
+                    ("pg_get_serial_sequence", [a, b])
+                        if [a, b].iter().all(|arg| {
+                            matches!(arg, Expr::Null)
+                                || self
+                                    .expr_type(arg)
+                                    .is_ok_and(|(code, _)| textual_type(code))
+                        }) =>
+                    {
+                        Ok((253, 0))
+                    }
                     ("pg_is_in_recovery", []) => {
                         Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
                     }
@@ -1689,6 +1699,71 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                "pg_get_serial_sequence" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
+                    (Value::Null, _) | (_, Value::Null) => Value::Null,
+                    (Value::Text(relation), Value::Text(column)) => {
+                        let snapshot = snapshot.ok_or_else(|| {
+                            ConnError::Session("schema snapshot is unavailable".into())
+                        })?;
+                        let oid = crate::pg_oid::resolve_with_path(
+                            &relation,
+                            database,
+                            snapshot,
+                            self.public_first,
+                        )?;
+                        // Follow the durable column reference; never infer ownership from names.
+                        let mut sequence_id = None;
+                        let mut found_column = false;
+                        for schema in snapshot
+                            .AllSchemas()
+                            .into_iter()
+                            .filter(|s| s.name.lower == database.to_lowercase())
+                        {
+                            for table in snapshot
+                                .SchemaTableInfos(&schema.name)
+                                .map_err(|e| ConnError::Session(e.to_string()))?
+                            {
+                                if crate::pg_oid::table_oid(table.id).ok() != Some(oid) {
+                                    continue;
+                                }
+                                if let Some(model) = &table.model_meta {
+                                    if let Some(col) =
+                                        model.Columns.iter().find(|c| c.Name.O == column)
+                                    {
+                                        found_column = true;
+                                        sequence_id =
+                                            col.PostgreSQLIdentity.as_ref().map(|i| i.SequenceID);
+                                    }
+                                }
+                            }
+                        }
+                        if !found_column {
+                            return Err(ConnError::Session(format!("Unknown column {column}")));
+                        }
+                        let mut result = Value::Null;
+                        if let Some(id) = sequence_id {
+                            for schema in snapshot
+                                .AllSchemas()
+                                .into_iter()
+                                .filter(|s| s.name.lower == database.to_lowercase())
+                            {
+                                for table in snapshot
+                                    .SchemaTableInfos(&schema.name)
+                                    .map_err(|e| ConnError::Session(e.to_string()))?
+                                {
+                                    if table.id == id {
+                                        result = Value::Text(format!(
+                                            "public.{}",
+                                            crate::pg_oid::quoted(&table.name.original)
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        result
+                    }
+                    _ => unreachable!("validated serial sequence arguments"),
+                },
                 "translate" => match (
                     evaluate(&args[0])?,
                     evaluate(&args[1])?,
