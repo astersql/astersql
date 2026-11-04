@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -134,7 +134,7 @@ def observe_transaction(side, admin_dsn):
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
         for extended in (False, True):
-            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case == 'failed_rollback' else ('30', 'NULL'))):
+            for inserted in (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else ('30', 'NULL'))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -157,7 +157,7 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
-                if a.case == 'failed_rollback':
+                if a.case in ('failed_rollback', 'failed_commit'):
                     failure = 'INSERT INTO public.tx_contract VALUES (1,99)' if inserted == '23505' else 'SELECT 1/0 AS bad'
                     def error(sql, code, state):
                         r = A.query(sql, extended, required=False)
@@ -178,6 +178,22 @@ def observe_transaction(side, admin_dsn):
                     check(A, [['1','11'],['2','20'],['3','30']], 'T')
                     check(B, initial, 'I')
                     error(failure, inserted, 'E')
+                    if a.case == 'failed_commit':
+                        command(A, 'COMMIT', 'ROLLBACK', 'I')
+                        for conn in (A,B):
+                            check(conn, initial, 'I')
+                            probe(conn)
+                        command(A, 'BEGIN', 'BEGIN', 'T')
+                        command(A, 'INSERT INTO public.tx_contract VALUES (5,50)', 'INSERT 0 1', 'T', '1')
+                        check(B, initial, 'I')
+                        command(A, 'COMMIT', 'COMMIT', 'I')
+                        for conn in (A,B):
+                            check(conn, initial + [['5','50']], 'I')
+                        A.query('DROP TABLE public.tx_contract')
+                        for conn in (A,B):
+                            conn.close()
+                        record['cleanup'].append({'mode':'extended' if extended else 'simple','first_error':inserted,'table_dropped':True,'connections_closed':True})
+                        continue
                     for sql in ('SELECT 1::int4', O,
                                 'INSERT INTO public.tx_contract VALUES (4,40)',
                                 'UPDATE public.tx_contract SET value=99 WHERE id=2',
@@ -386,7 +402,7 @@ for side, dsn in [('reference', reference), ('aster', f'host={a.host} port={a.po
 def behavior(record):
     return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
-            if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case == 'failed_rollback' and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
+            if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case in ('failed_rollback', 'failed_commit') and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
 reference_behavior, aster_behavior = [behavior(outputs[side]) for side in ('reference','aster')]
 # The recovery probe's implicit expression name is a separate existing SQL
 # naming difference, not a transaction outcome. Preserve raw metadata above
@@ -401,7 +417,7 @@ for ref, local in zip(reference_behavior, aster_behavior):
         ref['columns'] = [dict(ref['columns'][0], name='<implicit recovery expression>')]
         local['columns'] = [dict(local['columns'][0], name='<implicit recovery expression>')]
 (evidence / 'comparison.json').write_text(json.dumps({'recovery_probe_name_differences':probe_names},indent=2))
-if a.case in ('single_implicit', 'failed_rollback'):
+if a.case in ('single_implicit', 'failed_rollback', 'failed_commit'):
     # Raw diagnostics remain in endpoint evidence; compare SQLSTATE while
     # recording backend-specific wording and detail/position differences.
     differences = []

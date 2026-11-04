@@ -662,6 +662,13 @@ impl PgService {
                                     )?;
                                     continue;
                                 }
+                                let failed_commit =
+                                    extended.session.failed_commit(command, context.as_ref());
+                                let (sql, command) = if failed_commit {
+                                    (std::borrow::Cow::Borrowed("ROLLBACK"), "ROLLBACK")
+                                } else {
+                                    (sql, command)
+                                };
                                 if let Some(messages) = extended
                                     .session
                                     .repeated_begin(command, context.as_ref())

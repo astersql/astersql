@@ -137,17 +137,14 @@ fn failed_transaction_requires_rollback() {
     assert_eq!(failure[0].0, b'E');
     assert_eq!(failure.last(), Some(&(b'Z', b"E".to_vec())));
 
-    for sql in ["SELECT 1", "COMMIT"] {
-        let blocked = query(&mut socket, sql);
-        assert_eq!(blocked[0].0, b'E', "{sql}: {blocked:?}");
-        assert_eq!(error_state(&blocked[0].1), Some("25P02"), "{sql}");
-        assert_eq!(blocked.last(), Some(&(b'Z', b"E".to_vec())));
-    }
+    let blocked = query(&mut socket, "SELECT 1");
+    assert_eq!(blocked[0].0, b'E', "{blocked:?}");
+    assert_eq!(error_state(&blocked[0].1), Some("25P02"));
+    assert_eq!(blocked.last(), Some(&(b'Z', b"E".to_vec())));
 
-    assert_eq!(
-        query(&mut socket, "ROLLBACK").last(),
-        Some(&(b'Z', b"I".to_vec()))
-    );
+    let committed = query(&mut socket, "COMMIT");
+    assert_eq!(committed[0], (b'C', b"ROLLBACK\0".to_vec()));
+    assert_eq!(committed.last(), Some(&(b'Z', b"I".to_vec())));
     assert_eq!(
         row_count(&query(&mut socket, "SELECT id FROM public.pg_tx_failed")),
         0
@@ -1620,6 +1617,11 @@ fn pg12_outside_end() {
 #[test]
 fn pg12_disconnect() {
     pg12_transaction_case("disconnect");
+}
+
+#[test]
+fn pg12_failed_commit() {
+    pg12_transaction_case("failed_commit");
 }
 
 #[test]

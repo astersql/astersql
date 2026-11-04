@@ -2228,6 +2228,15 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
+                    if self.session.failed_commit(command, context.as_ref()) {
+                        transaction_control(context, "ROLLBACK")?;
+                        self.session
+                            .record_success(Some("ROLLBACK"), context.as_ref());
+                        let messages = vec![(b'C', b"ROLLBACK\0".to_vec())];
+                        portal.offset = messages.len();
+                        portal.messages = Some(messages.clone());
+                        return Ok(messages);
+                    }
                     let repeated_begin = if self.implicit_transaction {
                         None
                     } else {

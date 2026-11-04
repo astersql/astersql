@@ -144,7 +144,7 @@ impl PgSession {
             self.failed_transaction = false;
             return Ok(());
         }
-        if self.failed_transaction && command != Some("ROLLBACK") {
+        if self.failed_transaction && !matches!(command, Some("ROLLBACK" | "COMMIT")) {
             return Err((
                 "25P02",
                 "current transaction is aborted, commands ignored until end of transaction block"
@@ -174,6 +174,12 @@ impl PgSession {
             ));
         }
         Ok(())
+    }
+
+    /// COMMIT in an aborted block must execute a real rollback. The caller
+    /// reports completion only after the shared engine confirms success.
+    pub(crate) fn failed_commit(&self, command: &str, context: &dyn TiDBContext) -> bool {
+        command == "COMMIT" && self.failed_transaction && context.in_transaction()
     }
 
     /// PostgreSQL BEGIN in an active block is a warning and a no-op. Never
