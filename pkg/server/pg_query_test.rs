@@ -31158,3 +31158,294 @@ fn pg11_16() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_18() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn value(s: &mut TcpStream, sql: &str, ext: bool, expected: Option<&str>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(
+            catalog_rows(&m),
+            vec![vec![expected.map(str::to_owned)]],
+            "{sql}: {m:?}"
+        );
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+        assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        let next = "SELECT nextval('public.seq_range'::regclass) AS v";
+        let curr = "SELECT currval('public.seq_range'::regclass) AS v";
+        let create = "CREATE SEQUENCE public.seq_range AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE";
+        ok(&mut a, create, ext);
+        ok(
+            &mut a,
+            "CREATE TABLE public.seq_range_rows (id integer PRIMARY KEY,v bigint)",
+            ext,
+        );
+        value(&mut a, next, ext, Some("10"));
+        // Bounds rejects must leave both connection and shared watermarks untouched.
+        for sql in [
+            "SELECT setval('public.seq_range'::regclass,0) AS v",
+            "SELECT setval('public.seq_range'::regclass,1001,false) AS v",
+        ] {
+            denied(&mut a, sql, ext, "22003");
+            value(&mut a, curr, ext, Some("10"));
+        }
+        value(&mut b, next, ext, Some("11"));
+        value(
+            &mut a,
+            "SELECT setval('public.seq_range'::regclass,1000,true) AS v",
+            ext,
+            Some("1000"),
+        );
+        for _ in 0..2 {
+            denied(&mut a, next, ext, "2200H");
+            value(&mut a, curr, ext, Some("1000"));
+        }
+        value(
+            &mut a,
+            "SELECT setval('public.seq_range'::regclass,999,false) AS v",
+            ext,
+            Some("999"),
+        );
+        value(&mut a, next, ext, Some("999"));
+        value(&mut b, next, ext, Some("1000"));
+        denied(&mut b, next, ext, "2200H");
+        ok(&mut a, "DROP SEQUENCE public.seq_range", ext);
+        ok(&mut a, create, ext);
+        // Every invalid-object/signature probe leaves a fresh valid sequence at 10.
+        for function in ["nextval", "currval", "setval"] {
+            let tail = if function == "setval" { ",40" } else { "" };
+            for (name, code) in [
+                ("public.seq_range_missing", "42P01"),
+                ("public.seq_range_rows", "42809"),
+            ] {
+                denied(
+                    &mut a,
+                    &format!("SELECT {function}('{name}'::regclass{tail}) AS v"),
+                    ext,
+                    code,
+                );
+            }
+        }
+        for sql in [
+            "SELECT nextval(true) AS v",
+            "SELECT currval(1.5) AS v",
+            "SELECT setval('public.seq_range'::regclass,true) AS v",
+            "SELECT setval('public.seq_range'::regclass,1.5) AS v",
+            "SELECT setval('public.seq_range'::regclass,40,1) AS v",
+        ] {
+            denied(&mut a, sql, ext, "42883");
+        }
+        for sql in [
+            "SELECT nextval(NULL::regclass) AS v",
+            "SELECT currval(NULL::regclass) AS v",
+            "SELECT setval(NULL::regclass,40) AS v",
+            "SELECT setval('public.seq_range'::regclass,NULL) AS v",
+            "SELECT setval('public.seq_range'::regclass,40,NULL) AS v",
+        ] {
+            value(&mut a, sql, ext, None);
+        }
+        denied(&mut a, curr, ext, "55000");
+        value(&mut b, next, ext, Some("10"));
+        ok(&mut a, "DROP SEQUENCE public.seq_range", ext);
+        ok(&mut a, create, ext);
+        // Independent bounds/transaction fixture: row rollback and sequence state differ.
+        assert_eq!(
+            run(&mut a, "BEGIN", ext).last().unwrap(),
+            &(b'Z', b"T".to_vec())
+        );
+        let m = run(&mut a, next, ext);
+        assert_eq!(catalog_rows(&m), vec![vec![Some("10".to_owned())]]);
+        assert_eq!(m.last().unwrap(), &(b'Z', b"T".to_vec()));
+        let m = run(
+            &mut a,
+            "INSERT INTO public.seq_range_rows VALUES (1,10)",
+            ext,
+        );
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"T".to_vec()));
+        for (sql, code) in [
+            (
+                "SELECT setval('public.seq_range'::regclass,0) AS v",
+                "22003",
+            ),
+            ("SELECT 1", "25P02"),
+        ] {
+            let m = run(&mut a, sql, ext);
+            assert!(
+                m.iter()
+                    .any(|m| m.0 == b'E'
+                        && m.1.windows(7).any(|w| w == format!("C{code}\0").as_bytes())),
+                "{sql}: {m:?}"
+            );
+            assert_eq!(m.last().unwrap(), &(b'Z', b"E".to_vec()));
+        }
+        if ext {
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"E".to_vec()));
+        }
+        ok(&mut a, "ROLLBACK", ext);
+        value(&mut a, curr, ext, Some("10"));
+        value(&mut b, next, ext, Some("11"));
+        let m = run(
+            &mut b,
+            "SELECT id,v FROM public.seq_range_rows ORDER BY id",
+            ext,
+        );
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{m:?}");
+        assert!(catalog_rows(&m).is_empty());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(&mut a, "DROP SEQUENCE public.seq_range", ext);
+        ok(&mut a, "DROP TABLE public.seq_range_rows", ext);
+        // Initial allocation and non-congruent reset follow the declared signed step.
+        for (start, step, min, max, reset, after) in
+            [(10, 3, 1, 1000, 20, 23), (-10, -3, -1000, -1, -20, -23)]
+        {
+            ok(
+                &mut a,
+                &format!(
+                    "CREATE SEQUENCE public.seq_range AS bigint START WITH {start} INCREMENT BY {step} MINVALUE {min} MAXVALUE {max} CACHE 1 NO CYCLE"
+                ),
+                ext,
+            );
+            value(&mut a, next, ext, Some(&start.to_string()));
+            value(&mut b, next, ext, Some(&(start + step).to_string()));
+            value(
+                &mut a,
+                &format!("SELECT setval('public.seq_range'::regclass,{reset},true) AS v"),
+                ext,
+                Some(&reset.to_string()),
+            );
+            value(&mut b, next, ext, Some(&after.to_string()));
+            let boundary = if step > 0 { max } else { min };
+            value(
+                &mut a,
+                &format!("SELECT setval('public.seq_range'::regclass,{boundary},false) AS v"),
+                ext,
+                Some(&boundary.to_string()),
+            );
+            value(&mut b, next, ext, Some(&boundary.to_string()));
+            denied(&mut b, next, ext, "2200H");
+            value(&mut b, curr, ext, Some(&boundary.to_string()));
+            ok(&mut a, "DROP SEQUENCE public.seq_range", ext);
+        }
+        ok(&mut a, "SELECT 1", ext);
+        ok(&mut b, "SELECT 1", ext);
+        if ext {
+            for s in [&mut a, &mut b] {
+                for kind in [b'P', b'S'] {
+                    send(s, b'C', &[kind, 0]);
+                    assert_eq!(read(s), (b'3', vec![]));
+                }
+                send(s, b'S', &[]);
+                assert_eq!(read(s), (b'Z', b"I".to_vec()));
+            }
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_18 ext={ext}: bounds, exhaustion, objects, signatures, NULL, transaction recovery, positive step, negative step: 8 groups passed"
+        );
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
