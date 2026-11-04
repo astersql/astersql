@@ -941,7 +941,7 @@ pub const DefaultNegativeSequenceMaxValue: i64 = -1;
 /// 负序列默认最小值。
 pub const DefaultNegativeSequenceMinValue: i64 = -9_223_372_036_854_775_807;
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 /// 序列对象参数。
 pub struct SequenceInfo {

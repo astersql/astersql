@@ -492,6 +492,108 @@ fn build_column(definition: &ast::ColumnDef, offset: usize) -> BuildResult<model
             }
             ast::ColumnOptionType::NotNull => column.AddFlag(model::mysql::NotNullFlag),
             ast::ColumnOptionType::Null => column.DelFlag(model::mysql::NotNullFlag),
+            ast::ColumnOptionType::PostgreSQLIdentity => {
+                if column.PostgreSQLIdentity.is_some()
+                    || definition.Options.iter().any(|o| {
+                        matches!(
+                            o.Tp,
+                            ast::ColumnOptionType::DefaultValue
+                                | ast::ColumnOptionType::Null
+                                | ast::ColumnOptionType::Generated
+                                | ast::ColumnOptionType::AutoIncrement
+                        )
+                    })
+                {
+                    return Err(build_error(
+                        "identity conflicts with another column declaration",
+                    ));
+                }
+                let declaration = option
+                    .PostgreSQLIdentity
+                    .as_ref()
+                    .ok_or_else(|| build_error("missing identity declaration"))?;
+                let maximum = match column.GetType() {
+                    model::mysql::TypeShort => i16::MAX as i64,
+                    model::mysql::TypeLong => i32::MAX as i64,
+                    model::mysql::TypeLonglong => i64::MAX,
+                    _ => return Err(build_error("identity requires smallint, integer or bigint")),
+                };
+                let mut sequence = model::SequenceInfo {
+                    Start: 1,
+                    MinValue: 1,
+                    MaxValue: maximum,
+                    Increment: 1,
+                    Cache: true,
+                    CacheValue: 1,
+                    ..Default::default()
+                };
+                let mut seen = std::collections::HashSet::new();
+                for option in &declaration.Options {
+                    use ast::SequenceOptionType as T;
+                    let category = match option.Tp {
+                        T::StartWith => 1,
+                        T::IncrementBy => 2,
+                        T::MinValue | T::NoMinValue => 3,
+                        T::MaxValue | T::NoMaxValue => 4,
+                        T::Cache | T::NoCache => 5,
+                        T::Cycle | T::NoCycle => 6,
+                        _ => return Err(build_error("invalid identity sequence option")),
+                    };
+                    if !seen.insert(category) {
+                        return Err(build_error("duplicate identity sequence option"));
+                    }
+                    match option.Tp {
+                        T::StartWith => sequence.Start = option.IntValue,
+                        T::IncrementBy => sequence.Increment = option.IntValue,
+                        T::MinValue => sequence.MinValue = option.IntValue,
+                        T::MaxValue => sequence.MaxValue = option.IntValue,
+                        T::Cache => sequence.CacheValue = option.IntValue,
+                        T::Cycle => sequence.Cycle = true,
+                        _ => {}
+                    }
+                }
+                if !seen.contains(&1) {
+                    sequence.Start = sequence.MinValue;
+                }
+                // This bounded initial identity implementation supports positive steps.
+                // Reject other declarations before installing any catalog objects.
+                if sequence.Increment == 0 || sequence.CacheValue <= 0 {
+                    return Err(build_error("invalid identity sequence increment or cache"));
+                }
+                if sequence.Start == i64::MIN {
+                    return Err(build_error(
+                        "identity START at bigint minimum is not supported",
+                    ));
+                }
+                if sequence.Increment < 0 || sequence.CacheValue != 1 {
+                    return Err(build_error(
+                        "identity currently requires positive INCREMENT and CACHE 1",
+                    ));
+                }
+                let minimum = match column.GetType() {
+                    model::mysql::TypeShort => i16::MIN as i64,
+                    model::mysql::TypeLong => i32::MIN as i64,
+                    _ => i64::MIN,
+                };
+                if sequence.MinValue < minimum
+                    || sequence.MaxValue > maximum
+                    || sequence.MinValue >= sequence.MaxValue
+                    || i128::from(sequence.Increment)
+                        > i128::from(sequence.MaxValue) - i128::from(sequence.MinValue)
+                    || sequence.Start < sequence.MinValue
+                    || sequence.Start > sequence.MaxValue
+                {
+                    return Err(build_error(
+                        "identity sequence bounds exceed declared integer type",
+                    ));
+                }
+                column.PostgreSQLIdentity = Some(model::PostgreSQLIdentity {
+                    Always: declaration.Always,
+                    SequenceID: 0,
+                    Sequence: sequence,
+                });
+                column.AddFlag(model::mysql::NotNullFlag);
+            }
             ast::ColumnOptionType::AutoIncrement => {
                 column.AddFlag(model::mysql::AutoIncrementFlag | model::mysql::NotNullFlag)
             }

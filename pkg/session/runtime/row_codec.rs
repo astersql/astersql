@@ -1183,6 +1183,34 @@ impl ConcreteSession {
         column: &astersql_meta_model::ColumnInfo,
     ) -> SessionResult<Option<String>> {
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && let Some(identity) = &column.PostgreSQLIdentity
+        {
+            let sequence = self
+                .domain
+                .info_schema()
+                .TableByID(identity.SequenceID)
+                .ok_or_else(|| SessionError::new("identity sequence is missing"))?
+                .ModelMeta()
+                .map_err(|error| session_error("resolve identity sequence", error))?;
+            let value =
+                self.domain
+                    .sequence_next_value(&sequence)
+                    .map_err(|error| match error {
+                        astersql_meta_autoid::AutoIdError::AutoIncrementReadFailed(_) => {
+                            super::query::pg_union_error(
+                                "identity sequence has reached its limit",
+                                "2200H",
+                            )
+                        }
+                        _ => session_error("allocate identity value", error),
+                    })?;
+            self.state
+                .borrow_mut()
+                .pg_sequence_values
+                .insert(sequence.ID, value);
+            return Ok(Some(value.to_string()));
+        }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
             && column.DefaultIsExpr
             && let Some(astersql_meta_model::DefaultValue::String(bytes)) = column.GetDefaultValue()
         {

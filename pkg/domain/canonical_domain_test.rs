@@ -1988,3 +1988,116 @@ fn port_d0665b0713_drop_schema_external_ttl_failure_restores_registrations_and_m
         );
     }
 }
+
+#[test]
+fn identity_catalog_creation_and_drop_are_atomic() {
+    use astersql_meta_model::{ColumnInfo, PostgreSQLIdentity, SequenceInfo, TableInfo};
+    use astersql_parser_ast::NewCIStr;
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    let loader = super::canonical_domain::KvInfoSchemaLoader::new();
+    let mut column = ColumnInfo::New(1, NewCIStr("id"));
+    column.PostgreSQLIdentity = Some(PostgreSQLIdentity {
+        Always: true,
+        SequenceID: 0,
+        Sequence: SequenceInfo {
+            Start: 10,
+            Increment: 1,
+            MinValue: 1,
+            MaxValue: 1000,
+            Cache: true,
+            CacheValue: 1,
+            ..Default::default()
+        },
+    });
+    let definition = TableInfo {
+        Name: NewCIStr("identity_probe"),
+        ExactName: true,
+        State: astersql_meta_model::StatePublic,
+        Columns: vec![column],
+        ..Default::default()
+    };
+    let created = service
+        .create_table(storage.as_ref(), "test", definition.clone(), false)
+        .unwrap();
+    assert_eq!(created.new_tables.len(), 2);
+    let table = &created.new_tables[0].1;
+    let sequence = &created.new_tables[1].1;
+    assert_ne!(table.ID, sequence.ID);
+    assert_eq!(
+        table.Columns[0]
+            .PostgreSQLIdentity
+            .as_ref()
+            .unwrap()
+            .SequenceID,
+        sequence.ID
+    );
+    assert_eq!(table.DBID, sequence.DBID);
+    let snapshot = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert!(snapshot.schema.TableByID(sequence.ID).is_some());
+    assert_eq!(snapshot.schema.SchemaMetaVersion(), created.schema_version);
+    assert!(
+        service
+            .create_table(storage.as_ref(), "test", definition.clone(), false)
+            .is_err()
+    );
+    assert!(
+        service
+            .drop_table_ids(storage.as_ref(), &[sequence.ID])
+            .is_err()
+    );
+    let snapshot2 = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert_eq!(
+        snapshot2.schema.SchemaMetaVersion(),
+        snapshot.schema.SchemaMetaVersion()
+    );
+    let dropped = service
+        .drop_table_ids(storage.as_ref(), &[table.ID])
+        .unwrap();
+    assert_eq!(dropped.old_tables.len(), 2);
+    let snapshot3 = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert!(snapshot3.schema.TableByID(table.ID).is_none());
+    assert!(snapshot3.schema.TableByID(sequence.ID).is_none());
+    let recreated = service
+        .create_table(storage.as_ref(), "test", definition.clone(), false)
+        .unwrap();
+    assert_ne!(recreated.new_tables[0].1.ID, table.ID);
+    assert_ne!(recreated.new_tables[1].1.ID, sequence.ID);
+    service
+        .drop_table_ids(storage.as_ref(), &[recreated.new_tables[0].1.ID])
+        .unwrap();
+    // A collision on the internal sequence aborts the table and ID publication.
+    service
+        .create_table(
+            storage.as_ref(),
+            "test",
+            TableInfo {
+                Name: NewCIStr("identity_probe__identity_1"),
+                ExactName: true,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    let before = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert!(
+        service
+            .create_table(storage.as_ref(), "test", definition, false)
+            .is_err()
+    );
+    let after = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert_eq!(
+        before.schema.SchemaMetaVersion(),
+        after.schema.SchemaMetaVersion()
+    );
+    assert!(
+        after
+            .schema
+            .ModelTableInfoByExactName(&infoschema::CiString::new("test"), "identity_probe")
+            .is_err()
+    );
+}

@@ -2420,6 +2420,38 @@ impl ConcreteSession {
                 "0A000",
             ));
         }
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+            && table
+                .Columns
+                .iter()
+                .any(|c| c.PostgreSQLIdentity.as_ref().is_some_and(|i| i.Always))
+        {
+            let names = if statement.Columns.is_empty() {
+                table
+                    .Columns
+                    .iter()
+                    .filter(|c| !c.Hidden && !c.IsGenerated())
+                    .map(|c| c.Name.L.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                statement.Columns.iter().map(|c| c.Name.L.clone()).collect()
+            };
+            for expressions in &statement.Lists {
+                for (name, expr) in names.iter().zip(expressions) {
+                    if table.Columns.iter().any(|c| {
+                        c.Name.L == *name && c.PostgreSQLIdentity.as_ref().is_some_and(|i| i.Always)
+                    }) && !matches!(
+                        expr.Kind,
+                        ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
+                    ) {
+                        return Err(super::query::pg_union_error(
+                            "explicit values for GENERATED ALWAYS identity require an overriding policy",
+                            "0A000",
+                        ));
+                    }
+                }
+            }
+        }
         let has_foreign_key_checks = !table.ForeignKeys.is_empty();
         self.record_transaction_table_write(&table);
         if let Some(indexes) = RUNTIME_PENDING_WRITE_INDEXES
@@ -3176,6 +3208,7 @@ impl ConcreteSession {
                     continue;
                 }
                 let mut value = if strict_sql_mode
+                    && column.PostgreSQLIdentity.is_none()
                     && column.GetDefaultValue().is_none()
                     && !column.DefaultIsExpr
                 {

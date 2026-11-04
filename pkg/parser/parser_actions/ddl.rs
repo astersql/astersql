@@ -19,6 +19,9 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum DdlRule {
+    PgIdentityAlways,
+    PgIdentity,
+    PgIdentityOptions,
     PgUnsupportedConstraint,
     PgUnsupportedConstraintElement,
     PgNamedUnique,
@@ -629,6 +632,16 @@ enum DdlRule {
 
 fn identify(rule_id: RuleId) -> Option<DdlRule> {
     match rule_id.as_str() {
+        "columnoption_generated_by_default_as_identifier--e26b3df928020dea"
+        | "columnoption_generatedalways_as_identifier_pgide--6c8dd84369343e4d" => {
+            Some(DdlRule::PgIdentity)
+        }
+        "generatedalways--729d5fea5f580e0f"
+        | "generatedalways_generated_always--6aea9730473969bc" => Some(DdlRule::PgIdentityAlways),
+        "pgidentityoptions--7f0910dd5d5ef00c"
+        | "pgidentityoptions_sequenceoptionlist--adf7df0b2e4a7ec8" => {
+            Some(DdlRule::PgIdentityOptions)
+        }
         "pgunsupportedconstraint_pgconstraintexclude_usin--76304ede8c3d89cb"
         | "pgunsupportedconstraint_unique_keyorindexopt_ind--465cc2e4c8cf10ac" => Some(DdlRule::PgUnsupportedConstraint),
         "constraintelem_pgunsupportedconstraint--4eafa643ad45e397"
@@ -1963,6 +1976,49 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         lexer: yylex,
     } = context;
     match rule {
+        DdlRule::PgIdentityAlways => {
+            out.item = Some(Box::new(rhs_len != 0));
+        }
+        DdlRule::PgIdentityOptions => {
+            out.item = Some(Box::new(if rhs_len == 0 {
+                Vec::<parser_ast::SequenceOption>::new()
+            } else {
+                rhs[rhs_len - 1]
+                    .item
+                    .as_deref()
+                    .and_then(|v| v.downcast_ref::<Vec<parser_ast::SequenceOption>>())
+                    .cloned()
+                    .unwrap_or_default()
+            }));
+        }
+        DdlRule::PgIdentity => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL
+                || (rhs_len == 4
+                    && !rhs[1]
+                        .item
+                        .as_deref()
+                        .and_then(|v| v.downcast_ref::<bool>())
+                        .copied()
+                        .unwrap_or(false))
+                || !rhs[rhs_len - 1].ident.eq_ignore_ascii_case("identity")
+            {
+                yylex.AppendError(yylex.Errorf("expected PostgreSQL IDENTITY declaration", &[]));
+                return Err(1);
+            }
+            out.item = Some(Box::new(parser_ast::ColumnOption {
+                Tp: parser_ast::ColumnOptionType::PostgreSQLIdentity,
+                PostgreSQLIdentity: Some(parser_ast::PostgreSQLIdentity {
+                    Always: rhs_len == 4,
+                    Options: rhs[rhs_len]
+                        .item
+                        .as_deref()
+                        .and_then(|v| v.downcast_ref::<Vec<parser_ast::SequenceOption>>())
+                        .cloned()
+                        .unwrap_or_default(),
+                }),
+                ..Default::default()
+            }));
+        }
         DdlRule::PgUnsupportedConstraint | DdlRule::PgUnsupportedConstraintElement => {
             if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
                 yylex.AppendError(yylex.Errorf("PostgreSQL constraint syntax", &[]));

@@ -2791,6 +2791,24 @@ fn sequence_dependency_rows(
                 table.name.original
             ))
         })?;
+        if model.State == astersql_meta_model::StatePublic {
+            for (position, column) in model.Columns.iter().enumerate() {
+                if let Some(identity) = &column.PostgreSQLIdentity {
+                    rows.push(vec![
+                        Value::Signed(classid),
+                        Value::Signed(i64::from(crate::pg_oid::table_oid(identity.SequenceID)?)),
+                        Value::Signed(classid),
+                        Value::Signed(i64::from(crate::pg_oid::table_oid(model.ID)?)),
+                        Value::Signed(position as i64 + 1),
+                        Value::Text("i".into()),
+                        Value::Signed(0),
+                    ]);
+                    if rows.len() > MAX_CATALOG_ROWS {
+                        return Err(catalog_row_limit());
+                    }
+                }
+            }
+        }
         if model.State != astersql_meta_model::StatePublic || model.Sequence.is_none() {
             continue;
         }
@@ -3452,8 +3470,15 @@ fn column_catalog_rows(
                     // tombstone attributes; surviving offsets remain authoritative.
                     Value::Text("false".into()),
                     Value::Text("true".into()),
-                    // AUTO_INCREMENT is not a PG identity or sequence.
-                    Value::Text(String::new()),
+                    // Only explicit durable identity metadata supplies this attribute.
+                    Value::Text(
+                        column
+                            .PostgreSQLIdentity
+                            .as_ref()
+                            .map(|i| if i.Always { "a" } else { "d" })
+                            .unwrap_or("")
+                            .into(),
+                    ),
                     Value::Text(String::new()),
                     Value::Null,
                     Value::Text(default.is_some().to_string()),

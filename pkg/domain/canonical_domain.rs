@@ -402,9 +402,36 @@ impl DdlMetadataService {
                 .expect("database inserted above");
             table.DBID = database_info.ID;
             assign_table_physical_ids(catalog, &mut table);
+            let mut new_tables = Vec::new();
+            for column in &mut table.Columns {
+                if let Some(identity) = column.PostgreSQLIdentity.as_mut() {
+                    let name = format!("{}__identity_{}", table.Name.O, column.ID);
+                    let key = (database.clone(), name.clone());
+                    if catalog.tables.contains_key(&key) {
+                        return Err(kv::errors::New("identity sequence name already exists"));
+                    }
+                    let mut sequence = TableInfo {
+                        Name: ast::NewCIStr(&name),
+                        DBID: table.DBID,
+                        ExactName: table.ExactName,
+                        State: astersql_meta_model::StatePublic,
+                        Sequence: Some(identity.Sequence.clone()),
+                        PostgreSQLNamespace: table
+                            .PostgreSQLNamespace
+                            .as_ref()
+                            .map(|(id, name)| (*id, format!("{name}__identity_{}", column.ID))),
+                        ..Default::default()
+                    };
+                    assign_table_physical_ids(catalog, &mut sequence);
+                    identity.SequenceID = sequence.ID;
+                    catalog.tables.insert(key, sequence.clone());
+                    new_tables.push((database.clone(), sequence));
+                }
+            }
             catalog.tables.insert(key, table.clone());
+            new_tables.insert(0, (database, table));
             Ok(DdlMetadataChange {
-                new_tables: vec![(database, table)],
+                new_tables,
                 changed: true,
                 ..DdlMetadataChange::default()
             })
@@ -580,7 +607,25 @@ impl DdlMetadataService {
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         self.mutate(store, |catalog| {
             let mut old_tables = Vec::new();
-            for id in ids {
+            let requested: std::collections::HashSet<i64> = ids.iter().copied().collect();
+            let mut all = ids.to_vec();
+            for table in catalog.tables.values() {
+                for column in &table.Columns {
+                    if let Some(identity) = &column.PostgreSQLIdentity {
+                        if requested.contains(&identity.SequenceID)
+                            && !requested.contains(&table.ID)
+                        {
+                            return Err(kv::errors::New(
+                                "cannot drop internal identity sequence without its table",
+                            ));
+                        }
+                        if requested.contains(&table.ID) && !all.contains(&identity.SequenceID) {
+                            all.push(identity.SequenceID);
+                        }
+                    }
+                }
+            }
+            for id in &all {
                 let key = catalog
                     .tables
                     .iter()
@@ -625,6 +670,44 @@ impl DdlMetadataService {
                     old_tables.push((database, old));
                 } else if !if_exists {
                     return Err(kv::errors::New(format!("unknown table {database}.{table}")));
+                }
+            }
+            // Native folded-name drops must not bypass the internal dependency
+            // protected by the PostgreSQL exact-ID drop path.
+            let removed = old_tables
+                .iter()
+                .map(|(_, t)| t.ID)
+                .collect::<std::collections::HashSet<_>>();
+            if catalog.tables.values().any(|table| {
+                table.Columns.iter().any(|column| {
+                    column
+                        .PostgreSQLIdentity
+                        .as_ref()
+                        .is_some_and(|i| removed.contains(&i.SequenceID))
+                })
+            }) {
+                return Err(kv::errors::New(
+                    "cannot drop internal identity sequence without its table",
+                ));
+            }
+            let owned = old_tables
+                .iter()
+                .flat_map(|(_, table)| {
+                    table
+                        .Columns
+                        .iter()
+                        .filter_map(|c| c.PostgreSQLIdentity.as_ref().map(|i| i.SequenceID))
+                })
+                .collect::<Vec<_>>();
+            for id in owned {
+                if let Some(key) = catalog
+                    .tables
+                    .iter()
+                    .find(|(_, t)| t.ID == id)
+                    .map(|(key, _)| key.clone())
+                {
+                    let sequence = catalog.tables.remove(&key).expect("owned sequence exists");
+                    old_tables.push((key.0, sequence));
                 }
             }
             Ok(DdlMetadataChange {

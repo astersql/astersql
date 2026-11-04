@@ -1716,6 +1716,7 @@ pub enum ColumnOptionType {
     SecondaryEngineAttribute,
     MariaDBRowStart,
     MariaDBRowEnd,
+    PostgreSQLIdentity,
 }
 
 /// 自动随机选项结构体。
@@ -1733,9 +1734,17 @@ impl Default for AutoRandomOption {
     }
 }
 
+/// A PostgreSQL identity declaration, distinct from expression generated columns.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgreSQLIdentity {
+    pub Always: bool,
+    pub Options: Vec<SequenceOption>,
+}
+
 /// 列选项结构体。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ColumnOption {
+    pub PostgreSQLIdentity: Option<PostgreSQLIdentity>,
     pub Tp: ColumnOptionType,
     pub Expr: Option<ExprNode>,
     pub Stored: bool,

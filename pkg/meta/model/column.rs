@@ -249,10 +249,26 @@ pub struct ChangeStateInfo {
     pub DependencyColumnOffset: isize,
 }
 
+/// Persisted identity mode and stable association to an internal sequence.
+/// SequenceID is assigned in the same catalog transaction as the table.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PostgreSQLIdentity {
+    pub Always: bool,
+    pub SequenceID: i64,
+    /// Creation parameters; allocation reads the associated real sequence metadata.
+    pub Sequence: crate::SequenceInfo,
+}
+
 /// 单列完整元数据：类型、默认值、生成列表达式、schema 状态等。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ColumnInfo {
+    /// Explicit PostgreSQL identity; native columns have no association.
+    #[serde(
+        rename = "postgresql_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLIdentity: Option<PostgreSQLIdentity>,
     /// 列唯一 ID。
     #[serde(rename = "id")]
     pub ID: i64,
@@ -324,6 +340,7 @@ impl ColumnInfo {
             ID,
             Name,
             Offset: 0,
+            PostgreSQLIdentity: None,
             OriginDefaultValue: None,
             OriginDefaultValueBit: None,
             DefaultValue: None,

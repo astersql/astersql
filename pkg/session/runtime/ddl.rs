@@ -649,8 +649,25 @@ impl ConcreteSession {
                     astersql_meta_metabuild::WithPreSplitRegions(state.pre_split_regions),
                 ]);
             drop(state);
-            astersql_ddl::BuildTableInfoFromAST(&context, statement)
-                .map_err(|error| session_error("build CREATE TABLE metadata", error))?
+            astersql_ddl::BuildTableInfoFromAST(&context, statement).map_err(|error| {
+                let message = error.to_string();
+                if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+                    let state = match message.as_str() {
+                        "identity currently requires positive INCREMENT and CACHE 1"
+                        | "identity START at bigint minimum is not supported" => Some("0A000"),
+                        "identity sequence bounds exceed declared integer type" => Some("22003"),
+                        "invalid identity sequence increment or cache"
+                        | "identity requires smallint, integer or bigint" => Some("22023"),
+                        "duplicate identity sequence option"
+                        | "identity conflicts with another column declaration" => Some("42601"),
+                        _ => None,
+                    };
+                    if let Some(state) = state {
+                        return super::query::pg_union_error(&message, state);
+                    }
+                }
+                session_error("build CREATE TABLE metadata", error)
+            })?
         };
         if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
             table.PostgreSQLNamespace = self.pg_relation_namespace(&table.Name.O)?;
@@ -2099,6 +2116,20 @@ impl ConcreteSession {
         } else {
             statement.Table.Schema.L.as_str()
         };
+        if self
+            .resolve_runtime_table(database, relation_name(&statement.Table))
+            .is_some_and(|table| {
+                table
+                    .Columns
+                    .iter()
+                    .any(|column| column.PostgreSQLIdentity.is_some())
+            })
+        {
+            return Err(super::query::pg_union_error(
+                "ALTER of identity tables is not supported in this identity generation increment",
+                "0A000",
+            ));
+        }
         let column_is_referenced_by_partial_index =
             |table: &astersql_meta_model::TableInfo, column: &str| {
                 let quoted = format!("`{}`", column.to_ascii_lowercase());

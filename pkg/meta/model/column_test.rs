@@ -192,3 +192,32 @@ fn column_json_uses_go_default_and_byte_shapes() {
         Some(DefaultValue::String(vec![0x19, 0xb9]))
     );
 }
+
+#[test]
+fn postgresql_identity_roundtrip_preserves_sequence_identity() {
+    let mut column = ColumnInfo::New(3, ast::NewCIStr("id"));
+    assert!(round_trip_column(&column).PostgreSQLIdentity.is_none());
+    column.PostgreSQLIdentity = Some(PostgreSQLIdentity {
+        Always: true,
+        SequenceID: 81,
+        Sequence: SequenceInfo {
+            Start: 10,
+            Increment: 1,
+            MinValue: 1,
+            MaxValue: 1000,
+            Cache: true,
+            CacheValue: 1,
+            ..Default::default()
+        },
+    });
+    let copy = round_trip_column(&column);
+    let identity = copy.PostgreSQLIdentity.unwrap();
+    assert!(identity.Always);
+    assert_eq!(identity.SequenceID, 81);
+    assert_eq!(
+        (identity.Sequence.Start, identity.Sequence.MaxValue),
+        (10, 1000)
+    );
+    assert!(copy.DefaultValue.is_none());
+    assert!(!copy.DefaultIsExpr);
+}

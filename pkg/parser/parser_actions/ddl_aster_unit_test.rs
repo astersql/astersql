@@ -8,6 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 const DDL_NONTERMINALS: &[&str] = &[
+    "PgIdentityOptions",
     "PgDefaultSum",
     "PgDefaultTerm",
     "PgDefaultFactor",
@@ -210,7 +211,7 @@ fn ddl_rule_coverage() {
         .map(|production| production.rule_id.as_str())
         .collect::<HashSet<_>>();
 
-    assert_eq!(expected.len(), 609, "DDL RuleId inventory changed");
+    assert_eq!(expected.len(), 615, "DDL RuleId inventory changed");
 
     let owned = RULE_IDS_BY_REDUCTION
         .iter()
@@ -228,4 +229,55 @@ fn ddl_module_has_no_numeric_fallback() {
     assert!(!source.contains("legacy_rule_number"));
     assert!(!source.contains("apply_numeric"));
     assert!(!source.contains("rhs_index"));
+}
+
+#[test]
+fn postgresql_identity_ast_and_default_values() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    for (mode, always) in [("ALWAYS", true), ("BY DEFAULT", false)] {
+        let statement = parser.ParseOneStmt(&format!("CREATE TABLE t (id bigint GENERATED {mode} AS IDENTITY (START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE))"), "", "").unwrap();
+        let create = statement
+            .as_any()
+            .downcast_ref::<parser_ast::CreateTableStmt>()
+            .unwrap();
+        let identity = create.Cols[0].Options[0]
+            .PostgreSQLIdentity
+            .as_ref()
+            .unwrap();
+        assert_eq!(identity.Always, always);
+        assert_eq!(identity.Options.len(), 6);
+        assert_eq!(identity.Options[0].IntValue, 10);
+    }
+    let statement = parser
+        .ParseOneStmt("INSERT INTO t DEFAULT VALUES", "", "")
+        .unwrap();
+    let insert = statement
+        .as_any()
+        .downcast_ref::<parser_ast::InsertStmt>()
+        .unwrap();
+    assert_eq!(insert.Lists, vec![vec![]]);
+    assert!(
+        parser
+            .ParseOneStmt(
+                "CREATE TABLE t (id bigint GENERATED ALWAYS AS other)",
+                "",
+                ""
+            )
+            .is_err()
+    );
+    let mut mysql = crate::New();
+    assert!(
+        mysql
+            .ParseOneStmt(
+                "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY)",
+                "",
+                ""
+            )
+            .is_err()
+    );
+    assert!(
+        mysql
+            .ParseOneStmt("INSERT INTO t DEFAULT VALUES", "", "")
+            .is_err()
+    );
 }

@@ -32110,3 +32110,343 @@ fn pg11_21() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_22() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    fn rows(s: &mut TcpStream, sql: &str, ext: bool, expected: &[Vec<Option<String>>], oid: u32) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}: {m:?}");
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &oid.to_be_bytes(), "{sql}");
+        let length: i16 = match oid {
+            21 => 2,
+            23 => 4,
+            20 => 8,
+            _ => panic!("unexpected identity OID"),
+        };
+        assert_eq!(&d[offset + 10..offset + 12], &length.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        for (ty, oid, maximum) in [
+            ("smallint", 21, i16::MAX as i64),
+            ("integer", 23, i32::MAX as i64),
+            ("bigint", 20, i64::MAX),
+        ] {
+            for (name, mode) in [("identity_a", "ALWAYS"), ("identity_d", "BY DEFAULT")] {
+                let create = format!(
+                    "CREATE TABLE public.{name} (id {ty} GENERATED {mode} AS IDENTITY (START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 CACHE 1 NO CYCLE), note text)"
+                );
+                ok(&mut a, &create, ext);
+                let metadata = run(
+                    &mut b,
+                    &format!(
+                        "SELECT attidentity FROM pg_attribute WHERE attrelid='public.{name}'::regclass AND attname='id'"
+                    ),
+                    ext,
+                );
+                assert_eq!(
+                    catalog_rows(&metadata),
+                    vec![vec![Some(if mode == "ALWAYS" { "a" } else { "d" }.into())]],
+                    "{metadata:?}"
+                );
+                let dependency = run(
+                    &mut b,
+                    &format!(
+                        "SELECT deptype FROM pg_depend WHERE refobjid='public.{name}'::regclass AND refobjsubid=1"
+                    ),
+                    ext,
+                );
+                assert_eq!(
+                    catalog_rows(&dependency),
+                    vec![vec![Some("i".into())]],
+                    "{dependency:?}"
+                );
+                ok(
+                    &mut a,
+                    &format!("INSERT INTO public.{name}(note) VALUES ('omit')"),
+                    ext,
+                );
+                ok(
+                    &mut a,
+                    &format!("INSERT INTO public.{name}(id,note) VALUES (DEFAULT,'default')"),
+                    ext,
+                );
+                rows(
+                    &mut b,
+                    &format!("SELECT id,note FROM public.{name} ORDER BY id"),
+                    ext,
+                    &[
+                        vec![Some("10".into()), Some("omit".into())],
+                        vec![Some("11".into()), Some("default".into())],
+                    ],
+                    oid,
+                );
+                let table = domain
+                    .info_schema()
+                    .ModelTableInfoByExactName(&astersql_infoschema::CiString::new("test"), name)
+                    .unwrap();
+                let sequence_id = table.Columns[0]
+                    .PostgreSQLIdentity
+                    .as_ref()
+                    .unwrap()
+                    .SequenceID;
+                assert!(domain.info_schema().TableByID(sequence_id).is_some());
+                ok(&mut a, &format!("DROP TABLE public.{name}"), ext);
+                assert!(domain.info_schema().TableByID(sequence_id).is_none());
+                ok(&mut a, &create, ext);
+                ok(
+                    &mut a,
+                    &format!("INSERT INTO public.{name} DEFAULT VALUES"),
+                    ext,
+                );
+                rows(
+                    &mut b,
+                    &format!("SELECT id,note FROM public.{name}"),
+                    ext,
+                    &[vec![Some("10".into()), None]],
+                    oid,
+                );
+                ok(&mut a, &format!("DROP TABLE public.{name}"), ext);
+            }
+            ok(
+                &mut a,
+                &format!(
+                    "CREATE TABLE public.identity_bound (id {ty} GENERATED BY DEFAULT AS IDENTITY (START WITH {maximum} MINVALUE 1 MAXVALUE {maximum}))"
+                ),
+                ext,
+            );
+            denied(
+                &mut a,
+                "INSERT INTO public.identity_bound VALUES (NULL)",
+                ext,
+                "23502",
+            );
+            ok(
+                &mut a,
+                "INSERT INTO public.identity_bound DEFAULT VALUES",
+                ext,
+            );
+            rows(
+                &mut b,
+                "SELECT id FROM public.identity_bound",
+                ext,
+                &[vec![Some(maximum.to_string())]],
+                oid,
+            );
+            denied(
+                &mut a,
+                "INSERT INTO public.identity_bound DEFAULT VALUES",
+                ext,
+                "2200H",
+            );
+            ok(&mut a, "DROP TABLE public.identity_bound", ext);
+        }
+        // Identity does not imply uniqueness; explicit DEFAULT and omission use
+        // the same owned sequence even when another row has a duplicate id.
+        ok(
+            &mut a,
+            "CREATE TABLE public.identity_plain (id integer GENERATED BY DEFAULT AS IDENTITY (START 10), note text)",
+            ext,
+        );
+        ok(
+            &mut a,
+            "INSERT INTO public.identity_plain(id) VALUES (10)",
+            ext,
+        );
+        ok(
+            &mut a,
+            "INSERT INTO public.identity_plain DEFAULT VALUES",
+            ext,
+        );
+        rows(
+            &mut b,
+            "SELECT id FROM public.identity_plain",
+            ext,
+            &[vec![Some("10".into())], vec![Some("10".into())]],
+            23,
+        );
+        ok(&mut a, "DROP TABLE public.identity_plain", ext);
+        for (invalid, state) in [
+            (
+                "smallint GENERATED ALWAYS AS IDENTITY (MAXVALUE 32768)",
+                "22003",
+            ),
+            ("text GENERATED ALWAYS AS IDENTITY", "22023"),
+            ("integer GENERATED ALWAYS AS IDENTITY (CACHE 0)", "22023"),
+            ("integer GENERATED ALWAYS AS IDENTITY (CACHE 2)", "0A000"),
+            (
+                "integer GENERATED ALWAYS AS IDENTITY (INCREMENT -1)",
+                "0A000",
+            ),
+        ] {
+            denied(
+                &mut a,
+                &format!("CREATE TABLE public.identity_invalid (id {invalid})"),
+                ext,
+                state,
+            );
+            assert!(
+                domain
+                    .info_schema()
+                    .ModelTableInfoByExactName(
+                        &astersql_infoschema::CiString::new("test"),
+                        "identity_invalid"
+                    )
+                    .is_err()
+            );
+        }
+        if ext {
+            ok(
+                &mut a,
+                "CREATE TABLE public.identity_phase (id bigint GENERATED ALWAYS AS IDENTITY (START 10))",
+                false,
+            );
+            send(
+                &mut a,
+                b'P',
+                &[
+                    b"phase\0".as_slice(),
+                    b"INSERT INTO public.identity_phase DEFAULT VALUES",
+                    b"\0\0\0",
+                ]
+                .concat(),
+            );
+            assert_eq!(read(&mut a).0, b'1');
+            send(&mut a, b'D', b"Sphase\0");
+            assert_eq!(read(&mut a).0, b't');
+            assert_eq!(read(&mut a).0, b'n');
+            send(&mut a, b'B', b"portal\0phase\0\0\0\0\0\0\0");
+            assert_eq!(read(&mut a).0, b'2');
+            send(&mut a, b'D', b"Pportal\0");
+            assert_eq!(read(&mut a).0, b'n');
+            ok(
+                &mut b,
+                "INSERT INTO public.identity_phase DEFAULT VALUES",
+                false,
+            );
+            send(&mut a, b'E', b"portal\0\0\0\0\0");
+            assert_eq!(read(&mut a).0, b'C');
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+            rows(
+                &mut b,
+                "SELECT id FROM public.identity_phase ORDER BY id",
+                false,
+                &[vec![Some("10".into())], vec![Some("11".into())]],
+                20,
+            );
+            send(&mut a, b'C', b"Pportal\0");
+            assert_eq!(read(&mut a).0, b'3');
+            send(&mut a, b'C', b"Sphase\0");
+            assert_eq!(read(&mut a).0, b'3');
+            send(&mut a, b'S', &[]);
+            assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+            ok(&mut a, "DROP TABLE public.identity_phase", false);
+        }
+        for stream in [&mut a, &mut b] {
+            send(stream, b'X', &[]);
+        }
+        eprintln!(
+            "pg11_22 ext={ext}: 6 generation/DEFAULT groups, 6 DEFAULT VALUES groups, 3 NULL/bounds/exhaustion groups, 1 nonunique group, 3 invalid declarations and 2 precise option gates; ext phase additionally checks no allocation before Execute"
+        );
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
