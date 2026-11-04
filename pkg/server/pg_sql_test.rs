@@ -175,3 +175,21 @@ fn pg10_28_old_new_capability_gate_is_lexical_and_syntax_checked() {
         assert!(crate::pg_sql::check_returning_aliases(sql).is_ok(), "{sql}");
     }
 }
+
+#[test]
+fn query_statement_text_preserves_quoted_semicolons() {
+    for source in [
+        "SELECT ';' AS marker",
+        "; /* ; comment */ SELECT ';' AS marker;;",
+        "-- ; comment\n ; SELECT ';' AS marker; -- trailing ;",
+    ] {
+        assert_eq!(
+            crate::pg_sql::query_statement_text(source).unwrap(),
+            "SELECT ';' AS marker"
+        );
+    }
+    assert_eq!(
+        crate::pg_sql::query_statement_text("; /* ; */ ;").unwrap(),
+        ""
+    );
+}

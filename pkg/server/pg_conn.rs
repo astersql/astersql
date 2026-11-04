@@ -472,6 +472,9 @@ impl PgService {
                         .filter(|sql| !sql.contains(&0))
                         .and_then(|sql| std::str::from_utf8(sql).ok());
                     if let Some(sql) = sql {
+                        if self.query_block(socket, pid, sql, &mut extended.session)? {
+                            continue;
+                        }
                         if let Some(result) = extended.deallocate_query(sql, &context) {
                             match result {
                                 Ok(()) => write_message(socket, b'C', b"DEALLOCATE\0")?,
@@ -948,6 +951,176 @@ impl PgService {
             }
         }
     }
+    /// A simple Query owns one implicit transaction across its ordinary DML.
+    /// Parse the complete input first, using parser-owned statement text so
+    /// semicolons in literals/comments never become protocol boundaries.
+    fn query_block(
+        &self,
+        socket: &mut TcpStream,
+        pid: u32,
+        sql: &str,
+        session: &mut crate::pg_session::PgSession,
+    ) -> io::Result<bool> {
+        use astersql_parser_ast as ast;
+        if !sql.contains(';') {
+            return Ok(false);
+        }
+        let Ok((statements, _)) =
+            astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL).ParseSQL(sql, &[])
+        else {
+            // The existing single-query path owns syntax diagnostics, and
+            // parses the full input before executing any statement.
+            return Ok(false);
+        };
+        if statements.len() < 2 {
+            return Ok(false);
+        }
+        if !statements.iter().all(|statement| {
+            let node = statement.as_any();
+            node.is::<ast::SelectStmt>()
+                || node.is::<ast::SetOprStmt>()
+                || node.is::<ast::InsertStmt>()
+                || node.is::<ast::UpdateStmt>()
+                || node.is::<ast::DeleteStmt>()
+        }) {
+            // Transaction-control, DDL and COPY mixtures retain their existing
+            // unsupported boundary; they must not implicitly commit a prefix.
+            return Ok(false);
+        }
+        self.with_query(pid, |context| {
+            if let Err((state, message)) = session.check_transaction_command(None, context.as_ref())
+            {
+                write_error(socket, "ERROR", state, &message)?;
+                write_message(
+                    socket,
+                    b'Z',
+                    &[session.transaction_status(context.as_ref())],
+                )?;
+                return Ok(true);
+            }
+            let implicit = !context.in_transaction();
+            // Also roll back on transport/encoding failures. Only the Query's
+            // own implicit block may be ended here; explicit blocks retain E.
+            struct Block<'a> {
+                context: &'a dyn TiDBContext,
+                rollback: bool,
+            }
+            impl Drop for Block<'_> {
+                fn drop(&mut self) {
+                    if self.rollback {
+                        if self
+                            .context
+                            .execute_query("ROLLBACK", false, &CancellationToken::new())
+                            .is_err()
+                        {
+                            eprintln!("PostgreSQL Query block cleanup rollback failed");
+                        }
+                    }
+                }
+            }
+            let mut block = Block {
+                context: context.as_ref(),
+                rollback: implicit,
+            };
+            let execute = |sql: &str| context.execute_query(sql, false, &CancellationToken::new());
+            if implicit {
+                if let Err(error) = execute("BEGIN") {
+                    write_error(socket, "ERROR", sqlstate(&error), &error.to_string())?;
+                    drop(block);
+                    write_message(
+                        socket,
+                        b'Z',
+                        &[session.transaction_status(context.as_ref())],
+                    )?;
+                    return Ok(true);
+                }
+            }
+            let mut failed = false;
+            for statement in statements {
+                let original = statement.Text();
+                let result = (|| {
+                    let source = crate::pg_sql::query_statement_text(&original)?;
+                    let sql = crate::pg_name::adapt(source, context.as_ref(), session)?;
+                    let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
+                    let sql =
+                        crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?;
+                    let command = crate::pg_result::command(&sql)?
+                        .ok_or(("XX000", "missing statement command".into()))?;
+                    if command == "INSERT" {
+                        crate::pg_extended::conflict_plan(&sql, context.as_ref(), true)?;
+                    }
+                    let results =
+                        execute(&sql).map_err(|error| (sqlstate(&error), error.to_string()))?;
+                    if results.len() != 1 {
+                        return Err(("0A000", "unsupported result multiplicity".into()));
+                    }
+                    let result = &results[0];
+                    let style = crate::pg_result::interval_style(result, context.as_ref())
+                        .map_err(|error| (sqlstate(&error), error.to_string()))?;
+                    let messages =
+                        crate::pg_result::encode_formats_interval(result, command, &[], style);
+                    if messages.is_err() {
+                        if let Some(lifecycle) = &result.response_lifecycle {
+                            lifecycle.finish();
+                        }
+                    }
+                    messages
+                        .map(|messages| (messages, result.response_lifecycle.clone()))
+                        .map_err(|error| {
+                            (
+                                crate::pg_result::encoding_sqlstate(&error),
+                                error.to_string(),
+                            )
+                        })
+                })();
+                match result {
+                    Ok((messages, lifecycle)) => {
+                        let started = std::time::Instant::now();
+                        let response = messages
+                            .iter()
+                            .try_for_each(|(tag, body)| write_message(socket, *tag, body));
+                        if let Some(lifecycle) = lifecycle {
+                            lifecycle.add_write_duration(started.elapsed());
+                            lifecycle.finish();
+                        }
+                        response?;
+                    }
+                    Err((state, message)) => {
+                        session.record_error(context.as_ref());
+                        write_sql_error(socket, state, &message, &original, None)?;
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            if implicit {
+                let end = if failed { "ROLLBACK" } else { "COMMIT" };
+                match execute(end) {
+                    Ok(_) => {
+                        block.rollback = false;
+                        session.record_success(Some(end), context.as_ref());
+                    }
+                    Err(error) => {
+                        session.record_error(context.as_ref());
+                        write_error(socket, "ERROR", sqlstate(&error), &error.to_string())?;
+                        // Do not report a reusable session after a transaction
+                        // boundary failure; Drop still attempts rollback.
+                        return Err(io::Error::other(
+                            "could not finish PostgreSQL Query transaction",
+                        ));
+                    }
+                }
+            }
+            drop(block);
+            write_message(
+                socket,
+                b'Z',
+                &[session.transaction_status(context.as_ref())],
+            )?;
+            Ok(true)
+        })?
+    }
+
     fn catalog_cancel(&self, pid: u32) -> Arc<CancellationToken> {
         self.active.lock().unwrap()[&pid].catalog_cancel.clone()
     }

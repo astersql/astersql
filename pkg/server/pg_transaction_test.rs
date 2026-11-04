@@ -1635,6 +1635,11 @@ fn pg12_failed_rollback() {
 }
 
 #[test]
+fn pg12_query_block() {
+    pg12_transaction_case("query_block");
+}
+
+#[test]
 fn pg12_savepoint_gate() {
     pg12_transaction_case("savepoint_gate");
 }

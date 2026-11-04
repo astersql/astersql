@@ -154,6 +154,19 @@ fn tokens(sql: &str) -> ParseResult<Vec<Token>> {
     Ok(tokens)
 }
 
+/// Trim parser-owned statement spans to their nonempty token boundaries.
+/// StatementList can retain preceding empty fragments/comments in Text().
+/// Reuse the SQL lexer so quoted semicolons remain part of their token.
+pub(crate) fn query_statement_text(sql: &str) -> ParseResult<&str> {
+    let tokens = tokens(sql)?;
+    let mut content = tokens.iter().filter(|token| !token.symbol(b';'));
+    let Some(first) = content.next() else {
+        return Ok("");
+    };
+    let last = content.next_back().unwrap_or(first);
+    Ok(&sql[first.start..last.end])
+}
+
 fn column_type(
     tokens: &[Token],
     start: usize,
