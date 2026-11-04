@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -341,6 +341,50 @@ def savepoint_gate(A, B, check, side, record, extended, variant):
     B.close()
     record['cleanup'].append(dict(table_dropped=True, connections_closed=True))
 
+def extended_success(A, B, check, record, explicit, inserted):
+    wire = PortalWire(A, record.setdefault('extended_segments', []))
+    expected = [['1','11'],['2','20'],['3',None if inserted == 'NULL' else '30']]
+    try:
+        r = wire.exchange([], '<empty sync>', 'Sync')
+        assert r['tags'] == ['Z'] and r['transaction'] == 'I', r
+        check(B, S0, 'I')
+        if explicit:
+            r = wire.query('BEGIN')
+            assert r['command'] == 'BEGIN' and r['transaction'] == 'T', r
+        for name, sql, tag in [
+                ('update', 'UPDATE public.tx_contract SET value=11 WHERE id=1', 'UPDATE 1'),
+                ('insert', f'INSERT INTO public.tx_contract VALUES (3,{inserted})', 'INSERT 0 1')]:
+            n = name.encode() + b'\0'
+            r = wire.exchange([(b'P', n + sql.encode() + b'\0\0\0'),
+                               (b'B', n + n + b'\0'*6),
+                               (b'E', n + struct.pack('!I', 0))],
+                              sql, 'Parse/Bind/Execute/Flush', name, flush=True)
+            assert r['tags'] == ['1','2','C'] and r['command'] == tag, r
+            assert r['affected'] == '1' and r['transaction'] is None, r
+            assert not r['columns'] and not r['rows'] and not r['diagnostics']['C'], r
+            check(B, S0, 'I')
+        state = 'T' if explicit else 'I'
+        for phase in ('Sync', 'empty Sync after segment'):
+            r = wire.exchange([], '<sync>', phase)
+            assert r['tags'] == ['Z'] and r['transaction'] == state, r
+            check(B, S0 if explicit else expected, 'I')
+        r = wire.query(O)
+        assert r['rows'] == expected and r['transaction'] == state, r
+        assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
+        if explicit:
+            r = wire.query('COMMIT')
+            assert r['command'] == 'COMMIT' and r['transaction'] == 'I', r
+        check(B, expected, 'I')
+        r = wire.query('SELECT 1::int4 AS ok')
+        assert r['rows'] == [['1']] and r['transaction'] == 'I', r
+        r = wire.query('DROP TABLE public.tx_contract')
+        assert r['command'] == 'DROP TABLE' and r['transaction'] == 'I', r
+    finally:
+        wire.sock.close()
+    A.close()
+    B.close()
+    record['cleanup'].append(dict(explicit=explicit, insert=inserted, table_dropped=True, connections_closed=True))
+
 def observe_transaction(side, admin_dsn):
     obs, connections = [], []
     record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
@@ -380,6 +424,9 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'extended_success':
+                    extended_success(A, B, check, record, extended, inserted)
+                    continue
                 if a.case == 'query_block':
                     check(A, initial, 'I')
                     wire = PortalWire(A, record.setdefault('query_blocks', []))
@@ -668,6 +715,16 @@ def behavior(record):
     return [{k:r[k] for k in (('sql','phase','transaction','columns','rows','command','affected','diagnostics','notices') if a.case in ('repeated_begin', 'outside_end') else ('sql','phase','transaction','columns','rows','command','affected','diagnostics'))}
             for r in record['observations']
             if r['sql'] in (O,'BEGIN','COMMIT','ROLLBACK','SELECT 1::int4') or (a.case in ('failed_rollback', 'failed_commit') and r['sql'] in ('SELECT 1/0 AS bad', 'SHOW search_path', 'SELECT oid,nspname FROM pg_catalog.pg_namespace')) or r['sql'].startswith(('INSERT INTO public.tx_contract','UPDATE public.tx_contract','DELETE FROM public.tx_contract'))]
+if a.case == 'extended_success':
+    ref, local = [outputs[side]['extended_segments'] for side in ('reference', 'aster')]
+    assert len(ref) == len(local) and len(ref) > 0
+    for r, l in zip(ref, local):
+        for key in ('sql','phase','transaction','rows','columns','command','affected','tags','diagnostics'):
+            assert r[key] == l[key], (key,r,l)
+    assert all(v['cases_passed'] == 4 for v in outputs.values())
+    (evidence / 'comparison.json').write_text(json.dumps(dict(segments_per_endpoint=4, wire_observations=len(ref), matched=True),indent=2))
+    print(json.dumps(dict(case=a.case, cases_per_endpoint=4, evidence=str(evidence), cleanup='passed')))
+    raise SystemExit(0)
 if a.case == 'query_block':
     differences = []
     ref, local = [outputs[side]['query_blocks'] for side in ('reference', 'aster')]

@@ -1635,6 +1635,11 @@ fn pg12_failed_rollback() {
 }
 
 #[test]
+fn pg12_extended_success() {
+    pg12_transaction_case("extended_success");
+}
+
+#[test]
 fn pg12_query_block() {
     pg12_transaction_case("query_block");
 }
