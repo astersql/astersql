@@ -31674,3 +31674,202 @@ fn pg11_19() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_20() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn value(s: &mut TcpStream, sql: &str, ext: bool, expected: Option<&str>) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(
+            catalog_rows(&m),
+            vec![vec![expected.map(str::to_owned)]],
+            "{sql}: {m:?}"
+        );
+        let d = &m.iter().find(|m| m.0 == b'T').unwrap().1;
+        let offset = 2 + d[2..].iter().position(|b| *b == 0).unwrap() + 1;
+        assert_eq!(&d[offset + 6..offset + 10], &20u32.to_be_bytes());
+        assert_eq!(&d[offset + 10..offset + 12], &8i16.to_be_bytes());
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    for ext in [false, true] {
+        let mut admin = connect(None);
+        ok(
+            &mut admin,
+            "CREATE SEQUENCE public.seq_concurrent AS bigint START WITH 10 INCREMENT BY 1 MINVALUE 1 MAXVALUE 209 CACHE 1 NO CYCLE",
+            ext,
+        );
+        let next = "SELECT nextval('public.seq_concurrent'::regclass) AS v";
+        let curr = "SELECT currval('public.seq_concurrent'::regclass) AS v";
+        let mut a = connect(None);
+        let mut b = connect(None);
+        for stream in [&mut a, &mut b] {
+            denied(stream, curr, ext, "55000");
+            value(stream, "SELECT nextval(NULL::regclass) AS v", ext, None);
+            denied(
+                stream,
+                "SELECT nextval('public.seq_concurrent_missing'::regclass) AS v",
+                ext,
+                "42P01",
+            );
+        }
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [a, b]
+            .into_iter()
+            .map(|mut stream| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let mut values = Vec::new();
+                    for _ in 0..100 {
+                        let m = run(&mut stream, next, ext);
+                        assert!(!m.iter().any(|m| m.0 == b'E'), "{m:?}");
+                        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+                        let rows = catalog_rows(&m);
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].len(), 1);
+                        values.push(rows[0][0].as_ref().unwrap().parse::<i64>().unwrap());
+                    }
+                    let last = *values.last().unwrap();
+                    value(&mut stream, curr, ext, Some(&last.to_string()));
+                    (stream, values)
+                })
+            })
+            .collect();
+        // Join every worker before propagating a panic or cleaning up its object.
+        let results: Vec<_> = workers.into_iter().map(|worker| worker.join()).collect();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut sessions = Vec::new();
+            let mut all = std::collections::BTreeSet::new();
+            for result in results {
+                let (stream, values) = result.unwrap();
+                assert_eq!(values.len(), 100);
+                for v in &values {
+                    assert!((10..=209).contains(v), "out of range: {v}");
+                    assert!(all.insert(*v), "duplicate allocation: {v}");
+                }
+                sessions.push((stream, *values.last().unwrap()));
+            }
+            assert_eq!(all.len(), 200);
+            for (stream, last) in &mut sessions {
+                // Both workers are finished; other allocations never replace currval.
+                value(stream, curr, ext, Some(&last.to_string()));
+                denied(stream, next, ext, "2200H");
+                value(stream, curr, ext, Some(&last.to_string()));
+                if ext {
+                    send(stream, b'C', b"P\0");
+                    assert_eq!(read(stream).0, b'3');
+                    send(stream, b'C', b"S\0");
+                    assert_eq!(read(stream).0, b'3');
+                    send(stream, b'S', &[]);
+                    assert_eq!(read(stream), (b'Z', b"I".to_vec()));
+                }
+                send(stream, b'X', &[]);
+            }
+            let mut fresh = connect(None);
+            denied(&mut fresh, curr, ext, "55000");
+            send(&mut fresh, b'X', &[]);
+        }));
+        ok(&mut admin, "DROP SEQUENCE public.seq_concurrent", ext);
+        send(&mut admin, b'X', &[]);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+        eprintln!(
+            "pg11_20 ext={ext}: 2 x 100 allocations unique in 10..=209; local currval, exhaustion, NULL, invalid object, reconnect and cleanup passed"
+        );
+    }
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+}
