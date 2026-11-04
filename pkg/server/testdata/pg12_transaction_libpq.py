@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate'], required=True)
+p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -845,7 +845,7 @@ def observe_transaction(side, admin_dsn):
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
         for extended in ((False,) if a.case in ('query_block', 'extended_error', 'explicit_sync') else (False, True)):
-            for inserted in (('create', 'drop') if a.case == 'database_ddl_gate' else ('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else (('create', 'drop', 'alter', 'truncate') if a.case == 'table_ddl_gate' else (('create_index','drop_view','create_view','drop_index','create_sequence','alter_sequence','drop_sequence') if a.case == 'other_ddl_gate' else ('30', 'NULL'))))))):
+            for inserted in (('create', 'drop') if a.case == 'database_ddl_gate' else ('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else (('create', 'drop', 'alter', 'truncate') if a.case in ('table_ddl_gate', 'mysql_ddl_coexist') else (('create_index','drop_view','create_view','drop_index','create_sequence','alter_sequence','drop_sequence') if a.case == 'other_ddl_gate' else ('30', 'NULL'))))))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -863,7 +863,7 @@ def observe_transaction(side, admin_dsn):
                 if a.case == 'other_ddl_gate':
                     other_ddl_gate(A, B, side, record, extended, inserted)
                     continue
-                if a.case == 'table_ddl_gate':
+                if a.case in ('table_ddl_gate', 'mysql_ddl_coexist'):
                     table_ddl_gate(A, B, side, record, extended, inserted)
                     continue
                 A.query('CREATE TABLE public.tx_contract (id integer PRIMARY KEY,value integer)')
@@ -1161,12 +1161,12 @@ def observe_transaction(side, admin_dsn):
                 for conn in (A,B,C):
                     conn.close()
                 record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':not preserve,'preserved_for_restart':preserve,'connections_closed':True})
-        record['cases_passed'] = 14 if a.case == 'other_ddl_gate' else 16 if a.case == 'table_ddl_gate' else 3 if a.case == 'extended_error' else 4
+        record['cases_passed'] = 14 if a.case == 'other_ddl_gate' else 16 if a.case in ('table_ddl_gate', 'mysql_ddl_coexist') else 3 if a.case == 'extended_error' else 4
     finally:
         for conn in connections:
             if conn.ptr:
                 conn.query('ROLLBACK', required=False)
-                if a.case == 'table_ddl_gate':
+                if a.case in ('table_ddl_gate', 'mysql_ddl_coexist'):
                     conn.query('DROP TABLE IF EXISTS public.txddl_probe', required=False)
                     conn.query('DROP TABLE IF EXISTS public.txddl_sentinel', required=False)
                 if not (a.storage == 'tikv' and a.case == 'commit' and side == 'aster' and (evidence / 'restart-baseline.json').exists()):
@@ -1229,7 +1229,7 @@ if a.case == 'other_ddl_gate':
         boundaries={side:v['other_ddl_boundaries'] for side,v in outputs.items()}), indent=2))
     print(json.dumps(dict(case=a.case, cases_per_endpoint=14, evidence=str(evidence), cleanup='passed')))
     raise SystemExit(0)
-if a.case == 'table_ddl_gate':
+if a.case in ('table_ddl_gate', 'mysql_ddl_coexist'):
     assert all(v['cases_passed'] == 16 for v in outputs.values())
     for ref, local in zip(outputs['reference']['ddl_boundaries'], outputs['aster']['ddl_boundaries']):
         for key in ('mode', 'operation', 'exit', 'recovered'):

@@ -1981,3 +1981,254 @@ fn pg12_mysql_dml_coexist() {
     assert!(TcpStream::connect(mysql_addr).is_err());
     assert!(TcpStream::connect(pg_addr).is_err());
 }
+
+/// PG DDL gates preserve concurrent MySQL transactions and native implicit DDL commits.
+#[test]
+fn pg12_mysql_ddl_coexist() {
+    use crate::mysql_compat_test_support::{
+        CLIENT_DEPRECATE_EOF, MysqlTestClient, TextResultSet, TextValue, WireResponse,
+    };
+    fn result(response: WireResponse) -> TextResultSet {
+        let WireResponse::ResultSet(r) = response else {
+            panic!("{response:?}")
+        };
+        assert_eq!(r.warnings, 0);
+        r
+    }
+    fn ok(client: &mut MysqlTestClient, sql: &str) {
+        let response = client.query(sql).unwrap();
+        println!("MySQL {sql}: {response:?}");
+        assert!(matches!(response, WireResponse::Ok(_)), "{response:?}");
+    }
+    fn observe(
+        client: &mut MysqlTestClient,
+        expected: &[(i32, i32)],
+        transaction: bool,
+    ) -> TextResultSet {
+        let r = result(
+            client
+                .query("SELECT id,value FROM tx_contract_mysql ORDER BY id")
+                .unwrap(),
+        );
+        println!("MySQL observation: {r:?}");
+        let rows: Vec<_> = expected
+            .iter()
+            .map(|(id, value)| {
+                vec![
+                    TextValue::Bytes(id.to_string().into_bytes()),
+                    TextValue::Bytes(value.to_string().into_bytes()),
+                ]
+            })
+            .collect();
+        assert_eq!(r.rows, rows);
+        assert_eq!(r.status & 3, 2 | u16::from(transaction));
+        r
+    }
+    fn native_round(
+        m: &mut MysqlTestClient,
+        n: &mut MysqlTestClient,
+        payload: &[u8],
+    ) -> (TextResultSet, Vec<TextResultSet>) {
+        ok(m, "UPDATE tx_contract_mysql SET value=10 WHERE id=1");
+        ok(m, "BEGIN");
+        ok(m, "UPDATE tx_contract_mysql SET value=13 WHERE id=1");
+        observe(m, &[(1, 13)], true);
+        observe(n, &[(1, 10)], false);
+        ok(m, "CREATE TABLE txddl_mysql_ddl (id INT PRIMARY KEY)");
+        ok(m, "ROLLBACK");
+        let committed = observe(m, &[(1, 13)], false);
+        assert_eq!(result(m.execute_prepared(&payload).unwrap()), committed);
+        observe(n, &[(1, 13)], false);
+        let mut directories = Vec::new();
+        for client in [&mut *m, &mut *n] {
+            let directory = result(client.query("SHOW TABLES").unwrap());
+            println!("MySQL native DDL directory: {directory:?}");
+            directories.push(directory.clone());
+            assert!(
+                directory
+                    .rows
+                    .iter()
+                    .any(|r| r == &vec![TextValue::Bytes(b"txddl_mysql_ddl".to_vec())])
+            );
+        }
+        ok(m, "DROP TABLE txddl_mysql_ddl");
+        (committed, directories)
+    }
+    assert!(
+        std::env::var_os("PG18_REFERENCE_DSN").is_some(),
+        "reference required"
+    );
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let server = crate::pg_client_integration_test::start_client_server(domain.clone(), Some(0));
+    struct Close(Arc<crate::server::Server>);
+    impl Drop for Close {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let guard = Close(server);
+    let mysql_addr = guard.0.listener_addr().unwrap();
+    let pg_addr = guard.0.postgres_listener_addr().unwrap();
+    let database = format!(
+        "pg12_ddl_mysql_{}_{}",
+        std::process::id(),
+        mysql_addr.port()
+    );
+    let mut m =
+        MysqlTestClient::connect(mysql_addr, CLIENT_DEPRECATE_EOF, Some("test"), &[]).unwrap();
+    ok(&mut m, &format!("CREATE DATABASE {database}"));
+    ok(&mut m, &format!("USE {database}"));
+    let mut n =
+        MysqlTestClient::connect(mysql_addr, CLIENT_DEPRECATE_EOF, Some(&database), &[]).unwrap();
+    println!(
+        "MySQL client=repository wire client; handshake={:?}; storage=CreateAnalyzeSession; SHA={}",
+        m.handshake,
+        String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout
+        )
+        .unwrap()
+    );
+    let config_sql = "SELECT version(),@@sql_mode,@@transaction_isolation,DATABASE()";
+    let mut configurations = Vec::new();
+    for client in [&mut m, &mut n] {
+        ok(client, "SET autocommit=1");
+        let configuration = result(client.query(config_sql).unwrap());
+        println!("MySQL configuration: {configuration:?}");
+        configurations.push(configuration);
+    }
+    ok(
+        &mut m,
+        "CREATE TABLE tx_contract_mysql (id INT PRIMARY KEY,value INT NOT NULL)",
+    );
+    ok(&mut m, "INSERT INTO tx_contract_mysql VALUES (1,10)");
+    let s0 = [(1, 10)];
+    let baseline = observe(&mut m, &s0, false);
+    observe(&mut n, &s0, false);
+    let prepared = m
+        .prepare("SELECT id,value FROM tx_contract_mysql ORDER BY id")
+        .unwrap();
+    assert_eq!(prepared.parameter_count, 0);
+    let mut payload = prepared.statement_id.to_le_bytes().to_vec();
+    payload.push(0);
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    assert_eq!(result(m.execute_prepared(&payload).unwrap()), baseline);
+    let mut scalar = result(m.query("SELECT 1 AS ok,NULL AS absent WHERE 1=1").unwrap());
+    assert_eq!(
+        scalar.rows,
+        vec![vec![TextValue::Bytes(b"1".to_vec()), TextValue::Null]]
+    );
+    assert!(
+        result(
+            m.query("SELECT id,value FROM tx_contract_mysql WHERE id=99")
+                .unwrap()
+        )
+        .rows
+        .is_empty()
+    );
+    let native_baseline = native_round(&mut m, &mut n, &payload);
+    ok(&mut m, "UPDATE tx_contract_mysql SET value=10 WHERE id=1");
+    ok(&mut m, "BEGIN");
+    ok(&mut m, "UPDATE tx_contract_mysql SET value=12 WHERE id=1");
+    let own = observe(&mut m, &[(1, 12)], true);
+    scalar.status = own.status;
+    observe(&mut n, &s0, false);
+    // Establish MySQL's own duplicate-key continuation baseline before PG work.
+    let failure = m
+        .query("INSERT INTO tx_contract_mysql VALUES (1,99)")
+        .unwrap();
+    assert!(matches!(failure, WireResponse::Err(_)), "{failure:?}");
+    println!("MySQL native error: {failure:?}");
+    assert_eq!(observe(&mut m, &[(1, 12)], true), own);
+    for case in ["mysql_ddl_coexist"] {
+        let pg_database = format!("{database}_{case}");
+        ok(&mut n, &format!("CREATE DATABASE {pg_database}"));
+        let snapshot = std::env::temp_dir().join(format!("{database}_ddl"));
+        let reply = snapshot.with_extension("reply");
+        let mut child = std::process::Command::new("python3")
+            .env("PG12_DDL_SNAPSHOT", &snapshot)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/pg12_transaction_libpq.py"
+            ))
+            .args([
+                "--case",
+                case,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &pg_addr.port().to_string(),
+                "--database",
+                &pg_database,
+            ])
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(100);
+        while child.try_wait().unwrap().is_none() {
+            if snapshot.exists() {
+                std::fs::write(&reply, domain.info_schema().SchemaMetaVersion().to_string())
+                    .unwrap();
+                std::fs::remove_file(&snapshot).unwrap();
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let output = child.wait_with_output().unwrap();
+        let _ = std::fs::remove_file(&snapshot);
+        let _ = std::fs::remove_file(&reply);
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+        ok(&mut n, &format!("DROP DATABASE {pg_database}"));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            m.query("INSERT INTO tx_contract_mysql VALUES (1,99)")
+                .unwrap(),
+            failure
+        );
+        let mut m_config = configurations[0].clone();
+        m_config.status = own.status;
+        assert_eq!(result(m.query(config_sql).unwrap()), m_config);
+        assert_eq!(result(n.query(config_sql).unwrap()), configurations[1]);
+        assert_eq!(observe(&mut m, &[(1, 12)], true), own);
+        assert_eq!(result(m.execute_prepared(&payload).unwrap()), own);
+        assert_eq!(observe(&mut n, &s0, false), baseline);
+        assert_eq!(
+            result(m.query("SELECT 1 AS ok,NULL AS absent WHERE 1=1").unwrap()),
+            scalar
+        );
+    }
+    ok(&mut m, "ROLLBACK");
+    assert_eq!(observe(&mut m, &s0, false), baseline);
+    assert_eq!(result(m.execute_prepared(&payload).unwrap()), baseline);
+    observe(&mut n, &s0, false);
+    ok(&mut m, "BEGIN");
+    ok(&mut m, "INSERT INTO tx_contract_mysql VALUES (5,50)");
+    observe(&mut n, &s0, false);
+    ok(&mut m, "COMMIT");
+    observe(&mut n, &[(1, 10), (5, 50)], false);
+    ok(&mut m, "DELETE FROM tx_contract_mysql WHERE id=5");
+    assert_eq!(native_round(&mut m, &mut n, &payload), native_baseline);
+    m.close_prepared(prepared.statement_id).unwrap();
+    ok(&mut m, "ROLLBACK");
+    ok(&mut n, "ROLLBACK");
+    ok(&mut m, "DROP TABLE tx_contract_mysql");
+    ok(&mut m, "USE test");
+    ok(&mut n, "USE test");
+    ok(&mut m, &format!("DROP DATABASE {database}"));
+    drop(m);
+    drop(n);
+    guard.0.close();
+    assert!(TcpStream::connect(mysql_addr).is_err());
+    assert!(TcpStream::connect(pg_addr).is_err());
+}
