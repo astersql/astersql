@@ -2241,9 +2241,15 @@ impl Extended {
                     }
                     // Binding reparses literals in the shared kernel. Keep the
                     // prepared labels while still checking actual result types.
-                    if portal.integer_parameters && result.columns.len() == portal.columns.len() {
+                    // Parameter-free unnamed expressions also have PG labels
+                    // (?column?) rather than the kernel's literal-value labels.
+                    if result.columns.len() == portal.columns.len() {
                         for (column, prepared) in result.columns.iter_mut().zip(&portal.columns) {
-                            column.name.clone_from(&prepared.name);
+                            if portal.integer_parameters
+                                || (portal.args.is_empty() && prepared.name == "?column?")
+                            {
+                                column.name.clone_from(&prepared.name);
+                            }
                         }
                     }
                     if result.result_set.is_some() {

@@ -464,6 +464,45 @@ fn postgres_create_table_extended_query() {
     send(&mut socket, b'S', b"");
     assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
 
+    // PG unnamed literal labels must survive the shared relational executor,
+    // whose native labels are the literal values rather than ?column?.
+    let inserted = query(
+        &mut socket,
+        r#"INSERT INTO public."PgCreateExtended" (id) VALUES (1)"#,
+    );
+    assert!(
+        inserted.iter().all(|message| message.0 != b'E'),
+        "{inserted:?}"
+    );
+    parse(
+        &mut socket,
+        "literal_labels",
+        r#"SELECT 'public.T', '"T"', 'a.b' FROM public."PgCreateExtended" /* public."T" */"#,
+        &[],
+    );
+    assert_eq!(read(&mut socket), (b'1', Vec::new()));
+    bind(&mut socket, "literal_portal", "literal_labels", &[]);
+    assert_eq!(read(&mut socket), (b'2', Vec::new()));
+    send(&mut socket, b'D', b"Pliteral_portal\0");
+    let description = read(&mut socket);
+    assert_eq!(description.0, b'T');
+    assert_eq!(
+        description
+            .1
+            .windows(9)
+            .filter(|name| *name == b"?column?\0")
+            .count(),
+        3
+    );
+    execute(&mut socket, "literal_portal", 0);
+    assert_eq!(
+        read(&mut socket),
+        (b'D', row(&[Some("public.T"), Some("\"T\""), Some("a.b")]))
+    );
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+    send(&mut socket, b'S', b"");
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+
     let folded = query(
         &mut socket,
         "SELECT a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod) FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.pgcreateextended'::regclass::oid ORDER BY a.attnum",
