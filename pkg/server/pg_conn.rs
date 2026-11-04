@@ -447,11 +447,18 @@ impl PgService {
                         if let Some(catalog) = catalog {
                             return Ok(catalog.execute(context.as_ref(), &self.catalog_cancel(pid)));
                         }
-                        Ok(context.execute_prepared_streaming(
-                            statement,
-                            args,
-                            &CancellationToken::new(),
-                        ))
+                        let cancel = self.catalog_cancel(pid);
+                        let result = context.execute_prepared_streaming(statement, args, &cancel);
+                        // The shared executor can reset its SQLKiller while
+                        // initializing statement memory arbitration. Preserve
+                        // this Execute's cancellation until its result boundary,
+                        // before publishing success or committing at Sync.
+                        if result.is_ok() && cancel.is_cancelled() {
+                            return Ok(Err(crate::conn::ConnError::Session(
+                                "Query execution was interrupted".to_owned(),
+                            )));
+                        }
+                        Ok(result)
                     })
                 };
                 let handled = if tag == b'E' {

@@ -9,11 +9,12 @@ import signal
 import socket
 import struct
 import time
+import threading
 from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
+p.add_argument('--case', choices=['active_cancel', 'commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -829,6 +830,101 @@ def explicit_sync(A, B, check, record, stage):
     B.close()
     record['cleanup'].append(dict(stage=stage, table_dropped=True, connections_closed=True))
 
+def active_cancel(A, B, check, side, record, variant):
+    wire = PortalWire(A, record.setdefault('cancel_segments', []))
+    explicit = variant == 'explicit'
+    # Same input on both endpoints. FOR UPDATE provides the reference's real
+    # lock wait; the comment activates an existing product scheduling hook.
+    sql = O + ' FOR UPDATE /* sleep */'
+    def pbx(name, sql, describe=False):
+        n = name.encode() + b'\0'
+        messages = [(b'P', n + sql.encode() + b'\0\0\0'), (b'B', n+n+b'\0'*6)]
+        if describe: messages += [(b'D', b'P'+n)]
+        return messages + [(b'E', n+struct.pack('!I',0))]
+    paths = [Path(os.environ['PG12_CANCEL_BARRIER']).with_suffix('.'+suffix) for suffix in ('arm','entered','release')]
+    worker = None
+    cancel = api('PQgetCancel', P, P)(A.ptr)
+    assert cancel
+    outcome = {}
+    try:
+        # Normal completion proves that the identical SELECT is executable.
+        r = wire.exchange(pbx('normal', sql, True), sql, 'normal/Sync', 'normal')
+        assert r['rows'] == S0 and r['transaction'] == 'I' and r['command'] == 'SELECT 2', r
+        assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
+        if explicit: assert wire.query('BEGIN')['transaction'] == 'T'
+        update = 'UPDATE public.tx_contract SET value=11 WHERE id=1'
+        r = wire.exchange(pbx('prefix', update), update, 'prefix/Flush', flush=True)
+        assert r['tags'] == ['1','2','C'] and r['command'] == 'UPDATE 1', r
+        check(B, S0, 'I')
+        if side == 'reference':
+            B.query('BEGIN')
+            B.query('SELECT id,value FROM public.tx_contract WHERE id=2 FOR UPDATE')
+        else:
+            for path in paths: path.unlink(missing_ok=True)
+            paths[0].write_text('arm one request')
+        def run():
+            try: outcome['row'] = wire.exchange(pbx('cancelled', sql, True), sql, 'active Execute/Flush', 'cancelled', flush=True)
+            except BaseException as error: outcome['error'] = error
+        worker = threading.Thread(target=run)
+        worker.start()
+        deadline = time.monotonic()+10
+        while True:
+            if side == 'reference':
+                B.query('SELECT pg_stat_clear_snapshot()')
+                r = B.query(f"SELECT state,wait_event_type FROM pg_stat_activity WHERE pid={backendpid(A.ptr)}")
+                entered = r['rows'] == [['active','Lock']]
+            else:
+                entered = paths[1].exists()
+            if entered: break
+            assert worker.is_alive(), outcome
+            assert time.monotonic() < deadline, 'no controlled active execution'
+            time.sleep(.002) # polling an observed barrier, never inferring activity
+        record.setdefault('activity', []).append(dict(explicit=explicit, entered=True,
+            control='pg_stat_activity active/Lock' if side == 'reference' else 'shared mockStmtSlow callback'))
+        error = c.create_string_buffer(256)
+        assert api('PQcancel', I, P, P, I)(cancel, error, len(error)) == 1, 'cancel send failed'
+        # PQcancel waits for EOF of the short cancellation connection. Product
+        # consumes the key synchronously before EOF, so release cannot race it.
+        if side == 'aster': paths[2].write_text('release after cancellation EOF')
+        worker.join(12)
+        assert not worker.is_alive(), 'cancelled execution did not finish'
+        if 'error' in outcome: raise outcome['error']
+        r = outcome['row']
+        assert r['diagnostics']['C'] == '57014' and not r['command'], r
+        # PostgreSQL may send the first locked row before waiting on row 2;
+        # partial DataRows are observations, never a successful statement.
+        assert r['rows'] in ([], [['1','11']]), r
+        assert r['transaction'] is None and [t for t in r['tags'] if t != 'D'] == ['1','2','T','E'], r
+        if side == 'reference': B.query('ROLLBACK')
+        r = wire.exchange(pbx('discard', 'INSERT INTO public.tx_contract VALUES (3,30)'),
+                          'discard INSERT; Sync', 'discard/Sync')
+        assert r['tags'] == ['Z'] and r['transaction'] == ('E' if explicit else 'I'), r
+        check(B, S0, 'I')
+        if explicit:
+            r = wire.query('SELECT 1::int4')
+            assert r['diagnostics']['C'] == '25P02' and r['transaction'] == 'E', r
+            assert wire.query('ROLLBACK')['transaction'] == 'I'
+        r = wire.query(O)
+        assert r['rows'] == S0 and r['transaction'] == 'I', r
+        assert api('PQcancel', I, P, P, I)(cancel, error, len(error)) == 1
+        r = wire.exchange(pbx('idle_probe', 'SELECT 1::int4', True), 'SELECT 1::int4', 'idle cancel/new PBX', 'idle_probe')
+        assert r['rows'] == [['1']] and r['transaction'] == 'I' and not r['diagnostics']['C'], r
+        check(B, S0, 'I')
+        assert wire.query('DROP TABLE public.tx_contract')['command'] == 'DROP TABLE'
+    finally:
+        paths[2].write_text('finally release') if side == 'aster' else None
+        if worker: worker.join(12)
+        try:
+            B.query('ROLLBACK', required=False)
+            wire.exchange([], '<cleanup sync>', 'cleanup/Sync')
+            wire.query('ROLLBACK')
+        finally:
+            wire.sock.close()
+            api('PQfreeCancel', None, P)(cancel)
+            for path in paths: path.unlink(missing_ok=True)
+    A.close(); B.close()
+    record['cleanup'].append(dict(explicit=explicit, table_dropped=True, connections_closed=True, barrier_released=True))
+
 def observe_transaction(side, admin_dsn):
     obs, connections = [], []
     record = {'side':side, 'repository_sha':head, 'client_version':libversion(),
@@ -840,12 +936,15 @@ def observe_transaction(side, admin_dsn):
         admin = Connection(admin_dsn, 'admin', obs)
         record['server_version_num'] = serverversion(admin.ptr)
         record['source_commit_sha'] = head if side == 'aster' else 'unverified: reference installed from release archive'
+        if a.case == 'active_cancel' and side == 'reference':
+            # Release builds have archive provenance rather than a Git checkout.
+            record['source_archive_sha256'] = os.environ.get('PG18_REFERENCE_SOURCE_SHA256', 'unverified')
         if side == 'reference':
             admin.query(f'CREATE DATABASE {a.database}')
             created = True
         dsn = admin_dsn + f' dbname={a.database}'
-        for extended in ((False,) if a.case in ('query_block', 'extended_error', 'explicit_sync') else (False, True)):
-            for inserted in (('create', 'drop') if a.case == 'database_ddl_gate' else ('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else (('create', 'drop', 'alter', 'truncate') if a.case in ('table_ddl_gate', 'mysql_ddl_coexist') else (('create_index','drop_view','create_view','drop_index','create_sequence','alter_sequence','drop_sequence') if a.case == 'other_ddl_gate' else ('30', 'NULL'))))))):
+        for extended in ((False,) if a.case in ('active_cancel', 'query_block', 'extended_error', 'explicit_sync') else (False, True)):
+            for inserted in (('implicit', 'explicit') if a.case == 'active_cancel' else ('create', 'drop') if a.case == 'database_ddl_gate' else ('Parse', 'Bind', 'Execute', 'success') if a.case == 'explicit_sync' else ('Parse', 'Bind', 'Execute') if a.case == 'extended_error' else ('success', 'duplicate', 'lexical', 'syntax') if a.case == 'query_block' else (('terminate', 'socket') if a.case == 'disconnect' else (('23505', '22012') if a.case in ('failed_rollback', 'failed_commit') else (('without_prefix','with_prefix') if a.case == 'old_portal' else (('create', 'drop', 'alter', 'truncate') if a.case in ('table_ddl_gate', 'mysql_ddl_coexist') else (('create_index','drop_view','create_view','drop_index','create_sequence','alter_sequence','drop_sequence') if a.case == 'other_ddl_gate' else ('30', 'NULL'))))))):
                 A, B = [Connection(dsn, n, obs) for n in ('A','B')]
                 connections += [A,B]
                 for conn in (A,B):
@@ -877,6 +976,9 @@ def observe_transaction(side, admin_dsn):
                     assert [(f['name'],f['oid'],f['typlen'],f['typmod'],f['format']) for f in r['columns']] == [('id',23,4,-1,0),('value',23,4,-1,0)], r
                     return r
                 check(B,initial,'I')
+                if a.case == 'active_cancel':
+                    active_cancel(A, B, check, side, record, inserted)
+                    continue
                 if a.case == 'explicit_sync':
                     explicit_sync(A, B, check, record, inserted)
                     continue
@@ -1161,7 +1263,7 @@ def observe_transaction(side, admin_dsn):
                 for conn in (A,B,C):
                     conn.close()
                 record['cleanup'].append({'mode':'extended' if extended else 'simple','insert':inserted,'table_dropped':not preserve,'preserved_for_restart':preserve,'connections_closed':True})
-        record['cases_passed'] = 14 if a.case == 'other_ddl_gate' else 16 if a.case in ('table_ddl_gate', 'mysql_ddl_coexist') else 3 if a.case == 'extended_error' else 4
+        record['cases_passed'] = 2 if a.case == 'active_cancel' else 14 if a.case == 'other_ddl_gate' else 16 if a.case in ('table_ddl_gate', 'mysql_ddl_coexist') else 3 if a.case == 'extended_error' else 4
     finally:
         for conn in connections:
             if conn.ptr:
@@ -1240,6 +1342,26 @@ if a.case in ('table_ddl_gate', 'mysql_ddl_coexist'):
         aster='0A000 early refusal without implicit commit',
         boundaries={side:v['ddl_boundaries'] for side,v in outputs.items()}), indent=2))
     print(json.dumps(dict(case=a.case, cases_per_endpoint=16, evidence=str(evidence), cleanup='passed')))
+    raise SystemExit(0)
+if a.case == 'active_cancel':
+    ref, local = [outputs[side]['cancel_segments'] for side in ('reference','aster')]
+    assert len(ref) == len(local) > 0
+    for r,l in zip(ref,local):
+        for key in ('sql','phase','transaction','rows','command','affected','tags'):
+            if r['phase'] == 'active Execute/Flush' and key in ('rows','tags'):
+                continue # independently asserted partial rows need not precede cancellation
+            assert r[key] == l[key], (key,r,l)
+        assert r['diagnostics']['C'] == l['diagnostics']['C'], (r,l)
+        # Only the bare recovery expression has endpoint-specific labels.
+        if r['sql'] == 'SELECT 1::int4':
+            assert [{**f,'name':'expression'} for f in r['columns']] == [{**f,'name':'expression'} for f in l['columns']], (r,l)
+        else:
+            assert r['columns'] == l['columns'], (r,l)
+    assert all(v['cases_passed'] == 2 and len(v['activity']) == 2 for v in outputs.values())
+    (evidence/'comparison.json').write_text(json.dumps(dict(matched=True, cases_per_endpoint=2, wire_observations=len(ref),
+        partial_rows=[dict(reference=r['rows'],aster=l['rows']) for r,l in zip(ref,local) if r['phase']=='active Execute/Flush'],
+        diagnostics=[dict(reference=r['diagnostics'],aster=l['diagnostics']) for r,l in zip(ref,local) if r['diagnostics']['C']]),indent=2))
+    print(json.dumps(dict(case=a.case,cases_per_endpoint=2,evidence=str(evidence),cleanup='passed')))
     raise SystemExit(0)
 if a.case in ('extended_error', 'explicit_sync'):
     differences, probe_names = [], []

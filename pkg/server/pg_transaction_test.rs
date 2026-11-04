@@ -1683,6 +1683,11 @@ fn pg12_explicit_sync() {
     pg12_transaction_case("explicit_sync");
 }
 
+#[test]
+fn pg12_active_cancel() {
+    pg12_transaction_case("active_cancel");
+}
+
 fn pg12_transaction_case(case: &str) {
     assert!(
         std::env::var_os("PG18_REFERENCE_DSN").is_some(),
@@ -1721,8 +1726,41 @@ fn pg12_transaction_case(case: &str) {
     let barrier = std::env::temp_dir().join(format!("{database}_cleanup"));
     let ddl_snapshot = barrier.with_extension("ddl");
     let ddl_reply = barrier.with_extension("reply");
+    let cancel_arm = barrier.with_extension("arm");
+    let cancel_entered = barrier.with_extension("entered");
+    let cancel_release = barrier.with_extension("release");
+    // Existing shared-session injection runs after statement entry. Only this
+    // test's explicitly armed request pauses; storage and query results stay real.
+    let cancel_paths = [
+        cancel_arm.clone(),
+        cancel_entered.clone(),
+        cancel_release.clone(),
+    ];
+    let pause_paths = cancel_paths.clone();
+    let _pause = (case == "active_cancel").then(|| {
+        astersql_testkit_testfailpoint::enable_concurrent_call(
+            "github.com/pingcap/tidb/pkg/session/mockStmtSlow",
+            move || {
+                if !pause_paths[0].exists() {
+                    return;
+                }
+                std::fs::remove_file(&pause_paths[0]).unwrap();
+                std::fs::write(&pause_paths[1], "shared statement entered").unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                while !pause_paths[2].exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "cancel barrier not released"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                std::fs::remove_file(&pause_paths[2]).unwrap();
+            },
+        )
+    });
     let mut child = std::process::Command::new("python3")
         .env("PG12_DDL_SNAPSHOT", &ddl_snapshot)
+        .env("PG12_CANCEL_BARRIER", &barrier)
         .env("PG12_CLEANUP_BARRIER", &barrier)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1764,10 +1802,17 @@ fn pg12_transaction_case(case: &str) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    // Failure/timeout also releases an armed execution before server shutdown.
+    if case == "active_cancel" {
+        let _ = std::fs::write(&cancel_release, "cleanup");
+    }
     let output = child.wait_with_output();
     let _ = std::fs::remove_file(&barrier);
     let _ = std::fs::remove_file(&ddl_snapshot);
     let _ = std::fs::remove_file(&ddl_reply);
+    for path in &cancel_paths {
+        let _ = std::fs::remove_file(path);
+    }
     let cleanup = query(&mut admin, &format!("DROP DATABASE {database}"));
     send(&mut admin, b'X', &[]);
     drop(admin);
