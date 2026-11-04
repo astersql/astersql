@@ -33185,3 +33185,299 @@ fn pg11_25() {
     service.close();
     assert!(TcpStream::connect(addr).is_err());
 }
+
+#[test]
+fn pg11_26() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup(Arc<PgService>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _cleanup = Cleanup(service.clone());
+    let connect = |path: Option<&str>| {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut body = 196608u32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"user\0root\0database\0test\0");
+        if let Some(path) = path {
+            body.extend_from_slice(b"search_path\0");
+            body.extend_from_slice(path.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        s.write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        s.write_all(&body).unwrap();
+        loop {
+            let m = read(&mut s);
+            assert_ne!(m.0, b'E', "startup {path:?}: {m:?}");
+            if m.0 == b'Z' {
+                break;
+            }
+        }
+        s
+    };
+    fn run(s: &mut TcpStream, sql: &str, ext: bool) -> Vec<(u8, Vec<u8>)> {
+        if !ext {
+            return query(s, sql);
+        }
+        send(
+            s,
+            b'P',
+            &[b"\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+        );
+        send(s, b'B', &[0; 8]);
+        send(s, b'D', b"P\0");
+        send(s, b'E', &[0; 5]);
+        send(s, b'S', &[]);
+        let mut messages = Vec::new();
+        loop {
+            let m = read(s);
+            let ready = m.0 == b'Z';
+            messages.push(m);
+            if ready {
+                return messages;
+            }
+        }
+    }
+    fn ok(s: &mut TcpStream, sql: &str, ext: bool) {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert!(m.iter().any(|m| m.0 == b'C'), "{sql}: {m:?}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+    }
+    fn denied(s: &mut TcpStream, sql: &str, ext: bool, state: &str) {
+        let m = run(s, sql, ext);
+        eprintln!(
+            "pg11_26 diagnostic ext={ext} state={state} response_tags={:?}",
+            m.iter().map(|m| m.0 as char).collect::<Vec<_>>()
+        );
+        let e = &m
+            .iter()
+            .find(|m| m.0 == b'E')
+            .unwrap_or_else(|| panic!("{sql}: {m:?}"))
+            .1;
+        assert!(
+            e.windows(state.len() + 2)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|m| m.0 == b'D' || m.0 == b'C'),
+            "{sql}: {m:?}"
+        );
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        ok(s, "SELECT 1", ext);
+    }
+    fn values(items: &[(&str, Option<&str>)]) -> Vec<Vec<Option<String>>> {
+        items
+            .iter()
+            .map(|(id, note)| vec![Some((*id).into()), note.map(str::to_owned)])
+            .collect()
+    }
+    fn returned(
+        s: &mut TcpStream,
+        sql: &str,
+        ext: bool,
+        expected: &[Vec<Option<String>>],
+    ) -> Vec<u8> {
+        let m = run(s, sql, ext);
+        assert!(!m.iter().any(|m| m.0 == b'E'), "{sql}: {m:?}");
+        assert_eq!(catalog_rows(&m), expected, "{sql}");
+        assert_eq!(m.last().unwrap(), &(b'Z', b"I".to_vec()));
+        let tag = if sql.starts_with("INSERT") {
+            format!("INSERT 0 {}\0", expected.len())
+        } else {
+            format!("SELECT {}\0", expected.len())
+        };
+        assert_eq!(m.iter().find(|m| m.0 == b'C').unwrap().1, tag.as_bytes());
+        let description = m.iter().find(|m| m.0 == b'T').unwrap().1.clone();
+        let mut offset = 2;
+        assert_eq!(&description[..2], &2u16.to_be_bytes());
+        for (name, oid) in [("id", 20u32), ("note", 25u32)] {
+            let end = offset + description[offset..].iter().position(|b| *b == 0).unwrap();
+            assert_eq!(&description[offset..end], name.as_bytes());
+            offset = end + 1;
+            assert_eq!(&description[offset + 6..offset + 10], &oid.to_be_bytes());
+            offset += 18;
+        }
+        description
+    }
+    for ext in [false, true] {
+        let mut a = connect(None);
+        let mut b = connect(None);
+        for mode in ["ALWAYS", "BY DEFAULT"] {
+            ok(
+                &mut a,
+                &format!(
+                    "CREATE TABLE public.identity_return26 (id bigint GENERATED {mode} AS IDENTITY (START 10), note text)"
+                ),
+                ext,
+            );
+            returned(
+                &mut a,
+                "INSERT INTO public.identity_return26(note) VALUES ('omit') RETURNING id,note",
+                ext,
+                &values(&[("10", Some("omit"))]),
+            );
+            returned(
+                &mut a,
+                "INSERT INTO public.identity_return26 VALUES (DEFAULT,'default') RETURNING id,note",
+                ext,
+                &values(&[("11", Some("default"))]),
+            );
+            returned(
+                &mut a,
+                "INSERT INTO public.identity_return26 DEFAULT VALUES RETURNING id,note",
+                ext,
+                &values(&[("12", None)]),
+            );
+            returned(
+                &mut a,
+                "INSERT INTO public.identity_return26 OVERRIDING SYSTEM VALUE VALUES (900,'manual') RETURNING id,note",
+                ext,
+                &values(&[("900", Some("manual"))]),
+            );
+            returned(
+                &mut a,
+                "INSERT INTO public.identity_return26 OVERRIDING USER VALUE VALUES (900,'ignored') RETURNING id,note",
+                ext,
+                &values(&[("13", Some("ignored"))]),
+            );
+            denied(
+                &mut a,
+                "INSERT INTO public.identity_return26 OVERRIDING SYSTEM VALUE VALUES (NULL,'bad') RETURNING id,note",
+                ext,
+                "23502",
+            );
+            denied(
+                &mut a,
+                "INSERT INTO public.identity_return26(note) VALUES ('bad') RETURNING",
+                ext,
+                "42601",
+            );
+            returned(
+                &mut a,
+                "INSERT INTO public.identity_return26(note) VALUES ('after') RETURNING id,note",
+                ext,
+                &values(&[("14", Some("after"))]),
+            );
+            returned(
+                &mut b,
+                "SELECT id,note FROM public.identity_return26 ORDER BY id",
+                ext,
+                &values(&[
+                    ("10", Some("omit")),
+                    ("11", Some("default")),
+                    ("12", None),
+                    ("13", Some("ignored")),
+                    ("14", Some("after")),
+                    ("900", Some("manual")),
+                ]),
+            );
+            ok(&mut a, "DROP TABLE public.identity_return26", ext);
+        }
+        send(&mut a, b'X', &[]);
+        send(&mut b, b'X', &[]);
+        eprintln!(
+            "pg11_26 ext={ext}: 2 modes x 8 RETURNING inputs and complete stored rows passed"
+        );
+    }
+    let mut a = connect(None);
+    let mut b = connect(None);
+    ok(
+        &mut a,
+        "CREATE TABLE public.identity_phase26 (id bigint GENERATED ALWAYS AS IDENTITY (START 10), note text)",
+        false,
+    );
+    let sql = "INSERT INTO public.identity_phase26(note) VALUES ('prepared'),('second') RETURNING id,note";
+    send(
+        &mut a,
+        b'P',
+        &[b"phase26\0".as_slice(), sql.as_bytes(), b"\0\0\0"].concat(),
+    );
+    assert_eq!(read(&mut a).0, b'1');
+    send(&mut a, b'D', b"Sphase26\0");
+    assert_eq!(read(&mut a).0, b't');
+    let statement_description = read(&mut a);
+    assert_eq!(statement_description.0, b'T');
+    send(&mut a, b'B', b"portal26\0phase26\0\0\0\0\0\0\0");
+    assert_eq!(read(&mut a).0, b'2');
+    send(&mut a, b'D', b"Pportal26\0");
+    let portal_description = read(&mut a);
+    assert_eq!(statement_description, portal_description);
+    let description = returned(
+        &mut b,
+        "INSERT INTO public.identity_phase26(note) VALUES ('observer') RETURNING id,note",
+        false,
+        &values(&[("10", Some("observer"))]),
+    );
+    assert_eq!(description, portal_description.1);
+    send(&mut a, b'E', b"portal26\0\0\0\0\x01");
+    let first = read(&mut a);
+    assert_eq!(first.0, b'D');
+    assert_eq!(catalog_rows(&[first]), values(&[("11", Some("prepared"))]));
+    assert_eq!(read(&mut a).0, b's');
+    // The whole INSERT executes once even though delivery pauses after one row.
+    returned(
+        &mut b,
+        "SELECT id,note FROM public.identity_phase26 ORDER BY id",
+        false,
+        &values(&[
+            ("10", Some("observer")),
+            ("11", Some("prepared")),
+            ("12", Some("second")),
+        ]),
+    );
+    send(&mut a, b'E', b"portal26\0\0\0\0\0");
+    let second = read(&mut a);
+    assert_eq!(second.0, b'D');
+    assert_eq!(catalog_rows(&[second]), values(&[("12", Some("second"))]));
+    assert_eq!(read(&mut a), (b'C', b"INSERT 0 1\0".to_vec()));
+    send(&mut a, b'E', b"portal26\0\0\0\0\0");
+    assert_eq!(read(&mut a), (b'C', b"INSERT 0 0\0".to_vec()));
+    for name in [b"Pportal26\0".as_slice(), b"Sphase26\0"] {
+        send(&mut a, b'C', name);
+        assert_eq!(read(&mut a).0, b'3');
+    }
+    send(&mut a, b'S', &[]);
+    assert_eq!(read(&mut a), (b'Z', b"I".to_vec()));
+    returned(
+        &mut b,
+        "INSERT INTO public.identity_phase26(note) VALUES ('after') RETURNING id,note",
+        false,
+        &values(&[("13", Some("after"))]),
+    );
+    returned(
+        &mut b,
+        "SELECT id,note FROM public.identity_phase26 ORDER BY id",
+        false,
+        &values(&[
+            ("10", Some("observer")),
+            ("11", Some("prepared")),
+            ("12", Some("second")),
+            ("13", Some("after")),
+        ]),
+    );
+    ok(&mut a, "DROP TABLE public.identity_phase26", false);
+    send(&mut a, b'X', &[]);
+    send(&mut b, b'X', &[]);
+    service.close();
+    assert!(TcpStream::connect(addr).is_err());
+    eprintln!("pg11_26: describe/execute allocation, suspension/resume, close and shutdown passed");
+}
