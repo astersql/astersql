@@ -529,3 +529,277 @@ fn pg12_ddl_visibility() {
         "schema_mapping":"native storage database test; actual INFORMATION_SCHEMA and PG catalog queries expose public"
     })).unwrap()).unwrap();
 }
+
+#[test]
+fn pg12_ddl_failure_cleanup() {
+    struct RestoreMdl(bool);
+    impl Drop for RestoreMdl {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        }
+    }
+    let _restore = RestoreMdl(astersql_sessionctx_vardef::IsMDLEnabled());
+    astersql_sessionctx_vardef::SetEnableMDL(true);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let database = format!("pg12_ddl_failure_{}", std::process::id());
+    assert!(
+        std::process::Command::new("python3")
+            .arg(root.join("pkg/server/testdata/pg12_transaction_libpq.py"))
+            .args([
+                "--case",
+                "ddl_failure_reference",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--database",
+                &database
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "independent PG18.6 reference required; no skip"
+    );
+    let evidence = root
+        .join("target/pg12-ddl_failure_reference-evidence")
+        .join(database);
+    let reference: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(evidence.join("reference.json")).unwrap()).unwrap();
+    let (domain, _bootstrap) = CreateAnalyzeSession().unwrap();
+    let b = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    let directory = "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name='txddl_probe'";
+    let columns = "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='txddl_probe' ORDER BY ordinal_position";
+    let keys = "SELECT constraint_type FROM information_schema.table_constraints WHERE table_schema='public' AND table_name='txddl_probe' AND constraint_type='PRIMARY KEY'";
+    let sentinel = "SELECT id,v FROM txddl_sentinel ORDER BY id";
+    let data = "SELECT id,v FROM txddl_probe ORDER BY id";
+    let mut observations = Vec::new();
+    let mut cases = Vec::new();
+    for sql in ["SELECT version()", "SHOW server_version_num"] {
+        visibility_observe(&b, sql, &mut observations);
+    }
+    for (index, mode) in ["ROLLBACK", "CLOSE", "PRECOMMIT_FAULT"].iter().enumerate() {
+        assert_eq!(reference["cases"][index]["mode"], *mode);
+        let a = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+        // Retain only the independent lock observer, never a session clone.
+        let mdl = a.transaction_mdl();
+        let owner = a.row_lock_owner;
+        visibility_observe(&a, "SET tidb_txn_mode = 'pessimistic'", &mut observations).unwrap();
+        for sql in [
+            "CREATE TABLE txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_sentinel VALUES (1,10)",
+        ] {
+            visibility_observe(&a, sql, &mut observations).unwrap();
+        }
+        let runtime_probe_jobs = || {
+            let jobs = RUNTIME_DDL_JOBS.lock().unwrap();
+            jobs.active
+                .values()
+                .chain(jobs.history.iter())
+                .filter(|j| {
+                    j.domain_id == Arc::as_ptr(&domain) as usize && j.table == "txddl_probe"
+                })
+                .count()
+        };
+        let runtime_jobs_before = runtime_probe_jobs();
+        let version = domain.info_schema().SchemaMetaVersion();
+        let sentinel_id = domain.table_by_name("test", "txddl_sentinel").unwrap().ID;
+        for sql in [
+            "BEGIN",
+            "UPDATE txddl_sentinel SET v=11 WHERE id=1",
+            "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_probe VALUES (1,30)",
+        ] {
+            visibility_observe(&a, sql, &mut observations).unwrap();
+        }
+        assert_eq!(
+            visibility_observe(&a, data, &mut observations).unwrap(),
+            [["1", "30"]]
+        );
+        let job = *a.state.borrow().pending_create_jobs.last().unwrap();
+        let table_id = a.resolve_runtime_table("test", "txddl_probe").unwrap().ID;
+        assert_eq!(durable_state(&domain, job), (version, false, false));
+        assert!(mdl_blocks(&a, sentinel_id, version + 1));
+        assert!(
+            a.HeldRowLockCount() > 0,
+            "exercise actual row-lock ownership"
+        );
+        if *mode != "PRECOMMIT_FAULT" {
+            assert!(
+                visibility_observe(
+                    &a,
+                    "INSERT INTO txddl_probe VALUES (1,40)",
+                    &mut observations
+                )
+                .is_none()
+            );
+            assert!(
+                observations.last().unwrap()["native_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Duplicate entry")
+            );
+        }
+        assert_eq!(
+            visibility_observe(&b, sentinel, &mut observations).unwrap(),
+            [["1", "10"]]
+        );
+        assert!(
+            visibility_observe(&b, directory, &mut observations)
+                .unwrap()
+                .is_empty()
+        );
+        if *mode == "CLOSE" {
+            drop(a);
+        } else {
+            if *mode == "PRECOMMIT_FAULT" {
+                // Existing deterministic fault rolls the actual transaction
+                // back immediately before its Commit and catalog publication.
+                a.state.borrow_mut().next_dml_commit_error =
+                    Some("task21 before user commit".into());
+                assert!(visibility_observe(&a, "COMMIT", &mut observations).is_none());
+                assert!(
+                    observations.last().unwrap()["native_error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("task21 before user commit")
+                );
+            } else {
+                visibility_observe(&a, "ROLLBACK", &mut observations).unwrap();
+            }
+            assert!(
+                !mdl_blocks(&a, sentinel_id, version + 1),
+                "exit itself releases MDL before session drop"
+            );
+            assert_eq!(a.HeldRowLockCount(), 0);
+            assert!(
+                RUNTIME_ROW_LOCKS
+                    .0
+                    .lock()
+                    .unwrap()
+                    .holders
+                    .values()
+                    .all(|holders| !holders.contains_key(&owner))
+            );
+            assert!(a.state.borrow().transaction.is_none());
+            assert!(a.state.borrow().pending_create_schema.is_none());
+            assert!(a.state.borrow().pending_create_jobs.is_empty());
+            assert_eq!(
+                visibility_observe(&a, sentinel, &mut observations).unwrap(),
+                [["1", "10"]]
+            );
+            assert!(
+                visibility_observe(&a, directory, &mut observations)
+                    .unwrap()
+                    .is_empty()
+            );
+            drop(a);
+        }
+        let mut jobs = HashMap::from([(
+            1,
+            Arc::new(astersql_session_sessmgr::mdldef::JobMDL {
+                ver: version + 1,
+                table_ids: HashSet::from([sentinel_id, table_id]),
+            }),
+        )]);
+        mdl.check_jobs(&mut jobs);
+        assert_eq!(
+            jobs.len(),
+            1,
+            "closed/finished transaction must release MDL"
+        );
+        let locks = RUNTIME_ROW_LOCKS.0.lock().unwrap();
+        assert!(
+            locks
+                .holders
+                .values()
+                .all(|holders| !holders.contains_key(&owner))
+        );
+        assert!(!locks.wait_for.contains_key(&owner));
+        assert!(!locks.wait_for.values().any(|holder| *holder == owner));
+        assert!(!locks.connections.contains_key(&owner));
+        drop(locks);
+        assert_eq!(durable_state(&domain, job), (version, false, false));
+        assert_eq!(
+            runtime_probe_jobs(),
+            runtime_jobs_before,
+            "no active or completed runtime job leaked"
+        );
+        assert_eq!(domain.info_schema().SchemaMetaVersion(), version);
+        assert!(domain.table_by_name("test", "txddl_probe").is_err());
+        // Read the abandoned table's actual row-key prefix in a fresh KV snapshot.
+        domain.storage().with_storage(|store| {
+            let snapshot = store.GetSnapshot(store.CurrentVersion("global").unwrap());
+            let prefix = astersql_tablecodec::GenTableRecordPrefix(table_id);
+            let mut iter = snapshot.Iter(kv::Key(prefix.0.clone()), None).unwrap();
+            assert!(
+                !iter.Valid() || !iter.Key().0.starts_with(&prefix.0),
+                "abandoned physical rows"
+            );
+            iter.Close();
+        });
+        for sql in [columns, keys] {
+            assert!(
+                visibility_observe(&b, sql, &mut observations)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let values = visibility_observe(&b, sentinel, &mut observations).unwrap();
+        assert_eq!(
+            serde_json::json!(values),
+            reference["cases"][index]["after"]["sentinel"]
+        );
+        assert!(
+            visibility_observe(&b, directory, &mut observations)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(visibility_observe(&b, data, &mut observations).is_none());
+        assert!(
+            observations.last().unwrap()["native_error"]
+                .as_str()
+                .unwrap()
+                .contains("doesn't exist")
+        );
+        for sql in [
+            "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_probe VALUES (2,50)",
+            "UPDATE txddl_sentinel SET v=12 WHERE id=1",
+        ] {
+            visibility_observe(&b, sql, &mut observations).unwrap();
+        }
+        assert_eq!(
+            serde_json::json!(rows(&b, data)),
+            reference["cases"][index]["new_data"]
+        );
+        assert_eq!(
+            serde_json::json!(rows(&b, sentinel)),
+            reference["cases"][index]["new_sentinel"]
+        );
+        cases.push(
+            serde_json::json!({"mode":mode,"job_id":job,"abandoned_table_id":table_id,
+            "durable_schema_version":version,"directory_empty":true,"history_absent":true,
+            "physical_rows_absent":true,"MDL_released":true,"row_locks_absent":true,
+            "sentinel":values,"name_reused":true,"new_data":rows(&b,data)}),
+        );
+        b.execute("DROP TABLE txddl_probe").unwrap();
+        b.execute("DROP TABLE txddl_sentinel").unwrap();
+        assert!(domain.table_by_name("test", "txddl_probe").is_err());
+        assert!(domain.table_by_name("test", "txddl_sentinel").is_err());
+    }
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    std::fs::write(evidence.join("aster.json"), serde_json::to_vec_pretty(&serde_json::json!({
+        "repository_sha":String::from_utf8_lossy(&sha.stdout).trim(),"cases":cases,"observations":observations,
+        "storage":"CreateAnalyzeSession shared MVCC store; not RealTiKV", "client":"native ConcreteSession API",
+        "isolation":b.TransactionIsolation(),"wire":"not applicable: internal prototype, no fabricated PG diagnostics",
+        "fault":"existing next_dml_commit_error before actual Commit/publication; reference terminates owned backend before COMMIT",
+        "cleanup":"all owned tables absent; sessions dropped; reference test database dropped"
+    })).unwrap()).unwrap();
+}

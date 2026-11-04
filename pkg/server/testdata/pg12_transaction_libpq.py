@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 
 p = argparse.ArgumentParser()
-p.add_argument('--case', choices=['ddl_visibility_reference', 'ddl_atomic_reference', 'active_cancel', 'commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
+p.add_argument('--case', choices=['ddl_failure_reference', 'ddl_visibility_reference', 'ddl_atomic_reference', 'active_cancel', 'commit', 'rollback', 'single_implicit', 'repeated_begin', 'outside_end', 'disconnect', 'failed_rollback', 'failed_commit', 'old_portal', 'savepoint_gate', 'query_block', 'extended_success', 'extended_error', 'explicit_sync', 'table_ddl_gate', 'other_ddl_gate', 'database_ddl_gate', 'mysql_ddl_coexist'], required=True)
 p.add_argument('--host', choices=['127.0.0.1'], required=True)
 p.add_argument('--port', type=int, required=True)
 p.add_argument('--database', required=True)
@@ -1304,6 +1304,98 @@ if a.restart_check:
 # The internal session prototype has no public PG wire entry. This scenario
 # independently collects only the real PostgreSQL reference; Rust collects the
 # local shared-session results before comparing their actual outcomes.
+if a.case == 'ddl_failure_reference':
+    obs, connections = [], []
+    record = dict(repository_sha=head, client_version=libversion(),
+                  storage='PostgreSQL persistent reference', observations=obs,
+                  source_commit_sha='unverified: release archive', cases=[], cleanup=[])
+    admin = Connection(reference, 'admin', obs)
+    created = False
+    directory = "SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='txddl_probe'"
+    columns = "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='txddl_probe' ORDER BY ordinal_position"
+    keys = "SELECT constraint_type FROM information_schema.table_constraints WHERE table_schema='public' AND table_name='txddl_probe' AND constraint_type='PRIMARY KEY'"
+    sentinel = 'SELECT id,v FROM public.txddl_sentinel ORDER BY id'
+    try:
+        assert serverversion(admin.ptr) == 180006, 'exact PG18.6 required'
+        record['server_version_num'] = serverversion(admin.ptr)
+        admin.query(f'CREATE DATABASE {a.database}')
+        created = True
+        dsn = reference + f' dbname={a.database}'
+        for extended in (False, True):
+            for mode in ('ROLLBACK', 'CLOSE', 'PRECOMMIT_FAULT'):
+                A, B = [Connection(dsn, n, obs) for n in ('A', 'B')]
+                connections.extend((A, B))
+                for conn in (A, B):
+                    conn.query("SET statement_timeout = '2s'")
+                for sql in ('SELECT version()', 'SHOW server_version_num', 'SHOW transaction_isolation'):
+                    A.query(sql)
+                A.query('CREATE TABLE public.txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)')
+                A.query('INSERT INTO public.txddl_sentinel VALUES (1,10)')
+                pid = backendpid(A.ptr)
+                A.query('BEGIN', extended)
+                A.query('UPDATE public.txddl_sentinel SET v=11 WHERE id=1', extended)
+                A.query('CREATE TABLE public.txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)', extended)
+                A.query('INSERT INTO public.txddl_probe VALUES (1,30)', extended)
+                assert A.query('SELECT id,v FROM public.txddl_probe ORDER BY id', extended)['rows'] == [['1','30']]
+                assert A.query(columns, extended)['rows'] == [['id','integer','NO'],['v','integer','NO']]
+                assert A.query(keys, extended)['rows'] == [['PRIMARY KEY']]
+                if mode != 'PRECOMMIT_FAULT':
+                    error = A.query('INSERT INTO public.txddl_probe VALUES (1,40)', extended, required=False)
+                    assert error['diagnostics']['C'] == '23505' and error['transaction'] == 'E', error
+                before = dict(sentinel=B.query(sentinel, extended)['rows'], directory=B.query(directory, extended)['rows'])
+                assert before == dict(sentinel=[['1','10']], directory=[])
+                if mode == 'ROLLBACK':
+                    assert A.query('ROLLBACK', extended)['transaction'] == 'I'
+                    assert A.query(sentinel, extended)['rows'] == [['1','10']]
+                    assert A.query(directory, extended)['rows'] == []
+                else:
+                    if mode == 'PRECOMMIT_FAULT':
+                        # Kill this owned backend before COMMIT is sent, never the
+                        # reference instance. This has a definite rollback outcome.
+                        assert B.query(f'SELECT pg_terminate_backend({pid})')['rows'] == [['t']]
+                    A.close()
+                    for _ in range(100):
+                        if not B.query(f'SELECT pid FROM pg_catalog.pg_stat_activity WHERE pid={pid}')['rows']:
+                            break
+                        time.sleep(0.01)
+                    else:
+                        raise AssertionError('owned backend did not close')
+                assert B.query(f"SELECT locktype FROM pg_catalog.pg_locks WHERE pid={pid} AND locktype IN ('relation','transactionid','tuple')")['rows'] == []
+                after = dict(sentinel=B.query(sentinel, extended)['rows'], directory=B.query(directory, extended)['rows'])
+                assert after == before
+                for sql in (columns, keys):
+                    assert B.query(sql, extended)['rows'] == []
+                missing = B.query('SELECT id,v FROM public.txddl_probe ORDER BY id', extended, required=False)
+                assert missing['diagnostics']['C'] == '42P01', missing
+                for sql in ('CREATE TABLE public.txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)',
+                            'INSERT INTO public.txddl_probe VALUES (2,50)',
+                            'UPDATE public.txddl_sentinel SET v=12 WHERE id=1'):
+                    B.query(sql, extended)
+                new_data = B.query('SELECT id,v FROM public.txddl_probe ORDER BY id', extended)['rows']
+                new_sentinel = B.query(sentinel, extended)['rows']
+                assert new_data == [['2','50']]
+                assert new_sentinel == [['1','12']]
+                record['cases'].append(dict(mode=mode, extended=extended, before=before, after=after,
+                    locks_absent=True, name_reused=True, new_data=new_data, new_sentinel=new_sentinel))
+                B.query('DROP TABLE public.txddl_probe')
+                B.query('DROP TABLE public.txddl_sentinel')
+                assert B.query(directory)['rows'] == []
+                for conn in (A, B):
+                    conn.close()
+    finally:
+        for conn in connections:
+            if conn.ptr:
+                conn.query('ROLLBACK', required=False)
+                conn.close()
+        if created:
+            admin.query(f'DROP DATABASE {a.database}')
+            assert admin.query(f"SELECT datname FROM pg_catalog.pg_database WHERE datname='{a.database}'")['rows'] == []
+            record['cleanup'].append(dict(database_dropped=True, connections_closed=True))
+        admin.close()
+        (evidence / 'reference.json').write_text(json.dumps(record, indent=2))
+    print(json.dumps(dict(evidence=str(evidence), cases=len(record['cases']), cleanup='passed')))
+    raise SystemExit(0)
+
 if a.case == 'ddl_visibility_reference':
     obs, connections = [], []
     record = dict(repository_sha=head, client_version=libversion(),

@@ -2962,3 +2962,161 @@ fn pg12_ddl_visibility_catalog() {
     )
     .unwrap();
 }
+
+#[test]
+fn pg12_ddl_failure_cleanup_catalog() {
+    use crate::conn::{CancellationToken, SessionDriver};
+    let (domain, _bootstrap) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver.clone(),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    struct CloseService(Arc<PgService>);
+    impl Drop for CloseService {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _close_service = CloseService(service.clone());
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    until_ready(&mut socket);
+    let directory = "SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='txddl_probe'";
+    let token = CancellationToken::new();
+    for (index, close) in [false, true].iter().enumerate() {
+        let a = driver
+            .open_ctx_with_dialect(
+                98300 + index as u64,
+                0,
+                45,
+                "test",
+                None,
+                astersql_parser_ast::SqlDialect::PostgreSQL,
+            )
+            .unwrap();
+        for sql in [
+            "CREATE TABLE txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_sentinel VALUES (1,10)",
+            "BEGIN",
+            "UPDATE txddl_sentinel SET v=11 WHERE id=1",
+            "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_probe VALUES (1,30)",
+        ] {
+            a.execute_query(sql, false, &token).unwrap();
+        }
+        assert!(
+            a.execute_query("INSERT INTO txddl_probe VALUES (1,40)", false, &token)
+                .is_err()
+        );
+        // The writer enters only through the internal worker, preserving the
+        // public PG DDL gate; the observer uses a real TCP PostgreSQL session.
+        for sql in [directory] {
+            let messages = query(&mut socket, sql);
+            eprintln!("cleanup close={close} before SQL={sql} wire={messages:?}");
+            assert!(!messages.iter().any(|m| matches!(m.0, b'D' | b'E')));
+            assert_eq!(messages.last().unwrap(), &(b'Z', vec![b'I']));
+        }
+        let messages = query(
+            &mut socket,
+            "SELECT id,v FROM public.txddl_sentinel ORDER BY id",
+        );
+        assert!(messages.contains(&(b'D', row(&[Some("1"), Some("10")]))));
+        if !close {
+            a.execute_query("ROLLBACK", false, &token).unwrap();
+        }
+        a.close().unwrap(); // Shutdown joins the worker and drops its actual session.
+        for sql in [directory] {
+            let messages = query(&mut socket, sql);
+            eprintln!("cleanup close={close} after SQL={sql} wire={messages:?}");
+            assert!(!messages.iter().any(|m| matches!(m.0, b'D' | b'E')));
+        }
+        let recovered = query(
+            &mut socket,
+            "SELECT id,v FROM public.txddl_sentinel ORDER BY id",
+        );
+        assert_eq!(
+            recovered.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>(),
+            vec![&(b'D', row(&[Some("1"), Some("10")]))]
+        );
+        let missing = query(
+            &mut socket,
+            "SELECT id,v FROM public.txddl_probe ORDER BY id",
+        );
+        assert!(
+            missing
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(6).any(|v| v == b"42P01\0"))
+        );
+        assert_eq!(missing.last().unwrap(), &(b'Z', vec![b'I']));
+        let b = driver
+            .open_ctx_with_dialect(
+                98310 + index as u64,
+                0,
+                45,
+                "test",
+                None,
+                astersql_parser_ast::SqlDialect::PostgreSQL,
+            )
+            .unwrap();
+        for sql in [
+            "CREATE TABLE txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)",
+            "INSERT INTO txddl_probe VALUES (2,50)",
+            "UPDATE txddl_sentinel SET v=12 WHERE id=1",
+        ] {
+            b.execute_query(sql, false, &token).unwrap();
+        }
+        for (sql, expected) in [
+            (
+                "SELECT id,v FROM public.txddl_probe ORDER BY id",
+                row(&[Some("2"), Some("50")]),
+            ),
+            (
+                "SELECT id,v FROM public.txddl_sentinel ORDER BY id",
+                row(&[Some("1"), Some("12")]),
+            ),
+        ] {
+            let messages = query(&mut socket, sql);
+            eprintln!("cleanup close={close} reuse SQL={sql} wire={messages:?}");
+            assert_eq!(
+                messages.iter().filter(|m| m.0 == b'D').collect::<Vec<_>>(),
+                vec![&(b'D', expected)]
+            );
+        }
+        for sql in ["DROP TABLE txddl_probe", "DROP TABLE txddl_sentinel"] {
+            b.execute_query(sql, false, &token).unwrap();
+        }
+        b.close().unwrap();
+        assert!(
+            !query(&mut socket, directory)
+                .iter()
+                .any(|m| matches!(m.0, b'D' | b'E'))
+        );
+    }
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+    assert!(
+        TcpListener::bind(addr).is_ok(),
+        "owned listener must be released"
+    );
+}
