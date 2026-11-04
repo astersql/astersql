@@ -1635,6 +1635,11 @@ fn pg12_failed_rollback() {
 }
 
 #[test]
+fn pg12_extended_error() {
+    pg12_transaction_case("extended_error");
+}
+
+#[test]
 fn pg12_extended_success() {
     pg12_transaction_case("extended_success");
 }
