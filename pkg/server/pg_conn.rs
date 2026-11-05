@@ -643,7 +643,11 @@ impl PgService {
                         } else {
                             crate::pg_name::adapt(sql, context.as_ref(), &mut extended.session)
                                 .and_then(|sql| {
-                                    crate::pg_sql::adapt_with_context(&sql, context.as_ref())
+                                    crate::pg_sql::adapt_with_session(
+                                        &sql,
+                                        context.as_ref(),
+                                        &extended.session,
+                                    )
                                 })
                                 .and_then(|sql| {
                                     crate::pg_result::adapt_session_query(
@@ -1053,7 +1057,7 @@ impl PgService {
                 let result = (|| {
                     let source = crate::pg_sql::query_statement_text(&original)?;
                     let sql = crate::pg_name::adapt(source, context.as_ref(), session)?;
-                    let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
+                    let sql = crate::pg_sql::adapt_with_session(&sql, context.as_ref(), session)?;
                     let sql =
                         crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?;
                     let command = crate::pg_result::command(&sql)?

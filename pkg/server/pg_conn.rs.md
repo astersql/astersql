@@ -149,3 +149,7 @@ Reuse the existing PostgreSQL error encoder to send detail, hint and position to
 ## 2026-11-02 命名约束诊断
 
 共享执行端在写入前无法绑定本表真实唯一约束时，以精确内部诊断映射 SQLSTATE 42704；不将普通唯一索引或他表约束名称当作有效身份。此规则不使用任意子串匹配，也不改变非目标唯一错误的23505映射。
+
+## 独立索引生命周期（2026-11-05）
+
+Q与多语句入口将PgSession传入pg_sql::adapt_with_session，独立索引DDL按实际search_path解析真实OID，再转为既有表内索引DDL。适配检查schema USAGE、改名目标schema创建权限、实际认证角色与持久owner、名称冲突；不建立另一套索引存储。约束拥有索引和条件DDL仍明确拒绝。未扩展角色继承或SET ROLE语义。

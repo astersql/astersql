@@ -5125,3 +5125,163 @@ fn pg13_013_contract() {
         "pg13_013_contract: format=12 refusal=1 recovery=1 connections=3 zero_rows=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_014_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_014_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_014_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_014_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_014_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_014_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_014_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_014_admin");
+    let (mut c, _) = connect("pg13_014_policy");
+    let ddl = query(
+        &mut a,
+        "CREATE TABLE public.idx_contract (id integer, a integer, b integer, CONSTRAINT idx_contract_pk PRIMARY KEY (id))",
+    );
+    assert_eq!(ddl[0].0, b'C', "{ddl:?}");
+    for sql in [
+        "CREATE INDEX idx_contract_ba ON public.idx_contract (b,a)",
+        "CREATE UNIQUE INDEX idx_contract_uq ON public.idx_contract (a)",
+    ] {
+        let got = query(&mut a, sql);
+        assert_eq!(got[0].0, b'C', "{got:?}");
+    }
+    let sql = "SELECT c.relname,i.indexrelid,i.indrelid,i.indisunique,i.indisprimary FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid WHERE i.indrelid='public.idx_contract'::regclass::oid ORDER BY c.relname";
+    let got = query(&mut a, sql);
+    assert_eq!(got[0].0, b'T', "{got:?}");
+    assert_eq!(got.iter().filter(|m| m.0 == b'D').count(), 3, "{got:?}");
+    assert_eq!(query(&mut b, sql), got);
+    let constraints = query(
+        &mut a,
+        "SELECT conname FROM pg_catalog.pg_constraint WHERE conrelid='public.idx_contract'::regclass::oid AND contype='u'",
+    );
+    assert_eq!(constraints[0].0, b'T', "{constraints:?}");
+    assert_eq!(
+        constraints.iter().filter(|m| m.0 == b'D').count(),
+        0,
+        "standalone unique index is not a constraint: {constraints:?}"
+    );
+    query(
+        &mut a,
+        "CREATE TABLE public.idx_handle (id integer PRIMARY KEY)",
+    );
+    let snapshot = domain.info_schema();
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_014_admin"))
+        .unwrap();
+    let handle = tables
+        .iter()
+        .find(|t| t.model_meta.as_ref().unwrap().Name.O == "idx_handle")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    assert!(handle.PKIsHandle);
+    assert!(!handle.Indices.iter().any(|i| i.Primary));
+    let indexes = crate::pg_catalog::catalog_indexes(handle).unwrap();
+    assert_eq!(indexes.len(), 1);
+    assert_eq!(indexes[0].ID, -1);
+    let mut explicit = (**handle).clone();
+    explicit.Indices.push(astersql_meta_model::IndexInfo {
+        ID: 1,
+        ..indexes[0].clone()
+    });
+    assert_eq!(
+        crate::pg_catalog::catalog_indexes(&explicit).unwrap().len(),
+        1
+    );
+    let mut invalid = (**handle).clone();
+    invalid.Columns.push(invalid.Columns[0].clone());
+    assert!(
+        crate::pg_catalog::catalog_indexes(&invalid).is_err(),
+        "multiple handle columns must be rejected"
+    );
+    let mut missing = (**handle).clone();
+    missing.Columns.clear();
+    assert!(crate::pg_catalog::catalog_indexes(&missing).is_err());
+    let mut duplicate = explicit.clone();
+    duplicate.Indices.push(duplicate.Indices[0].clone());
+    assert!(crate::pg_catalog::catalog_indexes(&duplicate).is_err());
+    duplicate.Indices[1].ID = 2;
+    assert!(crate::pg_catalog::catalog_indexes(&duplicate).is_err());
+    let mut non_integer = (**handle).clone();
+    non_integer.Columns[0].SetType(astersql_parser_mysql::r#type::TypeVarchar);
+    assert!(crate::pg_catalog::catalog_indexes(&non_integer).is_err());
+    let mut invalid_id = explicit.clone();
+    invalid_id.ID = 0;
+    assert!(crate::pg_catalog::catalog_indexes(&invalid_id).is_err());
+    invalid_id.ID = explicit.ID;
+    invalid_id.Indices[0].ID = i64::MAX;
+    assert!(crate::pg_catalog::catalog_indexes(&invalid_id).is_err());
+    let null = query(
+        &mut a,
+        "SELECT pg_catalog.pg_get_indexdef(NULL) AS definition",
+    );
+    assert_eq!(null[0].0, b'T', "{null:?}");
+    assert!(null.contains(&(b'D', row(&[None]))));
+    let isolated = query(&mut c, "SELECT indexrelid FROM pg_catalog.pg_index");
+    assert_eq!(isolated[0].0, b'T');
+    assert_eq!(isolated.iter().filter(|m| m.0 == b'D').count(), 0);
+    drop((a, b, c));
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg13_014_contract: base=3 handle=1 explicit=1 invalid=7 standalone_unique=1 isolation=1 connections=3 cleanup=1"
+    );
+}

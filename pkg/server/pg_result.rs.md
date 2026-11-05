@@ -274,3 +274,7 @@ PG10-10：结构化 PostgreSQLCapabilityError 映射为0A000；普通解析错�
 ## 2026-11-02 冲突更新动作条件
 
 PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受限 `<` 比较和布尔字面量/转换复用共享表达式求值；仅 TRUE 更新，FALSE/NULL 不求值 SET、不返回旧行且不计数。不变值更新仍计1，目标 WHERE 与部分索引推断继续拒绝。扩展协议保留支持的冲突子句参数映射，typed NULL 和新 Bind 条件值进入同一执行链。测试入口 pg10_12_behavior、pg10_12_action_condition；独立参考端、真实并发与性能不在本次验收范围。
+
+## 索引生命周期命令标签（2026-11-05）
+
+独立索引改名适配为单一RenameIndex动作时输出ALTER INDEX；DropIndexStmt输出DROP INDEX。pg13_014_differential使用独立libpq核对成功标签、SQLSTATE及恢复状态。

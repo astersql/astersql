@@ -270,3 +270,7 @@ prepare/process 复用 pg_result::supported_conflict_do_nothing 判断 Any/列�
 ## 2026-11-02 冲突更新动作条件
 
 PG10-12：动作 WHERE 在共享冲突路径按旧行与 excluded 绑定，受限 `<` 比较和布尔字面量/转换复用共享表达式求值；仅 TRUE 更新，FALSE/NULL 不求值 SET、不返回旧行且不计数。不变值更新仍计1，目标 WHERE 与部分索引推断继续拒绝。扩展协议保留支持的冲突子句参数映射，typed NULL 和新 Bind 条件值进入同一执行链。测试入口 pg10_12_behavior、pg10_12_action_condition；独立参考端、真实并发与性能不在本次验收范围。
+
+## 索引DDL路径解析（2026-11-05）
+
+扩展Parse入口通过pg_sql::adapt_with_session使用连接实际有效search_path，与Q共用目录OID到存储表内索引的解析；后续仍走现有Prepare/Bind/Execute执行。

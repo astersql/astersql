@@ -344,8 +344,14 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
         "CREATE DATABASE"
     } else if node.is::<ast::DropDatabaseStmt>() {
         "DROP DATABASE"
-    } else if node.is::<ast::AlterTableStmt>() {
-        "ALTER TABLE"
+    } else if let Some(alter) = node.downcast_ref::<ast::AlterTableStmt>() {
+        if alter.Specs.len() == 1 && alter.Specs[0].Tp == ast::AlterTableType::RenameIndex {
+            "ALTER INDEX"
+        } else {
+            "ALTER TABLE"
+        }
+    } else if node.is::<ast::DropIndexStmt>() {
+        "DROP INDEX"
     } else if node.is::<ast::TruncateTableStmt>() {
         "TRUNCATE TABLE"
     } else if node.is::<ast::BeginStmt>() {

@@ -84,3 +84,7 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 ## 2026-10-26 文本族身份边界（任务21）
 
 既有目录/会话类型的 NativeType 初始化明确设置 postgresql_text_oid=None，保持目录专用 wire 类型的原解释；仅为共享元数据新增字段所必需的局部接线。
+
+## 索引身份与句柄主键（2026-11-05）
+
+catalog_indexes 校验表内索引ID唯一、多主索引和整数句柄的唯一主键列；缺显式Primary时才投影局部ID -1。已保存的PG主键声明名用于关系命名，pg_class、pg_index及regclass共用该身份。PG表的独立唯一索引没有PostgreSQLConstraintName时不产生唯一约束行；原生遗留约束语义留待约束来源专项。IDX-BASE字段及conrelid补齐PG目录来源属性号，零行Describe也保持来源。

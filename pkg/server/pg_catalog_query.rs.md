@@ -90,3 +90,7 @@ RustCodeGraph 对 `pg_catalog_query.rs::parse_shadowed` 的节点记录确认其
 ## 2026-11-01 普通 INT4 FROM 函数所有权
 
 pg_catalog.generate_series(...) 本身不再触发目录查询所有权，普通 SRF 交由共享引擎；查询中若同时存在真实目录关系，原目录门禁仍生效。不在目录解释器内实现 generate_series，不改变其他目录表函数。
+
+## 索引生命周期标量入口（2026-11-05）
+
+限定pg_catalog.pg_get_indexdef无FROM SELECT复用目录标量求值，使已删除索引原OID与NULL输入各返回一行SQL NULL；使用同一执行快照。

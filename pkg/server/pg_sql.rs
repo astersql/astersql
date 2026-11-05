@@ -316,11 +316,20 @@ pub(crate) fn check_returning_aliases(sql: &str) -> ParseResult<()> {
 }
 
 pub(crate) fn adapt(sql: &str) -> ParseResult<String> {
-    adapt_internal(sql, None)
+    adapt_internal(sql, None, None)
 }
 
 pub(crate) fn adapt_with_context(sql: &str, context: &dyn TiDBContext) -> ParseResult<String> {
-    adapt_internal(sql, Some(context))
+    adapt_internal(sql, Some(context), None)
+}
+
+/// Index relation lookup must use the connection's effective search_path.
+pub(crate) fn adapt_with_session(
+    sql: &str,
+    context: &dyn TiDBContext,
+    session: &crate::pg_session::PgSession,
+) -> ParseResult<String> {
+    adapt_internal(sql, Some(context), Some(session))
 }
 
 // PG omits ROW before each VALUES tuple. Reuse the row-list AST while
@@ -378,7 +387,11 @@ pub(crate) fn values_parameter_source(sql: &str) -> ParseResult<(String, Vec<usi
     Ok((apply(sql, edits)?, insertions))
 }
 
-fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<String> {
+fn adapt_internal(
+    sql: &str,
+    context: Option<&dyn TiDBContext>,
+    session: Option<&crate::pg_session::PgSession>,
+) -> ParseResult<String> {
     let tokens = tokens(sql)?;
     let Some(first) = tokens.first() else {
         return Ok(sql.to_owned());
@@ -392,6 +405,17 @@ fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<S
     for start in values_row_insertions(&tokens) {
         edits.insert(start, (start, values_row_prefix(sql, start)));
     }
+    if (first.word("alter") || first.word("drop"))
+        && tokens.get(1).is_some_and(|token| token.word("index"))
+    {
+        let path = match (session, context) {
+            (Some(session), Some(context)) => session
+                .effective_explicit_path(context)
+                .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?,
+            _ => vec!["pg_catalog".into(), "public".into()],
+        };
+        return adapt_index(&tokens, context, &path);
+    }
     if first.word("alter") && tokens.get(1).is_some_and(|token| token.word("table")) {
         adapt_alter(sql, &tokens, edits, context)
     } else if !first.word("create") {
@@ -399,6 +423,150 @@ fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<S
     } else {
         adapt_create(sql, &tokens, edits)
     }
+}
+
+// Resolve a PG schema relation back to its table-local native index. The
+// resulting ordinary DDL keeps authorization and durable publication in the
+// existing session/DDL path, rather than mutating a catalog projection.
+fn adapt_index(
+    tokens: &[Token],
+    context: Option<&dyn TiDBContext>,
+    path: &[String],
+) -> ParseResult<String> {
+    let context = context.ok_or_else(|| error("0A000", "index DDL requires catalog context"))?;
+    if tokens.get(2).is_some_and(|t| t.word("if")) {
+        return Err(error("0A000", "conditional index DDL is unsupported"));
+    }
+    let (schema, name, action) = alter_table_parts(tokens)?;
+    let end = tokens.len() - usize::from(tokens.last().is_some_and(|t| t.symbol(b';')));
+    let rename = tokens[0].word("alter");
+    if rename {
+        if action + 3 != end
+            || !tokens[action].word("rename")
+            || !tokens[action + 1].word("to")
+            || !tokens[action + 2].identifier()
+        {
+            return Err(error("42601", "expected ALTER INDEX name RENAME TO name"));
+        }
+    } else if action != end {
+        return Err(error("0A000", "unsupported DROP INDEX clause"));
+    }
+    let result = context
+        .execute_query(
+            "SELECT DATABASE()",
+            false,
+            &crate::conn::CancellationToken::new(),
+        )
+        .map_err(|_| error("XX000", "cannot read current database"))?;
+    let database = match result
+        .first()
+        .and_then(|r| r.rows.first())
+        .and_then(|r| r.first())
+    {
+        Some(crate::conn::Value::Text(db)) => db,
+        _ => return Err(error("3D000", "no current database for index DDL")),
+    };
+    let snapshot = context
+        .schema_snapshot()
+        .ok_or_else(|| error("0A000", "schema snapshot is unavailable"))?;
+    let facts = context
+        .pg_namespace_facts()
+        .transpose()
+        .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?
+        .unwrap_or_default();
+    let qualified = schema.as_ref().map_or_else(
+        || format!("\"{}\"", name.replace('"', "\"\"")),
+        |schema| {
+            format!(
+                "\"{}\".\"{}\"",
+                schema.replace('"', "\"\""),
+                name.replace('"', "\"\"")
+            )
+        },
+    );
+    let oid = crate::pg_oid::resolve_in_path(&qualified, database, snapshot.as_ref(), path, &facts)
+        .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+    if rename {
+        let rows = crate::pg_catalog::class_rows(snapshot.as_ref(), database)
+            .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+        let namespace = rows
+            .iter()
+            .find(|r| r[0] == crate::conn::Value::Signed(i64::from(oid)))
+            .map(|r| &r[2]);
+        if facts.iter().any(|fact| {
+            let ns = if fact.name == "pg_catalog" {
+                Some(11)
+            } else {
+                crate::pg_oid::namespace_oid(fact.id).ok()
+            };
+            namespace
+                == ns
+                    .map(|ns| crate::conn::Value::Signed(i64::from(ns)))
+                    .as_ref()
+                && !fact.can_create
+        }) {
+            return Err(error("42501", "permission denied for index schema"));
+        }
+        let destination =
+            crate::conn::Value::Text(token_name(&tokens[action + 2]).unwrap().to_owned());
+        if rows
+            .iter()
+            .any(|r| Some(&r[2]) == namespace && r[1] == destination)
+        {
+            return Err(error("42P07", "relation already exists"));
+        }
+    }
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .map_err(|_| error("XX000", "cannot read index owner table"))?;
+    for table in tables {
+        let Some(model) = &table.model_meta else {
+            continue;
+        };
+        for index in crate::pg_catalog::catalog_indexes(model)
+            .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?
+        {
+            if crate::pg_oid::index_oid(model.ID, index.ID).ok() != Some(oid) {
+                continue;
+            }
+            let identity = context
+                .user_identity()
+                .map_err(|_| error("XX000", "cannot read authenticated role"))?;
+            let actor = identity
+                .rsplit_once('@')
+                .map_or(identity.as_str(), |(user, _)| user);
+            if actor != "root" {
+                let roles = context
+                    .pg_database_facts(None)
+                    .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+                let owner = model
+                    .PostgreSQLOwner
+                    .and_then(|id| roles.first()?.roles.get(&id));
+                if owner.map(String::as_str) != Some(actor) {
+                    return Err(error("42501", "must be owner of index"));
+                }
+            }
+            // Constraint-owned indexes require constraint DDL, which this narrow
+            // standalone-index lifecycle path does not implement.
+            if index.Primary || index.PostgreSQLConstraintName.is_some() {
+                return Err(error("0A000", "constraint-owned index DDL is unsupported"));
+            }
+            // The target was resolved in this database above. Native index DDL
+            // takes the storage table key, not the logical PG schema name.
+            let table = quote(&model.Name.O);
+            return Ok(if rename {
+                format!(
+                    "ALTER TABLE {} RENAME INDEX {} TO {}",
+                    table,
+                    quote(&index.Name.O),
+                    quote(token_name(&tokens[action + 2]).unwrap())
+                )
+            } else {
+                format!("DROP INDEX {} ON {}", quote(&index.Name.O), table)
+            });
+        }
+    }
+    Err(error("42809", "relation is not an index"))
 }
 
 fn adapt_create(

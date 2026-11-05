@@ -1502,7 +1502,7 @@ impl Extended {
         } else {
             let sql = crate::pg_name::adapt(&sql, context.as_ref(), &mut self.session)?;
             dependencies = relation_dependencies(&sql, context.as_ref());
-            let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
+            let sql = crate::pg_sql::adapt_with_session(&sql, context.as_ref(), &self.session)?;
             let (engine_sql, mapping) = markers(&sql)?;
             if !mapping.is_empty() {
                 parameter_contract = indexed_parameter_contract(&original_sql)?;

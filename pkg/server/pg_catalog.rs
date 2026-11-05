@@ -1229,8 +1229,16 @@ impl CatalogQuery {
                         ("pg_namespace", 1) => 2,
                         ("pg_namespace", 5) => 3,
                         ("pg_namespace", 6) => 4,
+                        ("pg_constraint", 3) => 9,
                         ("pg_index", 0) => 1,
                         ("pg_index", 1) => 2,
+                        ("pg_index", 2) => 3,
+                        ("pg_index", 3) => 4,
+                        ("pg_index", 4) => 5,
+                        ("pg_index", 5) => 7,
+                        ("pg_index", 6) => 6,
+                        ("pg_index", 13) => 11,
+                        ("pg_index", 14) => 13,
                         ("pg_index", 7) => 16,
                         ("pg_index", 10) => 17,
                         ("pg_attribute", 0) => 1,
@@ -4727,20 +4735,51 @@ pub(crate) fn catalog_indexes(
     if model.Indices.iter().any(|i| i.ID <= 0) {
         return Err(ConnError::UnsupportedCommand(0));
     }
+    let mut ids = std::collections::HashSet::new();
+    if model.Indices.iter().any(|i| !ids.insert(i.ID))
+        || model.Indices.iter().filter(|i| i.Primary).count() > 1
+    {
+        return Err(ConnError::UnsupportedCommand(0));
+    }
     let mut indexes = model.Indices.clone();
+    // A named PG declaration is a schema relation name, unlike native PRIMARY.
+    for index in indexes.iter_mut().filter(|i| i.Primary) {
+        if let Some(name) = &index.PostgreSQLConstraintName {
+            index.Name = astersql_parser_ast::NewCIStr(name);
+        }
+    }
     if model.PKIsHandle && !indexes.iter().any(|i| i.Primary) {
-        let column = model
+        let columns: Vec<_> = model
             .Columns
             .iter()
-            .find(|c| {
+            .filter(|c| {
                 c.State == astersql_meta_model::StatePublic
                     && !c.Hidden
                     && astersql_parser_mysql::r#type::HasPriKeyFlag(c.GetFlag())
             })
-            .ok_or(ConnError::UnsupportedCommand(0))?;
+            .collect();
+        let [column] = columns.as_slice() else {
+            return Err(ConnError::UnsupportedCommand(0));
+        };
+        if !matches!(
+            column.GetType(),
+            astersql_parser_mysql::r#type::TypeTiny
+                | astersql_parser_mysql::r#type::TypeShort
+                | astersql_parser_mysql::r#type::TypeInt24
+                | astersql_parser_mysql::r#type::TypeLong
+                | astersql_parser_mysql::r#type::TypeLonglong
+        ) {
+            return Err(ConnError::UnsupportedCommand(0));
+        }
         indexes.push(astersql_meta_model::IndexInfo {
             ID: -1,
-            Name: astersql_parser_ast::NewCIStr("PRIMARY"),
+            Name: astersql_parser_ast::NewCIStr(
+                model
+                    .PostgreSQLPrimaryConstraint
+                    .as_deref()
+                    .unwrap_or("PRIMARY"),
+            ),
+            PostgreSQLConstraintName: model.PostgreSQLPrimaryConstraint.clone(),
             Columns: vec![astersql_meta_model::IndexColumn {
                 Name: column.Name.clone(),
                 Offset: column.Offset,
@@ -4752,6 +4791,11 @@ pub(crate) fn catalog_indexes(
             State: astersql_meta_model::StatePublic,
             ..Default::default()
         });
+    }
+    crate::pg_oid::table_oid(model.ID).map_err(|_| ConnError::UnsupportedCommand(0))?;
+    for index in &indexes {
+        crate::pg_oid::index_oid(model.ID, index.ID)
+            .map_err(|_| ConnError::UnsupportedCommand(0))?;
     }
     Ok(indexes)
 }
@@ -4910,7 +4954,9 @@ fn index_constraint_rows(
                         .collect::<Vec<_>>()
                         .join("\0"),
                 );
-            } else if index.Primary || index.Unique {
+            } else if index.Primary
+                || (index.Unique && (!model.ExactName || index.PostgreSQLConstraintName.is_some()))
+            {
                 row[0] = Value::Signed(oid);
                 row[1] = Value::Text(index.Name.O.clone());
                 row[2] = Value::Text(if index.Primary { "p" } else { "u" }.into());
