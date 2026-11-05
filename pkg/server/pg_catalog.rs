@@ -1231,6 +1231,8 @@ impl CatalogQuery {
                         ("pg_namespace", 6) => 4,
                         ("pg_index", 0) => 1,
                         ("pg_index", 1) => 2,
+                        ("pg_index", 7) => 16,
+                        ("pg_index", 10) => 17,
                         ("pg_attribute", 0) => 1,
                         ("pg_sequence", 0) => 1,
                         ("pg_attribute", 3) => 3,

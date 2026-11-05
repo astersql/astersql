@@ -587,3 +587,24 @@ fn pg09_23_catalog_ownership() {
         assert_eq!(parse(sql).unwrap_err().0, "0A000", "{sql}");
     }
 }
+
+#[test]
+fn jdbc_array_delimiter_comma_join() {
+    let query = crate::pg_catalog_query::parse("SELECT e.typdelim FROM pg_catalog.pg_type t,pg_catalog.pg_type e WHERE t.oid=$1 AND t.typelem=e.oid").unwrap().unwrap();
+    assert_eq!(query.joins.len(), 1);
+    assert!(matches!(
+        query.joins[0].on,
+        crate::pg_catalog_query::Expr::Boolean(true)
+    ));
+    assert!(query.filter.is_some());
+    let too_many = (0..10)
+        .map(|n| format!("pg_catalog.pg_type t{n}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        crate::pg_catalog_query::parse(&format!("SELECT t0.oid FROM {too_many}"))
+            .unwrap_err()
+            .0,
+        "0A000"
+    );
+}

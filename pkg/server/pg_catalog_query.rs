@@ -991,8 +991,11 @@ impl Parser {
         let mut joins = Vec::new();
         loop {
             let natural = self.word("natural");
-            let cross = self.word("cross");
-            let left = if cross {
+            let comma = self.symbol(',');
+            let cross = comma || self.word("cross");
+            let left = if comma {
+                false
+            } else if cross {
                 self.require_word("join")?;
                 false
             } else if self.word("left") {
