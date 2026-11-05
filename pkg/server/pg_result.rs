@@ -266,6 +266,7 @@ pub(crate) fn supported_conflict_action(clause: &ast::PostgreSQLConflictClause) 
 
 fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'static str, String)> {
     crate::pg_sql::check_returning_aliases(sql)?;
+    crate::pg_name::check_index_options(sql)?;
     let (statements, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
         .ParseSQL(sql, &[])
         .map_err(|error| {
@@ -328,7 +329,17 @@ fn command_for_phase(sql: &str, prepare: bool) -> Result<PrepareCommand, (&'stat
             ));
         }
         "DELETE"
-    } else if node.is::<ast::CreateIndexStmt>() {
+    } else if let Some(index) = node.downcast_ref::<ast::CreateIndexStmt>() {
+        if index
+            .IndexPartSpecifications
+            .iter()
+            .any(|part| part.Expr.is_some())
+        {
+            return Err((
+                "0A000",
+                "PostgreSQL expression index facts are unavailable".into(),
+            ));
+        }
         "CREATE INDEX"
     } else if node.is::<ast::CreateViewStmt>() {
         "CREATE VIEW"

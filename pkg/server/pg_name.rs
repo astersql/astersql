@@ -1443,12 +1443,65 @@ fn alias_scope(
     Ok(scope.allowed)
 }
 
+/// The native index model has no PG ordering/INCLUDE facts. Reject these
+/// declarations before parsing/adaptation can discard them or write metadata.
+pub(crate) fn check_index_options(sql: &str) -> ParseResult<()> {
+    // Command classification also sees internally adapted native identifiers.
+    let parts = source_tokens(sql, true)?;
+    let index = parts.first().is_some_and(|p| p.word("create"))
+        && (parts.get(1).is_some_and(|p| p.word("index"))
+            || parts.get(1).is_some_and(|p| p.word("unique"))
+                && parts.get(2).is_some_and(|p| p.word("index")));
+    if !index {
+        return Ok(());
+    }
+    let Some(on) = parts.iter().position(|p| p.word("on")) else {
+        return Ok(());
+    };
+    let Some(open) = parts
+        .iter()
+        .enumerate()
+        .skip(on + 1)
+        .find_map(|(i, p)| (p.symbol == Some(b'(')).then_some(i))
+    else {
+        return Ok(());
+    };
+    let mut depth = 0usize;
+    for (i, part) in parts.iter().enumerate().skip(open) {
+        match part.symbol {
+            Some(b'(') => depth += 1,
+            Some(b')') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        let ordering = depth == 1
+            && (part.word("desc")
+                && parts
+                    .get(i.wrapping_sub(1))
+                    .is_some_and(|p| p.name.is_some())
+                || part.word("nulls")
+                    && parts
+                        .get(i + 1)
+                        .is_some_and(|p| p.word("first") || p.word("last")));
+        let include = depth == 0
+            && part.word("include")
+            && parts.get(i + 1).is_some_and(|p| p.symbol == Some(b'('));
+        if ordering || include {
+            return Err(error(
+                "0A000",
+                "PostgreSQL index ordering and INCLUDE require stored index facts",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn adapt(
     sql: &str,
     context: &dyn TiDBContext,
     session: &mut crate::pg_session::PgSession,
 ) -> ParseResult<String> {
     crate::pg_sql::check_returning_aliases(sql)?;
+    check_index_options(sql)?;
     // Native physical partitions have no independent PG relation identities.
     // Gate valid PG partition DDL before the native parser can misdiagnose it
     // as malformed MySQL partition syntax or create partial metadata.

@@ -1075,7 +1075,7 @@ impl Parser {
 fn label(expr: &Expr) -> String {
     match expr {
         Expr::Column(path) | Expr::Call(path, _) => path.last().unwrap().clone(),
-        Expr::Cast(expr, _) => label(expr),
+        Expr::Cast(expr, _) | Expr::Subscript(expr, _) => label(expr),
         _ => "?column?".into(),
     }
 }

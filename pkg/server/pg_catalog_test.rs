@@ -5285,3 +5285,170 @@ fn pg13_014_contract() {
         "pg13_014_contract: base=3 handle=1 explicit=1 invalid=7 standalone_unique=1 isolation=1 connections=3 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_015_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_015_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_015_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_015_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_015_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_015_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_015_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_015_admin");
+    let (mut c, _) = connect("pg13_015_policy");
+    for sql in [
+        "CREATE TABLE public.idx_contract (id integer, obsolete integer, a integer, b integer)",
+        "ALTER TABLE public.idx_contract DROP COLUMN obsolete",
+        "CREATE INDEX idx_contract_ba ON public.idx_contract (b,a)",
+    ] {
+        let got = query(&mut a, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let sql = "SELECT i.indkey,i.indkey[0],i.indkey[1],i.indoption,i.indnatts,i.indnkeyatts FROM pg_catalog.pg_index i WHERE i.indrelid='public.idx_contract'::regclass::oid";
+    let got = query(&mut a, sql);
+    assert_eq!(got[0].0, b'T', "{got:?}");
+    assert!(
+        got.contains(&(
+            b'D',
+            row(&[
+                Some("4 3"),
+                Some("4"),
+                Some("3"),
+                Some("0 0"),
+                Some("2"),
+                Some("2")
+            ])
+        )),
+        "{got:?}"
+    );
+    assert_eq!(query(&mut b, sql), got);
+    for shape in [
+        "(b DESC)",
+        "(b DESC NULLS LAST,a ASC NULLS FIRST)",
+        "(a) INCLUDE (b)",
+        "((a+1))",
+    ] {
+        let ddl = format!("CREATE INDEX idx_rejected ON public.idx_contract {shape}");
+        let denied = query(&mut a, &ddl);
+        assert!(
+            denied
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+            "{ddl}: {denied:?}"
+        );
+        assert_eq!(query(&mut b, sql), got, "rejection must not change indexes");
+        assert_eq!(query(&mut a, "SELECT 1")[0].0, b'T');
+    }
+    let meta = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("pg13_015_admin"),
+            &astersql_infoschema::CiString::new("idx_contract"),
+        )
+        .unwrap();
+    let original = meta.Meta().model_meta.as_ref().unwrap().as_ref().clone();
+    for scenario in 0..4 {
+        let mut model = original.clone();
+        match scenario {
+            0 => model.Indices[0].Columns[0].Offset = 999,
+            1 => model.Indices[0].Columns[0].Name = astersql_parser_ast::NewCIStr("missing"),
+            2 => {
+                model.PostgreSQLAttributeSlots.as_mut().unwrap()[3].0 =
+                    model.PostgreSQLAttributeSlots.as_ref().unwrap()[2].0
+            }
+            _ => model.PostgreSQLAttributeSlots = Some(vec![(1, false); i16::MAX as usize + 1]),
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("invalid"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: model.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("idx_contract"),
+                    model_meta: Some(Arc::new(model)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let err = crate::pg_catalog::index_constraint_rows(
+            "pg_index",
+            &bad,
+            "invalid",
+            &crate::conn::CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&err),
+            "0A000",
+            "scenario={scenario}"
+        );
+    }
+    let isolated = query(&mut c, "SELECT indkey,indoption FROM pg_catalog.pg_index");
+    assert_eq!(isolated[0].0, b'T');
+    assert_eq!(isolated.iter().filter(|m| m.0 == b'D').count(), 0);
+    drop((a, b, c));
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg13_015_contract: persistent_order=1 vector_subscripts=2 options=1 rejected_shapes=4 invalid_metadata=4 second_connection=1 isolation=1 cleanup=1"
+    );
+}

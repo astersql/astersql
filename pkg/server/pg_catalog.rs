@@ -1240,6 +1240,7 @@ impl CatalogQuery {
                         ("pg_index", 13) => 11,
                         ("pg_index", 14) => 13,
                         ("pg_index", 7) => 16,
+                        ("pg_index", 8) => 19,
                         ("pg_index", 10) => 17,
                         ("pg_attribute", 0) => 1,
                         ("pg_sequence", 0) => 1,
@@ -4800,7 +4801,7 @@ pub(crate) fn catalog_indexes(
     Ok(indexes)
 }
 
-fn index_constraint_rows(
+pub(crate) fn index_constraint_rows(
     relation: &str,
     snapshot: &dyn astersql_infoschema::InfoSchema,
     database: &str,
@@ -4939,6 +4940,9 @@ fn index_constraint_rows(
                         .collect::<Vec<_>>()
                         .join(" "),
                 );
+                // Only ordinary native keys reach this provider. PG declarations
+                // with direction/NULL ordering or INCLUDE are rejected before DDL
+                // because the native model cannot preserve those facts.
                 row[8] = Value::Text(vec!["0"; columns.len()].join(" "));
                 // Native indexes do not select PostgreSQL operator classes.
                 row[9] = Value::Text(String::new());
