@@ -459,6 +459,16 @@ impl DdlMetadataService {
             .expect("database inserted above");
         table.DBID = database_info.ID;
         assign_table_physical_ids(catalog, &mut table);
+        // Assign once at creation, before any native offset changes. Hidden
+        // implementation columns have no PostgreSQL system-column identity.
+        table.PostgreSQLAttributeSlots = Some(
+            table
+                .Columns
+                .iter()
+                .filter(|c| !c.Hidden)
+                .map(|c| (c.ID, false))
+                .collect(),
+        );
         let mut new_tables = Vec::new();
         for column in &mut table.Columns {
             if let Some(identity) = column.PostgreSQLIdentity.as_mut() {
@@ -1259,6 +1269,13 @@ impl DdlMetadataService {
             {
                 return Err(kv::errors::New("unknown index in ALTER TABLE DROP INDEX"));
             }
+            if let Some(slots) = &mut new.PostgreSQLAttributeSlots {
+                for (id, dropped) in slots {
+                    if removed_column_ids.contains(id) {
+                        *dropped = true;
+                    }
+                }
+            }
             new.Columns
                 .retain(|column| !removed_column_ids.contains(&column.ID));
             for (offset, column) in new.Columns.iter_mut().enumerate() {
@@ -1372,6 +1389,16 @@ impl DdlMetadataService {
                 new.MaxColumnID += 1;
                 column.ID = new.MaxColumnID;
                 column.Offset = new.Columns.len() as isize;
+                if !column.Hidden {
+                    if let Some(slots) = &mut new.PostgreSQLAttributeSlots {
+                        if slots.len() >= i16::MAX as usize {
+                            return Err(kv::errors::New(
+                                "PostgreSQL attribute slot limit exceeded",
+                            ));
+                        }
+                        slots.push((column.ID, false));
+                    }
+                }
                 new.Columns.push(column);
             }
             catalog.tables.insert(key, new.clone());

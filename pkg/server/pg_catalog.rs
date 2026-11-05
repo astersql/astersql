@@ -1194,6 +1194,8 @@ impl CatalogQuery {
                     // These are PostgreSQL catalog attribute numbers, not the
                     // compact row slots used internally by the catalog evaluator.
                     let attribute = match (relation.name.as_str(), slot % CATALOG_ROW_WIDTH) {
+                        ("pg_attribute", 1) => 5,
+                        ("pg_attribute", 7) => 17,
                         ("pg_shdescription", 6) => 1,
                         ("pg_shdescription", 7) => 2,
                         ("pg_shdescription", 2) => 3,
@@ -3129,11 +3131,14 @@ fn native_metadata_rows(
                     .map_or(model.Comment.as_str(), |s| s.Comment.as_str()),
             );
             for column in &model.Columns {
-                if column.State == astersql_meta_model::StatePublic {
+                if column.State == astersql_meta_model::StatePublic && !column.Hidden {
                     comment(
                         oid,
-                        i64::try_from(column.Offset + 1)
-                            .map_err(|_| ConnError::UnsupportedCommand(0))?,
+                        i64::from(
+                            model
+                                .postgresql_attribute_number(column.ID)
+                                .map_err(|_| ConnError::UnsupportedCommand(0))?,
+                        ),
                         &column.Comment,
                     );
                 }
@@ -3197,14 +3202,18 @@ fn sequence_dependency_rows(
             ))
         })?;
         if model.State == astersql_meta_model::StatePublic {
-            for (position, column) in model.Columns.iter().enumerate() {
+            for column in &model.Columns {
                 if let Some(identity) = &column.PostgreSQLIdentity {
                     rows.push(vec![
                         Value::Signed(classid),
                         Value::Signed(i64::from(crate::pg_oid::table_oid(identity.SequenceID)?)),
                         Value::Signed(classid),
                         Value::Signed(i64::from(crate::pg_oid::table_oid(model.ID)?)),
-                        Value::Signed(position as i64 + 1),
+                        Value::Signed(i64::from(
+                            model
+                                .postgresql_attribute_number(column.ID)
+                                .map_err(|_| ConnError::UnsupportedCommand(0))?,
+                        )),
                         Value::Text("i".into()),
                         Value::Signed(0),
                     ]);
@@ -3764,7 +3773,7 @@ fn column_default(
     Ok(Some(format!("'{}'::{name}", text.replace('\'', "''"))))
 }
 
-fn column_catalog_rows(
+pub(crate) fn column_catalog_rows(
     relation: &str,
     snapshot: &dyn astersql_infoschema::InfoSchema,
     database: &str,
@@ -3819,27 +3828,43 @@ fn column_catalog_rows(
             continue;
         }
         let relid = i64::from(crate::pg_oid::table_oid(model.ID)?);
-        let mut positions = std::collections::HashSet::new();
-        for column in &model.Columns {
+        let slots = model
+            .postgresql_attribute_slots()
+            .map_err(|_| ConnError::UnsupportedCommand(0))?;
+        for (index, (id, dropped)) in slots.iter().enumerate() {
             check_catalog_cancel(cancel)?;
-            if column.State != astersql_meta_model::StatePublic || column.Hidden {
+            let position = (index + 1) as i64;
+            if *dropped {
+                if relation == "pg_attribute" {
+                    rows.push(vec![
+                        Value::Signed(relid),
+                        Value::Signed(position),
+                        Value::Text(format!("........pg.dropped.{position}........")),
+                        Value::Signed(0),
+                        Value::Signed(-1),
+                        Value::Signed(0),
+                        Value::Text("false".into()),
+                        Value::Text("true".into()),
+                        Value::Text("true".into()),
+                        Value::Text(String::new()),
+                        Value::Text(String::new()),
+                        Value::Null,
+                        Value::Text("false".into()),
+                        Value::Null,
+                    ]);
+                    if rows.len() > MAX_CATALOG_ROWS {
+                        return Err(catalog_row_limit());
+                    }
+                }
                 continue;
             }
-            let position = column
-                .Offset
-                .checked_add(1)
-                .filter(|n| *n > 0 && *n <= i16::MAX as isize)
-                .ok_or_else(|| {
-                    ConnError::Session(format!(
-                        "invalid column offset metadata for {}",
-                        column.Name.O
-                    ))
-                })? as i64;
-            if column.ID <= 0 || !positions.insert(position) {
-                return Err(ConnError::Session(format!(
-                    "invalid column identity metadata for {}",
-                    column.Name.O
-                )));
+            let column = model
+                .Columns
+                .iter()
+                .find(|c| c.ID == *id)
+                .ok_or(ConnError::UnsupportedCommand(0))?;
+            if column.State != astersql_meta_model::StatePublic {
+                continue;
             }
             let (oid, modifier) = native_column_type(column)?;
             if relation == "pg_type" {
@@ -3870,8 +3895,6 @@ fn column_catalog_rows(
                     Value::Text(
                         astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()).to_string(),
                     ),
-                    // Native DROP removes the column rather than retaining PG
-                    // tombstone attributes; surviving offsets remain authoritative.
                     Value::Text("false".into()),
                     Value::Text("true".into()),
                     // Only explicit durable identity metadata supplies this attribute.
@@ -3971,11 +3994,9 @@ fn index_constraint_rows(
                     .iter()
                     .find(|c| c.State == StatePublic && !c.Hidden && c.Name.O == *name)
                     .ok_or_else(unsupported)?;
-                let position = column
-                    .Offset
-                    .checked_add(1)
-                    .filter(|n| *n > 0 && *n <= i16::MAX as isize)
-                    .ok_or_else(unsupported)?;
+                let position = model
+                    .postgresql_attribute_number(column.ID)
+                    .map_err(|_| unsupported())?;
                 Ok((position as i64, pg_identifier(&column.Name.O)))
             })
             .collect()
@@ -4046,12 +4067,14 @@ fn index_constraint_rows(
                     .map(|c| c.Name.O.clone())
                     .collect::<Vec<_>>(),
             )?;
-            if index
-                .Columns
-                .iter()
-                .zip(&columns)
-                .any(|(c, p)| c.Offset + 1 != p.0 as isize)
-            {
+            // Native index offsets still address the compact native row layout;
+            // validate them against that layout, never against persistent attnum.
+            if index.Columns.iter().any(|key| {
+                !model
+                    .Columns
+                    .iter()
+                    .any(|column| column.Name.O == key.Name.O && column.Offset == key.Offset)
+            }) {
                 return Err(unsupported());
             }
             let oid = i64::from(crate::pg_oid::index_oid(model.ID, index.ID)?);

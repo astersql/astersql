@@ -484,3 +484,29 @@ fn moving_columns_updates_index_offsets() {
         assert_eq!(indexed.Offset, column.Offset);
     }
 }
+
+#[test]
+fn postgresql_attribute_slots_survive_serialization() {
+    let mut table = TableInfo {
+        Columns: vec![new_column_for_test(10, 0), new_column_for_test(30, 1)],
+        PostgreSQLAttributeSlots: Some(vec![(10, false), (20, true), (30, false)]),
+        ..Default::default()
+    };
+    let encoded = serde_json::to_vec(&table).unwrap();
+    let restored: TableInfo = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(restored.postgresql_attribute_number(30).unwrap(), 3);
+    assert!(restored.postgresql_attribute_number(20).is_err());
+    assert_eq!(
+        restored.postgresql_attribute_slots().unwrap(),
+        vec![(10, false), (20, true), (30, false)]
+    );
+    table.Columns[1].Name = ast::NewCIStr("renamed");
+    assert_eq!(table.postgresql_attribute_number(30).unwrap(), 3);
+    table.Columns.push(new_column_for_test(40, 2));
+    table
+        .PostgreSQLAttributeSlots
+        .as_mut()
+        .unwrap()
+        .push((40, false));
+    assert_eq!(table.postgresql_attribute_number(40).unwrap(), 4);
+}

@@ -1786,7 +1786,7 @@ fn pg_introspection_columns_live() {
         result.contains(&(
             b'D',
             row(&[
-                Some("5"),
+                Some("6"),
                 Some("added"),
                 Some("1043"),
                 Some("character varying(7)"),
@@ -1831,7 +1831,7 @@ fn pg_introspection_columns_live() {
         "fixture must distinguish native ID from offset"
     );
     let after = bind(&mut socket);
-    assert_eq!(after.iter().filter(|(tag, _)| *tag == b'D').count(), 5);
+    assert_eq!(after.iter().filter(|(tag, _)| *tag == b'D').count(), 6);
     assert_ne!(
         before
             .iter()
@@ -4267,5 +4267,190 @@ fn pg13_007_contract() {
     drop(cleanup);
     println!(
         "pg13_007_contract: kinds=2 owner_connections=2 owner_transfer=1 legacy_adoption=1 owner_drop_guard=1 cross_database=1 rejected_projections_recovered=8 cleanup=1"
+    );
+}
+
+#[test]
+fn pg13_008_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_008_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_008_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_008_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_008_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_008_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_008_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_008_admin");
+    let (mut c, _) = connect("pg13_008_policy");
+    let ddl = query(
+        &mut a,
+        "CREATE TABLE public.attr_life(id integer, label varchar(24), obsolete integer, stamp integer)",
+    );
+    assert!(!ddl.iter().any(|m| m.0 == b'E'), "{ddl:?}");
+    let index = query(
+        &mut a,
+        "CREATE INDEX attr_life_stamp ON public.attr_life(stamp)",
+    );
+    assert!(!index.iter().any(|m| m.0 == b'E'), "{index:?}");
+    let sql = "SELECT a.attnum,a.attname,a.atttypid,a.attisdropped FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.attr_life'::regclass::oid AND a.attnum>0 ORDER BY a.attnum";
+    let initial = query(&mut a, sql);
+    assert_eq!(
+        initial.iter().filter(|m| m.0 == b'D').count(),
+        4,
+        "{initial:?}"
+    );
+    for sql in [
+        "ALTER TABLE public.attr_life RENAME COLUMN label TO \"Label\"",
+        "ALTER TABLE public.attr_life DROP COLUMN obsolete",
+        "ALTER TABLE public.attr_life ADD COLUMN added varchar(7)",
+    ] {
+        let got = query(&mut a, sql);
+        assert!(!got.iter().any(|m| m.0 == b'E'), "{sql}: {got:?}");
+    }
+    for socket in [&mut a, &mut b] {
+        let got = query(socket, sql);
+        assert_eq!(
+            got.iter().filter(|m| m.0 == b'D').count(),
+            5,
+            "DROP must retain a durable tombstone: {got:?}"
+        );
+        for values in [
+            [Some("2"), Some("Label"), Some("1043"), Some("f")],
+            [Some("4"), Some("stamp"), Some("23"), Some("f")],
+            [Some("5"), Some("added"), Some("1043"), Some("f")],
+        ] {
+            assert!(got.contains(&(b'D', row(&values))), "{got:?}");
+        }
+    }
+    let index = query(
+        &mut a,
+        "SELECT i.indkey FROM pg_catalog.pg_index i WHERE i.indrelid='public.attr_life'::regclass::oid",
+    );
+    assert!(
+        index.contains(&(b'D', row(&[Some("4")]))),
+        "index key must retain stamp's PG slot: {index:?}"
+    );
+    let isolated = query(
+        &mut c,
+        "SELECT a.attnum FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid WHERE c.relname='attr_life'",
+    );
+    assert_eq!(isolated.iter().filter(|m| m.0 == b'D').count(), 0);
+    // Inject only canonical metadata, then exercise the real provider's gate.
+    let meta = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("pg13_008_admin"),
+            &astersql_infoschema::CiString::new("attr_life"),
+        )
+        .unwrap();
+    let original = meta.Meta().model_meta.as_ref().unwrap().as_ref().clone();
+    assert_eq!(original.PostgreSQLAttributeSlots.as_ref().unwrap().len(), 5);
+    for scenario in 0..7 {
+        let mut model = original.clone();
+        match scenario {
+            0 => model.PostgreSQLAttributeSlots.as_mut().unwrap()[0].0 = 0,
+            1 => {
+                model.PostgreSQLAttributeSlots.as_mut().unwrap()[1].0 =
+                    model.PostgreSQLAttributeSlots.as_ref().unwrap()[0].0
+            }
+            2 => model.PostgreSQLAttributeSlots.as_mut().unwrap()[0].1 = true,
+            3 => model.PostgreSQLAttributeSlots = Some(vec![(1, false); i16::MAX as usize + 1]),
+            4 => model.PostgreSQLAttributeSlots = None,
+            5 => model.Columns[0].ID = -1,
+            _ => model.Columns[0].Hidden = true,
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("invalid"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: model.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("attr_life"),
+                    model_meta: Some(Arc::new(model)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let err = crate::pg_catalog::column_catalog_rows(
+            "pg_attribute",
+            &bad,
+            "invalid",
+            &crate::conn::CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&err),
+            "0A000",
+            "scenario={scenario}"
+        );
+    }
+    // Hidden implementation columns do not acquire negative system attributes.
+    let mut hidden = original.clone();
+    let mut hidden_column = hidden.Columns[0].clone();
+    hidden_column.ID = 999;
+    hidden_column.Hidden = true;
+    hidden.Columns.push(hidden_column);
+    assert_eq!(hidden.postgresql_attribute_slots().unwrap().len(), 5);
+    drop((a, b, c));
+    drop(cleanup);
+    println!(
+        "pg13_008_contract: initial=1 rename=1 drop=1 add=1 second_connection=1 cross_database=1 invalid_metadata=7 hidden=1 cleanup=1"
     );
 }

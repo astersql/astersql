@@ -494,6 +494,10 @@ fn masking_policy_drop_column_persistent_four_phases_and_policy_cleanup() {
             );
         });
         assert_eq!(stored.schema_state, state);
+        let table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        let slots = table.PostgreSQLAttributeSlots.as_ref().unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[1], (col.ID, state == SchemaState::None));
     }
     assert_eq!(f.queue(j.id).unwrap().state, JobState::Done);
     assert_eq!(

@@ -69,14 +69,27 @@ pub const VirtualColFTSScoreID: i64 = -2050;
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TableInfo {
+    /// Durable PG attribute slots in attnum order: (persistent column ID, dropped).
+    /// Kept independently of the native column vector, which DROP reorders.
+    #[serde(
+        rename = "postgresql_attribute_slots",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLAttributeSlots: Option<Vec<(i64, bool)>>,
     /// Persistent PG role identity. Legacy native relations require explicit adoption.
     #[serde(rename = "postgresql_owner", skip_serializing_if = "Option::is_none")]
     pub PostgreSQLOwner: Option<i64>,
     /// PG namespace identity and logical relation name; Name remains the storage key.
-    #[serde(rename = "postgresql_namespace", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "postgresql_namespace",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub PostgreSQLNamespace: Option<(i64, String)>,
     /// Declared PG primary constraint, including PKIsHandle without an index row.
-    #[serde(rename = "postgresql_primary_constraint", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "postgresql_primary_constraint",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub PostgreSQLPrimaryConstraint: Option<String>,
     /// 表稳定 ID。
     #[serde(rename = "id")]
@@ -96,11 +109,17 @@ pub struct TableInfo {
     pub PostgreSQLNumericText: bool,
     /// PG float text storage preserves signed zero across both row formats.
     /// Older tables keep their original binary float representation.
-    #[serde(rename = "postgresql_float_text", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        rename = "postgresql_float_text",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
     pub PostgreSQLFloatText: bool,
     /// PG dates preserve the full calendar domain in string Datum storage.
     /// Absent on older tables, whose packed MySQL date rows stay readable.
-    #[serde(rename = "postgresql_date_text", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        rename = "postgresql_date_text",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
     pub PostgreSQLDateText: bool,
     /// 默认字符集。
     #[serde(rename = "charset")]
@@ -316,6 +335,66 @@ impl std::fmt::Debug for TableInfo {
 }
 
 impl TableInfo {
+    /// Validate durable slot identities before any PG rows are exposed. Legacy
+    /// metadata is usable only while the original contiguous columns remain.
+    pub fn postgresql_attribute_slots(&self) -> Result<Vec<(i64, bool)>, String> {
+        let slots = match &self.PostgreSQLAttributeSlots {
+            Some(slots) => slots.clone(),
+            None => {
+                if self
+                    .Columns
+                    .iter()
+                    .enumerate()
+                    .any(|(i, c)| c.Hidden || c.ID != i as i64 + 1 || c.Offset != i as isize)
+                    || self.MaxColumnID > self.Columns.len() as i64
+                {
+                    return Err("PG attribute slots require durable lifecycle metadata".into());
+                }
+                self.Columns.iter().map(|c| (c.ID, false)).collect()
+            }
+        };
+        if slots.len() > i16::MAX as usize {
+            return Err("PG attribute slot limit exceeded".into());
+        }
+        let mut columns = std::collections::HashMap::new();
+        for column in &self.Columns {
+            if columns.insert(column.ID, column).is_some() {
+                return Err("duplicate column identity".into());
+            }
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut live_ids = std::collections::HashSet::new();
+        for (id, dropped) in &slots {
+            if *id <= 0 || !ids.insert(*id) {
+                return Err("invalid or duplicate PG column identity".into());
+            }
+            let matching = columns.get(id);
+            if (*dropped && matching.is_some())
+                || (!*dropped && matching.is_none_or(|column| column.Hidden))
+            {
+                return Err("PG attribute slot does not match column metadata".into());
+            }
+            if !dropped {
+                live_ids.insert(*id);
+            }
+        }
+        for c in self.Columns.iter().filter(|c| !c.Hidden) {
+            if !live_ids.contains(&c.ID) {
+                return Err("missing live PG column identity".into());
+            }
+        }
+        Ok(slots)
+    }
+
+    /// Resolve an existing column ID without using its mutable native offset.
+    pub fn postgresql_attribute_number(&self, id: i64) -> Result<i16, String> {
+        self.postgresql_attribute_slots()?
+            .iter()
+            .position(|(slot, dropped)| *slot == id && !dropped)
+            .map(|index| (index + 1) as i16)
+            .ok_or_else(|| "missing PG attribute slot".into())
+    }
+
     /// 返回表级存储层级与迁移规则的元数据表示。
     pub fn StorageClassString(&self) -> String {
         buildStorageClassString(&self.StorageClassTier, &self.StorageClassTransitions)
