@@ -192,3 +192,15 @@ Native physical partitions do not establish PG partitioned-relation semantics;
 PG `PARTITION BY` / `PARTITION OF` DDL is rejected before native parsing or writes,
 and a native partition's `pg_class.relkind` projection is rejected rather than
 reported as `p` or `I`. Ordinary identities and unrelated relations remain readable.
+
+## Rust PostgreSQL column nullability
+
+The PostgreSQL listener translates `ALTER COLUMN ... DROP NOT NULL` to an
+explicit `NULL` column option. An empty option list has a different purpose:
+a type-only ALTER preserves the existing constraints. The runtime PostgreSQL
+MODIFY COLUMN path scans the shared stored rows before strengthening a nullable
+column to NOT NULL and returns SQLSTATE `23502` before metadata publication if
+any value is NULL. Published column flags remain the source of
+`pg_attribute.attnotnull`; catalog reads do not infer constraints from samples.
+Focused coverage is in `pg13_010_contract`, `pg13_010_differential`, and
+`pg13_010_not_null_rejects_existing_null_before_publication`.

@@ -243,3 +243,28 @@ fn pg13_009_type_change_preserves_column_facts() {
     );
     session.execute("DROP TABLE decl_change").unwrap();
 }
+
+#[test]
+fn pg13_010_not_null_rejects_existing_null_before_publication() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    session
+        .execute("CREATE TABLE null_publish(id integer, label text)")
+        .unwrap();
+    session
+        .execute("INSERT INTO null_publish VALUES(1,NULL)")
+        .unwrap();
+    let error = session
+        .execute("ALTER TABLE null_publish MODIFY COLUMN label text NOT NULL")
+        .err()
+        .expect("existing NULL must reject NOT NULL publication");
+    assert_eq!(error.pg_array_error().unwrap().state, "23502");
+    let (_, table) = domain.stats_table("test", "null_publish").unwrap();
+    assert!(!astersql_parser_mysql::r#type::HasNotNullFlag(
+        table.Columns[1].GetFlag()
+    ));
+    session
+        .execute("INSERT INTO null_publish VALUES(2,NULL)")
+        .unwrap();
+    session.execute("DROP TABLE null_publish").unwrap();
+}

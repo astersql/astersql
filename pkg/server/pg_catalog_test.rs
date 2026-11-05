@@ -4636,3 +4636,131 @@ fn pg13_009_contract() {
         "pg13_009_contract: declarations=11 connections=2 zero_rows=2 invalid_metadata=3 native_tiny=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_010_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_010_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_010_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_010_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_010_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_010_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_010_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_010_admin");
+    let (mut c, _) = connect("pg13_010_policy");
+    let ddl = query(
+        &mut a,
+        "CREATE TABLE public.null_contract(id integer NOT NULL, label varchar(24))",
+    );
+    assert!(!ddl.iter().any(|m| m.0 == b'E'), "{ddl:?}");
+    let sql = "SELECT a.attname,a.attnotnull FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.null_contract'::regclass::oid ORDER BY a.attnum";
+    for (ddl, flag) in [
+        ("SELECT 1", "f"),
+        (
+            "ALTER TABLE public.null_contract ALTER COLUMN label SET NOT NULL",
+            "t",
+        ),
+        (
+            "ALTER TABLE public.null_contract ALTER COLUMN label DROP NOT NULL",
+            "f",
+        ),
+    ] {
+        let changed = query(&mut a, ddl);
+        assert!(!changed.iter().any(|m| m.0 == b'E'), "{changed:?}");
+        for socket in [&mut a, &mut b] {
+            let got = query(socket, sql);
+            assert_eq!(
+                columns(&got[0].1),
+                vec![("attname".into(), 19), ("attnotnull".into(), 16)]
+            );
+            assert!(
+                got.contains(&(b'D', row(&[Some("id"), Some("t")]))),
+                "{got:?}"
+            );
+            assert!(
+                got.contains(&(b'D', row(&[Some("label"), Some(flag)]))),
+                "{got:?}"
+            );
+            let empty = query(socket, &format!("{sql} LIMIT 0"));
+            assert_eq!(empty[0], got[0]);
+            assert!(!empty.iter().any(|m| m.0 == b'D'));
+        }
+    }
+    let begin = query(&mut a, "BEGIN");
+    assert_eq!(begin.last().unwrap().1, b"T");
+    let failed = query(&mut a, "INSERT INTO public.null_contract VALUES(NULL,NULL)");
+    assert!(
+        failed
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"23502")),
+        "{failed:?}"
+    );
+    assert_eq!(failed.last().unwrap().1, b"E");
+    let rollback = query(&mut a, "ROLLBACK");
+    assert_eq!(rollback.last().unwrap().1, b"I");
+    let accepted = query(&mut a, "INSERT INTO public.null_contract VALUES(1,NULL)");
+    assert!(!accepted.iter().any(|m| m.0 == b'E'), "{accepted:?}");
+    let isolated = query(
+        &mut c,
+        "SELECT a.attname FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid WHERE c.relname='null_contract'",
+    );
+    assert!(!isolated.iter().any(|m| m.0 == b'D'));
+    drop((a, b, c));
+    drop(cleanup);
+    println!(
+        "pg13_010_contract: nullability_states=3 connections=2 zero_rows=6 enforcement=1 recovery=1 cross_database=1 cleanup=1"
+    );
+}

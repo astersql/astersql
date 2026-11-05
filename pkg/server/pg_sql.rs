@@ -730,6 +730,10 @@ fn existing_column_suffix(
         not_null.unwrap_or_else(|| astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()));
     if is_not_null {
         suffix.push_str(" NOT NULL");
+    } else if not_null == Some(false) {
+        // Explicit NULL distinguishes DROP NOT NULL from a type-only ALTER,
+        // whose empty options deliberately retain existing column constraints.
+        suffix.push_str(" NULL");
     }
     if let Some(override_default) = default_override {
         if let Some(default) = override_default {

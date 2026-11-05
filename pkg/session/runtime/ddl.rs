@@ -2991,6 +2991,23 @@ impl ConcreteSession {
                         preserved.AddFlag(flags);
                         column = preserved;
                     }
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && !astersql_parser_mysql::r#type::HasNotNullFlag(
+                            info.Columns[offset].GetFlag(),
+                        )
+                        && astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag())
+                    {
+                        // Validate stored rows before publishing the stronger constraint.
+                        // A missing value is SQL NULL too (for example an older added column).
+                        for (_, row) in self.scan_registered_table(&info)? {
+                            if row.get(&column.Name.L).and_then(Option::as_ref).is_none() {
+                                return Err(super::query::pg_union_error(
+                                    &format!("column \"{}\" contains null values", column.Name.O),
+                                    "23502",
+                                ));
+                            }
+                        }
+                    }
                     Self::check_embedding_column_dependencies(&column, &info)?;
                     Self::validate_enum_set_lengths(std::slice::from_ref(&column))?;
                     if column.GetType() == astersql_parser_mysql::r#type::TypeTiDBVectorFloat32 {
