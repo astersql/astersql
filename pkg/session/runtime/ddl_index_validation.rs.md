@@ -26,7 +26,7 @@
 2. 入口将 `astersql_config::get_global_config().max_index_length` 转成 `usize`。负值转换失败时返回 `max-index-length must not be negative`。
 3. 它从 `self.state.borrow().sql_mode` 解析 SQL mode，并缓存 `HasStrictMode()` 的结果。解析失败直接包装为 `SessionError`。
 4. 对每个 `IndexInfo`，先取得 `GetColumnarIndexType()` 和键列数量，再把累计值 `total` 置零。每个 `IndexColumn` 通过大小写折叠名 `Name.L` 在 `table.Columns` 中定位 `ColumnInfo`；找不到即返回 `column does not exist`。
-5. `index_column_length` 先处理列存索引；普通索引选择显式前缀或字段 `flen`，拒绝无法转成非负 `usize` 的长度。BIT 使用 `div_ceil(8)`；字符/二进制/BLOB 族按字符集 `Maxlen` 放大；整数、浮点、日期时间及 DECIMAL 使用各自规则；其余类型直接使用逻辑长度。
+5. `index_column_length` 先处理列存索引；普通索引的固定宽度整数、双精度及日期时间类型先按类型取得编码宽度，不将 PG 未指定的显示长度 `-1` 转成 `usize`；其余类型选择显式前缀或字段 `flen`，拒绝无法转成非负 `usize` 的长度。BIT 使用 `div_ceil(8)`；字符/二进制/BLOB 族按字符集 `Maxlen` 放大；整数、浮点、日期时间及 DECIMAL 使用各自规则；其余类型直接使用逻辑长度。
 6. 每列结果通过 `checked_add` 加到 `total`。未超过 `maximum` 时继续；一旦超过，形成兼容 MySQL/TiDB 的 `[ddl:1071]Specified key was too long ...` 消息。
 7. 严格模式、唯一索引、主键索引、带 `UniKeyFlag` 的列或多列索引任一成立时立即报错。否则这是非严格模式下的单列普通索引：再次用逻辑长度 1 计算单位字节数，以 `maximum / bytes_per_unit` 得到可容纳的前缀长度，写回当前 `IndexColumn.Length`，并调用 `set_warning_with_code(1071, message)`。
 8. 所有索引均通过后返回 `Ok(())`，调用方才继续规范化表名并进入临时表保存或普通 DDL 提交流程。

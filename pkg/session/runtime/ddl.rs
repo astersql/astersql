@@ -744,6 +744,22 @@ impl ConcreteSession {
         // existing durable catalog; MySQL keeps its canonical folded spelling.
         table.Name = ast::NewCIStr(relation_name(&statement.Table));
         table.ExactName = self.sql_dialect() == ast::SqlDialect::PostgreSQL;
+        if !table.ExactName && statement.ReferTable.is_none() {
+            // A native table UNIQUE declaration is also a real constraint.
+            // Capture its source while the AST exists; standalone CREATE INDEX
+            // deliberately never receives this ownership marker.
+            for constraint in &statement.Constraints {
+                if constraint.Tp == ast::ConstraintType::Unique && !constraint.Name.is_empty() {
+                    if let Some(index) = table.Indices.iter_mut().find(|index| {
+                        index.Unique
+                            && !index.Primary
+                            && index.Name.L == constraint.Name.to_lowercase()
+                    }) {
+                        index.PostgreSQLConstraintName = Some(index.Name.O.clone());
+                    }
+                }
+            }
+        }
         if table.ExactName && statement.ReferTable.is_none() {
             // Capture declaration provenance while the original CREATE TABLE AST
             // is available. Standalone CREATE INDEX never enters this path.

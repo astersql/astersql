@@ -315,8 +315,9 @@ pub struct IndexInfo {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub PostgreSQLBuildComplete: bool,
-    /// Actual PG declaration owning this supporting index. Absent for standalone
-    /// CREATE UNIQUE INDEX and legacy metadata; never inferred from idx_name.
+    /// Actual declaration owning this supporting index, captured from the PG
+    /// or native CREATE TABLE AST. Absent for standalone CREATE UNIQUE INDEX
+    /// and legacy metadata; never inferred later from idx_name.
     #[serde(
         rename = "postgresql_constraint_name",
         skip_serializing_if = "Option::is_none"

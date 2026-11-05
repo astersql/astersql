@@ -48,6 +48,26 @@ fn index_column_length(
         return Ok(0);
     }
 
+    // PG fixed-width types intentionally retain an unspecified display length.
+    // Their encoded index width comes from the type, not that display modifier.
+    if matches!(
+        column.GetType(),
+        mysql::TypeTiny
+            | mysql::TypeInt24
+            | mysql::TypeLong
+            | mysql::TypeLonglong
+            | mysql::TypeDouble
+            | mysql::TypeShort
+            | mysql::TypeYear
+            | mysql::TypeDate
+            | mysql::TypeDuration
+            | mysql::TypeDatetime
+            | mysql::TypeTimestamp
+    ) {
+        return default_mysql_type_length(column.GetType())
+            .ok_or_else(|| SessionError::new("missing default MySQL type length"));
+    }
+
     let length = if index_length != astersql_parser_types::UnspecifiedLength {
         index_length
     } else {
@@ -81,18 +101,6 @@ fn index_column_length(
                 .checked_mul(usize::try_from(charset.Maxlen).unwrap_or_default())
                 .ok_or_else(|| SessionError::new("index column length overflow"))
         }
-        mysql::TypeTiny
-        | mysql::TypeInt24
-        | mysql::TypeLong
-        | mysql::TypeLonglong
-        | mysql::TypeDouble
-        | mysql::TypeShort
-        | mysql::TypeYear
-        | mysql::TypeDate
-        | mysql::TypeDuration
-        | mysql::TypeDatetime
-        | mysql::TypeTimestamp => default_mysql_type_length(column.GetType())
-            .ok_or_else(|| SessionError::new("missing default MySQL type length")),
         mysql::TypeFloat => default_mysql_type_length(
             if length <= astersql_parser_mysql::r#const::MaxFloatPrecisionLength {
                 mysql::TypeFloat

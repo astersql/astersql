@@ -1229,7 +1229,12 @@ impl CatalogQuery {
                         ("pg_namespace", 1) => 2,
                         ("pg_namespace", 5) => 3,
                         ("pg_namespace", 6) => 4,
+                        ("pg_constraint", 0) => 1,
+                        ("pg_constraint", 1) => 2,
+                        ("pg_constraint", 2) => 4,
                         ("pg_constraint", 3) => 9,
+                        ("pg_constraint", 4) => 3,
+                        ("pg_constraint", 6) => 11,
                         ("pg_index", 0) => 1,
                         ("pg_index", 1) => 2,
                         ("pg_index", 2) => 3,
@@ -3554,7 +3559,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_index", "indislive") => (19, 1),
         ("pg_index", "indisreplident") => (20, 1),
         ("pg_constraint", "oid") => (0, oid),
-        ("pg_constraint", "conname") => (1, 253),
+        ("pg_constraint", "conname") => (1, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_constraint", "contype") => (2, internal_char),
         ("pg_constraint", "conrelid") => (3, oid),
         ("pg_constraint", "connamespace") => (4, oid),
@@ -4974,6 +4979,20 @@ pub(crate) fn index_constraint_rows(
         }
         let relid = i64::from(crate::pg_oid::table_oid(model.ID)?);
         let indexes = catalog_indexes(model)?;
+        // Legacy native UNIQUE metadata does not distinguish a declaration from
+        // CREATE UNIQUE INDEX. Refuse that ambiguous projection; PG-origin
+        // standalone indexes have explicit dialect provenance and no owner.
+        if relation == "pg_constraint"
+            && indexes.iter().any(|i| {
+                i.State == StatePublic
+                    && i.Unique
+                    && !i.Primary
+                    && !model.ExactName
+                    && i.PostgreSQLConstraintName.is_none()
+            })
+        {
+            return Err(unsupported());
+        }
         if relation == "pg_index" && indexes.iter().any(|i| i.State != StatePublic) {
             // The PG adapter has no concurrent-index state machine. A native
             // transitional index is unavailable, not an absent successful row.
@@ -5109,11 +5128,15 @@ pub(crate) fn index_constraint_rows(
                         .collect::<Vec<_>>()
                         .join("\0"),
                 );
-            } else if index.Primary
-                || (index.Unique && (!model.ExactName || index.PostgreSQLConstraintName.is_some()))
-            {
+            } else if index.Primary || (index.Unique && index.PostgreSQLConstraintName.is_some()) {
                 row[0] = Value::Signed(oid);
-                row[1] = Value::Text(index.Name.O.clone());
+                row[1] = Value::Text(
+                    index
+                        .PostgreSQLConstraintName
+                        .as_ref()
+                        .unwrap_or(&index.Name.O)
+                        .clone(),
+                );
                 row[2] = Value::Text(if index.Primary { "p" } else { "u" }.into());
                 row[3] = Value::Signed(relid);
                 row[4] = Value::Signed(namespace);

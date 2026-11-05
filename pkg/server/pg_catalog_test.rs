@@ -5803,3 +5803,149 @@ fn pg13_017_contract() {
         "pg13_017_contract: aux_state_extra=12 null_shape=2 invalid_model=11 second_connection=1 isolation=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_018_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_018_contract").unwrap();
+    native
+        .execute("CREATE TABLE pg13_018_contract.native_unique (id INT)")
+        .unwrap();
+    native
+        .execute("CREATE UNIQUE INDEX native_standalone ON pg13_018_contract.native_unique(id)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_018_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_018_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let native_rows = query(
+        &mut socket,
+        "SELECT oid FROM pg_catalog.pg_constraint WHERE conrelid='public.native_unique'::regclass::oid",
+    );
+    assert_eq!(
+        native_rows[0].0, b'E',
+        "Unique flag alone is not constraint provenance: {native_rows:?}"
+    );
+    assert!(native_rows[0].1.windows(5).any(|w| w == b"0A000"));
+    native
+        .execute("DROP TABLE pg13_018_contract.native_unique")
+        .unwrap();
+    for sql in [
+        "CREATE TABLE public.con_parent (a integer,b integer,code integer,CONSTRAINT con_pk PRIMARY KEY(a,b),CONSTRAINT con_uq UNIQUE(code))",
+        "CREATE TABLE public.con_child (x integer,y integer,CONSTRAINT con_fk FOREIGN KEY(y,x) REFERENCES public.con_parent(a,b))",
+        "CREATE UNIQUE INDEX con_standalone ON public.con_parent(b,a)",
+        "CREATE TABLE public.con_handle (id integer CONSTRAINT con_handle_pk PRIMARY KEY)",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let sql = "SELECT c.oid,c.conname,c.contype,c.conrelid,c.connamespace,c.conindid FROM pg_catalog.pg_constraint c ORDER BY c.conname";
+    let got = query(&mut socket, sql);
+    assert_eq!(got.iter().filter(|m| m.0 == b'D').count(), 4, "{got:?}");
+    assert_eq!(
+        columns(&got[0].1).iter().map(|v| v.1).collect::<Vec<_>>(),
+        vec![26, 19, 18, 26, 26, 26]
+    );
+    let snapshot = domain.info_schema();
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_018_contract"))
+        .unwrap();
+    let parent = tables
+        .iter()
+        .find(|t| t.name.lower == "con_parent")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    assert!(
+        parent
+            .Indices
+            .iter()
+            .any(|i| i.PostgreSQLConstraintName.as_deref() == Some("con_uq"))
+    );
+    assert!(
+        parent
+            .Indices
+            .iter()
+            .any(|i| i.Name.O == "con_standalone" && i.PostgreSQLConstraintName.is_none())
+    );
+    let before = query(
+        &mut socket,
+        "SELECT oid,conindid FROM pg_catalog.pg_constraint WHERE conname='con_uq'",
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "ALTER TABLE public.con_parent RENAME TO con_parent_new"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT oid,conindid FROM pg_catalog.pg_constraint WHERE conname='con_uq'"
+        ),
+        before
+    );
+    for sql in [
+        "DROP TABLE public.con_child",
+        "DROP TABLE public.con_parent_new",
+        "DROP TABLE public.con_handle",
+    ] {
+        assert_eq!(query(&mut socket, sql)[0].0, b'C');
+    }
+    assert_eq!(
+        query(
+            &mut socket,
+            "CREATE TABLE public.con_parent (a integer CONSTRAINT con_uq UNIQUE)"
+        )[0]
+        .0,
+        b'C'
+    );
+    assert_ne!(
+        query(
+            &mut socket,
+            "SELECT oid,conindid FROM pg_catalog.pg_constraint WHERE conname='con_uq'"
+        ),
+        before
+    );
+    send(&mut socket, b'X', &[]);
+    println!(
+        "pg13_018_contract: native_source=1 p_u_f=3 handle_dedup=1 rename=1 recreate=1 cleanup=1"
+    );
+}

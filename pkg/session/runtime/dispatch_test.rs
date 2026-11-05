@@ -2268,3 +2268,74 @@ fn pg11_08_exact_column_identity() {
     mysql.execute("DROP TABLE mysql_pg1108").unwrap();
     mysql.execute("DROP TABLE mysql_pg1108_legacy").unwrap();
 }
+
+#[test]
+fn pg13_018_native_constraint_provenance() {
+    use astersql_meta_model::{DecodeTableInfo, EncodeTableInfo};
+    let (domain, native) = crate::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE native_constraint_source (a INT,CONSTRAINT declared_uq UNIQUE(a))")
+        .unwrap();
+    native
+        .execute("CREATE UNIQUE INDEX standalone_uq ON native_constraint_source(a)")
+        .unwrap();
+    domain.force_full_reload_for_test().unwrap();
+    let table = domain
+        .table_by_name("test", "native_constraint_source")
+        .unwrap();
+    let decoded = DecodeTableInfo(&EncodeTableInfo(&table).unwrap()).unwrap();
+    assert_eq!(
+        decoded
+            .Indices
+            .iter()
+            .find(|i| i.Name.L == "declared_uq")
+            .unwrap()
+            .PostgreSQLConstraintName
+            .as_deref(),
+        Some("declared_uq")
+    );
+    assert!(
+        decoded
+            .Indices
+            .iter()
+            .find(|i| i.Name.L == "standalone_uq")
+            .unwrap()
+            .PostgreSQLConstraintName
+            .is_none()
+    );
+    native
+        .execute("DROP TABLE native_constraint_source")
+        .unwrap();
+}
+
+#[test]
+fn pg13_018_composite_constraint_fixed_width() {
+    let (domain, native) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let pg = crate::runtime::ConcreteSession::new_with_dialect(
+        domain.clone(),
+        astersql_parser_ast::SqlDialect::PostgreSQL,
+    );
+    pg.execute("CREATE TABLE composite_constraint_width(a integer,b integer,CONSTRAINT composite_pk PRIMARY KEY(a,b))").unwrap();
+    let table = domain
+        .table_by_name("test", "composite_constraint_width")
+        .unwrap();
+    assert_eq!(
+        table
+            .Indices
+            .iter()
+            .find(|i| i.Primary)
+            .unwrap()
+            .Columns
+            .len(),
+        2
+    );
+    pg.execute("INSERT INTO composite_constraint_width VALUES(1,2)")
+        .unwrap();
+    assert!(
+        pg.execute("INSERT INTO composite_constraint_width VALUES(1,2)")
+            .is_err()
+    );
+    native
+        .execute("DROP TABLE composite_constraint_width")
+        .unwrap();
+}
