@@ -320,6 +320,15 @@ pub(super) fn unique_lock_keys_for_predicate(
 }
 
 impl ConcreteSession {
+    // Preserve native diagnostics while exposing the action's PG error identity.
+    fn foreign_key_error(&self, message: String, restrict: bool) -> SessionError {
+        if self.sql_dialect() == ast::SqlDialect::PostgreSQL {
+            super::pg_schema::namespace_error(if restrict { "23001" } else { "23503" }, &message)
+        } else {
+            SessionError::new(message)
+        }
+    }
+
     /// Preserve Go's transaction-context TTL counter around savepoints. Rows
     /// before any savepoint retain the existing immediate metric behavior;
     /// rows after a savepoint are held until commit so rollback-to can discard
@@ -634,11 +643,11 @@ impl ConcreteSession {
                     .and_then(|index| parent_rows.get(*index))
                     .map(|(_, row)| row)
                 else {
-                    return Err(SessionError::new(format!(
+                    return Err(self.foreign_key_error(format!(
                         "[kv:1452]Cannot add or update a child row: a foreign key constraint fails \
                          (`{}`.`{}`, CONSTRAINT `{}` FOREIGN KEY)",
                         current_database, child.Name.O, foreign_key.Name.O
-                    )));
+                    ), false));
                 };
                 checked.push(encode_relational_row(&parent, parent_row, flags)?);
             }
@@ -1990,11 +1999,14 @@ impl ConcreteSession {
                             == Some(&old_values)
                     });
                     if referenced {
-                        return Err(SessionError::new(format!(
-                            "[kv:1451]Cannot delete or update a parent row: a foreign key \
+                        return Err(self.foreign_key_error(
+                            format!(
+                                "[kv:1451]Cannot delete or update a parent row: a foreign key \
                              constraint fails (`{database}`.`{child_name}`, CONSTRAINT `{}`)",
-                            foreign_key.Name.O
-                        )));
+                                foreign_key.Name.O
+                            ),
+                            foreign_key.OnUpdate == 1,
+                        ));
                     }
                 }
             }
@@ -2128,11 +2140,14 @@ impl ConcreteSession {
                             }
                         }
                         _ => {
-                            return Err(SessionError::new(format!(
-                                "[kv:1451]Cannot delete or update a parent row: a foreign key \
+                            return Err(self.foreign_key_error(
+                                format!(
+                                    "[kv:1451]Cannot delete or update a parent row: a foreign key \
                                  constraint fails (`{database}`.`{child_name}`, CONSTRAINT `{}`)",
-                                foreign_key.Name.O
-                            )));
+                                    foreign_key.Name.O
+                                ),
+                                foreign_key.OnDelete == 1,
+                            ));
                         }
                     }
                 }

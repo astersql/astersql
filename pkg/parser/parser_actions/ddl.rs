@@ -4775,6 +4775,19 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             else {
                 return Ok(false);
             };
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                let match_type = rhs.borrow(rhs_len - 1)
+                    .and_then(|v| v.item.as_deref().and_then(|v| v.downcast_ref::<parser_ast::MatchType>()).copied())
+                    .unwrap_or_default();
+                // The shared executor implements SIMPLE, immediate checks,
+                // cascade and delete SET NULL. Do not persist stronger claims.
+                if matches!(match_type, parser_ast::MatchType::Full | parser_ast::MatchType::Partial)
+                    || pair.0.ReferOpt == parser_ast::ReferOptionType::SetDefault
+                    || matches!(pair.1.ReferOpt, parser_ast::ReferOptionType::SetDefault | parser_ast::ReferOptionType::SetNull)
+                {
+                    parser_state.unsupported_pg_constraint = true;
+                }
+            }
             out.item = Some(Box::new(parser_ast::ReferenceDef {
                 Table: table,
                 IndexPartSpecifications: rhs

@@ -5949,3 +5949,183 @@ fn pg13_018_contract() {
         "pg13_018_contract: native_source=1 p_u_f=3 handle_dedup=1 rename=1 recreate=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_019_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_019_contract").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_019_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_019_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE TABLE public.con_parent (a integer,b integer,CONSTRAINT con_pk PRIMARY KEY(b,a))",
+        "CREATE TABLE public.con_child (x integer,y integer,CONSTRAINT con_fk FOREIGN KEY(y,x) REFERENCES public.con_parent(a,b) ON UPDATE RESTRICT ON DELETE CASCADE)",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let got = query(
+        &mut socket,
+        "SELECT conkey,confkey,confupdtype,confdeltype,confmatchtype FROM pg_catalog.pg_constraint WHERE conname='con_fk'",
+    );
+    assert_eq!(got[0].0, b'T', "{got:?}");
+    assert!(
+        got.iter().any(|m| m.0 == b'D'
+            && m.1
+                == row(&[
+                    Some("{2,1}"),
+                    Some("{1,2}"),
+                    Some("r"),
+                    Some("c"),
+                    Some("s")
+                ])),
+        "{got:?}"
+    );
+    for sql in [
+        "INSERT INTO public.con_parent VALUES (10,20)",
+        "INSERT INTO public.con_child VALUES (20,10)",
+        "INSERT INTO public.con_child VALUES (NULL,999)",
+    ] {
+        let got = query(&mut socket, sql);
+        assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+    }
+    let bad = query(
+        &mut socket,
+        "UPDATE public.con_parent SET a=11 WHERE a=10 AND b=20",
+    );
+    assert_eq!(bad[0].0, b'E', "{bad:?}");
+    let got = query(
+        &mut socket,
+        "DELETE FROM public.con_parent WHERE a=10 AND b=20",
+    );
+    assert_eq!(got[0].0, b'C', "{got:?}");
+    let got = query(&mut socket, "SELECT x,y FROM public.con_child");
+    assert!(
+        got.iter()
+            .any(|m| m.0 == b'D' && m.1 == row(&[None, Some("999")])),
+        "{got:?}"
+    );
+    assert_eq!(got.iter().filter(|m| m.0 == b'D').count(), 1);
+    let native_error = native
+        .execute("INSERT INTO pg13_019_contract.con_child VALUES (777,666)")
+        .err()
+        .expect("native FK violation");
+    assert!(
+        native_error.to_string().contains("[kv:1452]"),
+        "{native_error}"
+    );
+    // Corruption fixtures replace shared models, never provider output rows.
+    let snapshot = domain.info_schema();
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_019_contract"))
+        .unwrap();
+    let parent = tables
+        .iter()
+        .find(|t| t.name.lower == "con_parent")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    let child = tables
+        .iter()
+        .find(|t| t.name.lower == "con_child")
+        .unwrap()
+        .model_meta
+        .as_ref()
+        .unwrap();
+    for scenario in 0..13 {
+        let mut p = parent.as_ref().clone();
+        let mut c = child.as_ref().clone();
+        match scenario {
+            0 => c.ForeignKeys[0].RefTable = astersql_meta_model::ast::NewCIStr("missing"),
+            1 => {
+                c.ForeignKeys[0].RefSchema = astersql_meta_model::ast::NewCIStr("another_database")
+            }
+            2 => {
+                c.ForeignKeys[0].RefCols.pop();
+            }
+            3 => p.State = astersql_meta_model::StateWriteOnly,
+            4 => c.ForeignKeys[0].OnDelete = 99,
+            5 => c.ForeignKeys[0].OnUpdate = 99,
+            6 => p.Columns[0].Hidden = true,
+            7 => p.Columns[0].State = astersql_meta_model::StateWriteOnly,
+            8 => c.ForeignKeys[0].Cols[0] = astersql_meta_model::ast::NewCIStr("missing"),
+            9 => c.ForeignKeys[0].RefCols[0] = c.ForeignKeys[0].RefCols[1].clone(),
+            10 => p.Indices[0].Columns[0].Offset = 999,
+            11 => p.Indices.clear(),
+            _ => p.Indices[0].Columns[0] = p.Indices[0].Columns[1].clone(),
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        let models = [c, p]
+            .into_iter()
+            .map(|m| {
+                astersql_infoschema::Table::new(astersql_infoschema::TableInfo {
+                    id: m.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new(m.Name.L.clone()),
+                    model_meta: Some(Arc::new(m)),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("pg13_019_contract"),
+                ..Default::default()
+            },
+            models,
+        );
+        let err = crate::pg_catalog::index_constraint_rows(
+            "pg_constraint",
+            &bad,
+            "pg13_019_contract",
+            &crate::conn::CancellationToken::new(),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&err),
+            "0A000",
+            "scenario={scenario}"
+        );
+    }
+    println!(
+        "pg13_019_contract: order=1 permuted_parent=1 actions=2 match_null=1 corrupt_models=13 cleanup=1"
+    );
+}

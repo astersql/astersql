@@ -1235,6 +1235,12 @@ impl CatalogQuery {
                         ("pg_constraint", 3) => 9,
                         ("pg_constraint", 4) => 3,
                         ("pg_constraint", 6) => 11,
+                        ("pg_constraint", 5) => 21,
+                        ("pg_constraint", 7) => 13,
+                        ("pg_constraint", 8) => 22,
+                        ("pg_constraint", 9) => 14,
+                        ("pg_constraint", 10) => 15,
+                        ("pg_constraint", 22) => 16,
                         ("pg_index", 0) => 1,
                         ("pg_index", 1) => 2,
                         ("pg_index", 2) => 3,
@@ -3569,6 +3575,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_constraint", "confkey") => (8, crate::pg_result::CatalogColumnType::Int2Array as u8),
         ("pg_constraint", "confupdtype") => (9, internal_char),
         ("pg_constraint", "confdeltype") => (10, internal_char),
+        ("pg_constraint", "confmatchtype") => (22, internal_char),
         ("pg_constraint", "condeferrable") => (11, 1),
         ("pg_constraint", "condeferred") => (12, 1),
         ("pg_constraint", "connoinherit") => (13, 1),
@@ -5145,6 +5152,7 @@ pub(crate) fn index_constraint_rows(
                 row[7] = Value::Signed(0);
                 row[9] = Value::Text(" ".into());
                 row[10] = Value::Text(" ".into());
+                row[22] = Value::Text(" ".into());
                 for slot in [11, 12, 13] {
                     row[slot] = Value::Text("false".into());
                 }
@@ -5194,6 +5202,22 @@ pub(crate) fn index_constraint_rows(
                 parent,
                 &fk.RefCols.iter().map(|c| c.O.clone()).collect::<Vec<_>>(),
             )?;
+            if parent.State != StatePublic
+                || matches!(fk.OnUpdate, 3 | 5)
+                || fk.OnDelete == 5
+                || fk
+                    .RefCols
+                    .iter()
+                    .enumerate()
+                    .any(|(n, c)| fk.RefCols[..n].iter().any(|p| p.L == c.L))
+                || fk
+                    .Cols
+                    .iter()
+                    .enumerate()
+                    .any(|(n, c)| fk.Cols[..n].iter().any(|p| p.L == c.L))
+            {
+                return Err(unsupported());
+            }
             let parent_indexes = catalog_indexes(parent)?;
             let referenced_index = parent_indexes
                 .iter()
@@ -5201,10 +5225,20 @@ pub(crate) fn index_constraint_rows(
                     i.State == StatePublic
                         && i.Unique
                         && i.Columns.len() == referenced.len()
-                        && i.Columns
+                        && i.ConditionExprString.is_empty()
+                        && fk
+                            .RefCols
                             .iter()
-                            .zip(&fk.RefCols)
-                            .all(|(c, r)| c.Name.L == r.L)
+                            .all(|r| i.Columns.iter().filter(|c| c.Name.L == r.L).count() == 1)
+                        && i.Columns.iter().all(|c| {
+                            c.Length == -1
+                                && !c.UseChangingType
+                                && fk.RefCols.iter().any(|r| c.Name.L == r.L)
+                                && parent
+                                    .Columns
+                                    .iter()
+                                    .any(|p| p.Name.L == c.Name.L && p.Offset == c.Offset)
+                        })
                 })
                 .ok_or_else(unsupported)?;
             let (update, update_sql) = action(fk.OnUpdate)?;
@@ -5227,6 +5261,9 @@ pub(crate) fn index_constraint_rows(
             row[8] = array(&referenced);
             row[9] = Value::Text(update.into());
             row[10] = Value::Text(delete.into());
+            // Shared FK checks exempt any tuple containing NULL; PostgreSQL
+            // FULL/PARTIAL are rejected before DDL, so this is SIMPLE semantics.
+            row[22] = Value::Text("s".into());
             for slot in [11, 12, 13] {
                 row[slot] = Value::Text("false".into());
             }
