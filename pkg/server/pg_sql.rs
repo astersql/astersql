@@ -406,6 +406,17 @@ fn adapt_create(
     tokens: &[Token],
     mut edits: BTreeMap<usize, (usize, String)>,
 ) -> ParseResult<String> {
+    // No durable domain/composite/enum identities exist yet. Reject before
+    // native parsing or metadata writes rather than presenting them as base types.
+    if tokens
+        .get(1)
+        .is_some_and(|t| t.word("domain") || t.word("type"))
+    {
+        return Err(error(
+            "0A000",
+            "PostgreSQL user-defined types are not supported",
+        ));
+    }
     let mut table = 1;
     if tokens
         .get(table)

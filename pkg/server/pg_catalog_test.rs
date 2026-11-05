@@ -1697,8 +1697,24 @@ fn pg_introspection_columns_live() {
         .split("```")
         .next()
         .unwrap();
-    let types = query(&mut socket, &types_template.replace("$1", "11"));
-    assert_eq!(types[0].0, b'T', "complete PG18 type template: {types:?}");
+    let unavailable_owner = query(&mut socket, &types_template.replace("$1", "11"));
+    assert!(
+        unavailable_owner
+            .iter()
+            .any(|m| m.0 == b'E' && m.1.windows(7).any(|w| w == b"C0A000\0")),
+        "type owner facts are unavailable, not SQL NULL: {unavailable_owner:?}"
+    );
+    // Retain sorted nonempty builtin and empty user-namespace coverage without
+    // claiming that the complete owner-bearing client template is supported.
+    let supported_types = types_template.replace(
+        ",\n       pg_catalog.pg_get_userbyid(T.typowner) as \"owner\"",
+        "",
+    );
+    let types = query(&mut socket, &supported_types.replace("$1", "11"));
+    assert_eq!(
+        types[0].0, b'T',
+        "supported builtin identity projection: {types:?}"
+    );
     let mut previous = 0u32;
     for (_, body) in types.iter().filter(|(tag, _)| *tag == b'D') {
         let length = i32::from_be_bytes(body[2..6].try_into().unwrap()) as usize;
@@ -1715,7 +1731,7 @@ fn pg_introspection_columns_live() {
     assert!(previous > 0, "builtin types must be real nonempty rows");
     let types = query(
         &mut socket,
-        &types_template.replace("$1", &namespace.to_string()),
+        &supported_types.replace("$1", &namespace.to_string()),
     );
     assert_eq!(types[0].0, b'T', "{types:?}");
     assert_eq!(types.iter().filter(|(tag, _)| *tag == b'D').count(), 0);
@@ -1941,12 +1957,12 @@ fn pg_introspection_columns_live() {
         "unsupported native enum must not be guessed: {rejected:?}"
     );
     assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
-    let rejected = query(&mut socket, "SELECT typname FROM pg_type");
+    let builtins = query(&mut socket, "SELECT typname FROM pg_type");
     assert_eq!(
-        rejected[0].0, b'E',
-        "type catalog cannot silently hide unmapped native enum: {rejected:?}"
+        builtins[0].0, b'T',
+        "static builtin identities are independent of native enums: {builtins:?}"
     );
-    assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    assert!(builtins.contains(&(b'D', row(&[Some("int4")]))));
     native
         .execute("DROP TABLE test.columns_unsupported")
         .unwrap();
@@ -4762,5 +4778,146 @@ fn pg13_010_contract() {
     drop(cleanup);
     println!(
         "pg13_010_contract: nullability_states=3 connections=2 zero_rows=6 enforcement=1 recovery=1 cross_database=1 cleanup=1"
+    );
+}
+
+#[test]
+fn pg13_011_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_011_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_011_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_011_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_011_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_011_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_011_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_011_admin");
+    let (mut c, _) = connect("pg13_011_policy");
+    let sql = "SELECT t.oid,t.typname,t.typnamespace,t.typtype,t.typcategory,t.typelem,t.typarray,t.typdelim,t.typlen,t.typbyval,t.typisdefined FROM pg_catalog.pg_type t WHERE t.oid IN (23,25,1007,1009) ORDER BY t.oid";
+    let got = query(&mut a, sql);
+    assert_eq!(
+        got[0].0, b'T',
+        "TYPE-BASE must return real builtin facts: {got:?}"
+    );
+    assert_eq!(
+        columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![26, 19, 26, 18, 18, 26, 26, 18, 21, 16, 16]
+    );
+    for values in [
+        [
+            "23", "int4", "11", "b", "N", "0", "1007", ",", "4", "t", "t",
+        ],
+        [
+            "25", "text", "11", "b", "S", "0", "1009", ",", "-1", "f", "t",
+        ],
+        [
+            "1007", "_int4", "11", "b", "A", "23", "0", ",", "-1", "f", "t",
+        ],
+        [
+            "1009", "_text", "11", "b", "A", "25", "0", ",", "-1", "f", "t",
+        ],
+    ] {
+        assert!(got.contains(&(b'D', row(&values.map(Some)))), "{got:?}");
+    }
+    assert_eq!(got.iter().filter(|m| m.0 == b'D').count(), 4);
+    assert_eq!(query(&mut b, sql), got);
+    assert_eq!(query(&mut c, sql), got);
+    let empty = query(&mut a, &format!("{sql} LIMIT 0"));
+    assert_eq!(empty[0], got[0]);
+    assert!(!empty.iter().any(|m| m.0 == b'D'));
+    // All result and declaration identities, including range/pseudo types, are unique.
+    for oid in [
+        16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 30, 114, 199, 700, 701, 1000, 1001, 1002, 1003,
+        1005, 1006, 1007, 1009, 1013, 1014, 1015, 1016, 1021, 1022, 1028, 1033, 1034, 1042, 1043,
+        1082, 1083, 1114, 1115, 1182, 1183, 1184, 1185, 1186, 1187, 1231, 1700, 2205, 2206, 2210,
+        2211, 2249, 2287, 2950, 2951, 3802, 3807, 3904, 3905, 3906, 3907,
+    ] {
+        let result = query(
+            &mut a,
+            &format!("SELECT t.oid FROM pg_catalog.pg_type t WHERE t.oid={oid}"),
+        );
+        assert_eq!(
+            result.iter().filter(|m| m.0 == b'D').count(),
+            1,
+            "missing or duplicated OID {oid}: {result:?}"
+        );
+    }
+    // Static builtin lookup must not validate unrelated native enum columns.
+    native
+        .execute("CREATE TABLE pg13_011_admin.bad_type (e ENUM('a','b'))")
+        .unwrap();
+    assert_eq!(query(&mut a, sql), got);
+    for unsupported in [
+        "CREATE DOMAIN public.type_domain AS integer CHECK (VALUE>0)",
+        "CREATE TYPE public.type_composite AS (id integer)",
+        "SELECT t.typowner,t.typacl FROM pg_catalog.pg_type t WHERE t.oid=23",
+    ] {
+        let result = query(&mut a, unsupported);
+        assert!(
+            result
+                .iter()
+                .any(|m| m.0 == b'E' && m.1.windows(5).any(|w| w == b"0A000")),
+            "{unsupported}: {result:?}"
+        );
+        assert_eq!(result.last().unwrap().1, b"I");
+        assert_eq!(query(&mut a, sql), got);
+    }
+    drop((a, b, c));
+    drop(cleanup);
+    assert!(TcpStream::connect(addr).is_err());
+    println!(
+        "pg13_011_contract: base=4 closure=60 zero_rows=1 static_bad_model=1 refusals=3 recovery=3 connections=3 cleanup=1"
     );
 }

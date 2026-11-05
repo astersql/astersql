@@ -193,3 +193,22 @@ fn query_statement_text_preserves_quoted_semicolons() {
         ""
     );
 }
+
+#[test]
+fn pg13_011_user_type_creation_gate() {
+    for sql in [
+        "CREATE DOMAIN public.positive AS integer CHECK (VALUE>0)",
+        "/* before */ CREATE /* kind */ DOMAIN public.d AS integer",
+        "CREATE TYPE public.pair AS (id integer, label text)",
+        "CREATE TYPE public.mood AS ENUM ('good','bad')",
+    ] {
+        assert_eq!(crate::pg_sql::adapt(sql).unwrap_err().0, "0A000", "{sql}");
+    }
+    for sql in [
+        "CREATE TABLE public.type(id integer)",
+        "SELECT 'CREATE TYPE'",
+        "SELECT 1 AS domain",
+    ] {
+        assert!(crate::pg_sql::adapt(sql).is_ok(), "{sql}");
+    }
+}
