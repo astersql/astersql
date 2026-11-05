@@ -267,9 +267,9 @@ fn pg_introspection_oid_live_casts() {
     for (value, state) in [
         ("missing_relation", "42P01"),
         ("public.missing_relation", "42P01"),
-        ("other.missing_relation", "0A000"),
+        ("other.missing_relation", "42P01"),
         ("test.public.missing_relation", "0A000"),
-        ("\"unfinished", "22P02"),
+        ("\"unfinished", "42602"),
     ] {
         let response = query(
             &mut socket,

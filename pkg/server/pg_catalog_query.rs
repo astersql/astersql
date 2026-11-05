@@ -976,7 +976,7 @@ impl Parser {
         let from = if self.word("from") {
             self.relation()?
         } else {
-            if !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if s == "pg_get_serial_sequence") && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
+            if !oid_scalar(&self.tokens[projection_start..self.pos]) && !self.tokens[projection_start..self.pos].windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass")) && w[1] == Token::Symbol('(')) && !self.tokens[projection_start..self.pos].windows(4).any(|w| {
                 matches!(&w[0],Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
                 && matches!(&w[2],Token::Word(s) if matches!(s.as_str(),"pg_is_in_recovery" | "txid_current"))
                 && w[3]==Token::Symbol('(')
@@ -1153,9 +1153,10 @@ fn oid_scalar(tokens: &[Token]) -> bool {
     !tokens
         .iter()
         .any(|t| matches!(t, Token::Word(s) if s == "from" || s == "join"))
-        && tokens
-            .windows(2)
-            .any(|w| w[0] == Token::Cast && matches!(&w[1], Token::Word(s) if s == "oid"))
+        && tokens.windows(2).any(|w| {
+            w[0] == Token::Cast
+                && matches!(&w[1], Token::Word(s) if matches!(s.as_str(), "oid" | "regclass"))
+        })
 }
 
 pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Option<Select>> {
@@ -1184,7 +1185,7 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
             && w[1] == Token::Symbol('.')
             && matches!(&w[2], Token::Word(s) | Token::Quoted(s) if is_catalog_relation(s))
     });
-    let scalar_catalog = tokens.windows(2).any(|w| matches!(&w[0], Token::Word(s) if s == "pg_get_serial_sequence") && w[1] == Token::Symbol('(')) || tokens.windows(4).any(|w| {
+    let scalar_catalog = tokens.windows(2).any(|w| matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "pg_get_serial_sequence" | "to_regclass")) && w[1] == Token::Symbol('(')) || tokens.windows(4).any(|w| {
         matches!(&w[0], Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
         && matches!(&w[2], Token::Word(s) if matches!(s.as_str(), "pg_is_in_recovery" | "txid_current"))
         && w[3]==Token::Symbol('(')

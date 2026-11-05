@@ -3959,3 +3959,155 @@ fn pg13_005_contract() {
     drop(cleanup);
     println!("pg13_005_contract: base=4 connections=3 key=3 lifecycle=3 range=9 cleanup=1");
 }
+
+#[test]
+fn pg13_006_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_006_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_006_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_006_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_006_admin")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_006_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_006_admin");
+    let (mut c, _) = connect("pg13_006_policy");
+    let checks = [
+        (
+            "SELECT pg_catalog.to_regclass('public.missing') AS absent",
+            vec![Some("2205")],
+            vec![None],
+        ),
+        (
+            "SELECT '4294967295'::regclass AS maximum,NULL::regclass AS absent",
+            vec![Some("2205"), Some("2205")],
+            vec![Some("4294967295"), None],
+        ),
+    ];
+    for (sql, types, values) in checks {
+        let got = query(&mut a, sql);
+        assert_eq!(got[0].0, b'T', "{sql}: {got:?}");
+        assert_eq!(
+            columns(&got[0].1)
+                .iter()
+                .map(|c| c.1.to_string())
+                .collect::<Vec<_>>(),
+            types
+                .iter()
+                .map(|t| t.unwrap().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(got.iter().find(|m| m.0 == b'D').unwrap().1, row(&values));
+    }
+    for sql in [
+        "CREATE TABLE public.pg_class(id integer)",
+        "CREATE TABLE public.\"Rel Mixed\"(id integer)",
+    ] {
+        let got = query(&mut a, sql);
+        assert!(!got.iter().any(|m| m.0 == b'E'), "{got:?}");
+    }
+    let got = query(&mut a, "SET search_path=public,pg_catalog");
+    assert!(!got.iter().any(|m| m.0 == b'E'));
+    let got = query(&mut a, "SELECT 1259::regclass::text AS name");
+    assert_eq!(
+        got.iter().find(|m| m.0 == b'D').unwrap().1,
+        row(&[Some("pg_catalog.pg_class")])
+    );
+    let got = query(&mut b, "SELECT 'public.\"Rel Mixed\"'::regclass::oid AS id");
+    assert!(!got.iter().any(|m| m.0 == b'E'), "{got:?}");
+    let got = query(
+        &mut c,
+        "SELECT pg_catalog.to_regclass('public.\"Rel Mixed\"') AS missing",
+    );
+    assert_eq!(got.iter().find(|m| m.0 == b'D').unwrap().1, row(&[None]));
+    for sql in [
+        "SELECT 'public.missing'::regclass",
+        "SELECT '\"unfinished'::regclass",
+        "SELECT '4294967296'::regclass",
+    ] {
+        let got = query(&mut a, sql);
+        assert!(got.iter().any(|m| m.0 == b'E'), "{got:?}");
+        let got = query(&mut a, "SELECT 1259::oid AS recovered");
+        assert!(!got.iter().any(|m| m.0 == b'E'), "{got:?}");
+    }
+    for table in ["legacy_one", "legacy_two"] {
+        native
+            .execute(&format!(
+                "CREATE TABLE pg13_006_admin.{table}(id integer,KEY duplicate_local(id))"
+            ))
+            .unwrap();
+    }
+    let ambiguous = query(&mut a, "SELECT 'public.duplicate_local'::regclass");
+    assert_eq!(ambiguous[0].0, b'E', "{ambiguous:?}");
+    assert!(
+        ambiguous[0].1.windows(5).any(|s| s == b"42725"),
+        "{ambiguous:?}"
+    );
+    let ambiguous_display = query(
+        &mut a,
+        "SELECT c.oid::regclass AS relation FROM pg_catalog.pg_class c WHERE c.relname='duplicate_local'",
+    );
+    assert_eq!(ambiguous_display[0].0, b'E', "{ambiguous_display:?}");
+    assert!(
+        ambiguous_display[0].1.windows(5).any(|s| s == b"42725"),
+        "{ambiguous_display:?}"
+    );
+    let recovered = query(&mut a, "SELECT 1259::oid AS recovered");
+    assert!(!recovered.iter().any(|m| m.0 == b'E'));
+    drop(a);
+    drop(b);
+    drop(c);
+    drop(cleanup);
+    println!(
+        "pg13_006_contract: unknown=2 path=1 quoted=1 cross_database=1 errors_recovered=3 legacy_ambiguity=2 cleanup=1"
+    );
+}

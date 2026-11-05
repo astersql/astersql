@@ -109,6 +109,7 @@ pub(crate) struct CatalogQuery {
     pub(crate) select: Select,
     pub(crate) current_schema: Option<String>,
     pub(crate) public_first: bool,
+    relation_path: Vec<String>,
     cte_columns: CteColumns,
     parameter_oids: Vec<u32>,
     parameter_values: Vec<Expr>,
@@ -122,6 +123,7 @@ impl CatalogQuery {
             select,
             current_schema: Some("public".into()),
             public_first: false,
+            relation_path: vec!["pg_catalog".into(), "public".into()],
             cte_columns: CteColumns::new(),
             parameter_oids: Vec::new(),
             parameter_values: Vec::new(),
@@ -212,6 +214,7 @@ impl CatalogQuery {
             select,
             current_schema: path.first().cloned(),
             public_first,
+            relation_path: path,
             cte_columns: CteColumns::new(),
             parameter_oids: Vec::new(),
             parameter_values: Vec::new(),
@@ -252,11 +255,16 @@ impl CatalogQuery {
             _ => "",
         };
         for input in literals {
-            crate::pg_oid::resolve_with_path(
+            crate::pg_oid::resolve_in_path(
                 &input,
                 database,
                 snapshot.as_ref(),
-                self.public_first,
+                &self.relation_path,
+                &context
+                    .pg_namespace_facts()
+                    .transpose()
+                    .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?
+                    .unwrap_or_default(),
             )
             .map_err(|error| (crate::pg_conn::sqlstate(&error), error.to_string()))?;
         }
@@ -271,6 +279,7 @@ impl CatalogQuery {
             select,
             current_schema: self.current_schema.clone(),
             public_first: self.public_first,
+            relation_path: self.relation_path.clone(),
             cte_columns: self.cte_columns.clone(),
             parameter_oids: self.parameter_oids.clone(),
             parameter_values: self.parameter_values.clone(),
@@ -918,6 +927,11 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
+                    ("to_regclass", [arg])
+                        if matches!(arg, Expr::Null) || textual_type(self.expr_type(arg)?.0) =>
+                    {
+                        Ok((crate::pg_oid::REGCLASS_TYPE, 0))
+                    }
                     ("current_user", []) => Ok((253, 0)),
                     ("pg_get_serial_sequence", [a, b])
                         if [a, b].iter().all(|arg| {
@@ -1879,11 +1893,16 @@ impl CatalogQuery {
                     let snapshot = snapshot.ok_or_else(|| {
                         ConnError::Session("schema snapshot is unavailable".into())
                     })?;
-                    Value::Signed(i64::from(crate::pg_oid::resolve_with_path(
+                    Value::Signed(i64::from(crate::pg_oid::resolve_in_path(
                         &s,
                         database,
                         snapshot,
-                        self.public_first,
+                        &self.relation_path,
+                        &execution
+                            .context
+                            .pg_namespace_facts()
+                            .transpose()?
+                            .unwrap_or_default(),
                     )?))
                 }
                 (Value::Signed(n), CastType::Varchar) => {
@@ -1893,12 +1912,18 @@ impl CatalogQuery {
                         let snapshot = snapshot.ok_or_else(|| {
                             ConnError::Session("schema snapshot is unavailable".into())
                         })?;
-                        Value::Text(crate::pg_oid::display(
+                        Value::Text(crate::pg_oid::display_in_path(
                             u32::try_from(n).map_err(|_| {
                                 ConnError::Session("PG oid conversion out of range".into())
                             })?,
                             database,
                             snapshot,
+                            &self.relation_path,
+                            &execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default(),
                         )?)
                     } else {
                         Value::Text(n.to_string())
@@ -1919,17 +1944,51 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                "to_regclass" => match evaluate(&args[0])? {
+                    Value::Null => Value::Null,
+                    Value::Text(input) => {
+                        let snapshot = snapshot.ok_or(ConnError::UnsupportedCommand(0))?;
+                        match crate::pg_oid::resolve_in_path(
+                            &input,
+                            database,
+                            snapshot,
+                            &self.relation_path,
+                            &execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default(),
+                        ) {
+                            Ok(oid) => Value::Signed(i64::from(oid)),
+                            Err(error)
+                                if matches!(
+                                    crate::pg_conn::sqlstate(&error),
+                                    "42P01" | "42602" | "22003"
+                                ) =>
+                            {
+                                Value::Null
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    _ => unreachable!("validated to_regclass input"),
+                },
                 "pg_get_serial_sequence" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
                     (Value::Null, _) | (_, Value::Null) => Value::Null,
                     (Value::Text(relation), Value::Text(column)) => {
                         let snapshot = snapshot.ok_or_else(|| {
                             ConnError::Session("schema snapshot is unavailable".into())
                         })?;
-                        let oid = crate::pg_oid::resolve_with_path(
+                        let oid = crate::pg_oid::resolve_in_path(
                             &relation,
                             database,
                             snapshot,
-                            self.public_first,
+                            &self.relation_path,
+                            &execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default(),
                         )?;
                         // Follow the durable column reference; never infer ownership from names.
                         let mut sequence_id = None;
@@ -2527,7 +2586,7 @@ impl CatalogQuery {
                                 == crate::pg_oid::REGCLASS_TYPE
                         {
                             if let Value::Signed(oid) = value {
-                                return Ok(Value::Text(crate::pg_oid::display(
+                                return Ok(Value::Text(crate::pg_oid::display_in_path(
                                     u32::try_from(oid).map_err(|_| {
                                         ConnError::Session("PG oid conversion out of range".into())
                                     })?,
@@ -2535,6 +2594,12 @@ impl CatalogQuery {
                                     snapshot.ok_or_else(|| {
                                         ConnError::Session("schema snapshot is unavailable".into())
                                     })?,
+                                    &self.relation_path,
+                                    &execution
+                                        .context
+                                        .pg_namespace_facts()
+                                        .transpose()?
+                                        .unwrap_or_default(),
                                 )?));
                             }
                         }

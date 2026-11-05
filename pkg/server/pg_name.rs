@@ -713,6 +713,68 @@ impl Resolver<'_> {
                 expect = true;
                 list = update;
             } else if create_index && self.word(i, "on") {
+                // PG indexes share their table's namespace with all relations.
+                // Persist the declared name unchanged; never synthesize suffixes
+                // for native table-local collisions.
+                if let (Some(context), Some(snapshot)) = (self.context, &self.snapshot) {
+                    let index_token = if self.word(1, "unique") { 2 } else { 1 };
+                    let name_token = if self.word(index_token + 1, "if") {
+                        index_token + 4
+                    } else {
+                        index_token + 1
+                    };
+                    if let Some(name) = self.tokens.get(name_token).and_then(|t| t.name.as_ref()) {
+                        let first = self.tokens.get(i + 1).and_then(|t| t.name.clone());
+                        let (schema, table) = if self.symbol(i + 2, b'.') {
+                            (first, self.tokens.get(i + 3).and_then(|t| t.name.clone()))
+                        } else {
+                            (None, first)
+                        };
+                        if let Some(table) = table {
+                            if let Some(bound) = context.pg_bind_relation(schema, table, false) {
+                                let physical = bound
+                                    .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+                                let database = astersql_infoschema::CiString::new(self.database);
+                                let target = snapshot
+                                    .ModelTableInfoByExactName(&database, &physical)
+                                    .map_err(|e| ("42P01", e.to_string()))?;
+                                let namespace =
+                                    target.PostgreSQLNamespace.as_ref().map(|(id, _)| *id);
+                                for table in snapshot
+                                    .SchemaTableInfos(&database)
+                                    .map_err(|e| ("0A000", e.to_string()))?
+                                {
+                                    let model = table.model_meta.as_ref().ok_or_else(|| {
+                                        error("0A000", "relation metadata unavailable")
+                                    })?;
+                                    if model.State != astersql_meta_model::StatePublic
+                                        || model.PostgreSQLNamespace.as_ref().map(|(id, _)| *id)
+                                            != namespace
+                                    {
+                                        continue;
+                                    }
+                                    let relation = model
+                                        .PostgreSQLNamespace
+                                        .as_ref()
+                                        .map_or(model.Name.O.as_str(), |(_, name)| name.as_str());
+                                    if relation == name
+                                        || crate::pg_catalog::catalog_indexes(model)
+                                            .map_err(|e| {
+                                                (crate::pg_conn::sqlstate(&e), e.to_string())
+                                            })?
+                                            .iter()
+                                            .any(|idx| {
+                                                idx.State == astersql_meta_model::StatePublic
+                                                    && idx.Name.O == *name
+                                            })
+                                    {
+                                        return Err(error("42P07", "relation already exists"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // The index target is a relation reference, using the same
                 // public/current-database boundary as other PG DDL targets.
                 expect = true;

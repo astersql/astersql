@@ -1,7 +1,7 @@
 // Copyright 2026 AsterSQL.
 //! PG object identity, computed from persistent native IDs without allocation.
 use crate::conn::{ConnError, ConnResult};
-use astersql_infoschema::{CiString, InfoSchema};
+use astersql_infoschema::InfoSchema;
 
 // Reserved synthetic catalog type codes; created and consumed only by PG modules.
 pub(crate) const OID_TYPE: u8 = crate::pg_result::CatalogColumnType::Oid as u8;
@@ -94,7 +94,7 @@ pub(crate) fn name_parts(input: &str) -> ConnResult<Vec<String>> {
                     }
                     Some('"') => break,
                     Some(c) => part.push(c),
-                    None => return Err(ConnError::Session("invalid PG regclass name".into())),
+                    None => return Err(diagnostic("42602", "invalid name syntax".into())),
                 }
             }
         } else {
@@ -103,14 +103,14 @@ pub(crate) fn name_parts(input: &str) -> ConnResult<Vec<String>> {
                     break;
                 }
                 if !(c.is_alphanumeric() || c == '_' || c == '$') {
-                    return Err(ConnError::Session("invalid PG regclass name".into()));
+                    return Err(diagnostic("42602", "invalid name syntax".into()));
                 }
                 part.extend(c.to_lowercase());
                 chars.next();
             }
         }
         if part.is_empty() {
-            return Err(ConnError::Session("invalid PG regclass name".into()));
+            return Err(diagnostic("42602", "invalid name syntax".into()));
         }
         parts.push(part);
         while chars.peek().is_some_and(|c| c.is_whitespace()) {
@@ -123,7 +123,7 @@ pub(crate) fn name_parts(input: &str) -> ConnResult<Vec<String>> {
                     chars.next();
                 }
             }
-            _ => return Err(ConnError::Session("invalid PG regclass name".into())),
+            _ => return Err(diagnostic("42602", "invalid name syntax".into())),
         }
     }
 }
@@ -136,6 +136,33 @@ pub(crate) fn resolve_with_path(
     snapshot: &dyn InfoSchema,
     public_first: bool,
 ) -> ConnResult<u32> {
+    let path = if public_first {
+        vec!["public".into(), "pg_catalog".into()]
+    } else {
+        vec!["pg_catalog".into(), "public".into()]
+    };
+    resolve_in_path(input, database, snapshot, &path, &[])
+}
+
+fn diagnostic(state: &'static str, message: String) -> ConnError {
+    ConnError::PgFunction(astersql_session::runtime::PgFunctionError {
+        state,
+        message,
+        detail: None,
+        hint: None,
+        position: None,
+    })
+}
+
+/// Resolve the same published relation identities exposed by pg_class. Namespace
+/// identities and USAGE come from the authenticated session, never name prefixes.
+pub(crate) fn resolve_in_path(
+    input: &str,
+    database: &str,
+    snapshot: &dyn InfoSchema,
+    path: &[String],
+    facts: &[astersql_session::runtime::PgNamespaceFact],
+) -> ConnResult<u32> {
     if !input.trim().is_empty() && input.trim().bytes().all(|b| b.is_ascii_digit()) {
         return input.trim().parse::<u32>().map_err(|_| range_error());
     }
@@ -143,30 +170,63 @@ pub(crate) fn resolve_with_path(
     let (schema, name) = match parts.as_slice() {
         [name] => (None, name),
         [schema, name] => (Some(schema.as_str()), name),
-        _ => return Err(ConnError::UnsupportedCommand(0)),
-    };
-    if schema.is_none() && public_first && !database.is_empty() {
-        let tables = snapshot
-            .SchemaTableInfos(&CiString::new(database))
-            .map_err(|e| ConnError::Session(e.to_string()))?;
-        if let Some(table) = tables.iter().find(|t| t.name.original == *name) {
-            return table_oid(table.id);
+        _ => {
+            return Err(diagnostic(
+                "0A000",
+                "cross-database regclass input is unsupported".into(),
+            ));
         }
+    };
+    let public_oid = snapshot
+        .AllSchemas()
+        .iter()
+        .find(|s| s.name.lower == database.to_lowercase())
+        .map(|s| namespace_oid(s.id))
+        .transpose()?;
+    let namespace = |name: &str| -> ConnResult<Option<u32>> {
+        if let Some(fact) = facts.iter().find(|f| f.name == name) {
+            if !fact.usage {
+                return Err(diagnostic(
+                    "42501",
+                    format!("permission denied for schema {name}"),
+                ));
+            }
+            return if name == "pg_catalog" {
+                Ok(Some(11))
+            } else {
+                namespace_oid(fact.id).map(Some)
+            };
+        }
+        if name == "pg_catalog" {
+            Ok(Some(11))
+        } else if name == "public" {
+            Ok(public_oid)
+        } else {
+            Ok(None)
+        }
+    };
+    let mut search = schema.map_or_else(|| path.to_vec(), |s| vec![s.to_owned()]);
+    if schema.is_none() && !search.iter().any(|s| s == "pg_catalog") {
+        search.insert(0, "pg_catalog".into());
+    }
+    let rows = crate::pg_catalog::class_rows(snapshot, database)?;
+    for schema in search {
+        let Some(ns) = namespace(&schema)? else {
+            continue;
+        };
         let mut found = None;
-        for table in &tables {
-            for index in &crate::pg_catalog::catalog_indexes(
-                table
-                    .model_meta
-                    .as_ref()
-                    .ok_or(ConnError::UnsupportedCommand(0))?,
-            )? {
-                if index.Name.O == *name {
-                    let oid = index_oid(table.id, index.ID)?;
-                    if found.replace(oid).is_some() {
-                        return Err(ConnError::Session(
-                            "ambiguous PG index relation name".into(),
-                        ));
-                    }
+        for row in &rows {
+            if row[1] == crate::conn::Value::Text(name.clone())
+                && row[2] == crate::conn::Value::Signed(i64::from(ns))
+            {
+                let crate::conn::Value::Signed(oid) = row[0] else {
+                    unreachable!()
+                };
+                if found.replace(oid as u32).is_some() {
+                    return Err(diagnostic(
+                        "42725",
+                        "ambiguous PG index relation name".into(),
+                    ));
                 }
             }
         }
@@ -174,82 +234,62 @@ pub(crate) fn resolve_with_path(
             return Ok(oid);
         }
     }
-    if schema.is_none() || schema == Some("pg_catalog") {
-        if let Some((_, oid)) = SYSTEM_RELATIONS.iter().find(|(n, _)| *n == name) {
-            return Ok(*oid);
-        }
-        if schema == Some("pg_catalog") {
-            return Err(missing(input));
-        }
-    }
-    if schema.is_some_and(|s| s != "public") {
-        return Err(ConnError::UnsupportedCommand(0));
-    }
-    if database.is_empty() {
-        return Err(missing(input));
-    }
-    let tables = snapshot
-        .SchemaTableInfos(&CiString::new(database))
-        .map_err(|e| ConnError::Session(e.to_string()))?;
-    // Exact comparison after PG folding preserves quoted identifiers rather than
-    // silently adopting the native case-insensitive resolver's behavior.
-    if let Some(table) = tables.iter().find(|t| t.name.original == *name) {
-        return table_oid(table.id);
-    }
-    let mut found = None;
-    for table in tables {
-        for index in &crate::pg_catalog::catalog_indexes(
-            table
-                .model_meta
-                .as_ref()
-                .ok_or(ConnError::UnsupportedCommand(0))?,
-        )? {
-            if index.Name.O == *name {
-                let oid = index_oid(table.id, index.ID)?;
-                if found.replace(oid).is_some() {
-                    return Err(ConnError::Session(
-                        "ambiguous PG index relation name".into(),
-                    ));
-                }
-            }
-        }
-    }
-    found.ok_or_else(|| missing(input))
-}
-fn missing(input: &str) -> ConnError {
-    ConnError::Session(format!("Table '{input}' doesn't exist"))
+    Err(diagnostic(
+        "42P01",
+        format!("relation {input} does not exist"),
+    ))
 }
 
 pub(crate) fn display(oid: u32, database: &str, snapshot: &dyn InfoSchema) -> ConnResult<String> {
-    if let Some((name, _)) = SYSTEM_RELATIONS.iter().find(|(_, id)| *id == oid) {
-        return Ok((*name).into());
-    }
-    let tables = snapshot
-        .SchemaTableInfos(&CiString::new(database))
-        .map_err(|e| ConnError::Session(e.to_string()))?;
-    for table in tables {
-        if table_oid(table.id)? == oid {
-            return Ok(native_name(&table.name.original));
+    display_in_path(
+        oid,
+        database,
+        snapshot,
+        &["pg_catalog".into(), "public".into()],
+        &[],
+    )
+}
+
+pub(crate) fn display_in_path(
+    oid: u32,
+    database: &str,
+    snapshot: &dyn InfoSchema,
+    path: &[String],
+    facts: &[astersql_session::runtime::PgNamespaceFact],
+) -> ConnResult<String> {
+    for row in crate::pg_catalog::class_rows(snapshot, database)? {
+        if row[0] != crate::conn::Value::Signed(i64::from(oid)) {
+            continue;
         }
-        for index in &crate::pg_catalog::catalog_indexes(
-            table
-                .model_meta
-                .as_ref()
-                .ok_or(ConnError::UnsupportedCommand(0))?,
-        )? {
-            if index_oid(table.id, index.ID)? == oid {
-                return Ok(native_name(&index.Name.O));
-            }
+        let crate::conn::Value::Text(name) = &row[1] else {
+            unreachable!()
+        };
+        let bare = quoted(name);
+        if resolve_in_path(&bare, database, snapshot, path, facts).ok() == Some(oid) {
+            return Ok(bare);
         }
+        let crate::conn::Value::Signed(ns) = row[2] else {
+            unreachable!()
+        };
+        let schema = if ns == 11 {
+            "pg_catalog"
+        } else {
+            facts
+                .iter()
+                .find(|f| namespace_oid(f.id).ok().map(i64::from) == Some(ns))
+                .map_or("public", |f| f.name.as_str())
+        };
+        let qualified = format!("{}.{}", quoted(schema), bare);
+        // Legacy native metadata can contain several table-local indexes with
+        // the same PG relation name. Qualification cannot disambiguate those.
+        if let Err(error) = resolve_in_path(&qualified, database, snapshot, path, facts)
+            && crate::pg_conn::sqlstate(&error) == "42725"
+        {
+            return Err(error);
+        }
+        return Ok(qualified);
     }
     Ok(oid.to_string())
-}
-fn native_name(name: &str) -> String {
-    if SYSTEM_RELATIONS.iter().any(|(n, _)| *n == name) {
-        format!("public.{}", quoted(name))
-    } else {
-        quoted(name)
-    }
 }
 pub(crate) fn quoted(name: &str) -> String {
     if name
