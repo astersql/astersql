@@ -263,6 +263,13 @@ pub struct PostgreSQLIdentity {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ColumnInfo {
+    /// PG generation syntax captured from the declaration, bound to column IDs.
+    /// Legacy native expressions deliberately have no PostgreSQL provenance.
+    #[serde(
+        rename = "postgresql_generated",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub PostgreSQLGenerated: Option<crate::PostgreSQLCheckExpression>,
     /// Durable default object identity, assigned atomically with its column.
     #[serde(
         rename = "postgresql_default_id",
@@ -361,6 +368,7 @@ impl ColumnInfo {
             Offset: 0,
             PostgreSQLIdentity: None,
             PostgreSQLNotNull: None,
+            PostgreSQLGenerated: None,
             PostgreSQLDefaultID: None,
             PostgreSQLHasDefault: None,
             OriginDefaultValue: None,

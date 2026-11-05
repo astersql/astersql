@@ -235,3 +235,24 @@ use this durable identity and the existing attribute-slot mapping; legacy flags
 alone do not establish PG constraint identities. CHECK, NOT NULL, FK and handle
 primary identities occupy disjoint local-ID classes. Focused tests are
 `pg13_020_contract` and `pg13_020_differential` in the server test modules.
+
+## Rust PostgreSQL generated expression provenance
+
+PG CREATE TABLE admits a bounded generated expression: a plain `integer` column
+plus an `integer` constant, with an `integer` result, in STORED or VIRTUAL mode.
+It captures the declaration in `ColumnInfo.PostgreSQLGenerated` using the existing
+`PostgreSQLCheckExpression` representation and stable column IDs. Other syntax is
+rejected before metadata publication. Legacy native expression strings are not
+converted during catalog reads.
+
+The existing default identity allocator also assigns generated definitions a
+persistent `PostgreSQLDefaultID`. A column rename preserves that identity and
+regenerates the native expression and dependency names from the bound definition
+in the same metadata publication. INSERT, UPDATE and VIRTUAL reads continue to
+use the existing generated column evaluator. PG VIRTUAL values are omitted from
+physical rows; their integer range conversion is checked when the generated
+column is consumed, so an unused VIRTUAL value cannot reject a base-column read.
+The PG catalog emits VAR/OPEXPR
+nodes using persistent attribute slots; deparsing requires the matching current
+relation and bound definition. Focused tests are `pg13_024_contract` and
+`pg13_024_differential` in the existing server test modules.

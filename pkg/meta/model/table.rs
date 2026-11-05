@@ -1415,7 +1415,7 @@ impl PartitionDefinition {
 }
 
 /// Durable expression syntax with column references bound to persistent IDs.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum PostgreSQLCheckExpression {
     Literal(String),
     Column(i64),

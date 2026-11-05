@@ -653,6 +653,12 @@ pub(super) fn encode_relational_row_with_format(
                 | astersql_meta_model::SchemaState::WriteReorganization
         )
     }) {
+        // A PG VIRTUAL definition is evaluated on reads; no value or range
+        // conversion belongs in its physical row, even when writes computed it
+        // transiently for constraint/index evaluation.
+        if column.PostgreSQLGenerated.is_some() && !column.GeneratedStored {
+            continue;
+        }
         let value = if let Some(change) = column.ChangeStateInfo.as_ref().filter(|_| {
             matches!(
                 column.State,

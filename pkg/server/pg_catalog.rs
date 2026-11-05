@@ -1219,6 +1219,7 @@ impl CatalogQuery {
                         ("pg_attribute", 2) => 2,
                         ("pg_attribute", 4) => 6,
                         ("pg_attribute", 7) => 17,
+                        ("pg_attribute", 10) => 16,
                         ("pg_shdescription", 6) => 1,
                         ("pg_shdescription", 7) => 2,
                         ("pg_shdescription", 2) => 3,
@@ -2526,8 +2527,17 @@ impl CatalogQuery {
                         (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => {
                             Value::Null
                         }
-                        (Value::Text(tree), Value::Signed(_), _) => {
-                            Value::Text(deparse_default_tree(&tree)?)
+                        (Value::Text(tree), Value::Signed(relation), _) => {
+                            Value::Text(if tree.starts_with("{OPEXPR ") {
+                                deparse_generated_tree(
+                                    &tree,
+                                    relation,
+                                    snapshot.ok_or(ConnError::UnsupportedCommand(0))?,
+                                    database,
+                                )?
+                            } else {
+                                deparse_default_tree(&tree)?
+                            })
                         }
                         _ => return Err(ConnError::UnsupportedCommand(0)),
                     }
@@ -4693,8 +4703,7 @@ fn column_default(
 ) -> ConnResult<Option<String>> {
     use astersql_meta_model::DefaultValue;
     if !column.GeneratedExprString.is_empty() {
-        // A MySQL generated expression cannot be exposed as PG SQL by copying
-        // its source text. Reject until its expression semantics are supported.
+        // Native expression text is never exposed or parsed as PostgreSQL SQL.
         return Err(ConnError::UnsupportedCommand(0));
     }
     let Some(value) = column.GetDefaultValue() else {
@@ -4938,6 +4947,86 @@ fn default_node_tree(
         bytes.resize(8, 0);
     }
     Ok(default_const_tree(oid, &bytes, len, byval))
+}
+
+// The admitted generated-column subset is int4-column + int4-constant.
+// Encode actual PG18 nodes; attribute slots, not mutable offsets, identify Vars.
+fn generated_node_tree(
+    expression: &astersql_meta_model::PostgreSQLCheckExpression,
+    table: &astersql_meta_model::TableInfo,
+) -> ConnResult<String> {
+    use astersql_meta_model::PostgreSQLCheckExpression as B;
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    let B::Binary(op, left, right) = expression else {
+        return Err(unsupported());
+    };
+    let (B::Column(id), B::Literal(value)) = (left.as_ref(), right.as_ref()) else {
+        return Err(unsupported());
+    };
+    if op != "+" {
+        return Err(unsupported());
+    }
+    let column = table
+        .Columns
+        .iter()
+        .find(|c| {
+            c.ID == *id
+                && !c.Hidden
+                && !c.IsGenerated()
+                && c.State == astersql_meta_model::StatePublic
+        })
+        .ok_or_else(unsupported)?;
+    if native_column_type(column)?.0 != 23 {
+        return Err(unsupported());
+    }
+    let slots = table
+        .postgresql_attribute_slots()
+        .map_err(|_| unsupported())?;
+    let attnum = slots
+        .iter()
+        .position(|(slot, dropped)| slot == id && !dropped)
+        .ok_or_else(unsupported)?
+        + 1;
+    let number = value.parse::<i32>().map_err(|_| unsupported())?;
+    let mut bytes = number.to_le_bytes().to_vec();
+    bytes.resize(8, 0);
+    let constant = default_const_tree(23, &bytes, 4, true);
+    Ok(format!(
+        "{{OPEXPR :opno 551 :opfuncid 177 :opresulttype 23 :opretset false :opcollid 0 :inputcollid 0 :args ({{VAR :varno 1 :varattno {attnum} :vartype 23 :vartypmod -1 :varcollid 0 :varnullingrels (b) :varlevelsup 0 :varreturningtype 0 :varnosyn 1 :varattnosyn {attnum} :location -1}} {constant}) :location -1}}"
+    ))
+}
+
+fn deparse_generated_tree(
+    tree: &str,
+    relation: i64,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+) -> ConnResult<String> {
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    if relation <= 0 || tree.len() > 1_048_576 {
+        return Err(unsupported());
+    }
+    let tables = snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .map_err(|_| unsupported())?;
+    for table in tables {
+        let Some(model) = table.model_meta.as_ref() else {
+            continue;
+        };
+        if i64::from(crate::pg_oid::table_oid(model.ID)?) != relation {
+            continue;
+        }
+        for column in &model.Columns {
+            if let Some(bound) = &column.PostgreSQLGenerated {
+                if generated_node_tree(bound, model)? == tree {
+                    return bound
+                        .render(model, false, &mut Vec::new())
+                        .ok_or_else(unsupported);
+                }
+            }
+        }
+    }
+    Err(unsupported())
 }
 
 fn deparse_default_tree(tree: &str) -> ConnResult<String> {
@@ -5231,9 +5320,28 @@ pub(crate) fn column_catalog_rows(
                 continue;
             }
             let (oid, modifier) = native_column_type(column)?;
-            let default = column_default(column, oid)?;
+            let generated = column.PostgreSQLGenerated.as_ref();
+            if generated.is_some() && (!column.IsGenerated() || oid != 23) {
+                return Err(ConnError::UnsupportedCommand(0));
+            }
+            let generated_tree = if let Some(bound) = generated {
+                if bound.render(&model, true, &mut Vec::new()).as_deref()
+                    != Some(column.GeneratedExprString.as_str())
+                {
+                    return Err(ConnError::UnsupportedCommand(0));
+                }
+                Some(generated_node_tree(bound, &model)?)
+            } else {
+                None
+            };
+            let default = if generated.is_some() {
+                None
+            } else {
+                column_default(column, oid)?
+            };
+            let has_definition = generated.is_some() || default.is_some();
             if column.PostgreSQLHasDefault.is_some_and(|exists| {
-                exists != default.is_some() || exists != column.PostgreSQLDefaultID.is_some()
+                exists != has_definition || exists != column.PostgreSQLDefaultID.is_some()
             }) || column.PostgreSQLDefaultID.is_some_and(|id| id <= 0)
             {
                 return Err(ConnError::UnsupportedCommand(0));
@@ -5244,13 +5352,21 @@ pub(crate) fn column_catalog_rows(
                 }
             }
             if relation == "pg_attrdef" {
-                if let Some(default) = default {
+                if has_definition {
                     // Bind the typed value to an actual PostgreSQL node, without
                     // evaluating runtime functions during catalog reads.
                     rows.push(vec![
                         Value::Signed(relid),
                         Value::Signed(position),
-                        Value::Text(default_node_tree(column, oid, &default)?),
+                        Value::Text(if let Some(tree) = &generated_tree {
+                            tree.clone()
+                        } else {
+                            default_node_tree(
+                                column,
+                                oid,
+                                default.as_ref().ok_or(ConnError::UnsupportedCommand(0))?,
+                            )?
+                        }),
                         Value::Signed(i64::from(crate::pg_oid::namespace_oid(
                             column
                                 .PostgreSQLDefaultID
@@ -5280,12 +5396,19 @@ pub(crate) fn column_catalog_rows(
                             .unwrap_or("")
                             .into(),
                     ),
-                    Value::Text(String::new()),
+                    Value::Text(
+                        if column.PostgreSQLGenerated.is_some() {
+                            if column.GeneratedStored { "s" } else { "v" }
+                        } else {
+                            ""
+                        }
+                        .into(),
+                    ),
                     Value::Null,
                     Value::Text(
                         column
                             .PostgreSQLHasDefault
-                            .unwrap_or(default.is_some())
+                            .unwrap_or(has_definition)
                             .to_string(),
                     ),
                     Value::Null,

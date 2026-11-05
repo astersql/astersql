@@ -762,6 +762,56 @@ impl ConcreteSession {
             }
         }
         if table.ExactName && statement.ReferTable.is_none() {
+            // Reuse the bound CHECK syntax, but admit only the integer addition
+            // whose native read/write semantics are shared with PostgreSQL.
+            for (index, definition) in statement.Cols.iter().enumerate() {
+                for option in &definition.Options {
+                    if option.Tp != ast::ColumnOptionType::Generated {
+                        continue;
+                    }
+                    let unsupported = || {
+                        super::query::pg_union_error(
+                            "unsupported PostgreSQL generated expression",
+                            "0A000",
+                        )
+                    };
+                    let expression = option.Expr.as_ref().ok_or_else(unsupported)?;
+                    let bound = pg_bind_check_expression(expression, &table)?;
+                    use astersql_meta_model::PostgreSQLCheckExpression as B;
+                    let valid = match &bound {
+                        B::Binary(op, left, right) if op == "+" => {
+                            match (left.as_ref(), right.as_ref()) {
+                                (B::Column(id), B::Literal(value)) => {
+                                    value.parse::<i32>().is_ok()
+                                        && table.Columns.iter().any(|c| {
+                                            c.ID == *id
+                                                && !c.IsGenerated()
+                                                && c.GetType()
+                                                    == astersql_parser_mysql::r#type::TypeLong
+                                                && !astersql_parser_mysql::r#type::HasUnsignedFlag(
+                                                    c.GetFlag(),
+                                                )
+                                        })
+                                }
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !valid
+                        || table.Columns[index].GetType() != astersql_parser_mysql::r#type::TypeLong
+                        || astersql_parser_mysql::r#type::HasUnsignedFlag(
+                            table.Columns[index].GetFlag(),
+                        )
+                    {
+                        return Err(unsupported());
+                    }
+                    table.Columns[index].GeneratedExprString = bound
+                        .render(&table, true, &mut Vec::new())
+                        .ok_or_else(unsupported)?;
+                    table.Columns[index].PostgreSQLGenerated = Some(bound);
+                }
+            }
             // Capture declaration provenance while the original CREATE TABLE AST
             // is available. Standalone CREATE INDEX never enters this path.
             let mut names = std::collections::HashSet::new();

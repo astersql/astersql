@@ -1363,6 +1363,20 @@ impl ConcreteSession {
                 }
                 _ => crate::dml_runtime::EvalExpr(&expression, row, None)?,
             };
+            if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                && column.PostgreSQLGenerated.is_some()
+                && column.GeneratedStored
+            {
+                if value
+                    .as_ref()
+                    .is_some_and(|value| value.parse::<i32>().is_err())
+                {
+                    return Err(super::query::pg_union_error(
+                        "integer out of range in generated expression",
+                        "22003",
+                    ));
+                }
+            }
             row.insert(column.Name.L.clone(), value);
         }
         Ok(())

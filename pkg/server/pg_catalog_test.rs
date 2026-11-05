@@ -6759,3 +6759,225 @@ fn pg13_023_contract() {
         "pg13_023_contract: constants=3 null=2 invalid_recovery=3 native_generated_reject=1 pg_node_tree_describe=1 cleanup=1"
     );
 }
+
+#[test]
+fn pg13_024_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_024_contract").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_024_contract")
+            .unwrap();
+    });
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg13_024_contract\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    for (mode, flag) in [("STORED", "s"), ("VIRTUAL", "v")] {
+        let name = format!("gen_{}", mode.to_ascii_lowercase());
+        for sql in [
+            format!(
+                "CREATE TABLE public.{name} (x integer,y integer GENERATED ALWAYS AS (x+1) {mode}, d integer DEFAULT 7)"
+            ),
+            format!("INSERT INTO public.{name}(x) VALUES (2),(NULL)"),
+        ] {
+            let got = query(&mut socket, &sql);
+            assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+        }
+        let got = query(
+            &mut socket,
+            &format!("SELECT x,y,d FROM public.{name} ORDER BY x"),
+        );
+        assert_eq!(got[1], (b'D', row(&[Some("2"), Some("3"), Some("7")])));
+        assert_eq!(got[2], (b'D', row(&[None, None, Some("7")])));
+        let sql = format!(
+            "SELECT a.attnum,a.attgenerated,a.atthasdef,d.oid,d.adnum,pg_get_expr(d.adbin,d.adrelid) FROM pg_attribute a LEFT JOIN pg_attrdef d ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE a.attrelid='public.{name}'::regclass::oid ORDER BY a.attnum"
+        );
+        let got = query(&mut socket, &sql);
+        assert_eq!(
+            got[0].0, b'T',
+            "generated catalog positive contract: {got:?}"
+        );
+        assert_eq!(
+            columns(&got[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+            vec![21, 18, 16, 26, 21, 25]
+        );
+        let data: Vec<_> = got.iter().filter(|(t, _)| *t == b'D').collect();
+        assert_eq!(data.len(), 3);
+        assert_eq!(
+            data[0].1,
+            row(&[Some("1"), Some(""), Some("f"), None, None, None])
+        );
+        assert!(data[1].1.windows(flag.len()).any(|s| s == flag.as_bytes()));
+        for sql in [
+            format!("UPDATE public.{name} SET x=4 WHERE x=2"),
+            format!("ALTER TABLE public.{name} RENAME COLUMN x TO renamed_x"),
+            format!("INSERT INTO public.{name}(renamed_x) VALUES (6)"),
+        ] {
+            let got = query(&mut socket, &sql);
+            assert_eq!(got[0].0, b'C', "{sql}: {got:?}");
+        }
+        let got = query(
+            &mut socket,
+            &format!("SELECT renamed_x,y FROM public.{name} WHERE renamed_x=6"),
+        );
+        assert_eq!(got[1], (b'D', row(&[Some("6"), Some("7")])));
+        let got = query(&mut socket, &sql);
+        assert_eq!(got[0].0, b'T', "{got:?}");
+        let models = domain
+            .info_schema()
+            .SchemaTableInfos(&astersql_infoschema::CiString::new("pg13_024_contract"))
+            .unwrap();
+        let model = models
+            .iter()
+            .find(|t| t.name.lower == name)
+            .unwrap()
+            .model_meta
+            .as_ref()
+            .unwrap();
+        assert!(model.Columns[1].PostgreSQLDefaultID.is_some());
+        assert_eq!(model.Columns[1].PostgreSQLHasDefault, Some(true));
+        let bytes = serde_json::to_vec(model.as_ref()).unwrap();
+        let restored: astersql_meta_model::TableInfo = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(bytes, serde_json::to_vec(&restored).unwrap());
+        assert_ne!(
+            model.Columns[1].PostgreSQLDefaultID,
+            model.Columns[2].PostgreSQLDefaultID
+        );
+        for scenario in 0..4 {
+            let mut bad = restored.clone();
+            match scenario {
+                0 => bad.Columns[1].PostgreSQLDefaultID = None,
+                1 => bad.Columns[1].PostgreSQLGenerated = None,
+                2 => {
+                    bad.Columns[1].PostgreSQLGenerated =
+                        Some(astersql_meta_model::PostgreSQLCheckExpression::Column(999))
+                }
+                _ => bad.Columns[1].PostgreSQLHasDefault = Some(false),
+            }
+            let mut schema = astersql_infoschema::infoSchema::new(1);
+            schema.add_schema(
+                astersql_infoschema::DBInfo {
+                    id: 42,
+                    name: astersql_infoschema::CiString::new("pg13_024_contract"),
+                    ..Default::default()
+                },
+                vec![astersql_infoschema::Table::new(
+                    astersql_infoschema::TableInfo {
+                        id: bad.ID,
+                        db_id: 42,
+                        name: astersql_infoschema::CiString::new(&name),
+                        model_meta: Some(Arc::new(bad)),
+                        ..Default::default()
+                    },
+                )],
+            );
+            assert!(
+                crate::pg_catalog::column_catalog_rows(
+                    "pg_attrdef",
+                    &schema,
+                    "pg13_024_contract",
+                    &crate::conn::CancellationToken::new()
+                )
+                .is_err(),
+                "corrupt generated model scenario {scenario}"
+            );
+        }
+    }
+    let rejected = query(
+        &mut socket,
+        "CREATE TABLE public.bad_gen (x integer,y integer GENERATED ALWAYS AS (IFNULL(x,0)) STORED)",
+    );
+    assert!(
+        rejected
+            .iter()
+            .any(|(t, b)| *t == b'E' && b.windows(6).any(|b| b == b"42883\0")),
+        "{rejected:?}"
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_class WHERE relname='bad_gen'"
+        )
+        .iter()
+        .filter(|(t, _)| *t == b'D')
+        .count(),
+        0
+    );
+    let unsupported = query(
+        &mut socket,
+        "CREATE TABLE public.unsupported_gen(x integer,y integer GENERATED ALWAYS AS(x*2) STORED)",
+    );
+    assert!(
+        unsupported
+            .iter()
+            .any(|(t, b)| *t == b'E' && b.windows(6).any(|b| b == b"0A000\0")),
+        "{unsupported:?}"
+    );
+    assert!(
+        !query(
+            &mut socket,
+            "SELECT oid FROM pg_class WHERE relname='unsupported_gen'"
+        )
+        .iter()
+        .any(|(t, _)| *t == b'D')
+    );
+    native.execute("CREATE TABLE pg13_024_contract.native_gen(x INT,y INT GENERATED ALWAYS AS(IFNULL(x,0)) STORED)").unwrap();
+    let rejected = query(
+        &mut socket,
+        "SELECT adbin FROM pg_attrdef WHERE adrelid='public.native_gen'::regclass::oid",
+    );
+    assert!(
+        rejected
+            .iter()
+            .any(|(t, b)| *t == b'E' && b.windows(6).any(|b| b == b"0A000\0")),
+        "{rejected:?}"
+    );
+    native
+        .execute("DROP TABLE pg13_024_contract.native_gen")
+        .unwrap();
+    let empty = query(
+        &mut socket,
+        "SELECT oid,adrelid,adnum,adbin FROM pg_attrdef WHERE adrelid=0",
+    );
+    assert_eq!(
+        columns(&empty[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![26, 26, 21, 194]
+    );
+    assert!(!empty.iter().any(|(t, _)| *t == b'D'));
+    send(&mut socket, b'X', b"");
+    drop(socket);
+    println!(
+        "pg13_024_contract: modes=2 insert_null=2 update=2 rename=2 durable_identity=2 serde=2 corrupt_models=8 native_generated_reject=1 unsupported_ddl=1 reject_recovery=1 empty_describe=1 cleanup=1"
+    );
+}

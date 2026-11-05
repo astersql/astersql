@@ -895,6 +895,10 @@ fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     let bytes = match oid {
         16 => vec![u8::from(text == "t")],
         18 => {
+            // PG's empty internal char is a zero byte in binary format.
+            if text.is_empty() {
+                return Ok(Some(vec![0]));
+            }
             if text.len() != 1 {
                 return Err(invalid("invalid internal char"));
             }

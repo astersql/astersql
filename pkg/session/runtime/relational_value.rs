@@ -1336,6 +1336,33 @@ pub(super) fn pg_int4_unary_minus_value(value: Option<String>) -> SessionResult<
     Ok((!null).then(|| value.to_string()))
 }
 
+// Range-check a bound PG virtual value only when that column is consumed.
+// The existing scan may compute its text while reading a row, but selecting
+// another column must not evaluate this definition's integer conversion.
+fn pg_generated_column_value(name: &str, value: Option<String>) -> SessionResult<Option<String>> {
+    let virtual_int4 = PG_CAST_TABLE.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|table| {
+            table.Columns.iter().any(|column| {
+                column.Name.L == name
+                    && column.PostgreSQLGenerated.is_some()
+                    && !column.GeneratedStored
+            })
+        })
+    });
+    if virtual_int4 {
+        astersql_expression::pg_cast_int4(value.as_deref())
+            .map(|number| number.map(|n| n.to_string()))
+            .map_err(|error| {
+                SessionError::with_source(
+                    error.to_string(),
+                    astersql_errors::SharedError::new(error),
+                )
+            })
+    } else {
+        Ok(value)
+    }
+}
+
 /// Evaluate one scalar expression against a decoded relational row.
 pub(super) fn relational_expression_value(
     expression: &ast::ExprNode,
@@ -1359,10 +1386,12 @@ pub(super) fn relational_expression_value(
             ast::ValueDatum::Bool(value) => Some(if *value { "1" } else { "0" }.to_owned()),
             _ => Some(value.text()),
         }),
-        ast::ExprKind::Column(column) => row
-            .get(&column.Name.L)
-            .cloned()
-            .ok_or_else(|| SessionError::new(format!("Unknown column '{}'", column.Name.O))),
+        ast::ExprKind::Column(column) => pg_generated_column_value(
+            &column.Name.L,
+            row.get(&column.Name.L)
+                .cloned()
+                .ok_or_else(|| SessionError::new(format!("Unknown column '{}'", column.Name.O)))?,
+        ),
         ast::ExprKind::Parentheses(inner) | ast::ExprKind::Collate { Expr: inner, .. } => {
             relational_expression_value(inner, row)
         }
@@ -5037,32 +5066,32 @@ pub(super) fn project_relational_rows(
             projections
                 .iter()
                 .map(|projection| match projection {
-                    Projection::Column(name, is_bit) => Ok(row
-                        .get(name)
-                        .and_then(Option::as_ref)
-                        .cloned()
-                        .map(|value| {
-                            if *is_bit
-                                && let Some(hex) = value
-                                    .strip_prefix("0x")
-                                    .or_else(|| value.strip_prefix("0X"))
-                                && hex.len() % 2 == 0
-                                && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-                            {
-                                let bytes = hex
-                                    .as_bytes()
-                                    .chunks(2)
-                                    .map(|chunk| {
-                                        let high = (chunk[0] as char).to_digit(16).unwrap_or(0);
-                                        let low = (chunk[1] as char).to_digit(16).unwrap_or(0);
-                                        ((high << 4) | low) as u8
-                                    })
-                                    .collect::<Vec<_>>();
-                                return String::from_utf8_lossy(&bytes).into_owned();
-                            }
-                            display_runtime_value(value)
-                        })
-                        .unwrap_or_else(|| SHOW_NULL_CELL.to_owned())),
+                    Projection::Column(name, is_bit) => Ok(pg_generated_column_value(
+                        name,
+                        row.get(name).and_then(Option::as_ref).cloned(),
+                    )?
+                    .map(|value| {
+                        if *is_bit
+                            && let Some(hex) = value
+                                .strip_prefix("0x")
+                                .or_else(|| value.strip_prefix("0X"))
+                            && hex.len() % 2 == 0
+                            && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        {
+                            let bytes = hex
+                                .as_bytes()
+                                .chunks(2)
+                                .map(|chunk| {
+                                    let high = (chunk[0] as char).to_digit(16).unwrap_or(0);
+                                    let low = (chunk[1] as char).to_digit(16).unwrap_or(0);
+                                    ((high << 4) | low) as u8
+                                })
+                                .collect::<Vec<_>>();
+                            return String::from_utf8_lossy(&bytes).into_owned();
+                        }
+                        display_runtime_value(value)
+                    })
+                    .unwrap_or_else(|| SHOW_NULL_CELL.to_owned())),
                     Projection::Expression(expression) => {
                         relational_expression_value_with_embed(expression, row, &embed_text)
                             .map(|value| value.unwrap_or_else(|| SHOW_NULL_CELL.to_owned()))

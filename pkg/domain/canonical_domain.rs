@@ -1399,11 +1399,12 @@ impl DdlMetadataService {
                         slots.push((column.ID, false));
                     }
                 }
-                column.PostgreSQLDefaultID = if column.GetDefaultValue().is_some() {
-                    Some(allocate_id(catalog))
-                } else {
-                    None
-                };
+                column.PostgreSQLDefaultID =
+                    if column.GetDefaultValue().is_some() || column.PostgreSQLGenerated.is_some() {
+                        Some(allocate_id(catalog))
+                    } else {
+                        None
+                    };
                 column.PostgreSQLHasDefault = Some(column.PostgreSQLDefaultID.is_some());
                 new.Columns.push(column);
             }
@@ -1697,9 +1698,38 @@ impl DdlMetadataService {
             column.Offset = previous.Offset;
             column.SetFlag(column.GetFlag() | previous.GetFlag());
             let new_name = column.Name.clone();
+            column.PostgreSQLGenerated = previous.PostgreSQLGenerated.clone();
             column.PostgreSQLDefaultID = previous.PostgreSQLDefaultID;
             column.PostgreSQLHasDefault = previous.PostgreSQLHasDefault;
             new.Columns[offset] = column;
+            // Rename changes spelling, never the expression's dependency IDs.
+            // Keep the existing native evaluator's input in the same atomic DDL
+            // publication as the bound PostgreSQL definition.
+            for position in 0..new.Columns.len() {
+                if let Some(bound) = &new.Columns[position].PostgreSQLGenerated {
+                    let mut ids = Vec::new();
+                    let expression = bound
+                        .render(&new, true, &mut ids)
+                        .ok_or_else(|| kv::errors::New("invalid generated column dependency"))?;
+                    let names = ids
+                        .into_iter()
+                        .map(|id| {
+                            (
+                                new.Columns
+                                    .iter()
+                                    .find(|c| c.ID == id)
+                                    .unwrap()
+                                    .Name
+                                    .L
+                                    .clone(),
+                                (),
+                            )
+                        })
+                        .collect();
+                    new.Columns[position].GeneratedExprString = expression;
+                    new.Columns[position].Dependences = names;
+                }
+            }
             for index in &mut new.Indices {
                 for indexed in &mut index.Columns {
                     if indexed.Name.L == old_name {
@@ -1752,15 +1782,16 @@ impl DdlMetadataService {
             column.Offset = new.Columns[offset].Offset;
             // A default replacement creates a new object, including SET to
             // the same value. Allocation is persisted atomically with the DDL.
-            column.PostgreSQLDefaultID = if column.GetDefaultValue().is_some() {
-                Some(
-                    column
-                        .PostgreSQLDefaultID
-                        .unwrap_or_else(|| allocate_id(catalog)),
-                )
-            } else {
-                None
-            };
+            column.PostgreSQLDefaultID =
+                if column.GetDefaultValue().is_some() || column.PostgreSQLGenerated.is_some() {
+                    Some(
+                        column
+                            .PostgreSQLDefaultID
+                            .unwrap_or_else(|| allocate_id(catalog)),
+                    )
+                } else {
+                    None
+                };
             column.PostgreSQLHasDefault = Some(column.PostgreSQLDefaultID.is_some());
             new.Columns[offset] = column;
             if let Some((shard_bits, range_bits)) = auto_random {
@@ -1991,7 +2022,9 @@ pub(crate) fn assign_table_physical_ids(catalog: &mut MetadataCatalog, table: &m
         catalog.next_id = catalog.next_id.max(table.ID);
     }
     for column in &mut table.Columns {
-        if column.GetDefaultValue().is_some() && column.PostgreSQLIdentity.is_none() {
+        if (column.GetDefaultValue().is_some() || column.PostgreSQLGenerated.is_some())
+            && column.PostgreSQLIdentity.is_none()
+        {
             column.PostgreSQLDefaultID = Some(allocate_id(catalog));
         } else {
             column.PostgreSQLDefaultID = None;
