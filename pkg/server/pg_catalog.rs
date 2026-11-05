@@ -2219,56 +2219,85 @@ impl CatalogQuery {
                                 .transpose()?
                                 .unwrap_or_default(),
                         )?;
-                        // Follow the durable column reference; never infer ownership from names.
-                        let mut sequence_id = None;
-                        let mut found_column = false;
-                        for schema in snapshot
-                            .AllSchemas()
-                            .into_iter()
-                            .filter(|s| s.name.lower == database.to_lowercase())
-                        {
-                            for table in snapshot
-                                .SchemaTableInfos(&schema.name)
-                                .map_err(|e| ConnError::Session(e.to_string()))?
-                            {
-                                if crate::pg_oid::table_oid(table.id).ok() != Some(oid) {
-                                    continue;
-                                }
-                                if let Some(model) = &table.model_meta {
-                                    if let Some(col) =
-                                        model.Columns.iter().find(|c| c.Name.O == column)
-                                    {
-                                        found_column = true;
-                                        sequence_id =
-                                            col.PostgreSQLIdentity.as_ref().map(|i| i.SequenceID);
-                                    }
-                                }
-                            }
-                        }
-                        if !found_column {
-                            return Err(ConnError::Session(format!("Unknown column {column}")));
-                        }
-                        let mut result = Value::Null;
-                        if let Some(id) = sequence_id {
-                            for schema in snapshot
-                                .AllSchemas()
-                                .into_iter()
-                                .filter(|s| s.name.lower == database.to_lowercase())
-                            {
-                                for table in snapshot
-                                    .SchemaTableInfos(&schema.name)
-                                    .map_err(|e| ConnError::Session(e.to_string()))?
+                        let tables = snapshot
+                            .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                            .map_err(|e| ConnError::Session(e.to_string()))?;
+                        let model = tables.iter().find_map(|table| {
+                            table.model_meta.as_ref().filter(|model| {
+                                crate::pg_oid::table_oid(model.ID).ok() == Some(oid)
+                                    && model.State == astersql_meta_model::StatePublic
+                            })
+                        });
+                        let column = model
+                            .and_then(|model| {
+                                model.Columns.iter().find(|col| {
+                                    col.Name.O == column
+                                        && col.State == astersql_meta_model::StatePublic
+                                        && !col.Hidden
+                                })
+                            })
+                            .ok_or_else(|| {
+                                ConnError::PgFunction(astersql_session::runtime::PgFunctionError {
+                                    state: "42703",
+                                    message: "column does not exist in the specified relation"
+                                        .into(),
+                                    detail: None,
+                                    hint: None,
+                                    position: None,
+                                })
+                            })?;
+                        let model = model.expect("column belongs to the resolved relation");
+                        // Both dependency kinds use durable IDs, never defaults or native
+                        // AUTO_INCREMENT. Resolve within this database's execution snapshot.
+                        let identity = column.PostgreSQLIdentity.as_ref().map(|i| i.SequenceID);
+                        let mut sequence = None;
+                        for table in &tables {
+                            execution.comparison()?;
+                            let Some(candidate) = table.model_meta.as_ref() else {
+                                return Err(ConnError::UnsupportedCommand(0));
+                            };
+                            if identity.map_or(
+                                candidate.PostgreSQLSequenceOwner == Some((model.ID, column.ID)),
+                                |id| id == candidate.ID,
+                            ) {
+                                if candidate.State != astersql_meta_model::StatePublic
+                                    || candidate.Sequence.is_none()
+                                    || candidate.DBID != model.DBID
                                 {
-                                    if table.id == id {
-                                        result = Value::Text(format!(
-                                            "public.{}",
-                                            crate::pg_oid::quoted(&table.name.original)
-                                        ));
-                                    }
+                                    return Err(ConnError::UnsupportedCommand(0));
                                 }
+                                sequence = Some(candidate);
+                                break;
                             }
                         }
-                        result
+                        if identity.is_some() && sequence.is_none() {
+                            return Err(ConnError::UnsupportedCommand(0));
+                        }
+                        if let Some(sequence) = sequence {
+                            let namespaces = execution
+                                .context
+                                .pg_namespace_facts()
+                                .transpose()?
+                                .unwrap_or_default();
+                            let (schema, name) = match &sequence.PostgreSQLNamespace {
+                                Some((id, name)) => (
+                                    namespaces
+                                        .iter()
+                                        .find(|fact| fact.id == *id)
+                                        .map(|fact| fact.name.as_str())
+                                        .ok_or(ConnError::UnsupportedCommand(0))?,
+                                    name.as_str(),
+                                ),
+                                None => ("public", sequence.Name.O.as_str()),
+                            };
+                            Value::Text(format!(
+                                "{}.{}",
+                                crate::pg_oid::quoted(schema),
+                                crate::pg_oid::quoted(name)
+                            ))
+                        } else {
+                            Value::Null
+                        }
                     }
                     _ => unreachable!("validated serial sequence arguments"),
                 },
