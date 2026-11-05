@@ -50,7 +50,16 @@ struct Namespace {
     owner_id: Option<i64>,
     usage: BTreeSet<String>,
     #[serde(default)]
-    explicit_acl: bool,
+    explicit_acl: Option<bool>,
+    #[serde(default = "owner_privilege_default")]
+    owner_usage: bool,
+    #[serde(default = "owner_privilege_default")]
+    owner_create: bool,
+}
+
+// Older persisted namespaces gave their owner both default privileges.
+fn owner_privilege_default() -> bool {
+    true
 }
 
 impl ConcreteSession {
@@ -86,6 +95,14 @@ impl ConcreteSession {
             ) => Some(self.pg_database_role_id(owner)?),
             _ => None,
         };
+        // Persist grants only for a role from the same authoritative role catalog.
+        if let Some(
+            PgSchemaCommand::Usage { grantee, .. } | PgSchemaCommand::RevokeAll { grantee, .. },
+        ) = command
+            && grantee != "PUBLIC"
+        {
+            self.pg_database_role_id(grantee)?;
+        }
         let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
         let mut result = BTreeMap::new();
         self.domain
@@ -104,7 +121,9 @@ impl ConcreteSession {
                                 (
                                     "public".into(),
                                     Namespace {
-                                        explicit_acl: false,
+                                        explicit_acl: Some(false),
+                                        owner_usage: true,
+                                        owner_create: true,
                                         id: 0,
                                         owner: "root".into(),
                                         owner_id: None,
@@ -114,7 +133,9 @@ impl ConcreteSession {
                                 (
                                     "pg_catalog".into(),
                                     Namespace {
-                                        explicit_acl: false,
+                                        explicit_acl: Some(false),
+                                        owner_usage: true,
+                                        owner_create: true,
                                         id: 0,
                                         owner: "root".into(),
                                         owner_id: None,
@@ -151,7 +172,9 @@ impl ConcreteSession {
                                 namespaces.insert(
                                     name.clone(),
                                     Namespace {
-                                        explicit_acl: false,
+                                        explicit_acl: Some(false),
+                                        owner_usage: true,
+                                        owner_create: true,
                                         id: allocate_namespace_id(transaction, &context)?,
                                         owner: actor.clone(),
                                         owner_id: command_owner_id,
@@ -175,7 +198,9 @@ impl ConcreteSession {
                                         owner: owner.clone(),
                                         owner_id: command_owner_id,
                                         usage: BTreeSet::new(),
-                                        explicit_acl: false,
+                                        explicit_acl: Some(false),
+                                        owner_usage: true,
+                                        owner_create: true,
                                     },
                                 );
                             }
@@ -197,12 +222,11 @@ impl ConcreteSession {
                                     return Err(kv::errors::New("must be owner of schema"));
                                 }
                                 if grantee == &existing.owner {
-                                    return Err(kv::errors::New(
-                                        "revoking schema owner privileges is unsupported",
-                                    ));
+                                    existing.owner_usage = false;
+                                    existing.owner_create = false;
                                 }
                                 existing.usage.remove(grantee);
-                                existing.explicit_acl = true;
+                                existing.explicit_acl = Some(true);
                             }
                             PgSchemaCommand::Rename { schema, name } => {
                                 if matches!(schema.as_str(), "public" | "pg_catalog")
@@ -268,8 +292,10 @@ impl ConcreteSession {
                                 if actor != "root" && actor != schema.owner {
                                     return Err(kv::errors::New("must be owner of schema"));
                                 }
-                                schema.explicit_acl = true;
-                                if *grant {
+                                schema.explicit_acl = Some(true);
+                                if grantee == &schema.owner {
+                                    schema.owner_usage = *grant;
+                                } else if *grant {
                                     schema.usage.insert(grantee.clone());
                                 } else {
                                     schema.usage.remove(grantee);
@@ -281,7 +307,7 @@ impl ConcreteSession {
                         let defaults = namespaces.len() == 2
                             && namespaces.iter().all(|(name, ns)| {
                                 matches!(name.as_str(), "public" | "pg_catalog")
-                                    && !ns.explicit_acl
+                                    && ns.explicit_acl == Some(false)
                                     && ns.owner == "root"
                                     && ns.usage == BTreeSet::from(["PUBLIC".into()])
                             });
@@ -312,8 +338,7 @@ impl ConcreteSession {
                 "must be owner of schema" | "permission denied to create schema" => {
                     namespace_error("42501", "permission denied for schema")
                 }
-                "revoking schema owner privileges is unsupported"
-                | "renaming built-in schema is unsupported"
+                "renaming built-in schema is unsupported"
                 | "dropping built-in schema is unsupported" => {
                     namespace_error("0A000", "built-in schema operation is unsupported")
                 }
@@ -391,7 +416,7 @@ impl ConcreteSession {
             let name = if entry == "$user" { &actor } else { entry };
             if let Some(schema) = namespaces.get(name)
                 && (actor == "root"
-                    || actor == schema.owner
+                    || (actor == schema.owner && schema.owner_usage)
                     || schema.usage.contains("PUBLIC")
                     || schema.usage.contains(&actor))
                 && !result.contains(name)
@@ -413,6 +438,8 @@ pub struct PgNamespaceFact {
     pub can_create: bool,
     pub owner: Option<i64>,
     pub acl: Option<String>,
+    /// A default SQL NULL is only valid when the persisted ACL state is known.
+    pub acl_available: bool,
 }
 
 fn allocate_namespace_id(
@@ -478,12 +505,34 @@ impl ConcreteSession {
                             })
                             .flatten()
                     }),
-                acl: namespace.explicit_acl.then(|| {
+                acl_available: namespace.explicit_acl.is_some()
+                    && roles.values().any(|name| name == &namespace.owner)
+                    && namespace
+                        .owner_id
+                        .is_none_or(|id| roles.get(&id) == Some(&namespace.owner))
+                    && namespace
+                        .usage
+                        .iter()
+                        .all(|r| r == "PUBLIC" || roles.values().any(|name| name == r)),
+                acl: (namespace.explicit_acl == Some(true)).then(|| {
                     fn quoted(value: &str) -> String {
                         format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
                     }
                     let grantor = quoted(&namespace.owner);
-                    let mut entries = vec![format!("{}=UC/{}", quoted(&namespace.owner), grantor)];
+                    let mut entries = Vec::new();
+                    let privileges = format!(
+                        "{}{}",
+                        if namespace.owner_usage { "U" } else { "" },
+                        if namespace.owner_create { "C" } else { "" }
+                    );
+                    if !privileges.is_empty() {
+                        entries.push(format!(
+                            "{}={}/{}",
+                            quoted(&namespace.owner),
+                            privileges,
+                            grantor
+                        ));
+                    }
                     entries.extend(
                         namespace
                             .usage
@@ -515,9 +564,9 @@ impl ConcreteSession {
                 } else {
                     namespace.id
                 },
-                can_create: actor == "root" || actor == namespace.owner,
+                can_create: actor == "root" || (actor == namespace.owner && namespace.owner_create),
                 usage: actor == "root"
-                    || actor == namespace.owner
+                    || (actor == namespace.owner && namespace.owner_usage)
                     || namespace.usage.contains("PUBLIC")
                     || namespace.usage.contains(&actor),
                 name,

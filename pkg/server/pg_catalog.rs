@@ -1700,6 +1700,18 @@ impl CatalogQuery {
                         "PostgreSQL namespace owner identity is unavailable",
                     ));
                 }
+                if self
+                    .relations()
+                    .nth(slot / CATALOG_ROW_WIDTH)
+                    .is_some_and(|r| r.name == "pg_namespace")
+                    && slot % CATALOG_ROW_WIDTH == 6
+                    && row[slot - 6] != Value::Null
+                    && row[slot + 1] != Value::Signed(1)
+                {
+                    return Err(database_identity_unavailable(
+                        "PostgreSQL namespace ACL source is unavailable",
+                    ));
+                }
                 row[slot].clone()
             }
             Expr::Null => Value::Null,
@@ -4148,6 +4160,8 @@ fn namespace_rows_for_context(
                 );
                 row[5] = fact.owner.map_or(Value::Null, Value::Signed);
                 row[6] = fact.acl.map_or(Value::Null, Value::Text);
+                // Internal source marker, never exposed as a catalog attribute.
+                row[7] = Value::Signed(i64::from(fact.acl_available));
                 Ok(row)
             })
             .collect();

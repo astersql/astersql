@@ -773,3 +773,66 @@ fn namespace_rename_preserves_table_identity_and_reads_do_not_allocate() {
         .pg_schema_command(&PgSchemaCommand::Drop("ns_after".into()))
         .unwrap();
 }
+
+#[test]
+fn namespace_owner_revocation_preserves_identity_and_removes_effective_privileges() {
+    let (domain, native) = CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE USER 'ns_acl_owner'@'%' IDENTIFIED WITH mysql_native_password BY ''")
+        .unwrap();
+    let admin = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    admin
+        .pg_schema_command(&PgSchemaCommand::CreateOwned {
+            schema: "owner_acl".into(),
+            owner: "ns_acl_owner".into(),
+        })
+        .unwrap();
+    let before = admin
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "owner_acl")
+        .unwrap();
+    assert!(before.owner.is_some() && before.acl_available && before.acl.is_none());
+    admin
+        .pg_schema_command(&PgSchemaCommand::RevokeAll {
+            schema: "owner_acl".into(),
+            grantee: "ns_acl_owner".into(),
+        })
+        .unwrap();
+    let after = admin
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "owner_acl")
+        .unwrap();
+    assert_eq!((before.id, before.owner), (after.id, after.owner));
+    assert_eq!(after.acl.as_deref(), Some("{}"));
+    let mut owner = ConcreteSession::new_with_dialect(domain, ast::SqlDialect::PostgreSQL);
+    owner.login_user = Some("ns_acl_owner".into());
+    let owned = owner
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "owner_acl")
+        .unwrap();
+    assert!(!owned.usage && !owned.can_create);
+    admin
+        .pg_schema_command(&PgSchemaCommand::Usage {
+            schema: "owner_acl".into(),
+            grantee: "ns_acl_owner".into(),
+            grant: true,
+        })
+        .unwrap();
+    let owned = owner
+        .pg_namespace_facts()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "owner_acl")
+        .unwrap();
+    assert!(owned.usage && !owned.can_create);
+    admin
+        .pg_schema_command(&PgSchemaCommand::Drop("owner_acl".into()))
+        .unwrap();
+    native.execute("DROP USER 'ns_acl_owner'@'%'").unwrap();
+}

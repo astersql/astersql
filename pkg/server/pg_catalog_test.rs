@@ -3612,3 +3612,179 @@ fn pg13_003_contract() {
     drop(cleanup);
     println!("pg13_003_contract: create=1 rename=1 drop=1 cross_connection=3 empty=2 cleanup=1");
 }
+
+#[test]
+fn pg13_004_contract() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_004_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_004_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_004_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_004_admin")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_004_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_004_admin");
+    let (mut c, _) = connect("pg13_004_policy");
+    let sql = "SELECT oid,nspowner,nspacl FROM pg_catalog.pg_namespace WHERE nspname = 'ns_acl'";
+    assert_eq!(query(&mut b, "CREATE SCHEMA ns_acl")[0].0, b'C');
+    let initial = query(&mut a, sql);
+    assert_eq!(
+        columns(&initial[0].1),
+        vec![
+            ("oid".into(), 26),
+            ("nspowner".into(), 26),
+            ("nspacl".into(), 1034)
+        ]
+    );
+    assert_eq!(initial.len(), 4, "{initial:?}");
+    assert!(initial[1].1.ends_with(&(-1i32).to_be_bytes()));
+    assert_eq!(query(&mut c, sql).len(), 3);
+    let empty = query(&mut a, &format!("{sql} LIMIT 0"));
+    assert_eq!(columns(&empty[0].1), columns(&initial[0].1));
+    assert_eq!(empty[1], (b'C', b"SELECT 0\0".to_vec()));
+    // Corrupt only persisted metadata at its real model boundary, never provider rows.
+    let db = domain
+        .info_schema()
+        .SchemaByName(&astersql_infoschema::CiString::new("pg13_004_admin"))
+        .unwrap();
+    let key =
+        astersql_meta::transaction_meta_hash_key(b"PgNamespaces", db.id.to_string().as_bytes());
+    let context = astersql_kv::Context::default();
+    let mut original = Vec::new();
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&context, store, true, |_, tx| {
+                original = tx.Get(&context, key.clone(), &[])?.Value;
+                let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                document["ns_acl"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("explicit_acl");
+                tx.Set(key.clone(), serde_json::to_vec(&document).unwrap())
+            })
+        })
+        .unwrap();
+    let missing = query(
+        &mut a,
+        "SELECT nspacl FROM pg_catalog.pg_namespace WHERE nspname='ns_acl'",
+    );
+    assert_eq!(missing[0].0, b'E', "{missing:?}");
+    assert!(missing[0].1.windows(5).any(|w| w == b"0A000"));
+    assert_eq!(missing.last().unwrap(), &(b'Z', vec![b'I']));
+    assert_eq!(
+        query(
+            &mut a,
+            "SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='ns_acl'"
+        )
+        .len(),
+        4
+    );
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&context, store, true, |_, tx| {
+                tx.Set(key.clone(), original.clone())
+            })
+        })
+        .unwrap();
+    assert_eq!(query(&mut a, sql), initial);
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&context, store, true, |_, tx| {
+                let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                document["ns_acl"]["owner_id"] = serde_json::json!(2147483646);
+                tx.Set(key.clone(), serde_json::to_vec(&document).unwrap())
+            })
+        })
+        .unwrap();
+    for field in ["nspowner", "nspacl"] {
+        let missing = query(
+            &mut a,
+            &format!("SELECT {field} FROM pg_catalog.pg_namespace WHERE nspname='ns_acl'"),
+        );
+        assert_eq!(missing[0].0, b'E', "{missing:?}");
+        assert!(missing[0].1.windows(5).any(|w| w == b"0A000"));
+        assert_eq!(missing.last().unwrap(), &(b'Z', vec![b'I']));
+    }
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            astersql_kv::RunInNewTxn(&context, store, true, |_, tx| {
+                tx.Set(key.clone(), original.clone())
+            })
+        })
+        .unwrap();
+    assert_eq!(query(&mut a, sql), initial);
+    let invalid = query(
+        &mut b,
+        "GRANT USAGE ON SCHEMA ns_acl TO pg13_004_missing_role",
+    );
+    assert_eq!(invalid[0].0, b'E', "{invalid:?}");
+    assert_eq!(query(&mut a, sql), initial);
+    let revoked = query(&mut b, "REVOKE ALL ON SCHEMA ns_acl FROM root");
+    assert_eq!(revoked[0].0, b'C', "{revoked:?}");
+    let explicit = query(
+        &mut a,
+        "SELECT nspacl FROM pg_catalog.pg_namespace WHERE nspname='ns_acl'",
+    );
+    assert_eq!(explicit[1], (b'D', row(&[Some("{}")])), "{explicit:?}");
+    assert_eq!(query(&mut b, "DROP SCHEMA ns_acl")[0].0, b'C');
+    drop(c);
+    drop(a);
+    drop(b);
+    drop(cleanup);
+    println!(
+        "pg13_004_contract: default_null=1 explicit_empty=1 cross_connection=2 empty_description=1 missing_source=3 invalid=1 recovery=3 cleanup=1"
+    );
+}
