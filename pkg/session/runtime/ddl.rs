@@ -842,6 +842,7 @@ impl ConcreteSession {
                 // timezone-dependent native TIMESTAMP storage identity.
                 if definition.Tp.GetType() == astersql_parser_mysql::r#type::TypeTimestamp {
                     column.SetType(astersql_parser_mysql::r#type::TypeDatetime);
+                    column.FieldType.SetPostgreSQLDeclaration();
                     column.SetDecimal(definition.Tp.GetDecimal());
                 }
                 if column.GetType() == astersql_parser_mysql::r#type::TypeNewDecimal {
@@ -2961,7 +2962,7 @@ impl ConcreteSession {
                             definition.Name.Name.O
                         )));
                     };
-                    let column = astersql_ddl::BuildColumnInfoFromAST(
+                    let mut column = astersql_ddl::BuildColumnInfoFromAST(
                         definition,
                         offset,
                         charset,
@@ -2970,6 +2971,26 @@ impl ConcreteSession {
                     .map_err(|error| {
                         session_error("build ALTER TABLE MODIFY COLUMN metadata", error)
                     })?;
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && definition.Tp.GetType() == astersql_parser_mysql::r#type::TypeTimestamp
+                    {
+                        column.SetType(astersql_parser_mysql::r#type::TypeDatetime);
+                        column.FieldType.SetPostgreSQLDeclaration();
+                        column.SetDecimal(definition.Tp.GetDecimal());
+                    }
+                    if self.sql_dialect() == ast::SqlDialect::PostgreSQL
+                        && definition.Tp.IsPostgreSQLDeclaration()
+                        && definition.Options.is_empty()
+                    {
+                        // ALTER COLUMN TYPE changes only the declaration, retaining column facts.
+                        let flags = info.Columns[offset].GetFlag()
+                            & !(astersql_parser_mysql::r#type::IsBooleanFlag
+                                | astersql_parser_mysql::r#type::UnsignedFlag);
+                        let mut preserved = info.Columns[offset].clone();
+                        preserved.FieldType = column.FieldType;
+                        preserved.AddFlag(flags);
+                        column = preserved;
+                    }
                     Self::check_embedding_column_dependencies(&column, &info)?;
                     Self::validate_enum_set_lengths(std::slice::from_ref(&column))?;
                     if column.GetType() == astersql_parser_mysql::r#type::TypeTiDBVectorFloat32 {

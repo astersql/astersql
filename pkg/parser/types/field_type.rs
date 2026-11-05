@@ -128,6 +128,7 @@ pub struct FieldType {
     elems: Option<Vec<String>>,
     elemsIsBinaryLit: Option<Vec<bool>>,
     array: bool,
+    postgresql_declaration: bool,
     postgresql_text_oid: Option<u32>,
     postgresql_array_element: Option<PostgreSQLArrayElement>,
     postgresql_record_fields: Option<Vec<PostgreSQLRecordField>>,
@@ -158,6 +159,7 @@ impl FieldType {
             h.HashBool(*elem);
         }
         h.HashBool(self.array);
+        if self.postgresql_declaration { h.HashBool(true); }
         if let Some(oid) = self.postgresql_text_oid {
             h.HashUint64(oid as u64);
         }
@@ -194,6 +196,7 @@ impl FieldType {
             && self.collate == other.collate
             && self.GetElems() == other.GetElems()
             && self.GetElemsIsBinaryLit() == other.GetElemsIsBinaryLit()
+            && self.postgresql_declaration == other.postgresql_declaration
             && self.array == other.array
             && self.postgresql_text_oid == other.postgresql_text_oid
             && self.postgresql_array_element == other.postgresql_array_element
@@ -282,6 +285,7 @@ impl FieldType {
     pub fn SetType(&mut self, tp: u8) {
         self.tp = tp;
         self.array = false;
+        self.postgresql_declaration = false;
         self.postgresql_text_oid = None;
         self.postgresql_array_element = None;
         self.postgresql_record_fields = None;
@@ -376,6 +380,9 @@ impl FieldType {
     pub fn SetElem(&mut self, idx: usize, element: String) {
         self.elems.as_mut().unwrap()[idx] = element;
     }
+    /// Preserve unspecified PG declaration modifiers instead of applying MySQL defaults.
+    pub fn IsPostgreSQLDeclaration(&self) -> bool { self.postgresql_declaration }
+    pub fn SetPostgreSQLDeclaration(&mut self) { self.postgresql_declaration = true; }
     /// PostgreSQL text identity is independent of MySQL storage code/charset.
     pub fn PostgreSQLTextOid(&self) -> Option<u32> {
         self.postgresql_text_oid
@@ -954,6 +961,8 @@ struct jsonFieldType {
     Array: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     PostgreSQLTextOid: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    PostgreSQLDeclaration: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     PostgreSQLArrayElement: Option<PostgreSQLArrayElement>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -972,6 +981,7 @@ impl From<&FieldType> for jsonFieldType {
             Elems: ft.elems.clone(),
             ElemsIsBinaryLit: ft.elemsIsBinaryLit.clone(),
             Array: ft.array,
+            PostgreSQLDeclaration: ft.postgresql_declaration,
             PostgreSQLTextOid: ft.postgresql_text_oid,
             PostgreSQLArrayElement: ft.postgresql_array_element,
             PostgreSQLRecordFields: ft.postgresql_record_fields.clone(),
@@ -991,6 +1001,7 @@ impl From<jsonFieldType> for FieldType {
             elems: value.Elems,
             elemsIsBinaryLit: value.ElemsIsBinaryLit,
             array: value.Array,
+            postgresql_declaration: value.PostgreSQLDeclaration,
             postgresql_text_oid: value.PostgreSQLTextOid,
             postgresql_array_element: value.PostgreSQLArrayElement,
             postgresql_record_fields: value.PostgreSQLRecordFields,

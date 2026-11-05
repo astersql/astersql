@@ -7172,3 +7172,23 @@ fn pg10_23_writable_cte_values_preserves_producer() {
             .is_err()
     );
 }
+
+#[test]
+fn pg13_009_column_declarations() {
+    let mut parser = crate::Parser::with_dialect(parser_ast::SqlDialect::PostgreSQL);
+    let (statements,_)=parser.ParseSQL("CREATE TABLE decl_types(i integer[], v varchar(24), n numeric, neg numeric(8,-2), t timestamp, p timestamp(3))",&[]).unwrap();
+    let table = statements[0]
+        .as_any()
+        .downcast_ref::<parser_ast::CreateTableStmt>()
+        .unwrap();
+    assert_eq!(
+        table.Cols[0].Tp.PostgreSQLArrayElement(),
+        Some(parser_types::PostgreSQLArrayElement::Int4)
+    );
+    assert!(table.Cols.iter().all(|c| c.Tp.IsPostgreSQLDeclaration()));
+    assert_eq!(table.Cols[1].Tp.PostgreSQLTextOid(), Some(1043));
+    assert_eq!(table.Cols[2].Tp.GetFlen(), -1);
+    assert_eq!(table.Cols[3].Tp.GetDecimal(), -2);
+    assert_eq!(table.Cols[4].Tp.GetDecimal(), -1);
+    assert_eq!(table.Cols[5].Tp.GetDecimal(), 3);
+}

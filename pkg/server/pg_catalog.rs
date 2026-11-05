@@ -1195,6 +1195,8 @@ impl CatalogQuery {
                     // compact row slots used internally by the catalog evaluator.
                     let attribute = match (relation.name.as_str(), slot % CATALOG_ROW_WIDTH) {
                         ("pg_attribute", 1) => 5,
+                        ("pg_attribute", 2) => 2,
+                        ("pg_attribute", 4) => 6,
                         ("pg_attribute", 7) => 17,
                         ("pg_shdescription", 6) => 1,
                         ("pg_shdescription", 7) => 2,
@@ -3491,7 +3493,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_constraint", "xmin") => (16, 8),
         ("pg_attribute", "attrelid") => (0, oid),
         ("pg_attribute", "attnum") => (1, 2),
-        ("pg_attribute", "attname") => (2, 253),
+        ("pg_attribute", "attname") => (2, crate::pg_result::CatalogColumnType::Name as u8),
         ("pg_attribute", "atttypid") => (3, oid),
         ("pg_attribute", "atttypmod") => (4, 3),
         ("pg_attribute", "attndims") => (5, 3),
@@ -3561,19 +3563,54 @@ const COLUMN_TYPES: &[(i64, &str, &str, &str)] = &[
 
 fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i64, i64)> {
     use astersql_parser_mysql::r#type as mysql;
-    if column.FieldType.IsArray() {
+    let tp = &column.FieldType;
+    if tp.IsArray() && tp.PostgreSQLArrayElement().is_none() {
         return Err(ConnError::UnsupportedCommand(0));
     }
-    // DDL metadata can lose the parser-only boolean flag, but preserves a
-    // boolean-typed default. Do not guess ordinary native TINYINT(1) columns.
-    if column.GetFlag() & mysql::IsBooleanFlag != 0
-        || column.GetType() == 1
-            && column.GetFlen() == 1
-            && matches!(
-                column.GetDefaultValue(),
-                Some(astersql_meta_model::DefaultValue::Bool(_))
-            )
-    {
+    if let Some(element) = tp.PostgreSQLArrayElement() {
+        let mut scalar = column.clone();
+        // Array storage is textual; the declaration carries its actual element identity.
+        let mut field = astersql_types::field::ast::NewFieldType(match element.oid() {
+            21 => mysql::TypeShort,
+            23 => mysql::TypeLong,
+            20 => mysql::TypeLonglong,
+            1700 => mysql::TypeNewDecimal,
+            1083 => mysql::TypeDuration,
+            1114 => mysql::TypeDatetime,
+            1184 => mysql::TypePgTimestampTz,
+            1186 => mysql::TypePgInterval,
+            _ => mysql::TypeVarString,
+        });
+        field.SetFlen(tp.GetFlen());
+        field.SetDecimal(tp.GetDecimal());
+        field.SetPostgreSQLDeclaration();
+        if matches!(element.oid(), 1042 | 1043) {
+            field.SetPostgreSQLTextOid(element.oid());
+        }
+        scalar.FieldType = field;
+        let modifier = if matches!(
+            element.oid(),
+            1042 | 1043 | 1700 | 1083 | 1114 | 1184 | 1186
+        ) {
+            native_column_type(&scalar)?.1
+        } else {
+            -1
+        };
+        return Ok((i64::from(element.array_oid()), modifier));
+    }
+    if let Some(oid) = tp.PostgreSQLTextOid() {
+        let modifier = if matches!(oid, 1042 | 1043) && tp.GetFlen() >= 0 {
+            i64::try_from(tp.GetFlen())
+                .ok()
+                .and_then(|n| n.checked_add(4))
+                .filter(|n| *n <= i64::from(i32::MAX))
+                .ok_or(ConnError::UnsupportedCommand(0))?
+        } else {
+            -1
+        };
+        return Ok((i64::from(oid), modifier));
+    }
+    if column.GetFlag() & mysql::IsBooleanFlag != 0 {
         return Ok((16, -1));
     }
     let unsigned = mysql::HasUnsignedFlag(column.GetFlag());
@@ -3609,13 +3646,17 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
                 i64::try_from(column.GetFlen()).map_err(|_| ConnError::UnsupportedCommand(0))?;
             let scale =
                 i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
-            if !(1..=65).contains(&precision) || !(0..=precision).contains(&scale) {
-                return Err(ConnError::Session(format!(
-                    "incomplete column type metadata for {}",
-                    column.Name.O
-                )));
+            if tp.IsPostgreSQLDeclaration() && precision == -1 && scale == -1 {
+                return Ok((1700, -1));
             }
-            modifier = 4 + (precision << 16) + scale;
+            if if tp.IsPostgreSQLDeclaration() {
+                !(1..=1000).contains(&precision) || !(-1000..=1000).contains(&scale)
+            } else {
+                !(1..=65).contains(&precision) || !(0..=precision).contains(&scale)
+            } {
+                return Err(ConnError::UnsupportedCommand(0));
+            }
+            modifier = 4 + (precision << 16) + (scale & 0x7ff);
             1700
         }
         15 | 253 | 254 => {
@@ -3625,10 +3666,7 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
                 let length = i64::try_from(column.GetFlen())
                     .map_err(|_| ConnError::UnsupportedCommand(0))?;
                 if length <= 0 || length > i64::from(i32::MAX) - 4 {
-                    return Err(ConnError::Session(format!(
-                        "incomplete column length metadata for {}",
-                        column.Name.O
-                    )));
+                    return Err(ConnError::UnsupportedCommand(0));
                 }
                 modifier = length + 4;
                 if column.GetType() == 254 { 1042 } else { 1043 }
@@ -3645,25 +3683,47 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
         11 => {
             modifier =
                 i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
-            if !(0..=6).contains(&modifier) {
-                return Err(ConnError::Session(format!(
-                    "incomplete time precision metadata for {}",
-                    column.Name.O
-                )));
+            if !(-1..=6).contains(&modifier) || modifier == -1 && !tp.IsPostgreSQLDeclaration() {
+                return Err(ConnError::UnsupportedCommand(0));
             }
             1083
         }
         7 | 12 => {
             modifier =
                 i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
-            if !(0..=6).contains(&modifier) {
-                return Err(ConnError::Session(format!(
-                    "incomplete datetime precision metadata for {}",
-                    column.Name.O
-                )));
+            if !(-1..=6).contains(&modifier) || modifier == -1 && !tp.IsPostgreSQLDeclaration() {
+                return Err(ConnError::UnsupportedCommand(0));
             }
             1114
         }
+        mysql::TypePgTimestampTz => {
+            modifier = column.GetDecimal() as i64;
+            1184
+        }
+        mysql::TypePgInterval => {
+            modifier = if column.GetFlen() < 0 && column.GetDecimal() < 0 {
+                -1
+            } else {
+                ((if column.GetFlen() < 0 {
+                    0x7fff
+                } else {
+                    column.GetFlen() as i64
+                }) << 16)
+                    | if column.GetDecimal() < 0 {
+                        0xffff
+                    } else {
+                        column.GetDecimal() as i64
+                    }
+            };
+            1186
+        }
+        mysql::TypePgUuid => 2950,
+        mysql::TypePgJson => 114,
+        mysql::TypePgJsonb => 3802,
+        mysql::TypePgName => 19,
+        mysql::TypePgRegtype => 2206,
+        mysql::TypePgInt4Range => 3904,
+        mysql::TypePgNumRange => 3906,
         245 => 114,
         // Enums and sets need identities/labels not provided by this compatibility phase.
         _ => return Err(ConnError::UnsupportedCommand(0)),
@@ -3726,6 +3786,9 @@ fn column_default(
         return Ok(None);
     };
     let text = match value {
+        // Native TRUE/FALSE defaults are numeric constants on integer columns;
+        // their value does not establish the column's PostgreSQL identity.
+        DefaultValue::Bool(v) if matches!(oid, 20 | 21 | 23) => i32::from(v).to_string(),
         DefaultValue::Bool(v) => v.to_string(),
         DefaultValue::Int(v) => v.to_string(),
         DefaultValue::Uint(v) => v.to_string(),

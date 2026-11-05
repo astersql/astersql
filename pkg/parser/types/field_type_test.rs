@@ -688,3 +688,22 @@ fn pg08_30_regtype_identity() {
         .unwrap();
     assert_eq!(output, b"REGTYPE");
 }
+
+#[test]
+fn pg13_009_declaration_survives_json() {
+    let mut tp = crate::NewFieldType(crate::mysql::TypeNewDecimal);
+    tp.SetPostgreSQLDeclaration();
+    tp.SetFlen(-1);
+    tp.SetDecimal(-1);
+    let json = serde_json::to_string(&tp).unwrap();
+    let restored: crate::FieldType = serde_json::from_str(&json).unwrap();
+    assert!(restored.IsPostgreSQLDeclaration());
+    assert_eq!(restored.GetFlen(), -1);
+    assert_eq!(restored.GetDecimal(), -1);
+    let mut native = crate::NewFieldType(crate::mysql::TypeNewDecimal);
+    let json = serde_json::to_string(&native).unwrap();
+    assert!(!json.contains("PostgreSQLDeclaration"));
+    native.SetPostgreSQLDeclaration();
+    native.SetType(crate::mysql::TypeLong);
+    assert!(!native.IsPostgreSQLDeclaration());
+}

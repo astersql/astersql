@@ -350,7 +350,7 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         | "sumexpr_builtincount_distinctkwd_expressionlist--0458f0f19f8b7199"
         | "sumexpr_builtincount_expression_pgaggregateorder--88332d57268b95a3" => Some(ExpressionRule::PgAggregateOrder),
         id if id.starts_with("simpleexpr_sumexpr_pgfilter_") => Some(ExpressionRule::PgAggregateFilter),
-        id if id.starts_with("pgcasttype_pgcasttype--") || id.starts_with("pgcasttype_pgpostfixfloat--") || id.starts_with("pgcasttype_pgpostfixtext--") || id.starts_with("pgcasttype_pgpostfixdate--") || id.starts_with("pgcasttype_pgpostfixjson--") || id.starts_with("pgcasttype_pgtimetype--") || id.starts_with("pgcasttype_pgtimestamptype--") => Some(ExpressionRule::PgArrayType),
+        id if id.starts_with("type_type--") || id.starts_with("pgcasttype_pgcasttype--") || id.starts_with("pgcasttype_pgpostfixfloat--") || id.starts_with("pgcasttype_pgpostfixtext--") || id.starts_with("pgcasttype_pgpostfixdate--") || id.starts_with("pgcasttype_pgpostfixjson--") || id.starts_with("pgcasttype_pgtimetype--") || id.starts_with("pgcasttype_pgtimestamptype--") => Some(ExpressionRule::PgArrayType),
         id if id.starts_with("pgcasttype_pginterval_pgintervalopt--") || id.starts_with("pgcasttype_pginterval_prec_empty--") => Some(ExpressionRule::PgIntervalType),
         id if id.starts_with("pgintervalliteralopt") => Some(ExpressionRule::PgIntervalLiteralOpt),
         id if id.starts_with("pgintervalopt") => Some(ExpressionRule::PgIntervalOpt),

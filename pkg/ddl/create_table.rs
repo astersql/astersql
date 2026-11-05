@@ -438,12 +438,17 @@ fn build_column(definition: &ast::ColumnDef, offset: usize) -> BuildResult<model
                 | model::mysql::UniqueKeyFlag
                 | model::mysql::MultipleKeyFlag),
     );
+    // PG unspecified precision is a declaration fact, not a native storage default.
     let (default_flen, default_decimal) =
         model::mysql::GetDefaultFieldLengthAndDecimal(column.GetType());
-    if column.GetDecimal() == model::types::UnspecifiedLength {
+    if !column.FieldType.IsPostgreSQLDeclaration()
+        && column.GetDecimal() == model::types::UnspecifiedLength
+    {
         column.SetDecimal(default_decimal);
     }
-    if column.GetFlen() == model::types::UnspecifiedLength {
+    if !column.FieldType.IsPostgreSQLDeclaration()
+        && column.GetFlen() == model::types::UnspecifiedLength
+    {
         let flen = if model::mysql::HasUnsignedFlag(column.GetFlag())
             && column.GetType() != model::mysql::TypeLonglong
             && model::mysql::IsIntegerType(column.GetType())

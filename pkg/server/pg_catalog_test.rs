@@ -1608,7 +1608,7 @@ fn pg_introspection_columns_live() {
         columns(&result[0].1),
         vec![
             ("attnum".into(), 21),
-            ("attname".into(), 25),
+            ("attname".into(), 19),
             ("atttypid".into(), 26),
             ("spec".into(), 25),
             ("attnotnull".into(), 16),
@@ -4452,5 +4452,187 @@ fn pg13_008_contract() {
     drop(cleanup);
     println!(
         "pg13_008_contract: initial=1 rename=1 drop=1 add=1 second_connection=1 cross_database=1 invalid_metadata=7 hidden=1 cleanup=1"
+    );
+}
+
+#[test]
+fn pg13_009_contract() {
+    let metadata =
+        crate::pg_catalog::CatalogQuery::parse("SELECT attname,atttypmod FROM pg_attribute")
+            .unwrap()
+            .unwrap()
+            .metadata();
+    assert_eq!(
+        metadata.catalog_column_origins,
+        vec![Some((1249, 2)), Some((1249, 6))]
+    );
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg13_009_policy").unwrap();
+    native.execute("CREATE DATABASE pg13_009_admin").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let cleanup = Cleanup(|| {
+        service.close();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_009_policy")
+            .unwrap();
+        native
+            .execute("DROP DATABASE IF EXISTS pg13_009_admin")
+            .unwrap();
+        native
+            .execute("DROP USER IF EXISTS 'pg13_009_owner'@'%'")
+            .unwrap();
+    });
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let m = read(&mut socket);
+            let done = m.0 == b'Z' || m.0 == b'E';
+            messages.push(m);
+            if done {
+                break;
+            }
+        }
+        (socket, messages)
+    };
+    let (mut a, startup) = connect("pg13_009_admin");
+    assert_eq!(startup.last().unwrap().0, b'Z');
+    let (mut b, _) = connect("pg13_009_admin");
+    let (mut c, _) = connect("pg13_009_policy");
+    let ddl = query(
+        &mut a,
+        "CREATE TABLE public.decl_types(i integer, v varchar(24), c char(7), n numeric(12,3), u numeric, neg numeric(8,-2), t timestamp, p timestamp(3), arr integer[], b boolean, txt text)",
+    );
+    assert!(!ddl.iter().any(|m| m.0 == b'E'), "{ddl:?}");
+    let sql = "SELECT a.attname,a.atttypid,a.atttypmod FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.decl_types'::regclass::oid ORDER BY a.attnum";
+    let expected = [
+        ("i", 23, -1),
+        ("v", 1043, 28),
+        ("c", 1042, 11),
+        ("n", 1700, 786439),
+        ("u", 1700, -1),
+        ("neg", 1700, 526338),
+        ("t", 1114, -1),
+        ("p", 1114, 3),
+        ("arr", 1007, -1),
+        ("b", 16, -1),
+        ("txt", 25, -1),
+    ];
+    for socket in [&mut a, &mut b] {
+        let got = query(socket, sql);
+        assert_eq!(got[0].0, b'T', "{got:?}");
+        assert_eq!(
+            columns(&got[0].1),
+            vec![
+                ("attname".into(), 19),
+                ("atttypid".into(), 26),
+                ("atttypmod".into(), 23)
+            ]
+        );
+        for (name, oid, modifier) in expected {
+            assert!(
+                got.contains(&(
+                    b'D',
+                    row(&[
+                        Some(name),
+                        Some(&oid.to_string()),
+                        Some(&modifier.to_string())
+                    ])
+                )),
+                "{name}: {got:?}"
+            );
+        }
+        let empty = query(socket, &format!("{sql} LIMIT 0"));
+        assert_eq!(empty[0], got[0]);
+        assert_eq!(empty.iter().filter(|m| m.0 == b'D').count(), 0);
+    }
+    let table = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("pg13_009_admin"),
+            &astersql_infoschema::CiString::new("decl_types"),
+        )
+        .unwrap();
+    for scenario in 0..3 {
+        let mut model = table.Meta().model_meta.as_ref().unwrap().as_ref().clone();
+        match scenario {
+            0 => model.Columns[3].SetDecimal(1001),
+            1 => model.Columns[6].SetDecimal(7),
+            _ => model.Columns[1].SetFlen(i32::MAX as isize),
+        }
+        let mut bad = astersql_infoschema::infoSchema::new(1);
+        bad.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 42,
+                name: astersql_infoschema::CiString::new("invalid"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::new(
+                astersql_infoschema::TableInfo {
+                    id: model.ID,
+                    db_id: 42,
+                    name: astersql_infoschema::CiString::new("decl_types"),
+                    model_meta: Some(Arc::new(model)),
+                    ..Default::default()
+                },
+            )],
+        );
+        let error = crate::pg_catalog::column_catalog_rows(
+            "pg_attribute",
+            &bad,
+            "invalid",
+            &crate::conn::CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::pg_conn::sqlstate(&error),
+            "0A000",
+            "scenario={scenario}"
+        );
+    }
+    native
+        .execute("CREATE TABLE pg13_009_admin.native_tiny(x TINYINT(1) DEFAULT TRUE)")
+        .unwrap();
+    let tiny = query(
+        &mut a,
+        "SELECT a.atttypid FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.native_tiny'::regclass::oid",
+    );
+    assert!(
+        tiny.contains(&(b'D', row(&[Some("21")]))),
+        "native width/default must not imply boolean: {tiny:?}"
+    );
+    drop((a, b, c));
+    drop(cleanup);
+    println!(
+        "pg13_009_contract: declarations=11 connections=2 zero_rows=2 invalid_metadata=3 native_tiny=1 cleanup=1"
     );
 }

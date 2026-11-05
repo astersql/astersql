@@ -124,3 +124,42 @@ fn postgresql_identity_metadata_validates_type_and_declarations() {
         );
     }
 }
+
+#[test]
+fn pg13_009_preserves_declared_modifiers() {
+    let context = metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    let mut parser = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL);
+    let (statements, _) = parser.ParseSQL("CREATE TABLE decl_types(n numeric, neg numeric(8,-2), t timestamp, p timestamp(3), v varchar(24), a integer[])", &[]).unwrap();
+    let statement = statements[0]
+        .as_any()
+        .downcast_ref::<ast::CreateTableStmt>()
+        .unwrap();
+    let table = BuildTableInfoFromAST(&context, statement).unwrap();
+    assert_eq!(
+        (table.Columns[0].GetFlen(), table.Columns[0].GetDecimal()),
+        (-1, -1)
+    );
+    assert_eq!(
+        (table.Columns[1].GetFlen(), table.Columns[1].GetDecimal()),
+        (8, -2)
+    );
+    assert_eq!(table.Columns[2].GetDecimal(), -1);
+    assert_eq!(table.Columns[3].GetDecimal(), 3);
+    assert_eq!(table.Columns[4].FieldType.PostgreSQLTextOid(), Some(1043));
+    assert!(
+        table.Columns[5]
+            .FieldType
+            .PostgreSQLArrayElement()
+            .is_some()
+    );
+    let native = BuildTableInfoFromAST(
+        &context,
+        &parse_create("CREATE TABLE native_types(n decimal, t datetime)"),
+    )
+    .unwrap();
+    assert_eq!(
+        (native.Columns[0].GetFlen(), native.Columns[0].GetDecimal()),
+        (10, 0)
+    );
+    assert_eq!(native.Columns[1].GetDecimal(), 0);
+}

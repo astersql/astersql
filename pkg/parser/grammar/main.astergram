@@ -1192,6 +1192,7 @@ AlterTableSpec : "CHANGE" ColumnKeywordOpt IfExists ColumnName ColumnDef ColumnP
 AlterTableSpec : "ALTER" ColumnKeywordOpt ColumnName "SET" "DEFAULT" SignedLiteral @action;
 AlterTableSpec : "ALTER" ColumnKeywordOpt ColumnName "SET" "DEFAULT" "(" Expression ")" @action;
 AlterTableSpec : "ALTER" ColumnKeywordOpt ColumnName "DROP" "DEFAULT" @action;
+AlterTableSpec : "ALTER" ColumnKeywordOpt ColumnName "TYPE" Type @action;
 AlterTableSpec : "RENAME" "COLUMN" Identifier "TO" Identifier @action;
 AlterTableSpec : "RENAME" "TO" TableName @action;
 AlterTableSpec : "RENAME" EqOpt TableName @action;
@@ -3734,6 +3735,7 @@ RowFormat : "ROW_FORMAT" EqOpt "TOKUDB_QUICKLZ" @action;
 RowFormat : "ROW_FORMAT" EqOpt "TOKUDB_LZMA" @action;
 RowFormat : "ROW_FORMAT" EqOpt "TOKUDB_SNAPPY" @action;
 RowFormat : "ROW_FORMAT" EqOpt "TOKUDB_UNCOMPRESSED" @action;
+Type : Type '[' ']' @action;
 Type : NumericType;
 Type : StringType;
 Type : DateAndTimeType;

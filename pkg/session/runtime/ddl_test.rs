@@ -200,3 +200,46 @@ fn restore_mode_skips_pre_split_even_with_explicit_configuration() {
         &table,
     ));
 }
+
+#[test]
+fn pg13_009_type_change_preserves_column_facts() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let session = ConcreteSession::new_with_dialect(domain.clone(), ast::SqlDialect::PostgreSQL);
+    session
+        .execute(
+            "CREATE TABLE decl_change(v varchar(24) NOT NULL DEFAULT 'hello', n numeric(12,3), t timestamp)",
+        )
+        .unwrap();
+    let (_, before) = domain.stats_table("test", "decl_change").unwrap();
+    session
+        .execute("ALTER TABLE decl_change ALTER COLUMN v TYPE varchar(7)")
+        .unwrap();
+    session
+        .execute("ALTER TABLE decl_change ALTER COLUMN n TYPE numeric(8,2)")
+        .unwrap();
+    session
+        .execute("ALTER TABLE decl_change ALTER COLUMN t TYPE timestamp(3)")
+        .unwrap();
+    let (_, after) = domain.stats_table("test", "decl_change").unwrap();
+    assert_eq!(before.ID, after.ID);
+    assert!(after.Columns[2].FieldType.IsPostgreSQLDeclaration());
+    assert_eq!(after.Columns[2].GetDecimal(), 3);
+    assert_eq!(
+        after.Columns[2].GetType(),
+        astersql_parser_mysql::r#type::TypeDatetime
+    );
+    assert_eq!(before.Columns[0].ID, after.Columns[0].ID);
+    assert_eq!(
+        before.Columns[0].DefaultValue,
+        after.Columns[0].DefaultValue
+    );
+    assert!(astersql_parser_mysql::r#type::HasNotNullFlag(
+        after.Columns[0].GetFlag()
+    ));
+    assert_eq!(after.Columns[0].GetFlen(), 7);
+    assert_eq!(
+        (after.Columns[1].GetFlen(), after.Columns[1].GetDecimal()),
+        (8, 2)
+    );
+    session.execute("DROP TABLE decl_change").unwrap();
+}

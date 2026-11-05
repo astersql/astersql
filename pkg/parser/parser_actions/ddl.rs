@@ -19,6 +19,7 @@ use super::{Context, Rhs};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum DdlRule {
+    PgColumnType,
     PgIdentityAlways,
     PgIdentity,
     PgIdentityOptions,
@@ -632,6 +633,7 @@ enum DdlRule {
 
 fn identify(rule_id: RuleId) -> Option<DdlRule> {
     match rule_id.as_str() {
+        "altertablespec_alter_columnkeywordopt_columnname--7063fb2dfd9051a6" => Some(DdlRule::PgColumnType),
         "columnoption_generated_by_default_as_identifier--e26b3df928020dea"
         | "columnoption_generatedalways_as_identifier_pgide--6c8dd84369343e4d" => {
             Some(DdlRule::PgIdentity)
@@ -1976,6 +1978,32 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         lexer: yylex,
     } = context;
     match rule {
+        DdlRule::PgColumnType => {
+            if parser_state.sql_dialect() != parser_ast::SqlDialect::PostgreSQL {
+                yylex.AppendError(ErrSyntax.GenWithStackByArgs(&[]));
+                return Err(1);
+            }
+            let name = rhs[3].item.as_deref()
+                .and_then(|v| v.downcast_ref::<parser_ast::ColumnName>())
+                .cloned().ok_or(1isize)?;
+            let mut tp = rhs[5].item.as_deref()
+                .and_then(|v| v.downcast_ref::<parser_types::types::FieldType>())
+                .cloned().ok_or(1isize)?;
+            tp.SetPostgreSQLDeclaration();
+            if matches!(tp.GetType(), parser_mysql::r#type::TypeVarchar | parser_mysql::r#type::TypeVarString)
+                && tp.PostgreSQLArrayElement().is_none()
+            {
+                tp.SetPostgreSQLTextOid(1043);
+            }
+            if tp.GetType() == parser_mysql::r#type::TypeString {
+                tp.SetPostgreSQLTextOid(1042);
+            }
+            out.item = Some(Box::new(parser_ast::AlterTableSpec {
+                Tp: parser_ast::AlterTableType::ModifyColumn,
+                NewColumns: vec![parser_ast::ColumnDef { Name: name, Tp: tp, Options: Vec::new() }],
+                ..Default::default()
+            }));
+        }
         DdlRule::PgIdentityAlways => {
             out.item = Some(Box::new(rhs_len != 0));
         }
@@ -4176,7 +4204,7 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             else {
                 return Ok(false);
             };
-            let Some(tp) = rhs
+            let Some(mut tp) = rhs
                 .borrow(rhs_len - (1))
                 .expect("DDL RHS position")
                 .item
@@ -4186,6 +4214,14 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             else {
                 return Ok(false);
             };
+            if parser_state.sql_dialect() == parser_ast::SqlDialect::PostgreSQL {
+                tp.SetPostgreSQLDeclaration();
+                match tp.GetType() {
+                    parser_mysql::r#type::TypeVarchar | parser_mysql::r#type::TypeVarString if tp.PostgreSQLArrayElement().is_none() => tp.SetPostgreSQLTextOid(1043),
+                    parser_mysql::r#type::TypeString => tp.SetPostgreSQLTextOid(1042),
+                    _ => {}
+                }
+            }
             let options = rhs
                 .borrow(rhs_len - (0))
                 .expect("DDL RHS position")
